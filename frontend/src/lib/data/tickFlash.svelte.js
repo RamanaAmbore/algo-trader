@@ -39,6 +39,7 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     // First sample — establish baseline, no flash. Without this every
     // mount would flash every cell from null → value.
     if (last == null) return;
+    if (v === last) return;       // no-change: same value → no flash, no text animation
     if (Math.abs(v - last) < threshold) return;
     if (_pctThreshold > 0 && last > 0) {
       const changePct = Math.abs((v - last) / last * 100);

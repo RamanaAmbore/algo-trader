@@ -405,7 +405,7 @@
   });
 
   import { untrack } from 'svelte';
-  import { priceFmt, aggFmt, aggCompact } from '$lib/format';
+  import { priceFmt, aggFmt, aggCompact, ltpDayClass } from '$lib/format';
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
 
@@ -740,12 +740,12 @@
                ? `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">SPOT</span>
-          <span class={'ps-v ps-spot-' + spotDir}>{fmtSpot(spot)}</span>
+          <span class={'ps-v ' + ltpDayClass(spotPct)}>{fmtSpot(spot)}</span>
         </div>
         {#if spotPct != null}
           <div class="ps-row" title="Spot % change from previous session close">
             <span class="ps-k">CHG%</span>
-            <span class={'ps-v ps-spot-' + spotDir}>
+            <span class={'ps-v ' + ltpDayClass(spotPct)}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
             </span>
           </div>

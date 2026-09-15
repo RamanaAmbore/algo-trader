@@ -14,6 +14,8 @@
 // closures. Accessors ensure the closures see the current $state value
 // on every ag-Grid redraw — not the stale binding captured at mount.
 
+import { aggCompact, ltpDayClass } from '$lib/format.js';
+
 // ─── Pure helpers ────────────────────────────────────────────────────
 
 // ── Magnitude-tiered flash helpers ──────────────────────────────────
@@ -224,10 +226,10 @@ function _ltpAvgFor(row) {
   return null;
 }
 
-// Return the tick-flash class for a symbol, or null when not flashing.
+// Return the background tick-flash class for a symbol, or null when not flashing.
 // Uses getter functions (not frozen Set values) so the closure stays live.
-// Text-color flash (ltp-tc-flash-*) replaces the background flash on LTP
-// cells so the animation doesn't fight the ltp-vs-avg background tint.
+// Background flash (tf-up / tf-down) is used on LTP cells — background pulse
+// communicates tick direction without fighting the persistent ltpDayClass text color.
 // Magnitude is sourced from rowData (cumulative day %) when available;
 // falls back to getLtpFlashPct() (tick-delta map) as last resort.
 function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, rowData) {
@@ -235,13 +237,13 @@ function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, row
     const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
                  : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
                  : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _tcFlashClass('up', absPct);
+    return _bgFlashClass('up', absPct);
   }
   if (getLtpFlashDown?.().has(sym)) {
     const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
                  : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
                  : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _tcFlashClass('down', absPct);
+    return _bgFlashClass('down', absPct);
   }
   return null;
 }
@@ -290,19 +292,17 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
   }
   const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
-  // Text-color direction for the LTP value — prefer the precomputed
-  // change_pct / day_pnl_pct field (same SSOT as the Day % column) so
-  // LTP color agrees with the adjacent day-% cell on every row type.
-  // Falls back to ltp vs close_price when neither field is present
-  // (e.g. underlying snapshot rows where change_pct may be absent).
+  // Persistent text color for the LTP value — tiered by day % magnitude.
+  // Prefer precomputed change_pct / day_pnl_pct (same SSOT as Day % column).
+  // Falls back to computing day% from ltp vs close_price when neither field
+  // is present (e.g. underlying snapshot rows where change_pct may be absent).
   const pct = p.data.change_pct ?? p.data.day_pnl_pct ?? null;
   const prev = p.data.close ?? null;
-  const dir = pct != null
-    ? (pct > 0 ? 'cell-pos' : pct < 0 ? 'cell-neg' : 'cell-flat')
+  const dayPct = pct != null ? pct
     : (typeof ltp === 'number' && typeof prev === 'number' && prev > 0
-        ? (ltp > prev ? 'cell-pos' : ltp < prev ? 'cell-neg' : 'cell-flat')
+        ? (ltp - prev) / prev * 100
         : null);
-  if (dir) cls.push(dir);
+  cls.push(ltpDayClass(dayPct));
   return cls.join(' ');
 }
 
@@ -767,7 +767,7 @@ export function mkExpPnlCol(getDerivedByKey) {
       return getDerivedByKey()[sym]?.exp_pnl ?? null;
     },
     cellClass: p => dirCls(p.value),
-    valueFormatter: p => p.value != null ? p.value.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '',
+    valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Projected P&L at expiry — option intrinsic × qty (options) or (spot − avg) × qty (futures). Blank for equity rows.',
   };
 }
@@ -792,7 +792,7 @@ export function mkExtrinsicCol(getDerivedByKey) {
       return getDerivedByKey()[sym]?.extrinsic ?? null;
     },
     cellClass: p => dirCls(p.value),
-    valueFormatter: p => p.value != null ? p.value.toLocaleString('en-IN', { maximumFractionDigits: 0 }) : '',
+    valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus intrinsic (ltp−avg)×qty. Positive when you paid/received more than the current mark-to-market.',
   };
 }

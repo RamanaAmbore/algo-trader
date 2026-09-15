@@ -640,14 +640,14 @@
     font-size: var(--fs-lg);
   }
   .perf-reg-metric {
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-md);
   }
   .perf-reg-nums {
     margin-left: auto;
     font-variant-numeric: tabular-nums;
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     font-size: var(--fs-md);
     white-space: nowrap;
   }
@@ -727,7 +727,7 @@
   }
   .perf-stat-label {
     font-size: var(--fs-xs);
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     line-height: 1;
@@ -761,7 +761,7 @@
   }
   .perf-chart-label {
     font-size: var(--fs-xs);
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     font-variant-numeric: tabular-nums;
   }
   .perf-chart-svg {
@@ -810,7 +810,7 @@
 
   .perf-card-foot {
     font-size: var(--fs-xs);
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     margin-top: 0.15rem;
     font-variant-numeric: tabular-nums;
   }
@@ -835,7 +835,7 @@
     text-overflow: ellipsis;
   }
   .perf-fn-page {
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-lg);
     white-space: nowrap;
@@ -848,7 +848,7 @@
     font-weight: 700;
   }
   .perf-fn-line {
-    color: var(--text-soft, #94a3b8);
+    color: var(--text-sub, #c4d0e0);
   }
 
   /* Reduced-motion: suppress animations (there are none here — all

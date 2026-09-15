@@ -6,6 +6,7 @@ import {
   directional,
   fmtPctScaled,
   fmtPctFraction,
+  ltpDayClass,
 } from '$lib/format.js';
 
 // ── priceFmt ────────────────────────────────────────────────────────────────
@@ -256,5 +257,109 @@ describe('fmtPctFraction', () => {
 
   it('null → "—"', () => {
     expect(fmtPctFraction(null)).toBe('—');
+  });
+});
+
+// ── ltpDayClass ─────────────────────────────────────────────────────────────
+
+describe('ltpDayClass', () => {
+  // Flat tier: null, undefined, 0, NaN, Infinity
+  it('null → ltp-day-flat', () => {
+    expect(ltpDayClass(null)).toBe('ltp-day-flat');
+  });
+
+  it('undefined → ltp-day-flat', () => {
+    expect(ltpDayClass(undefined)).toBe('ltp-day-flat');
+  });
+
+  it('0 → ltp-day-flat', () => {
+    expect(ltpDayClass(0)).toBe('ltp-day-flat');
+  });
+
+  it('NaN → ltp-day-flat', () => {
+    expect(ltpDayClass(NaN)).toBe('ltp-day-flat');
+  });
+
+  it('Infinity → ltp-day-flat', () => {
+    expect(ltpDayClass(Infinity)).toBe('ltp-day-flat');
+  });
+
+  it('-Infinity → ltp-day-flat', () => {
+    expect(ltpDayClass(-Infinity)).toBe('ltp-day-flat');
+  });
+
+  // Small magnitude tier (< 0.5%)
+  it('positive 0.3% → ltp-day-pos-sm', () => {
+    expect(ltpDayClass(0.3)).toBe('ltp-day-pos-sm');
+  });
+
+  it('negative -0.3% → ltp-day-neg-sm', () => {
+    expect(ltpDayClass(-0.3)).toBe('ltp-day-neg-sm');
+  });
+
+  it('positive 0.49% (boundary below 0.5%) → ltp-day-pos-sm', () => {
+    expect(ltpDayClass(0.49)).toBe('ltp-day-pos-sm');
+  });
+
+  it('negative -0.49% (boundary below 0.5%) → ltp-day-neg-sm', () => {
+    expect(ltpDayClass(-0.49)).toBe('ltp-day-neg-sm');
+  });
+
+  // Standard tier (0.5–2%)
+  it('positive 0.5% → ltp-day-pos', () => {
+    expect(ltpDayClass(0.5)).toBe('ltp-day-pos');
+  });
+
+  it('negative -0.5% → ltp-day-neg', () => {
+    expect(ltpDayClass(-0.5)).toBe('ltp-day-neg');
+  });
+
+  it('positive 1.0% (mid-range) → ltp-day-pos', () => {
+    expect(ltpDayClass(1.0)).toBe('ltp-day-pos');
+  });
+
+  it('negative -1.0% (mid-range) → ltp-day-neg', () => {
+    expect(ltpDayClass(-1.0)).toBe('ltp-day-neg');
+  });
+
+  it('positive 1.99% (boundary below 2%) → ltp-day-pos', () => {
+    expect(ltpDayClass(1.99)).toBe('ltp-day-pos');
+  });
+
+  it('negative -1.99% (boundary below 2%) → ltp-day-neg', () => {
+    expect(ltpDayClass(-1.99)).toBe('ltp-day-neg');
+  });
+
+  // Large magnitude tier (≥ 2%)
+  it('positive 2.0% → ltp-day-pos-lg', () => {
+    expect(ltpDayClass(2.0)).toBe('ltp-day-pos-lg');
+  });
+
+  it('negative -2.0% → ltp-day-neg-lg', () => {
+    expect(ltpDayClass(-2.0)).toBe('ltp-day-neg-lg');
+  });
+
+  it('positive 2.5% → ltp-day-pos-lg', () => {
+    expect(ltpDayClass(2.5)).toBe('ltp-day-pos-lg');
+  });
+
+  it('negative -2.5% → ltp-day-neg-lg', () => {
+    expect(ltpDayClass(-2.5)).toBe('ltp-day-neg-lg');
+  });
+
+  it('positive 5.0% (large move) → ltp-day-pos-lg', () => {
+    expect(ltpDayClass(5.0)).toBe('ltp-day-pos-lg');
+  });
+
+  it('negative -5.0% (large move) → ltp-day-neg-lg', () => {
+    expect(ltpDayClass(-5.0)).toBe('ltp-day-neg-lg');
+  });
+
+  it('positive 50.0% (extreme move) → ltp-day-pos-lg', () => {
+    expect(ltpDayClass(50.0)).toBe('ltp-day-pos-lg');
+  });
+
+  it('negative -50.0% (extreme move) → ltp-day-neg-lg', () => {
+    expect(ltpDayClass(-50.0)).toBe('ltp-day-neg-lg');
   });
 });

@@ -1,101 +1,235 @@
-# Plan: Fix CRUDEOIL spot SSOT gap — derivatives Snapshot + payoff not updating per-tick
+# Plan: LTP/spot text color redesign + flash no-change guard + Exp P&L format + legs total label + stale cleanup
 
 ## Context
-CRUDEOIL spot price updates live in MarketPulse positions grid but is frozen in the derivatives
-Snapshot card (spot column) and payoff overlay. Both use `liveSpot` ($derived.by in +page.svelte).
+Five distinct fixes bundled into one plan. The primary change is a visual redesign of how LTP / spot / day% 
+communicate price direction — industry-standard dual-signal pattern used by Bloomberg, Refinitiv, Kite.
 
-Root cause: `patchUnderlyingSpot("CRUDEOIL", ltp)` IS called from the tick bus anchor path (Path 2)
-whenever the anchor contract ticks, updating `underlyingSpotStore._quotes["CRUDEOIL"].ltp` and
-therefore `_underlyingQuotes["CRUDEOIL"].ltp`. But `liveSpot` reads `_underlyingQuotes[selectedUnderlying]?.ltp`
-inside `untrack()` and is only re-triggered by `_quoteGeneration` (incremented after each 30s batchQuote).
-So tick-level patches to `_underlyingQuotes` are invisible to `liveSpot` until the next 30s poll.
+**Dual-signal design (confirmed industry standard):**
+- **Text color** = WHERE you are vs. yesterday (persistent, tiered by day% magnitude)
+  - > prev_close → positive green (dim / standard / bright based on |day%|)
+  - < prev_close → negative red (same tiers)
+  - = prev_close → flat/muted
+- **Background flash** = WHAT JUST HAPPENED on the last tick (animated, tick-direction based)
+  - Tick ↑ → `tf-up` pulse (green background)
+  - Tick ↓ → `tf-down` pulse (red background)
+  - Same value as prev tick → NO flash (no-change guard)
 
-Second gap: when `strategy.spot_anchor_contract` is null (sim mode, fallback), Path 2 never fires at
-all for CRUDEOIL ticks — the underlying's nearest-future tradingsymbol (e.g., "CRUDEOILSEP26FUT")
-has no handler in the tick bus.
-
-## Task
-Three targeted changes to `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`:
-
-1. Add a reactive derived `_activeQuoteLtp` that tracks the selected underlying's LTP from
-   `_underlyingQuotes`. This is reactive (not `untrack`-ed), so Svelte will re-derive it whenever
-   `patchUnderlyingSpot` patches `_quotes`.
-
-2. Add `void _activeQuoteLtp` in `liveSpot` so it re-derives whenever the patched LTP changes —
-   closing the 30s-only update gap.
-
-3. Add Path 3 in the tick bus handler: when neither Path 1 (direct root match) nor Path 2 (anchor)
-   matched the ticked symbol, scan `_underlyingQuoteKeys` for a `quoteKey` whose tradingsymbol part
-   equals `root`. If found, call `patchUnderlyingSpot(und, ltp)` + `flash.update`. Handles the case
-   where `strategy.spot_anchor_contract` is null.
+**Current issues:**
+1. LTP text color is an ANIMATED flash (fades) based on TICK direction — conflates the two signals
+2. No background pulse on LTP/spot cells (currently on P&L cells only)
+3. Same-tick value re-delivers still fire the animated text flash (threshold=0 bug)
+4. MarketPulse Exp P&L / Extrinsic use `toLocaleString` not `aggCompact`
+5. Legs total "TOTAL" label sits in pos-state column (38px), not symbol column
+6. Stale code: dead import, `_excludedByAccount`, vestigial comment
 
 ## Agents
 - backend: skip
-- frontend: Implement the three changes below in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- frontend: Implement all changes below across all surfaces
 - broker: skip
 - doc: skip
 - backend-test: skip
-- playwright: Add a Playwright smoke test for the derivatives page confirming the spot cell for the
-  selected underlying renders a non-zero numeric value (covers the liveSpot derivation path end-to-end).
+- playwright: Add a brief smoke test that derivatives snapshot card LTP cells have the `ltp-day-pos`
+  or `ltp-day-neg` or `ltp-day-flat` class applied (verifies the new color system is wired up).
 
-## Exact changes
-
-### Change 1 — after line 865 (`let _quoteGeneration = $state(0);`)
-
-Insert:
+## Change A — `frontend/src/lib/data/tickFlash.svelte.js`
+### A1: No-change guard
+After line 41 (`if (last == null) return;`), insert:
 ```javascript
-  /** Reactive LTP of the currently selected underlying from underlyingSpotStore.
-   *  Updates when patchUnderlyingSpot patches _quotes on each anchor/Path-3 tick,
-   *  so liveSpot re-derives per-tick instead of waiting for the 30s _quoteGeneration bump. */
-  const _activeQuoteLtp = $derived(_underlyingQuotes[selectedUnderlying]?.ltp ?? 0);
+    if (v === last) return;       // no-change: same value → no flash, no text animation
 ```
 
-### Change 2 — in `liveSpot` at line 1725, after `void _throttledTick;`
-
-Insert:
+## Change B — New `ltpDayClass` helper in `frontend/src/lib/format.js`
+Add at the end of the file:
 ```javascript
-    void _activeQuoteLtp;  // re-derive when tick-patched underlying LTP changes
+/**
+ * Persistent LTP text color class based on day % change, tiered by magnitude.
+ * Tiers: sm (< 0.5%), default (0.5–2%), lg (≥ 2%).
+ * @param {number | null | undefined} changePct
+ * @returns {string}
+ */
+export function ltpDayClass(changePct) {
+  if (changePct == null || !isFinite(changePct) || changePct === 0) return 'ltp-day-flat';
+  const a = Math.abs(changePct);
+  const tier = a < 0.5 ? 'sm' : a < 2 ? '' : 'lg';
+  const dir = changePct > 0 ? 'pos' : 'neg';
+  return tier ? `ltp-day-${dir}-${tier}` : `ltp-day-${dir}`;
+}
 ```
 
-### Change 3 — after the Path 2 anchor block (after line 1676, before the candidateLegRow loop)
+## Change C — `frontend/src/app.css`
 
-Insert:
-```javascript
-      // Path 3: resolved quoteKey tradingsymbol — covers MCX when spot_anchor_contract is null.
-      // Fires only when Path 1 (direct root key) and Path 2 (anchor) both missed this sym.
-      if (!(root in _underlyingQuotes) && root !== _anchor) {
-        for (const { root: und, quoteKey } of _underlyingQuoteKeys) {
-          const _ts = quoteKey.includes(':') ? quoteKey.split(':')[1].toUpperCase() : '';
-          if (_ts === root && und in _underlyingQuotes) {
-            const _ps = getSnapshot(root);
-            if (_ps?.ltp != null) {
-              flash.update(`${und}:ltp`, Number(_ps.ltp));
-              patchUnderlyingSpot(und, _ps.ltp);
-            }
-            break;
-          }
-        }
-      }
+### C1: New `--text-sub` global token (add to `:root` variable block)
+Sits between `--text-faint` (#94a3b8, tertiary/disabled) and `--text` (#e2e8f0, primary).
+Used for secondary labels that need better legibility than tertiary (e.g., perf page labels).
+```css
+  --text-sub: #c4d0e0;   /* secondary readable text — above dim, below primary */
 ```
 
-## Files
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (lines 865, 1725, 1676)
+### C2: New LTP persistent day-change text color classes
+Add near the `.ltp-tc-flash-*` block. All tokens already exist in `:root`:
 
-## Reused utilities
-- `patchUnderlyingSpot` from `frontend/src/lib/data/underlyingSpotStore.svelte.js` (already imported)
-- `_underlyingQuoteKeys` derived (line 871) — already computed; reused in Path 3
-- `flash.update` / `getSnapshot` — already available in tick bus handler scope
+```css
+/* ── LTP persistent day-change text color — tiered ─────────────────── */
+/* Static (not animated) — reflects LTP vs prev_close. Direction signal. */
+/* Pair with tf-up / tf-down background flash for tick-direction pulse.  */
+.ltp-day-pos-sm { color: var(--algo-green-text-dim);    }   /* < 0.5%: dim green    */
+.ltp-day-pos    { color: var(--algo-green);              }   /* 0.5–2%: std green    */
+.ltp-day-pos-lg { color: var(--algo-green-text-bright);  }   /* ≥ 2%: bright green   */
+.ltp-day-neg-sm { color: var(--algo-red-text-dim);       }   /* < 0.5%: dim red      */
+.ltp-day-neg    { color: var(--algo-red);                }   /* 0.5–2%: std red      */
+.ltp-day-neg-lg { color: var(--algo-red-text-bright);    }   /* ≥ 2%: bright red     */
+.ltp-day-flat   { color: var(--c-muted);                 }   /* = prev_close: muted  */
+```
+
+Existing tokens used (all confirmed in `:root`):
+- `--algo-green-text-dim` = rgba(74, 222, 128, 0.50)
+- `--algo-green` = #4ade80
+- `--algo-green-text-bright` = #86efac
+- `--algo-red-text-dim` = rgba(248, 113, 113, 0.50)
+- `--algo-red` = #f87171
+- `--algo-red-text-bright` = #fca5a5
+- `--c-muted` = var(--algo-muted)
+
+## Change D — `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+### D1: Snapshot card spot cell (around line 4775)
+Current template (simplified):
+```svelte
+<span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`) === 'tf-up' ? _tcFlashClass('up', _spotDayPct) : flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? _tcFlashClass('down', _spotDayPct) : ''}">
+```
+Replace with:
+```svelte
+<span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">
+```
+- `ltpDayClass(_pct)` uses the day% (`_pct` already computed from `(_ltp - _close) / _close * 100` or `_q?.day_pct`)
+- `flash.classOf(...)` returns `tf-up` / `tf-down` / `''` for background pulse (tick direction)
+- Remove `_spotDir`, `_tcFlashClass`, `_spotDayPct` from this cell if no longer used elsewhere
+
+### D2: Snapshot card day% cell — apply same tiered color
+The day% cell currently uses sign classes only. Apply `ltpDayClass(_pct)` here too since it
+represents the same signal:
+```svelte
+<span class="num {ltpDayClass(_pct)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+```
+
+### D3: Payoff overlay spot/chg% display
+Find the overlay's spot chip (labeled "chg%" per operator note). Apply:
+- Text color: `ltpDayClass` using the overlay's `_pct` or `_changePercent`
+- Background flash: `flash.classOf(...)` on the relevant key
+
+### D4: Import `ltpDayClass` at top of the file
+```javascript
+import { ltpDayClass } from '$lib/format.js';
+```
+
+### D5: Legs total row — move TOTAL label to symbol column (lines 4619-4621)
+Current:
+```svelte
+<span></span>
+<span class="cand-total-label">TOTAL</span>
+<span>—</span>
+```
+Change to:
+```svelte
+<span></span>
+<span></span>
+<span class="cand-total-label">TOTAL</span>
+```
+
+### D6: Stale cleanup
+- Remove line 26: `import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';`
+- Remove line 62: vestigial `// applyUnderlyingTickLtp — tick patches now go through patchUnderlyingSpot` comment
+- Remove `let _excludedByAccount = $state({});` (line ~3323) and its two write sites (~3510, ~3603)
+
+## Change E — `frontend/src/lib/CandidateLegRow.svelte`
+Find the LTP cell. Replace current text-color logic with:
+```svelte
+<span class="num {ltpDayClass(leg.change_pct ?? leg.day_change_pct)} {flashClass}">
+  {priceFmt(leg.ltp)}
+</span>
+```
+Where `flashClass` comes from the flash key for this leg. Check what field carries day% in the leg
+data (`change_pct`, `day_change_pct`, or compute `(ltp - close_price) / close_price * 100`).
+Import `ltpDayClass` from `$lib/format.js`.
+
+## Change F — `frontend/src/lib/data/pulseColumns.js`
+
+### F1: Add import
+```javascript
+import { aggCompact, ltpDayClass } from '$lib/format.js';
+```
+
+### F2: Update `mkExpPnlCol` valueFormatter (line ~770)
+```javascript
+valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
+```
+
+### F3: Update `mkExtrinsicCol` valueFormatter (line ~795)
+```javascript
+valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
+```
+
+### F4: Update `mkLtpCol` cellClass to use persistent day-change color
+In `mkLtpCol`, the `cellClass` currently includes tick-direction text color classes. Change to apply
+`ltpDayClass(p.data?.change_pct)` for persistent text color. Keep the background flash classes
+(`tf-up` / `tf-down` from `_ltpFlashUp` / `_ltpFlashDown` sets) unchanged — they already do the
+right thing. Remove any `ltp-tc-flash-*` text animation classes from `cellClass`.
+
+## Change G — `frontend/src/routes/(algo)/admin/perf/+page.svelte` — text contrast fix
+
+Secondary labels throughout the perf page use `--text-soft` (#94a3b8) which sits at ~4.7:1
+contrast on the dark backgrounds — technically accessible but visually dim, especially in
+bright environments. No shading needed — lift the secondary text color in the perf page's
+scoped CSS block.
+
+Add a scoped CSS variable override at the top of the `<style>` block in `perf/+page.svelte`:
+```css
+  :global(.perf-stat-label),
+  :global(.perf-chart-label),
+  :global(.perf-card-foot),
+  :global(.perf-reg-metric),
+  :global(.perf-reg-nums),
+  :global(.perf-fn-page),
+  :global(.perf-fn-line) {
+    color: #c4d0e0;   /* lifted from --text-soft (#94a3b8) → ~7:1 contrast on dark bg */
+  }
+```
+Or if these classes are defined in the scoped `<style>` block already, just change their
+`color:` value directly from `var(--text-soft, #94a3b8)` to `#c4d0e0`.
+
+Do NOT change `--text-soft` globally — the brighter shade is perf-page specific. Other
+surfaces may rely on the original value.
+
+**Label audit note:** All column/label names are consistent across surfaces. "Spot" vs "LTP"
+is intentional (underlying index vs tradeable contract). No naming changes required.
+
+## Files changed
+- `frontend/src/lib/data/tickFlash.svelte.js`
+- `frontend/src/lib/format.js` (new `ltpDayClass` export)
+- `frontend/src/app.css` (new CSS classes)
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- `frontend/src/lib/CandidateLegRow.svelte`
+- `frontend/src/lib/data/pulseColumns.js`
+- `frontend/src/routes/(algo)/admin/perf/+page.svelte` (contrast fix)
 
 ## Tests
 - pytest: no
 - svelte-check: yes
-- playwright: yes (smoke test — derivatives page loads and spot cell shows a value)
+- playwright: yes (smoke — LTP cells have ltp-day-* class)
+- vitest: no new tests needed (ltpDayClass is a pure function — add to format.test.js)
 
 ## Commit message
-fix(derivatives): react to per-tick underlying spot patches — CRUDEOIL liveSpot SSOT gap
+feat(ui): dual-signal LTP color — persistent day-change text + tick-direction bg flash; Exp P&L L/K format; legs TOTAL in symbol column; stale cleanup
 
 ## Done when
-- `_activeQuoteLtp` declared and tracked in `liveSpot`
-- Path 3 in tick bus handler matches CRUDEOILSEP26FUT → CRUDEOIL and calls patchUnderlyingSpot
+- LTP cells everywhere show green/red text permanently based on day% vs prev_close (tiered)
+- Background pulse (tf-up/tf-down) fires on tick ↑/↓, suppressed on no-change
+- Animated text-color flash (`ltp-tc-flash-*`) removed from LTP cells
+- pulseColumns Exp P&L and Extrinsic show K/L/C format
+- Legs TOTAL label in symbol column
 - svelte-check 0 errors
-- Playwright smoke passes
+- Day% cell in derivatives snapshot uses same ltpDayClass color
+
+## Deferred
+- SSOT: three diverging spot resolvers (`_resolveExpirySpot` / `_rootSpot` / `liveSpot`)
+- SSOT: `hold_day` raw `day_change_val` at line 3591

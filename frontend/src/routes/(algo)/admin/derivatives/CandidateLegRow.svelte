@@ -32,8 +32,7 @@
   import { acctColor }              from '$lib/account';
   import { lotsForRow, fmtLots }    from '$lib/data/lotsForRow';
   import { getProxyRow }            from '$lib/data/hedgeProxies';
-  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
-  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
+  import { priceFmt, pctFmt, aggCompact, ltpDayClass } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
@@ -321,11 +320,10 @@
     {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
       ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
       : ''}
-    {typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-      ? (ltp > c.prev_close ? 'cell-pos' : ltp < c.prev_close ? 'cell-neg' : 'cell-flat')
-      : ''}
-    {flash.classOf(`${_legFlashKey}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _legDayPct) :
-     flash.classOf(`${_legFlashKey}:ltp`) === 'tf-down' ? _tcFlashClass('down', _legDayPct) : ''}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+    {ltpDayClass(c.change_pct != null ? c.change_pct :
+      (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+        ? (ltp - c.prev_close) / c.prev_close * 100 : null))}
+    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /

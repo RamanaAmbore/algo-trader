@@ -129,4 +129,57 @@ test.describe('/admin/derivatives — Snapshot card spot price smoke', () => {
       ).toBe(true);
     }
   });
+
+  test('LTP dual-signal color classes render on snapshot rows', async ({ page }) => {
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Wait for snapshot card to load
+    await page.locator('.opt-byund-card').waitFor({ state: 'attached', timeout: 25_000 });
+
+    // Get all data rows (exclude total row)
+    const snapshotRows = page.locator('.byund-row:not(.byund-row-total)');
+    const rowCount = await snapshotRows.count();
+
+    if (rowCount === 0) {
+      test.skip();
+      return;
+    }
+
+    // Check that at least one row has one of the ltp-day-* color classes
+    // Valid classes: ltp-day-flat, ltp-day-pos, ltp-day-neg, ltp-day-pos-sm,
+    // ltp-day-neg-sm, ltp-day-pos-lg, ltp-day-neg-lg
+    const ltpDayColorClasses = [
+      'ltp-day-flat',
+      'ltp-day-pos',
+      'ltp-day-neg',
+      'ltp-day-pos-sm',
+      'ltp-day-neg-sm',
+      'ltp-day-pos-lg',
+      'ltp-day-neg-lg',
+    ];
+
+    let foundLtpDayClass = false;
+
+    // Check up to first 5 rows for any ltp-day-* class
+    const checkCount = Math.min(rowCount, 5);
+    for (let i = 0; i < checkCount; i++) {
+      const row = snapshotRows.nth(i);
+
+      // Check each row for any of the ltp-day-* classes
+      for (const className of ltpDayColorClasses) {
+        const hasClass = await row.locator(`.${className}`).count();
+        if (hasClass > 0) {
+          foundLtpDayClass = true;
+          break;
+        }
+      }
+
+      if (foundLtpDayClass) break;
+    }
+
+    expect(
+      foundLtpDayClass,
+      `Expected to find at least one element with an ltp-day-* class in snapshot rows`
+    ).toBe(true);
+  });
 });

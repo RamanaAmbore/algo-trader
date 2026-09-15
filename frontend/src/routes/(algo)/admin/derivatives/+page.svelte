@@ -23,7 +23,6 @@
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
   import { positionsStore, holdingsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
-  import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
@@ -51,15 +50,13 @@
   import { rootOfLabel } from '$lib/data/rootOf.js';
   import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
-  import { priceFmt, pctFmt, aggCompact, fmtPctFraction } from '$lib/format';
-  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
+  import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST } from '$lib/dateFormat.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
-  // applyUnderlyingTickLtp — tick patches now go through patchUnderlyingSpot in underlyingSpotStore
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -3318,9 +3315,7 @@
    *  filter is picked, the snapshot derivation adds these excluded
    *  totals back. Keyed by account so an account-filter still
    *  partitions correctly.
-   *  Operator: "still snapshot totals not in sync with nav strip numbers."
-   *  @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
-  let _excludedByAccount = $state({});
+   *  Operator: "still snapshot totals not in sync with nav strip numbers." */
 
   /** Real (unmasked) broker account IDs from /api/accounts/. Loaded
    *  separately from positions because /positions masks the account
@@ -3507,7 +3502,6 @@
       }
       const simRows = positions.filter(r => r.source === 'sim');
       positions = [...merged, ...simRows];
-      _excludedByAccount = excluded;
     });
   });
 
@@ -3600,7 +3594,6 @@
       holdings = [];
     }
 
-    _excludedByAccount = _excluded;
     _positionsLoaded   = true;
     _positionsRefreshedAt = Date.now();
     if (!positionsStore.error) lastRefreshAt.set(Date.now());
@@ -4617,8 +4610,8 @@
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
+              <span></span>
               <span class="cand-total-label">TOTAL</span>
-              <span>—</span>
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4774,9 +4767,6 @@
           {@const _pct   = _ltp != null && _close != null && _close > 0
               ? ((_ltp - _close) / _close) * 100
               : (_q?.day_pct ?? null)}
-          {@const _spotDir = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
-              ? (_ltp > _close ? 'cell-pos' : _ltp < _close ? 'cell-neg' : 'cell-flat')
-              : ''}
           <!-- SSOT: all three trios read from per-root maps that share
                _perRootReduce (same iteration, same _isLegEnabled gate,
                same _includeHoldings gate, same proxy routing). Only the
@@ -4789,13 +4779,10 @@
           {@const _pnlVal  = _snRow?.pnl       ?? 0}
           {@const _expVal  = _snRow?.exp_pnl   ?? 0}
           {@const _extVal  = _snRow?.extrinsic ?? 0}
-          {@const _spotDayPct = (_ltp != null && _ltp > 0 && _close != null && _close > 0)
-              ? Math.abs((_ltp - _close) / _close * 100) : 1}
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
-            <span class="num {_spotDir} {flash.classOf(`${g.underlying}:ltp`) === 'tf-up'   ? _tcFlashClass('up',   _spotDayPct) :
-                                         flash.classOf(`${g.underlying}:ltp`) === 'tf-down' ? _tcFlashClass('down', _spotDayPct) : ''}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
-            <span class="num {_pct != null && _pct > 0 ? 'cell-pos' : _pct != null && _pct < 0 ? 'cell-neg' : 'cell-flat'}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
+            <span class="num {ltpDayClass(_pct)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
