@@ -951,6 +951,8 @@ the accessors so cells see current $state values on every redraw (not stale bind
 **Value formatters** (pure, no leading +, no ₹ prefix, right-aligned for numerics):
 - `numFmt`: price-precision format (2 decimals); null → "—"
 - `aggFmtGrid`: compact format for large numbers (45.6M, 150K); null → "—"
+- `aggCompact`: ultra-compact notation for large P&L values (L/K/C: <1K decimal,
+  <100K K, <10M L, ≥10M C). Used for Exp P&L and Extrinsic columns; null → "—"
 - `pctFmtGrid`: percentage with % suffix (12.45%); null → "—"
 - `qtyFmt`: quantity format (no decimals for whole shares); null → "—"
 - `fmtLots`: lot format (F&O contract units); null → "—"
@@ -967,14 +969,24 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - `ltp-snap` — static styling (no animation) when is_animating=false
 - `ltp-snap-unsettled` — dashed border for pre-settled snapshot rows
 
-**LTP text direction coloring** (Sep 2026):
-- Legs grid `CandidateLegRow` LTP value text now applies `cell-pos` / `cell-neg` / `cell-flat`
-  CSS class based on LTP vs `prev_close` direction (green if LTP > prev_close, red if LTP < 
-  prev_close, gray if equal). Replaces old `ltp-vs-prev-*` vertical bar box-shadow styling.
-- Snapshot card Spot LTP in `+page.svelte` receives the same directional text color treatment
-  (`cell-pos/neg/flat` classes based on liveSpot vs reference close).
-- Rationale: text color provides higher contrast and faster direction recognition than 
-  box-shadow bars; aligns with cell-value styling used in data grids throughout the page.
+**LTP dual-signal color system** (Sep 2026):
+- **Persistent text color** — reflects day% change vs `prev_close` at page load; remains
+  stable unless broker poll updates the `change_pct` field. Three tiers per direction:
+  - Green (positive): dim <0.5%, standard 0.5–2%, bright ≥2%
+  - Red (negative): same intensity tiers
+  - Muted gray (no change or zero close)
+- **Background flash** (`.ltp-flash-up` / `.ltp-flash-down`) — fires on tick direction
+  (up/down) when SSE or poll-cycle LTP changes. Suppressed when LTP doesn't change
+  between ticks (zero-guard on delta detection).
+- Dual signals provide immediate visual feedback: background flash for moment-to-moment
+  price movement (tight 4Hz cadence), persistent text color for intraday directional
+  trend (updated on 5–30s broker poll cycle).
+- Legs grid `CandidateLegRow` LTP value text applies `cell-pos` / `cell-neg` / `cell-flat`
+  CSS class based on LTP vs `prev_close` direction. Snapshot card Spot LTP in 
+  `+page.svelte` receives the same directional text color treatment.
+- Rationale: dual signals reduce noise (no flash on unchanged ticks) while providing
+  both momentum feedback (flash) and trend persistence (text color); text color provides
+  higher contrast than box-shadow bars; aligns with cell-value styling across all grids.
 
 **LTP cell resolution** (via `mkResolveCellLtp()`):
 - Priority: live SSE snapshot (`snap[sym]` when > 0) > polled ltp field > null
@@ -1912,6 +1924,8 @@ columns, rendering blank cells ("—").
   - Open legs (qty ≠ 0): expected intrinsic + realized partial closes
   - Closed legs (qty = 0): locked-in realized P&L or lifetime P&L fallback
 - Data source: `positionsDerivedStore.byKey[sym].exp_pnl` (5s cadence)
+- **Formatting**: `aggCompact` (L/K/C notation: <1K decimal, <100K K, <10M L, ≥10M C);
+  right-aligned; null → "—"
 - Null for equity positions (equity has no expiry value)
 
 **Holdings grid**:
@@ -1935,6 +1949,7 @@ columns, rendering blank cells ("—").
 - Returns 0 for closed legs (qty = 0) — no remaining time value
 - Returns 0 for FUT (futures have no time decay; intrinsic = total value)
 - Returns 0 for equity (no optionality)
+- **Formatting**: `aggCompact` (L/K/C notation); right-aligned; null → "—"
 
 **Holdings grid**:
 - Returns null for all rows
