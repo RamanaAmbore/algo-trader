@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.14 — 2026-09-10  
+**Version**: 1.15 — 2026-09-15  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -910,6 +910,34 @@ the grid.
 
 ---
 
+### 13.4 MCX Underlying Spot Resolution — Virtual Roots to Front-Month Contracts
+
+The derivatives page (`/admin/derivatives`) Snapshot grid and underlying picker now resolve
+MCX synthetic roots (e.g. "CRUDEOIL") to actual front-month contracts (e.g. 
+"CRUDEOIL26OCTFUT") before sending to `batchQuote` and subscribing to KiteTicker.
+
+**Problem fixed**:
+- `_underlyingQuoteKeys` derived previously always sent the raw root symbol to `batchQuote`,
+  causing two failures: (a) KiteTicker never subscribed (synthetic roots have no real 
+  instrument token), and (b) `loadUnderlyingSpots` received no SSE updates for synthetic 
+  roots, causing `liveSpot` to freeze at page-load analytics value instead of ticking live.
+- Result: operators viewed stale MCX spot prices (analytics ETD or daily_book snapshot) 
+  instead of real-time SSE ticks throughout the MCX trading day.
+
+**Implementation**:
+- `_underlyingQuoteKeys` now reads `instrumentsReady` (front-end instrument cache ready flag)
+- For each underlying in `selectedRoots` or picker tiers, calls `findNearestFuture(root)` to 
+  resolve the synthetic root → nearest expiry contract key (e.g. "CRUDEOIL" → "CRUDEOIL26OCTFUT")
+- Resolved contract keys sent to `loadUnderlyingQuotes()` via `batchQuote`
+- Backend `batch_quote()` handler now also uses the resolved broker key for `seen_pairs` in 
+  `_subscribe_batch_universe_to_ticker`, triggering real-time KiteTicker subscriptions
+
+**Impact**: MCX active-underlying spot prices now update live via SSE ticks throughout the
+trading day. Derivatives page spot-price display, payoff chart positioning, and EV 
+calculations reflect real-time MCX rates instead of freezing at page-load or settlement.
+
+---
+
 ## 14. Column Definitions
 
 Every ag-Grid column uses a factory function (e.g. `mkLtpCol`, `mkPrevCol`) that accepts 
@@ -934,6 +962,15 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - `ltp-vs-prev-up/down/flat` — heat encoding LTP vs previous close
 - `ltp-snap` — static styling (no animation) when is_animating=false
 - `ltp-snap-unsettled` — dashed border for pre-settled snapshot rows
+
+**LTP text direction coloring** (Sep 2026):
+- Legs grid `CandidateLegRow` LTP value text now applies `cell-pos` / `cell-neg` / `cell-flat`
+  CSS class based on LTP vs `prev_close` direction (green if LTP > prev_close, red if LTP < 
+  prev_close, gray if equal). Replaces old `ltp-vs-prev-*` vertical bar box-shadow styling.
+- Snapshot card Spot LTP in `+page.svelte` receives the same directional text color treatment
+  (`cell-pos/neg/flat` classes based on liveSpot vs reference close).
+- Rationale: text color provides higher contrast and faster direction recognition than 
+  box-shadow bars; aligns with cell-value styling used in data grids throughout the page.
 
 **LTP cell resolution** (via `mkResolveCellLtp()`):
 - Priority: live SSE snapshot (`snap[sym]` when > 0) > polled ltp field > null
@@ -1691,3 +1728,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-10 | v1.13 Derivatives page reactive chain improvements (commit 16c8e44f + 91cccd02): Critical fixes for symbol-switch stalls, market-transition quote stalls, and hibernation strategy wipe. Four reactive-chain bug fixes: (A) **Symbol-switch stale stub** — `_clientPayoffStub` was reading `selectedUnderlying` inside `untrack()` so symbol changes never triggered re-derive; fix: capture `const _sel = selectedUnderlying` before `untrack()`. (B) **Market-close quote stall** — `liveSpot` and `_clientPayoffStub` gated `_quoteGeneration` counter via `if (!isMarketOpen())`, so batchQuote completions dropped from dependency set during hours; fix: unconditionally track counter always. (C) **legs-driven loadStrategy effect** — on symbol switch, `loadStrategy()` fired before legs updated (Svelte 5 declaration order); fix: added new effect after legs that fires strategy refetch with guard to skip when strategy already matches. (D) **Strategy wipe on hibernation** — `loadStrategy()` fired before `loadPositions()` on page show, using qty=0 legs; fix: added `_positionsRefreshedAt` freshness check, only wipe if positions stale >30s. Eight data-sync improvements: (1) positions `$effect` re-runs F&O transform on 5s book-poller, per-row P&L updates within 5s. (2–5) `_quoteGeneration` counter always tracked; quotes fetched continuously via `visibleInterval` with throttle; seeded at `loadPositions()` end. (6) `_snapshotTotalDay` uses `livePositionDayPnl()` SSOT via `getSnapshot` at 4Hz, matches NavStrip P1. (7) CandidateLegRow LTP reads `getSnapshot` first (4Hz SSE-reactive). (8) TOTAL row label clarified. Impact: symbol switches update payoff chart immediately; market-open/close quote refreshes trigger chart re-render; hibernation exit preserves strategy. All Snapshot data within 5s cycle; payoff chart + day-P&L TOTAL synchronized across page, MarketPulse, NavStrip. |
 | 2026-09-10 | v1.14 Underlying picker auto-select + Snapshot TOTAL day P&L formula (TBD): §13.2 new subsection documents underlying picker auto-select: all six tiers now carry `qtySum` field (Tier 1–2 = actual position qty, Tiers 3–6 = 0); on cold load, `_autoSelectDone` gate fires once when `_positionsLoaded` first true, promoting to first active underlying (qtySum > 0) if current selection has qtySum = 0; after promote, subsequent 5s refreshes do NOT re-promote, allowing manual inactive selection. Initial picker selection now prefers `firstActive` over `opts[0]`. §13.3 new subsection documents Snapshot TOTAL day P&L formula: `_snapshotTotalDay = Object.values(_dayPnlByRootMap).reduce((a, b) => a + b, 0)` (sum of per-row values) instead of applying `livePositionDayPnl` to raw positions (which included `prev_settlement_pnl`). Eliminates ±54k divergence on MCX FUT positions where prior formula conflated settled P&L with intraday P&L. New formula is symmetric with `_snapshotTotalPnl` and `_snapshotTotalExp` — TOTAL = sum of rows by construction. |
 | 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
+| 2026-09-15 | v1.16 MCX underlying spot resolution + LTP text direction coloring (TBD): §13.4 new subsection documents MCX synthetic-root resolution: `_underlyingQuoteKeys` derived now reads `instrumentsReady` cache-ready flag, then resolves each root via `findNearestFuture()` to its nearest-expiry contract (e.g. "CRUDEOIL" → "CRUDEOIL26OCTFUT") before sending to `batchQuote`. Backend `batch_quote()` handler subscribes resolved contract keys to KiteTicker, enabling SSE real-time ticks for MCX spot prices throughout trading day instead of freezing at page-load. §14 LTP cell styling updated — Legs grid `CandidateLegRow` LTP and Snapshot card Spot LTP now apply `cell-pos` / `cell-neg` / `cell-flat` text color classes based on LTP vs `prev_close` direction; replaced old `ltp-vs-prev-*` vertical bar box-shadow. Rationale: text color provides higher contrast and faster direction recognition than bar styling. Impact: MCX spot prices tick live in real-time on derivatives page; LTP text direction instantly recognizable via color (green/red/gray). |
