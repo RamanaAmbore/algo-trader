@@ -4609,7 +4609,6 @@
                     title="Σ P&L across every visible row = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
-              <span class="num">—</span>
               <!-- Strict SSOT: Snapshot row for selectedUnderlying reads
                    _legsExpPnlTotal directly (same value shown here). -->
               <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -4620,6 +4619,7 @@
                     title="Σ Extrinsic value across all positions — total time value remaining in the portfolio.">
                 {aggCompact(positionsDerivedStore.total.extrinsic)}
               </span>
+              <span class="num">—</span>
               <span class="num">—</span>
               <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
               <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
