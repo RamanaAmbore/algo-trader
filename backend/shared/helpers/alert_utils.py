@@ -33,6 +33,7 @@ Message type prefixes
 
 import atexit
 import hashlib
+import html
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -520,7 +521,7 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
     warning_block = _build_tg_warning_block(sim_mode, branch)
     telegram_msg = (
         f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
-        f"<code>{tg_table}</code>"
+        f"<code>{html.escape(tg_table)}</code>"
     )
     # Route via the config-driven table.
     # open/close → info channel, email: true per backend_config.yaml

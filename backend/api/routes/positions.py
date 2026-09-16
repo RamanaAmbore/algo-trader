@@ -408,21 +408,23 @@ async def _fetch_ref_close_map(
     cutoff = await settlement_cutoff_for("NON-MCX")
 
     out: dict[tuple[str, str], float] = {}
-    # Build IN-list filter to avoid scanning all positions rows.
-    pair_filter = " AND (account, symbol) IN :pairs" if closed_pairs else ""
-    params: dict = {"kind": kind, "cutoff": cutoff}
-    if closed_pairs:
-        params["pairs"] = tuple(closed_pairs)
+    # Split pairs into two parallel arrays for asyncpg-compatible UNNEST binding.
+    # (account, symbol) IN :pairs fails asyncpg with tuple-of-tuples — UNNEST avoids it.
+    accts = [p[0] for p in closed_pairs]
+    syms  = [p[1] for p in closed_pairs]
+    params: dict = {"kind": kind, "cutoff": cutoff, "accts": accts, "syms": syms}
     try:
         async with async_session() as session:
-            result = await session.execute(_sql_text(f"""
+            result = await session.execute(_sql_text("""
                 SELECT DISTINCT ON (account, symbol)
                        account, symbol, ltp AS ref_close
                 FROM daily_book
                 WHERE kind = :kind
                   AND ltp IS NOT NULL AND ltp > 0
                   AND captured_at < :cutoff
-                  {pair_filter}
+                  AND (account, symbol) IN (
+                      SELECT a, s FROM UNNEST(CAST(:accts AS text[]), CAST(:syms AS text[])) AS t(a, s)
+                  )
                 ORDER BY account, symbol, captured_at DESC
             """), params)
             for account, symbol, ref_close in result.all():

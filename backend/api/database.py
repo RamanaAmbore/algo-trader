@@ -759,6 +759,14 @@ async def _migrate_exchange_schedule_table(conn) -> None:
     """))
 
 
+async def _migrate_algo_orders_gtt_order_id(conn) -> None:
+    """Add gtt_order_id column to algo_orders if not present."""
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS gtt_order_id VARCHAR(64)"
+    ))
+
+
 async def _migrate_app_messages_table(conn) -> None:
     """Idempotent — create app_messages table + indexes.
 
@@ -827,6 +835,7 @@ async def init_db() -> None:
         await _migrate_daily_book_previous_close_backup(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
+        await _migrate_algo_orders_gtt_order_id(conn)
         await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
     logger.info("Database: tables verified")

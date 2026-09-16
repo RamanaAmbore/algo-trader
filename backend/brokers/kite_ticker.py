@@ -231,6 +231,7 @@ class TickerManager:
         self._tick_buffer = None                  # TickBufferWriter | None
         self._token_to_sym: dict[int, str] = {}   # token → tradingsymbol (for SSE payload)
         self._sym_to_token: dict[str, int] = {}   # tradingsymbol (upper) → token (for O(1) has_sym)
+        self._virtual_root_aliases: dict[int, str] = {}  # token → virtual root sym (e.g. 58312711 → "CRUDEOIL")
         self._lock = threading.Lock()
         self._subscribed: set[int] = set()        # tokens live on the socket
         self._pending: set[int] = set()           # tokens queued pre-connect
@@ -377,7 +378,7 @@ class TickerManager:
         with self._lock:
             return sym.upper() in self._sym_to_token
 
-    def snapshot(self) -> dict[int, dict]:
+    def snapshot(self) -> dict[int | str, dict]:
         """
         Return a snapshot of all currently-held ticks as
         {token: {ltp, sym}} for the SSE initial-snapshot event.
@@ -387,13 +388,26 @@ class TickerManager:
         `_tick_map`. Belt + suspenders for the LTP-flicker fix — if a
         future code change re-introduces a 0 write path, the snapshot
         still won't propagate it to new SSE clients.
+
+        Virtual root aliases are also included, keyed as "vr_{tok}" strings
+        so they don't collide with real integer token keys. The frontend
+        _onSnapshot iterates .values() and uses v.sym, so the key type
+        doesn't matter — new SSE connections are primed immediately with
+        the root sym (e.g. "CRUDEOIL") at current LTP.
         """
         with self._lock:
-            return {
+            result = {
                 tok: {"ltp": lp, "sym": self._token_to_sym.get(tok, "")}
                 for tok, lp in self._tick_map.items()
                 if isinstance(lp, (int, float)) and lp > 0
             }
+            # Add virtual root aliases — keyed with "vr_{tok}" string so they
+            # don't collide with real integer token keys.
+            for tok, vr in self._virtual_root_aliases.items():
+                lp = self._tick_map.get(tok)
+                if isinstance(lp, (int, float)) and lp > 0:
+                    result[f"vr_{tok}"] = {"ltp": lp, "sym": vr}
+            return result
 
     def subscribe(self, tokens: Iterable[int]) -> None:
         """
@@ -459,6 +473,10 @@ class TickerManager:
                     ]
                     for sym in ghost_syms:
                         self._sym_to_token.pop(sym, None)
+                    # _virtual_root_aliases keyed by token — prune dropped tokens
+                    # so a rolled-over contract doesn't emit stray root ticks.
+                    for tok in drop:
+                        self._virtual_root_aliases.pop(tok, None)
                 except Exception:
                     logger.exception("KiteTicker: unsubscribe() failed")
 
@@ -484,6 +502,20 @@ class TickerManager:
             if tok is None:
                 return None
             return self._tick_map.get(int(tok))
+
+    def set_virtual_root_alias(self, token: int, root: str) -> None:
+        """Register a virtual root alias: when token ticks, also emit {sym: root} to the SSE bus.
+
+        Lets frontend surfaces read getSnapshot("CRUDEOIL") at tick cadence without
+        futures-sym mapping. Called from background.py after subscribing the futures contract.
+        """
+        with self._lock:
+            self._virtual_root_aliases[int(token)] = root
+
+    def get_token_for_sym(self, sym: str) -> int | None:
+        """Return the subscribed token for a tradingsymbol, or None if not subscribed."""
+        with self._lock:
+            return self._sym_to_token.get(str(sym or '').upper())
 
     def get_ltp_batch(self, tokens: Iterable[int]) -> dict[int, float]:
         """
@@ -945,6 +977,7 @@ class TickerManager:
             self._tick_age.clear()
             self._token_to_sym.clear()
             self._sym_to_token.clear()
+            self._virtual_root_aliases.clear()
         self.stop()
         self._subscribed = set()
         self._pending    = set(prev_subs)
@@ -1000,6 +1033,7 @@ class TickerManager:
             self._tick_age = {}
             self._token_to_sym.clear()
             self._sym_to_token.clear()
+            self._virtual_root_aliases.clear()
         self.start(api_key, access_token, account=account)
         return self._started
 
@@ -1132,6 +1166,11 @@ class TickerManager:
                     "ltp": lp_f,
                     "ts":  ts,
                 })
+                # Emit virtual root alias alongside the real sym so SSE clients
+                # can read getSnapshot("CRUDEOIL") at tick cadence.
+                vr = self._virtual_root_aliases.get(tok)
+                if vr:
+                    to_publish.append({"tok": tok, "sym": vr, "ltp": lp_f, "ts": ts})
         # Mirror to the shared-memory buffer outside the lock — the
         # writer's only state is mmap byte positions; safe to call
         # concurrently with reads from other processes (we're the

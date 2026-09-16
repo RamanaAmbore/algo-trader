@@ -107,11 +107,11 @@ class TestLossPositionsAcct:
         )
 
     def test_has_static_conditions(self):
-        """loss-positions-acct must retain static pnl_pct and pnl thresholds."""
+        """loss-positions-acct must retain static pnl_pct, pnl, and day_val thresholds."""
         a = _agent("loss-positions-acct")
         conds = a["conditions"]["any"]
         metrics = {c["metric"] for c in conds}
-        expected = {"pnl_pct", "pnl"}
+        expected = {"pnl_pct", "pnl", "day_val"}
         assert metrics == expected, (
             f"loss-positions-acct should have static metrics {expected}, "
             f"got {metrics}"
@@ -398,14 +398,14 @@ class TestConditionTreeStructure:
         assert len(items) >= 2, "loss-positions-acct should have at least 2 conditions"
 
     def test_loss_positions_total_condition_tree(self):
-        """loss-positions-total conditions are a valid any: tree with 4 items."""
+        """loss-positions-total conditions are a valid any: tree with 5 items."""
         a = _agent("loss-positions-total")
         conds = a.get("conditions")
         assert "any" in conds, "loss-positions-total must have 'any' key"
 
         items = conds["any"]
         assert isinstance(items, list), "conditions['any'] must be a list"
-        assert len(items) == 4, (
-            f"loss-positions-total should have exactly 4 conditions "
-            f"(2 static + 2 rate), got {len(items)}"
+        assert len(items) == 5, (
+            f"loss-positions-total should have exactly 5 conditions "
+            f"(3 static + 2 rate), got {len(items)}"
         )

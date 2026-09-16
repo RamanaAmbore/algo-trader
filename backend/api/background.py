@@ -779,8 +779,10 @@ import re as _re_module
 async def _add_mcx_spot_anchors(
     book_pairs: list,
     book_seen: set,
-) -> None:
-    """Subscribe MCX front-month futures as spot anchors for MCX options."""
+) -> dict[str, str]:
+    """Subscribe MCX front-month futures as spot anchors for MCX options.
+    Returns {futures_sym.upper(): root} for virtual root alias registration."""
+    aliases: dict[str, str] = {}
     try:
         from backend.api.algo.symbol_resolver import list_active_futures as _laf
         mcx_roots = {
@@ -796,12 +798,18 @@ async def _add_mcx_spot_anchors(
                 if key not in book_seen:
                     book_seen.add(key)
                     book_pairs.append(key)
+                aliases[futs[0].upper()] = root  # "CRUDEOIL26OCTFUT" → "CRUDEOIL"
     except Exception as _e:
         logger.debug(f"Background: MCX spot-anchor subscribe skipped: {_e}")
+    return aliases
 
 
-def _add_nfo_spot_anchors(book_pairs: list) -> None:
-    """Subscribe NSE equity/index underlyings as spot anchors for NFO/BFO options."""
+def _add_nfo_spot_anchors(book_pairs: list) -> dict[str, str]:
+    """Subscribe NSE equity/index underlyings as spot anchors for NFO/BFO options.
+    Returns {tradingsymbol.upper(): root} for pairs where tradingsymbol != root
+    (e.g. {"NIFTY 50": "NIFTY"}) so the caller can register virtual root aliases."""
+    from backend.api.algo.derivatives import underlying_ltp_key as _ult_key
+    aliases: dict[str, str] = {}
     try:
         already = {s.upper() for s, _ in book_pairs}
         nfo_roots = {
@@ -812,10 +820,17 @@ def _add_nfo_spot_anchors(book_pairs: list) -> None:
             if m
         }
         for root in nfo_roots:
-            if root not in already:
-                book_pairs.append((root, 'NSE'))
+            ltp_key = _ult_key(root)
+            if ':' not in ltp_key:
+                continue
+            exch_part, sym_part = ltp_key.split(':', 1)
+            if sym_part.upper() not in already:
+                book_pairs.append((sym_part, exch_part))
+            if sym_part.upper() != root.upper():
+                aliases[sym_part.upper()] = root  # "NIFTY 50" → "NIFTY"
     except Exception as _e:
         logger.debug(f"Background: NFO/BFO spot-anchor subscribe skipped: {_e}")
+    return aliases
 
 
 async def _perf_subscribe_book_symbols(
@@ -843,8 +858,8 @@ async def _perf_subscribe_book_symbols(
             logger.debug(f"Background: snapshot book symbols skipped in perf: {_se}")
         # Subscribe underlying spot anchors (MCX futures + NFO/BFO equity/index)
         # so liveSpot in payoff runs from tick cadence, not the 30s batchQuote fallback.
-        await _add_mcx_spot_anchors(_book_pairs, _book_seen)
-        _add_nfo_spot_anchors(_book_pairs)
+        _mcx_aliases = await _add_mcx_spot_anchors(_book_pairs, _book_seen)
+        _nfo_aliases = _add_nfo_spot_anchors(_book_pairs)
         # Resolve tokens for symbols not yet in the ticker.
         # O(1) check via has_sym() — avoids rebuilding the full set each cycle.
         _need_resolve = [
@@ -855,6 +870,13 @@ async def _perf_subscribe_book_symbols(
             _all_batch = await _bg_resolve_tokens_chunked(_need_resolve, _rts)
             if _all_batch:
                 _ticker.subscribe_with_sym(_all_batch)
+        # Register virtual root aliases so SSE emits root sym alongside futures/index sym.
+        # This lets frontend surfaces read getSnapshot("CRUDEOIL") at tick cadence.
+        _all_aliases = {**_mcx_aliases, **_nfo_aliases}
+        for _sym_upper, _root in _all_aliases.items():
+            _tok = _ticker.get_token_for_sym(_sym_upper)
+            if _tok is not None:
+                _ticker.set_virtual_root_alias(_tok, _root)
     except Exception as _tke:
         logger.debug(f"Background: ticker book-subscribe skipped: {_tke}")
 

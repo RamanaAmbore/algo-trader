@@ -817,6 +817,10 @@ class AlgoOrder(Base):
     # M11 — intent tag for chase recovery. NULL = normal open order;
     # "close" = position-close chase that must bypass the 50-lot ceiling on recovery.
     intent: Mapped[Optional[str]] = mapped_column(String(16), nullable=True)
+    # GTT order ID returned by the broker after GTT placement. Stored so
+    # cancellation and status checks can reference the broker's GTT handle
+    # without a separate lookup. NULL when no GTT has been placed.
+    gtt_order_id: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

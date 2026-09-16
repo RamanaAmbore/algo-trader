@@ -381,7 +381,10 @@ def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
         pnl: float = float(row.get('day_change_val', 0) or 0)
         pct: float | None = _ae_holdings_pct(row)
     elif section == 'Positions':
-        pnl = float(row.get('pnl', 0) or 0)
+        if metric == 'day_val':
+            pnl = float(row.get('day_change_val', 0) or 0)
+        else:
+            pnl = float(row.get('pnl', 0) or 0)
         pct = None  # computed later only when we have used_margin
     else:  # Funds
         pnl = _ae_funds_pnl(metric, value, row)
@@ -805,6 +808,7 @@ _LOSS_AGENTS = [
          conditions={"any": [
              {"metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
              {"metric": "pnl",     "scope": "positions.any_acct", "op": "<=", "value": -30000},
+             {"metric": "day_val", "scope": "positions.any_acct", "op": "<=", "value": -30000},
          ]},
          scope="total",
          ),
@@ -841,6 +845,7 @@ _LOSS_AGENTS = [
          conditions={"any": [
              {"metric": "pnl_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
              {"metric": "pnl",          "scope": "positions.total", "op": "<=", "value": -50000},
+             {"metric": "day_val",      "scope": "positions.total", "op": "<=", "value": -50000},
              {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
              {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
          ]},

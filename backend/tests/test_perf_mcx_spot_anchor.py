@@ -139,8 +139,10 @@ async def test_nfo_option_triggers_nse_underlying_subscription():
         for call in ticker.subscribe_with_sym.call_args_list
         for _tok, sym in call.args[0]
     }
-    assert "NIFTY" in all_subscribed_syms, (
-        f"NIFTY (NSE underlying) must be subscribed when NIFTY24500CE (NFO) is held; "
+    # underlying_ltp_key("NIFTY") returns "NSE:NIFTY 50" so "NIFTY 50" is the subscribed sym
+    nifty_spots = {s for s in all_subscribed_syms if "NIFTY" in s and s != "NIFTY24500CE"}
+    assert len(nifty_spots) > 0, (
+        f"A NIFTY spot (e.g. 'NIFTY 50') must be subscribed when NIFTY24500CE (NFO) is held; "
         f"subscribed: {all_subscribed_syms}"
     )
 
@@ -240,12 +242,13 @@ async def test_spot_anchor_code_present_in_source():
     assert "MCX" in mcx_src and "(CE|PE)" in mcx_src, (
         "MCX option pattern (CE|PE) must be present in _add_mcx_spot_anchors"
     )
-    # NFO helper: must handle NFO and BFO exchanges and append NSE root
+    # NFO helper: must handle NFO and BFO exchanges and resolve underlying exchange
     assert "NFO" in nfo_src and "BFO" in nfo_src, (
         "NFO and BFO exchange checks must be present in _add_nfo_spot_anchors"
     )
-    assert "'NSE'" in nfo_src or '"NSE"' in nfo_src, (
-        "NSE exchange must be appended in _add_nfo_spot_anchors"
+    # Exchange is now resolved dynamically via underlying_ltp_key (exch_part from key split)
+    assert "exch_part" in nfo_src or "'NSE'" in nfo_src or '"NSE"' in nfo_src, (
+        "NSE/exchange resolution must be present in _add_nfo_spot_anchors"
     )
     # Main function must delegate to both helpers
     assert "_add_mcx_spot_anchors" in sub_src and "_add_nfo_spot_anchors" in sub_src, (
