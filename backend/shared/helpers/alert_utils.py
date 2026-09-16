@@ -1011,8 +1011,11 @@ def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> No
         url = f"{base_url.rstrip('/')}/{topic}"
         send_count = 3 if priority == "urgent" else 1
 
+        # HTTP headers must be latin-1 safe; replace Unicode punctuation that
+        # appears in agent titles (em dash u2014, en dash u2013, etc.) with ASCII.
+        safe_title = title.replace('—', '--').replace('–', '-').replace('’', "'").replace('“', '"').replace('”', '"').encode('latin-1', errors='replace').decode('latin-1')
         headers = {
-            "Title": title,
+            "Title": safe_title,
             "Priority": priority,
             "Tags": "rotating_light",
             "Content-Type": "text/plain",
