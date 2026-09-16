@@ -52,7 +52,7 @@ MarketPulse is a two-panel grid:
 - **Left panel**: Watchlists (Pinned + custom) + Movers (Winners / Losers tabs)
 - **Right panel**: Positions + Holdings
 
-Every row carries: Symbol · 5d sparkline · LTP · Avg · Day% · Close · Qty · Day P&L · P&L% · P&L.
+Every row carries: Symbol · 5d sparkline · LTP · Avg · Chg% · Close · Qty · Day P&L · P&L% · P&L.
 
 The page is **always populated** — no blank grids, no "—" placeholders. Closed hours show the last snapshot with a staleness hint. Empty is a defect.
 
@@ -676,7 +676,7 @@ All left-grid columns use `mkLeftColDefs()`:
 - Symbol (168px, pinned left) — MCX/CDS virtual label (CRUDEOIL not CRUDEOIL26JUNFUT)
 - 5d sparkline (44px) — mini SVG price curve; blank if broker rate-limited
 - LTP (77px) — live SSE + tick-flash; snapshot frozen during closed hours
-- Day % (64px) — raw symbol change % (no qty weighting); directional (green/red)
+- Chg % (64px) — raw symbol change % (no qty weighting); directional (green/red)
 - Close (68px) — previous session EOD price (muted)
 - Open (68px) — today's opening price (muted)
 - Volume (58px) — intraday volume; compacted format (e.g. "45.6M")
@@ -694,14 +694,14 @@ with account-scoped filters and a pinned TOTAL row at bottom.
 - Live: broker + SSE delta during market hours; `daily_book` snapshot when closed
 - Account filter: MultiSelect on `positionsAccounts` (empty = all); persisted to sessionStorage
 - TOTAL row: pinned bottom, shows sum of filtered positions + live F&O-only expiry value
-- Columns: Symbol (right-aligned account tint) · St · 5d · LTP · Avg · Day % · Close · P&L · P&L % · Day P&L · Qty · Lots · Account
+- Columns: Symbol (right-aligned account tint) · St · 5d · LTP · Avg · Chg % · Close · P&L · P&L % · Day P&L · Qty · Lots · Account
 
 **Holdings grid** (`gridHoldings`):
 - Rows: `_majorGroup === 'holdings'` + `_includesHoldAcct(account)` filter
 - Source: broker holdings + daily_book snapshot; LTP never intraday-split
 - Account filter: separate MultiSelect on `holdingsAccounts`; persisted independently
 - TOTAL row: sum of filtered holdings (cost basis + current value)
-- Columns: Symbol (account tint) · 5d · LTP · Avg · Day % · Close · Day P&L · P&L % · P&L · Qty · Lots (immediately before Invested) · Invested · Value · Account
+- Columns: Symbol (account tint) · 5d · LTP · Avg · Chg % · Close · Day P&L · P&L % · P&L · Qty · Lots (immediately before Invested) · Invested · Value · Account
 - **Note**: St (pos_state) column is filtered out of holdings grid; only visible in positions grid
 
 **Right-grid column order** (via `mkRightColDefs()`):
@@ -728,7 +728,7 @@ Holdings grid (St column filtered out):
 - 5d sparkline (44px)
 - LTP (77px)
 - Avg (68px)
-- Day % (64px)
+- Chg % (64px)
 - Close (68px)
 - Day P&L (78px)
 - P&L % (64px)
@@ -970,10 +970,10 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - `ltp-snap-unsettled` — dashed border for pre-settled snapshot rows
 
 **LTP dual-signal color system** (Sep 2026):
-- **Persistent text color** — reflects day% change vs `prev_close` at page load; remains
-  stable unless broker poll updates the `change_pct` field. Three tiers per direction:
-  - Green (positive): dim <0.5%, standard 0.5–2%, bright ≥2%
-  - Red (negative): same intensity tiers
+- **Persistent text color** — reflects LTP change vs `prev_close` direction at page load;
+  remains stable unless broker poll updates the `change_pct` field.
+  - Green (positive): LTP > prev_close
+  - Red (negative): LTP < prev_close
   - Muted gray (no change or zero close)
 - **Background flash** (`.ltp-flash-up` / `.ltp-flash-down`) — fires on tick direction
   (up/down) when SSE or poll-cycle LTP changes. Suppressed when LTP doesn't change
@@ -1752,79 +1752,49 @@ percentages move: LTP cells, spot prices, and day-change percentages.
 - Applied to: LTP cells in all grids (Watchlist, Positions, Holdings, Derivatives)
 - Contrast: high (color accent on white/light text) + quick fade (not distracting)
 
-**Day % poll-cycle flash** (broker-polling, every ~5-30s):
+**Chg % poll-cycle flash** (broker-polling, every ~5-30s):
 - Fires when `change_pct` or `day_pnl_pct` values update from broker poll
 - Animation: same `.ltp-tc-flash-up` / `.ltp-tc-flash-down` keyframes
-- Trigger: used on left-grid `change_pct` (day % column) and right-grid
-  `day_pnl_pct` (day P&L % column)
+- Trigger: used on left-grid `change_pct` (Chg % column) and right-grid
+  `day_pnl_pct` (Day P&L % column)
 - Resets on next poll cycle; if no change detected, no flash
 
 **Reference price comparison**:
 - **LTP flash**: text color reflects `ltp vs prev_close` direction
   - Green if `ltp > prev_close`; Red if `ltp < prev_close`; Gray if equal
-- **Day % flash**: text color reflects `change_pct vs 0` direction
+- **Chg % flash**: text color reflects `change_pct vs 0` direction
   - Green if `change_pct > 0`; Red if `change_pct < 0`; Gray if zero
 - **Spot flash**: on derivatives page, Spot LTP color same as regular LTP flash
   (reflects `liveSpot vs prev_close`)
 
-### Magnitude-based flash intensity (tiered)
+### Directional text-color flash
 
-Flash animation intensity now scales with the magnitude of price change, providing
-visual emphasis proportional to market movement. Three tiers per direction (commit
-3ce487af, 2026-09-15).
+Flash animation fires when text-value changes. Three directional classes (commit 562c1a4b,
+2026-09-15).
 
-**Text-color flash tiers** (LTP and Day % columns):
-- **Tier 1 (< 0.5%)**:  `.ltp-tc-flash-up-sm` / `.ltp-tc-flash-down-sm` — dim start
-  color (`--algo-green-text-dim` / `--algo-red-text-dim`), subtle cue
-- **Tier 2 (0.5–2%)**: `.ltp-tc-flash-up` / `.ltp-tc-flash-down` — normal intensity
-  (`--algo-green-text` / `--algo-red-text`), standard flash
-- **Tier 3 (≥ 2%)**:  `.ltp-tc-flash-up-lg` / `.ltp-tc-flash-down-lg` — bright start
-  color (`--algo-green-text-bright` / `--algo-red-text-bright`), high emphasis
+**Text-color flash classes** (LTP and Chg % columns):
+- `.ltp-tc-flash-up` — text color animates from `--algo-green-text` to `inherit`; fires
+  when value increases
+- `.ltp-tc-flash-down` — text color animates from `--algo-red-text` to `inherit`; fires
+  when value decreases
+- No animation — when value unchanged (zero-guard prevents false flashes)
 
-**Background cascade flash tiers** (P&L columns):
-- **Tier 1 (< 0.5%)**:  `.tf-up-sm` / `.tf-down-sm` — subtle background pulse
-  (`--algo-green-cascade-sm` / `--algo-red-cascade-sm`)
-- **Tier 2 (0.5–2%)**: `.tf-up` / `.tf-down` — standard cascade
-  (`--algo-green-cascade` / `--algo-red-cascade`)
-- **Tier 3 (≥ 2%)**:  `.tf-up-lg` / `.tf-down-lg` — bold cascade
-  (`--algo-green-cascade-lg` / `--algo-red-cascade-lg`)
+**Background cascade flash** (P&L columns):
+- `.tf-up` — background cascades from `--algo-green-cascade` (rgba 13% alpha) to transparent;
+  fires on positive change
+- `.tf-down` — background cascades from `--algo-red-cascade` (rgba 13% alpha) to transparent;
+  fires on negative change
 
-**Tier assignment logic** (in `frontend/src/lib/data/pulseColumns.js`):
-```javascript
-function _flashTier(absPct) {
-  // Determine which tier based on absolute percentage magnitude
-  if (absPct < 0.005) return 'sm';    // < 0.5%
-  if (absPct < 0.02)  return '';      // 0.5–2% (no suffix, default)
-  return 'lg';                         // ≥ 2%
-}
+**Helper function locations** (in `frontend/src/lib/data/pulseColumns.js`):
+- `_tcFlashClass(direction)` — returns `ltp-tc-flash-{up|down}`
+- `_bgFlashClass(direction)` — returns `tf-{up|down}`
 
-function _tcFlashClass(direction, absPct) {
-  // Text-color flash class: ltp-tc-flash-{up|down}{-sm|-lg}
-  const tier = _flashTier(absPct);
-  return `ltp-tc-flash-${direction}${tier ? `-${tier}` : ''}`;
-}
+### Directional change detection
 
-function _bgFlashClass(direction, absPct) {
-  // Background cascade class: tf-{up|down}{-sm|-lg}
-  const tier = _flashTier(absPct);
-  return `tf-${direction}${tier ? `-${tier}` : ''}`;
-}
-```
-
-**Helper function locations**:
-- `_flashTier()`, `_tcFlashClass()`, `_bgFlashClass()` — defined in
-  `frontend/src/lib/data/pulseColumns.js`
-
-### Unified price flash threshold
-
-Flash animation is now gated by a single operator-configurable threshold
-(`ltpFlashPct`, admin/settings label: "Price flash threshold (%)"). This threshold
-applies uniformly to:
-- **LTP tick-bus flash** (SSE WebSocket ticks) — was already using it
-- **Day % poll-diff flash** (broker polling updates) — now uses `ltpFlashPct`
-  instead of hardcoded `0.001` threshold
-
-Both surfaces check `|Δ%| >= ltpFlashPct` before emitting a flash class.
+Flash animation is gated by direction detection: up, down, or flat (no change).
+When value increases from prior poll/tick, applies up-direction class; when value
+decreases, applies down-direction class. Zero-guard: if delta is negligible or
+unchanged, no flash class applied.
 
 ### LTP cell color SSOT
 
@@ -1837,22 +1807,20 @@ field is absent.
 ### Affected columns and surfaces
 
 **MarketPulse grids**:
-- Left grid: `change_pct` (Day %) column flashes on poll-cycle updates
-  - Text-color class determined by tier (LTP and day % now synchronized)
+- Left grid: `change_pct` (Chg %) column flashes on poll-cycle updates
+  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (LTP and Chg % synchronized)
 - Right grid (Positions): `day_pnl_pct` (Day P&L %) column flashes on updates
-  - Background cascade class (tf-up/down) assigned per tier
+  - Background cascade class: `.tf-up` / `.tf-down`
 - Right grid (Holdings): `day_pnl_pct` column flashes
 
 **Derivatives page**:
-- Snapshot grid LTP cells flash on SSE + poll-cycle updates (tiered intensity)
+- Snapshot grid LTP cells flash on SSE + poll-cycle updates (up/down only)
 - CandidateLegRow LTP cells flash (SSE-driven at 4Hz via `getSnapshot`)
 - Spot price display in OptionsPayoff card flashes on quote updates
 
 **PerformancePage**:
-- P&L cascade columns now use `tf-up/down` (background) instead of
-  `ltp-flash-up/down`
-- LTP cell uses `_tcFlashClass` for tiered text-color flash, sourced from
-  `_perfLtpFlashPctMap`
+- P&L cascade columns use `.tf-up` / `.tf-down` (background)
+- LTP cell uses `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (text-color)
 
 **Nav surfaces**:
 - PositionStrip P/H pills animate on day-P&L store updates (4Hz throttle)
@@ -1871,40 +1839,18 @@ field is absent.
   0% { color: var(--algo-red-text); }
   100% { color: inherit; }
 }
-
-@keyframes ltp-tc-flash-up-sm {
-  0% { color: var(--algo-green-text-dim); }
-  100% { color: inherit; }
-}
-
-@keyframes ltp-tc-flash-down-sm {
-  0% { color: var(--algo-red-text-dim); }
-  100% { color: inherit; }
-}
-
-@keyframes ltp-tc-flash-up-lg {
-  0% { color: var(--algo-green-text-bright); }
-  100% { color: inherit; }
-}
-
-@keyframes ltp-tc-flash-down-lg {
-  0% { color: var(--algo-red-text-bright); }
-  100% { color: inherit; }
-}
 ```
 
-Background cascade keyframes (tf-up/down) apply similarly with cascade-tier tokens.
+Background cascade keyframes (tf-up/down) apply similarly with cascade tokens.
 
-Applied via `.ltp-tc-flash-up{-sm|-lg}` / `.ltp-tc-flash-down{-sm|-lg}` CSS classes
-(500ms duration).
+Applied via `.ltp-tc-flash-up` / `.ltp-tc-flash-down` CSS classes (500ms duration).
 
 **Cell class logic** (from column renderer):
 ```javascript
-const absPctChange = Math.abs(newValue - oldValue) / Math.abs(oldValue || 1);
 const direction = newValue > oldValue ? 'up' : (newValue < oldValue ? 'down' : '');
-const flashClass = _tcFlashClass(direction, absPctChange);
-// Apply tiered flash class + directional color:
-cellEl.classList.add(flashClass);
+const flashClass = direction ? _tcFlashClass(direction) : '';
+// Apply flash class + persistent directional color:
+if (flashClass) cellEl.classList.add(flashClass);
 cellEl.classList.add(direction === 'up' ? 'cell-pos' : (direction === 'down' ? 'cell-neg' : 'cell-flat'));
 ```
 
