@@ -1486,7 +1486,7 @@
             return fc ? `${base} ${fc}` : base;
           },
           valueFormatter: _agNumFmt },
-        { field: 'pct', headerName: 'Day %', minWidth: 64, flex: 0.9,
+        { field: 'pct', headerName: 'Chg %', minWidth: 64, flex: 0.9,
           type: 'numericColumn', headerClass: _numericHdr,
           cellClass: (p) => `ag-right-aligned-cell ${(p.value ?? 0) > 0 ? 'pnl-gain' : (p.value ?? 0) < 0 ? 'pnl-loss' : ''}`,
           valueFormatter: ({ value }) =>

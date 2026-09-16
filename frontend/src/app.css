@@ -2575,16 +2575,12 @@ button:not(:disabled):active,
   .ltp-tc-flash-up-lg, .ltp-tc-flash-down-lg { animation: none; }
 }
 
-/* ── LTP persistent day-change text color — tiered ─────────────────── */
+/* ── LTP persistent day-change text color ────────────────────────────── */
 /* Static (not animated) — reflects LTP vs prev_close. Direction signal. */
 /* Pair with tf-up / tf-down background flash for tick-direction pulse.  */
-.ltp-day-pos-sm { color: var(--algo-green-text-dim)    !important; }   /* < 0.5%: dim green    */
-.ltp-day-pos    { color: var(--algo-green)              !important; }   /* 0.5–2%: std green    */
-.ltp-day-pos-lg { color: var(--algo-green-text-bright)  !important; }   /* ≥ 2%: bright green   */
-.ltp-day-neg-sm { color: var(--algo-red-text-dim)       !important; }   /* < 0.5%: dim red      */
-.ltp-day-neg    { color: var(--algo-red)                !important; }   /* 0.5–2%: std red      */
-.ltp-day-neg-lg { color: var(--algo-red-text-bright)    !important; }   /* ≥ 2%: bright red     */
-.ltp-day-flat   { color: var(--c-muted)                 !important; }   /* = prev_close: muted  */
+.ltp-day-pos  { color: var(--algo-green) !important; }
+.ltp-day-neg  { color: var(--algo-red)   !important; }
+.ltp-day-flat { color: var(--c-muted)    !important; }
 
 /* ── Magnitude-tiered background cascade flash (sm / lg) ─────────────────────
    Background-pulse tiers for P&L cascade. .tf-up/.tf-down are the

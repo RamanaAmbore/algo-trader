@@ -173,16 +173,13 @@ export function aggFmtGrid({ value }) { return value == null ? '' : aggCompact(v
 export function pctFmtGrid({ value }) { return value == null ? '' : `${pctFmt(value)}%`; }
 
 /**
- * Persistent LTP text color class based on day % change, tiered by magnitude.
- * Tiers: sm (< 0.5%), default (0.5–2%), lg (≥ 2%).
+ * Persistent LTP text color class based on day % change.
+ * Three classes: pos / neg / flat.
  * Pair with tf-up / tf-down background flash for tick-direction pulse.
  * @param {number | null | undefined} changePct
  * @returns {string}
  */
 export function ltpDayClass(changePct) {
   if (changePct == null || !isFinite(changePct) || changePct === 0) return 'ltp-day-flat';
-  const a = Math.abs(changePct);
-  const tier = a < 0.5 ? 'sm' : a < 2 ? '' : 'lg';
-  const dir = changePct > 0 ? 'pos' : 'neg';
-  return tier ? `ltp-day-${dir}-${tier}` : `ltp-day-${dir}`;
+  return changePct > 0 ? 'ltp-day-pos' : 'ltp-day-neg';
 }

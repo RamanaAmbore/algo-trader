@@ -146,16 +146,11 @@ test.describe('/admin/derivatives — Snapshot card spot price smoke', () => {
     }
 
     // Check that at least one row has one of the ltp-day-* color classes
-    // Valid classes: ltp-day-flat, ltp-day-pos, ltp-day-neg, ltp-day-pos-sm,
-    // ltp-day-neg-sm, ltp-day-pos-lg, ltp-day-neg-lg
+    // Valid classes: ltp-day-flat, ltp-day-pos, ltp-day-neg
     const ltpDayColorClasses = [
       'ltp-day-flat',
       'ltp-day-pos',
       'ltp-day-neg',
-      'ltp-day-pos-sm',
-      'ltp-day-neg-sm',
-      'ltp-day-pos-lg',
-      'ltp-day-neg-lg',
     ];
 
     let foundLtpDayClass = false;

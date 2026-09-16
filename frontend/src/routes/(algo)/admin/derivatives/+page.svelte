@@ -4711,7 +4711,7 @@
         [
           { header: 'Underlying',   key: 'underlying' },
           { header: 'Spot',         key: 'spot',        format: (v) => v == null ? '' : String(v) },
-          { header: 'Day %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
+          { header: 'Chg %',        key: 'day_pct',     format: (v) => v === '' ? '' : Number(v).toFixed(2) },
           { header: 'Close',        key: 'prev_close',  format: (v) => v == null ? '' : String(v) },
           { header: 'Day P&L',      key: 'day_pnl',     format: (v) => String(v) },
           { header: 'P&L',          key: 'pnl',         format: (v) => String(v) },
@@ -4733,7 +4733,7 @@
         <div class="byund-headrow">
           <span>Underlying</span>
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
-          <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Day %</span>
+          <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Chg %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
           <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>

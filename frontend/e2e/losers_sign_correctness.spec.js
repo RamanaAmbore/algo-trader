@@ -1,5 +1,5 @@
 /**
- * Regression spec: Losers grid must render the Day % as NEGATIVE
+ * Regression spec: Losers grid must render the Chg % as NEGATIVE
  * (with a leading `-` or Unicode minus `−`).
  *
  * Why: Operator reported (2026-07-03) that SIEMENS showed +50% in the Losers
@@ -11,7 +11,7 @@
  * to the left-grid Day % column) is caught at CI.
  *
  * Uses INFY / RELIANCE / TCS / etc (all in FO_UNDERLYINGS) so the 'underlying'
- * mover tab is auto-selected — same left-grid Day % column definition
+ * mover tab is auto-selected — same left-grid Chg % column definition
  * (`left_change_pct` reading raw signed `change_pct` with `pctFmtGrid`) that
  * renders SIEMENS on the midcap tab. Assertions target the DOM text (the
  * exact thing the operator sees) rather than symbol-substring matching so
@@ -26,7 +26,7 @@
  *   Perf     — no extra fetches; single mock covers the whole grid
  *   Stale    — no localStorage residue survives (test clears storage)
  *   Reuse    — mock pattern reused from movers_winners_losers_regression.spec.js
- *   UX       — Day % cell text starts with `-` (ASCII) or `−` (U+2212) for losers,
+ *   UX       — Chg % cell text starts with `-` (ASCII) or `−` (U+2212) for losers,
  *              starts with a digit for winners; no cross-bucket sign contamination
  */
 
@@ -116,27 +116,27 @@ function assertSignCorrectness(loserTexts, winnerTexts) {
   expect(loserTexts.length,  'Losers grid must have >= 1 row').toBeGreaterThanOrEqual(1);
   expect(winnerTexts.length, 'Winners grid must have >= 1 row').toBeGreaterThanOrEqual(1);
 
-  // SSOT — every Losers row MUST render a negative Day %.
+  // SSOT — every Losers row MUST render a negative Chg %.
   // Direct answer to operator's report ("SIEMENS 50% in losers — should be
-  // negative"). If any losers row renders a positive Day %, this fails.
+  // negative"). If any losers row renders a positive Chg %, this fails.
   for (let i = 0; i < loserTexts.length; i++) {
     const t = loserTexts[i];
     expect(
       NEG_RE.test(t),
-      `Losers row ${i} MUST have a negative Day % (text: "${t}")`
+      `Losers row ${i} MUST have a negative Chg % (text: "${t}")`
     ).toBe(true);
   }
 
-  // SSOT — every Winners row MUST render a positive Day % (no leading minus).
+  // SSOT — every Winners row MUST render a positive Chg % (no leading minus).
   for (let i = 0; i < winnerTexts.length; i++) {
     const t = winnerTexts[i];
     expect(
       NEG_RE.test(t),
-      `Winners row ${i} MUST NOT have a negative Day % (text: "${t}")`
+      `Winners row ${i} MUST NOT have a negative Chg % (text: "${t}")`
     ).toBe(false);
     expect(
       POS_RE.test(t),
-      `Winners row ${i} MUST have a positive Day % (text: "${t}")`
+      `Winners row ${i} MUST have a positive Chg % (text: "${t}")`
     ).toBe(true);
   }
 
@@ -158,8 +158,8 @@ function assertSignCorrectness(loserTexts, winnerTexts) {
   expect(posFiftyInLosers,  'Losers must NEVER contain a positive 50.00% row').toBe(false);
 }
 
-test.describe('Movers sign-correctness: Losers render negative Day %, Winners render positive', () => {
-  test('desktop — Losers rows all show negative Day %; Winners rows all show positive Day %', async ({ page }) => {
+test.describe('Movers sign-correctness: Losers render negative Chg %, Winners render positive', () => {
+  test('desktop — Losers rows all show negative Chg %; Winners rows all show positive Chg %', async ({ page }) => {
     test.setTimeout(90_000);
     await page.setViewportSize({ width: 1440, height: 900 });
 
