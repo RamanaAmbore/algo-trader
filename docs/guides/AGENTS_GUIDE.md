@@ -127,7 +127,15 @@ Read the live catalog at `/admin/tokens`. The full canonical list is in [CLAUDE.
 
 ### Metrics (number-producing)
 
-**Point-in-time** — `pnl`, `pnl_pct`, `day_val`, `day_pct`, `inv_val`, `cur_val`, `cash`, `avail_margin`, `used_margin`, `collateral`.
+**Point-in-time** — `pnl`, `pnl_pct`, `day_val`, `day_pct`, `inv_val`, `cur_val`,
+`cash`, `avail_margin`, `used_margin`, `collateral`.
+
+The `day_val` metric reads `day_change_val` from positions data — today's session
+P&L calculated from the previous session's settlement close price. This is the same
+value displayed in the NavStrip as "Day P&L". Use `day_val` to detect intra-session
+losses independent of the position's total unrealized P&L (e.g. an option that gained
+on entry but lost ground today will fire a loss alert on `day_val` alone, even if
+`pnl` remains positive overall).
 
 For `pnl_pct` metric: when `util_debits = 0` (intraday/MIS positions with no margin utilization), the metric falls back to using `net` (available) margin as the denominator. Returns `None` (leaf skipped) only when both denominator options are zero.
 
@@ -228,8 +236,9 @@ of `order_failure` alerts — operators monitoring ntfy see loss events immediat
 **Three built-in loss agents — behaviour and gating:**
 
 - **`loss-positions-acct`** (high tier, 30-min cooldown) — per-account absolute loss.
-  Suppressed by `loss-positions-total` when both fire on the same tick.
-  Routes to ntfy, Telegram, email at urgent priority.
+  Includes conditions for both `pnl` (total unrealized P&L) and `day_val` (intra-session
+  loss from prior close). Suppressed by `loss-positions-total` when both fire on the
+  same tick. Routes to ntfy, Telegram, email at urgent priority.
 
 - **`loss-rate-acct`** (critical tier, 10-min cooldown + 10-min baseline window) —
   per-account rate-of-loss. Blocked from firing for the first 10 minutes after market
@@ -237,8 +246,9 @@ of `order_failure` alerts — operators monitoring ntfy see loss events immediat
   email at urgent priority.
 
 - **`loss-positions-total`** (critical tier, suppresses per-acct) — book-wide absolute
-  loss. Fires independently; suppresses re-fire of `loss-positions-acct` on same topic.
-  Routes to ntfy, Telegram, email at urgent priority.
+  loss. Includes conditions for both `pnl` and `day_val`. Fires independently; suppresses
+  re-fire of `loss-positions-acct` on same topic. Routes to ntfy, Telegram, email at
+  urgent priority.
 
 **Simulator engine suppression:** When the simulator is running (`execution.sim_mode:
 true`), all real loss alerts are blocked — only sim-tagged events fire. This prevents

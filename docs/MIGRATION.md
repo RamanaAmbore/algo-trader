@@ -233,6 +233,7 @@ Recent migrations (idempotent `ALTER TABLE ... IF NOT EXISTS` pattern):
 |---|---|---|---|---|
 | 2026-07-13 | `daily_book` | `previous_close` | DOUBLE PRECISION | Freeze yesterday's official settlement close price at first intraday snapshot per trading day. Addresses Kite overwriting `positions.close_price` to today's settlement after EOD, which broke `baseDayPnlForPosition` fallback math during closed-hours snapshot reads. Written once via COALESCE on UPSERT to prevent overwrite. |
 | 2026-07-15 | `broker_connection_events` | (new table) | — | Broker connection event log. Created by `create_broker_connection_events_table()` in `backend/api/persistence/migrations.py`; registered in `_ensure_shared_broker_schema()` in `backend/api/database.py`. Lives in shared `ramboq` DB (not per-env). Columns: `id`, `account`, `broker_id`, `event_type`, `detail` (JSONB), `occurred_at`. Indexes: `(account, occurred_at)`, `(event_type, occurred_at)`. |
+| 2026-09-16 | `algo_orders` | `gtt_order_id` | VARCHAR(64) NULL | Stores the GTT order ID for orders placed via GTT templates. Enables `_fetch_gtt_set` to query active GTT orders without a column-not-found error. Migrated by `_migrate_algo_orders_gtt_order_id` in `backend/api/persistence/migrations.py`. |
 
 ---
 
