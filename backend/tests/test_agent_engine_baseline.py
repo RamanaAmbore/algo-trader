@@ -16,10 +16,13 @@ from __future__ import annotations
 
 from datetime import datetime, date, timedelta
 import pytest
+import pandas as pd
 from backend.api.algo.agent_engine import (
     _update_pnl_history,
     _v2_all_rate_metric,
     _cycle_baseline_not_ready,
+    _ae_should_reset_conditions,
+    _ae_sync_existing_builtin,
 )
 
 
@@ -217,4 +220,174 @@ class TestCycleBaselineNotReady:
         result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=False)
         assert result is True, (
             f"Expected pure-rate agent blocked within offset (True), got {result}"
+        )
+
+
+class TestPnlHistoryDayChangeVal:
+    """_update_pnl_history uses day_change_val for positions, pnl for holdings."""
+
+    def test_pnl_history_positions_uses_day_change_val(self):
+        """Positions rows store day_change_val, not pnl, in pnl_history."""
+        state = {}
+        now = datetime(2026, 9, 16, 10, 0, 0)
+        pos_df = pd.DataFrame([{
+            'account': 'ZD',
+            'pnl': 99999.0,
+            'day_change_val': -5000.0,
+            'day_change_percentage': -1.5,
+        }])
+        _update_pnl_history(state, now, pos_df, None)
+        bucket = state['pnl_history'][('positions', 'ZD')]
+        assert len(bucket) == 1, (
+            f"Expected 1 history entry, got {len(bucket)}"
+        )
+        _, val, pct = bucket[0]
+        assert val == -5000.0, (
+            f"Expected day_change_val=-5000.0 stored (not pnl=99999.0), got {val}"
+        )
+        assert pct == -1.5, (
+            f"Expected day_change_percentage=-1.5, got {pct}"
+        )
+
+    def test_pnl_history_holdings_uses_pnl(self):
+        """Holdings rows still store pnl (not day_change_val) in pnl_history."""
+        state = {}
+        now = datetime(2026, 9, 16, 10, 0, 0)
+        hld_df = pd.DataFrame([{
+            'account': 'ZD',
+            'pnl': -8000.0,
+            'pnl_percentage': -2.5,
+            'day_change_val': 99999.0,  # must be ignored for holdings
+        }])
+        _update_pnl_history(state, now, None, hld_df)
+        bucket = state['pnl_history'][('holdings', 'ZD')]
+        assert len(bucket) == 1, (
+            f"Expected 1 history entry, got {len(bucket)}"
+        )
+        _, val, pct = bucket[0]
+        assert val == -8000.0, (
+            f"Expected pnl=-8000.0 stored for holdings, got {val}"
+        )
+        assert pct == -2.5, (
+            f"Expected pnl_percentage=-2.5, got {pct}"
+        )
+
+
+class TestAeShouldResetConditions:
+    """_ae_should_reset_conditions detects stale pnl/pnl_pct leaves."""
+
+    def test_detects_stale_pnl_leaf(self):
+        """Top-level any: with a pnl leaf → True."""
+        stale = {"any": [
+            {"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -50000},
+        ]}
+        clean = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+        ]}
+        assert _ae_should_reset_conditions(stale, clean) is True, (
+            "Expected True for stale pnl leaf"
+        )
+
+    def test_clean_conditions_return_false(self):
+        """Conditions with only day_val/day_pct leaves → False."""
+        clean = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+            {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+        ]}
+        assert _ae_should_reset_conditions(clean, clean) is False, (
+            "Expected False for clean day_val/day_pct conditions"
+        )
+
+    def test_detects_stale_pnl_pct_leaf(self):
+        """pnl_pct leaf (not pnl_rate_pct) → True."""
+        stale = {"any": [
+            {"metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
+        ]}
+        assert _ae_should_reset_conditions(stale, None) is True, (
+            "Expected True for stale pnl_pct leaf"
+        )
+
+    def test_nested_stale_pnl_pct_detected(self):
+        """Nested any: with mixed leaves — pnl_pct present → True."""
+        nested_stale = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+            {"metric": "pnl_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+        ]}
+        clean = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+        ]}
+        assert _ae_should_reset_conditions(nested_stale, clean) is True, (
+            "Expected True when nested pnl_pct leaf detected"
+        )
+
+    def test_rate_metric_not_stale(self):
+        """pnl_rate_abs and pnl_rate_pct are NOT stale metric names → False."""
+        rate_cond = {"any": [
+            {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
+            {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
+        ]}
+        assert _ae_should_reset_conditions(rate_cond, None) is False, (
+            "pnl_rate_abs / pnl_rate_pct are not stale — expected False"
+        )
+
+    def test_none_conditions_return_false(self):
+        """None existing_cond → False (no-op for agents without conditions)."""
+        assert _ae_should_reset_conditions(None, None) is False, (
+            "Expected False when existing_cond is None"
+        )
+
+
+class TestAeSyncExistingBuiltinResetsStaleConditions:
+    """_ae_sync_existing_builtin force-resets stale pnl/pnl_pct conditions."""
+
+    def _make_existing(self, conditions):
+        """Minimal Agent-like stub with mutable conditions."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            conditions=conditions,
+            long_name=None,
+            schedule="market_hours",
+            tier="medium",
+            topic="general",
+            status="active",
+            events=[],
+            fire_at_time=None,
+            last_fired=None,
+        )
+
+    def test_stale_pnl_leaf_gets_reset(self):
+        """Existing conditions with pnl leaf are replaced by code conditions."""
+        stale_cond = {"any": [
+            {"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -50000},
+        ]}
+        new_cond = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+            {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+        ]}
+        existing = self._make_existing(stale_cond)
+        agent_def = {
+            "slug": "loss-positions-total",
+            "conditions": new_cond,
+            "long_name": "test",
+        }
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.conditions == new_cond, (
+            f"Expected conditions reset to new_cond, got {existing.conditions}"
+        )
+
+    def test_clean_conditions_not_overwritten(self):
+        """Already-migrated conditions (day_val/day_pct) are not touched."""
+        clean_cond = {"any": [
+            {"metric": "day_val", "scope": "positions.total", "op": "<=", "value": -50000},
+            {"metric": "day_pct", "scope": "positions.total", "op": "<=", "value": -2.0},
+        ]}
+        existing = self._make_existing(clean_cond)
+        agent_def = {
+            "slug": "loss-positions-total",
+            "conditions": clean_cond,
+            "long_name": "test",
+        }
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.conditions == clean_cond, (
+            f"Expected clean conditions unchanged, got {existing.conditions}"
         )

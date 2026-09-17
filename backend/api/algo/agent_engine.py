@@ -87,14 +87,21 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> 
             acct = str(row.get('account', '') or '')
             if not acct:
                 continue
-            try:
-                pnl = float(row.get('pnl', 0) or 0)
-            except (TypeError, ValueError):
-                continue
-            # pnl_pct is optional — holdings always have it; positions
-            # carry a per-row pnl_percentage too. Fall back to None
-            # when not present so the field_idx=2 path returns None.
-            pct_raw = row.get('pnl_percentage')
+            # Positions track day P&L velocity; holdings track total unrealized.
+            if section == 'positions':
+                try:
+                    pnl = float(row.get('day_change_val', 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                pct_raw = row.get('day_change_percentage')
+            else:
+                try:
+                    pnl = float(row.get('pnl', 0) or 0)
+                except (TypeError, ValueError):
+                    continue
+                # pnl_pct is optional — holdings always have it. Fall back to
+                # None when not present so the field_idx=2 path returns None.
+                pct_raw = row.get('pnl_percentage')
             try:
                 pct = float(pct_raw) if pct_raw is not None else None
             except (TypeError, ValueError):
@@ -824,9 +831,8 @@ _LOSS_AGENTS = [
              "loss-rate-acct (critical tier, 10-min cooldown)."
          ),
          conditions={"any": [
-             {"metric": "pnl_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
-             {"metric": "pnl",     "scope": "positions.any_acct", "op": "<=", "value": -30000},
              {"metric": "day_val", "scope": "positions.any_acct", "op": "<=", "value": -30000},
+             {"metric": "day_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
          ]},
          scope="total",
          ),
@@ -861,9 +867,8 @@ _LOSS_AGENTS = [
              "is bleeding' signal."
          ),
          conditions={"any": [
-             {"metric": "pnl_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
-             {"metric": "pnl",          "scope": "positions.total", "op": "<=", "value": -50000},
              {"metric": "day_val",      "scope": "positions.total", "op": "<=", "value": -50000},
+             {"metric": "day_pct",      "scope": "positions.total", "op": "<=", "value": -2.0},
              {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<=", "value": -6000},
              {"metric": "pnl_rate_pct", "scope": "positions.total", "op": "<=", "value": -0.25},
          ]},
@@ -1233,11 +1238,33 @@ def _ae_sync_builtin_status(existing, desired: str | None) -> None:
         existing.status = "inactive"
 
 
+def _ae_should_reset_conditions(existing_cond: dict | None, code_cond: dict | None) -> bool:
+    """True when existing DB conditions contain a stale 'pnl' or 'pnl_pct' leaf.
+
+    Used during seed_agents to force-migrate loss agents that were seeded
+    before the day-P&L metric switch. Safe to call on any agent def — returns
+    False unless stale metric names are detected, so operator-customised
+    conditions are left untouched.
+    """
+    if not isinstance(existing_cond, dict):
+        return False
+    for key in ('all', 'any'):
+        if key in existing_cond:
+            if any(_ae_should_reset_conditions(c, None) for c in (existing_cond[key] or [])):
+                return True
+    if 'not' in existing_cond:
+        return _ae_should_reset_conditions(existing_cond['not'], None)
+    m = existing_cond.get('metric', '') or ''
+    return m in ('pnl', 'pnl_pct')
+
+
 def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     """Force-sync mutable fields on an existing system Agent row.
 
     Operator-editable fields (conditions, cooldown, actions) are left
-    untouched. Extracted from seed_agents to reduce CC there."""
+    untouched EXCEPT when stale ``pnl``/``pnl_pct`` leaves are detected
+    (one-time day-P&L metric migration via ``_ae_should_reset_conditions``).
+    Extracted from seed_agents to reduce CC there."""
     code_long = agent_def.get("long_name")
     if code_long and existing.long_name != code_long:
         existing.long_name = code_long
@@ -1265,6 +1292,10 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
         # instead of being silenced by a stale last_fired timestamp
         # from the old schedule.
         existing.last_fired = None
+    # Force-reset conditions when DB still has stale unrealized-P&L metric leaves.
+    code_cond = agent_def.get('conditions')
+    if code_cond and _ae_should_reset_conditions(existing.conditions, code_cond):
+        existing.conditions = code_cond
 
 
 def _ae_build_agent_row(agent_def: dict) -> 'Agent':

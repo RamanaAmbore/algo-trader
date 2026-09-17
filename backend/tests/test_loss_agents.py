@@ -107,11 +107,11 @@ class TestLossPositionsAcct:
         )
 
     def test_has_static_conditions(self):
-        """loss-positions-acct must retain static pnl_pct, pnl, and day_val thresholds."""
+        """loss-positions-acct must have day_val and day_pct static thresholds (migrated from pnl/pnl_pct)."""
         a = _agent("loss-positions-acct")
         conds = a["conditions"]["any"]
         metrics = {c["metric"] for c in conds}
-        expected = {"pnl_pct", "pnl", "day_val"}
+        expected = {"day_val", "day_pct"}
         assert metrics == expected, (
             f"loss-positions-acct should have static metrics {expected}, "
             f"got {metrics}"
@@ -153,13 +153,13 @@ class TestLossPositionsTotal:
         )
 
     def test_keeps_static_conditions(self):
-        """loss-positions-total also keeps static pnl thresholds."""
+        """loss-positions-total has day_val and day_pct static thresholds (migrated from pnl/pnl_pct)."""
         a = _agent("loss-positions-total")
         conds = a["conditions"]["any"]
         metrics = {c["metric"] for c in conds}
-        static_metrics = {m for m in metrics if m in {"pnl", "pnl_pct"}}
-        assert static_metrics == {"pnl", "pnl_pct"}, (
-            f"loss-positions-total should keep static conditions, "
+        static_metrics = {m for m in metrics if m in {"day_val", "day_pct"}}
+        assert static_metrics == {"day_val", "day_pct"}, (
+            f"loss-positions-total should have day_val + day_pct static conditions, "
             f"got {static_metrics}"
         )
 
@@ -398,14 +398,14 @@ class TestConditionTreeStructure:
         assert len(items) >= 2, "loss-positions-acct should have at least 2 conditions"
 
     def test_loss_positions_total_condition_tree(self):
-        """loss-positions-total conditions are a valid any: tree with 5 items."""
+        """loss-positions-total conditions are a valid any: tree with 4 items (2 static + 2 rate)."""
         a = _agent("loss-positions-total")
         conds = a.get("conditions")
         assert "any" in conds, "loss-positions-total must have 'any' key"
 
         items = conds["any"]
         assert isinstance(items, list), "conditions['any'] must be a list"
-        assert len(items) == 5, (
-            f"loss-positions-total should have exactly 5 conditions "
-            f"(3 static + 2 rate), got {len(items)}"
+        assert len(items) == 4, (
+            f"loss-positions-total should have exactly 4 conditions "
+            f"(2 static day_val/day_pct + 2 rate), got {len(items)}"
         )
