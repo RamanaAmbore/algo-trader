@@ -217,16 +217,18 @@ class TestIsTradingDayToday:
 # =============================================================================
 
 class TestFetchSnapshotCloseMapPositions:
-    """Integration tests for _fetch_snapshot_close_map() in positions.py."""
+    """Integration tests for _fetch_snapshot_close_map() in positions.py.
+
+    Single-query path only — two-CTE removed; weekend/holiday startup writes
+    are skipped by _task_daily_snapshot; trading-day restarts capture correct
+    settlement LTP so latest-before-08:00 is always right.
+    """
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_saturday_mcx_two_cte_path(self, mock_gate):
-        """Two-CTE path on Saturday: Fri 23:45 ltp=500, Thu 23:45 ltp=490 → ref_close=490."""
+    async def test_saturday_mcx_single_query(self):
+        """Saturday pre-08:00: single query returns latest row before today_08 (ltp=490)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        # Mock daily_book query results (two-CTE path returns prev_batch rows)
-        # Positional tuple format: (account, symbol, ref_close, total_pnl)
         mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1000.0)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
@@ -246,17 +248,14 @@ class TestFetchSnapshotCloseMapPositions:
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
             snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
 
-        # Two-CTE returns Thu settlement (490), not Fri frozen (500)
         assert snapshot_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 490.0
         assert prev_pnl_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 1000.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_diwali_3day_gap_two_cte(self, mock_gate):
-        """Diwali 3-day gap: Tue 23:45 ltp=500, Fri 23:45 ltp=480 (72h) → ref_close=480."""
+    async def test_diwali_gap_single_query(self):
+        """Diwali holiday gap: single query returns the most-recent row before today_08."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        # Fri settlement (480) is the prev_close; Tue is the one before that
         mock_rows = [("ACC1", "NIFTY25OCTFUT", 480.0, 2000.0)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
@@ -279,9 +278,8 @@ class TestFetchSnapshotCloseMapPositions:
         assert snapshot_map.get(("ACC1", "NIFTY25OCTFUT")) == 480.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_nse_non_trading_two_cte(self, mock_gate):
-        """NSE non-trading day: Fri 15:45 ltp=1000, Thu 15:45 ltp=980 → ref_close=980."""
+    async def test_nse_non_trading_single_query(self):
+        """Non-trading day: single query returns latest daily_book row (ltp=980)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         mock_rows = [("ACC1", "RELIANCE", 980.0, 5000.0)]
@@ -306,12 +304,10 @@ class TestFetchSnapshotCloseMapPositions:
         assert snapshot_map.get(("ACC1", "RELIANCE")) == 980.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_no_prev_settlement_returns_empty(self, mock_gate):
-        """Only one row (Fri 23:45) → two-CTE prev_batch returns empty."""
+    async def test_no_daily_book_rows_returns_empty(self):
+        """No daily_book rows before today_08 → empty snapshot_map and prev_pnl_map."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        # No prev_batch rows when only one daily_book entry exists
         mock_result = MagicMock()
         mock_result.all.return_value = []
 
@@ -334,12 +330,10 @@ class TestFetchSnapshotCloseMapPositions:
         assert prev_pnl_map == {}
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=True)
-    async def test_live_tuesday_single_query_path(self, mock_gate):
+    async def test_live_tuesday_single_query_path(self):
         """Live Tue 14:00: single query returns Mon settlement (490)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        # Single query path returns latest entry (Mon 23:45)
         mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
@@ -356,15 +350,14 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aenter__ = AsyncMock(return_value=mock_session)
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
-            cutoff = datetime(2026, 9, 2, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))  # Tue
+            cutoff = datetime(2026, 9, 2, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
             snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 490.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=True)
-    async def test_post_close_snapshot_window_single_query(self, mock_gate):
-        """Live Tue 23:35 IST (post-close, in snapshot window): single query path."""
+    async def test_post_close_snapshot_window_single_query(self):
+        """Tue 23:35 IST (post-close, in snapshot window): single query path."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0)]
@@ -394,16 +387,16 @@ class TestFetchSnapshotCloseMapPositions:
 # =============================================================================
 
 class TestOverrideStalCloseForHoldings:
-    """Integration tests for _override_stale_close_for_holdings() in holdings.py."""
+    """Integration tests for _override_stale_close_for_holdings() in holdings.py.
+
+    Single-query path only — two-CTE removed; same reasoning as positions.
+    """
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.holdings.is_market_active_for_prev_close", return_value=False)
-    async def test_holdings_saturday_two_cte(self, mock_gate):
-        """Saturday holdings: Fri 15:45 ltp=1000, Thu 15:45 ltp=980 → ref_close=980."""
+    async def test_holdings_saturday_single_query(self):
+        """Saturday holdings: single query returns settlement ltp=980."""
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
-        # Mock daily_book query results for holdings
-        # Positional tuple format: (account, symbol, ref_close)
         mock_rows = [("ACC1", "TCS", 980.0)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
@@ -423,17 +416,14 @@ class TestOverrideStalCloseForHoldings:
 
             await _override_stale_close_for_holdings(raw)
 
-        # Should have patched previous_close and close_price
         assert raw.at[0, "previous_close"] == 980.0
         assert raw.at[0, "close_price"] == 980.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.holdings.is_market_active_for_prev_close", return_value=False)
-    async def test_holdings_no_snapshot_no_patch(self, mock_gate):
-        """Holdings with no matching snapshot → no patch."""
+    async def test_holdings_no_snapshot_no_patch(self):
+        """Holdings with no matching daily_book row → no patch."""
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
-        # Empty query result
         mock_result = MagicMock()
         mock_result.all.return_value = []
 
@@ -452,12 +442,10 @@ class TestOverrideStalCloseForHoldings:
 
             await _override_stale_close_for_holdings(raw)
 
-        # Row should remain unchanged
         assert "previous_close" not in raw.columns or raw.at[0, "previous_close"] == 0.0
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.holdings.is_market_active_for_prev_close", return_value=True)
-    async def test_holdings_live_single_query(self, mock_gate):
+    async def test_holdings_live_single_query(self):
         """Live Tuesday holdings: single query returns Mon settlement."""
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
@@ -547,8 +535,7 @@ class TestEdgeCases:
     """Edge case and error handling tests."""
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_db_error_returns_empty_maps(self, mock_gate):
+    async def test_db_error_returns_empty_maps(self):
         """DB error → _fetch_snapshot_close_map returns ({}, {})."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
@@ -579,8 +566,7 @@ class TestEdgeCases:
         assert len(key) == 2
 
     @pytest.mark.asyncio
-    @patch("backend.api.routes.positions.is_market_active_for_prev_close", return_value=False)
-    async def test_multiple_accounts_same_symbol(self, mock_gate):
+    async def test_multiple_accounts_same_symbol(self):
         """Multiple accounts, same symbol → separate entries in snapshot_map."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 

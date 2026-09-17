@@ -14,7 +14,6 @@ from backend.api.algo.pnl_math import (
     recompute_row_percentages,
 )
 from backend.api.cache import get_or_fetch, invalidate
-from backend.api.helpers.exchange_clock import is_market_active_for_prev_close
 from backend.api.helpers.ltp_patch import apply_ltp_patch, positions_policy
 from backend.api.helpers.price_resolver import resolve_current_price
 from backend.api.helpers.snapshot_gate import (
@@ -919,17 +918,11 @@ async def _fetch_snapshot_close_map(
 ) -> tuple[dict, dict]:
     """Query daily_book for the most-recent settlement LTP per (account, symbol).
 
-    Two paths depending on whether the market is currently active:
-
-    - Trading day / snapshot pending (is_market_active_for_prev_close=True):
-      Latest entry before today 08:00 IST = correct prev_close (prior session
-      settlement LTP, same as the existing single-query path).
-
-    - Non-trading day (is_market_active_for_prev_close=False):
-      The latest entry IS the frozen current ltp (= wrong prev_close).  Use a
-      two-CTE query to skip the latest batch and return the entry BEFORE it
-      (the prior trading day's real settlement LTP).  daily_book has exactly
-      one write per trading day (~24h gap) so no time-window filter is needed.
+    Returns the latest entry before today 08:00 IST — the prior-session
+    settlement LTP.  Weekend/holiday startup snapshot writes are skipped by
+    ``_task_daily_snapshot``; trading-day restart snapshots (00:30–08:00 IST)
+    capture the correct MCX settlement LTP from the frozen tick buffer, so
+    the single-query path is always correct.
 
     Returns ``(snapshot_map, prev_pnl_map)`` where both are
     ``dict[tuple[str, str], float]`` keyed by ``(account, tradingsymbol)``.
@@ -947,10 +940,7 @@ async def _fetch_snapshot_close_map(
     try:
         from backend.api.database import async_session
         async with async_session() as session:
-            if is_market_active_for_prev_close():
-                # Trading day / snapshot pending — latest entry before today 08:00
-                # is the correct prior-session settlement LTP.
-                result = await session.execute(_sql_text("""
+            result = await session.execute(_sql_text("""
                     SELECT DISTINCT ON (account, symbol)
                            account, symbol,
                            daily_book.ltp AS ref_close,
@@ -960,34 +950,6 @@ async def _fetch_snapshot_close_map(
                       AND ltp IS NOT NULL AND ltp > 0
                       AND captured_at < :today_08
                     ORDER BY account, symbol, captured_at DESC
-                """), {"today_08": today_08})
-            else:
-                # Non-trading day: latest entry = frozen ltp = wrong prev_close.
-                # Need the entry BEFORE the latest. daily_book has one write per
-                # trading day (~24h gap), so no time-window filter is needed.
-                result = await session.execute(_sql_text("""
-                    WITH latest_batch AS (
-                        SELECT account, symbol, MAX(captured_at) AS max_at
-                        FROM daily_book
-                        WHERE kind = 'positions'
-                          AND ltp IS NOT NULL AND ltp > 0
-                          AND captured_at < :today_08
-                        GROUP BY account, symbol
-                    ),
-                    prev_batch AS (
-                        SELECT DISTINCT ON (db.account, db.symbol)
-                               db.account, db.symbol,
-                               db.ltp AS ref_close,
-                               db.total_pnl
-                        FROM daily_book db
-                        JOIN latest_batch lb
-                          ON db.account = lb.account AND db.symbol = lb.symbol
-                        WHERE db.kind = 'positions'
-                          AND db.ltp IS NOT NULL AND db.ltp > 0
-                          AND db.captured_at < lb.max_at
-                        ORDER BY db.account, db.symbol, db.captured_at DESC
-                    )
-                    SELECT account, symbol, ref_close, total_pnl FROM prev_batch
                 """), {"today_08": today_08})
             for account, symbol, ref_close, total_pnl in result.all():
                 key = (str(account), str(symbol))
@@ -1040,11 +1002,10 @@ def _patch_close_from_snapshot_map(
 async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
     """Fallback for rows whose ``previous_close`` is still 0 after the first pass.
 
-    MCX option snapshots are captured DURING the MCX evening session (after
-    18:30 UTC), which is AFTER the 08:00 IST cutoff used by the first-pass
-    query, so they never match it.  Those daily_book rows carry a valid
-    ``previous_close`` column (prior-session settlement price written by the
-    broker adapter at snapshot time).  This pass fetches that value directly.
+    Reads ``daily_book.ltp`` (not ``previous_close``) because the snapshot at
+    23:45 IST is captured before the MCX BHAV publishes at 00:15 IST, so
+    ``previous_close`` at that time equals last-traded ≈ ltp (stale).
+    ``daily_book.ltp`` in the settlement snapshot IS the settlement price.
 
     Only fires when at least one row still has ``previous_close == 0.0``.
     Returns the list of indices patched.  On any DB error logs a warning and
@@ -1063,10 +1024,10 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
     try:
         async with async_session() as session:
             result2 = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, previous_close
+                SELECT DISTINCT ON (account, symbol) account, symbol, ltp AS previous_close
                 FROM daily_book
                 WHERE kind = 'positions'
-                  AND previous_close IS NOT NULL AND previous_close > 0
+                  AND ltp IS NOT NULL AND ltp > 0
                   AND symbol = ANY(:syms)
                 ORDER BY account, symbol, captured_at DESC
             """), {"syms": syms_needing_fallback})
