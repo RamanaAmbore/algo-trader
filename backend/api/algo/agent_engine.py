@@ -1238,24 +1238,27 @@ def _ae_sync_builtin_status(existing, desired: str | None) -> None:
         existing.status = "inactive"
 
 
-def _ae_should_reset_conditions(existing_cond: dict | None, code_cond: dict | None) -> bool:
-    """True when existing DB conditions contain a stale 'pnl' or 'pnl_pct' leaf.
-
-    Used during seed_agents to force-migrate loss agents that were seeded
-    before the day-P&L metric switch. Safe to call on any agent def — returns
-    False unless stale metric names are detected, so operator-customised
-    conditions are left untouched.
-    """
-    if not isinstance(existing_cond, dict):
+def _ae_has_pnl_leaf(cond: dict | None) -> bool:
+    """True when the condition tree contains any leaf with metric in ('pnl', 'pnl_pct')."""
+    if not isinstance(cond, dict):
         return False
     for key in ('all', 'any'):
-        if key in existing_cond:
-            if any(_ae_should_reset_conditions(c, None) for c in (existing_cond[key] or [])):
+        if key in cond:
+            if any(_ae_has_pnl_leaf(c) for c in (cond[key] or [])):
                 return True
-    if 'not' in existing_cond:
-        return _ae_should_reset_conditions(existing_cond['not'], None)
-    m = existing_cond.get('metric', '') or ''
-    return m in ('pnl', 'pnl_pct')
+    if 'not' in cond:
+        return _ae_has_pnl_leaf(cond['not'])
+    return (cond.get('metric', '') or '') in ('pnl', 'pnl_pct')
+
+
+def _ae_should_reset_conditions(existing_cond: dict | None, code_cond: dict | None) -> bool:
+    """True when DB conditions have a stale 'pnl'/'pnl_pct' leaf AND code no longer does.
+
+    The two-sided check is critical: agents that legitimately keep 'pnl' in their
+    Python default (e.g. loss-pos-total-auto-close) are NOT reset — only agents
+    where the code intentionally migrated away from unrealized-P&L metrics.
+    """
+    return _ae_has_pnl_leaf(existing_cond) and not _ae_has_pnl_leaf(code_cond)
 
 
 def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:

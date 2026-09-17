@@ -21,6 +21,7 @@ from backend.api.algo.agent_engine import (
     _update_pnl_history,
     _v2_all_rate_metric,
     _cycle_baseline_not_ready,
+    _ae_has_pnl_leaf,
     _ae_should_reset_conditions,
     _ae_sync_existing_builtin,
 )
@@ -335,6 +336,21 @@ class TestAeShouldResetConditions:
         assert _ae_should_reset_conditions(None, None) is False, (
             "Expected False when existing_cond is None"
         )
+
+    def test_code_also_has_pnl_no_reset(self):
+        """When code_cond also has a pnl leaf, do NOT reset (legitimate agent like loss-pos-total-auto-close)."""
+        auto_close_cond = {"metric": "pnl", "scope": "positions.total", "op": "<=", "value": -50000}
+        assert _ae_should_reset_conditions(auto_close_cond, auto_close_cond) is False, (
+            "Expected False: code also uses pnl — no migration needed"
+        )
+
+    def test_ae_has_pnl_leaf_direct(self):
+        """_ae_has_pnl_leaf correctly identifies pnl leaves."""
+        assert _ae_has_pnl_leaf({"metric": "pnl"}) is True
+        assert _ae_has_pnl_leaf({"metric": "pnl_pct"}) is True
+        assert _ae_has_pnl_leaf({"metric": "pnl_rate_abs"}) is False
+        assert _ae_has_pnl_leaf({"metric": "day_val"}) is False
+        assert _ae_has_pnl_leaf(None) is False
 
 
 class TestAeSyncExistingBuiltinResetsStaleConditions:
