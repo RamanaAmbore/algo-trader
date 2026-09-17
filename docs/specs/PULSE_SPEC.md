@@ -1178,7 +1178,7 @@ or broker polls:
 
 **Resolution order** (first non-null value wins):
 1. **SSE tick on spot-anchor contract** — live tick from WebSocket subscription
-2. **SSE tick on underlying** — live tick if the underlying itself is subscribed
+2. **SSE tick on underlying** — live tick if the underlying itself is subscribed (gated on `isMarketOpen()` post-close)
 3. **`candidatePositions[*].underlying_ltp`** (backend-stamped, positions.py Pass 3)
    — available immediately on page load from broker settlement data; eliminates 
    "Resolving spot…" placeholder during SSE warmup
@@ -1186,9 +1186,23 @@ or broker polls:
    quote cycle refresh
 5. **`strategy.spot`** (stale server value) — last-resort static value from page load
 
+**Post-close SSE gate (Sep 2026)**:
+Tier 2 (resolved contract from `symbolStore`) is now gated on `isMarketOpen()`. 
+Post-close, the resolver skips to Tier 3 (REST `batchQuote` endpoint) to prevent 
+stale intraday SSE-written `ltp_ts > 0` values from blocking updated REST quotes after 
+MCX settlement.
+
 **Rationale**: Broker-stamped `underlying_ltp` appears instantly in candidatePositions 
 without waiting for SSE subscription to activate, allowing the payoff chart to render 
 with a real spot estimate on first paint instead of showing a loading state.
+
+### 17.2 OptionsPayoff Overlay — SPOT and CHG% Flash on Tick
+
+The payoff overlay's live price display now includes directional flash feedback on each 
+tick update. SPOT value shows a 300ms background flash (`tf-up` / `tf-down` CSS class) 
+and CHG% displays a text-color flash (`ltp-tc-flash-up` / `ltp-tc-flash-down`) to signal 
+price movement, matching the Snapshot grid's LTP and CHG% cell behaviour and providing 
+consistent visual feedback across all derivatives surfaces.
 
 ### 17.3 Candidate Leg Row — Pending Qty Chip
 
@@ -1206,7 +1220,7 @@ states.
 **Use case**: Operators tracking partial-close executions see which legs have open 
 cancel/reduce orders queued, preventing accidental double-reduces.
 
-### 17.2 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
+### 17.4 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
 
 **Leg row DOM order** (Aug 2026, commit e6656b7e):
 - Checkbox now renders **BEFORE** the pos_state (St) cell in CandidateLegRow
@@ -1224,7 +1238,7 @@ cancel/reduce orders queued, preventing accidental double-reduces.
   with 2 small option legs (qty 4 contracts total)
 - Operators see underlyings with the largest total quantity first when selecting roots
 
-### 17.4 Expiry-Close Analysis — "Exp close" Badge Counts
+### 17.5 Expiry-Close Analysis — "Exp close" Badge Counts
 
 The derivatives page's expiryCloseAnalysis feature identifies ITM/OTM options approaching 
 expiry and organizes them into bands (close, netted, OTM). Badge counts in the UI reflect 
@@ -1247,7 +1261,7 @@ the number of ITM positions requiring action.
 **Impact**: Operators see accurate close-action counts; stale in-session closed legs no 
 longer spike the orange "Exp close" badge count after partial closes.
 
-### 17.5 Candidate Position Filtering — Closed Positions (qty=0) Now Always Included
+### 17.6 Candidate Position Filtering — Closed Positions (qty=0) Now Always Included
 
 The `buildCandidatePositions()` function in `frontend/src/lib/derivatives/pageLoad.js` 
 includes all F&O positions regardless of whether their symbols are present in Kite's 

@@ -147,6 +147,8 @@ The full developer onboarding document. Read top-to-bottom to understand the cod
 - §22.25. [Demo banner + Showcase page + Nav + Fullscreen + Derivatives Exp Close](#2225-demo-banner--showcase-page--nav--fullscreen--derivatives-exp-close)
 - §22.26. [Derivatives rows + LogPanel CSS Grid — border-bottom + 2-col grid layout](#2226-derivatives-rows--logpanel-css-grid--border-bottom--2-col-grid-layout)
 - §22.27. [Modal consolidation — ActivityLogModal sheet pattern + fullscreen inset flush](#2227-modal-consolidation--activitylogmodal-sheet-pattern--fullscreen-inset-flush)
+- §22.28. [Agent engine — baseline window initialization + mixed-condition gating](#2228-agent-engine--baseline-window-initialization--mixed-condition-gating)
+- §22.29. [MmapTickReader — virtual-root alias resolution for MCX SSE subscription](#2229-mmaptickreader--virtual-root-alias-resolution-for-mcx-sse-subscription)
 
 **Part VII — Operations**
 
@@ -5794,6 +5796,38 @@ underlying symbol.
 **Files changed:**
 - `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — passes `spot: liveSpot` to backend
 - `backend/api/routes/derivatives.py::_resolve_spot` — early return when spot is provided
+
+---
+
+## 22.28. Agent engine — baseline window initialization + mixed-condition gating
+
+`backend/api/algo/agent_engine.py` fixes baseline-window handling in the v2 grammar alert system to prevent loss-alert fires during the 15-minute opening-gap period.
+
+**Session-start baseline initialization:** `_update_pnl_history()` now sets `alert_state['session_start']` on the first call each day (and on cold start / process restart), enabling `_v2_baseline_live()` to correctly gate the 15-minute opening-gap baseline window. Without the session_start marker, agents firing on loss thresholds would trigger immediately at market open before establishing an intraday baseline, producing false-positive alerts. The `session_start` timestamp acts as the fence; conditions are suppressed until `now - session_start >= 900s` (15 minutes).
+
+**Mixed-condition baseline gating:** `_cycle_baseline_not_ready()` now uses `_v2_all_rate_metric()` (requires ALL leaves to be rate metrics) instead of `_v2_has_rate_metric()` (any rate metric), so mixed-condition agents (e.g. `pnl ≤ threshold OR pnl_rate_abs ≤ threshold`) fire immediately on their static conditions without waiting for the baseline window. Static conditions like `pnl ≤ -5%` need no baseline; only purely rate-based conditions (e.g. `pnl_rate > 10%/min`) depend on a warm-up window. This prevents long-position loss-hedge agents (which have mixed static + rate conditions) from being silently suppressed during market open.
+
+**Files:**
+- `backend/api/algo/agent_engine.py::_update_pnl_history` — session_start initialization
+- `backend/api/algo/agent_engine.py::_v2_baseline_live` — 15-minute window gating
+- `backend/api/algo/agent_engine.py::_cycle_baseline_not_ready` — all_rate_metric check
+
+---
+
+## 22.29. MmapTickReader — virtual-root alias resolution for MCX SSE subscription
+
+`backend/brokers/mmap_ticker.py::MmapTickReader` now exposes two methods for managing MCX virtual-root symbol aliases in the mmap shared-memory tick buffer, enabling per-symbol SSE subscription without alias resolution overhead.
+
+**New method: `get_token_for_sym(sym)`** — Returns the instrument token for a symbol, or None if not found. Used by SSE subscription paths to confirm token existence before registering listeners.
+
+**New method: `set_virtual_root_alias(tok, root)`** — Overrides the internal `_token_to_sym[tok]` mapping so the mmap poll loop emits the root symbol (e.g. `"CRUDEOIL"`) instead of the futures contract tradingsymbol (e.g. `"CRUDEOIL26JULFUT"`). This allows `_perf_subscribe_book_symbols` to register MCX virtual root aliases for SSE at 250ms cadence without requiring resolution callbacks at subscription time. The mmap writer continues to receive ticks under the contract token; the reader translates them to the canonical root symbol before broadcasting to subscribers.
+
+**Integration point:** Background task `_perf_subscribe_book_symbols` now calls `set_virtual_root_alias(kite_token, virtual_root)` for each MCX position discovered during performance refresh, so SSE clients receive ticks under the semantically correct root symbol rather than seeing both the concrete contract and root in separate streams.
+
+**Files:**
+- `backend/brokers/mmap_ticker.py::MmapTickReader.get_token_for_sym` — new method
+- `backend/brokers/mmap_ticker.py::MmapTickReader.set_virtual_root_alias` — new method
+- `backend/api/background.py::_perf_subscribe_book_symbols` — caller
 
 ---
 
