@@ -188,6 +188,87 @@ describe('underlyingSpotStore — multi-underlying load', () => {
   });
 });
 
+// ── Test 4b: regression — two independent callers must not wipe each other ───
+
+describe('underlyingSpotStore — regression: sequential loadUnderlyingSpots merges, not replaces', () => {
+  it('second caller does not wipe first caller symbols after second loadUnderlyingSpots', () => {
+    // Regression test: loadUnderlyingSpots should MERGE into the store, not replace.
+    // Both PositionStrip and the derivatives page call loadUnderlyingSpots with
+    // different symbol sets; the second call must preserve the first call's entries.
+
+    // First call: load GOLDM (MCX futures)
+    const pairs1 = [{ root: 'GOLDM', quoteKey: 'MCX:GOLDM24OCTFUT' }];
+    const result1 = {
+      items: [
+        {
+          exchange: 'MCX',
+          tradingsymbol: 'GOLDM24OCTFUT',
+          ltp: 72500,
+          close: 72200,
+        },
+      ],
+    };
+    const quotes1 = buildQuoteMap(pairs1, result1);
+
+    // Simulate merge (the fix): _quotes = { ..._quotes, ...next }
+    let merged = quotes1;
+    expect(merged['GOLDM'].ltp).toBe(72500);
+
+    // Second call: load CRUDEOIL (MCX futures) — different root
+    const pairs2 = [{ root: 'CRUDEOIL', quoteKey: 'MCX:CRUDEOIL24OCTFUT' }];
+    const result2 = {
+      items: [
+        {
+          exchange: 'MCX',
+          tradingsymbol: 'CRUDEOIL24OCTFUT',
+          ltp: 5900,
+          close: 5850,
+        },
+      ],
+    };
+    const quotes2 = buildQuoteMap(pairs2, result2);
+
+    // Apply the merge: preserve previous quotes + add new ones
+    merged = { ...merged, ...quotes2 };
+
+    // Both roots must now be present
+    expect(merged['GOLDM'].ltp).toBe(72500);
+    expect(merged['CRUDEOIL'].ltp).toBe(5900);
+    expect(Object.keys(merged).length).toBe(2);
+  });
+
+  it('third unrelated call preserves both previous entries', () => {
+    // Three independent callers (e.g., PositionStrip, derivatives page, scanner)
+    // each call loadUnderlyingSpots with disjoint symbol sets.
+
+    let merged = {};
+
+    // Caller 1: GOLDM
+    merged = { ...merged, ...buildQuoteMap(
+      [{ root: 'GOLDM', quoteKey: 'MCX:GOLDM24OCTFUT' }],
+      { items: [{ exchange: 'MCX', tradingsymbol: 'GOLDM24OCTFUT', ltp: 72500, close: 72200 }] }
+    ) };
+
+    // Caller 2: CRUDEOIL
+    merged = { ...merged, ...buildQuoteMap(
+      [{ root: 'CRUDEOIL', quoteKey: 'MCX:CRUDEOIL24OCTFUT' }],
+      { items: [{ exchange: 'MCX', tradingsymbol: 'CRUDEOIL24OCTFUT', ltp: 5900, close: 5850 }] }
+    ) };
+
+    // Caller 3: NIFTY (different exchange)
+    merged = { ...merged, ...buildQuoteMap(
+      [{ root: 'NIFTY', quoteKey: 'NSE:NIFTY 50' }],
+      { items: [{ exchange: 'NSE', tradingsymbol: 'NIFTY 50', ltp: 24200, close: 24000 }] }
+    ) };
+
+    // All three must survive
+    expect(merged['GOLDM'].ltp).toBe(72500);
+    expect(merged['CRUDEOIL'].ltp).toBe(5900);
+    expect(merged['NIFTY'].ltp).toBe(24200);
+    expect(Object.keys(merged).length).toBe(3);
+  });
+});
+
 // ── Test 5: missing batchQuote items handled gracefully ─────────────────────
 
 describe('underlyingSpotStore — missing or partial batchQuote response', () => {

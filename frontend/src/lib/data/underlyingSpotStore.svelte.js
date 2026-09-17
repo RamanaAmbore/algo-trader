@@ -83,7 +83,7 @@ export async function loadUnderlyingSpots(pairs) {
     else if (close > 0 && ltp > 0)    pct = ((ltp - close) / close) * 100;
     next[root] = { ltp, day_pct: pct, prev_close: close };
   }
-  _quotes = next;
+  _quotes = { ..._quotes, ...next };
 }
 
 /**
