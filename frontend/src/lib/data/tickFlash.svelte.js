@@ -34,6 +34,11 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     if (value == null) return;
     const v = Number(value);
     if (!isFinite(v)) return;
+    // Skip entirely while tab is hidden — prev[key] must reflect the last
+    // value the user actually saw, not the last polled value. On tab-return
+    // the first visible update compares against the pre-hide value and
+    // flashes correctly.
+    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const last = prev[key];
     prev[key] = v;
     // First sample — establish baseline, no flash. Without this every
@@ -45,12 +50,6 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
       const changePct = Math.abs((v - last) / last * 100);
       if (changePct < _pctThreshold) return;
     }
-    // Tab-hidden guard: state (prev[key]) is always updated above so we
-    // track the latest value even when hidden. But we skip the CSS class
-    // write + timer — the animation won't run in a hidden tab, and setting
-    // classes while hidden leaves orphaned 'tf-up'/'tf-down' markers that
-    // never clear if the tab stays hidden past durationMs.
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
     const dir = v > last ? 'up' : 'down';
     // Mutate the $state proxy in place. The earlier `classes = { ...
     // classes, [key]: dir }` form READ `classes` inside the same call-

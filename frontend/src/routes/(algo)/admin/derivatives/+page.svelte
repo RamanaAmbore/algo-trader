@@ -1794,19 +1794,18 @@
       return posUltp;
     }
 
-    // Fourth fallback: the Snapshot card's batchQuote result for the
-    // selected underlying. Covers the IDFC-style case where the SSE
-    // symbolStore has no live tick yet (first-open, pre-market, or a
-    // symbol whose KiteTicker subscription hasn't landed), so
-    // `getSnapshot` returns null and `strategy.spot` carries a stale
-    // server-poll value. `_underlyingQuotes` is refreshed on every
-    // batchQuote poll (every 30 s), so it's at most 30 s stale vs an SSE
-    // tick that could be arbitrarily old if the underlying hasn't printed
-    // a tick since page-open.
-    // Always track _quoteGeneration — batchQuote updates must re-trigger
-    // liveSpot regardless of market state. This covers MCX pre-open
-    // (17:00–17:30) where _throttledTick is sparse and liveSpot would
-    // otherwise freeze on a stale/zero spot until the next SSE tick.
+    // Tier 4: strategy.spot — resolved by backend using live KiteTicker data,
+    // refreshed every 5s. More reliable than batchQuote for MCX underlyings
+    // where the REST API may return stale OHLC.close as last_price.
+    if (stratMatchesSel && strategy?.spot != null) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '4-strategySpot', value: strategy?.spot }));
+      return strategy?.spot;
+    }
+
+    // Tier 5: batchQuote result — fallback for when strategy hasn't loaded yet
+    // (first-open, pre-market, no legs). _quoteGeneration tracks batchQuote
+    // refreshes; void here ensures liveSpot re-derives after each poll even
+    // when _throttledTick is sparse (MCX pre-open 17:00–17:30).
     // ── untrack() here is essential: `_underlyingQuotes` is replaced
     //    wholesale every 30 s (new object reference). Without untrack,
     //    liveSpot would re-derive on EVERY snapshot poll in addition to
@@ -1816,14 +1815,10 @@
     void _quoteGeneration;
     const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
     if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '4-bq', key: selectedUnderlying, value: bqLtp }));
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '5-bq', key: selectedUnderlying, value: bqLtp }));
       return bqLtp;
     }
 
-    if (stratMatchesSel && strategy?.spot != null) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: 'last-strategySpot', value: strategy?.spot }));
-      return strategy?.spot;
-    }
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
     return stratMatchesSel ? strategy?.spot : undefined;
   });
@@ -3693,7 +3688,7 @@
     }
 
     const _thisGen = ++_stratGen;
-    loading = true;
+    if (!strategy) loading = true;
     try {
       const resp    = await fetchStrategyAnalytics(cleanLegs, { spot: liveSpot ?? null });
       if (_thisGen !== _stratGen) return;
