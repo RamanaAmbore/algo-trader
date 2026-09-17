@@ -212,6 +212,18 @@ class MmapTickReader:
         except Exception as e:
             logger.warning("MmapTickReader: subscribe forward failed: %s", e)
 
+    def get_token_for_sym(self, sym: str) -> int | None:
+        """Return the token for a tradingsymbol, or None if not registered."""
+        return self._sym_to_token.get(str(sym or "").upper())
+
+    def set_virtual_root_alias(self, tok: int, root: str) -> None:
+        """Override _token_to_sym so _poll_loop emits root sym (e.g. "CRUDEOIL")
+        instead of the actual futures sym. _sym_to_token retains the original
+        tradingsymbol→token mapping so has_sym() still works; root lookup also works."""
+        if root:
+            self._token_to_sym[tok] = root
+            self._sym_to_token[root.upper()] = tok
+
     # ── status / diagnostics (UDS forward) ─────────────────────────────
 
     def status(self, stale_threshold_sec: int = 60, stale_top_n: int = 20) -> dict:

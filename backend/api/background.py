@@ -780,7 +780,7 @@ async def _add_mcx_spot_anchors(
     book_pairs: list,
     book_seen: set,
 ) -> dict[str, str]:
-    """Subscribe MCX front-month futures as spot anchors for MCX options.
+    """Subscribe MCX spot anchors for MCX options AND futures.
     Returns {futures_sym.upper(): root} for virtual root alias registration."""
     aliases: dict[str, str] = {}
     try:
@@ -799,6 +799,17 @@ async def _add_mcx_spot_anchors(
                     book_seen.add(key)
                     book_pairs.append(key)
                 aliases[futs[0].upper()] = root  # "CRUDEOIL26OCTFUT" → "CRUDEOIL"
+        # Pass 2: alias MCX futures already in book_pairs regardless of options.
+        # Covers pure-futures positions (no CE/PE) so set_virtual_root_alias is
+        # always called for held MCX contracts.
+        _re_fut_inner = _re_module.compile(r'^([A-Z]+)\d+[A-Z]+FUT$')
+        for _sym, _exch in list(book_pairs):
+            if _exch == 'MCX':
+                _m = _re_fut_inner.match(str(_sym).upper())
+                if _m:
+                    _root = _m.group(1)
+                    if str(_sym).upper() not in aliases:
+                        aliases[str(_sym).upper()] = _root
     except Exception as _e:
         logger.debug(f"Background: MCX spot-anchor subscribe skipped: {_e}")
     return aliases

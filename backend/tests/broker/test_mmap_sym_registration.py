@@ -408,3 +408,33 @@ class TestPollLoopSsot:
             "background.py must contain _register_universe_with_ticker "
             "for startup sym→token registration"
         )
+
+
+def test_get_token_for_sym_returns_none_when_unregistered():
+    reader = MmapTickReader.__new__(MmapTickReader)
+    reader._token_to_sym = {}
+    reader._sym_to_token = {}
+    assert reader.get_token_for_sym("CRUDEOIL26SEPFUT") is None
+
+
+def test_get_token_for_sym_returns_token_after_subscribe():
+    reader = MmapTickReader.__new__(MmapTickReader)
+    reader._token_to_sym = {}
+    reader._sym_to_token = {}
+    with patch("backend.brokers.client.sync._get_client") as mc:
+        mc.return_value.post.return_value = MagicMock(status_code=200)
+        reader.subscribe_with_sym([(144870151, "CRUDEOIL26SEPFUT")])
+    assert reader.get_token_for_sym("CRUDEOIL26SEPFUT") == 144870151
+
+
+def test_set_virtual_root_alias_overrides_poll_sym():
+    reader = MmapTickReader.__new__(MmapTickReader)
+    reader._token_to_sym = {}
+    reader._sym_to_token = {}
+    with patch("backend.brokers.client.sync._get_client") as mc:
+        mc.return_value.post.return_value = MagicMock(status_code=200)
+        reader.subscribe_with_sym([(144870151, "CRUDEOIL26SEPFUT")])
+    reader.set_virtual_root_alias(144870151, "CRUDEOIL")
+    assert reader._token_to_sym[144870151] == "CRUDEOIL"
+    assert reader.has_sym("CRUDEOIL") is True
+    assert reader.has_sym("CRUDEOIL26SEPFUT") is True

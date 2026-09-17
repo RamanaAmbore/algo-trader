@@ -179,3 +179,27 @@ class TestAddMcxSpotAnchors:
         assert len(aliases) == 0, (
             f"Expected empty aliases dict on error, got {aliases}"
         )
+
+    @pytest.mark.asyncio
+    async def test_add_mcx_spot_anchors_aliases_pure_futures(self):
+        """Pass 2 aliases MCX futures to root even when no MCX CE/PE in positions."""
+        from backend.api.background import _add_mcx_spot_anchors
+
+        book_pairs = [
+            ("CRUDEOIL26OCTFUT", "MCX"),
+        ]
+        book_seen = set()
+        initial_len = len(book_pairs)
+
+        with patch("backend.api.algo.symbol_resolver.list_active_futures") as mock_laf:
+            mock_laf.return_value = ["CRUDEOIL26OCTFUT"]
+
+            aliases = await _add_mcx_spot_anchors(book_pairs, book_seen)
+
+        # Should return aliases mapping the future to its root
+        assert isinstance(aliases, dict), (
+            f"Expected dict return value, got {type(aliases)}"
+        )
+        assert aliases.get("CRUDEOIL26OCTFUT") == "CRUDEOIL", (
+            f"Expected CRUDEOIL26OCTFUT → CRUDEOIL alias, got {aliases}"
+        )

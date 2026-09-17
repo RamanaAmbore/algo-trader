@@ -1767,7 +1767,7 @@
     // the key mismatch caused fallthrough to the positions-API
     // underlying_ltp, which can lag by up to 5 s.
     const _resolvedTs = resolveUnderlying(selectedUnderlying, findNearestFuture)?.tradingsymbol;
-    if (_resolvedTs) {
+    if (_resolvedTs && isMarketOpen()) {
       const v = Number(untrack(() => getSnapshot(_resolvedTs)?.ltp));
       if (Number.isFinite(v) && v > 0) {
         untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-resolvedTs', sym: _resolvedTs, value: v }));
@@ -4782,7 +4782,7 @@
           <div class="byund-row">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
-            <span class="num {ltpDayClass(_pct)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>

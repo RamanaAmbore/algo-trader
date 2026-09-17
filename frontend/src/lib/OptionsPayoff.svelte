@@ -408,6 +408,8 @@
   import { priceFmt, aggFmt, aggCompact, ltpDayClass } from '$lib/format';
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
+  import { _tcFlashClass } from '$lib/data/pulseColumns.js';
 
   const _pulse = createChartRefreshPulse();
   // Fire when payoff data changes — but NOT on hover / zoom / pan (those
@@ -416,6 +418,9 @@
   $effect(() => {
     if (payoff.length) untrack(() => _pulse.notify('payoff'));
   });
+
+  const _spotFlash = createTickFlash({ threshold: 0, durationMs: 300 });
+  $effect(() => { _spotFlash.update('spot', spot); });
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".
   // Keeps left-edge labels short enough to fit in PAD_L budget.
@@ -740,12 +745,12 @@
                ? `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">SPOT</span>
-          <span class={'ps-v ' + ltpDayClass(spotPct)}>{fmtSpot(spot)}</span>
+          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
         </div>
         {#if spotPct != null}
           <div class="ps-row" title="Spot % change from previous session close">
             <span class="ps-k">CHG%</span>
-            <span class={'ps-v ' + ltpDayClass(spotPct)}>
+            <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('spot') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
             </span>
           </div>

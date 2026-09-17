@@ -73,6 +73,9 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> 
     if today and last_date != today:
         alert_state['pnl_history'] = {}
         alert_state['session_date'] = today
+        alert_state['session_start'] = now   # reset per-day baseline anchor
+    if 'session_start' not in alert_state:
+        alert_state['session_start'] = now   # set on cold start / process restart
     hist_map = alert_state.setdefault('pnl_history', {})
 
     def _append(section: str, df):
@@ -285,6 +288,21 @@ def _v2_has_rate_metric(cond) -> bool:
             return any(_v2_has_rate_metric(c) for c in (cond.get(key) or []))
     if 'not' in cond:
         return _v2_has_rate_metric(cond['not'])
+    m = cond.get('metric', '') or ''
+    return '_rate_' in m
+
+
+def _v2_all_rate_metric(cond) -> bool:
+    """True when ALL leaf metrics require a rate baseline (contain _rate_).
+    Used by baseline gate — blocks only pure-rate agents, not mixed ones."""
+    if not isinstance(cond, dict):
+        return False
+    for key in ('all', 'any'):
+        if key in cond:
+            children = cond.get(key) or []
+            return bool(children) and all(_v2_all_rate_metric(c) for c in children)
+    if 'not' in cond:
+        return _v2_all_rate_metric(cond['not'])
     m = cond.get('metric', '') or ''
     return '_rate_' in m
 
@@ -1477,10 +1495,10 @@ def _cycle_in_blackout(agent, now, *, bypass_schedule: bool) -> bool:
 
 def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
                               bypass_schedule: bool) -> bool:
-    """True when a rate-metric agent should be suppressed during the baseline window."""
+    """True when a PURE rate-metric agent should be suppressed during baseline window."""
     return (
         not bypass_schedule
-        and _v2_has_rate_metric(agent.conditions)
+        and _v2_all_rate_metric(agent.conditions)
         and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])
     )
 
