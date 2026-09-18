@@ -847,8 +847,8 @@ _LOSS_AGENTS = [
          tier="critical",
          topic="positions_loss",
          name="Positions per-account burn-rate guardrail",
-         conditions={"any": [
-             {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -3000},
+         conditions={"all": [
+             {"metric": "pnl_rate_abs", "scope": "positions.any_acct", "op": "<=", "value": -10000},
              {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
          ]},
          cooldown_minutes=10,

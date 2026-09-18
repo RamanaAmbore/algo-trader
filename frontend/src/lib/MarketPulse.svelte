@@ -1559,12 +1559,7 @@
     // comes from tickBus (computed in symbolStore._mergeSymbolWrite where
     // prev and next LTP are both available). Per-sym clearance timers
     // prevent one sym's 300ms window from wiping another sym's flash.
-    _tickBusUnsub = tickBus.subscribe(({ sym, dir, pct }) => {
-      // Skip flashes below the operator-configured percentage threshold.
-      // pctThreshold === 0 means "no gate" (same as before this feature).
-      if (_pctThreshold > 0 && pct < _pctThreshold) return;
-      // Record magnitude so cellClass closures can apply tiered flash.
-      _ltpFlashPctMap.set(sym, pct);
+    _tickBusUnsub = tickBus.subscribe(({ sym, dir }) => {
       if (dir === 'up') {
         _ltpFlashUp = new Set([..._ltpFlashUp, sym]);
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
@@ -1581,7 +1576,6 @@
       if (existing) clearTimeout(existing);
       _ltpFlashTimers.set(sym, setTimeout(() => {
         _ltpFlashTimers.delete(sym);
-        _ltpFlashPctMap.delete(sym);
         _ltpFlashUp   = new Set([..._ltpFlashUp].filter(s => s !== sym));
         _ltpFlashDown = new Set([..._ltpFlashDown].filter(s => s !== sym));
         // Repaint once more after clearing flash so cells revert to
@@ -2265,10 +2259,6 @@
   // whole set when one symbol clears — prevents flicker when multiple
   // symbols have staggered 300ms windows).
   const _ltpFlashTimers = /** @type {Map<string, ReturnType<typeof setTimeout>>} */ (new Map());
-  // Tracks per-sym absolute percentage change from the tickBus so
-  // _ltpCellClass and mkPnlCellClass can apply magnitude-tiered flash.
-  // Plain Map (not $state) — read only inside cellClass closures.
-  const _ltpFlashPctMap = /** @type {Map<string, number>} */ (new Map());
   let _flashRefreshTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   /** @type {(() => void) | null} */
   let _tickBusUnsub = null;
@@ -2295,7 +2285,7 @@
     if (_flashRefreshTimer) return;
     _flashRefreshTimer = setTimeout(() => {
       _flashRefreshTimer = null;
-      const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl', 'day_pnl_pct'];
+      const cols = ['ltp', 'sparkline', 'day_pnl_pct'];
       if (gridPinnedReady && gridPinned && topTab === 'pinned')
         try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline', 'left_change_pct'], force: true }); } catch (_) {}
       if (gridWatchReady && gridWatch && typeof topTab === 'number')
@@ -3570,7 +3560,6 @@
       getMpFlash:       () => _mpFlash,
       getLtpFlashUp:    () => _ltpFlashUp,
       getLtpFlashDown:  () => _ltpFlashDown,
-      getLtpFlashPct:   () => _ltpFlashPctMap,
     });
 
     // Main symbols grid — only built when the parent opted into the
@@ -3590,7 +3579,6 @@
       getLiveLtpSnap:  () => _liveLtpSnap,
       getLtpFlashUp:   () => _ltpFlashUp,
       getLtpFlashDown: () => _ltpFlashDown,
-      getLtpFlashPct:  () => _ltpFlashPctMap,
       numFmt, RA, numericHdr,
     });
     const _prevCol          = mkPrevCol({ RA, numericHdr, numFmt });
@@ -3617,6 +3605,8 @@
       lotsForRow, fmtLots,
       getDerivedByKey: () => positionsDerivedStore.byKey,
       getMpFlash: () => _mpFlash,
+      getLtpFlashUp: () => _ltpFlashUp,
+      getLtpFlashDown: () => _ltpFlashDown,
     });
     // Patch the day_pnl column to prefer positionsDerivedStore (the 4 Hz SSOT)
     // for positions rows, falling back to the row's own day_pnl (holdings).

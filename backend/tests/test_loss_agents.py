@@ -39,7 +39,7 @@ class TestLossRateAcct:
     def test_contains_only_rate_conditions(self):
         """loss-rate-acct must contain ONLY rate metrics (pnl_rate_abs/pct)."""
         a = _agent("loss-rate-acct")
-        conds = a["conditions"]["any"]
+        conds = a["conditions"]["all"]
         metrics = {c["metric"] for c in conds}
         expected = {"pnl_rate_abs", "pnl_rate_pct"}
         assert metrics == expected, (
@@ -50,11 +50,20 @@ class TestLossRateAcct:
     def test_no_static_conditions(self):
         """loss-rate-acct must NOT have static pnl or pnl_pct thresholds."""
         a = _agent("loss-rate-acct")
-        conds = a["conditions"]["any"]
+        conds = a["conditions"]["all"]
         static_metrics = {c["metric"] for c in conds if c["metric"] in {"pnl", "pnl_pct"}}
         assert static_metrics == set(), (
             f"loss-rate-acct should not have static conditions, "
             f"found {static_metrics}"
+        )
+
+    def test_abs_threshold_is_minus_10000(self):
+        """loss-rate-acct absolute threshold must be -10000."""
+        a = _agent("loss-rate-acct")
+        conds = a["conditions"]["all"]
+        abs_cond = next(c for c in conds if c["metric"] == "pnl_rate_abs")
+        assert abs_cond["value"] == -10000, (
+            f"Expected pnl_rate_abs threshold -10000, got {abs_cond['value']}"
         )
 
     def test_in_ntfy_dict_as_urgent(self):
@@ -70,10 +79,71 @@ class TestLossRateAcct:
     def test_scope_is_any_acct(self):
         """loss-rate-acct applies to per-account scope (positions.any_acct)."""
         a = _agent("loss-rate-acct")
-        conds = a["conditions"]["any"]
+        conds = a["conditions"]["all"]
         scopes = {c["scope"] for c in conds}
         expected = {"positions.any_acct"}
         assert scopes == expected, f"Expected scopes {expected}, got {scopes}"
+
+    def test_condition_is_all_not_any(self):
+        """loss-rate-acct uses AND logic — both rate metrics must breach to fire."""
+        a = _agent("loss-rate-acct")
+        conds = a.get("conditions", {})
+        assert "all" in conds, (
+            "loss-rate-acct must use 'all' (AND) condition, not 'any' (OR)"
+        )
+        assert "any" not in conds, (
+            "loss-rate-acct must not have an 'any' (OR) key; expected 'all' only"
+        )
+
+    def test_only_abs_breach_does_not_fire(self):
+        """If ONLY abs breaches (-10001 abs, -0.10 pct) the agent must NOT fire (AND semantics)."""
+        a = _agent("loss-rate-acct")
+        conds = a["conditions"]["all"]
+        # Simulate both conditions against mock values
+        abs_val = -10001
+        pct_val = -0.10
+        results = []
+        for c in conds:
+            if c["metric"] == "pnl_rate_abs":
+                results.append(abs_val <= c["value"])   # True: -10001 <= -10000
+            elif c["metric"] == "pnl_rate_pct":
+                results.append(pct_val <= c["value"])   # False: -0.10 > -0.25
+        # AND: must all be True to fire — one False means no fire
+        assert not all(results), (
+            "Agent should NOT fire when only abs breaches (AND semantics)"
+        )
+
+    def test_only_pct_breach_does_not_fire(self):
+        """If ONLY pct breaches (-2000 abs, -0.30 pct) the agent must NOT fire (AND semantics)."""
+        a = _agent("loss-rate-acct")
+        conds = a["conditions"]["all"]
+        abs_val = -2000
+        pct_val = -0.30
+        results = []
+        for c in conds:
+            if c["metric"] == "pnl_rate_abs":
+                results.append(abs_val <= c["value"])   # False: -2000 > -10000
+            elif c["metric"] == "pnl_rate_pct":
+                results.append(pct_val <= c["value"])   # True: -0.30 <= -0.25
+        assert not all(results), (
+            "Agent should NOT fire when only pct breaches (AND semantics)"
+        )
+
+    def test_both_breach_fires(self):
+        """If BOTH abs and pct breach (-10001 abs, -0.30 pct) the agent DOES fire (AND semantics)."""
+        a = _agent("loss-rate-acct")
+        conds = a["conditions"]["all"]
+        abs_val = -10001
+        pct_val = -0.30
+        results = []
+        for c in conds:
+            if c["metric"] == "pnl_rate_abs":
+                results.append(abs_val <= c["value"])   # True: -10001 <= -10000
+            elif c["metric"] == "pnl_rate_pct":
+                results.append(pct_val <= c["value"])   # True: -0.30 <= -0.25
+        assert all(results), (
+            "Agent should fire when BOTH abs and pct breach (AND semantics)"
+        )
 
 
 class TestLossPositionsAcct:
@@ -371,13 +441,14 @@ class TestConditionTreeStructure:
     """Tests for condition tree format and structure."""
 
     def test_loss_rate_acct_condition_tree(self):
-        """loss-rate-acct conditions are a valid any: tree."""
+        """loss-rate-acct conditions are a valid all: tree (AND semantics)."""
         a = _agent("loss-rate-acct")
         conds = a.get("conditions")
-        assert "any" in conds, "loss-rate-acct must have 'any' key"
+        assert "all" in conds, "loss-rate-acct must have 'all' key (AND condition)"
+        assert "any" not in conds, "loss-rate-acct must not have 'any' key"
 
-        items = conds["any"]
-        assert isinstance(items, list), "conditions['any'] must be a list"
+        items = conds["all"]
+        assert isinstance(items, list), "conditions['all'] must be a list"
         assert len(items) >= 2, "loss-rate-acct should have at least 2 conditions"
 
         # Each item should have metric, scope, op, value

@@ -27,7 +27,7 @@
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
-  import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, liveSnap, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import Select        from '$lib/Select.svelte';
@@ -1638,7 +1638,7 @@
     _tickThrottleUnsub = symbolTickCount.subscribe(() => {
       if (_tickThrottleTimer) return;
       _tickThrottleTimer = setTimeout(() => {
-        if (isMarketOpen()) _throttledTick++;
+        _throttledTick++;
         _tickThrottleTimer = null;
       }, 250);
     });
@@ -1739,88 +1739,75 @@
   });
 
   const liveSpot = $derived.by(() => {
-    void _throttledTick;
-    void _activeQuoteLtp;  // re-derive when tick-patched underlying LTP changes
-    void _postCloseUndLtp;
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
 
     if (stratMatchesSel) {
+      // Tier 1a: anchor contract SSE tick
       const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       if (anchor) {
-        const v = Number(untrack(() => getSnapshot(anchor)?.ltp));
-        if (Number.isFinite(v) && v > 0) {
+        const v = liveSnap(anchor)?.ltp;
+        if (v > 0) {
           untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1a-anchor', anchor, value: v }));
           return v;
         }
       }
-      const v = Number(untrack(() => getSnapshot(stratUnd)?.ltp));
-      if (Number.isFinite(v) && v > 0) {
+      // Tier 1b: strategy underlying SSE tick
+      const v = liveSnap(stratUnd)?.ltp;
+      if (v > 0) {
         untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1b-stratUnd', sym: stratUnd, value: v }));
         return v;
       }
     }
 
-    // Try SSE tick via the resolved contract key — for MCX virtual roots
-    // (e.g. "CRUDEOIL") the ticker publishes under the actual front-month
-    // future tradingsymbol (e.g. "CRUDEOIL26JUNFUT"). Without this lookup
-    // the key mismatch caused fallthrough to the positions-API
-    // underlying_ltp, which can lag by up to 5 s.
+    // Tier 2: resolved front-month contract SSE tick (covers MCX virtual roots)
     const _resolvedTs = resolveUnderlying(selectedUnderlying, findNearestFuture)?.tradingsymbol;
-    if (_resolvedTs && isMarketOpen()) {
-      const v = Number(untrack(() => getSnapshot(_resolvedTs)?.ltp));
-      if (Number.isFinite(v) && v > 0) {
+    if (_resolvedTs) {
+      const v = liveSnap(_resolvedTs)?.ltp;
+      if (v > 0) {
         untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-resolvedTs', sym: _resolvedTs, value: v }));
         return v;
       }
     }
 
-    // SSOT — backend-stamped underlying_ltp from positions (Pass 3).
-    // Post-close: use reactive _postCloseUndLtp so candidatePositions
-    // updates propagate after market close. Market-open: use untrack so
-    // candidatePositions changes don't bypass the _throttledTick gate
-    // and cause extra SVG re-renders.
-    const posUltp = (!isMarketOpen() && _postCloseUndLtp > 0)
-      ? _postCloseUndLtp
-      : untrack(() => {
-          for (const p of candidatePositions) {
-            const v = Number(/** @type {any} */ (p).underlying_ltp);
-            if (v > 0) return v;
-          }
-          return null;
-        });
-    if (posUltp != null) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-posScan', value: posUltp }));
-      return posUltp;
+    // Tier 3: backend-stamped underlying_ltp from positions
+    for (const p of candidatePositions) {
+      const v = Number(/** @type {any} */ (p).underlying_ltp);
+      if (v > 0) {
+        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-posScan', value: v }));
+        return v;
+      }
     }
 
-    // Tier 4: strategy.spot — resolved by backend using live KiteTicker data,
-    // refreshed every 5s. More reliable than batchQuote for MCX underlyings
-    // where the REST API may return stale OHLC.close as last_price.
+    // Tier 4: strategy.spot (backend poll, 5s)
     if (stratMatchesSel && strategy?.spot != null) {
       untrack(() => debugLog('payoff:spot', 'resolved', { tier: '4-strategySpot', value: strategy?.spot }));
       return strategy?.spot;
     }
 
-    // Tier 5: batchQuote result — fallback for when strategy hasn't loaded yet
-    // (first-open, pre-market, no legs). _quoteGeneration tracks batchQuote
-    // refreshes; void here ensures liveSpot re-derives after each poll even
-    // when _throttledTick is sparse (MCX pre-open 17:00–17:30).
-    // ── untrack() here is essential: `_underlyingQuotes` is replaced
-    //    wholesale every 30 s (new object reference). Without untrack,
-    //    liveSpot would re-derive on EVERY snapshot poll in addition to
-    //    the 250 ms _throttledTick gate above — defeating the throttle
-    //    and causing downstream OptionsPayoff SVG re-renders at 30 s
-    //    intervals even with no user interaction.
-    void _quoteGeneration;
-    const bqLtp = untrack(() => _underlyingQuotes[selectedUnderlying]?.ltp);
-    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) {
+    // Tier 5: batchQuote fallback (cold start)
+    const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
+    if (bqLtp > 0) {
       untrack(() => debugLog('payoff:spot', 'resolved', { tier: '5-bq', key: selectedUnderlying, value: bqLtp }));
       return bqLtp;
     }
 
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
     return stratMatchesSel ? strategy?.spot : undefined;
+  });
+
+  // Per-underlying live LTP map for the by-underlying totals table.
+  // Each entry resolves via liveSnap (SSE tick, same SSOT as liveSpot)
+  // so the table rows update at tick rate without coupling to liveSpot's
+  // single-underlying focus.
+  const _undLiveLtp = $derived.by(() => {
+    const m = /** @type {Record<string, number>} */ ({});
+    for (const g of _byUnderlyingTotals) {
+      const ts = resolveUnderlying(g.underlying, findNearestFuture)?.tradingsymbol ?? g.underlying;
+      const v = liveSnap(ts)?.ltp;
+      if (v > 0) m[g.underlying] = v;
+    }
+    return m;
   });
 
   // True for the one render frame between selectedUnderlying changing and the
@@ -4755,7 +4742,7 @@
         {#each _byUnderlyingTotals as g (g.underlying)}
           {@const _q = _underlyingQuotes[g.underlying]}
           {@const _useAnchor = g.underlying === selectedUnderlying && liveSpot != null && liveSpot > 0}
-          {@const _ltp   = _useAnchor ? liveSpot : (_q ? Number(_q.ltp) : null)}
+          {@const _ltp   = _useAnchor ? liveSpot : (_undLiveLtp[g.underlying] ?? (_q ? Number(_q.ltp) : null))}
           {@const _close = _useAnchor && (strategy?.spot_prev_close ?? 0) > 0
               ? Number(strategy.spot_prev_close)
               : (_q ? Number(_q.prev_close) : null)}

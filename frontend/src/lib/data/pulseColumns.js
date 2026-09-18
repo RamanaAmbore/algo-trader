@@ -87,34 +87,7 @@ export function dirCls(v) {
  */
 export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct }) {
   return (p, field) => {
-    const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
-    const sym = p.data?.tradingsymbol;
-    if (!sym || !field) return base;
-    const symUpper      = String(sym).toUpperCase();
-    const quoteSym      = p.data?.quote_symbol ? String(p.data.quote_symbol).toUpperCase() : null;
-    const ltpFlashUp   = getLtpFlashUp();
-    const ltpFlashDown = getLtpFlashDown();
-    const inFlashUp   = ltpFlashUp.has(symUpper)   || (quoteSym ? ltpFlashUp.has(quoteSym)   : false);
-    const inFlashDown = ltpFlashDown.has(symUpper) || (quoteSym ? ltpFlashDown.has(quoteSym) : false);
-    // LTP cascade takes precedence over poll-diff flash.
-    // Use _bgFlashClass so the background cascade is magnitude-tiered.
-    // Prefer cumulative day % from row data; tick-delta map is fallback only.
-    if (inFlashUp) {
-      const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
-                   : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
-                   : getLtpFlashPct?.()?.get(symUpper) ?? 1;
-      // Omit mp-pnl-cell: its !important background-color overrides the animation
-      return `${RA} ${dirCls(p.value)} ${_bgFlashClass('up', absPct)}`;
-    }
-    if (inFlashDown) {
-      const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
-                   : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
-                   : getLtpFlashPct?.()?.get(symUpper) ?? 1;
-      // Omit mp-pnl-cell: its !important background-color overrides the animation
-      return `${RA} ${dirCls(p.value)} ${_bgFlashClass('down', absPct)}`;
-    }
-    const fc = getMpFlash().classOf(`${sym}:${field}`);
-    return fc ? `${base} ${fc}` : base;
+    return `${RA} ${dirCls(p.value)} mp-pnl-cell`;
   };
 }
 
@@ -235,21 +208,9 @@ function _ltpAvgFor(row) {
 // Uses getter functions (not frozen Set values) so the closure stays live.
 // Background flash (tf-up / tf-down) is used on LTP cells — background pulse
 // communicates tick direction without fighting the persistent ltpDayClass text color.
-// Magnitude is sourced from rowData (cumulative day %) when available;
-// falls back to getLtpFlashPct() (tick-delta map) as last resort.
-function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, rowData) {
-  if (getLtpFlashUp?.().has(sym)) {
-    const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
-                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
-                 : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _bgFlashClass('up', absPct);
-  }
-  if (getLtpFlashDown?.().has(sym)) {
-    const absPct = rowData?.change_pct != null  ? Math.abs(rowData.change_pct)
-                 : rowData?.day_pnl_pct != null ? Math.abs(rowData.day_pnl_pct)
-                 : getLtpFlashPct?.()?.get(sym) ?? 1;
-    return _bgFlashClass('down', absPct);
-  }
+function _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown) {
+  if (getLtpFlashUp?.().has(sym)) return 'tf-up';
+  if (getLtpFlashDown?.().has(sym)) return 'tf-down';
   return null;
 }
 
@@ -273,8 +234,7 @@ function _ltpHeatClasses(ltp, avg, prev) {
 // Consolidate all cellClass branches for the LTP column into one named function.
 // `resolveCellLtp` is the pre-bound resolver from mkResolveCellLtp so it sees
 // the current live-snap map at render time (not a frozen snapshot).
-// getLtpFlashPct is an optional getter returning Map<sym, absPct> for tiered flash.
-function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct) {
+function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   if (!p.data || p.data._isTotal) return RA;
   // Prefer quote_symbol over tradingsymbol so MCX mover rows (where
   // tradingsymbol is the bare commodity root e.g. "CRUDEOIL") look up
@@ -296,7 +256,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
     : 'cell-flat';
   // Animation gate — tick-flash only when the row's exchange is currently open.
   if (_isAnimating(p.data)) {
-    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, p.data);
+    const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown);
     if (fc) {
       cls.push(fc);
       // Omit mp-pnl-cell here: its !important background-color overrides the
@@ -331,18 +291,17 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
  *   getLiveLtpSnap: () => Record<string, number>,
  *   getLtpFlashUp: () => Set<string>,
  *   getLtpFlashDown: () => Set<string>,
- *   getLtpFlashPct?: () => Map<string, number>,
  *   numFmt: (p: { value: any }) => string,
  *   RA: string | ((p: any) => string | string[]),
  *   numericHdr: string,
  * }} opts
  */
-export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, numFmt, RA, numericHdr }) {
+export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFmt, RA, numericHdr }) {
   const resolveCellLtp = mkResolveCellLtp({ getLiveLtpSnap });
   return {
     colId: 'ltp', headerName: 'LTP', width: 77, minWidth: 77, maxWidth: 96,
     type: 'numericColumn', headerClass: numericHdr,
-    cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct),
+    cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
     valueGetter: resolveCellLtp,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
   };
@@ -483,18 +442,13 @@ export function mkAcctColTrailing({ RA }) {
  */
 export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, volCol, oiCol, numericHdr, dirCellClass, pctFmtGrid, getMpFlash }) {
   // Day % cellClass with optional poll-diff flash.
-  // Uses _tcFlashClass() for magnitude-tiered text-color flash; absPct comes
-  // from change_pct on the row data (same field that changed to trigger the flash).
   const changePctCellClass = getMpFlash
     ? (p) => {
         const sym = p.data?.tradingsymbol;
         const base = `${dirCellClass(p)} mp-pnl-cell`;
         if (!sym) return base;
         const fc = getMpFlash().classOf(`${sym}:change_pct`);
-        if (!fc) return base;
-        const dir = fc === 'tf-up' ? 'up' : 'down';
-        const absPct = Math.abs(p.data?.change_pct ?? 1);
-        return `${base} ${_tcFlashClass(dir, absPct)}`;
+        return fc ? `${base} ${fc}` : base;
       }
     : (p) => `${dirCellClass(p)} mp-pnl-cell`;
   return /** @type {any[]} */ ([
@@ -571,6 +525,8 @@ function _qtyNetValueGetter(p) {
  *   fmtLots: (v: number|null|undefined) => string,
  *   getDerivedByKey?: () => Record<string, {day_pnl: number, exp_pnl: number|null, extrinsic: number|null, pnl: number}>,
  *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
+ *   getLtpFlashUp?: () => Set<string>,
+ *   getLtpFlashDown?: () => Set<string>,
  * }} opts
  * @returns {any[]}
  */
@@ -581,6 +537,8 @@ export function mkRightColDefs({
   lotsForRow, fmtLots,
   getDerivedByKey,
   getMpFlash,
+  getLtpFlashUp,
+  getLtpFlashDown,
 }) {
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
@@ -609,9 +567,14 @@ export function mkRightColDefs({
     ltpCol,
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: pnlCellClass
-        ? (p) => pnlCellClass(p, 'day_pnl_pct')
-        : (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
+      cellClass: (p) => {
+        if (!p.data || p.data._isTotal) return RA;
+        const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
+        const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+        if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} tf-up`;
+        if (getLtpFlashDown && getLtpFlashDown().has(sym)) return `${RA} ${dirCls(p.value)} tf-down`;
+        return base;
+      },
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },

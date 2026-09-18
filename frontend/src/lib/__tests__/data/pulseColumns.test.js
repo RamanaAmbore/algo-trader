@@ -599,8 +599,9 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
     expect(classOf).not.toHaveBeenCalledWith('TOTAL:day_pnl');
   });
 
-  it('regular row WITH tradingsymbol still gets flash class from getMpFlash', () => {
-    /** @type {import('vitest').Mock<() => '' | 'tf-up' | 'tf-down'>} */
+  it('regular row WITH tradingsymbol returns base class only (pnl columns do not flash)', () => {
+    // mkPnlCellClass flash logic was intentionally removed — pnl/day_pnl columns
+    // should never flash; only ltp and chg% flash.
     const classOf = vi.fn(() => /** @type {'tf-up'} */ ('tf-up'));
     /** @type {() => any} */
     const getMpFlash = () => ({ classOf });
@@ -611,7 +612,7 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
       getLtpFlashDown: () => new Set(),
     });
     const result = pcc(_makeP(200, { tradingsymbol: 'RELIANCE' }), 'day_pnl');
-    expect(result).toContain('tf-up');
-    expect(classOf).toHaveBeenCalledWith('RELIANCE:day_pnl');
+    expect(result).toBe(`${_RA} cell-pos mp-pnl-cell`);
+    expect(result).not.toMatch(/tf-up|tf-down/);
   });
 });
