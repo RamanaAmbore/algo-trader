@@ -2196,8 +2196,6 @@
       if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
     }
     gridWin.setGridOption('rowData', rows);
-    try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
-    setTimeout(() => { try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
   });
 } });
   $effect(() => { if (gridLoseReady && gridLose) {
@@ -2209,8 +2207,6 @@
       if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
     }
     gridLose.setGridOption('rowData', rows);
-    try { gridLose.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
-    setTimeout(() => { try { gridLose.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
   });
 } });
 
@@ -2287,17 +2283,17 @@
       _flashRefreshTimer = null;
       const cols = ['ltp', 'sparkline', 'day_pnl_pct'];
       if (gridPinnedReady && gridPinned && topTab === 'pinned')
-        try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline', 'left_change_pct'], force: true }); } catch (_) {}
+        try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
       if (gridWatchReady && gridWatch && typeof topTab === 'number')
-        try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline', 'left_change_pct'], force: true }); } catch (_) {}
+        try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
       if (gridPositionsReady && gridPositions && showPositions)
         try { gridPositions.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridHoldingsReady && gridHoldings && showHoldings)
         try { gridHoldings.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridWinReady && gridWin && showWinners)
-        try { gridWin.refreshCells({ columns: [...cols, 'left_change_pct'], force: true }); } catch (_) {}
+        try { gridWin.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridLoseReady && gridLose && showLosers)
-        try { gridLose.refreshCells({ columns: [...cols, 'left_change_pct'], force: true }); } catch (_) {}
+        try { gridLose.refreshCells({ columns: cols, force: true }); } catch (_) {}
     }, 50);
   }
 
@@ -4734,11 +4730,11 @@
     }
   }
 
-  /* Day Δ / P&L cells. */
-  :global(.cell-pos)  { color: var(--c-long) !important; }
-  :global(.cell-neg)  { color: var(--c-short) !important; }
-  :global(.cell-flat) { color: var(--algo-dim) !important; }
-  :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
+  /* Day Δ / P&L cells — prefixed with ag-theme-algo to beat ag-Grid's own .ag-cell specificity. */
+  :global(.ag-theme-algo .cell-pos)  { color: var(--c-long) !important; }
+  :global(.ag-theme-algo .cell-neg)  { color: var(--c-short) !important; }
+  :global(.ag-theme-algo .cell-flat) { color: var(--algo-dim) !important; }
+  :global(.ag-theme-algo .cell-muted){ color: rgba(200,216,240,0.55) !important; }
   /* Alternating row background for all Pulse grids — mirrors legs grid rhythm */
   :global(.ag-theme-algo .ag-body-viewport .ag-row-odd:not(.mp-total-row)) {
     background-color: var(--row-tint-odd-bg);

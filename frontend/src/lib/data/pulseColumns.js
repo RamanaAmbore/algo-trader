@@ -439,16 +439,7 @@ export function mkAcctColTrailing({ RA }) {
  * @returns {any[]}
  */
 export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, volCol, oiCol, numericHdr, dirCellClass, pctFmtGrid, getMpFlash }) {
-  // Day % cellClass with optional poll-diff flash.
-  const changePctCellClass = getMpFlash
-    ? (p) => {
-        const sym = p.data?.tradingsymbol;
-        const base = `${dirCellClass(p)}`;
-        if (!sym) return base;
-        const fc = getMpFlash().classOf(`${sym}:change_pct`);
-        return fc ? `${base} ${fc}` : base;
-      }
-    : (p) => `${dirCellClass(p)}`;
+  const changePctCellClass = (p) => dirCellClass(p);
   return /** @type {any[]} */ ([
     symColLeft,
     sparkCol,
