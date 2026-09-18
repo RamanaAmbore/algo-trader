@@ -450,7 +450,10 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
     ltpCol,
     { field: 'change_pct', headerName: 'Chg %', colId: 'left_change_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: changePctCellClass,
+      cellClass: (p) => {
+        const base = changePctCellClass(p);
+        return base ? `${base} chg-right-sep` : 'chg-right-sep';
+      },
       valueFormatter: pctFmtGrid,
       headerTooltip: 'Raw symbol day-change % (no qty).' },
     prevCol,
@@ -575,7 +578,7 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => {
         const d = p.data;
-        return d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA];
+        return (d?.qty_pos !== undefined || d?.qty_hold !== undefined) ? [RA, 'lots-left-sep'] : [RA];
       },
       valueGetter: (p) => lotsForRow(p.data),
       valueFormatter: ({ value }) => fmtLots(value),

@@ -128,6 +128,14 @@
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
+  // Chg % for the dedicated column — prefers change_pct when available,
+  // otherwise derives live from ltp / prev_close.
+  const _chgPct = $derived(
+    c.change_pct != null ? c.change_pct :
+    (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+      ? (ltp - c.prev_close) / c.prev_close * 100 : null)
+  );
+
   // Cumulative day % for flash tier — prefers change_pct when available,
   // otherwise computes from prev_close, falls back to 1 (middle tier).
   const _legDayPct = $derived(
@@ -323,7 +331,10 @@
     {ltpDayClass(c.change_pct != null ? c.change_pct :
       (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
         ? (ltp - c.prev_close) / c.prev_close * 100 : null))}
-    {flash.classOf(`${_legFlashKey}:ltp`)} {flash.classOf(`${_legFlashKey}:chg`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+  <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:chg`)}">
+    {_chgPct != null ? pctFmt(_chgPct) + '%' : '—'}
+  </span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /
@@ -864,5 +875,8 @@
     background: rgba(125, 145, 184, 0.15);
     color: var(--algo-dim);
     border: 1px solid rgba(125, 145, 184, 0.3);
+  }
+  .cand-chg-sep {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
   }
 </style>

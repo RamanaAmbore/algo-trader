@@ -1,91 +1,123 @@
-# Plan: Pulse & Derivatives UI — Column widths, decorations, flash
+# Plan: Derivatives UI polish — chg% separator, legs chg% column, flash fix, totals tint, payoff labels
+
+## Context
+Several UI consistency and correctness gaps in the derivatives and Pulse surfaces:
+1. The chg%/LOTS separator visible in positions is missing from pinned, watchlist, winners, losers, holdings, and the byund snapshot grid.
+2. The legs CSS Grid has no chg% column — the value is computed but never displayed; the flash class was being applied to the LTP span as a fallback.
+3. Leg chg% flash only fires on poll cycles (30s), not on SSE ticks — because the tickBus subscription (lines 1699–1704 in +page.svelte) updates `leg:${k}:ltp` but not `leg:${k}:chg`.
+4. The legs totals row (`cand-row-total`) has a green tint on positive P&L cells from `:global(.cand-pnl.cell-pos)` in CandidateLegRow.svelte — not suppressed by the amber container override.
+5. Payoff overlay legend labels need renaming: "P&L" → "Day P&L", "Exp P&L" → "Exp Val".
 
 ## Task
-Six related UI changes across MarketPulse and Derivatives:
-1. Reduce Day P&L / P&L / Exp P&L / Extrinsic column widths by 25% in Pulse positions+holdings (ag-Grid) and derivatives legs (CSS Grid)
-2. Reduce `St` column width in legs grid from 38px → 28px (match positions)
-3. Add alternating row background to derivatives legs grid (match positions/holdings tint)
-4. Extend symbol column right-border direction indicator (green=long, red=short) to ALL grids: pinned, watchlist, winners, losers, snapshot, legs
-5. Apply LTP + Chg% tick flash to derivatives legs LTP column, snapshot underlying LTP, and payoff overlay current-value indicator
-6. Add `cand-row:nth-child` alternating tint to snapshot (byund-grid) if not already present
+Five targeted changes across three files.
 
 ## Agents
-- frontend: all changes — pulseColumns.js, MarketPulse.svelte, app.css, derivatives +page.svelte, CandidateLegRow.svelte, OptionsPayoff.svelte
+- frontend: All five changes below
+- backend: skip
+- broker: skip
+- doc: skip
 - backend-test: skip
-- frontend-test: vitest + svelte-check
+- playwright: skip
 
-## Critical files
-- `frontend/src/lib/data/pulseColumns.js` — column widths (mkRightColDefs, mkExpPnlCol, mkExtrinsicCol)
-- `frontend/src/lib/MarketPulse.svelte` — symbol right-border CSS extension for pinned/watchlist/winners/losers rows
-- `frontend/src/app.css` — extend `ag-col-sym::after` rule to cover left-grid symbol column class (symColLeft → `ag-col-sym-left` or use existing class)
-- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — st width (38→28px), CSS Grid column minmax reduction, snapshot right-border, snapshot flash wiring
-- `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte` — LTP flash (tf-up/tf-down), chg% flash, alternating row bg
-- `frontend/src/lib/OptionsPayoff.svelte` — flash pulse on current-value indicator when LTP changes
+## Frontend agent task
 
-## Detailed changes
+### 1. chg% separator — left grids (pinned/watchlist/winners/losers)
+File: `frontend/src/lib/data/pulseColumns.js`
+- In `mkLeftColDefs()`, the `left_change_pct` column (line ~451) — add `'chg-right-sep'` to its `cellClass` array alongside the existing `changePctCellClass` result.
+  Change: `cellClass: changePctCellClass` → `cellClass: (p) => [changePctCellClass(p), 'chg-right-sep'].filter(Boolean).join(' ')`
 
-### 1. pulseColumns.js — column widths
-`mkRightColDefs` (positions/holdings right grid):
-- `day_pnl` (Day P&L): width 78→58, minWidth 60→45, maxWidth 96→72
-- `pnl` (P&L): width 78→58, minWidth 60→45, maxWidth 96→72
+File: `frontend/src/app.css`
+- Add CSS for the right-border separator (mirror the existing `lots-left-sep` style with inset on the right):
+  ```css
+  .ag-theme-algo .ag-cell.chg-right-sep {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  .ag-theme-ramboq .ag-cell.chg-right-sep {
+    box-shadow: inset -1px 0 0 0 rgba(112,99,76,0.40);
+  }
+  ```
 
-`mkExpPnlCol` / `mkExtrinsicCol`:
-- width 90→68 (no separate min/max on these)
+### 2. chg% separator — holdings (right grid)
+File: `frontend/src/lib/data/pulseColumns.js`
+- LOTS column cellClass (line ~576) currently: `d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA]`
+- Holdings rows have `qty_hold` defined, not `qty_pos`. Fix: `(d?.qty_pos !== undefined || d?.qty_hold !== undefined) ? [RA, 'lots-left-sep'] : [RA]`
 
-### 2. Derivatives legs grid — st + column widths
-`+page.svelte` `.cand-grid` grid-template-columns:
-- St column: 38px → 28px
-- Day P&L: `minmax(62px, max-content)` → `minmax(46px, max-content)`
-- P&L: `minmax(72px, max-content)` → `minmax(54px, max-content)`
-- Exp P&L: `minmax(72px, max-content)` → `minmax(54px, max-content)`
-- Extrinsic: `minmax(72px, max-content)` → `minmax(54px, max-content)`
+### 3. chg% separator — byund snapshot grid (derivatives)
+File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- The byund snapshot grid is a CSS Grid. Find the chg% span in the byund row template (the span showing `chgPct` or similar after the LTP span).
+- Add class `byund-chg-sep` to that span.
+- Add CSS in the page `<style>` block:
+  ```css
+  .byund-chg-sep {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  ```
 
-### 3. Legs alternating row background
-`CandidateLegRow.svelte` (or `+page.svelte` `:global`):
-```css
-.cand-row:nth-child(odd):not(.cand-total-row) {
-  background-color: var(--row-tint-odd-bg);
-}
-```
+### 4. Add chg% column to legs CSS Grid
+File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- In the `.cand-grid` `grid-template-columns`, after the LTP column (`minmax(62px, max-content) /* ltp */`), insert: `minmax(48px, max-content) /* chg % */`
+- In the cand-row-header row, add a header span `<span class="num">Chg %</span>` in the correct column position.
+- In the cand-row-total row, add a `<span class="num">—</span>` placeholder (no total for chg%).
+- Add CSS for right-border separator on the chg% column header cell (using nth-child or a named class).
 
-### 4. Symbol right-border direction indicator — all grids
-Currently `app.css` only covers `pos-long`/`pos-short`/`row-hold-up`/`row-hold-down` row classes with `ag-col-sym` column class.
+File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+- After the LTP span (line ~319–326), add a new span for chg%:
+  ```svelte
+  {@const _chgPct = c.change_pct != null ? c.change_pct :
+    (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
+      ? (ltp - c.prev_close) / c.prev_close * 100 : null)}
+  <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:chg`)}">
+    {_chgPct != null ? pctFmt(_chgPct) : '—'}
+  </span>
+  ```
+  Where `pctFmt` is the 2-decimal percent formatter (check existing imports for the right name).
+- Remove `{flash.classOf(`${_legFlashKey}:chg`)}` from the LTP span class string (line 326) — it now lives on the chg% span.
+- Add CSS for the right-border separator in CandidateLegRow.svelte:
+  ```css
+  .cand-chg-sep {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  ```
 
-**Winners/Losers grids**: They show position rows. They use `symColLeft` not `ag-col-sym` as the symbol cell class. Add parallel `::after` rules for `symColLeft` (or whatever class `symColLeft` assigns via cellClass) with `pos-long`/`pos-short` row classes.
+### 5. Fix leg chg% flash — wire to tickBus
+File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- In the tickBus subscription (lines 1699–1704), after the existing `flash.update(\`leg:${k}:ltp\`, ...)` call, add:
+  ```javascript
+  const _pc = c.prev_close != null ? Number(c.prev_close) : 0;
+  if (_pc > 0 && snap?.ltp != null) {
+    flash.update(`leg:${k}:chg`, ((Number(snap.ltp) - _pc) / _pc) * 100);
+  }
+  ```
+  This ensures chg% flash fires on every SSE tick matching a leg symbol, not just on 30s poll cycles.
 
-**Pinned/Watchlist grids**: These show market data not positions. Symbol column uses `symColLeft`. Direction is based on `change_pct` sign. In `mkLeftColDefs`, the `symColLeft` column def needs a `cellClassRules` or `getRowClass` in the grid options to add `chg-up`/`chg-down` based on `change_pct`. Then add CSS `::after` rules for those classes.
+### 6. Remove green tint from legs totals row
+File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+- In the `<style>` block, after line 6025 (`.cand-row.cand-row-total > .cell-flat { ... }`), add:
+  ```css
+  /* Suppress cell-level green/red background in totals — amber container is the signal. */
+  .cand-row.cand-row-total .cand-pnl.cell-pos,
+  .cand-row.cand-row-total .cand-pnl.cell-neg { background-color: transparent !important; }
+  ```
 
-**Snapshot (byund-grid)**: The underlying column (`.byund-und`) gets a similar `position: relative; ::after` right-border decoration based on the portfolio direction for that underlying (net long=green, short=red). This requires a CSS class on each `.byund-row` based on net direction.
-
-**Legs**: Already done — `cand-sym-acct::after` in CandidateLegRow.svelte.
-
-### 5. LTP + Chg% flash for derivatives
-**Legs grid (CandidateLegRow.svelte)**:
-- Import `createTickFlash` from `$lib/data/tickFlash.svelte.js` at component level (or use a shared instance passed from parent)
-- Track previous LTP and chg% via `$effect` comparing `liveSnap(sym).ltp` to stored previous value
-- Apply `tf-up`/`tf-down` class to the LTP cell and chg% cell for 300ms
-
-**Snapshot grid (byund-grid in +page.svelte)**:
-- Track previous aggregate LTP/dayPnl for each underlying
-- Apply `tf-up`/`tf-down` on the day P&L or LTP cells when value changes
-
-**Payoff overlay (OptionsPayoff.svelte)**:
-- Flash the current-spot indicator value or the current P&L value on the stat-overlay when LTP changes
-- Apply `tf-up`/`tf-down` to the spot/payoff span using a `$derived` comparing current vs previous LTP via `liveSnap`
+### 7. Payoff legend renames
+File: `frontend/src/lib/OptionsPayoff.svelte`
+- Line ~1269: `P&L` → `Day P&L`
+- Line ~1284: `Exp P&L` → `Exp Val`
 
 ## Tests
-- pytest: no — backend unchanged
+- pytest: no
 - svelte-check: yes
-- vitest: yes — update pulseColumns.test.js for new widths
+- playwright: no
 
 ## Commit message
-feat(ui): column width reduction, direction borders all grids, flash for derivatives
+feat(ui): legs chg% column + separator all grids, fix chg% flash, totals tint, payoff labels
 
 ## Done when
-- Day P&L/P&L/Exp P&L/Extrinsic columns 25% narrower in Pulse positions/holdings and derivatives legs
-- St column in legs = 28px
-- Alternating row tint in legs matches positions/holdings rhythm
-- Symbol column right-border (green/red direction bar) visible in pinned, watchlist, winners, losers, snapshot, legs
-- LTP and chg% cells in legs and snapshot flash tf-up/tf-down on tick
-- Payoff overlay stat flashes on LTP change
-- vitest 0 failures, svelte-check 0 errors
+- Pinned/watchlist/winners/losers/holdings all show inset right-border on chg% column
+- Holdings LOTS column shows the separator (lots-left-sep) for holding-only rows
+- byund snapshot grid has separator after chg% cell
+- Legs CSS Grid shows dedicated chg% column after LTP with right-border separator
+- Leg chg% flash fires immediately on SSE tick (not just on poll)
+- Legs totals row amber background is clean — no green tint on positive P&L cells
+- Payoff overlay legend shows "Day P&L" and "Exp Val"
+- svelte-check 0 errors

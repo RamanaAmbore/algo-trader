@@ -651,6 +651,14 @@
   box-shadow: inset 1px 0 0 0 rgba(112,99,76,0.40);
 }
 
+/* chg% right separator — pinned, watchlist, winners, losers */
+.ag-theme-algo .ag-cell.chg-right-sep {
+  box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+}
+.ag-theme-ramboq .ag-cell.chg-right-sep {
+  box-shadow: inset -1px 0 0 0 rgba(112,99,76,0.40);
+}
+
 /* TOTAL row — clear both axes so the amber stratum reads uniformly.
    Audit defect: the box-shadow stripe was leaking onto TOTAL cells
    that carried any `.ltp-vs-prev-*` class. */

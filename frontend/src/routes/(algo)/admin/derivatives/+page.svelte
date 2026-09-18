@@ -1700,7 +1700,11 @@
         if ((c.symbol ?? '').toUpperCase() === root) {
           const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
           const snap = getSnapshot(root);
-          if (snap?.ltp != null) flash.update(`leg:${k}:ltp`, Number(snap.ltp));
+          if (snap?.ltp != null) {
+            flash.update(`leg:${k}:ltp`, Number(snap.ltp));
+            const _pc = c.prev_close != null ? Number(c.prev_close) : 0;
+            if (_pc > 0) flash.update(`leg:${k}:chg`, ((Number(snap.ltp) - _pc) / _pc) * 100);
+          }
         }
       }
     });
@@ -4485,6 +4489,7 @@
                  separate Expiry column would be redundant. -->
             <span>Symbol</span>
             <span class="num">LTP</span>
+            <span class="num cand-chg-sep-hdr">Chg %</span>
             <span class="num"
                   title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span class="num">Qty</span>
@@ -4598,6 +4603,7 @@
               <span></span>
               <span class="cand-total-label">TOTAL</span>
               <span class="num">—</span>
+              <span class="num">—</span><!-- chg % -->
               <span class="num">—</span>
               <span class="num">—</span>
               <span class="num">—</span>
@@ -4767,7 +4773,7 @@
           <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
-            <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
+            <span class="num byund-chg-sep {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
             <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
@@ -5964,6 +5970,7 @@
       28px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(62px, max-content)            /* ltp */
+      minmax(48px, max-content)            /* chg % */
       minmax(44px, max-content)            /* lots */
       minmax(48px, max-content)            /* qty */
       minmax(62px, max-content)            /* avg (cost basis) */
@@ -6785,4 +6792,13 @@
     color: #67e8f9;
     border-bottom-color: rgba(34, 211, 238, 0.40);
   }
+  .byund-chg-sep {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  .cand-chg-sep-hdr {
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
+  }
+  /* Strip cell-level green/red bg from totals — amber container is the signal. */
+  .cand-row.cand-row-total .cand-pnl.cell-pos,
+  .cand-row.cand-row-total .cand-pnl.cell-neg { background-color: transparent !important; }
 </style>
