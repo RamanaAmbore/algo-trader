@@ -241,9 +241,11 @@ of `order_failure` alerts — operators monitoring ntfy see loss events immediat
   same tick. Routes to ntfy, Telegram, email at urgent priority.
 
 - **`loss-rate-acct`** (critical tier, 10-min cooldown + 10-min baseline window) —
-  per-account rate-of-loss. Blocked from firing for the first 10 minutes after market
-  open (baseline window, by design) — no early false alarms. Routes to ntfy, Telegram,
-  email at urgent priority.
+  per-account rate-of-loss. Fires only when **both** conditions breach simultaneously:
+  absolute loss rate ≤ -₹10,000/min **AND** percentage loss rate ≤ -0.25%/min. Single-
+  condition breaches (only absolute OR only percentage) do not trigger. Blocked from
+  firing for the first 10 minutes after market open (baseline window, by design) — no
+  early false alarms. Routes to ntfy, Telegram, email at urgent priority.
 
 - **`loss-positions-total`** (critical tier, suppresses per-acct) — book-wide absolute
   loss. Includes conditions for both `pnl` and `day_val`. Fires independently; suppresses
@@ -278,7 +280,7 @@ Open `/automation` and look at these — all 9 are teaching examples you can clo
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
 | `loss-positions-acct` | per-account guardrail (30-min cooldown) | Uses an `any:` block to OR four threshold types; routes to ntfy at urgent priority |
-| `loss-rate-acct` | per-account rate alert (10-min cooldown, 10-min baseline) | Rate-of-loss metric + re-fire suppression; silent for first 10 min after market open; routes to ntfy at urgent priority |
+| `loss-rate-acct` | per-account rate alert (10-min cooldown, 10-min baseline) | Rate-of-loss metric + re-fire suppression; fires only when **both** absolute loss rate ≤ -₹10,000/min **AND** percentage rate ≤ -0.25%/min; silent for first 10 min after market open; routes to ntfy at urgent priority |
 | `loss-positions-total` | book-wide guardrail (critical tier) | Same shape, scoped to TOTAL; suppresses `loss-positions-acct` on same fire; routes to ntfy at urgent priority |
 | `loss-margin-low` | available margin warning (DISABLED) | Disabled: cross-account false positive with Dhan/Groww zero margin; `loss-funds-negative` covers the critical case |
 | `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |
