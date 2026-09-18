@@ -1054,6 +1054,27 @@ canonical `--algo-green` and `--algo-red` tokens from `:root`, ensuring
 uniform color across all surfaces. Border width and positioning tuned 
 per-grid layout (ag-Grid vs CSS Grid, fixed vs flex columns).
 
+**Chg% right-border separator** (Sep 2026, commit 6310d70f):
+The `change_pct` (Chg%) column now carries an inset right-border CSS class 
+on all grids, marking the division between market-data columns and P&L 
+columns:
+
+- **Left grids** (Pinned, Watchlist, Winners, Losers): CSS class `chg-right-sep` 
+  on the `left_change_pct` column cell. Creates an inset right-border (subtle 
+  visual separator, 1–2px, canonical `--algo-dim` token).
+- **Holdings grid** (right panel): `left_change_pct` cell carries `chg-right-sep` 
+  class. When `qty_hold` is defined, `lots-left-sep` border applies on the Lots 
+  column (existing behavior, unchanged).
+- **Derivatives Snapshot grid** (by-underlying): CSS class `byund-chg-sep` 
+  on the chg% span within each row. Inset right-border matches left/right grids.
+- **Derivatives Legs grid** (candidate rows): new dedicated chg% column added 
+  after LTP; displays computed change% = `(ltp − prev_close) / prev_close × 100`, 
+  falls back to `c.change_pct`. CSS class `cand-chg-sep` on column header and cells.
+
+**Rationale**: Separator marks the semantic boundary between "what the market did 
+today" (LTP, Chg%, day%) and "what my portfolio did" (Day P&L, P&L, Exp P&L). 
+Helps operators quickly scan grids by visual region.
+
 **Orphan badge** (Aug 2026):
 - Coral "O" badge (class `badge-o`) shown in symbol or status column when `is_orphan=true`
 - Indicates position has no matching open AlgoOrder (status=OPEN) for its (account, tradingsymbol)
@@ -1248,8 +1269,8 @@ consistent visual feedback across all derivatives surfaces.
 The payoff overlay chart displays two P&L curves with the following legend labels:
 
 **Legend items**:
-- **"P&L"** — amber solid curve representing current-time P&L (marked-to-market at today's spot)
-- **"Exp P&L"** — dashed blue curve representing expiry P&L (P&L at option expiration, assumes
+- **"Day P&L"** — amber solid curve representing today's P&L (marked-to-market at today's spot)
+- **"Exp Val"** — dashed blue curve representing expiry P&L (P&L at option expiration, assumes
   spot remains at current level through expiry)
 
 **Chart behavior**:
@@ -1274,6 +1295,50 @@ states.
 
 **Use case**: Operators tracking partial-close executions see which legs have open 
 cancel/reduce orders queued, preventing accidental double-reduces.
+
+### 17.4a Derivatives Legs — Dedicated Chg% Column (Sep 2026, commit 6310d70f)
+
+The Derivatives Legs grid now includes a dedicated **Chg%** column immediately after the 
+LTP column, displaying intraday price change percentage for each leg.
+
+**Column definition**:
+- **Header**: "Chg %" (displayed with canonical text color)
+- **Width**: 56px (compact, right-aligned)
+- **Value**: Computed change% = `(ltp − prev_close) / prev_close × 100`, falls back to 
+  `c.change_pct` (broker-supplied field when computed value unavailable)
+- **Format**: Percentage with % suffix (e.g. "+2.45%", "−1.30%"); null → "—"
+- **Styling**: Directional text color via `cell-pos` / `cell-neg` / `cell-flat` (green 
+  for positive, red for negative, gray for zero or stale close)
+
+**CSS and flash animation**:
+- CSS class `cand-chg-sep` applied to column header and all cells (inset right-border 
+  separator, matching left/right grids)
+- **Flash class**: `leg:${k}:chg` SSE key subscribed in `tickBus`; fires text-color 
+  flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) on every 4Hz SSE tick via `tickBus` 
+  subscription, providing real-time directional feedback on price movement
+- Flash timing: sub-second, same cadence as LTP flash
+
+**Impact**: Operators now see live per-leg price change% in the Derivatives Legs grid, 
+synchronized with intraday tick updates. Chg% flash provides consistent visual feedback 
+alongside LTP flash, reducing need to cross-reference to MarketPulse or other surfaces.
+
+### 17.4b Legs Totals Row — Amber Container Background Only
+
+The Legs grid pinned-bottom TOTAL row now displays with **amber container background only** 
+(no green/red cell backgrounds on individual P&L values). This simplifies visual hierarchy 
+and prevents color confusion when the TOTAL is positive or negative.
+
+**Styling change**:
+- **Removed**: Per-cell green/red background (`cand-pnl.cell-pos` / `cand-pnl.cell-neg`) 
+  was previously applied to Day P&L and P&L cells in the TOTAL row
+- **Retained**: Amber row container background (22% opacity) distinguishes totals row 
+  from data rows; border styling maintained
+- **Text color**: Directional text colors (`cell-pos` green, `cell-neg` red) remain for 
+  all numeric columns; this provides directional feedback without duplicate cell backgrounds
+
+**Rationale**: Amber container background is sufficient to mark the totals row. Per-cell 
+backgrounds create visual noise and complicate the layout when TOTAL P&L is large/positive. 
+Text color alone preserves directional information without redundancy.
 
 ### 17.5 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
 
@@ -2173,3 +2238,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
 | 2026-09-15 | v1.16 CSS tokens + LTP/day% text flash + Exp P&L scoping + tab-reconnect (commit 562c1a4b): (1) **§28 CSS Directional Flash Tokens** — new section documents canonical tokens (`--algo-green`, `--algo-red`, `--algo-dim`, `--algo-green-flash`, `--algo-red-flash`, `--algo-green-cascade`, `--algo-red-cascade`, `--algo-green-pnl-bg`, `--algo-red-pnl-bg`) for directional colors + animations. All cell color classes (`cell-pos/neg/flat`, `mp-pnl-cell`) now reference tokens instead of hardcoded hex. Palette updates now mechanical. (2) **§29 LTP & Spot & Day % Text-Color Flash** — new section documents new animation pair (`.ltp-tc-flash-up/down`, 500ms) for LTP, spot, and day%-change cells. Text color animates from `--algo-green-text` / `--algo-red-text` back to `inherit`. Applied to: LTP cells (all grids), spot price (derivatives), `change_pct` (left grid), `day_pnl_pct` (right grids). Reference price comparison: LTP vs `prev_close`, day% vs 0. SSE-driven (sub-second) + poll-cycle triggered (5–30s cadence). (3) **§30 Holdings & Positions Exp P&L Column Scoping** — new section documents Exp P&L / Extrinsic columns now scoped to **positions grid only**. Holdings rows return null, render "—". Rationale: holdings are long-term equity without derivatives overlay; no expiry value. Positions grid totals row sums Exp P&L across all F&O legs; holdings totals row omits. (4) **§31 Tab-Return SSE Reconnect** — new section documents permanent `visibilitychange` listener in `quoteStream.js:startQuoteStream()`. When browser tab returns to focus, listener calls `restartQuoteStream()` immediately. LTP ticks resume flowing within ~100ms; preserves real-time visibility across tab switches. Graceful fallback to polling if reconnect fails. Impact: all changes ship in commit 562c1a4b (CSS token consolidation, text-color flash intro, Exp P&L column scoping, SSE reconnect) with no behavior breaking changes — purely visual + UX refinement. |
 | 2026-09-18 | v1.17 Column width reductions + direction borders + derivatives tick flash (commit 307a8c5a): (1) **§13.9 Column Width Reductions** — new subsection documents numeric column width optimizations across all Pulse grids (Positions, Holdings, Pinned, Watchlist, Winners, Losers, Derivatives): Day P&L 78→58px, P&L 78→58px, Exp P&L 90→68px, Extrinsic 90→68px, derivatives St 38→28px. Rationale: compact `aggCompact` notation + mobile/narrow-screen scrolling reduction. (2) **§14 Direction border indicator** — extension documents right-edge colored border (signal long/short direction) now uniform across ALL Pulse grids: Positions/Holdings (existing `pos-long`/`pos-short` row classes → `ag-col-sym::after`), Pinned/Watchlist/Winners/Losers (new `chg-up`/`chg-down` cell classes → `ag-col-sym-left::after`), Derivatives Legs (existing `cand-sym-acct::after`), Derivatives Snapshot (new `byund-dir-long`/`byund-dir-short` → `byund-und::after`). All use canonical `--algo-green` / `--algo-red` tokens. (3) **§17.8 Derivatives Tick Flash** — new subsection (renumbered 17.9 for liveSnap) documents tick-flash extension to derivatives surfaces: Derivatives Legs LTP now carries dual flash classes (`:ltp` background + `:chg` text-color on tick), Derivatives Snapshot Day P&L cell flashes on `${underlying}:day_w` SSE ticks, Payoff Overlay Spot + Day P&L both animate (background + text-color). Impact: unified directional flash feedback across MarketPulse + derivatives pages; operators see consistent real-time visual language for price/P&L movement. |
+| 2026-09-18 | v1.18 Chg% right-border separator + derivatives legs chg% column + payoff legend update (commit 6310d70f): (1) **§14 Chg% right-border separator** — new subsection documents inset right-border CSS class `chg-right-sep` on chg% column across all grids (left: Pinned/Watchlist/Winners/Losers; right: Holdings). Holdings Lots column `lots-left-sep` retained when `qty_hold` defined. Derivatives Snapshot grid chg% span receives `byund-chg-sep` class. Separator marks semantic boundary between "market movement" (LTP/Chg%/day%) and "portfolio P&L" columns. (2) **§17.4a Derivatives Legs dedicated Chg% column** — new subsection documents new column after LTP displaying intraday change% = `(ltp − prev_close) / prev_close × 100`, falls back to `c.change_pct`. Width 56px, right-aligned, directional text color. CSS class `cand-chg-sep` marks right-border separator. Flash class `leg:${k}:chg` subscribed in `tickBus`; fires text-color flash (`.ltp-tc-flash-up/down`) on every 4Hz SSE tick. (3) **§17.4b Legs totals row styling** — new subsection documents removal of per-cell green/red backgrounds (`cand-pnl.cell-pos/neg`) from TOTAL row; amber container background now sole visual marker. Directional text colors retained for numeric columns. Rationale: simplifies visual hierarchy, eliminates color noise. (4) **§17.3 Payoff chart legend labels** — updated from "P&L" / "Exp P&L" to "Day P&L" / "Exp Val", clarifying curve semantics: solid amber curve = today's market-to-market P&L, dashed blue curve = expiry P&L if spot freezes at current level. Impact: operators see consistent terminology across derivatives page, MarketPulse legend tooltips, and payoff overlay. |
