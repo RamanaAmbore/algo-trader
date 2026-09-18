@@ -215,10 +215,10 @@ describe('mkRightColDefs — Lots column cellClass (Fix 3)', () => {
     expect(result).toContain('lots-left-sep');
   });
 
-  it('omits lots-left-sep when qty_pos is undefined (holdings / watchlist row)', () => {
+  it('includes lots-left-sep when qty_pos is undefined but qty_hold is defined (holdings row)', () => {
     const col = getLotsCol();
     const result = col.cellClass({ data: { qty_hold: 10 } });
-    expect(result).not.toContain('lots-left-sep');
+    expect(result).toContain('lots-left-sep');
   });
 
   it('omits lots-left-sep when data is null', () => {
