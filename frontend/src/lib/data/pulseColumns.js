@@ -306,6 +306,11 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
         ? (ltp - prev) / prev * 100
         : null);
   cls.push(ltpDayClass(dayPct));
+  const dirBg = dayPct == null ? 'cell-flat'
+    : dayPct > 0.001 ? 'cell-pos'
+    : dayPct < -0.001 ? 'cell-neg'
+    : 'cell-flat';
+  cls.push(dirBg, 'mp-pnl-cell');
   return cls.join(' ');
 }
 
@@ -594,6 +599,14 @@ export function mkRightColDefs({
     symColRight,
     sparkCol,
     ltpCol,
+    { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
+      width: 64, type: 'numericColumn', headerClass: numericHdr,
+      cellClass: pnlCellClass
+        ? (p) => pnlCellClass(p, 'day_pnl_pct')
+        : (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
+      valueGetter: _dayPnlPctValueGetter,
+      valueFormatter: pctFmtGrid,
+      headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => {
@@ -625,14 +638,6 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'day_pnl'),
       valueFormatter: aggFmtGrid },
-    { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
-      width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: pnlCellClass
-        ? (p) => pnlCellClass(p, 'day_pnl_pct')
-        : (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
-      valueGetter: _dayPnlPctValueGetter,
-      valueFormatter: pctFmtGrid,
-      headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
     { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),
