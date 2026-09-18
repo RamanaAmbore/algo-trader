@@ -973,6 +973,9 @@
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
         flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
+        flash.update(`leg:${k}:chg`, (c.prev_close ?? 0) > 0 && c.ltp != null
+          ? ((Number(c.ltp) - Number(c.prev_close)) / Number(c.prev_close)) * 100
+          : null);
       }
     });
   });
@@ -4475,7 +4478,7 @@
                    checked={allCandidatesOn}
                    bind:this={allCandidatesEl}
                    onclick={(e) => { e.stopPropagation(); toggleAllCandidates(); }} />
-            <!-- State column header — matches second grid-template-columns track (38px). -->
+            <!-- State column header — matches second grid-template-columns track (28px). -->
             <span title="Position state: GTT (green) / Paired (cyan) / Orphan (amber)">St</span>
             <!-- Symbol header — hyphenated form below carries the
                  expiry month inline (e.g. NIFTY-26JUN-22000-CE) so a
@@ -4761,12 +4764,12 @@
           {@const _pnlVal  = _snRow?.pnl       ?? 0}
           {@const _expVal  = _snRow?.exp_pnl   ?? 0}
           {@const _extVal  = _snRow?.extrinsic ?? 0}
-          <div class="byund-row">
+          <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
+            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
             <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
             <span class="num {_extVal > 0 ? 'cell-pos' : _extVal < 0 ? 'cell-neg' : 'cell-flat'}">{_extVal === 0 ? '—' : aggCompact(_extVal)}</span>
@@ -5717,6 +5720,26 @@
     color: var(--c-action);
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
+    position: relative;
+  }
+  /* Direction bar on the symbol cell — mirrors ag-col-sym::after in app.css.
+     The byund-row is display:contents so the class lives on the row element;
+     we select the first child (byund-und) via the parent class + child combinator. */
+  .byund-dir-long > .byund-und::after,
+  .byund-dir-short > .byund-und::after {
+    content: '';
+    position: absolute;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    pointer-events: none;
+  }
+  .byund-dir-long > .byund-und::after {
+    background: rgba(74, 222, 128, 0.85);
+  }
+  .byund-dir-short > .byund-und::after {
+    background: rgba(248, 113, 113, 0.85);
   }
   .byund-row > .cell-pos { color: var(--c-long); }
   .byund-row > .cell-neg { color: var(--c-short); }
@@ -5938,17 +5961,17 @@
        saves ~58 px of horizontal real estate per row. */
     grid-template-columns:
       auto                                 /* checkbox */
-      38px                                 /* pos state (GTT / paired / orphan) */
+      28px                                 /* pos state (GTT / paired / orphan) */
       minmax(max-content, max-content)     /* symbol (hyphenated, carries expiry) */
       minmax(62px, max-content)            /* ltp */
       minmax(44px, max-content)            /* lots */
       minmax(48px, max-content)            /* qty */
       minmax(62px, max-content)            /* avg (cost basis) */
       minmax(72px, max-content)            /* prev close */
-      minmax(62px, max-content)            /* day pnl - today */
-      minmax(72px, max-content)            /* pnl - cumulative */
-      minmax(72px, max-content)            /* exp pnl @ current spot */
-      minmax(72px, max-content)            /* extrinsic (time value in P&L terms) */
+      minmax(46px, max-content)            /* day pnl - today */
+      minmax(54px, max-content)            /* pnl - cumulative */
+      minmax(54px, max-content)            /* exp pnl @ current spot */
+      minmax(54px, max-content)            /* extrinsic (time value in P&L terms) */
       minmax(max-content, max-content)     /* account */
       minmax(52px, max-content)            /* iv */
       minmax(56px, max-content)            /* delta */

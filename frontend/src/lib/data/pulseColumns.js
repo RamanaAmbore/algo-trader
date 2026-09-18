@@ -131,7 +131,11 @@ export function mkSymColLeft({ symRenderer }) {
   return {
     field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
     cellRenderer: symRenderer, sortable: true,
-    cellClass: 'ag-col-sym ag-col-fill',
+    cellClass: 'ag-col-sym ag-col-sym-left ag-col-fill',
+    cellClassRules: {
+      'chg-up':   p => (p.data?.change_pct ?? 0) > 0,
+      'chg-down': p => (p.data?.change_pct ?? 0) < 0,
+    },
   };
 }
 
@@ -594,11 +598,11 @@ export function mkRightColDefs({
       valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
       headerTooltip: 'Weighted average entry across positions + holdings.' },
     prevCol,
-    { field: 'day_pnl', headerName: 'Day P&L', width: 78, minWidth: 60, maxWidth: 96,
+    { field: 'day_pnl', headerName: 'Day P&L', width: 58, minWidth: 45, maxWidth: 72,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'day_pnl'),
       valueFormatter: aggFmtGrid },
-    { field: 'pnl', headerName: 'P&L', width: 78, minWidth: 60, maxWidth: 96,
+    { field: 'pnl', headerName: 'P&L', width: 58, minWidth: 45, maxWidth: 72,
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),
       valueFormatter: aggFmtGrid },
@@ -715,7 +719,7 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
   return {
     headerName: 'Exp P&L',
     colId: 'exp_pnl',
-    width: 90,
+    width: 68,
     type: 'numericColumn',
     headerClass: numericHdr,
     valueGetter: p => {
@@ -743,7 +747,7 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
   return {
     headerName: 'Extrinsic',
     colId: 'extrinsic',
-    width: 90,
+    width: 68,
     type: 'numericColumn',
     headerClass: numericHdr,
     valueGetter: p => {

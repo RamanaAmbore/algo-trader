@@ -323,7 +323,7 @@
     {ltpDayClass(c.change_pct != null ? c.change_pct :
       (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
         ? (ltp - c.prev_close) / c.prev_close * 100 : null))}
-    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+    {flash.classOf(`${_legFlashKey}:ltp`)} {flash.classOf(`${_legFlashKey}:chg`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <!-- Lots column. For proxy eq rows the lot count is in
        TARGET units (e.g. 1500 GOLDBEES ≈ 0.15 GOLD lots),
        so the math derives from the same market_value /

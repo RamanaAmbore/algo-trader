@@ -834,6 +834,28 @@
   background: rgba(248, 113, 113, 0.85);
 }
 
+/* Left-grid (Watchlist / Movers) direction bar — driven by change_pct sign
+   via cellClassRules on ag-col-sym-left. Uses the same 2px right-border
+   pattern as the right-grid pos-long/pos-short rules above. */
+.ag-theme-algo .ag-col-sym-left {
+  position: relative;
+}
+.ag-theme-algo .ag-col-sym-left::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+}
+.ag-theme-algo .ag-col-sym-left.chg-up::after {
+  background: rgba(74, 222, 128, 0.85);
+}
+.ag-theme-algo .ag-col-sym-left.chg-down::after {
+  background: rgba(248, 113, 113, 0.85);
+}
+
 /* Directional cell colour classes — used across every algo grid (Pulse,
    Performance, Legs / Derivatives, Dashboard, Simulator, Replay) to
    render numeric cells in green / red / slate based on sign. Hoisted
