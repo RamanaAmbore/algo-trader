@@ -23,6 +23,10 @@
 # Must come before `set -e`: flock returns non-zero on timeout, which
 # we surface explicitly via the message below.
 LOCK="/tmp/ramboq_deploy.lock"
+# Recover stale lock file owned by a different user (e.g. root from manual deploy,
+# www-data from webhook). exec 200>"$LOCK" fails with Permission Denied when the
+# file exists but isn't writable by the current user.
+[ -f "$LOCK" ] && [ ! -w "$LOCK" ] && { sudo rm -f "$LOCK" 2>/dev/null || true; }
 exec 200>"$LOCK"
 flock -w 900 200 || { echo "[$(date '+%F %T')] Lock wait timeout — aborting"; exit 0; }
 
@@ -426,6 +430,7 @@ JSONEOF
   # All safety-critical steps (pull, build, restart, health check,
   # notification) are done above — metrics are best-effort only.
   exec 200>&-
+  rm -f "$LOCK" 2>/dev/null || sudo rm -f "$LOCK" 2>/dev/null || true
 
   # D12 — Capture per-release code metrics. Best-effort; never fails
   # the deploy. Main branch deploys land under `git describe`, dev
