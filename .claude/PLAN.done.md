@@ -1,18 +1,15 @@
-# Plan: Derivatives UI polish — chg% separator, legs chg% column, flash fix, totals tint, payoff labels
+# Plan: Fix legs grid cell full-height coverage — bars/tints/separators
 
 ## Context
-Several UI consistency and correctness gaps in the derivatives and Pulse surfaces:
-1. The chg%/LOTS separator visible in positions is missing from pinned, watchlist, winners, losers, holdings, and the byund snapshot grid.
-2. The legs CSS Grid has no chg% column — the value is computed but never displayed; the flash class was being applied to the LTP span as a fallback.
-3. Leg chg% flash only fires on poll cycles (30s), not on SSE ticks — because the tickBus subscription (lines 1699–1704 in +page.svelte) updates `leg:${k}:ltp` but not `leg:${k}:chg`.
-4. The legs totals row (`cand-row-total`) has a green tint on positive P&L cells from `:global(.cand-pnl.cell-pos)` in CandidateLegRow.svelte — not suppressed by the amber container override.
-5. Payoff overlay legend labels need renaming: "P&L" → "Day P&L", "Exp P&L" → "Exp Val".
+In the derivatives legs CSS Grid, `.cand-row` uses `padding: 0.2rem 0.3rem` (container-level) + `align-items: center`. This means each cell `<span>` is only as tall as its text content (~12px), centered inside a taller row. The direction bar `::after` (`top:0; bottom:0`) and `background-color` on `.cand-sym-acct` both reference the span's own height — so they only cover the text zone, leaving the top/bottom padding areas bare.
+
+In the ag-Grid positions/holdings surface: row containers have no vertical padding; each `.ag-cell` fills the full `24px` row height and gets horizontal-only cell padding. `::after` covers the full 24px. Our CSS Grid legs need the same model: **move vertical padding from row to cells**.
 
 ## Task
-Five targeted changes across three files.
+Three CSS changes in `CandidateLegRow.svelte`. No other files needed.
 
 ## Agents
-- frontend: All five changes below
+- frontend: Make the three changes below
 - backend: skip
 - broker: skip
 - doc: skip
@@ -21,88 +18,38 @@ Five targeted changes across three files.
 
 ## Frontend agent task
 
-### 1. chg% separator — left grids (pinned/watchlist/winners/losers)
-File: `frontend/src/lib/data/pulseColumns.js`
-- In `mkLeftColDefs()`, the `left_change_pct` column (line ~451) — add `'chg-right-sep'` to its `cellClass` array alongside the existing `changePctCellClass` result.
-  Change: `cellClass: changePctCellClass` → `cellClass: (p) => [changePctCellClass(p), 'chg-right-sep'].filter(Boolean).join(' ')`
+**File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
 
-File: `frontend/src/app.css`
-- Add CSS for the right-border separator (mirror the existing `lots-left-sep` style with inset on the right):
-  ```css
-  .ag-theme-algo .ag-cell.chg-right-sep {
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
-  }
-  .ag-theme-ramboq .ag-cell.chg-right-sep {
-    box-shadow: inset -1px 0 0 0 rgba(112,99,76,0.40);
-  }
-  ```
+### Change 1 — Remove vertical padding from row container; switch to stretch
 
-### 2. chg% separator — holdings (right grid)
-File: `frontend/src/lib/data/pulseColumns.js`
-- LOTS column cellClass (line ~576) currently: `d?.qty_pos !== undefined ? [RA, 'lots-left-sep'] : [RA]`
-- Holdings rows have `qty_hold` defined, not `qty_pos`. Fix: `(d?.qty_pos !== undefined || d?.qty_hold !== undefined) ? [RA, 'lots-left-sep'] : [RA]`
+In the `.cand-row` rule (around line 419), make two edits:
+- `padding: 0.2rem 0.3rem` → `padding: 0 0.3rem`
+- `align-items: center` → `align-items: stretch`
 
-### 3. chg% separator — byund snapshot grid (derivatives)
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- The byund snapshot grid is a CSS Grid. Find the chg% span in the byund row template (the span showing `chgPct` or similar after the LTP span).
-- Add class `byund-chg-sep` to that span.
-- Add CSS in the page `<style>` block:
-  ```css
-  .byund-chg-sep {
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
-  }
-  ```
+### Change 2 — Restore vertical spacing at cell level + flex vertical centering
 
-### 4. Add chg% column to legs CSS Grid
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- In the `.cand-grid` `grid-template-columns`, after the LTP column (`minmax(62px, max-content) /* ltp */`), insert: `minmax(48px, max-content) /* chg % */`
-- In the cand-row-header row, add a header span `<span class="num">Chg %</span>` in the correct column position.
-- In the cand-row-total row, add a `<span class="num">—</span>` placeholder (no total for chg%).
-- Add CSS for right-border separator on the chg% column header cell (using nth-child or a named class).
+After the `.cand-row` rule, add a new rule targeting all direct `<span>` children:
+```css
+.cand-row > span {
+  padding-top: 0.2rem;
+  padding-bottom: 0.2rem;
+  display: flex;
+  align-items: center;
+}
+```
+This restores the same 0.2rem top/bottom breathing room, now at cell level so backgrounds and `::after` extend through it.
 
-File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
-- After the LTP span (line ~319–326), add a new span for chg%:
-  ```svelte
-  {@const _chgPct = c.change_pct != null ? c.change_pct :
-    (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-      ? (ltp - c.prev_close) / c.prev_close * 100 : null)}
-  <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:chg`)}">
-    {_chgPct != null ? pctFmt(_chgPct) : '—'}
-  </span>
-  ```
-  Where `pctFmt` is the 2-decimal percent formatter (check existing imports for the right name).
-- Remove `{flash.classOf(`${_legFlashKey}:chg`)}` from the LTP span class string (line 326) — it now lives on the chg% span.
-- Add CSS for the right-border separator in CandidateLegRow.svelte:
-  ```css
-  .cand-chg-sep {
-    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
-  }
-  ```
+### Change 3 — Right-align text in numeric cells under flex
 
-### 5. Fix leg chg% flash — wire to tickBus
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- In the tickBus subscription (lines 1699–1704), after the existing `flash.update(\`leg:${k}:ltp\`, ...)` call, add:
-  ```javascript
-  const _pc = c.prev_close != null ? Number(c.prev_close) : 0;
-  if (_pc > 0 && snap?.ltp != null) {
-    flash.update(`leg:${k}:chg`, ((Number(snap.ltp) - _pc) / _pc) * 100);
-  }
-  ```
-  This ensures chg% flash fires on every SSE tick matching a leg symbol, not just on 30s poll cycles.
+The existing `.cand-row > .num` rule has `justify-self: end` (grid alignment) which no longer makes sense once cells stretch to fill the column width. Replace it with flex text alignment:
+- Remove: `justify-self: end;`
+- Add: `justify-content: flex-end;`
 
-### 6. Remove green tint from legs totals row
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
-- In the `<style>` block, after line 6025 (`.cand-row.cand-row-total > .cell-flat { ... }`), add:
-  ```css
-  /* Suppress cell-level green/red background in totals — amber container is the signal. */
-  .cand-row.cand-row-total .cand-pnl.cell-pos,
-  .cand-row.cand-row-total .cand-pnl.cell-neg { background-color: transparent !important; }
-  ```
+The `text-align: right`, `min-width: 0`, `overflow: hidden`, `text-overflow: ellipsis`, `white-space: nowrap` lines stay unchanged.
 
-### 7. Payoff legend renames
-File: `frontend/src/lib/OptionsPayoff.svelte`
-- Line ~1269: `P&L` → `Day P&L`
-- Line ~1284: `Exp P&L` → `Exp Val`
+---
+
+After edits, run `cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1` and fix any errors. Report result.
 
 ## Tests
 - pytest: no
@@ -110,14 +57,12 @@ File: `frontend/src/lib/OptionsPayoff.svelte`
 - playwright: no
 
 ## Commit message
-feat(ui): legs chg% column + separator all grids, fix chg% flash, totals tint, payoff labels
+fix(ui): legs cells stretch to full row height — bars/tints/separators cover full cell
 
 ## Done when
-- Pinned/watchlist/winners/losers/holdings all show inset right-border on chg% column
-- Holdings LOTS column shows the separator (lots-left-sep) for holding-only rows
-- byund snapshot grid has separator after chg% cell
-- Legs CSS Grid shows dedicated chg% column after LTP with right-border separator
-- Leg chg% flash fires immediately on SSE tick (not just on poll)
-- Legs totals row amber background is clean — no green tint on positive P&L cells
-- Payoff overlay legend shows "Day P&L" and "Exp Val"
+- Direction bars (green/red `::after` on `.cand-sym-acct`) cover the full row height, not just the text zone
+- Account tint (`background-color` on `.cand-sym-acct`) fills the full row height
+- Grey separator box-shadows (`.cand-sym-acct` and `.cand-chg-sep`) span the full row height
+- Row vertical spacing is unchanged (0.2rem breathing room, now via cell padding)
+- Numeric text stays right-aligned
 - svelte-check 0 errors

@@ -423,8 +423,8 @@
     /* Subgrid inherits column-gap from .cand-grid (0.6rem). Don't
        set `gap` here — that overrides the parent and decouples the
        rows' spacing from the header's. */
-    padding: 0.2rem 0.3rem;
-    align-items: center;
+    padding: 0 0.3rem;
+    align-items: stretch;
     font-size: var(--fs-sm);
     font-family: monospace;
     font-variant-numeric: tabular-nums;
@@ -434,11 +434,19 @@
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
   .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
+  /* All cells fill the full row track height and restore 0.2rem vertical
+     breathing room at cell level (moved from container padding). */
+  .cand-row > span {
+    padding-top: 0.2rem;
+    padding-bottom: 0.2rem;
+    display: flex;
+    align-items: center;
+  }
 
   /* Numeric column cells — right-aligned + truncation. */
   .cand-row > .num {
     text-align: right;
-    justify-self: end;
+    justify-content: flex-end;
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
