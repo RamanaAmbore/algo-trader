@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.18 — 2026-09-18  
+**Version**: 1.19 — 2026-09-18  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -1050,21 +1050,20 @@ child rows remain adjacent to their parent.
 
 ---
 
-## 16. LTP and Chg% Tick Flash
+## 16. LTP Tick Flash — LTP Column Only
 
-Only LTP and Chg% columns flash on tick across all Pulse grids. Day P&L and P&L columns 
-remain static (no animation). Two sources drive flashes on different schedules:
-- **LTP cascade** (sub-second): SSE tick flashes via `symbolStore` updates; tight feedback loop
-- **Poll-diff** (every 5–30 s): broker fetch cycle detects change from prior poll; Chg% cells flash
+Only the LTP column flashes on tick across all Pulse grids. Chg% and other columns
+remain static (no animation). LTP flashes are driven by SSE ticks with a tight
+feedback loop.
 
-**Flash scope — Unified simplification (Sep 2026, commit 3f909237)**:
+**Flash scope — LTP-only (Sep 2026)**:
 - LTP column: flashes on every SSE tick (4Hz) and broker poll update
-- Chg% column: flashes on broker poll update (left grid only)
+- Chg% column: **no flash** (static text color only)
 - Day P&L and P&L columns: **no flash applied** (static styling only)
 - Derivatives page: LTP cells flash in snapshot and candidate-leg grids; Spot price in 
   OptionsPayoff card flashes when quote updates
-- **Magnitude-tiered flash variants (`tf-up-sm`, `tf-up-lg`) removed** (commit 3f909237); 
-  uniform `tf-up`/`tf-down` CSS animation applied to all flashing columns
+- **Magnitude-tiered flash variants removed**; uniform `tf-up`/`tf-down` CSS animation 
+  applied to all flashing columns
 
 **Flash animation** (uniform across all tickers):
 - Single directional flash class: `tf-up` (price rise) or `tf-down` (price fall)
@@ -1193,7 +1192,23 @@ and CHG% displays a text-color flash (`ltp-tc-flash-up` / `ltp-tc-flash-down`) t
 price movement, matching the Snapshot grid's LTP and CHG% cell behaviour and providing 
 consistent visual feedback across all derivatives surfaces.
 
-### 17.3 Candidate Leg Row — Pending Qty Chip
+### 17.3 Options Payoff Chart Legend
+
+The payoff overlay chart displays two P&L curves with the following legend labels:
+
+**Legend items**:
+- **"P&L"** — amber solid curve representing current-time P&L (marked-to-market at today's spot)
+- **"Exp P&L"** — dashed blue curve representing expiry P&L (P&L at option expiration, assumes
+  spot remains at current level through expiry)
+
+**Chart behavior**:
+- Y-axis shows profit/loss in currency units
+- X-axis shows underlying spot price range (±range around current spot)
+- Solid curve (P&L) updates every tick as spot price changes during the session
+- Dashed curve (Exp P&L) updates when strategy or spot price changes materially
+- Intersection of curves shows current spot price and live P&L / expiry P&L alignment
+
+### 17.4 Candidate Leg Row — Pending Qty Chip
 
 The Legs grid now displays a qty chip per row that reflects both closed and pending-order 
 states.
@@ -1209,7 +1224,7 @@ states.
 **Use case**: Operators tracking partial-close executions see which legs have open 
 cancel/reduce orders queued, preventing accidental double-reduces.
 
-### 17.4 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
+### 17.5 Candidate Leg Row DOM Order and Derivatives Grid Picker Sort
 
 **Leg row DOM order** (Aug 2026, commit e6656b7e):
 - Checkbox now renders **BEFORE** the pos_state (St) cell in CandidateLegRow
@@ -1227,7 +1242,7 @@ cancel/reduce orders queued, preventing accidental double-reduces.
   with 2 small option legs (qty 4 contracts total)
 - Operators see underlyings with the largest total quantity first when selecting roots
 
-### 17.5 Expiry-Close Analysis — "Exp close" Badge Counts
+### 17.6 Expiry-Close Analysis — "Exp close" Badge Counts
 
 The derivatives page's expiryCloseAnalysis feature identifies ITM/OTM options approaching 
 expiry and organizes them into bands (close, netted, OTM). Badge counts in the UI reflect 
@@ -1250,7 +1265,7 @@ the number of ITM positions requiring action.
 **Impact**: Operators see accurate close-action counts; stale in-session closed legs no 
 longer spike the orange "Exp close" badge count after partial closes.
 
-### 17.6 Candidate Position Filtering — Closed Positions (qty=0) Now Always Included
+### 17.7 Candidate Position Filtering — Closed Positions (qty=0) Now Always Included
 
 The `buildCandidatePositions()` function in `frontend/src/lib/derivatives/pageLoad.js` 
 includes all F&O positions regardless of whether their symbols are present in Kite's 
@@ -1289,7 +1304,7 @@ to vanish from exp P&L totals.
   when options settle at expiry, storing actual P&L in `pnl` instead)
 - No sensitivity to spot price (position is flat, P&L is locked)
 
-### 17.7 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
+### 17.8 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
 
 The derivatives page (`/admin/derivatives`) now uses the same live SSE tick source 
 (`liveSnap` from `symbolStore.svelte.js`) as the Pulse grids for spot price display 
@@ -1761,15 +1776,21 @@ the color palette and ensures consistency across all flash effects.
 - `.cell-flat` — dim gray text (v = 0); applies `color: var(--algo-dim)`
 - `.mp-pnl-cell` — background tint (10% green or red via cascade)
 
+**CSS rendering fix** (Sep 2026):
+- `.cell-pos`, `.cell-neg`, `.cell-flat` rules now include `.ag-theme-algo` prefix
+  (`MarketPulse.svelte` styles), ensuring correct ag-Grid cell specificity override.
+  Positive/negative/flat values now render in correct colors across all Pulse grids
+  (watchlist, positions, holdings, derivatives).
+
 **Rationale**: Named tokens make palette tweaks mechanical (edit `:root` once → all
 surfaces instantly update) and prevent color drift across flashy animations, static
 backgrounds, and text labels.
 
 ---
 
-## 29. LTP and Chg% Flash Simplification
+## 29. LTP Flash Simplification
 
-Only LTP and Chg% columns flash on tick across all Pulse grids. Day P&L and P&L
+Only LTP column flashes on tick across all Pulse grids. Chg%, Day P&L, and P&L
 columns remain static (no animation).
 
 ### Flash trigger and timing
@@ -1782,16 +1803,9 @@ columns remain static (no animation).
 - Applied to: LTP cells in all grids (Watchlist, Positions, Holdings, Derivatives)
 - Contrast: high (color accent on white/light text) + quick fade (not distracting)
 
-**Chg % poll-cycle flash** (broker-polling, every ~5-30s):
-- Fires when `change_pct` values update from broker poll (left grid only)
-- Animation: same `.ltp-tc-flash-up` / `.ltp-tc-flash-down` keyframes
-- Duration: 300ms (uniform across all flashing columns, no magnitude tiering)
-- Trigger: used on left-grid `change_pct` (Chg % column) only
-- Resets on next poll cycle; if no change detected, no flash
-
-**Day P&L % and P&L columns** (no flash):
-- `day_pnl_pct` and `pnl` columns remain static; background and text colors update
-  per broker poll but animations are suppressed
+**Chg%, Day P&L %, and P&L columns** (static styling only):
+- `change_pct`, `day_pnl_pct`, and `pnl` columns remain static (no animation)
+- Text colors and backgrounds reflect directional values but do not flash on update
 
 **Reference price comparison**:
 - **LTP flash**: text color reflects `ltp vs prev_close` direction
@@ -1841,8 +1855,9 @@ field is absent.
 ### Affected columns and surfaces
 
 **MarketPulse grids**:
-- Left grid: `ltp` (LTP) and `change_pct` (Chg %) columns flash on updates
-  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (uniform animation)
+- Left grid: `ltp` (LTP) column flashes on updates (LTP-only)
+  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down`
+  - Chg% column: static text color only (no flash)
 - Right grid (Positions & Holdings): `ltp` column flashes only
   - `day_pnl` and `pnl` columns remain static (no animation)
 
