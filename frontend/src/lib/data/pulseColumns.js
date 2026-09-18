@@ -566,9 +566,9 @@ export function mkRightColDefs({
       cellClass: (p) => {
         if (!p.data || p.data._isTotal) return RA;
         const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
-        const base = `${RA} ${dirCls(p.value)}`;
-        if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} tf-up`;
-        if (getLtpFlashDown && getLtpFlashDown().has(sym)) return `${RA} ${dirCls(p.value)} tf-down`;
+        const base = `${RA} ${dirCls(p.value)} chg-right-sep`;
+        if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-up`;
+        if (getLtpFlashDown && getLtpFlashDown().has(sym)) return `${RA} ${dirCls(p.value)} chg-right-sep tf-down`;
         return base;
       },
       valueGetter: _dayPnlPctValueGetter,

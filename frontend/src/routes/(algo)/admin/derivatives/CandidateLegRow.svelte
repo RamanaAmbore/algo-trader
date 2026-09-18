@@ -528,6 +528,9 @@
   :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 600; }
   :global(.cand-sym .sym-main.sym-ce) { color: var(--c-long); }
   :global(.cand-sym .sym-main.sym-pe) { color: var(--c-short); }
+  /* Always-visible grey separator on symbol cell right edge — marks the
+     boundary before the LTP/chg% market-data block, matching other grids. */
+  .cand-sym-acct { box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40); }
   /* SINGLE vertical right border on the symbol cell, encoding
      POSITION DIRECTION (long vs short). 2 px wide, flush against the
      right edge. Green when qty > 0 (long), red when qty < 0 (short),
