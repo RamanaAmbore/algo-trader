@@ -1266,7 +1266,7 @@
            below are the only legend pieces the chart needs. -->
       <span class="legend-item">
         <span class="legend-line legend-today"></span>
-        Day P&L
+        P&L
       </span>
       {#each intermediatePaths as ip (ip.elapsed)}
         <!-- Intermediate-DTE legend chips render in temporal order
@@ -1281,7 +1281,7 @@
       {/each}
       <span class="legend-item">
         <span class="legend-line legend-expiry"></span>
-        Exp Val
+        Exp P&L
       </span>
       <span class="legend-item legend-be">
         <span class="legend-mark legend-be-mark"></span>

@@ -325,9 +325,6 @@
     {/if}
   </span>
   <span class="num tf-cell leg-ltp
-    {typeof ltp === 'number' && typeof cost === 'number' && cost > 0
-      ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
-      : ''}
     {ltpDayClass(c.change_pct != null ? c.change_pct :
       (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
         ? (ltp - c.prev_close) / c.prev_close * 100 : null))}
@@ -423,7 +420,7 @@
     /* Subgrid inherits column-gap from .cand-grid (0.6rem). Don't
        set `gap` here — that overrides the parent and decouples the
        rows' spacing from the header's. */
-    padding: 0 0.3rem;
+    padding: 0;
     align-items: stretch;
     font-size: var(--fs-sm);
     font-family: monospace;
@@ -439,6 +436,8 @@
   .cand-row > span {
     padding-top: 0.2rem;
     padding-bottom: 0.2rem;
+    padding-left: 4px;
+    padding-right: 4px;
     display: flex;
     align-items: center;
   }
@@ -533,7 +532,7 @@
     background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
   }
   /* CE / PE text tint on the symbol main (Sensibull / Streak convention). */
-  :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 600; }
+  :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 500; }
   :global(.cand-sym .sym-main.sym-ce) { color: var(--c-long); }
   :global(.cand-sym .sym-main.sym-pe) { color: var(--c-short); }
   /* Always-visible grey separator on symbol cell right edge — marks the
@@ -599,12 +598,6 @@
   :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.08); }
   :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.08); }
   :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.06); }
-
-  /* ── LTP heat encoding ────────────────────────────────────────────── */
-  /* LTP heat encoding — mirrors the ag-theme-algo rules in app.css
-     but scoped to this component (which isn't an ag-Grid surface). */
-  .ltp-vs-avg-up   { background-color: var(--algo-green-bg); }
-  .ltp-vs-avg-down { background-color: var(--algo-red-bg); }
 
   /* ── Split-row tags ───────────────────────────────────────────────── */
   /* Split-row tags — small chip beside the symbol, indicates whether
