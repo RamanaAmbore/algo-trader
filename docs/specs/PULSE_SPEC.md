@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.17 — 2026-09-15  
+**Version**: 1.18 — 2026-09-18  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -1050,42 +1050,27 @@ child rows remain adjacent to their parent.
 
 ---
 
-## 16. LTP Tick Flash
+## 16. LTP and Chg% Tick Flash
 
-Directional 350ms pulse overlay on LTP cells when prices move. Two sources drive flashes 
-on different schedules:
+Only LTP and Chg% columns flash on tick across all Pulse grids. Day P&L and P&L columns 
+remain static (no animation). Two sources drive flashes on different schedules:
 - **LTP cascade** (sub-second): SSE tick flashes via `symbolStore` updates; tight feedback loop
-- **Poll-diff** (every 5 s): broker fetch cycle detects change from prior poll; LTP cells flash
+- **Poll-diff** (every 5–30 s): broker fetch cycle detects change from prior poll; Chg% cells flash
 
-**Flash scope** — **Derivatives page change (Sep 2026)**: On the `/admin/derivatives` page, 
-the snapshot grid and candidate legs grid now scope animation to LTP cells **only**. Previously, 
-Day P&L, P&L, Greeks, EV, KV, and TOTAL cells also flashed. LTP cells receive the full 
-`ltp-flash-up` / `ltp-flash-down` pulse; all other data cells remain static. This reduces 
-visual clutter during tick updates while maintaining tight feedback on price movement.
+**Flash scope — Unified simplification (Sep 2026)**:
+- LTP column: flashes on every SSE tick (4Hz) and broker poll update
+- Chg% column: flashes on broker poll update (left grid only)
+- Day P&L and P&L columns: no flash applied (static styling only)
+- Derivatives page: LTP cells flash in snapshot and candidate-leg grids; Spot price in 
+  OptionsPayoff card flashes when quote updates
+- Magnitude-tiered flash variants (`tf-up-sm`, `tf-up-lg`) removed; uniform `tf-up`/`tf-down` 
+  applied to all flashing columns
 
-**Implementation** (via `createTickFlash.svelte.js`):
-- `_ltpFlashUp` / `_ltpFlashDown`: Set of symbols with active upward/downward flash
-- Reassigned atomically each tick (not mutated in-place) so Svelte reactivity fires
+**Flash animation**:
+- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) fires on LTP and Chg% cells
+- Duration: 300ms; text color animates from `--algo-green-text` or `--algo-red-text` to `inherit`
 - Zero-guard: non-positive live values treated as "no live tick" (prevents phantom delta)
-- `_mpFlash` instance: tracks P&L per-symbol-per-field flashes (key = `"SYM:fieldname"`)
 - Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect re-runs
-
-**Cell class application** (from `mkPnlCellClass`):
-```
-base classes (RA + dirCls + mp-pnl-cell)
-  + LTP-cascade class if symbol in _ltpFlashUp/_ltpFlashDown
-  + poll-diff flash class (tf-up / tf-down) otherwise
-```
-
-**TOTAL row animation** (commit b33d056b):
-- MarketPulse TOTAL row cells now receive `tf-up`/`tf-down` animation classes on ≥0.1% 
-  value change. Previously the `_isTotal` guard in `pulseColumns.js` excluded the TOTAL row 
-  from all animation. Also updated in `dashboard/+page.svelte` positions grid.
-
-**Visual effect** — app.css defines:
-- `.ltp-flash-up` — green directional pulse (150ms ramp)
-- `.ltp-flash-down` — red directional pulse
-- `.tf-up` / `.tf-down` — subtle tick-flash (13% opacity, 300ms)
 
 ---
 
@@ -1299,6 +1284,33 @@ to vanish from exp P&L totals.
 - Uses `leg.realised || leg.pnl || 0` (checks both fields; Kite returns `realised=0` 
   when options settle at expiry, storing actual P&L in `pnl` instead)
 - No sensitivity to spot price (position is flat, P&L is locked)
+
+### 17.7 Derivatives Spot Price SSOT — liveSnap Unified Source
+
+The derivatives page (`/admin/derivatives`) now uses the same live SSE tick source 
+(`liveSnap` from `symbolStore`) as the Pulse grids for spot price display. Previously 
+it used a separate `batchQuote` / `_throttledTick` stack that was gated on 
+`isMarketOpen()`, causing MCX evening session spot prices to go stale after NSE closed 
+at 15:30 IST.
+
+**Problem fixed**:
+- Spot prices in the derivatives legs grid and by-underlying summary table froze at 
+  NSE close when `isMarketOpen()` returned false (NSE closed, MCX still trading during 
+  S2 state). Operators viewing MCX positions after 15:30 IST saw stale NSE spot prices 
+  instead of live MCX mid-session ticks.
+
+**Implementation**:
+- Snapshot grid LTP cells now read `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz 
+  via `void _throttledTick`), falling back to `legAnalytics.ltp` then broker API
+- CandidateLegRow LTP now sources from the same `getSnapshot()` pattern (Tier 1 SSE, 
+  Tier 2–3 broker)
+- Spot price in OptionsPayoff card (`liveSpot`) resolves via `liveSnap(underlying)` 
+  when market is open (S1/S2/S4 states with any segment live)
+- Eliminates the `isMarketOpen()` gate that was suppressing MCX evening session updates
+
+**Impact**: MCX spot prices, Greeks calculations, EV, and payoff chart positioning 
+reflect real-time mid-session ticks throughout the MCX trading day (15:30–23:30 IST), 
+matching the live-market behavior of Pulse grids and NavStrip.
 
 ---
 
@@ -1724,16 +1736,8 @@ the color palette and ensures consistency across all flash effects.
 **Flash animation tokens** (used in keyframes):
 - `--algo-green-flash` (rgba 35% alpha) — source pulse for upward LTP flash
 - `--algo-red-flash` (rgba 35% alpha) — source pulse for downward LTP flash
-- `--algo-green-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L gains
-- `--algo-red-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L losses
-- `--algo-green-cascade-sm` (rgba 8% alpha) — dim cascade for small moves (< 0.5%)
-- `--algo-red-cascade-sm` (rgba 8% alpha) — dim cascade for small moves (< 0.5%)
-- `--algo-green-cascade-lg` (rgba 18% alpha) — bright cascade for large moves (≥ 2%)
-- `--algo-red-cascade-lg` (rgba 18% alpha) — bright cascade for large moves (≥ 2%)
-- `--algo-green-text-dim` (lighter shade) — text color for small upward moves
-- `--algo-red-text-dim` (lighter shade) — text color for small downward moves
-- `--algo-green-text-bright` (brighter shade) — text color for large upward moves
-- `--algo-red-text-bright` (brighter shade) — text color for large downward moves
+- `--algo-green-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L gains (uniform, no magnitude tiering)
+- `--algo-red-cascade` (rgba 13% alpha) — subtle cascade pulse for P&L losses (uniform, no magnitude tiering)
 - `--algo-green-pnl-bg` (rgba 8% alpha) — background tint for P&L-gain cells
 - `--algo-red-pnl-bg` (rgba 8% alpha) — background tint for P&L-loss cells
 - `--algo-dim-bg` — neutral background for stale/flat rows
@@ -1751,34 +1755,38 @@ backgrounds, and text labels.
 
 ---
 
-## 29. LTP & Spot & Day % Text-Color Flash
+## 29. LTP and Chg% Flash Simplification
 
-Three data surfaces now apply directional text-color animations when prices or
-percentages move: LTP cells, spot prices, and day-change percentages.
+Only LTP and Chg% columns flash on tick across all Pulse grids. Day P&L and P&L
+columns remain static (no animation).
 
 ### Flash trigger and timing
 
 **LTP cascade flash** (SSE-driven, sub-second):
 - Fires when `symbolStore` LTP updates via WebSocket tick
 - Animation: `.ltp-tc-flash-up` or `.ltp-tc-flash-down` keyframes
-- Duration: 500ms; text color animates from `--algo-green-text` or `--algo-red-text`
+- Duration: 300ms; text color animates from `--algo-green-text` or `--algo-red-text`
   back to `inherit`
 - Applied to: LTP cells in all grids (Watchlist, Positions, Holdings, Derivatives)
 - Contrast: high (color accent on white/light text) + quick fade (not distracting)
 
 **Chg % poll-cycle flash** (broker-polling, every ~5-30s):
-- Fires when `change_pct` or `day_pnl_pct` values update from broker poll
+- Fires when `change_pct` values update from broker poll (left grid only)
 - Animation: same `.ltp-tc-flash-up` / `.ltp-tc-flash-down` keyframes
-- Trigger: used on left-grid `change_pct` (Chg % column) and right-grid
-  `day_pnl_pct` (Day P&L % column)
+- Duration: 300ms (uniform across all flashing columns, no magnitude tiering)
+- Trigger: used on left-grid `change_pct` (Chg % column) only
 - Resets on next poll cycle; if no change detected, no flash
+
+**Day P&L % and P&L columns** (no flash):
+- `day_pnl_pct` and `pnl` columns remain static; background and text colors update
+  per broker poll but animations are suppressed
 
 **Reference price comparison**:
 - **LTP flash**: text color reflects `ltp vs prev_close` direction
   - Green if `ltp > prev_close`; Red if `ltp < prev_close`; Gray if equal
 - **Chg % flash**: text color reflects `change_pct vs 0` direction
   - Green if `change_pct > 0`; Red if `change_pct < 0`; Gray if zero
-- **Spot flash**: on derivatives page, Spot LTP color same as regular LTP flash
+- **Spot flash** (derivatives page): Spot LTP color same as regular LTP flash
   (reflects `liveSpot vs prev_close`)
 
 ### Directional text-color flash
@@ -1821,24 +1829,23 @@ field is absent.
 ### Affected columns and surfaces
 
 **MarketPulse grids**:
-- Left grid: `change_pct` (Chg %) column flashes on poll-cycle updates
-  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (LTP and Chg % synchronized)
-- Right grid (Positions): `day_pnl_pct` (Day P&L %) column flashes on updates
-  - Background cascade class: `.tf-up` / `.tf-down`
-- Right grid (Holdings): `day_pnl_pct` column flashes
+- Left grid: `ltp` (LTP) and `change_pct` (Chg %) columns flash on updates
+  - Text-color class: `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (uniform animation)
+- Right grid (Positions & Holdings): `ltp` column flashes only
+  - `day_pnl` and `pnl` columns remain static (no animation)
 
 **Derivatives page**:
 - Snapshot grid LTP cells flash on SSE + poll-cycle updates (up/down only)
 - CandidateLegRow LTP cells flash (SSE-driven at 4Hz via `getSnapshot`)
-- Spot price display in OptionsPayoff card flashes on quote updates
+- Spot price display in OptionsPayoff card flashes on quote updates (same animation)
 
 **PerformancePage**:
-- P&L cascade columns use `.tf-up` / `.tf-down` (background)
 - LTP cell uses `.ltp-tc-flash-up` / `.ltp-tc-flash-down` (text-color)
+- P&L columns remain static
 
 **Nav surfaces**:
-- PositionStrip P/H pills animate on day-P&L store updates (4Hz throttle)
-- Dashboard positions/holdings cards use same flash tokens
+- PositionStrip P/H pills animate on day-P&L store updates (4Hz throttle via existing logic)
+- Dashboard cards use same flash tokens where applicable
 
 ### Implementation
 
