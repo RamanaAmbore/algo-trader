@@ -1827,6 +1827,7 @@ class TestPlaceOrderErrorHandling:
                 broker.place_order(
                     exchange="NSE",
                     tradingsymbol="RELIANCE",
+                    security_id="99999",  # bypass _ensure_dhan_instruments network call
                     quantity=1,
                     order_type="MARKET",
                     transaction_type="BUY",
@@ -1862,6 +1863,7 @@ class TestPlaceOrderErrorHandling:
                 broker.place_order(
                     exchange="NSE",
                     tradingsymbol="RELIANCE",
+                    security_id="99999",  # bypass _ensure_dhan_instruments network call
                     quantity=1,
                     order_type="MARKET",
                     transaction_type="BUY",
@@ -1893,6 +1895,7 @@ class TestPlaceOrderErrorHandling:
                 broker.place_order(
                     exchange="NSE",
                     tradingsymbol="RELIANCE",
+                    security_id="99999",  # bypass _ensure_dhan_instruments network call
                     quantity=1,
                     order_type="MARKET",
                     transaction_type="BUY",
