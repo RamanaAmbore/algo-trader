@@ -4738,15 +4738,11 @@
   :global(.cell-pos)  { color: var(--c-long) !important; }
   :global(.cell-neg)  { color: var(--c-short) !important; }
   :global(.cell-flat) { color: var(--algo-dim) !important; }
-  /* P&L cell background tint — same colour family + same alphas as the
-     /admin/derivatives Candidates panel (`.cand-pnl.cell-pos` etc.) so
-     the two surfaces' P&L columns read with the same visual identity.
-     Applied via the `mp-pnl-cell` marker class on Pulse's right-grid
-     P&L / Day P&L / P&L % / Day % columns + the summary grids. */
-  :global(.mp-pnl-cell.cell-pos)  { background-color: var(--algo-green-bg) !important; }
-  :global(.mp-pnl-cell.cell-neg)  { background-color: var(--algo-red-bg) !important; }
-  :global(.mp-pnl-cell.cell-flat) { background-color: var(--algo-dim-bg) !important; }
   :global(.cell-muted){ color: rgba(200,216,240,0.55) !important; }
+  /* Alternating row background for all Pulse grids — mirrors legs grid rhythm */
+  :global(.ag-theme-algo .ag-body-viewport .ag-row-odd:not(.mp-total-row)) {
+    background-color: var(--row-tint-odd-bg);
+  }
 
   /* Pinned sub-group dividers — first row of each pinned category
      (idx / fx / commodity) carries `.pin-divider` so the three

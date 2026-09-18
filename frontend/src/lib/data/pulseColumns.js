@@ -87,7 +87,7 @@ export function dirCls(v) {
  */
 export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct }) {
   return (p, field) => {
-    return `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+    return `${RA} ${dirCls(p.value)}`;
   };
 }
 
@@ -259,10 +259,8 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
     const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown);
     if (fc) {
       cls.push(fc);
-      // Omit mp-pnl-cell here: its !important background-color overrides the
-      // tf-up/tf-down animation. Restored by _scheduleFlashRefresh once flash clears.
-    } else {
-      cls.push(dirBg, 'mp-pnl-cell');
+      } else {
+      cls.push(dirBg);
     }
   } else {
     cls.push('ltp-snap');
@@ -270,7 +268,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
     // frontend can style .ltp-snap-unsettled with a dashed border
     // to convey "close_price not yet published".
     if (_normalisePriceSource(p.data) === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
-    cls.push(dirBg, 'mp-pnl-cell');
+    cls.push(dirBg);
   }
   const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
@@ -445,12 +443,12 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
   const changePctCellClass = getMpFlash
     ? (p) => {
         const sym = p.data?.tradingsymbol;
-        const base = `${dirCellClass(p)} mp-pnl-cell`;
+        const base = `${dirCellClass(p)}`;
         if (!sym) return base;
         const fc = getMpFlash().classOf(`${sym}:change_pct`);
         return fc ? `${base} ${fc}` : base;
       }
-    : (p) => `${dirCellClass(p)} mp-pnl-cell`;
+    : (p) => `${dirCellClass(p)}`;
   return /** @type {any[]} */ ([
     symColLeft,
     sparkCol,
@@ -570,7 +568,7 @@ export function mkRightColDefs({
       cellClass: (p) => {
         if (!p.data || p.data._isTotal) return RA;
         const sym = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
-        const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
+        const base = `${RA} ${dirCls(p.value)}`;
         if (getLtpFlashUp && getLtpFlashUp().has(sym)) return `${RA} ${dirCls(p.value)} tf-up`;
         if (getLtpFlashDown && getLtpFlashDown().has(sym)) return `${RA} ${dirCls(p.value)} tf-down`;
         return base;
@@ -616,7 +614,7 @@ export function mkRightColDefs({
     ...(getDerivedByKey ? [mkExpPnlCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr }), mkExtrinsicCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr })] : []),
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
+      cellClass: (p) => `${RA} ${dirCls(p.value)}`,
       valueGetter: _pnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'P&L as % of cost basis.' },

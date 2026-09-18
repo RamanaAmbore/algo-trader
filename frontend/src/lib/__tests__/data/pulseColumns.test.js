@@ -494,11 +494,11 @@ describe('Fix 3 — mkPosSummaryCols day_change_percentage (no mp-pnl-cell)', ()
     expect(result).not.toContain('mp-pnl-cell');
   });
 
-  it('day_pnl column still uses pnlCellClass (has mp-pnl-cell)', () => {
+  it('day_pnl column uses pnlCellClass (text color only, no mp-pnl-cell)', () => {
     const dayPnlCol = cols.find(c => c.field === 'day_pnl');
-    // pnlCellClass with no field → early return of base which contains mp-pnl-cell
     const result = dayPnlCol.cellClass(_makeP(100));
-    expect(result).toContain('mp-pnl-cell');
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
   });
 });
 
@@ -553,10 +553,11 @@ describe('Fix 4 — mkHoldSummaryCols pct columns (no mp-pnl-cell)', () => {
     expect(result).not.toContain('mp-pnl-cell');
   });
 
-  it('day_pnl column still uses pnlCellClass (has mp-pnl-cell)', () => {
+  it('day_pnl column uses pnlCellClass (text color only, no mp-pnl-cell)', () => {
     const dayPnlCol = cols.find(c => c.field === 'day_pnl');
     const result = dayPnlCol.cellClass(_makeP(500));
-    expect(result).toContain('mp-pnl-cell');
+    expect(result).toContain('cell-pos');
+    expect(result).not.toContain('mp-pnl-cell');
   });
 });
 
@@ -571,15 +572,15 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
     // sym is falsy → early return at `!sym` guard → returns base
     const p = _makeP(12345, { _isTotal: true });
     const result = pnlCellClass(p, 'day_pnl');
-    // base = `${RA} ${dirCls(p.value)} mp-pnl-cell`
-    expect(result).toBe(`${_RA} cell-pos mp-pnl-cell`);
+    // base = `${RA} ${dirCls(p.value)}`
+    expect(result).toBe(`${_RA} cell-pos`);
     expect(result).not.toMatch(/tf-up|tf-down|ltp-flash/);
   });
 
   it('TOTAL row negative value returns base class only', () => {
     const p = _makeP(-5000, { _isTotal: true });
     const result = pnlCellClass(p, 'pnl');
-    expect(result).toBe(`${_RA} cell-neg mp-pnl-cell`);
+    expect(result).toBe(`${_RA} cell-neg`);
     expect(result).not.toMatch(/tf-up|tf-down|ltp-flash/);
   });
 
@@ -612,7 +613,7 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
       getLtpFlashDown: () => new Set(),
     });
     const result = pcc(_makeP(200, { tradingsymbol: 'RELIANCE' }), 'day_pnl');
-    expect(result).toBe(`${_RA} cell-pos mp-pnl-cell`);
+    expect(result).toBe(`${_RA} cell-pos`);
     expect(result).not.toMatch(/tf-up|tf-down/);
   });
 });
