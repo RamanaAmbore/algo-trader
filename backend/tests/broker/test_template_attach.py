@@ -148,6 +148,9 @@ class TestDhanMcxTemplateGate:
         This test verifies that the MCX gate doesn't fire for NFO.
         The symbol validation is a separate concern.
         """
+        from unittest.mock import patch as _patch
+        import backend.brokers.adapters.dhan as _dhan_mod
+
         mock_conn = MagicMock()
         mock_sdk = MagicMock()
         mock_conn.get_dhan_conn.return_value = mock_sdk
@@ -156,20 +159,21 @@ class TestDhanMcxTemplateGate:
         adapter._conn = mock_conn
         adapter._account = "ZG0001"
 
-        # NFO should not hit the MCX gate; it may fail for other reasons
-        # (unknown symbol, etc.) but not the MCX gate.
-        try:
-            adapter.place_gtt(
-                trigger_type="single",
-                tradingsymbol="NIFTY25APR24000CE",
-                exchange="NFO",
-                last_price=100.0,
-                trigger_values=[105.0],
-                orders=[{"order_type": "LIMIT", "quantity": 1, "price": 105.0}],
-            )
-        except (RuntimeError, NotImplementedError) as e:
-            # May fail for other reasons (unknown symbol), not MCX gate
-            assert "MCX" not in str(e) or "does not cover" in str(e)
+        # Patch _resolve_security_id to return "" (unknown symbol) — avoids
+        # triggering _ensure_dhan_instruments which makes a live network call.
+        with _patch.object(_dhan_mod, "_resolve_security_id", return_value=""):
+            try:
+                adapter.place_gtt(
+                    trigger_type="single",
+                    tradingsymbol="NIFTY25APR24000CE",
+                    exchange="NFO",
+                    last_price=100.0,
+                    trigger_values=[105.0],
+                    orders=[{"order_type": "LIMIT", "quantity": 1, "price": 105.0}],
+                )
+            except (RuntimeError, NotImplementedError) as e:
+                # May fail for other reasons (unknown symbol), not MCX gate
+                assert "MCX" not in str(e) or "does not cover" in str(e)
 
 
 # ─── #7: wing_premium_pct=0 ────────────────────────────────────────────────────
