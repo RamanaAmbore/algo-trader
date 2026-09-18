@@ -5650,6 +5650,7 @@
     color: var(--c-muted);
     font-style: italic;
     text-align: center;
+    align-self: start;
   }
 
   /* ── Per-underlying snapshot card ────────────────────────────────
@@ -5678,7 +5679,7 @@
       minmax(4rem,   0.6fr); /* EV */
     min-width: 1020px;
     font-family: var(--font-numeric);
-    font-size: var(--fs-sm);        /* match Pulse Positions ~0.625rem */
+    font-size: 0.72rem;              /* match Pulse Positions ~0.625rem */
   }
   .byund-headrow,
   .byund-row {
@@ -6061,7 +6062,7 @@
     font-variant-numeric: tabular-nums;
   }
   .cand-headrow {
-    font-size: var(--fs-xs);
+    font-size: 0.65rem;
     font-weight: 800;
     color: var(--text-muted);
     text-transform: uppercase;

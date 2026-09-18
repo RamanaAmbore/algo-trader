@@ -786,7 +786,7 @@
              title={realizedPnl !== 0
                ? `Position lifetime P&L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
                : "Position lifetime P&L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's intraday move — use the DAY P&L row above for that."}>
-          <span class="ps-k">TODAY</span>
+          <span class="ps-k">P&amp;L</span>
           <span class={'ps-v ' + ((curveAtSpot?.today_value ?? 0) >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(curveAtSpot?.today_value)}
           </span>
@@ -815,7 +815,7 @@
              title={legsExpPnlAtSpot != null
                ? 'Strategy P&L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&L column.'
                : 'Strategy P&L at expiry (intrinsic only) for the current spot — same vertical offset as TODAY.'}>
-          <span class="ps-k">EXP</span>
+          <span class="ps-k">Exp P&amp;L</span>
           <span class={'ps-v ' + (_expDisplayVal >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(_expDisplayVal)}
           </span>
@@ -1243,14 +1243,14 @@
         </div>
         {#if hover?.today != null}
         <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">TODAY</span>
+          <span class="chart-tooltip-label">P&amp;L</span>
           <span class="chart-tooltip-value" class:up={(hover?.today ?? 0) >= 0} class:down={(hover?.today ?? 0) < 0}>
             {fmtMoney(hover?.today)}
           </span>
         </div>
         {/if}
         <div class="chart-tooltip-row">
-          <span class="chart-tooltip-label">EXP</span>
+          <span class="chart-tooltip-label">Exp P&amp;L</span>
           <span class="chart-tooltip-value" class:up={(hover?.expiry ?? 0) >= 0} class:down={(hover?.expiry ?? 0) < 0}>
             {fmtMoney(hover?.expiry)}
           </span>

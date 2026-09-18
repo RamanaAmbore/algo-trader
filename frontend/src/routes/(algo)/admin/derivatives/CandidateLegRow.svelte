@@ -422,7 +422,7 @@
        rows' spacing from the header's. */
     padding: 0;
     align-items: stretch;
-    font-size: var(--fs-sm);
+    font-size: 0.72rem;
     font-family: monospace;
     font-variant-numeric: tabular-nums;
     border-radius: 3px;
@@ -593,11 +593,8 @@
     padding: 0 0.25rem;
     font-weight: 700;
   }
-  /* Background tint for P&L cells (colour comes from the global
-     cell-pos / cell-neg / cell-flat rules in MarketPulse). */
-  :global(.cand-pnl.cell-pos)  { background-color: rgba(74,222,128,0.08); }
-  :global(.cand-pnl.cell-neg)  { background-color: rgba(248,113,113,0.08); }
-  :global(.cand-pnl.cell-flat) { background-color: rgba(148,163,184,0.06); }
+  /* Background tint removed — P&L sign is conveyed by cell-pos/cell-neg
+     text colour alone; background tints added visual noise at row density. */
 
   /* ── Split-row tags ───────────────────────────────────────────────── */
   /* Split-row tags — small chip beside the symbol, indicates whether
