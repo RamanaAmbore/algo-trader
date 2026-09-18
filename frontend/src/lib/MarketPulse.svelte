@@ -2295,19 +2295,19 @@
     if (_flashRefreshTimer) return;
     _flashRefreshTimer = setTimeout(() => {
       _flashRefreshTimer = null;
-      const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
+      const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl', 'day_pnl_pct'];
       if (gridPinnedReady && gridPinned && topTab === 'pinned')
-        try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
+        try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline', 'left_change_pct'], force: true }); } catch (_) {}
       if (gridWatchReady && gridWatch && typeof topTab === 'number')
-        try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
+        try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline', 'left_change_pct'], force: true }); } catch (_) {}
       if (gridPositionsReady && gridPositions && showPositions)
         try { gridPositions.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridHoldingsReady && gridHoldings && showHoldings)
         try { gridHoldings.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridWinReady && gridWin && showWinners)
-        try { gridWin.refreshCells({ columns: cols, force: true }); } catch (_) {}
+        try { gridWin.refreshCells({ columns: [...cols, 'left_change_pct'], force: true }); } catch (_) {}
       if (gridLoseReady && gridLose && showLosers)
-        try { gridLose.refreshCells({ columns: cols, force: true }); } catch (_) {}
+        try { gridLose.refreshCells({ columns: [...cols, 'left_change_pct'], force: true }); } catch (_) {}
     }, 50);
   }
 

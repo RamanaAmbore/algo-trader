@@ -338,7 +338,7 @@ describe('mkPrevCol — headerName is P.Close', () => {
   });
 });
 
-describe('mkRightColDefs — column order LTP→Lots→Qty→Avg→P.Close', () => {
+describe('mkRightColDefs — column order LTP→Chg%→Lots→Qty→Avg→P.Close', () => {
   function getOrderedCols() {
     return mkRightColDefs(makeOpts());
   }
@@ -361,13 +361,13 @@ describe('mkRightColDefs — column order LTP→Lots→Qty→Avg→P.Close', () 
     expect(prevIdx).toBeLessThan(dayPnlIdx);
   });
 
-  it('prevCol appears BEFORE day_pnl_pct', () => {
+  it('day_pnl_pct (Chg%) appears immediately after ltpCol', () => {
     const cols = getOrderedCols();
-    const prevIdx      = cols.findIndex(c => c.field === 'prev');
+    const ltpIdx       = cols.findIndex(c => c.colId === 'ltp'  || c.field === 'ltp');
     const dayPnlPctIdx = cols.findIndex(c => c.colId === 'day_pnl_pct');
-    expect(prevIdx,      'prev column not found').not.toBe(-1);
+    expect(ltpIdx,       'ltp column not found').not.toBe(-1);
     expect(dayPnlPctIdx, 'day_pnl_pct column not found').not.toBe(-1);
-    expect(prevIdx).toBeLessThan(dayPnlPctIdx);
+    expect(ltpIdx + 1).toBe(dayPnlPctIdx);
   });
 });
 
