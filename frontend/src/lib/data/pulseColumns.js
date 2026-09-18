@@ -103,13 +103,15 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown,
       const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
                    : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
                    : getLtpFlashPct?.()?.get(symUpper) ?? 1;
-      return `${base} ${_bgFlashClass('up', absPct)}`;
+      // Omit mp-pnl-cell: its !important background-color overrides the animation
+      return `${RA} ${dirCls(p.value)} ${_bgFlashClass('up', absPct)}`;
     }
     if (inFlashDown) {
       const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
                    : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
                    : getLtpFlashPct?.()?.get(symUpper) ?? 1;
-      return `${base} ${_bgFlashClass('down', absPct)}`;
+      // Omit mp-pnl-cell: its !important background-color overrides the animation
+      return `${RA} ${dirCls(p.value)} ${_bgFlashClass('down', absPct)}`;
     }
     const fc = getMpFlash().classOf(`${sym}:${field}`);
     return fc ? `${base} ${fc}` : base;
@@ -281,17 +283,34 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
   const sym  = String(p.data.quote_symbol || p.data.tradingsymbol || '').toUpperCase();
   const ltp  = resolveCellLtp(p);
   const cls  = [RA];
-  // Animation gate — tick-flash only when the row's exchange is
-  // currently open. Snapshot rows render static.
+  // Compute day% and dirBg upfront — needed in both animation branches.
+  const pct = p.data.change_pct ?? p.data.day_pnl_pct ?? null;
+  const prev = p.data.close ?? null;
+  const dayPct = pct != null ? pct
+    : (typeof ltp === 'number' && typeof prev === 'number' && prev > 0
+        ? (ltp - prev) / prev * 100
+        : null);
+  const dirBg = dayPct == null ? 'cell-flat'
+    : dayPct > 0.001 ? 'cell-pos'
+    : dayPct < -0.001 ? 'cell-neg'
+    : 'cell-flat';
+  // Animation gate — tick-flash only when the row's exchange is currently open.
   if (_isAnimating(p.data)) {
     const fc = _ltpFlashClass(sym, getLtpFlashUp, getLtpFlashDown, getLtpFlashPct, p.data);
-    if (fc) cls.push(fc);
+    if (fc) {
+      cls.push(fc);
+      // Omit mp-pnl-cell here: its !important background-color overrides the
+      // tf-up/tf-down animation. Restored by _scheduleFlashRefresh once flash clears.
+    } else {
+      cls.push(dirBg, 'mp-pnl-cell');
+    }
   } else {
     cls.push('ltp-snap');
     // Slight visual differentiation for the pre-settle window —
     // frontend can style .ltp-snap-unsettled with a dashed border
     // to convey "close_price not yet published".
     if (_normalisePriceSource(p.data) === 'snapshot_unsettled') cls.push('ltp-snap-unsettled');
+    cls.push(dirBg, 'mp-pnl-cell');
   }
   const heatCls = _ltpHeatClasses(ltp, _ltpAvgFor(p.data), p.data.close ?? null);
   for (const c of heatCls) cls.push(c);
@@ -299,18 +318,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown, ge
   // Prefer precomputed change_pct / day_pnl_pct (same SSOT as Day % column).
   // Falls back to computing day% from ltp vs close_price when neither field
   // is present (e.g. underlying snapshot rows where change_pct may be absent).
-  const pct = p.data.change_pct ?? p.data.day_pnl_pct ?? null;
-  const prev = p.data.close ?? null;
-  const dayPct = pct != null ? pct
-    : (typeof ltp === 'number' && typeof prev === 'number' && prev > 0
-        ? (ltp - prev) / prev * 100
-        : null);
   cls.push(ltpDayClass(dayPct));
-  const dirBg = dayPct == null ? 'cell-flat'
-    : dayPct > 0.001 ? 'cell-pos'
-    : dayPct < -0.001 ? 'cell-neg'
-    : 'cell-flat';
-  cls.push(dirBg, 'mp-pnl-cell');
   return cls.join(' ');
 }
 
@@ -577,7 +585,7 @@ export function mkRightColDefs({
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
       hide: false,
-      width: 38, minWidth: 38, maxWidth: 38,
+      width: 28, minWidth: 28, maxWidth: 28,
       pinned: 'left', resizable: false, sortable: false, suppressMovable: true,
       headerTooltip: 'Position state: Paired (P1/P2 cyan) · Orphan (○ amber) · GTT (green)',
       cellStyle: (p) => {
