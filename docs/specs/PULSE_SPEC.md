@@ -942,6 +942,28 @@ calculations reflect real-time MCX rates instead of freezing at page-load or set
 
 ---
 
+### 13.9 Column Width Reductions Across All Pulse Grids (Sep 2026)
+
+Pulse column widths were optimized to reduce horizontal scrolling burden on mobile and 
+narrow desktop viewports. Changes ship uniformly across all grids (Positions, Holdings, 
+Pinned, Watchlist, Winners, Losers, Derivatives Legs, Derivatives Snapshot):
+
+**Numeric column widths** (all Pulse grids):
+- **Day P&L**: 78px → 58px (min 45px, max 72px) — tighter vertical stripe
+- **P&L**: 78px → 58px (min 45px, max 72px) — matches day P&L width
+- **Exp P&L** (derivatives legs only): 90px → 68px — compact notation
+- **Extrinsic** (derivatives legs only): 90px → 68px — time-value stripe
+
+**CSS Grid columns** (derivatives legs grid `.cand-grid`):
+- **St** (position state column): 38px → 28px — minimal room for circle glyph
+
+**Rationale**: Numeric values in Pulse grids use ultra-compact formatting 
+(`aggCompact` notation: L/K/C for large values, decimals for small). Reduced 
+column space encourages compact display on mobile and aligns wide-screen 
+padding with operator scrolling expectations (sidebar pinned, grid scrollable).
+
+---
+
 ## 14. Column Definitions
 
 Every ag-Grid column uses a factory function (e.g. `mkLtpCol`, `mkPrevCol`) that accepts 
@@ -1002,6 +1024,35 @@ the accessors so cells see current $state values on every redraw (not stale bind
 **CE/PE text color** (Sensibull convention):
 - Green for CE (call, bullish), Red for PE (put, bearish) when visible in symbol display
 - Implemented in symbol cell renderer via `mkSymColRight` / `mkSymColLeft`
+
+**Direction border indicator** (extended to all grids, Sep 2026):
+The right-edge colored border on the symbol column now appears consistently across 
+ALL Pulse grids to signal position direction (long/bullish vs short/bearish):
+
+- **Positions & Holdings** (existing behavior, commit 307a8c5a):
+  - Row class: `pos-long` (green border) or `pos-short` (red border)
+  - Selector: `ag-col-sym::after` pseudo-element
+  - Indicates position type: long, short, or direction inferred from average price sign
+
+- **Pinned, Watchlist, Winners, Losers** (new, commit 307a8c5a):
+  - Cell class: `chg-up` (green border) or `chg-down` (red border) on symbol cell
+  - Selector: `ag-col-sym-left::after` pseudo-element
+  - Indicates intraday direction: price change up (green) or down (red) since previous close
+
+- **Derivatives Legs** (existing behavior, unchanged):
+  - Row class: `cand-sym-acct` on the symbol cell
+  - Selector: `cand-sym-acct::after` pseudo-element (border maintained from existing CSS)
+  - Indicates leg direction (long/short derived from order side)
+
+- **Derivatives Snapshot (by-underlying)** (new, commit 307a8c5a):
+  - Row class: `byund-dir-long` (green) or `byund-dir-short` (red)
+  - Selector: `byund-und::after` pseudo-element
+  - Indicates net direction across all legs for that underlying
+
+**Visual consistency**: All four direction-indicator pseudo-elements use the 
+canonical `--algo-green` and `--algo-red` tokens from `:root`, ensuring 
+uniform color across all surfaces. Border width and positioning tuned 
+per-grid layout (ag-Grid vs CSS Grid, fixed vs flex columns).
 
 **Orphan badge** (Aug 2026):
 - Coral "O" badge (class `badge-o`) shown in symbol or status column when `is_orphan=true`
@@ -1304,7 +1355,36 @@ to vanish from exp P&L totals.
   when options settle at expiry, storing actual P&L in `pnl` instead)
 - No sensitivity to spot price (position is flat, P&L is locked)
 
-### 17.8 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
+### 17.8 Derivatives Tick Flash — LTP and Day P&L Surfaces (Sep 2026)
+
+Tick flash (directional color animation on SSE ticks) now extends to derivatives 
+surfaces beyond positions/holdings grids, providing real-time visual feedback 
+across all Pulse + derivatives pages.
+
+**Derivatives Legs LTP cell flash** (commit 307a8c5a):
+- LTP value now carries TWO simultaneous flash classes on tick:
+  - **`:ltp` flash** — background pulse (existing behavior, 300ms `tf-up`/`tf-down`)
+  - **`:chg` flash** — text-color pulse (new, 500ms `ltp-tc-flash-up/down`)
+- Both animations fire together on SSE tick; provides distinct visual signals
+  (background flash for momentum, text-color flash for trend persistence)
+
+**Derivatives Snapshot (by-underlying) Day P&L cell flash** (commit 307a8c5a):
+- Per-root Day P&L cell now receives tick flash keyed on `${underlying}:day_w` SSE updates
+- Animation class: `.tf-up` (green cascade, positive move) or `.tf-down` (red cascade, loss)
+- Fires on every 4Hz SSE tick when underlying LTP changes; provides immediate P&L feedback
+
+**Payoff Overlay Spot price + Day P&L flash** (existing, sec 17.2):
+- Spot price display continues to use `.tf-up`/`.tf-down` background flash on quote updates
+- Day P&L row in the overlay stat now also flashes on postback fill or 5s poll cycle
+- Both animations synchronized (same duration, same directional tokens)
+
+**Impact**: Operators see unified flash feedback across MarketPulse grids, 
+derivatives Legs grid, Snapshot grid, and Payoff overlay — consistent visual 
+language for real-time price and P&L movement throughout the platform.
+
+---
+
+### 17.9 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
 
 The derivatives page (`/admin/derivatives`) now uses the same live SSE tick source 
 (`liveSnap` from `symbolStore.svelte.js`) as the Pulse grids for spot price display 
@@ -2092,3 +2172,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
 | 2026-09-14 | v1.15 positionsDerivedStore unification (TBD): §13 Right-grid column definitions updated — Day P&L column now reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, replaces `setFromPulse`). Two new columns added after P&L: **Exp P&L** (78px, F&O only, reads `positionsDerivedStore.byKey[sym].exp_pnl`) and **Extrinsic** (78px, F&O only, `exp_pnl - (ltp - avg) × qty`, zero for closed/equity). §13 Day P&L recompute section updated — store computes on 5s book-poll + immediate postback fill; replaces legacy `setFromPulse()` with unified store read across all consumers (NavStrip, Pulse grids, derivatives page). Per-leg Day P&L rescue path updated — uses store-driven refresh instead of Pulse-page-dependency. §13.1 Per-leg Day P&L section reworded to reflect store-driven MCX settlement stability and fallback behavior. All Pulse surfaces now converge on single `positionsDerivedStore` SSOT for day P&L and exp P&L metrics; 5s cadence + immediate fills eliminate cross-page divergence. Related: NAVSTRIP_SPEC updated §1 P:1 and P:3 slots, new §1.4 "Positions Derived Store" subsection documenting module design, cadence, data flow, and consumers. |
 | 2026-09-15 | v1.16 CSS tokens + LTP/day% text flash + Exp P&L scoping + tab-reconnect (commit 562c1a4b): (1) **§28 CSS Directional Flash Tokens** — new section documents canonical tokens (`--algo-green`, `--algo-red`, `--algo-dim`, `--algo-green-flash`, `--algo-red-flash`, `--algo-green-cascade`, `--algo-red-cascade`, `--algo-green-pnl-bg`, `--algo-red-pnl-bg`) for directional colors + animations. All cell color classes (`cell-pos/neg/flat`, `mp-pnl-cell`) now reference tokens instead of hardcoded hex. Palette updates now mechanical. (2) **§29 LTP & Spot & Day % Text-Color Flash** — new section documents new animation pair (`.ltp-tc-flash-up/down`, 500ms) for LTP, spot, and day%-change cells. Text color animates from `--algo-green-text` / `--algo-red-text` back to `inherit`. Applied to: LTP cells (all grids), spot price (derivatives), `change_pct` (left grid), `day_pnl_pct` (right grids). Reference price comparison: LTP vs `prev_close`, day% vs 0. SSE-driven (sub-second) + poll-cycle triggered (5–30s cadence). (3) **§30 Holdings & Positions Exp P&L Column Scoping** — new section documents Exp P&L / Extrinsic columns now scoped to **positions grid only**. Holdings rows return null, render "—". Rationale: holdings are long-term equity without derivatives overlay; no expiry value. Positions grid totals row sums Exp P&L across all F&O legs; holdings totals row omits. (4) **§31 Tab-Return SSE Reconnect** — new section documents permanent `visibilitychange` listener in `quoteStream.js:startQuoteStream()`. When browser tab returns to focus, listener calls `restartQuoteStream()` immediately. LTP ticks resume flowing within ~100ms; preserves real-time visibility across tab switches. Graceful fallback to polling if reconnect fails. Impact: all changes ship in commit 562c1a4b (CSS token consolidation, text-color flash intro, Exp P&L column scoping, SSE reconnect) with no behavior breaking changes — purely visual + UX refinement. |
+| 2026-09-18 | v1.17 Column width reductions + direction borders + derivatives tick flash (commit 307a8c5a): (1) **§13.9 Column Width Reductions** — new subsection documents numeric column width optimizations across all Pulse grids (Positions, Holdings, Pinned, Watchlist, Winners, Losers, Derivatives): Day P&L 78→58px, P&L 78→58px, Exp P&L 90→68px, Extrinsic 90→68px, derivatives St 38→28px. Rationale: compact `aggCompact` notation + mobile/narrow-screen scrolling reduction. (2) **§14 Direction border indicator** — extension documents right-edge colored border (signal long/short direction) now uniform across ALL Pulse grids: Positions/Holdings (existing `pos-long`/`pos-short` row classes → `ag-col-sym::after`), Pinned/Watchlist/Winners/Losers (new `chg-up`/`chg-down` cell classes → `ag-col-sym-left::after`), Derivatives Legs (existing `cand-sym-acct::after`), Derivatives Snapshot (new `byund-dir-long`/`byund-dir-short` → `byund-und::after`). All use canonical `--algo-green` / `--algo-red` tokens. (3) **§17.8 Derivatives Tick Flash** — new subsection (renumbered 17.9 for liveSnap) documents tick-flash extension to derivatives surfaces: Derivatives Legs LTP now carries dual flash classes (`:ltp` background + `:chg` text-color on tick), Derivatives Snapshot Day P&L cell flashes on `${underlying}:day_w` SSE ticks, Payoff Overlay Spot + Day P&L both animate (background + text-color). Impact: unified directional flash feedback across MarketPulse + derivatives pages; operators see consistent real-time visual language for price/P&L movement. |
