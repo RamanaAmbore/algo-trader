@@ -90,19 +90,22 @@ export function mkPnlCellClass({ RA, getMpFlash, getLtpFlashUp, getLtpFlashDown,
     const base = `${RA} ${dirCls(p.value)} mp-pnl-cell`;
     const sym = p.data?.tradingsymbol;
     if (!sym || !field) return base;
-    const symUpper = String(sym).toUpperCase();
+    const symUpper      = String(sym).toUpperCase();
+    const quoteSym      = p.data?.quote_symbol ? String(p.data.quote_symbol).toUpperCase() : null;
     const ltpFlashUp   = getLtpFlashUp();
     const ltpFlashDown = getLtpFlashDown();
+    const inFlashUp   = ltpFlashUp.has(symUpper)   || (quoteSym ? ltpFlashUp.has(quoteSym)   : false);
+    const inFlashDown = ltpFlashDown.has(symUpper) || (quoteSym ? ltpFlashDown.has(quoteSym) : false);
     // LTP cascade takes precedence over poll-diff flash.
     // Use _bgFlashClass so the background cascade is magnitude-tiered.
     // Prefer cumulative day % from row data; tick-delta map is fallback only.
-    if (ltpFlashUp.has(symUpper)) {
+    if (inFlashUp) {
       const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
                    : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
                    : getLtpFlashPct?.()?.get(symUpper) ?? 1;
       return `${base} ${_bgFlashClass('up', absPct)}`;
     }
-    if (ltpFlashDown.has(symUpper)) {
+    if (inFlashDown) {
       const absPct = p.data?.day_pnl_pct != null ? Math.abs(p.data.day_pnl_pct)
                    : p.data?.change_pct  != null ? Math.abs(p.data.change_pct)
                    : getLtpFlashPct?.()?.get(symUpper) ?? 1;
@@ -472,7 +475,7 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
   const changePctCellClass = getMpFlash
     ? (p) => {
         const sym = p.data?.tradingsymbol;
-        const base = dirCellClass(p);
+        const base = `${dirCellClass(p)} mp-pnl-cell`;
         if (!sym) return base;
         const fc = getMpFlash().classOf(`${sym}:change_pct`);
         if (!fc) return base;
@@ -480,7 +483,7 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
         const absPct = Math.abs(p.data?.change_pct ?? 1);
         return `${base} ${_tcFlashClass(dir, absPct)}`;
       }
-    : dirCellClass;
+    : (p) => `${dirCellClass(p)} mp-pnl-cell`;
   return /** @type {any[]} */ ([
     symColLeft,
     sparkCol,
@@ -624,18 +627,9 @@ export function mkRightColDefs({
       valueFormatter: aggFmtGrid },
     { field: 'day_pnl_pct', headerName: 'Chg %', colId: 'day_pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: getMpFlash
-        ? (p) => {
-            const base = `${RA} ${dirCls(p.value)}`;
-            const sym = p.data?.tradingsymbol;
-            if (!sym) return base;
-            const fc = getMpFlash().classOf(`${sym}:day_pnl_pct`);
-            if (!fc) return base;
-            const dir = fc === 'tf-up' ? 'up' : 'down';
-            const absPct = Math.abs(p.data?.day_pnl_pct ?? p.data?.change_pct ?? 1);
-            return `${base} ${_tcFlashClass(dir, absPct)}`;
-          }
-        : (p) => `${RA} ${dirCls(p.value)}`,
+      cellClass: pnlCellClass
+        ? (p) => pnlCellClass(p, 'day_pnl_pct')
+        : (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
       valueGetter: _dayPnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
@@ -643,10 +637,10 @@ export function mkRightColDefs({
       type: 'numericColumn', headerClass: numericHdr,
       cellClass: (p) => pnlCellClass(p, 'pnl'),
       valueFormatter: aggFmtGrid },
-    ...(getDerivedByKey ? [mkExpPnlCol(getDerivedByKey), mkExtrinsicCol(getDerivedByKey)] : []),
+    ...(getDerivedByKey ? [mkExpPnlCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr }), mkExtrinsicCol(getDerivedByKey, { RA: /** @type {string} */ (RA), numericHdr })] : []),
     { field: 'pnl_pct', headerName: 'P&L %', colId: 'pnl_pct',
       width: 64, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => `${RA} ${dirCls(p.value)}`,
+      cellClass: (p) => `${RA} ${dirCls(p.value)} mp-pnl-cell`,
       valueGetter: _pnlPctValueGetter,
       valueFormatter: pctFmtGrid,
       headerTooltip: 'P&L as % of cost basis.' },
@@ -751,12 +745,14 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, 
  * Blank for non-derivative rows (exp_pnl === null).
  * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
  */
-export function mkExpPnlCol(getDerivedByKey) {
+export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
+  const raStr = /** @type {string} */ (RA);
   return {
     headerName: 'Exp P&L',
     colId: 'exp_pnl',
     width: 90,
     type: 'numericColumn',
+    headerClass: numericHdr,
     valueGetter: p => {
       // TOTAL row carries the pre-summed exp_pnl from _totalsRowFor.
       if (p.data?._isTotal) return p.data.exp_pnl ?? null;
@@ -766,7 +762,7 @@ export function mkExpPnlCol(getDerivedByKey) {
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
       return getDerivedByKey()[sym]?.exp_pnl ?? null;
     },
-    cellClass: p => dirCls(p.value),
+    cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Projected P&L at expiry — option intrinsic × qty (options) or (spot − avg) × qty (futures). Blank for equity rows.',
   };
@@ -777,12 +773,14 @@ export function mkExpPnlCol(getDerivedByKey) {
  * Blank for non-derivative rows (extrinsic === null).
  * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
  */
-export function mkExtrinsicCol(getDerivedByKey) {
+export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
+  const raStr = /** @type {string} */ (RA);
   return {
     headerName: 'Extrinsic',
     colId: 'extrinsic',
     width: 90,
     type: 'numericColumn',
+    headerClass: numericHdr,
     valueGetter: p => {
       // TOTAL row: extrinsic is not summed (doesn't apply to the aggregate).
       if (p.data?._isTotal) return null;
@@ -791,7 +789,7 @@ export function mkExtrinsicCol(getDerivedByKey) {
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
       return getDerivedByKey()[sym]?.extrinsic ?? null;
     },
-    cellClass: p => dirCls(p.value),
+    cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus intrinsic (ltp−avg)×qty. Positive when you paid/received more than the current mark-to-market.',
   };

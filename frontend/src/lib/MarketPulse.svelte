@@ -2182,7 +2182,8 @@
         if (r.day_pnl     != null) _mpFlash.update(`${sym}:day_pnl`,     Number(r.day_pnl));
         if (r.pnl         != null) _mpFlash.update(`${sym}:pnl`,         Number(r.pnl));
         if (r.change_pct  != null) _mpFlash.update(`${sym}:change_pct`,  Number(r.change_pct));
-        if (r.day_pnl_pct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(r.day_pnl_pct));
+        const dpPct = r.day_pnl_pct ?? r.change_pct ?? null;
+        if (dpPct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(dpPct));
       }
       gridHoldings.setGridOption('rowData', hRows);
       gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
@@ -2192,10 +2193,32 @@
       }, 400);
     });
   } });
-  $effect(() => { if (gridWinReady && gridWin)
-    gridWin.setGridOption('rowData', winRows); });
-  $effect(() => { if (gridLoseReady && gridLose)
-    gridLose.setGridOption('rowData', loseRows); });
+  $effect(() => { if (gridWinReady && gridWin) {
+  const rows = winRows;
+  untrack(() => {
+    for (const r of rows) {
+      const sym = r.tradingsymbol;
+      if (!sym || r._isTotal) continue;
+      if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
+    }
+    gridWin.setGridOption('rowData', rows);
+    try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
+    setTimeout(() => { try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
+  });
+} });
+  $effect(() => { if (gridLoseReady && gridLose) {
+  const rows = loseRows;
+  untrack(() => {
+    for (const r of rows) {
+      const sym = r.tradingsymbol;
+      if (!sym || r._isTotal) continue;
+      if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
+    }
+    gridLose.setGridOption('rowData', rows);
+    try { gridLose.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
+    setTimeout(() => { try { gridLose.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
+  });
+} });
 
   // ag-Grid doesn't observe $state reads inside cell renderers, so
   // sparkline updates after the row data has stabilised won't trigger
@@ -2273,6 +2296,10 @@
     _flashRefreshTimer = setTimeout(() => {
       _flashRefreshTimer = null;
       const cols = ['ltp', 'sparkline', 'day_pnl', 'pnl'];
+      if (gridPinnedReady && gridPinned && topTab === 'pinned')
+        try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
+      if (gridWatchReady && gridWatch && typeof topTab === 'number')
+        try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
       if (gridPositionsReady && gridPositions && showPositions)
         try { gridPositions.refreshCells({ columns: cols, force: true }); } catch (_) {}
       if (gridHoldingsReady && gridHoldings && showHoldings)
@@ -3695,7 +3722,9 @@
     // Holdings grid omits the pos_state column (pair/orphan/GTT state
     // is a positions-only concept; showing it on holdings rows misleads).
     const holdingsColDefs = (() => {
-      const cols = rightColDefs.filter(c => c.colId !== 'pos_state');
+      const cols = rightColDefs.filter(c =>
+        !['pos_state', 'exp_pnl', 'extrinsic'].includes(c.colId)
+      );
       const lotsIdx   = cols.findIndex(c => c.colId === 'lots');
       const invValIdx = cols.findIndex(c => c.colId === 'inv_val');
       if (lotsIdx !== -1 && invValIdx !== -1 && lotsIdx !== invValIdx - 1) {
@@ -3705,8 +3734,11 @@
       }
       return cols;
     })();
+    const positionsColDefs = rightColDefs.filter(c =>
+      !['pnl_per_share', 'inv_val', 'cur_val'].includes(c.colId)
+    );
     if (gridPositionsEl) {
-      gridPositions = makeBucketGrid(gridPositionsEl, rightColDefs,
+      gridPositions = makeBucketGrid(gridPositionsEl, positionsColDefs,
         'No positions in the active book.', [], { postSortRows: _pairGroupPostSort });
       gridPositionsReady = true;
     }

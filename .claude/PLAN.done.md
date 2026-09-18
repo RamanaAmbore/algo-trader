@@ -1,98 +1,141 @@
-# Plan: Fix four derivatives/NavStrip/Pulse UX bugs
+# Plan: Pulse page — flash fixes + column visibility + right-align + bg color
+
+## Context
+Multiple UX issues on the MarketPulse page found together:
+1. LTP and Chg% cells don't flash for pinned, watchlist, gainers, losers, and holdings
+2. Root spot/futures rows in positions don't flash for LTP/chg% (option rows do)
+3. Holdings shows Exp P&L and Extrinsic columns (derivatives-only, meaningless for holdings)
+4. Positions shows P&L/sh, Invested (inv_val), Value (cur_val) — clutter for a live view
+5. Exp P&L and Extrinsic lack right-alignment (missing `ag-right-aligned-cell`)
+6. Chg%, P&L%, Exp P&L lack background color tinting — P&L has it (`mp-pnl-cell`) but these don't
+
+## Root causes
+
+### Flash gaps (item 1 & 2)
+
+| Tab / row | LTP flash | Chg% flash |
+|---|---|---|
+| pinned | `_scheduleFlashRefresh` skips `gridPinned` → LTP refresh only via slow `_liveLtpSnap` 4Hz path, up to 500ms idle delay, too late for 300ms clearance | poll-diff flash IS wired (`_mpFlash.update` + `refreshCells(['left_change_pct'])`) |
+| watchlist | Same as pinned | Same |
+| gainers | In `_scheduleFlashRefresh` ✓ | `$effect` (line 2195-2196) only calls `setGridOption` — NO `_mpFlash.update()` or `refreshCells` |
+| losers | In `_scheduleFlashRefresh` ✓ | Same as gainers |
+| holdings | In `_scheduleFlashRefresh` ✓ | `_mpFlash.update('${sym}:day_pnl_pct', ...)` silently skips when holdings API rows don't carry `day_pnl_pct` field; use `r.day_pnl_pct ?? r.change_pct` fallback |
+| positions root/futures | In `_scheduleFlashRefresh` — investigate if tickBus key (e.g. `CRUDEOIL26OCTFUT`) matches the row's `tradingsymbol`; also check if futures rows are registered in symbolStore and receiving SSE ticks | Same investigation needed |
+
+### Background color (item 6)
+`mp-pnl-cell` class + `cell-pos/neg` = green/red background tinting. P&L columns use
+`pnlCellClass(p, field)` which adds it. `day_pnl_pct`, `pnl_pct`, `exp_pnl`, `extrinsic`
+only use `dirCls` (text color only) — missing `mp-pnl-cell`.
+
+### Column visibility (items 3 & 4)
+`rightColDefs` is shared. Holdings filters only `pos_state`. Positions uses the array
+directly. Need to filter at call site.
+
+### Right alignment (item 5)
+`mkExpPnlCol` / `mkExtrinsicCol` don't accept `RA` or `numericHdr` params — `cellClass`
+uses only `dirCls(p.value)`, dropping `ag-right-aligned-cell`.
 
 ## Task
 
-Fix four related bugs across the derivatives page, NavStrip, and Pulse page:
+### 1. `_scheduleFlashRefresh` — add pinned + watchlist (MarketPulse.svelte ~line 2271)
+```js
+if (gridPinnedReady && gridPinned && topTab === 'pinned')
+  try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
+if (gridWatchReady && gridWatch && typeof topTab === 'number')
+  try { gridWatch.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
+```
 
-1. **No pulse flash (derivatives + Pulse change%)** — `createTickFlash.update()` advances `prev[key]` BEFORE the hidden-tab guard fires. While the tab is hidden, every poll silently catches `prev` up to the latest value. On tab-return, `v === prev[key]` → no change detected → no flash. Affects: derivatives Snapshot/legs/PayoffGreeks cells (poll-diff flash via `_mpFlash`) AND Pulse page change% column (same `createTickFlash` instance). Pulse LTP directional flash uses `tickBus` (separate mechanism, not broken by this bug).
+### 2. `mkLeftColDefs` — add `mp-pnl-cell` to chg% base class (pulseColumns.js ~line 475)
+Pinned/watchlist/gainers/losers `left_change_pct` currently uses `dirCellClass(p)` as
+base (text color only). Change to add persistent background tinting — same as holdings:
+```js
+const base = `${dirCellClass(p)} mp-pnl-cell`;
+```
+Apply to both the flash-wired branch and the fallback branch.
 
-2. **Tab-return blank (payoff / snapshot / legs)** — `loadStrategy()` line 3696 sets `loading = true` unconditionally. On tab-return, `marketAwareInterval` fires `loadStrategy()` immediately. If any leg qty changed while hidden (book poller ran), `legsKey !== _stratLastKey` → legs-signature memo doesn't skip → `loading = true` for 2-5s → payoff overlay, legs list, and snapshot all blank. The old strategy is already in memory and displayable; the refresh should be silent when a strategy exists.
+### 3. Gainers/losers $effects — add flash update + refreshCells
+Replace the one-liner `$effect` for gridWin (line 2195) and gridLose (line 2197) with the
+full pattern (same as pinned/watchlist effects):
+```js
+$effect(() => { if (gridWinReady && gridWin) {
+  const rows = winRows;
+  untrack(() => {
+    for (const r of rows) {
+      const sym = r.tradingsymbol;
+      if (!sym || r._isTotal) continue;
+      if (r.change_pct != null) _mpFlash.update(`${sym}:change_pct`, Number(r.change_pct));
+    }
+    gridWin.setGridOption('rowData', rows);
+    try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {}
+    setTimeout(() => { try { gridWin.refreshCells({ columns: ['left_change_pct'], force: true }); } catch (_) {} }, 400);
+  });
+} });
+// identical pattern for gridLose / loseRows
+```
 
-3. **Stale spot (CRUDEOIL/GOLDM shows 9808)** — selecting an MCX underlying briefly shows the correct spot (from `strategy.spot` Tier-5 fallback or `candidatePositions.underlying_ltp` Tier-3), then `loadUnderlyingQuotes()` fires within 5s and writes the batchQuote result (stale MCX OHLC close = 9808) into `_underlyingQuotes[root]`. `_quoteGeneration++` triggers liveSpot re-derive. Tiers 1-3 fail (no SSE tick, no positions for this underlying). Tier 4 (batchQuote) returns 9808. Tier 5 (strategy.spot = correct) never reached. Root fix: swap Tier 4 and Tier 5 — `strategy.spot` is resolved by the backend using live KiteTicker data and refreshed every 5s; batchQuote for MCX runs at most every 30s and may return stale OHLC.close from the REST API.
+### 3. Holdings chg% flash — use `r.day_pnl_pct ?? r.change_pct` fallback (MarketPulse.svelte ~line 2184)
+```js
+const dpPct = r.day_pnl_pct ?? r.change_pct ?? null;
+if (dpPct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(dpPct));
+```
 
-4. **NavStrip zeros on mount / tab-return** — `PositionStrip.svelte` line 471: `let _prevMktOpen = false`. A `$effect` that watches `_mktTick` (fires every 30s AND immediately on tab-return) checks `if (open && !_prevMktOpen) → dispPositionsToday = 0; dispHoldingsToday = 0`. Because `_prevMktOpen` always starts as `false`, the very first effect run with market open triggers this "closed→open session reset" branch, zeroing both day P&L displays. Intended to wipe stale prior-session P&L at market open; fires falsely on every mount/tab-return because the initial value is `false` regardless of actual market state.
+### 4. Positions root/futures flash — investigate
+Agent should grep for how `quote_symbol` vs `tradingsymbol` is set on futures rows in
+positions data. Check if the `_ltpFlashUp/Down` key lookup uses `tradingsymbol.toUpperCase()`
+(see `mkPnlCellClass` line 93) while tickBus fires with `quote_symbol`. If so, the
+`pnlCellClass` LTP-cascade check needs to try `quote_symbol` too — same pattern as
+`mkResolveCellLtp` (lines 132-136) which already handles this for the LTP value.
+Fix: in `mkPnlCellClass`, also check `getLtpFlashUp().has(p.data?.quote_symbol?.toUpperCase())`.
+
+### 5. Background color — add `mp-pnl-cell` to chg%, P&L%, Exp P&L, Extrinsic (pulseColumns.js)
+
+**`day_pnl_pct` (line 627)**: change cellClass to `pnlCellClass(p, 'day_pnl_pct')` — `pnlCellClass` is already in scope via `mkRightColDefs` params (line 564); this adds `mp-pnl-cell` AND the flash cascade.
+
+**`pnl_pct` (line 647)**: change cellClass to `(p) => \`${RA} ${dirCls(p.value)} mp-pnl-cell\`` (no flash needed here).
+
+**`mkExpPnlCol` and `mkExtrinsicCol`**: update signature to accept `{ RA, numericHdr }`:
+```js
+export function mkExpPnlCol(getDerivedByKey, { RA = 'ag-right-aligned-cell', numericHdr = '' } = {}) {
+  return { headerClass: numericHdr, cellClass: p => `${RA} ${dirCls(p.value)} mp-pnl-cell`, ... }
+}
+```
+Update call site (line 646): `mkExpPnlCol(getDerivedByKey, { RA, numericHdr })`, same for extrinsic.
+
+### 6. Column visibility — filter at call site (MarketPulse.svelte ~line 3697)
+
+Holdings (extend existing filter):
+```js
+const holdingsColDefs = rightColDefs.filter(c =>
+  !['pos_state', 'exp_pnl', 'extrinsic'].includes(c.colId)
+);
+```
+
+Positions (create new filtered var, replace direct `rightColDefs` usage for `gridPositions`):
+```js
+const positionsColDefs = rightColDefs.filter(c =>
+  !['pnl_per_share', 'inv_val', 'cur_val'].includes(c.colId)
+);
+```
 
 ## Agents
-
-- backend: skip
-- frontend: Fix all four bugs — details below
-- broker: skip
-- doc: skip
+- frontend: all changes — `MarketPulse.svelte` (items 1–4, 6) and `pulseColumns.js` (items 4–5). Read exact line numbers before editing.
 - backend-test: skip
-- playwright: skip (add Vitest unit test for createTickFlash hidden-tab behaviour instead)
-
-### Frontend agent task
-
-**File 1: `frontend/src/lib/data/tickFlash.svelte.js`**
-
-Move the hidden-tab guard to the TOP of `update()`, before any `prev[key]` read or write. Current code advances `prev[key]` even when the document is hidden (line 38 before line 53 guard). After the fix: when hidden, skip entirely — `prev[key]` retains "the last value the user actually saw". The first visible tick after tab-return compares against that old value, detects the change, and flashes correctly.
-
-Change the function body so the guard (`if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;`) is the FIRST check after validating `value` is a finite number — before `const last = prev[key]` and before `prev[key] = v`.
-
-Update the existing comment block near the guard to reflect the new semantics: "skip entirely while hidden so prev[key] reflects the last value the user saw, not the last polled value."
-
-This fix covers both surfaces: derivatives page poll-diff flash AND Pulse page change% flash (both use `createTickFlash`).
-
----
-
-**File 2: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` line 3696**
-
-Change `loading = true;` to `if (!strategy) loading = true;`.
-
-When a valid strategy is already rendered, `loadStrategy()` refreshes silently in the background — no need to blank the UI. `loading = true` should only fire when there is nothing to show yet (initial load). The `_refreshing` variable used by RefreshButton is separate (line 4102) and unaffected.
-
----
-
-**File 3: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — `liveSpot` $derived (lines ~1797–1825)**
-
-Swap the order of Tier 4 (batchQuote) and Tier 5 (strategy.spot). After the swap:
-
-- **New Tier 4** (`stratMatchesSel && strategy?.spot`): Strategy is re-fetched every 5s from the backend using live KiteTicker data — at most 5s stale during market hours. Check this before batchQuote.
-- **New Tier 5** (batchQuote, `_underlyingQuotes[selectedUnderlying]?.ltp`): Fallback for when strategy hasn't loaded yet (page first-open, pre-market, no legs). Still needed for MCX pre-open window.
-
-Exact change: move the block at lines 1823–1825 (`if (stratMatchesSel && strategy?.spot != null) { ... return strategy?.spot; }`) to BEFORE the `void _quoteGeneration; const bqLtp = ...` block (currently lines 1816–1821). Keep `_quoteGeneration` as a reactive dep (still needed for MCX pre-open where strategy is null). Update the Tier-4/5 comments to explain the reordering rationale.
-
----
-
-**File 4: `frontend/src/lib/PositionStrip.svelte` line 471**
-
-Change:
-```javascript
-let _prevMktOpen = false;
-```
-to:
-```javascript
-let _prevMktOpen = isNseOpen() || isMcxOpen();
-```
-
-`isNseOpen()` and `isMcxOpen()` are regular (non-reactive) functions already imported and called within this component; calling them at initialization is safe. This seeds `_prevMktOpen` from the actual current market state, preventing the `$effect` from seeing a false "closed→open" transition on first run.
-
----
-
-**Vitest test** (`frontend/src/lib/__tests__/data/tickFlash.test.js` — create if not exists):
-
-Add test: "hidden-tab: prev[key] not advanced while hidden; first visible update flashes"
-- Set `document.visibilityState = 'hidden'`
-- Call `flash.update('x', 100)` (initial seed) then `flash.update('x', 200)` (while hidden — should be skipped)
-- Set `document.visibilityState = 'visible'`
-- Call `flash.update('x', 200)` — should emit 'up' class (prev was still 100, not 200)
-- Call `flash.update('x', 200)` again — no class (no change)
+- playwright: skip
 
 ## Tests
-
 - pytest: no
 - svelte-check: yes
 - playwright: no
 
 ## Commit message
-
-fix(derivatives): fix pulse flash, tab-return blank, stale MCX spot, NavStrip zero on mount
+fix(pulse): flash for pinned/watchlist/gainers/losers/holdings; bg tint for chg%/p&l%/exp-pnl; hide exp-pnl/extrinsic from holdings, pnl-per-share/inv/cur-val from positions; right-align exp-pnl/extrinsic
 
 ## Done when
-
-1. `createTickFlash.update()` skips entirely (does not advance `prev`) when document is hidden — derivatives and Pulse change% cells flash correctly on tab-return
-2. Tab-return to derivatives page keeps existing chart/legs/snapshot visible during background refresh
-3. Selecting CRUDEOIL or GOLDM does not replace the correct spot with a stale batchQuote value
-4. PositionStrip NavStrip day P&L does not zero out on page mount or tab-return when market is open
-5. svelte-check 0 errors
-6. Vitest passes (including new hidden-tab test)
+- LTP + chg% flash for pinned, watchlist, gainers, losers (via `_scheduleFlashRefresh` + `_mpFlash.update`)
+- Holdings chg% flash fires using `day_pnl_pct ?? change_pct` fallback
+- Root/futures rows in positions flash LTP via `quote_symbol` fallback in `mkPnlCellClass`
+- `day_pnl_pct`, `pnl_pct`, `exp_pnl`, `extrinsic` show green/red background tinting
+- Exp P&L and Extrinsic are right-aligned with `ag-right-aligned-cell` + `numericHdr`
+- Holdings tab: no Exp P&L, no Extrinsic
+- Positions tab: no P&L/sh, no Invested, no Value
+- svelte-check: 0 errors
