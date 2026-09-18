@@ -1057,20 +1057,24 @@ remain static (no animation). Two sources drive flashes on different schedules:
 - **LTP cascade** (sub-second): SSE tick flashes via `symbolStore` updates; tight feedback loop
 - **Poll-diff** (every 5–30 s): broker fetch cycle detects change from prior poll; Chg% cells flash
 
-**Flash scope — Unified simplification (Sep 2026)**:
+**Flash scope — Unified simplification (Sep 2026, commit 3f909237)**:
 - LTP column: flashes on every SSE tick (4Hz) and broker poll update
 - Chg% column: flashes on broker poll update (left grid only)
-- Day P&L and P&L columns: no flash applied (static styling only)
+- Day P&L and P&L columns: **no flash applied** (static styling only)
 - Derivatives page: LTP cells flash in snapshot and candidate-leg grids; Spot price in 
   OptionsPayoff card flashes when quote updates
-- Magnitude-tiered flash variants (`tf-up-sm`, `tf-up-lg`) removed; uniform `tf-up`/`tf-down` 
-  applied to all flashing columns
+- **Magnitude-tiered flash variants (`tf-up-sm`, `tf-up-lg`) removed** (commit 3f909237); 
+  uniform `tf-up`/`tf-down` CSS animation applied to all flashing columns
 
-**Flash animation**:
-- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) fires on LTP and Chg% cells
-- Duration: 300ms; text color animates from `--algo-green-text` or `--algo-red-text` to `inherit`
+**Flash animation** (uniform across all tickers):
+- Single directional flash class: `tf-up` (price rise) or `tf-down` (price fall)
+- Duration: 300ms; background animates from directional color to transparent (pulse 
+  effect)
+- Text-color flash (`.ltp-tc-flash-up` / `.ltp-tc-flash-down`) fires on LTP and Chg% 
+  cells simultaneously
 - Zero-guard: non-positive live values treated as "no live tick" (prevents phantom delta)
-- Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect re-runs
+- Threshold: 0.001 (epsilon) prevents false flashes on identical floats due to effect 
+  re-runs
 
 ---
 
@@ -1285,28 +1289,36 @@ to vanish from exp P&L totals.
   when options settle at expiry, storing actual P&L in `pnl` instead)
 - No sensitivity to spot price (position is flat, P&L is locked)
 
-### 17.7 Derivatives Spot Price SSOT — liveSnap Unified Source
+### 17.7 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
 
 The derivatives page (`/admin/derivatives`) now uses the same live SSE tick source 
-(`liveSnap` from `symbolStore`) as the Pulse grids for spot price display. Previously 
-it used a separate `batchQuote` / `_throttledTick` stack that was gated on 
-`isMarketOpen()`, causing MCX evening session spot prices to go stale after NSE closed 
-at 15:30 IST.
+(`liveSnap` from `symbolStore.svelte.js`) as the Pulse grids for spot price display 
+in legs grid and by-underlying summary table. Previously it used a separate 
+`batchQuote` / `_throttledTick` stack that was gated on `isMarketOpen()`, causing 
+MCX evening session spot prices to go stale after NSE closed at 15:30 IST (commit 
+3f909237).
 
 **Problem fixed**:
 - Spot prices in the derivatives legs grid and by-underlying summary table froze at 
   NSE close when `isMarketOpen()` returned false (NSE closed, MCX still trading during 
   S2 state). Operators viewing MCX positions after 15:30 IST saw stale NSE spot prices 
   instead of live MCX mid-session ticks.
+- Derivatives Greeks calculations and payoff chart positioning depended on these 
+  stale values, causing analytics to lag the live market.
 
-**Implementation**:
-- Snapshot grid LTP cells now read `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz 
-  via `void _throttledTick`), falling back to `legAnalytics.ltp` then broker API
-- CandidateLegRow LTP now sources from the same `getSnapshot()` pattern (Tier 1 SSE, 
-  Tier 2–3 broker)
-- Spot price in OptionsPayoff card (`liveSpot`) resolves via `liveSnap(underlying)` 
-  when market is open (S1/S2/S4 states with any segment live)
-- Eliminates the `isMarketOpen()` gate that was suppressing MCX evening session updates
+**Implementation** (commit 3f909237):
+- Legs grid LTP cells now read `liveSnap(sym)?.ltp` first (SSE-reactive at 4Hz), 
+  falling back to `legAnalytics.ltp` then broker API
+- By-underlying Spot price in summary table resolves via `liveSnap(underlying)` — 
+  same SSE source as legs grid
+- OptionsPayoff card Spot price (`liveSpot`) now uses `liveSnap(underlying)` 
+  directly, eliminating the `isMarketOpen()` gate that was suppressing MCX evening 
+  session updates
+
+**SSOT contract**: Derivatives page spot prices now resolve via the same `liveSnap()` 
+reactive bridge as Pulse positions/holdings LTP cells. This ensures spot-dependent 
+calculations (Greeks, EV, payoff chart) reflect live market ticks across all market 
+states (S1–S4) without session-based staling.
 
 **Impact**: MCX spot prices, Greeks calculations, EV, and payoff chart positioning 
 reflect real-time mid-session ticks throughout the MCX trading day (15:30–23:30 IST), 
