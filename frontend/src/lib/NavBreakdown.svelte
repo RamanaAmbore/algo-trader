@@ -394,10 +394,10 @@
       cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'collateral', headerName: 'Collateral',  minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'totalCash',  headerName: 'Total Cash',  minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   const _hCols = [
@@ -408,7 +408,7 @@
       cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'value',     headerName: 'Value',        minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'lifetime',  headerName: 'P&L',          minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
