@@ -7,7 +7,7 @@
  * visually consistent.
  *
  * Usage:
- *   import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, mkBaseGridOpts }
+ *   import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, agDirCellText, mkBaseGridOpts }
  *     from '$lib/data/algoGridUtils.js';
  */
 
@@ -48,6 +48,17 @@ export const agPctFmt = ({ value }) =>
  */
 export const agDirCell = (p) =>
   `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
+
+/**
+ * cellStyle factory — direction-coloured text only (no background tint).
+ * Use in grids where row background must stay neutral (e.g. NavBreakdown).
+ * @param {import('ag-grid-community').CellClassParams} p
+ * @returns {{ color: string }}
+ */
+export const agDirCellText = (p) => {
+  const v = p.value ?? 0;
+  return { color: v > 0 ? 'var(--algo-green)' : v < 0 ? 'var(--algo-red)' : 'var(--algo-dim)' };
+};
 
 /**
  * mkBaseGridOpts — returns a fresh base config object for every ag-Grid

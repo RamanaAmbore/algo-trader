@@ -24,7 +24,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
-  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCell, agPctFmt } from '$lib/data/algoGridUtils.js';
+  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
@@ -360,13 +360,13 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
     { field: 'lifetime', headerName: 'Lifetime',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
     { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   const _mCols = [
@@ -391,7 +391,7 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
     { field: 'collateral', headerName: 'Collateral',  minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
@@ -405,13 +405,13 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
     { field: 'value',     headerName: 'Value',        minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
     { field: 'lifetime',  headerName: 'Lifetime',     minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCell, valueFormatter: agAggFmt },
+      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   // Grid creation — lazy, one per slot.
