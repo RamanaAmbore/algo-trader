@@ -30,6 +30,8 @@
     fetchNavLatest,
   } from '$lib/api';
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { userCaps, userRole, hasCap } from '$lib/rbac';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { todayIST } from '$lib/dateFormat.js';
@@ -481,16 +483,12 @@
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
-      const _hClose = Number(r.previous_close) || Number(r.close_price) || 0;
-      const _hLtp   = Number(r.last_price ?? 0);
-      const _hQty   = Number(r.quantity ?? 0);
-      const _hDcv   = Number(r.day_change_val) || 0;
-      byAcct[a].day_pnl += (_hClose > 0 && Math.abs(_hLtp - _hClose) > 0.005)
-        ? (_hLtp - _hClose) * _hQty
-        : _hDcv;
       byAcct[a].pnl     += Number(r.pnl) || 0;
       byAcct[a].inv_val += Number(r.inv_val) || 0;
       byAcct[a].cur_val += Number(r.cur_val) || 0;
+    }
+    for (const row of Object.values(byAcct)) {
+      row.day_pnl = holdingsDayPnlStore.byAccount[row.account] ?? 0;
     }
     const rows = Object.values(byAcct);
     return sortAccountsBy(rows.map(r => r.account), _orderMap)
@@ -749,13 +747,7 @@
         pnl,
         inv_val: Number(h.inv_val ?? 0),
         ltp:     Number(h.last_price ?? h.ltp ?? 0),
-        // Carry the broker's per-row day_change_percentage so the
-        // aggregate keeps the correct (last-close)/close * 100 value.
-        // Without this, Winners/Losers fell back to a wrong derived
-        // formula (pnl/inv_val) — see _aggregateBySymbol.
-        day_pct: h.day_change_percentage != null
-                 ? Number(h.day_change_percentage)
-                 : null,
+        day_pct: holdingsDayPnlStore.chgPctByKey[String(h.tradingsymbol || h.symbol || '').toUpperCase()] ?? null,
       });
     }
     // Aggregate first, then drop zero-pnl symbols (the dedupe could
@@ -782,12 +774,7 @@
         pnl,
         inv_val: 0,
         ltp: Number(p.last_price ?? p.ltp ?? 0),
-        // Same fix as _holdingsFor — carry the broker's day-change %
-        // so _toWlRow can use it directly instead of falling back to
-        // a wrong derived formula.
-        day_pct: p.day_change_percentage != null
-                 ? Number(p.day_change_percentage)
-                 : null,
+        day_pct: positionsDerivedStore.byKey[String(p.tradingsymbol || p.symbol || '').toUpperCase()]?.chg_pct ?? null,
       });
     }
     return _aggregateBySymbol(raw)

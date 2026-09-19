@@ -24,6 +24,7 @@
   //   onOpenChartTicket(c)  — fired for non-actionable rows (opens Chart tab)
   //   onContextMenu(c, ev)  — parent sets _ctxMenu from right-click / long-press
 
+  import { untrack } from 'svelte';
   import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
@@ -138,21 +139,12 @@
   const _chgPct = $derived.by(() => {
     const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
     if (stored != null) return stored;
-    if (c.chg_pct != null) return c.chg_pct;
-    const pc = c.prev_close ?? 0;
-    if (typeof ltp === 'number' && pc > 0) return (ltp - pc) / pc * 100;
-    return null;
+    if (c.chg_pct != null && c.chg_pct !== 0) return c.chg_pct;
+    return untrack(() => getSnapshot(c.symbol))?.day_change_pct ?? null;
   });
 
-  // Cumulative day % for flash tier — prefers change_pct when available,
-  // otherwise computes from prev_close, falls back to 1 (middle tier).
-  const _legDayPct = $derived(
-    c.change_pct != null
-      ? Math.abs(c.change_pct)
-      : (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-          ? Math.abs((ltp - c.prev_close) / c.prev_close * 100)
-          : 1)
-  );
+  // Cumulative day % for flash tier — uses the SSOT _chgPct, falls back to 1 (middle tier).
+  const _legDayPct = $derived(_chgPct != null ? Math.abs(_chgPct) : 1);
 
   // Band-header visibility — show when this row is first of its band in expiry view.
   const _showBandHeader = $derived(
@@ -332,11 +324,7 @@
       {/if}
     {/if}
   </span>
-  <span class="num tf-cell leg-ltp
-    {ltpDayClass(c.change_pct != null ? c.change_pct :
-      (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-        ? (ltp - c.prev_close) / c.prev_close * 100 : null))}
-    {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
+  <span class="num tf-cell leg-ltp {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:ltp`)}">{ltp != null ? priceFmt(ltp) : '—'}</span>
   <span class="num tf-cell cand-chg-sep {ltpDayClass(_chgPct)} {flash.classOf(`${_legFlashKey}:chg`)}">
     {_chgPct != null ? pctFmt(_chgPct) + '%' : '—'}
   </span>

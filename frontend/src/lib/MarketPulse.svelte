@@ -2479,7 +2479,7 @@
     // backend already computed per account. Σday_pnl / Σday_prev_val is
     // exactly what backend's TOTAL row uses.
     else if (t.day_prev_val > 0) {
-      t.day_change_percentage = dayChangePct(t.day_pnl, t.day_prev_val) ?? 0;
+      t.day_change_percentage = dayChangePct(t.day_pnl, t.day_prev_val);
     }
     return t;
   }

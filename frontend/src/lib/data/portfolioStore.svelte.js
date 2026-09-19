@@ -14,9 +14,6 @@
  *   portfolioStore.holdings   — { total, byKey, byAccount }  (pulse-overridable)
  *   portfolioStore.funds      — { total, byAccount }
  *   portfolioStore.setHoldingsFromPulse(byKey, total) — pulse override for MarketPulse
- *
- * Also exports _computeDerived as a named export for backward compat with any
- * future callers that want the pure function form (tests use local mirrors).
  */
 
 import { browser } from '$app/environment';
@@ -54,251 +51,250 @@ let _pulseHoldingsByKey = $state(/** @type {Record<string,number>|null} */ (null
 /** @type {{ positions: any, holdings: any, funds: any }|null} */
 let _last = null;
 
-// ── Main computation ─────────────────────────────────────────────────────────
-const _portfolio = $derived.by(() => {
-  // Register throttled tick so this re-runs at most 4×/sec during SSE bursts.
+// ── Root spot cache ──────────────────────────────────────────────────────────
+const _rootSpotCache = $derived.by(() => {
   void _tick;
-
-  // ── SWR NULL GUARD ────────────────────────────────────────────────────────
-  // If any required dep is null (mid-poll refresh), return the last known
-  // snapshot to prevent downstream derived values from zeroing out momentarily.
-  const posRows  = positionsStore.value;
-  const holdRows = pulseHoldingsStore.value;
-  const fundRows = fundsStore.value;
-  if (posRows == null || holdRows == null || fundRows == null) return _last;
-
-  const marketOpen = isMarketOpen();
-
-  // ── STEP 1: Positions (adapted from _computeDerived) ────────────────────
-
-  const posTotal = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number|null,extrinsic:number|null,pnl:number,prev_mv:number,chg_pct:number|null}>} */
-  const posByKey = {};
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
-  const byRootPositions = {};
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
-  const byRootHoldings  = {};
-  /** @type {Record<string,{spot:number,legs:string[],day_pnl:number,exp_pnl:number,extrinsic:number}>} */
-  const byRoot = {};
-  /** @type {Map<string,number>} */
-  const expiryByAcct = new Map();
-
-  // Build root→spot map ONCE before the positions loop so getUnderlyingSpot
-  // is only called once per root (not once per leg). All reads are wrapped in
-  // untrack() so individual symbol ticks don't register as reactive deps here —
-  // the throttled _tick drives recompute instead.
-  /** @type {Record<string,number>} */
-  const rootSpotCache = {};
+  const posRows = positionsStore.value;
+  if (!posRows) return {};
+  const cache = {};
   for (const p of posRows) {
     const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (!sym) continue;
     const exch = String(p?.exchange || '').toUpperCase();
-    if (!FO_EXCHS.has(exch)) continue;
-    const decomp = decomposeSymbol(sym);
-    const root   = (decomp.root || sym).toUpperCase();
-    if (root && !(root in rootSpotCache)) {
-      const liveSpot = untrack(() => getUnderlyingSpot(root));
-      rootSpotCache[root] = liveSpot > 0 ? liveSpot : (Number(p?.underlying_ltp) || 0);
+    if (!FO_EXCHS.has(exch) || !sym) continue;
+    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
+    if (root && !(root in cache)) {
+      const live = untrack(() => getUnderlyingSpot(root));
+      cache[root] = live > 0 ? live : (Number(p?.underlying_ltp) || 0);
     }
   }
+  return cache;
+});
 
-  for (const p of posRows) {
-    const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    const qty  = Number(p?.quantity ?? 0) || 0;
-    const avg  = Number(p?.average_price ?? 0) || 0;
-    const pnl  = Number(p?.pnl ?? 0);
-    // untrack: individual symbol ticks must not register as per-sym reactive deps.
+// ── Tier 1 — raw + LTP ───────────────────────────────────────────────────────
+const _posTier1 = $derived.by(() => {
+  void _tick;
+  const posRows = positionsStore.value;
+  if (!posRows) return null;
+  return posRows.map(p => {
+    const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
     const snap = untrack(() => getSnapshot(sym));
-    const ltp  = snap?.ltp ?? Number(p?.last_price ?? 0);
+    return {
+      ...p,
+      _sym:        sym,
+      _ltp:        snap?.ltp ?? Number(p?.last_price ?? 0),
+      _prev_close: Number(p?.previous_close) || Number(p?.close_price) || null,
+      _qty:        Number(p?.quantity ?? 0),
+      _avg:        Number(p?.average_price ?? 0),
+      _pnl:        Number(p?.pnl ?? 0),
+      _exch:       String(p?.exchange || '').toUpperCase(),
+    };
+  });
+});
 
+// ── Tier 2 — prev_mv, day_pnl, F&O exp_pnl ──────────────────────────────────
+const _posTier2 = $derived.by(() => {
+  if (!_posTier1) return null;
+  const marketOpen = isMarketOpen();
+  return _posTier1.map(p => {
+    const isFO = FO_EXCHS.has(p._exch);
     const day_pnl = livePositionDayPnl(
-      {
-        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
-        pollLtp: Number(p?.last_price      ?? 0),
-        qty:     Number(p?.quantity        ?? 0),
-        avg:     Number(p?.average_price   ?? 0),
-        dcvRow:  p,
-      },
-      ltp,
-      { marketOpen },
+      { closePx: p._prev_close ?? 0, pollLtp: Number(p?.last_price ?? 0),
+        qty: p._qty, avg: p._avg, dcvRow: p },
+      p._ltp, { marketOpen }
     );
+    // prev_mv: null when prev_close missing — no avg fallback
+    const prev_mv = p._prev_close != null && p._prev_close > 0
+      ? p._prev_close * Math.abs(p._qty) : null;
 
-    const exch = String(p?.exchange || '').toUpperCase();
-    const isFO = FO_EXCHS.has(exch);
-
-    let exp_pnl   = null;
-    let extrinsic = null;
-    let expVal    = null;
-
-    if (isFO) {
-      const realised = Number(p?.realised ?? 0) || 0;
-
-      if (qty === 0) {
-        // Closed leg — realised is locked in, no spot math needed.
-        exp_pnl   = Number(p?.realised || p?.pnl || 0);
-        extrinsic = 0;
-        expVal    = exp_pnl;
-      } else {
-        const isCE = sym.endsWith('CE');
-        const isPE = sym.endsWith('PE');
-
-        let ev = null;
-        if (isCE || isPE) {
-          // Option intrinsic: use root spot from cache (pre-built above).
-          const decomp  = decomposeSymbol(sym);
-          const root    = (decomp.root || sym).toUpperCase();
-          const spot1   = Number(p?.underlying_ltp || 0);
-          const spot    = spot1 > 0 ? spot1 : (rootSpotCache[root] || 0);
-          if (spot > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-          }
-        } else {
-          // Futures — own LTP is the "expiry" value.
-          const live = ltp || 0;
-          if (live > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-          }
-        }
-
-        if (ev != null) {
-          exp_pnl   = ev + realised;
-          extrinsic = ev - (ltp - avg) * qty;
-          expVal    = exp_pnl;
-        }
+    let exp_pnl = null, extrinsic = null;
+    if (isFO && p._qty !== 0) {
+      const decomp = decomposeSymbol(p._sym);
+      const root   = (decomp.root || p._sym).toUpperCase();
+      const spot   = Number(p?.underlying_ltp || 0) || _rootSpotCache[root] || 0;
+      const isCE   = p._sym.endsWith('CE'), isPE = p._sym.endsWith('PE');
+      const realised = Number(p?.realised ?? 0);
+      let ev = null;
+      if ((isCE || isPE) && spot > 0) {
+        ev = expiryPnl({ symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: 'opt' }, spot);
+      } else if (!isCE && !isPE) {
+        const live = p._ltp || 0;
+        if (live > 0) ev = expiryPnl({ symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: 'fut' }, live);
       }
+      if (ev != null) { exp_pnl = ev + realised; extrinsic = ev - (p._ltp - p._avg) * p._qty; }
+    } else if (isFO && p._qty === 0) {
+      exp_pnl = Number(p?.realised || p?._pnl || 0); extrinsic = 0;
     }
 
-    if (!posByKey[sym]) posByKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0, chg_pct: null };
-    const bk = posByKey[sym];
-    bk.day_pnl += day_pnl;
-    bk.pnl     += pnl;
-    const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
-    const refPx      = prev_close > 0 ? prev_close : avg;
-    bk.prev_mv       = (bk.prev_mv || 0) + refPx * Math.abs(qty);
-    if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
-    if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
+    return { ...p, _day_pnl: day_pnl, _prev_mv: prev_mv, _isFO: isFO, _exp_pnl: exp_pnl, _extrinsic: extrinsic };
+  });
+});
 
-    posTotal.day_pnl += day_pnl;
-    if (exp_pnl   != null) posTotal.exp_pnl   += exp_pnl;
-    if (extrinsic != null) posTotal.extrinsic += extrinsic;
+// ── Tier 3 — chg_pct, root ───────────────────────────────────────────────────
+const _posTier3 = $derived(
+  _posTier2?.map(p => ({
+    ...p,
+    _chg_pct: p._prev_mv != null && p._prev_mv > 0
+      ? p._day_pnl / p._prev_mv * 100 : null,
+    _root: p._isFO
+      ? (decomposeSymbol(p._sym).root || p._sym).toUpperCase()
+      : p._sym,
+  })) ?? null
+);
 
-    if (isFO && expVal != null) {
-      const acct = String(p?.account || '');
-      if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + expVal);
+// ── Position aggregates ───────────────────────────────────────────────────────
+const _posAgg = $derived.by(() => {
+  if (!_posTier3) return null;
+  const posTotal      = { day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null };
+  const posByKey      = {};
+  const byRootPos     = {};
+  const byRoot        = {};
+  const expiryByAcct  = new Map();
 
-      const decomp = decomposeSymbol(sym);
-      const root   = (decomp.root || sym).toUpperCase();
-      if (root) {
-        // byRootPositions — same shape as the existing _computeDerived output,
-        // used by derivatives Snapshot TOTAL sums.
-        const rp = byRootPositions[root] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
-        rp.day_pnl   += day_pnl;
-        rp.pnl       += pnl;
-        rp.exp_pnl   += (exp_pnl   ?? 0);
-        rp.extrinsic += (extrinsic ?? 0);
+  for (const p of _posTier3) {
+    if (!posByKey[p._sym]) posByKey[p._sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0, chg_pct: null };
+    const bk = posByKey[p._sym];
+    bk.day_pnl += p._day_pnl;
+    bk.pnl     += p._pnl;
+    bk.prev_mv += p._prev_mv ?? 0;
+    if (p._exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + p._exp_pnl;
+    if (p._extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + p._extrinsic;
 
-        // byRoot — new aggregated map with legs + spot for payoff callers.
-        if (!byRoot[root]) byRoot[root] = { spot: rootSpotCache[root] || 0, legs: [], day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
-        byRoot[root].legs.push(sym);
-        byRoot[root].day_pnl += day_pnl;
-        if (exp_pnl   != null) byRoot[root].exp_pnl   += exp_pnl;
-        if (extrinsic != null) byRoot[root].extrinsic += extrinsic;
+    posTotal.day_pnl += p._day_pnl;
+    posTotal.prev_mv += p._prev_mv ?? 0;
+    if (p._exp_pnl   != null) posTotal.exp_pnl   += p._exp_pnl;
+    if (p._extrinsic != null) posTotal.extrinsic += p._extrinsic;
+
+    if (p._isFO) {
+      const r = p._root;
+      if (r) {
+        if (!byRoot[r]) byRoot[r] = { spot: _rootSpotCache[r] || 0, legs: [], day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null };
+        byRoot[r].legs.push(p._sym);
+        byRoot[r].day_pnl   += p._day_pnl;
+        if (p._exp_pnl   != null) byRoot[r].exp_pnl   += p._exp_pnl;
+        if (p._extrinsic != null) byRoot[r].extrinsic += p._extrinsic;
+        byRoot[r].prev_mv   += p._prev_mv ?? 0;
+
+        byRootPos[r] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0, prev_mv: 0, chg_pct: null };
+        byRootPos[r].day_pnl   += p._day_pnl;
+        byRootPos[r].pnl       += p._pnl;
+        byRootPos[r].exp_pnl   += p._exp_pnl ?? 0;
+        byRootPos[r].extrinsic += p._extrinsic ?? 0;
+        byRootPos[r].prev_mv   += p._prev_mv ?? 0;
+
+        if (p._exp_pnl != null) {
+          const acct = String(p?.account || '');
+          if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + p._exp_pnl);
+        }
       }
     }
   }
 
-  // ── Holdings cross-hedge loop (byRootHoldings) ──────────────────────────
-  // Mirrors the holdRows loop in _computeDerived for cross-hedge attribution.
-  // This is SEPARATE from STEP 2's holdings day P&L loop — different purpose,
-  // different output shape.
-  for (const h of holdRows) {
-    const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
-    if (!sym) continue;
+  for (const bk of Object.values(posByKey)) {
+    bk.chg_pct = bk.prev_mv > 0 ? dayChangePct(bk.day_pnl, bk.prev_mv) : null;
+  }
+  posTotal.chg_pct = posTotal.prev_mv > 0 ? dayChangePct(posTotal.day_pnl, posTotal.prev_mv) : null;
+  for (const r of Object.values(byRoot)) {
+    r.chg_pct = r.prev_mv > 0 ? dayChangePct(r.day_pnl, r.prev_mv) : null;
+  }
+  for (const r of Object.values(byRootPos)) {
+    r.chg_pct = r.prev_mv > 0 ? dayChangePct(r.day_pnl, r.prev_mv) : null;
+  }
 
-    const qty  = Number(h?.quantity) || 0;
-    const cost = Number(h?.average_price ?? h?.avg_cost) || 0;
-    // untrack: same reason as positions loop above.
-    const snapH = untrack(() => getSnapshot(sym));
-    const ltp   = (snapH?.ltp ?? 0) > 0 ? Number(snapH.ltp) : Number(h?.last_price ?? 0);
+  return { posTotal, posByKey, byRoot, byRootPos, expiryByAcct };
+});
 
-    if (qty === 0) continue;
+// ── Holdings tiers ────────────────────────────────────────────────────────────
+const _holdTier1 = $derived.by(() => {
+  void _tick;
+  const holdRows = pulseHoldingsStore.value;
+  if (!holdRows) return null;
+  return holdRows.map(h => {
+    const sym  = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
+    const snap = untrack(() => getSnapshot(sym));
+    const snapLtp = snap?.ltp;
+    return {
+      ...h,
+      _sym:        sym,
+      _prev_close: Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || null,
+      _held_qty:   Number(h?.quantity ?? 0),
+      _ltp:        (snapLtp != null && snapLtp > 0) ? Number(snapLtp) : Number(h?.last_price ?? 0),
+      _dcv:        Number(h?.day_change_val) || 0,
+    };
+  });
+});
 
-    const targets = targetsForProxy(sym);
-    const credits = targets.length ? targets : [sym];
+const _holdTier2 = $derived(
+  _holdTier1?.map(h => {
+    const prev_mv = h._prev_close > 0 ? h._prev_close * Math.abs(h._held_qty) : null;
+    let day_pnl;
+    if (!h._prev_close || h._prev_close <= 0) {
+      day_pnl = h._dcv;
+    } else if (h._ltp > 0 && h._held_qty !== 0 && Math.abs(h._ltp - h._prev_close) > 0.005) {
+      day_pnl = (h._ltp - h._prev_close) * h._held_qty;
+    } else {
+      day_pnl = h._dcv;
+    }
+    return { ...h, _prev_mv: prev_mv, _day_pnl: day_pnl };
+  }) ?? null
+);
 
+const _holdTier3 = $derived(
+  _holdTier2?.map(h => ({
+    ...h,
+    _chg_pct: h._prev_mv != null && h._prev_mv > 0
+      ? h._day_pnl / h._prev_mv * 100 : null,
+  })) ?? null
+);
+
+const _holdAgg = $derived.by(() => {
+  if (!_holdTier3) return null;
+  let total = 0, prev_mv = 0;
+  const byKey = {}, byAccount = {}, chgPctByKey = {};
+  for (const h of _holdTier3) {
+    total   += h._day_pnl ?? 0;
+    prev_mv += h._prev_mv ?? 0;
+    byKey[h._sym] = (byKey[h._sym] ?? 0) + (h._day_pnl ?? 0);
+    chgPctByKey[h._sym] = h._chg_pct;
+    const acct = String(h?.account || '').toUpperCase();
+    if (acct) byAccount[acct] = (byAccount[acct] ?? 0) + (h._day_pnl ?? 0);
+  }
+  byAccount['TOTAL'] = total;
+  return { total, prev_mv, chg_pct: prev_mv > 0 ? dayChangePct(total, prev_mv) : null, byKey, chgPctByKey, byAccount };
+});
+
+// ── Cross-hedge byRootHoldings ─────────────────────────────────────────────
+const _byRootHoldings = $derived.by(() => {
+  if (!_holdTier1) return {};
+  const map = {};
+  for (const h of _holdTier1) {
+    if (!h._held_qty || h._held_qty === 0) continue;
+    const targets = targetsForProxy(h._sym);
+    const credits = targets.length ? targets : [h._sym];
     for (const target of credits) {
       let exp_pnl = null;
-
-      if (targets.length && ltp > 0) {
-        // Beta-adjusted cross-hedge contribution.
-        const proxyRow   = getProxyRow(sym, target);
+      if (targets.length && h._ltp > 0) {
+        const proxyRow   = getProxyRow(h._sym, target);
         const beta       = proxyRow?.beta ?? 1;
         const targetSpot = getUnderlyingSpot(target);
         if (targetSpot > 0) {
-          const effQty = (beta * ltp * qty) / targetSpot;
-          exp_pnl = (targetSpot - ltp / (beta || 1)) * effQty;
+          const effQty = (beta * h._ltp * h._held_qty) / targetSpot;
+          exp_pnl = (targetSpot - h._ltp / (beta || 1)) * effQty;
         }
-      } else if (!targets.length && ltp > 0) {
-        // Direct equity: (ltp − cost) × qty.
-        exp_pnl = (ltp - cost) * qty;
+      } else if (!targets.length && h._ltp > 0) {
+        exp_pnl = (h._ltp - Number(h?.average_price ?? h?.avg_cost ?? 0)) * h._held_qty;
       }
-
-      const r = byRootHoldings[target] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
+      const r = map[target] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
       r.pnl += Number(h?.pnl ?? 0);
       if (exp_pnl != null) r.exp_pnl += exp_pnl;
     }
   }
+  return map;
+});
 
-  // Compute chg_pct once per symbol key — all surfaces read the same value.
-  for (const bk of Object.values(posByKey)) {
-    bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
-  }
-
-  // ── STEP 2: Holdings day P&L (from holdingsDayPnlStore) ─────────────────
-  const holdingsResult = { total: 0, byKey: /** @type {Record<string,number>} */ ({}), byAccount: /** @type {Record<string,number>} */ ({}) };
-  for (const h of holdRows) {
-    const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    // untrack: per-symbol reads must not register as per-sym reactive deps.
-    const snap    = untrack(() => getSnapshot(sym));
-    const snapLtp = snap?.ltp;
-
-    // Prefer snapshot LTP; fall back to broker last_price for symbols
-    // not subscribed on the ticker (equity holdings off watchlist).
-    const liveLtp = (snapLtp != null && snapLtp > 0)
-      ? Number(snapLtp)
-      : Number(h?.last_price ?? 0);
-
-    const closePx = Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || 0;
-    const heldQty = Number(h?.quantity) || 0;
-    const dcv     = Number(h?.day_change_val) || 0;
-
-    let val;
-    if (closePx <= 0) {
-      val = dcv;
-    } else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
-      // Live formula — mirrors _liveHoldingsToday and mergeHoldingRows.
-      val = (liveLtp - closePx) * heldQty;
-    } else {
-      // Market closed or price flat (ltp ≈ close): fall back to broker day_change_val.
-      val = dcv;
-    }
-
-    holdingsResult.byKey[sym] = (holdingsResult.byKey[sym] ?? 0) + val;
-    holdingsResult.total += val;
-
-    const acc = String(h?.account || '').toUpperCase();
-    if (acc) {
-      if (!holdingsResult.byAccount[acc]) holdingsResult.byAccount[acc] = 0;
-      holdingsResult.byAccount[acc] += val;
-    }
-  }
-  holdingsResult.byAccount['TOTAL'] = holdingsResult.total;
-
-  // ── STEP 3: Funds aggregation ────────────────────────────────────────────
+// ── Funds aggregate ────────────────────────────────────────────────────────
+const _fundsAgg = $derived.by(() => {
+  const fundRows = fundsStore.value;
+  if (!fundRows) return null;
   const fundsResult = {
     total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 },
     byAccount: /** @type {Record<string,any>} */ ({}),
@@ -321,42 +317,54 @@ const _portfolio = $derived.by(() => {
   fundsResult.total.totalMargin = fundsResult.total.used_margin + fundsResult.total.avail_margin;
   fundsResult.total.utilPct = fundsResult.total.totalMargin > 0
     ? (fundsResult.total.used_margin / fundsResult.total.totalMargin) * 100 : 0;
-
-  _last = {
-    positions: { total: posTotal, byKey: posByKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct },
-    holdings:  holdingsResult,
-    funds:     fundsResult,
-  };
-  return _last;
+  return fundsResult;
 });
 
 // ── Default shapes returned when deps are null (SWR fallback) ────────────────
 const _EMPTY_POSITIONS = {
-  total:          { day_pnl: 0, exp_pnl: 0, extrinsic: 0 },
+  total:          { day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null },
   byKey:          {},
   byRootPositions:{},
   byRootHoldings: {},
   byRoot:         {},
   expiryByAcct:   new Map(),
 };
-const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {} };
+const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {} };
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
+
+// ── Final collector ────────────────────────────────────────────────────────
+const _portfolio = $derived.by(() => {
+  if (!_posAgg || !_holdAgg || !_fundsAgg) return _last;
+  _last = {
+    positions: {
+      total:           _posAgg.posTotal,
+      byKey:           _posAgg.posByKey,
+      byRoot:          _posAgg.byRoot,
+      byRootPositions: _posAgg.byRootPos,
+      byRootHoldings:  _byRootHoldings,
+      expiryByAcct:    _posAgg.expiryByAcct,
+    },
+    holdings: _holdAgg,
+    funds:    _fundsAgg,
+  };
+  return _last;
+});
 
 /**
  * Unified portfolio store.
  *
- * All three sections are derived from a single $derived.by() block with a
+ * All three sections are derived from a chained $derived tier structure with a
  * stale-while-revalidating (SWR) null-guard so consumers never see momentary
  * zero-out during a 5-second poll refresh.
  */
 export const portfolioStore = {
   // ── Positions ────────────────────────────────────────────────────────────
-  /** { total: {day_pnl,exp_pnl,extrinsic}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct } */
+  /** { total: {day_pnl,exp_pnl,extrinsic,prev_mv,chg_pct}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct } */
   get positions() { return _portfolio?.positions ?? _EMPTY_POSITIONS; },
 
   // ── Holdings (pulse-overridable) ─────────────────────────────────────────
   /**
-   * { total: number, byKey: Record<string,number>, byAccount: Record<string,number> }
+   * { total: number, byKey: Record<string,number>, byAccount: Record<string,number>, chg_pct: number|null, chgPctByKey: Record<string,number|null> }
    *
    * MarketPulse calls setHoldingsFromPulse() after each buildUnified pass so
    * NavStrip H reflects cq-accurate filter-aware values from the grid.
@@ -370,6 +378,7 @@ export const portfolioStore = {
       total:     _pulseHoldingsTotal,
       byKey:     _pulseHoldingsByKey ?? base.byKey,
       byAccount: { ...base.byAccount, TOTAL: _pulseHoldingsTotal },
+      chg_pct:   base.chg_pct,
     };
   },
 
@@ -388,170 +397,3 @@ export const portfolioStore = {
     _pulseHoldingsTotal  = total;
   },
 };
-
-/**
- * Pure computation — exported as a named function for backward compat.
- *
- * The Vitest tests for positionsDerivedStore use local mirrors of this logic,
- * not this import, so this export is provided as a safety net for any future
- * direct callers. The original signature is preserved exactly.
- *
- * @param {any[]} posRows
- * @param {any[]} holdRows
- * @param {object} [deps] - injectable for testing
- */
-export function _computeDerived(posRows, holdRows, deps = {}) {
-  const {
-    getSnap    = sym  => untrack(() => getSnapshot(sym)),
-    getSpot    = root => getUnderlyingSpot(root),
-    getTargets = sym  => targetsForProxy(sym),
-    getProxy   = (sym, tgt) => getProxyRow(sym, tgt),
-    livePosDay = (p, ltp, opts) => livePositionDayPnl(
-      {
-        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
-        pollLtp: Number(p?.last_price      ?? 0),
-        qty:     Number(p?.quantity        ?? 0),
-        avg:     Number(p?.average_price   ?? 0),
-        dcvRow:  p,
-      },
-      ltp,
-      opts,
-    ),
-    marketOpen = isMarketOpen(),
-  } = deps;
-
-  const total = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number|null,extrinsic:number|null,pnl:number,prev_mv:number,chg_pct:number|null}>} */
-  const byKey = {};
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
-  const byRootPositions = {};
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
-  const byRootHoldings  = {};
-  /** @type {Map<string,number>} */
-  const expiryByAcct = new Map();
-
-  for (const p of posRows) {
-    const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    const qty  = Number(p?.quantity ?? 0) || 0;
-    const avg  = Number(p?.average_price ?? 0) || 0;
-    const pnl  = Number(p?.pnl ?? 0);
-    const snap = getSnap(sym);
-    const ltp  = snap?.ltp ?? Number(p?.last_price ?? 0);
-
-    const day_pnl = livePosDay(p, ltp, { marketOpen });
-
-    const exch = String(p?.exchange || '').toUpperCase();
-    const isFO = FO_EXCHS.has(exch);
-
-    let exp_pnl   = null;
-    let extrinsic = null;
-    let expVal    = null;
-
-    if (isFO) {
-      const realised = Number(p?.realised ?? 0) || 0;
-
-      if (qty === 0) {
-        exp_pnl   = Number(p?.realised || p?.pnl || 0);
-        extrinsic = 0;
-        expVal    = exp_pnl;
-      } else {
-        const isCE = sym.endsWith('CE');
-        const isPE = sym.endsWith('PE');
-
-        let ev = null;
-        if (isCE || isPE) {
-          const decomp  = decomposeSymbol(sym);
-          const root    = (decomp.root || sym).toUpperCase();
-          const spot1   = Number(p?.underlying_ltp || 0);
-          const spot    = spot1 > 0 ? spot1 : getSpot(root);
-          if (spot > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-          }
-        } else {
-          const live = ltp || 0;
-          if (live > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-          }
-        }
-
-        if (ev != null) {
-          exp_pnl   = ev + realised;
-          extrinsic = ev - (ltp - avg) * qty;
-          expVal    = exp_pnl;
-        }
-      }
-    }
-
-    if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0, chg_pct: null };
-    const bk = byKey[sym];
-    bk.day_pnl += day_pnl;
-    bk.pnl     += pnl;
-    const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
-    const refPx      = prev_close > 0 ? prev_close : avg;
-    bk.prev_mv       = (bk.prev_mv || 0) + refPx * Math.abs(qty);
-    if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
-    if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
-
-    total.day_pnl += day_pnl;
-    if (exp_pnl   != null) total.exp_pnl   += exp_pnl;
-    if (extrinsic != null) total.extrinsic += extrinsic;
-
-    if (isFO && expVal != null) {
-      const acct = String(p?.account || '');
-      if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + expVal);
-
-      const decomp = decomposeSymbol(sym);
-      const root   = (decomp.root || sym).toUpperCase();
-      if (root) {
-        const r = byRootPositions[root] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
-        r.day_pnl += day_pnl;
-        r.pnl     += pnl;
-        r.exp_pnl   += (exp_pnl   ?? 0);
-        r.extrinsic += (extrinsic ?? 0);
-      }
-    }
-  }
-
-  for (const h of holdRows) {
-    const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    const qty  = Number(h?.quantity) || 0;
-    const cost = Number(h?.average_price ?? h?.avg_cost) || 0;
-    const snapH = getSnap(sym);
-    const ltp   = (snapH?.ltp ?? 0) > 0 ? Number(snapH.ltp) : Number(h?.last_price ?? 0);
-
-    if (qty === 0) continue;
-
-    const targets = getTargets(sym);
-    const credits = targets.length ? targets : [sym];
-
-    for (const target of credits) {
-      let exp_pnl = null;
-
-      if (targets.length && ltp > 0) {
-        const proxyRow   = getProxy(sym, target);
-        const beta       = proxyRow?.beta ?? 1;
-        const targetSpot = getSpot(target);
-        if (targetSpot > 0) {
-          const effQty = (beta * ltp * qty) / targetSpot;
-          exp_pnl = (targetSpot - ltp / (beta || 1)) * effQty;
-        }
-      } else if (!targets.length && ltp > 0) {
-        exp_pnl = (ltp - cost) * qty;
-      }
-
-      const r = byRootHoldings[target] ??= { day_pnl: 0, exp_pnl: 0, extrinsic: 0, pnl: 0 };
-      r.pnl += Number(h?.pnl ?? 0);
-      if (exp_pnl != null) r.exp_pnl += exp_pnl;
-    }
-  }
-
-  for (const bk of Object.values(byKey)) {
-    bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
-  }
-
-  return { total, byKey, byRootPositions, byRootHoldings, expiryByAcct };
-}

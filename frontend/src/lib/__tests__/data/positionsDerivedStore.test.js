@@ -108,8 +108,7 @@ function _computeDerived(posRows, holdRows, deps = {}) {
     }
 
     const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
-    const refPx      = prev_close > 0 ? prev_close : avg;
-    const prev_mv    = (byKey[sym]?.prev_mv || 0) + refPx * Math.abs(qty);
+    const prev_mv    = (byKey[sym]?.prev_mv || 0) + (prev_close > 0 ? prev_close * Math.abs(qty) : 0);
     byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct: null };
 
     total.day_pnl += day_pnl;
@@ -168,7 +167,7 @@ function _computeDerived(posRows, holdRows, deps = {}) {
   }
 
   for (const bk of Object.values(byKey)) {
-    bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
+    bk.chg_pct = bk.prev_mv > 0 ? dayChangePct(bk.day_pnl, bk.prev_mv) : null;
   }
 
   return { total, byKey, byRootPositions, byRootHoldings, expiryByAcct };
@@ -622,7 +621,7 @@ describe('positionsDerivedStore — chg_pct SSOT (byKey[sym].chg_pct)', () => {
     expect(byKey['NIFTY26JUNFUT'].chg_pct).toBeNull();
   });
 
-  it('chg_pct falls back to average_price when close_price is 0', () => {
+  it('chg_pct is null when close_price is 0 (no avg fallback)', () => {
     const pos = makePos({
       quantity: 25,
       close_price: 0,
@@ -633,9 +632,9 @@ describe('positionsDerivedStore — chg_pct SSOT (byKey[sym].chg_pct)', () => {
       livePosDay: () => 300,
     });
     const bk = byKey['NIFTY26JUNFUT'];
-    // refPx = avg = 23000; prev_mv = 23000 * 25 = 575000
-    expect(bk.prev_mv).toBeCloseTo(23000 * 25);
-    expect(bk.chg_pct).toBeCloseTo((300 / (23000 * 25)) * 100, 4);
+    // prev_close = 0, so prev_mv = 0 (no avg fallback)
+    expect(bk.prev_mv).toBe(0);
+    expect(bk.chg_pct).toBeNull();
   });
 
   it('byKey includes prev_mv and chg_pct fields', () => {

@@ -16,6 +16,7 @@
 
 import { aggCompact, ltpDayClass } from '$lib/format.js';
 import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
+import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
 // ─── Pure helpers ────────────────────────────────────────────────────
 
@@ -250,11 +251,7 @@ function _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown) {
   const cls  = [RA];
   // Compute day% and dirBg upfront — needed in both animation branches.
   const pct = p.data.change_pct ?? p.data.day_pnl_pct ?? null;
-  const prev = p.data.close ?? null;
-  const dayPct = pct != null ? pct
-    : (typeof ltp === 'number' && typeof prev === 'number' && prev > 0
-        ? (ltp - prev) / prev * 100
-        : null);
+  const dayPct = pct ?? null;
   const dirBg = dayPct == null ? 'cell-flat'
     : dayPct > 0.001 ? 'cell-pos'
     : dayPct < -0.001 ? 'cell-neg'
@@ -472,8 +469,10 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
 // live position entry in the derived store).
 function _dayPnlPctValueGetter(p) {
   const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-  const stored = positionsDerivedStore.byKey[sym]?.chg_pct;
-  if (stored != null) return stored;
+  const posStored = positionsDerivedStore.byKey[sym]?.chg_pct;
+  if (posStored != null) return posStored;
+  const holdStored = holdingsDayPnlStore.chgPctByKey[sym];
+  if (holdStored != null) return holdStored;
   const cp = Number(p.data?.change_pct);
   return Number.isFinite(cp) ? cp : null;
 }

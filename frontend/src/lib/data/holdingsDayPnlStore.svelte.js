@@ -17,9 +17,11 @@
 import { portfolioStore } from './portfolioStore.svelte.js';
 
 export const holdingsDayPnlStore = {
-  get total()     { return portfolioStore.holdings.total ?? 0;    },
-  get byKey()     { return portfolioStore.holdings.byKey;         },
-  get byAccount() { return portfolioStore.holdings.byAccount;     },
+  get total()        { return portfolioStore.holdings.total ?? 0;       },
+  get byKey()        { return portfolioStore.holdings.byKey;            },
+  get byAccount()    { return portfolioStore.holdings.byAccount;        },
+  get chg_pct()      { return portfolioStore.holdings.chg_pct ?? null;  },
+  get chgPctByKey()  { return portfolioStore.holdings.chgPctByKey ?? {}; },
   /**
    * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
    * and aggregate values. Delegates to portfolioStore.setHoldingsFromPulse.

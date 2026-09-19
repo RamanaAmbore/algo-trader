@@ -16,9 +16,6 @@
 
 import { portfolioStore } from './portfolioStore.svelte.js';
 
-// _computeDerived re-exported so any future direct callers compile.
-export { _computeDerived } from './portfolioStore.svelte.js';
-
 export const positionsDerivedStore = {
   /** { day_pnl, exp_pnl, extrinsic } — aggregate totals */
   get total()           { return portfolioStore.positions.total;              },
