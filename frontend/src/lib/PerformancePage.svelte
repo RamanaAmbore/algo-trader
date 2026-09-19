@@ -449,12 +449,6 @@
   const getRowClass = (params) => {
     const d = params.data || {};
     if (d.tradingsymbol === 'TOTAL' || d.account === 'TOTAL') return 'totals-row';
-    // pos-long / pos-short tinting only on positions (which carry
-    // a `product` field). Holdings are always long — no decoration.
-    if (d.product == null) return '';
-    const q = d.quantity;
-    if (typeof q === 'number' && q < 0) return 'pos-short';
-    if (typeof q === 'number' && q > 0) return 'pos-long';
     return '';
   };
 
@@ -735,20 +729,20 @@
   const fundsCols = [
     { field: 'account',      headerName: 'Account',      width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
     { field: 'avail_margin', headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr },
-    { headerName: 'Util %', flex: 1, valueFormatter: pctFmtGrid, type: 'numericColumn', headerClass: numericHdr,
+    { headerName: 'Util %', flex: 1, valueFormatter: pctFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr,
       valueGetter: (p) => {
         const used  = Number(p.data?.used_margin) || 0;
         const avail = Number(p.data?.avail_margin) || 0;
         const denom = used + avail;
         return denom > 0 ? (used / denom) * 100 : null;
       } },
-    { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr },
     { field: 'cash',             headerName: 'Cash',            flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'available_funds',  headerName: 'Avl.Margin', flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr,
       headerTooltip: 'Available Margin — free margin available for new trades (broker "net")' },
     { field: 'available_cash',   headerName: 'Avl.Cash',   flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr,
       headerTooltip: 'Available Cash — start-of-day cash minus long-option premiums locked in open positions' },
-    { field: 'collateral',       headerName: 'Collateral',      flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'collateral',       headerName: 'Collateral',      flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr },
   ];
 
   // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py
@@ -1385,20 +1379,6 @@
        as a page-level filter — scopes Funds, NAV, Positions
        Summary, Holdings Summary, and both Detail grids in one place. -->
   <div class="perf-ts-row flex items-center gap-3 mb-1.5 pb-1.5">
-    {#if accounts.length > 0}
-      <div class="acct-multi">
-        <AccountMultiSelect
-          bind:value={selectedAccounts}
-          options={accounts.map(a => ({
-            value: a,
-            // Trust backend mask. Inline /\d/g lost the broker-ordinal
-            // (D1####/D2####) for two-Dhan setups; backend ships the
-            // correct shape already.
-            label: a,
-          }))}
-          theme={compactHeader ? 'dark' : 'light'} />
-      </div>
-    {/if}
     <div class="text-[0.65rem] text-muted perf-ts">
       {#if loading && !lastRefresh}
         <span class="animate-pulse">Loading…</span>
@@ -1430,8 +1410,8 @@
 {#if !_agGridReady}
   <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
 {/if}
-<div bind:this={navEl}    class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'nav'}></div>
-<div bind:this={fundsEl}  class="ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'funds'}></div>
+<div bind:this={navEl}    class="perf-ag-grid ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'nav'}></div>
+<div bind:this={fundsEl}  class="perf-ag-grid ag-theme-quartz {theme} mb-2 w-full" class:hidden={fundsNavTab !== 'funds'}></div>
 
 <!-- Tabs — Positions / Holdings. No account picker here; the page-
      level picker above scopes both tabs uniformly. -->
@@ -1469,7 +1449,7 @@
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
-  <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
+  <div bind:this={positionsSummaryEl} class="perf-ag-grid ag-theme-quartz {theme} mb-2 w-full"></div>
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
@@ -1483,7 +1463,7 @@
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
-  <div bind:this={holdingsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
+  <div bind:this={holdingsSummaryEl} class="perf-ag-grid ag-theme-quartz {theme} mb-2 w-full"></div>
 </section>
 
 <!-- Fund Balances section retired here — moved into the Funds & NAV
@@ -1499,7 +1479,7 @@
       <GridDownloadButton onClick={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })} label="Positions" />
     {/if}
   </div>
-  <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
+  <div bind:this={positionsAllEl} class="perf-ag-grid ag-theme-quartz {theme} w-full"></div>
 </section>
 
 <section class:hidden={activeTab !== 'holdings'}>
@@ -1511,7 +1491,7 @@
       <GridDownloadButton onClick={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })} label="Holdings" />
     {/if}
   </div>
-  <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
+  <div bind:this={holdingsAllEl} class="perf-ag-grid ag-theme-quartz {theme} w-full"></div>
 </section>
 
 {#if _chartModalSym}
@@ -1896,5 +1876,24 @@
      AG Grid cellRenderer (outside Svelte's scoped DOM).  */
   :global(.ag-col-acct) {
     border-left: 3px solid var(--acct-stripe, transparent) !important;
+  }
+
+  /* Column header rows — match legs .cand-headrow decoration in algo theme */
+  :global(.perf-ag-grid.ag-theme-algo .ag-header-row) {
+    background: rgba(15, 23, 42, 0.65) !important;
+  }
+  :global(.perf-ag-grid.ag-theme-algo .ag-header-cell-text) {
+    font-size: 0.65rem !important;
+    font-weight: 800 !important;
+    text-transform: uppercase !important;
+    letter-spacing: 0.06em !important;
+    color: var(--text-muted) !important;
+  }
+  :global(.perf-ag-grid.ag-theme-algo .ag-header) {
+    border-bottom: 1px solid var(--algo-amber-border-soft) !important;
+  }
+  /* Section headings — amber like legs-header chip in algo theme */
+  :global(.ag-theme-algo .section-heading) {
+    color: var(--c-action);
   }
 </style>

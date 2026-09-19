@@ -15,7 +15,7 @@
   import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { authStore, visibleInterval, ltpFlashPct } from '$lib/stores';
-  import { priceFmt, pctFmt } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
@@ -171,20 +171,20 @@
       <div class="nav-panel">
         <div class="nav-panel-label">YOUR SHARE</div>
         <div class="nav-big tabular-nums {flash.classOf('shareNav')}">
-          <span class="nav-currency">₹</span>{priceFmt(shareNav)}
+          <span class="nav-currency">₹</span>{aggCompact(shareNav)}
         </div>
         <div class="nav-sub {pnlClass(shareDayPnl)} tabular-nums {flash.classOf('shareDayPnl')}">
-          {signLabel(shareDayPnl)}₹{priceFmt(Math.abs(shareDayPnl))} today
+          {signLabel(shareDayPnl)}₹{aggCompact(Math.abs(shareDayPnl))} today
           ({signLabel(shareDayPct)}{pctFmt(Math.abs(shareDayPct))}%)
         </div>
         <div class="nav-meta tabular-nums">
-          contribution: ₹{priceFmt(contribution)}
+          contribution: ₹{aggCompact(contribution)}
           &nbsp;·&nbsp;
           share: {pctFmt(sharePct)}%
         </div>
         {#if shareCumPnl !== 0}
           <div class="nav-cum {pnlClass(shareCumPnl)} tabular-nums">
-            Cumulative: {signLabel(shareCumPnl)}₹{priceFmt(Math.abs(shareCumPnl))}
+            Cumulative: {signLabel(shareCumPnl)}₹{aggCompact(Math.abs(shareCumPnl))}
           </div>
         {/if}
       </div>
@@ -194,10 +194,10 @@
       <div class="nav-panel nav-panel-firm" class:nav-panel-divider={showMyShare}>
         <div class="nav-panel-label">FIRM NAV</div>
         <div class="nav-big tabular-nums {flash.classOf('firmNav')}">
-          <span class="nav-currency">₹</span>{priceFmt(firmNav)}
+          <span class="nav-currency">₹</span>{aggCompact(firmNav)}
         </div>
         <div class="nav-sub {pnlClass(firmDayPnl)} tabular-nums {flash.classOf('firmDayPnl')}">
-          {signLabel(firmDayPnl)}₹{priceFmt(Math.abs(firmDayPnl))} today
+          {signLabel(firmDayPnl)}₹{aggCompact(Math.abs(firmDayPnl))} today
           ({signLabel(firmDayPct)}{pctFmt(Math.abs(firmDayPct))}%)
         </div>
         {#if partnerCount > 0}
@@ -205,7 +205,7 @@
         {/if}
         {#if firmCumPnl !== 0}
           <div class="nav-cum {pnlClass(firmCumPnl)} tabular-nums">
-            Cumulative: {signLabel(firmCumPnl)}₹{priceFmt(Math.abs(firmCumPnl))}
+            Cumulative: {signLabel(firmCumPnl)}₹{aggCompact(Math.abs(firmCumPnl))}
           </div>
         {/if}
       </div>
