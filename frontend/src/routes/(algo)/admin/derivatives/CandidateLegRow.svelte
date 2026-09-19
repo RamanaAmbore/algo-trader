@@ -128,13 +128,17 @@
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
-  // Chg % for the dedicated column — prefers change_pct when available,
-  // otherwise derives live from ltp / prev_close.
-  const _chgPct = $derived(
-    c.change_pct != null ? c.change_pct :
-    (typeof ltp === 'number' && typeof c.prev_close === 'number' && c.prev_close > 0
-      ? (ltp - c.prev_close) / c.prev_close * 100 : null)
-  );
+  // Chg % for the dedicated column.
+  // Primary: same formula as positions pulse _dayPnlPctValueGetter —
+  //   day_pnl / (prev_close × |qty|) × 100
+  // Secondary (live-tick fallback when day_pnl absent): (ltp − prev_close) / prev_close × 100
+  const _chgPct = $derived.by(() => {
+    const pc = c.prev_close ?? 0;
+    const prevMv = pc > 0 ? pc * Math.abs(c.qty || 0) : 0;
+    if (c.day_pnl != null && prevMv > 0) return (c.day_pnl / prevMv) * 100;
+    if (typeof ltp === 'number' && pc > 0) return (ltp - pc) / pc * 100;
+    return null;
+  });
 
   // Cumulative day % for flash tier — prefers change_pct when available,
   // otherwise computes from prev_close, falls back to 1 (middle tier).

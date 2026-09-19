@@ -76,6 +76,7 @@ export function buildPositionRowFromBroker(p, source) {
     pnl:      p?.pnl != null ? Number(p.pnl) : 0,
     realised: p?.realised != null ? Number(p.realised) : 0,
     day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
+    day_pnl: p?.day_pnl != null ? Number(p.day_pnl) : null,
     overnight_quantity: Number(p?.overnight_quantity || 0),
     day_buy_quantity:   Number(p?.day_buy_quantity || 0),
     day_sell_quantity:  Number(p?.day_sell_quantity || 0),
