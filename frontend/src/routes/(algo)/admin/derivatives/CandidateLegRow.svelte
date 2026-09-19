@@ -25,6 +25,7 @@
   //   onContextMenu(c, ev)  — parent sets _ctxMenu from right-click / long-press
 
   import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
+  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
   import { decomposeSymbol }        from '$lib/data/decomposeSymbol';
@@ -128,15 +129,19 @@
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
-  // Chg % for the dedicated column.
-  // Primary: same formula as positions pulse _dayPnlPctValueGetter —
-  //   day_pnl / (prev_close × |qty|) × 100
-  // Secondary (live-tick fallback when day_pnl absent): (ltp − prev_close) / prev_close × 100
+  // Chg % — same logical path as Pulse positions (_dayPnlPctValueGetter):
+  //   day_pnl / prev_market_value × 100
+  // Primary source: positionsDerivedStore.byKey (live reactive, never resets on
+  // tab switch — fixes the race condition where c.chg_pct is null during the
+  // re-fetch window when returning from another tab).
+  // For F&O options where prev_close = 0, avg_cost is used as the reference price.
   const _chgPct = $derived.by(() => {
-    if (c.chg_pct != null) return c.chg_pct;
     const pc = c.prev_close ?? 0;
-    const prevMv = pc > 0 ? pc * Math.abs(c.qty || 0) : 0;
-    if (c.day_pnl != null && prevMv > 0) return (c.day_pnl / prevMv) * 100;
+    const refPx = pc > 0 ? pc : (c.avg_cost ?? 0);
+    const prevMv = refPx > 0 ? refPx * Math.abs(c.qty || 0) : 0;
+    const liveRow = positionsDerivedStore.byKey[c.symbol];
+    if (liveRow != null && prevMv > 0) return (liveRow.day_pnl / prevMv) * 100;
+    if (c.chg_pct != null) return c.chg_pct;
     if (typeof ltp === 'number' && pc > 0) return (ltp - pc) / pc * 100;
     return null;
   });

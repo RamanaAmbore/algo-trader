@@ -534,6 +534,7 @@
   // the type set, since per-column shapes don't always pull
   // headerClass off the columnType definition reliably).
   const numericHdr = 'ag-right-aligned-header';
+  const RA         = 'ag-right-aligned-cell';
 
   // Column widths tightened so numeric cells (right-aligned) sit
   // next to their header instead of leaving empty space on the
@@ -733,7 +734,7 @@
   //   collateral    ← avail collateral
   const fundsCols = [
     { field: 'account',      headerName: 'Account',      width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'avail_margin', headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    { field: 'avail_margin', headerName: 'Net',          flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr },
     { headerName: 'Util %', flex: 1, valueFormatter: pctFmtGrid, type: 'numericColumn', headerClass: numericHdr,
       valueGetter: (p) => {
         const used  = Number(p.data?.used_margin) || 0;
@@ -743,9 +744,9 @@
       } },
     { field: 'used_margin',  headerName: 'Used Margin',  flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
     { field: 'cash',             headerName: 'Cash',            flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'available_funds',  headerName: 'Avl.Margin', flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr,
+    { field: 'available_funds',  headerName: 'Avl.Margin', flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr,
       headerTooltip: 'Available Margin — free margin available for new trades (broker "net")' },
-    { field: 'available_cash',   headerName: 'Avl.Cash',   flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr,
+    { field: 'available_cash',   headerName: 'Avl.Cash',   flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr,
       headerTooltip: 'Available Cash — start-of-day cash minus long-option premiums locked in open positions' },
     { field: 'collateral',       headerName: 'Collateral',      flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
@@ -772,8 +773,8 @@
   // NAV without waiting for the 16:00 IST cron.
   const navCols = [
     { field: 'account',      headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
-    { field: 'net',          headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
-    ...mkNavBreakdownCols({ RA: pnlCls, numericHdr, aggFmtGrid }),
+    { field: 'net',          headerName: 'Cash',         flex: 1, valueFormatter: aggFmtGrid, cellClass: RA, type: 'numericColumn', headerClass: numericHdr },
+    ...mkNavBreakdownCols({ RA, numericHdr, aggFmtGrid }),
   ];
 
   function makeGrid(el, colDefs, rowData = [], onRowClick = null, extraOpts = {}) {
