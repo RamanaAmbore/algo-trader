@@ -696,12 +696,12 @@
 /* Brighter red/green tuned for the dark navy body — 500-range colours
    read as "black text" on the old light theme, so switched to 400-range
    which has enough luminance to pop on #1d2a44. */
-.ag-theme-algo .pnl-loss { color: var(--algo-red)   !important; background-color: var(--algo-red-pnl-bg)   !important; }
-.ag-theme-algo .pnl-gain { color: var(--algo-green) !important; background-color: var(--algo-green-pnl-bg) !important; }
-.ag-theme-algo .pnl-zero { color: var(--algo-dim) !important; }
-.ag-theme-algo .dir-gain { color: var(--algo-green) !important; }
-.ag-theme-algo .dir-loss { color: var(--algo-amber) !important; }
-.ag-theme-algo .dir-flat { color: var(--algo-slate) !important; }
+.ag-theme-algo .ag-cell.pnl-loss { color: var(--algo-red)   !important; background-color: var(--algo-red-pnl-bg)   !important; }
+.ag-theme-algo .ag-cell.pnl-gain { color: var(--algo-green) !important; background-color: var(--algo-green-pnl-bg) !important; }
+.ag-theme-algo .ag-cell.pnl-zero { color: var(--algo-dim) !important; }
+.ag-theme-algo .ag-cell.dir-gain { color: var(--algo-green) !important; }
+.ag-theme-algo .ag-cell.dir-loss { color: var(--algo-amber) !important; }
+.ag-theme-algo .ag-cell.dir-flat { color: var(--algo-slate) !important; }
 
 /* Long vs short positions — distinct colour family from loss/gain so
    the operator doesn't conflate "side of the book" with "in profit".
