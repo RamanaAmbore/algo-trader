@@ -1,142 +1,32 @@
 /**
- * holdingsDayPnlStore — module-level singleton that aggregates live
- * day P&L across all holdings at 4 Hz (250ms throttle).
+ * holdingsDayPnlStore — backward-compat shim.
  *
- * Reads `pulseHoldingsStore.value` — same source as PositionStrip H slot display,
- * ensuring day P&L total and value/lifetime columns reflect the same fetch.
- * Throttles at 4 Hz via `symbolTickCount.subscribe` + 250ms setTimeout
- * gate — same pattern as positionsDayPnlStore.
+ * All computation has moved to portfolioStore.svelte.js (Phase 1 refactor).
+ * This shim re-exports the same API surface so all existing consumers compile
+ * without changes.
  *
- * Formula per row (mirrors mergeHoldingRows and _liveHoldingsToday):
- *   liveLtp  = getSnapshot(sym)?.ltp ?? h.last_price
- *   closePx  = h.previous_close || h.close_price || h.ohlc?.close || 0
- *   heldQty  = Number(h.quantity) || 0
- *   Guard: if closePx<=0 (missing/zero) → fall back to day_change_val
- *   day_pnl  = (liveLtp > 0 && heldQty !== 0 && |liveLtp−closePx| > 0.005)
- *              ? (liveLtp − closePx) × heldQty
- *              : Number(h.day_change_val) || 0
+ * Consumers read:
+ *   .total     → number  (pulse-overridable)
+ *   .byKey     → { [tradingsymbol]: number }  (pulse-overridable)
+ *   .byAccount → { [account]: number, TOTAL: number }  (TOTAL is pulse-aware)
  *
- * Exports:
- *   { total: number, byKey: { [tradingsymbol: string]: number }, byAccount: { [account: string]: number } }
- *
- * `byKey` keys are plain uppercase tradingsymbols (no exchange prefix).
- * `byAccount` is keyed by uppercase account ID; 'TOTAL' key holds the grand total.
- *
- * Pulse override: MarketPulse calls setFromPulse() after each buildUnified pass
- * so that total/byKey reflect the cq-accurate per-symbol values from the grid.
- * byAccount TOTAL key is pulse-aware (matches total getter); per-account values are from _store.
+ * setFromPulse(byKey, total) delegates to portfolioStore.setHoldingsFromPulse()
+ * so MarketPulse keeps writing to a single SSOT.
  */
 
-import { browser } from '$app/environment';
-import { untrack } from 'svelte';
-import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
-import { pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
+import { portfolioStore } from './portfolioStore.svelte.js';
 
-// Module-level throttle state — safe: one instance per bundled app.
-let _tick = $state(0);
-/** @type {ReturnType<typeof setTimeout> | null} */
-let _tickTimer = null;
-
-// Pulse override state — set by MarketPulse.setFromPulse() after each
-// buildUnified pass. Mirrors positionsDayPnlStore's _pulseTotal/_pulseByKey.
-// null means no pulse override yet; store falls back to _store values.
-let _pulseTotal = $state(/** @type {number|null} */ (null));
-let _pulseByKey = $state(/** @type {Record<string,number>|null} */ (null));
-
-// Throttle at 4 Hz (250 ms) — mirrors positionsDayPnlStore pattern.
-// Wrapped in browser guard: SSR has no setTimeout and no symbolTickCount stream.
-if (browser) {
-  symbolTickCount.subscribe(() => {
-    if (_tickTimer) return;
-    _tickTimer = setTimeout(() => {
-      _tickTimer = null;
-      _tick++;
-    }, 250);
-  });
-}
-
-const _store = $derived.by(() => {
-  // Register reactive dependency on the throttled tick so this block
-  // re-runs at most 4 times/sec during SSE burst.
-  void _tick;
-
-  const rows = pulseHoldingsStore.value ?? [];
-  let total = 0;
-  /** @type {Record<string, number>} */
-  const byKey = {};
-  /** @type {Record<string, number>} */
-  const byAccount = {};
-
-  for (const h of rows) {
-    const sym = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
-    if (!sym) continue;
-
-    // Use untrack() so individual symbol reads don't register as
-    // per-symbol reactive deps — the throttled tick drives recompute.
-    const snap    = untrack(() => getSnapshot(sym));
-    const snapLtp = snap?.ltp;
-
-    // Prefer snapshot LTP; fall back to broker last_price for symbols
-    // not subscribed on the ticker (equity holdings off watchlist).
-    const liveLtp = (snapLtp != null && snapLtp > 0)
-      ? Number(snapLtp)
-      : Number(h?.last_price ?? 0);
-
-    const closePx  = Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || 0;
-    const heldQty  = Number(h?.quantity) || 0;
-    const dcv      = Number(h?.day_change_val)  || 0;
-
-    let val;
-    if (closePx <= 0) {
-      val = dcv;
-    } else if (liveLtp > 0 && heldQty !== 0 && Math.abs(liveLtp - closePx) > 0.005) {
-      // Live formula — mirrors _liveHoldingsToday and mergeHoldingRows.
-      // Post-settlement guard: skip when ltp ≈ close (Kite resets
-      // last_price = close_price = settlement_price → delta ≈ 0).
-      val = (liveLtp - closePx) * heldQty;
-    } else {
-      // Market closed or price flat (ltp ≈ close): fall back to broker day_change_val.
-      // Backend now sends day_change_val = daily_book.day_pnl for closed exchanges —
-      // the actual EOD day P&L, not 0 (avoids the weekend same-snapshot zero-delta bug).
-      val = dcv;
-    }
-
-    byKey[sym] = (byKey[sym] ?? 0) + val;
-    total += val;
-
-    // Accumulate per-account totals for holdingsSummaryData filter path.
-    const acc = String(h?.account || '').toUpperCase();
-    if (acc) byAccount[acc] = (byAccount[acc] ?? 0) + val;
-  }
-
-  byAccount['TOTAL'] = total;
-
-  return { total, byKey, byAccount };
-});
-
-/**
- * Singleton store for holdings day P&L.
- *
- * - total / byKey: pulse-overridable (MarketPulse calls setFromPulse after
- *   each buildUnified so NavStrip H reads the same value the grid displays,
- *   and is filter-aware like NavStrip P).
- * - byAccount: TOTAL key is pulse-aware (matches total getter); per-account values are from _store.
- */
 export const holdingsDayPnlStore = {
-  get total()     { return _pulseTotal ?? _store.total; },
-  get byKey()     { return _pulseByKey ?? _store.byKey; },
-  get byAccount() {
-    if (_pulseTotal === null) return _store.byAccount;
-    return { ..._store.byAccount, TOTAL: _pulseTotal };
-  },
+  get total()     { return portfolioStore.holdings.total ?? 0;    },
+  get byKey()     { return portfolioStore.holdings.byKey;         },
+  get byAccount() { return portfolioStore.holdings.byAccount;     },
   /**
    * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
-   * and aggregate values. Mirrors positionsDayPnlStore.setFromPulse.
+   * and aggregate values. Delegates to portfolioStore.setHoldingsFromPulse.
    * @param {Record<string,number>} byKey
    * @param {number} total
    */
   setFromPulse(byKey, total) {
-    _pulseByKey  = byKey;
-    _pulseTotal  = total;
+    portfolioStore.setHoldingsFromPulse(byKey, total);
   },
 };

@@ -130,9 +130,9 @@
       // Avoids animation on every 5s book-poller tick when the backend
       // cache (30s TTL) returns identical data for 5 of 6 polls.
       const fp =
-        (positionsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|')
+        positions.map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|')
         + '||'
-        + (pulseHoldingsStore.value ?? []).map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|');
+        + holdings.map(r => `${r?.tradingsymbol}:${r?.last_price}:${r?.quantity}`).join('|');
       if (fp !== _prevFingerprint) {
         _prevFingerprint = fp;
         untrack(() => { _dataChangedTick++; });
@@ -175,7 +175,7 @@
     /** @type {Array<{ root: string, quoteKey: string }>} */
     const pairs = [];
     const seen = new Set();
-    const snap = untrack(() => positionsStore.value ?? []);
+    const snap = untrack(() => positions);
     for (const p of snap) {
       const sym  = String(p?.tradingsymbol || '').toUpperCase();
       const exch = String(p?.exchange || '').toUpperCase();

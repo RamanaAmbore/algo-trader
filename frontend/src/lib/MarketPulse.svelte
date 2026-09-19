@@ -2753,8 +2753,10 @@
         _lastPulseAt = pulseLastUpdate;
       }
 
-      const p_rows = pulsePositionsStore.value ?? [];
-      const h_rows = pulseHoldingsStore.value  ?? [];
+      // Use the local last-known-good state (maintained via guarded $effect above)
+      // rather than reading raw store values directly, which can be null mid-poll.
+      const p_rows = positions;
+      const h_rows = holdings;
 
       // ── Account-picker seeding ──────────────────────────────────────
       // Surface every account id seen across positions + holdings for the

@@ -3278,6 +3278,10 @@
   // because the backend can't fetch their ltp from the broker).
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number, prev_settlement_pnl?:number|null}>} */
   let positions = $state([]);
+  // Last-known pulse positions — used as fallback in loadPositions() when
+  // positionsStore.value has no rows. Plain let (not $state) since it is
+  // only read inside the async loadPositions() function, not in $derived.
+  let _lastDervPulsePos = /** @type {any[]} */ ([]);
 
   const _snapshotTotalEvFull = $derived.by(() => {
     const base = _snapshotTotalExp;
@@ -3295,6 +3299,19 @@
    *  curve reflects covered calls / hedges correctly. */
   /** @type {Array<{symbol:string, account:string, qty:number, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
   let holdings = $state([]);
+  // Last-known holdings from holdingsStore — used in loadPositions() right after
+  // await holdingsStore.load() as a guard against a transient null value.
+  let _lastDervHold = /** @type {any[]} */ ([]);
+  // Track last-known values from pulse/holdings stores for use in the
+  // async loadPositions() function (plain $effects, not $derived).
+  $effect(() => {
+    const v = pulsePositionsStore.value;
+    if (v != null) _lastDervPulsePos = v;
+  });
+  $effect(() => {
+    const v = holdingsStore.value;
+    if (v != null) _lastDervHold = v;
+  });
   /** Per-account totals of the rows the page FILTERS OUT of `positions`
    *  (equity intraday) and `holdings` (derivative-looking). The
    *  navbar PositionStrip sums every row from /api/positions +
@@ -3527,7 +3544,7 @@
     }
     const _posSource = positionsStore.value?.length
       ? positionsStore.value
-      : (pulsePositionsStore.value ?? []);
+      : _lastDervPulsePos;
     for (const p of _posSource) {
       const sym = p?.tradingsymbol || p?.symbol;
       if (!sym) continue;
@@ -3565,7 +3582,9 @@
     if (!simActive) {
       await holdingsStore.load();
       const rows = [];
-      for (const h of (holdingsStore.value ?? [])) {
+      // Use holdingsStore.value directly (set by load() above) with _lastDervHold
+      // as a last-known-good fallback in case the store value is transiently null.
+      for (const h of (holdingsStore.value ?? _lastDervHold)) {
         const sym = h?.tradingsymbol || h?.symbol;
         if (!sym) continue;
         if (isFOSymbol(sym)) {

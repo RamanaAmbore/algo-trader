@@ -184,10 +184,13 @@
     const p = positionsStore.value;
     const h = holdingsStore.value;
     const f = fundsStore.value;
+    // Last-known-good: only overwrite when the store has real data.
+    // A null during a mid-poll refresh must not wipe the local array —
+    // that would zero out derived grids for one frame (race-prone blank flash).
     untrack(() => {
-      _positionsRaw = p ?? [];
-      _holdingsRaw  = h ?? [];
-      _fundsRaw     = f ?? [];
+      if (p != null) _positionsRaw = p;
+      if (h != null) _holdingsRaw  = h;
+      if (f != null) _fundsRaw     = f;
     });
   });
   const _matchStrategySym = (/** @type {string} */ sym) => {

@@ -1312,7 +1312,13 @@
   // Each row carries: { account, cash, avail_margin, used_margin, collateral }
   /** @type {Array<{account:string, cash:number, avail_margin:number,
    *                used_margin:number, collateral:number}>} */
-  const _funds = $derived(fundsStore.value ?? []);
+  // Last-known-good pattern: keep prior snapshot when fundsStore goes null
+  // mid-refresh so the margin pill never blanks during a 5s poll cycle.
+  let _funds = $state(/** @type {Array<any>} */ (fundsStore.value ?? []));
+  $effect(() => {
+    const v = fundsStore.value;
+    untrack(() => { if (v != null) _funds = v; });
+  });
   // Pick the funds row to surface in the pill. Order:
   //   1. exact match on the currently-picked account (most useful)
   //   2. summed totals across every loaded fund row (fallback when
