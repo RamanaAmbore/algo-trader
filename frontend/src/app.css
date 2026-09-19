@@ -972,7 +972,7 @@
 .ag-theme-algo .ag-row.totals-row .pnl-loss,
 .ag-theme-algo .ag-row.totals-row .pnl-gain,
 .ag-theme-algo .ag-row.totals-row .pnl-zero,
-.ag-theme-algo .ag-row.totals-row .ag-cell { color: #fbbf24 !important; background-color: transparent !important; }
+.ag-theme-algo .ag-row.totals-row .ag-cell { color: var(--algo-amber) !important; background-color: transparent !important; }
 
 /* Right-align all numeric cells and their headers across every grid.
    AG Grid's internal header markup is:

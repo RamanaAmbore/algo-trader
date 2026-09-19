@@ -52,12 +52,18 @@ export const agDirCell = (p) =>
 /**
  * cellStyle factory — direction-coloured text only (no background tint).
  * Use in grids where row background must stay neutral (e.g. NavBreakdown).
+ * Color convention matches NavStrip pill values:
+ *   positive → --algo-green, negative → --algo-amber, zero/neutral → --algo-slate
  * @param {import('ag-grid-community').CellClassParams} p
  * @returns {{ color: string }}
  */
 export const agDirCellText = (p) => {
   const v = p.value ?? 0;
-  return { color: v > 0 ? 'var(--algo-green)' : v < 0 ? 'var(--algo-red)' : 'var(--algo-dim)' };
+  return {
+    color: v > 0 ? 'var(--algo-green)'
+         : v < 0 ? 'var(--algo-amber)'
+         : 'var(--algo-slate)',
+  };
 };
 
 /**
