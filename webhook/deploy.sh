@@ -45,6 +45,12 @@ case "$ENV" in
   *) echo "[$TS] ERROR: unknown ENV '$ENV'"; exit 1 ;;
 esac
 
+# Register safe.directory in the global config (HOME=/var/www → /var/www/.gitconfig)
+# BEFORE any git operation. Using --git-dir to set it fails because git checks ownership
+# before writing local config. Global config write does not require repo access.
+# Duplicates are harmless; git matches on presence not count.
+git config --global --add safe.directory "$APP_ROOT" 2>/dev/null || true
+
 LOG="$APP_ROOT/.log/hook_debug.log"
 
 # D9 — Trap: on any non-zero exit, fire a failure notification before the
@@ -80,8 +86,6 @@ trap 'on_exit $?' EXIT
       "$APP_ROOT/.git" "$APP_ROOT/.log" "$APP_ROOT/backend/config" \
       "$APP_ROOT/frontend/.svelte-kit" "$APP_ROOT/frontend/build" \
       "$APP_ROOT/frontend/node_modules" 2>/dev/null || true
-
-  git --git-dir="$APP_ROOT/.git" --work-tree="$APP_ROOT" config --add safe.directory "$APP_ROOT"
 
   # One-time migration: rename old config file names to new names
   [ -f "backend/config/config.yaml" ] && [ ! -f "backend/config/backend_config.yaml" ] && \
