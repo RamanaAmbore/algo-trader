@@ -4723,7 +4723,7 @@
       <div class="byund-grid">
         <div class="byund-headrow">
           <span>Underlying</span>
-          <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">Spot</span>
+          <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">LTP</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Chg %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
