@@ -54,7 +54,7 @@ on_exit() {
     EXIT_CODE=$1
     if [ "$EXIT_CODE" -ne 0 ]; then
         echo "[$TS] DEPLOY FAILED with exit code $EXIT_CODE"
-        python "$APP_ROOT/webhook/notify_deploy.py" \
+        python3 "$APP_ROOT/webhook/notify_deploy.py" \
             --status fail \
             --branch "$BRANCH" \
             --commit "$(git -C "$APP_ROOT" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
@@ -407,7 +407,7 @@ JSONEOF
   fi
 
   echo "[$TS] Sending startup notification..."
-  python "$APP_ROOT/webhook/notify_deploy.py" \
+  python3 "$APP_ROOT/webhook/notify_deploy.py" \
       --status "$DEPLOY_STATUS" \
       --branch "$BRANCH" \
       --commit "$(git rev-parse --short HEAD)" \
