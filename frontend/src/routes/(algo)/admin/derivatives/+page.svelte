@@ -4565,7 +4565,7 @@
                  mounted across symbol switches so the card doesn't
                  visually rebuild when the operator picks a new
                  underlying. Spans the whole grid via cand-empty. -->
-            <div class="cand-empty">
+            <div class="cand-empty" class:cand-loading={loading || !selectedUnderlying}>
               {#if !selectedUnderlying}
                 <EmptyState
                   title={instrumentsReady ? 'No underlying selected' : 'Loading underlyings…'}
@@ -5652,6 +5652,13 @@
     text-align: center;
     align-self: start;
   }
+  .cand-empty.cand-loading {
+    align-self: stretch;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 8rem;
+  }
 
   /* ── Per-underlying snapshot card ────────────────────────────────
      Compact 8-column table; first column is the underlying root,
@@ -5704,7 +5711,7 @@
   .byund-row > span {
     padding: 0.32rem 0.45rem;
     border-bottom: 1px solid rgba(126,151,184,0.10);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     transition: background-color 0.1s;
   }
   .byund-row > span.num {

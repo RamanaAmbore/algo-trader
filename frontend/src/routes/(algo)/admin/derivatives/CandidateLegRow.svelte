@@ -444,6 +444,7 @@
     padding-right: 4px;
     display: flex;
     align-items: center;
+    color: var(--algo-slate);
   }
 
   /* Numeric column cells — right-aligned + truncation. */
@@ -536,7 +537,7 @@
     background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
   }
   /* CE / PE text tint on the symbol main (Sensibull / Streak convention). */
-  :global(.cand-sym .sym-main)        { color: #e2e8f0; font-weight: 500; }
+  :global(.cand-sym .sym-main)        { color: var(--algo-slate); font-weight: 500; }
   :global(.cand-sym .sym-main.sym-ce) { color: var(--c-long); }
   :global(.cand-sym .sym-main.sym-pe) { color: var(--c-short); }
   /* Always-visible grey separator on symbol cell right edge — marks the
