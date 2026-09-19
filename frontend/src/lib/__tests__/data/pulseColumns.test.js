@@ -198,41 +198,20 @@ describe('mkRightColDefs — Lots column cellClass (Fix 3)', () => {
     return col;
   }
 
-  it('lots cellClass is a function', () => {
+  it('lots cellClass is a string (RA constant), not a function', () => {
     const col = getLotsCol();
-    expect(typeof col.cellClass).toBe('function');
+    expect(typeof col.cellClass).toBe('string');
   });
 
-  it('includes lots-left-sep when row has qty_pos defined', () => {
+  it('lots cellClass equals the RA class string', () => {
     const col = getLotsCol();
-    const result = col.cellClass({ data: { qty_pos: 50 } });
-    expect(result).toContain('lots-left-sep');
+    expect(col.cellClass).toContain('ra-cls');
   });
 
-  it('includes lots-left-sep when qty_pos is 0 (defined but zero — still a position row)', () => {
+  it('does not include lots-left-sep for any row type (double-border fix)', () => {
     const col = getLotsCol();
-    const result = col.cellClass({ data: { qty_pos: 0 } });
-    expect(result).toContain('lots-left-sep');
-  });
-
-  it('includes lots-left-sep when qty_pos is undefined but qty_hold is defined (holdings row)', () => {
-    const col = getLotsCol();
-    const result = col.cellClass({ data: { qty_hold: 10 } });
-    expect(result).toContain('lots-left-sep');
-  });
-
-  it('omits lots-left-sep when data is null', () => {
-    const col = getLotsCol();
-    const result = col.cellClass({ data: null });
-    expect(result).not.toContain('lots-left-sep');
-  });
-
-  it('always includes the RA class', () => {
-    const col = getLotsCol();
-    const withPos  = col.cellClass({ data: { qty_pos: 10 } });
-    const withHold = col.cellClass({ data: { qty_hold: 10 } });
-    expect(withPos).toContain('ra-cls');
-    expect(withHold).toContain('ra-cls');
+    // cellClass is now a plain string — no function to call
+    expect(col.cellClass).not.toContain('lots-left-sep');
   });
 });
 

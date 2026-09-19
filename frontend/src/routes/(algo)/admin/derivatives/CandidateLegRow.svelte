@@ -133,6 +133,7 @@
   //   day_pnl / (prev_close × |qty|) × 100
   // Secondary (live-tick fallback when day_pnl absent): (ltp − prev_close) / prev_close × 100
   const _chgPct = $derived.by(() => {
+    if (c.chg_pct != null) return c.chg_pct;
     const pc = c.prev_close ?? 0;
     const prevMv = pc > 0 ? pc * Math.abs(c.qty || 0) : 0;
     if (c.day_pnl != null && prevMv > 0) return (c.day_pnl / prevMv) * 100;

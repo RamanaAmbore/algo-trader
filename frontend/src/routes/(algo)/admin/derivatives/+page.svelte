@@ -5734,26 +5734,7 @@
     color: var(--c-action);
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
-    position: relative;
-  }
-  /* Direction bar on the symbol cell — mirrors ag-col-sym::after in app.css.
-     The byund-row is display:contents so the class lives on the row element;
-     we select the first child (byund-und) via the parent class + child combinator. */
-  .byund-dir-long > .byund-und::after,
-  .byund-dir-short > .byund-und::after {
-    content: '';
-    position: absolute;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    width: 2px;
-    pointer-events: none;
-  }
-  .byund-dir-long > .byund-und::after {
-    background: rgba(74, 222, 128, 0.85);
-  }
-  .byund-dir-short > .byund-und::after {
-    background: rgba(248, 113, 113, 0.85);
+    box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
   }
   .byund-row > .cell-pos { color: var(--c-long); }
   .byund-row > .cell-neg { color: var(--c-short); }

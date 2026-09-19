@@ -1,15 +1,16 @@
-# Plan: Fix legs grid cell full-height coverage — bars/tints/separators
+# Plan: Legs symbol format sync + LTP tint removal + payoff labels
 
 ## Context
-In the derivatives legs CSS Grid, `.cand-row` uses `padding: 0.2rem 0.3rem` (container-level) + `align-items: center`. This means each cell `<span>` is only as tall as its text content (~12px), centered inside a taller row. The direction bar `::after` (`top:0; bottom:0`) and `background-color` on `.cand-sym-acct` both reference the span's own height — so they only cover the text zone, leaving the top/bottom padding areas bare.
-
-In the ag-Grid positions/holdings surface: row containers have no vertical padding; each `.ag-cell` fills the full `24px` row height and gets horizontal-only cell padding. `::after` covers the full 24px. Our CSS Grid legs need the same model: **move vertical padding from row to cells**.
+Three small fixes:
+1. Legs symbol cell has `font-weight: 600` on the sym-main text (making it bold) and `0.3rem` of horizontal padding on the row container — positions ag-Grid uses normal weight and `4px` per-cell horizontal padding. User wants them in sync.
+2. Legs LTP cell applies `ltp-vs-avg-up` / `ltp-vs-avg-down` background tints (green/red when LTP > avg or < avg). Positions ag-Grid LTP column has no background tint — only text color via `ltpDayClass`. Remove the tint.
+3. Payoff overlay legend labels are currently "Day P&L" and "Exp Val". User wants "P&L" and "Exp P&L".
 
 ## Task
-Three CSS changes in `CandidateLegRow.svelte`. No other files needed.
+Three targeted changes across two files.
 
 ## Agents
-- frontend: Make the three changes below
+- frontend: All changes below
 - backend: skip
 - broker: skip
 - doc: skip
@@ -18,38 +19,44 @@ Three CSS changes in `CandidateLegRow.svelte`. No other files needed.
 
 ## Frontend agent task
 
+### Change 1 — Symbol cell: reduce horizontal padding + sync font weight
+
 **File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
 
-### Change 1 — Remove vertical padding from row container; switch to stretch
+a) In `.cand-row` (around line 419), change:
+   - `padding: 0 0.3rem` → `padding: 0` (remove horizontal container padding; move to cells)
 
-In the `.cand-row` rule (around line 419), make two edits:
-- `padding: 0.2rem 0.3rem` → `padding: 0 0.3rem`
-- `align-items: center` → `align-items: stretch`
+b) In `.cand-row > span` (the rule added recently with vertical padding), add horizontal padding matching ag-Grid:
+   - Add `padding-left: 4px; padding-right: 4px;`
 
-### Change 2 — Restore vertical spacing at cell level + flex vertical centering
+c) In `:global(.cand-sym .sym-main)` (around line 536), change:
+   - `font-weight: 600` → `font-weight: 500`  
+   (Lighter than the current bold; keeps readability above normal weight while aligning closer to positions.)
 
-After the `.cand-row` rule, add a new rule targeting all direct `<span>` children:
-```css
-.cand-row > span {
-  padding-top: 0.2rem;
-  padding-bottom: 0.2rem;
-  display: flex;
-  align-items: center;
-}
+### Change 2 — Remove LTP background tint
+
+**File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
+
+In the LTP span template (around line 327), the class string contains:
 ```
-This restores the same 0.2rem top/bottom breathing room, now at cell level so backgrounds and `::after` extend through it.
+{typeof ltp === 'number' && typeof cost === 'number' && cost > 0
+  ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
+  : ''}
+```
+Remove this entire ternary block from the class string. Keep the `ltpDayClass(...)` and `{flash.classOf(...)}` class bindings — only remove the `ltp-vs-avg-*` block.
 
-### Change 3 — Right-align text in numeric cells under flex
+The `.ltp-vs-avg-up` and `.ltp-vs-avg-down` CSS rules (around lines 606–607) can remain in the style block (dead but harmless) or be removed — remove them to keep the file clean.
 
-The existing `.cand-row > .num` rule has `justify-self: end` (grid alignment) which no longer makes sense once cells stretch to fill the column width. Replace it with flex text alignment:
-- Remove: `justify-self: end;`
-- Add: `justify-content: flex-end;`
+### Change 3 — Payoff legend labels
 
-The `text-align: right`, `min-width: 0`, `overflow: hidden`, `text-overflow: ellipsis`, `white-space: nowrap` lines stay unchanged.
+**File: `frontend/src/lib/OptionsPayoff.svelte`**
+
+- Line ~1269: `Day P&L` → `P&L`
+- Line ~1284: `Exp Val` → `Exp P&L`
 
 ---
 
-After edits, run `cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1` and fix any errors. Report result.
+After edits, run `cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1` and fix any errors.
 
 ## Tests
 - pytest: no
@@ -57,12 +64,11 @@ After edits, run `cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-c
 - playwright: no
 
 ## Commit message
-fix(ui): legs cells stretch to full row height — bars/tints/separators cover full cell
+fix(ui): legs symbol weight/padding sync with positions, remove LTP tint, fix payoff labels
 
 ## Done when
-- Direction bars (green/red `::after` on `.cand-sym-acct`) cover the full row height, not just the text zone
-- Account tint (`background-color` on `.cand-sym-acct`) fills the full row height
-- Grey separator box-shadows (`.cand-sym-acct` and `.cand-chg-sep`) span the full row height
-- Row vertical spacing is unchanged (0.2rem breathing room, now via cell padding)
-- Numeric text stays right-aligned
+- Legs symbol text weight 500 (lighter, closer to positions)
+- All legs cells have 4px left/right padding (consistent with ag-Grid cell model)
+- LTP cell in legs has no background tint — text color only (matching positions)
+- Payoff overlay legend shows "P&L" and "Exp P&L"
 - svelte-check 0 errors

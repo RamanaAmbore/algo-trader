@@ -576,10 +576,7 @@ export function mkRightColDefs({
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: (p) => {
-        const d = p.data;
-        return (d?.qty_pos !== undefined || d?.qty_hold !== undefined) ? [RA, 'lots-left-sep'] : [RA];
-      },
+      cellClass: RA,
       valueGetter: (p) => lotsForRow(p.data),
       valueFormatter: ({ value }) => fmtLots(value),
       headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
