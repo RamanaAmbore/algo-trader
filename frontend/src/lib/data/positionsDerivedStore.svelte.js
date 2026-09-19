@@ -13,7 +13,7 @@ import { browser } from '$app/environment';
 import { untrack } from 'svelte';
 import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
 import { positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
-import { livePositionDayPnl } from '$lib/data/nav.js';
+import { livePositionDayPnl, dayChangePct } from '$lib/data/nav.js';
 import { isMarketOpen } from '$lib/marketHours';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
@@ -59,7 +59,7 @@ export function _computeDerived(posRows, holdRows, deps = {}) {
   } = deps;
 
   const total = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
-  /** @type {Record<string,{day_pnl:number,exp_pnl:number|null,extrinsic:number|null,pnl:number}>} */
+  /** @type {Record<string,{day_pnl:number,exp_pnl:number|null,extrinsic:number|null,pnl:number,prev_mv:number,chg_pct:number|null}>} */
   const byKey = {};
   /** @type {Record<string,{day_pnl:number,exp_pnl:number,extrinsic:number,pnl:number}>} */
   const byRootPositions = {};
@@ -126,10 +126,13 @@ export function _computeDerived(posRows, holdRows, deps = {}) {
       }
     }
 
-    if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0 };
+    if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0, chg_pct: null };
     const bk = byKey[sym];
     bk.day_pnl += day_pnl;
     bk.pnl     += pnl;
+    const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
+    const refPx      = prev_close > 0 ? prev_close : avg;
+    bk.prev_mv       = (bk.prev_mv || 0) + refPx * Math.abs(qty);
     if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
     if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
 
@@ -189,6 +192,11 @@ export function _computeDerived(posRows, holdRows, deps = {}) {
       r.pnl += Number(h?.pnl ?? 0);
       if (exp_pnl != null) r.exp_pnl += exp_pnl;
     }
+  }
+
+  // Compute chg_pct once per symbol key so all surfaces read the same value.
+  for (const bk of Object.values(byKey)) {
+    bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
   }
 
   return { total, byKey, byRootPositions, byRootHoldings, expiryByAcct };

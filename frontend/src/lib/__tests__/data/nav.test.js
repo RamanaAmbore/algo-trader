@@ -6,6 +6,7 @@ import {
   navTotalRow,
   navByAccount,
   positionsPnlFiltered,
+  dayChangePct,
 } from '$lib/data/nav.js';
 
 // ── baseDayPnlForPosition ────────────────────────────────────────────────────
@@ -402,5 +403,37 @@ describe('positionsPnlFiltered', () => {
 
   it('empty array → zeros', () => {
     expect(positionsPnlFiltered([])).toEqual({ pnlTotal: 0, dayTotal: 0 });
+  });
+});
+
+// ── dayChangePct ─────────────────────────────────────────────────────────────
+
+describe('dayChangePct', () => {
+  it('returns (dayPnl / prevMv) * 100 for valid inputs', () => {
+    expect(dayChangePct(500, 10000)).toBeCloseTo(5);
+  });
+
+  it('returns null when prevMv is 0', () => {
+    expect(dayChangePct(500, 0)).toBeNull();
+  });
+
+  it('returns null when prevMv is negative', () => {
+    expect(dayChangePct(500, -1000)).toBeNull();
+  });
+
+  it('returns null when dayPnl is not finite (NaN)', () => {
+    expect(dayChangePct(NaN, 10000)).toBeNull();
+  });
+
+  it('returns null when dayPnl is not finite (Infinity)', () => {
+    expect(dayChangePct(Infinity, 10000)).toBeNull();
+  });
+
+  it('handles negative dayPnl (loss)', () => {
+    expect(dayChangePct(-300, 10000)).toBeCloseTo(-3);
+  });
+
+  it('coerces string inputs', () => {
+    expect(dayChangePct('200', '5000')).toBeCloseTo(4);
   });
 });

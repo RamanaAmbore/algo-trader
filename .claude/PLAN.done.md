@@ -1,74 +1,152 @@
-# Plan: Legs symbol format sync + LTP tint removal + payoff labels
+# Plan: SSOT fixes — spot refresh + chg% store
 
-## Context
-Three small fixes:
-1. Legs symbol cell has `font-weight: 600` on the sym-main text (making it bold) and `0.3rem` of horizontal padding on the row container — positions ag-Grid uses normal weight and `4px` per-cell horizontal padding. User wants them in sync.
-2. Legs LTP cell applies `ltp-vs-avg-up` / `ltp-vs-avg-down` background tints (green/red when LTP > avg or < avg). Positions ag-Grid LTP column has no background tint — only text color via `ltpDayClass`. Remove the tint.
-3. Payoff overlay legend labels are currently "Day P&L" and "Exp Val". User wants "P&L" and "Exp P&L".
+## Principle
+The store computes the value. Every surface just reads it. No surface re-computes
+what the store already provides.
 
-## Task
-Three targeted changes across two files.
+## Two problems
 
-## Agents
-- frontend: All changes below
-- backend: skip
-- broker: skip
-- doc: skip
-- backend-test: skip
-- playwright: skip
+### Problem 1 — Stale spot in layover and snapshot
 
-## Frontend agent task
+`liveSpot` Tier 5 and the snapshot grid fall back to `_underlyingQuotes[sym]?.ltp`
+(a secondary `$state` cache). The fix: read from `symbolStore` directly via
+`getSnapshot(root)?.ltp` — symbolStore is already updated by both SSE ticks AND
+`publishPulseQuotes` (which runs after every batchQuote).
 
-### Change 1 — Symbol cell: reduce horizontal padding + sync font weight
+### Problem 2 — chg% computed on every surface independently
 
-**File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
-
-a) In `.cand-row` (around line 419), change:
-   - `padding: 0 0.3rem` → `padding: 0` (remove horizontal container padding; move to cells)
-
-b) In `.cand-row > span` (the rule added recently with vertical padding), add horizontal padding matching ag-Grid:
-   - Add `padding-left: 4px; padding-right: 4px;`
-
-c) In `:global(.cand-sym .sym-main)` (around line 536), change:
-   - `font-weight: 600` → `font-weight: 500`  
-   (Lighter than the current bold; keeps readability above normal weight while aligning closer to positions.)
-
-### Change 2 — Remove LTP background tint
-
-**File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
-
-In the LTP span template (around line 327), the class string contains:
-```
-{typeof ltp === 'number' && typeof cost === 'number' && cost > 0
-  ? (ltp > cost ? 'ltp-vs-avg-up' : ltp < cost ? 'ltp-vs-avg-down' : 'ltp-vs-avg-flat')
-  : ''}
-```
-Remove this entire ternary block from the class string. Keep the `ltpDayClass(...)` and `{flash.classOf(...)}` class bindings — only remove the `ltp-vs-avg-*` block.
-
-The `.ltp-vs-avg-up` and `.ltp-vs-avg-down` CSS rules (around lines 606–607) can remain in the style block (dead but harmless) or be removed — remove them to keep the file clean.
-
-### Change 3 — Payoff legend labels
-
-**File: `frontend/src/lib/OptionsPayoff.svelte`**
-
-- Line ~1269: `Day P&L` → `P&L`
-- Line ~1284: `Exp Val` → `Exp P&L`
+Add `chg_pct` to `positionsDerivedStore.byKey[sym]` once. All consumers just read it —
+no formula on any surface. `dayChangePct` helper lives only in `nav.js` and is used:
+(a) inside `_computeDerived` to keep the formula in one place, and
+(b) for aggregate TOTAL rows in PerformancePage + MarketPulse where you can't read
+    per-symbol from the store.
 
 ---
 
-After edits, run `cd /Users/ramanambore/projects/ramboq/frontend && npx svelte-check --output machine 2>&1` and fix any errors.
+## Changes
+
+### 1. `frontend/src/lib/data/nav.js`
+Add pure helper — formula lives here and nowhere else:
+```js
+export function dayChangePct(dayPnl, prevMv) {
+  const dpnl = Number(dayPnl), mv = Number(prevMv);
+  if (!Number.isFinite(dpnl) || mv <= 0) return null;
+  return (dpnl / mv) * 100;
+}
+```
+
+### 2. `frontend/src/lib/data/positionsDerivedStore.svelte.js`
+Import `dayChangePct`. In the positions loop accumulate `prev_mv`; finalize `chg_pct`
+after the loop using the helper:
+
+```js
+// In positions loop (after existing day_pnl accumulation):
+const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
+const avg        = Number(p?.average_price) || 0;
+const refPx      = prev_close > 0 ? prev_close : avg;
+const qty        = Number(p?.quantity) || 0;
+if (!byKey[sym]) byKey[sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0 };
+byKey[sym].prev_mv += refPx * Math.abs(qty);
+
+// After both loops, finalize:
+for (const bk of Object.values(byKey)) {
+  bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
+}
+```
+
+`byKey[sym]` shape: `{ day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct }`.
+Existing `.day_pnl` consumers unaffected.
+
+### 3. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+Read `chg_pct` from store. No formula on the surface:
+```js
+const _chgPct = $derived.by(() => {
+  const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
+  if (stored != null) return stored;
+  if (c.chg_pct != null) return c.chg_pct;          // snapshot fallback
+  const pc = c.prev_close ?? 0;
+  if (typeof ltp === 'number' && pc > 0) return (ltp - pc) / pc * 100;  // ltp fallback
+  return null;
+});
+```
+
+### 4. `frontend/src/lib/data/pulseColumns.js`
+Read `chg_pct` from store. Remove inline formula:
+```js
+function _dayPnlPctValueGetter(p) {
+  const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
+  const stored = positionsDerivedStore.byKey[sym]?.chg_pct;
+  if (stored != null) return stored;
+  // fallback for holdings rows not covered by positionsDerivedStore
+  const cp = Number(p.data?.change_pct);
+  return Number.isFinite(cp) ? cp : null;
+}
+```
+Import `positionsDerivedStore`.
+
+### 5. `frontend/src/lib/PerformancePage.svelte`
+Import `dayChangePct`. Replace two inline TOTAL row computations (only place the
+helper is needed — aggregate totals can't read per-symbol from the store):
+```js
+day_change_percentage: dayChangePct(total_day_change, total_prev_val) ?? 0
+```
+
+### 6. `frontend/src/lib/MarketPulse.svelte`
+Import `dayChangePct`. Update `_synthesiseTotalRow` positions path:
+```js
+t.day_change_percentage = dayChangePct(t.day_pnl, t.day_prev_val) ?? 0;
+```
+
+### 7. `frontend/src/lib/data/underlyingSpotStore.svelte.js`
+Add import of `getSnapshot`. Fix `getUnderlyingSpot` to read symbolStore first:
+```js
+import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+export function getUnderlyingSpot(root) {
+  return getSnapshot(root)?.ltp || _quotes[root]?.ltp || 0;
+}
+```
+
+### 8. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+**Tier 5 in `liveSpot`** — replace `_underlyingQuotes` read with symbolStore:
+```js
+const snapLtp = getSnapshot(selectedUnderlying)?.ltp;
+if (snapLtp > 0) return snapLtp;
+```
+
+**Snapshot grid** — replace `_q.ltp` fallback with symbolStore:
+```svelte
+{@const _snapLtp = getSnapshot(g.underlying)?.ltp}
+{@const _ltp = _useAnchor ? liveSpot : (_undLiveLtp[g.underlying] ?? (_snapLtp ?? null))}
+```
+Keep `_q` for `_close` and `_pct` (prev_close, day_pct not in symbolStore).
+
+---
+
+## Files to change
+1. `frontend/src/lib/data/nav.js`
+2. `frontend/src/lib/data/positionsDerivedStore.svelte.js`
+3. `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+4. `frontend/src/lib/data/pulseColumns.js`
+5. `frontend/src/lib/PerformancePage.svelte`
+6. `frontend/src/lib/MarketPulse.svelte`
+7. `frontend/src/lib/data/underlyingSpotStore.svelte.js`
+8. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`
+
+## Agents
+- frontend: all 8 files; read MarketPulse lines 2460–2490 before editing;
+  verify `getSnapshot` import already present in +page.svelte before adding
 
 ## Tests
 - pytest: no
 - svelte-check: yes
-- playwright: no
+- vitest: yes
 
 ## Commit message
-fix(ui): legs symbol weight/padding sync with positions, remove LTP tint, fix payoff labels
+fix(derivatives): spot via symbolStore SSOT + chg% computed once in positionsDerivedStore
 
 ## Done when
-- Legs symbol text weight 500 (lighter, closer to positions)
-- All legs cells have 4px left/right padding (consistent with ag-Grid cell model)
-- LTP cell in legs has no background tint — text color only (matching positions)
-- Payoff overlay legend shows "P&L" and "Exp P&L"
-- svelte-check 0 errors
+- `positionsDerivedStore.byKey[sym].chg_pct` is the only place chg% is computed for positions
+- Legs and Pulse read `chg_pct` from the store — no inline formula
+- `dayChangePct` used only in `_computeDerived` and aggregate TOTAL rows
+- `getUnderlyingSpot` and `liveSpot` Tier 5 read symbolStore — layover/snapshot spot refreshes on SSE tick
+- svelte-check 0 errors, vitest green

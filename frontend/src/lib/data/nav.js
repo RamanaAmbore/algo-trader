@@ -235,6 +235,21 @@ export function positionsPnlFiltered(positions) {
 }
 
 /**
+ * Compute day-change percentage from day P&L and previous market value.
+ * Returns null (not 0) when the denominator is non-positive or inputs are
+ * non-finite — callers use `?? 0` when a numeric fallback is required.
+ *
+ * @param {number|null|undefined} dayPnl
+ * @param {number|null|undefined} prevMv  - previous market value (close × qty)
+ * @returns {number|null}
+ */
+export function dayChangePct(dayPnl, prevMv) {
+  const dpnl = Number(dayPnl), mv = Number(prevMv);
+  if (!Number.isFinite(dpnl) || mv <= 0) return null;
+  return (dpnl / mv) * 100;
+}
+
+/**
  * Sum a list of nav rows into a TOTAL row. Returns null on empty.
  * @param {Array<ReturnType<typeof navRowForAccount>>} rows
  */

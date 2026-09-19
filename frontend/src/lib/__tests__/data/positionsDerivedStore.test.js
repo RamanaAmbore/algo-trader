@@ -17,7 +17,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { livePositionDayPnl, baseDayPnlForPosition } from '$lib/data/nav.js';
+import { livePositionDayPnl, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 
 // ── _computeDerived pure-function mirror ─────────────────────────────────────
@@ -107,7 +107,10 @@ function _computeDerived(posRows, holdRows, deps = {}) {
       }
     }
 
-    byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl };
+    const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
+    const refPx      = prev_close > 0 ? prev_close : avg;
+    const prev_mv    = (byKey[sym]?.prev_mv || 0) + refPx * Math.abs(qty);
+    byKey[sym] = { day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct: null };
 
     total.day_pnl += day_pnl;
     if (exp_pnl   != null) total.exp_pnl   += exp_pnl;
@@ -162,6 +165,10 @@ function _computeDerived(posRows, holdRows, deps = {}) {
       r.pnl += Number(h?.pnl ?? 0);
       if (exp_pnl != null) r.exp_pnl += exp_pnl;
     }
+  }
+
+  for (const bk of Object.values(byKey)) {
+    bk.chg_pct = dayChangePct(bk.day_pnl, bk.prev_mv);
   }
 
   return { total, byKey, byRootPositions, byRootHoldings, expiryByAcct };
@@ -581,5 +588,61 @@ describe('positionsDerivedStore — SSOT helper validation', () => {
       pnl: 1250, day_change_val: 0, close_price: 0,
     });
     expect(baseDayPnlForPosition(pos)).toBe(1250);
+  });
+});
+
+// ── chg_pct SSOT tests ────────────────────────────────────────────────────────
+
+describe('positionsDerivedStore — chg_pct SSOT (byKey[sym].chg_pct)', () => {
+  it('computes chg_pct from day_pnl / prev_mv when close_price is set', () => {
+    const pos = makePos({
+      quantity: 25,
+      close_price: 22800,
+      average_price: 22800,
+      overnight_quantity: 25,
+    });
+    const { byKey } = _computeDerived([pos], [], {
+      livePosDay: () => 500,
+    });
+    const bk = byKey['NIFTY26JUNFUT'];
+    // prev_mv = close_price * qty = 22800 * 25 = 570000
+    // chg_pct = 500 / 570000 * 100
+    expect(bk.prev_mv).toBeCloseTo(22800 * 25);
+    expect(bk.chg_pct).toBeCloseTo((500 / (22800 * 25)) * 100, 4);
+  });
+
+  it('chg_pct is null when prev_mv is 0 (new intraday, no close)', () => {
+    const pos = makePos({
+      quantity: 25,
+      close_price: 0,
+      average_price: 0,
+      overnight_quantity: 0,
+    });
+    const { byKey } = _computeDerived([pos], []);
+    expect(byKey['NIFTY26JUNFUT'].chg_pct).toBeNull();
+  });
+
+  it('chg_pct falls back to average_price when close_price is 0', () => {
+    const pos = makePos({
+      quantity: 25,
+      close_price: 0,
+      average_price: 23000,
+      overnight_quantity: 25,
+    });
+    const { byKey } = _computeDerived([pos], [], {
+      livePosDay: () => 300,
+    });
+    const bk = byKey['NIFTY26JUNFUT'];
+    // refPx = avg = 23000; prev_mv = 23000 * 25 = 575000
+    expect(bk.prev_mv).toBeCloseTo(23000 * 25);
+    expect(bk.chg_pct).toBeCloseTo((300 / (23000 * 25)) * 100, 4);
+  });
+
+  it('byKey includes prev_mv and chg_pct fields', () => {
+    const pos = makePos();
+    const { byKey } = _computeDerived([pos], []);
+    const entry = byKey['NIFTY26JUNFUT'];
+    expect('prev_mv' in entry).toBe(true);
+    expect('chg_pct' in entry).toBe(true);
   });
 });

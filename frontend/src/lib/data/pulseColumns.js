@@ -15,6 +15,7 @@
 // on every ag-Grid redraw — not the stale binding captured at mount.
 
 import { aggCompact, ltpDayClass } from '$lib/format.js';
+import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
 
 // ─── Pure helpers ────────────────────────────────────────────────────
 
@@ -466,17 +467,15 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
 // ─── mkRightColDefs private helpers ─────────────────────────────────
 
 // Day P&L % — one-day return on yesterday's market value (close × qty).
-// NOT cost basis: close × qty is the honest denominator — per-symbol
-// this collapses to change_pct; TOTAL gets a market-value-weighted
-// day return.
+// Primary: positionsDerivedStore.byKey[sym].chg_pct (pre-computed SSOT).
+// Fallback: change_pct field on the row (watchlist / mover rows without a
+// live position entry in the derived store).
 function _dayPnlPctValueGetter(p) {
-  const dpnl = Number(p.data?.day_pnl);
-  const prev = Number(p.data?._prev_market_value);
-  if (!Number.isFinite(dpnl) || prev <= 0) {
-    const cp = Number(p.data?.change_pct);
-    return Number.isFinite(cp) ? cp : null;
-  }
-  return (dpnl / prev) * 100;
+  const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
+  const stored = positionsDerivedStore.byKey[sym]?.chg_pct;
+  if (stored != null) return stored;
+  const cp = Number(p.data?.change_pct);
+  return Number.isFinite(cp) ? cp : null;
 }
 
 // P&L as % of cost basis.

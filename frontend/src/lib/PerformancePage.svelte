@@ -24,7 +24,7 @@
   import { formatSymbol, decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
-  import { navByAccount, navTotalRow, aggregateDayPnlForPositions } from '$lib/data/nav';
+  import { navByAccount, navTotalRow, aggregateDayPnlForPositions, dayChangePct } from '$lib/data/nav';
   import { applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
@@ -873,7 +873,7 @@
       pnl:                   total_pnl,
       pnl_percentage:        total_inv_val  ? (total_pnl        / total_inv_val  * 100) : 0,
       day_change_val:        total_day_change,
-      day_change_percentage: total_prev_val ? (total_day_change / total_prev_val * 100) : 0,
+      day_change_percentage: dayChangePct(total_day_change, total_prev_val) ?? 0,
       quantity:              sum('quantity'),
       average_price: null,
       close_price:   null,
@@ -903,7 +903,7 @@
       pnl:                   total_pnl,
       pnl_percentage:        total_cost_basis ? (total_pnl        / total_cost_basis * 100) : 0,
       day_change_val:        total_day_change,
-      day_change_percentage: total_prev_val   ? (total_day_change / total_prev_val   * 100) : 0,
+      day_change_percentage: dayChangePct(total_day_change, total_prev_val) ?? 0,
       unrealised:    sum('unrealised'),
       realised:      sum('realised'),
       quantity:      sum('quantity'),

@@ -136,12 +136,10 @@
   // re-fetch window when returning from another tab).
   // For F&O options where prev_close = 0, avg_cost is used as the reference price.
   const _chgPct = $derived.by(() => {
-    const pc = c.prev_close ?? 0;
-    const refPx = pc > 0 ? pc : (c.avg_cost ?? 0);
-    const prevMv = refPx > 0 ? refPx * Math.abs(c.qty || 0) : 0;
-    const liveRow = positionsDerivedStore.byKey[c.symbol];
-    if (liveRow != null && prevMv > 0) return (liveRow.day_pnl / prevMv) * 100;
+    const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
+    if (stored != null) return stored;
     if (c.chg_pct != null) return c.chg_pct;
+    const pc = c.prev_close ?? 0;
     if (typeof ltp === 'number' && pc > 0) return (ltp - pc) / pc * 100;
     return null;
   });

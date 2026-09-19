@@ -101,7 +101,7 @@
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import OrderPairModal from '$lib/order/OrderPairModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav';
+  import { baseDayPnlForPosition, livePositionDayPnl, dayChangePct } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
@@ -2479,7 +2479,7 @@
     // backend already computed per account. Σday_pnl / Σday_prev_val is
     // exactly what backend's TOTAL row uses.
     else if (t.day_prev_val > 0) {
-      t.day_change_percentage = (t.day_pnl / t.day_prev_val) * 100;
+      t.day_change_percentage = dayChangePct(t.day_pnl, t.day_prev_val) ?? 0;
     }
     return t;
   }

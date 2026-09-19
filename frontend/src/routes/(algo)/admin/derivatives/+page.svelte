@@ -1792,11 +1792,11 @@
       return strategy?.spot;
     }
 
-    // Tier 5: batchQuote fallback (cold start)
-    const bqLtp = _underlyingQuotes[selectedUnderlying]?.ltp;
-    if (bqLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '5-bq', key: selectedUnderlying, value: bqLtp }));
-      return bqLtp;
+    // Tier 5: symbolStore SSE snapshot (fresher than batchQuote cache)
+    const snapLtp = getSnapshot(selectedUnderlying)?.ltp;
+    if (snapLtp > 0) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '5-snap', key: selectedUnderlying, value: snapLtp }));
+      return snapLtp;
     }
 
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
@@ -4751,7 +4751,8 @@
         {#each _byUnderlyingTotals as g (g.underlying)}
           {@const _q = _underlyingQuotes[g.underlying]}
           {@const _useAnchor = g.underlying === selectedUnderlying && liveSpot != null && liveSpot > 0}
-          {@const _ltp   = _useAnchor ? liveSpot : (_undLiveLtp[g.underlying] ?? (_q ? Number(_q.ltp) : null))}
+          {@const _snapLtp = getSnapshot(g.underlying)?.ltp}
+          {@const _ltp   = _useAnchor ? liveSpot : (_undLiveLtp[g.underlying] ?? (_snapLtp ?? null))}
           {@const _close = _useAnchor && (strategy?.spot_prev_close ?? 0) > 0
               ? Number(strategy.spot_prev_close)
               : (_q ? Number(_q.prev_close) : null)}

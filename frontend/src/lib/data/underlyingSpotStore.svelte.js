@@ -16,6 +16,7 @@
 import { batchQuote } from '$lib/api.js';
 import { publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
 import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
+import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
 
 /**
  * Module-local reactive map: { ROOT: { ltp, day_pct, prev_close } }
@@ -32,7 +33,7 @@ let _quotes = $state({});
  * @returns {number}
  */
 export function getUnderlyingSpot(root) {
-  return _quotes[root]?.ltp ?? 0;
+  return getSnapshot(root)?.ltp || _quotes[root]?.ltp || 0;
 }
 
 /**
