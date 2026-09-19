@@ -146,9 +146,10 @@ surfaces share a single SSOT: `underlyingSpotStore` in `frontend/src/lib/data/un
 
 #### Positions Derived Store (positionsDerivedStore)
 
-**Purpose**: Unified computation and caching of derived position metrics (day P&L and 
-expiry P&L) across all surfaces (NavStrip, MarketPulse, Derivatives page). Separates 
-computation logic from presentation surfaces, allowing independent metric updates.
+**Purpose**: Unified computation and caching of derived position metrics (day P&L, 
+expiry P&L, and day change percentage) across all surfaces (NavStrip, MarketPulse, 
+Derivatives page). Separates computation logic from presentation surfaces, allowing 
+independent metric updates.
 
 **Module**: `frontend/src/lib/data/positionsDerivedStore.svelte.js` (Sep 2026)
 
@@ -158,34 +159,72 @@ computation logic from presentation surfaces, allowing independent metric update
   total: {
     day_pnl: number,        // aggregate day P&L across all positions
     exp_pnl: number,        // aggregate expiry P&L across all F&O positions
+    extrinsic: number,      // aggregate extrinsic value (time value of options)
   },
   byKey: {
-    "RELIANCE": {day_pnl: 500, exp_pnl: 1200},   // per-symbol aggregates
-    "NIFTY24SEP28C24000": {day_pnl: 0, exp_pnl: -450},
+    "RELIANCE": {
+      day_pnl: 500,
+      exp_pnl: 1200,
+      extrinsic: 50,
+      pnl: 2400,            // lifetime P&L for this symbol
+      prev_mv: 8000,        // reference market value (prev_close × |qty|)
+      chg_pct: 6.25         // day change percentage = (day_pnl / prev_mv) × 100
+    },
+    "NIFTY24SEP28C24000": {
+      day_pnl: 0,
+      exp_pnl: -450,
+      extrinsic: 120,
+      pnl: -450,
+      prev_mv: 5000,
+      chg_pct: 0
+    },
     ...
   }
 }
 ```
 
-**Cadence**: 5s book-poll cycle (synchronized with broker positions refresh) + 
+**Cadence**: 4 Hz (symbolTickCount + 250ms throttle) — shared throttle cadence with 
+legacy `positionsDayPnlStore`. Recomputes on broker positions refresh (5s poll) and 
 immediate recompute on postback fill events (WebSocket order fills trigger cache 
 invalidation → positionsStore refresh → store recomputes).
 
 **Data flow**:
 1. Broker positions arrive via 5s poll or postback fill
 2. `positionsStore` updates (via `loadPositions()` or `order_update` handler)
-3. Store's internal `$effect` watches `positionsStore.value` and recomputes 
-   both `day_pnl` and `exp_pnl` metrics
+3. Store's internal `$derived.by()` watches `positionsStore.value` and recomputes 
+   all metrics: `day_pnl`, `exp_pnl`, `pnl`, `prev_mv`, and `chg_pct`
 4. Updated values flow to NavStrip, Pulse grids, Derivatives page automatically via 
    `$derived` consumers
+
+**Per-symbol `prev_mv` (previous market value)** — SSOT for day change percentage:
+- `prev_close` (prior session settlement) or `average_price` (if prev_close ≤ 0)
+- Multiplied by absolute quantity: `refPx × |qty|`
+- Used as the denominator in `dayChangePct()` to prevent division-by-zero errors
+
+**Per-symbol `chg_pct` (day change percentage)** — computed once per symbol at 4 Hz:
+- Formula: `dayChangePct(day_pnl, prev_mv)` — returns `(day_pnl / prev_mv) × 100` or `null`
+- Returns `null` when `prev_mv ≤ 0` (no valid reference market value)
+- Callers use `?? 0` when a numeric fallback is required
+- All surfaces (derivatives legs, MarketPulse positions, pulseColumns) read 
+  `byKey[sym].chg_pct` directly — no surface re-computes it
+
+**Helper: `dayChangePct(dayPnl, prevMv)`** — exported from `frontend/src/lib/data/nav.js`
+- Pure function, no side effects
+- Params: `dayPnl` (number or null), `prevMv` (previous market value, number or null)
+- Returns: percentage (number) or `null`
+- Guard: returns `null` if `dayPnl` is non-finite or `prevMv ≤ 0`
+- Used by `positionsDerivedStore._computeDerived()` and aggregate TOTAL rows 
+  in PerformancePage + MarketPulse
 
 **Consumers**:
 - **PositionStrip P:1 slot** — reads `store.total.day_pnl` for hero day P&L badge
 - **PositionStrip P:3 slot** — reads `store.total.exp_pnl` for hero expiry P&L badge
-- **MarketPulse Positions grid** — per-row cells read `store.byKey[sym].day_pnl` and 
-  `store.byKey[sym].exp_pnl` for accurate display
-- **Derivatives page overlay** — reads `store.byKey[sym]` for per-leg candidate day P&L 
-  and exp P&L
+- **MarketPulse Positions grid** — per-row cells read `store.byKey[sym].day_pnl`, 
+  `store.byKey[sym].exp_pnl`, and `store.byKey[sym].chg_pct` for accurate display
+- **Derivatives page overlay** — reads `store.byKey[sym]` for per-leg candidate day P&L, 
+  exp P&L, and chg_pct
+- **Aggregate TOTAL rows** — compute total `chg_pct` from summed `day_pnl` and `prev_mv` 
+  via `dayChangePct()` helper
 
 ### M pill: Margin
 
@@ -709,3 +748,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-08-30 | v1.4 Holdings day P&L guard fix + H:2 three-tier fallback (commit adc5e1f0): (1) H:1 closePx guard updated — removed `closePx === avgCost` condition which incorrectly fell back to broker `day_change_val` on valid trading days when price coincidentally equaled cost basis. New guard: `closePx <= 0` only. When `closePx > 0`, formula always computes `(liveLtp − closePx) × heldQty`. (2) H:2 current value added three-tier fallback in `_liveHoldingsValue`: Tier 1 `symbolStore ltp × qty` (SSE tick), Tier 2 `h.last_price × qty` (prevents invented value when broker sends last_price=0), Tier 3 `h.cur_val` (final fallback). Detailed subsection added in §1. |
 | 2026-09-14 | v1.5 Exp P&L spot SSOT consolidation (underlyingSpotStore): (1) New module-level store `underlyingSpotStore.svelte.js` centralizes underlying spot quotes (`{ ROOT: { ltp, day_pct, prev_close } }`). Exported API: `getUnderlyingSpot(root)` (cached LTP or 0), `loadUnderlyingSpots(pairs)` (batchQuote fetch + symbolStore publish), `patchUnderlyingSpot(root, ltp)` (per-tick update). (2) PositionStrip simplified: `_resolveOptionSpot(p.underlying_ltp)` reduced to single `getUnderlyingSpot(root)` call; removed symbolStore fallback chain (3 key attempts). (3) Derivatives page delegates to shared store: `loadUnderlyingQuotes()` → `loadUnderlyingSpots()`, eliminating local state duplication. Both surfaces now read identical spot prices; NavStrip P:3 and derivatives Exp P&L no longer diverge. (4) Update §1 EXP Slot spec: Spot resolution now SSOT-first via store (5s batchQuote + per-tick patches). Added detailed subsection §1.4 "Exp P&L Spot Architecture" documenting store design, refresh cadence, per-tick patching. Updated §2 SSOT table: P:3 row now references `underlyingSpotStore` instead of backend Pass 3 enrichment. Added test case: Exp P&L convergence check. |
 | 2026-09-14 | v1.6 positionsDerivedStore unification: (1) New module-level store `positionsDerivedStore.svelte.js` unifies day P&L and expiry P&L computation across all surfaces (NavStrip, Pulse, Derivatives). Store exports `{ total, byKey }` with metrics `{ day_pnl, exp_pnl }` computed on 5s book-poll cadence + immediate postback fill. (2) §1 Pill Layout P:1 and P:3 slots updated — P:1 now reads `positionsDerivedStore.total.day_pnl` (5s cadence, no 4Hz Pulse-driven override); P:3 now reads `positionsDerivedStore.total.exp_pnl` (5s cadence). (3) §1.2 EXP Slot specification refactored: formula unchanged (open: intrinsic + realised, closed: realised || pnl), but **SSOT updated** to store reads instead of backend computation. Cadence changed from "4Hz throttled" to "5s book-poll + immediate postback". Spot resolution via `underlyingSpotStore.getUnderlyingSpot(root)` unchanged. (4) §2 Data Sources SSOT table refactored: P:1 entry now documents store-driven workflow (no `setFromPulse` override); P:3 entry details exp P&L computation and spot sourcing from `underlyingSpotStore`. (5) §1.4 new subsection "Positions Derived Store" comprehensive documentation — purpose, module path, data structure, cadence, data flow, consumers (PositionStrip P:1/P:3, Pulse grids, Derivatives page). All surfaces now converge on single `positionsDerivedStore` SSOT; 5s refresh cycle + immediate fills eliminate cross-page divergence. |
+| 2026-09-18 | v1.7 Day change percentage (`chg_pct`) architecture (commit d8633d4e): (1) New helper `dayChangePct(dayPnl, prevMv)` exported from `frontend/src/lib/data/nav.js` — pure function returning `(dayPnl / prevMv) × 100` or `null` when `prevMv ≤ 0`. Lives only in nav.js. (2) `positionsDerivedStore.byKey[sym]` shape expanded — each symbol entry now includes `{ day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct }`. `prev_mv` = reference market value (prev_close × \|qty\|, or avg if prev_close=0); `chg_pct` = `dayChangePct(day_pnl, prev_mv)` computed once per symbol at 4Hz. (3) §1.4 "Positions Derived Store" subsection expanded — data structure documentation updated to include `extrinsic`, `prev_mv`, `chg_pct` fields; per-symbol `prev_mv` SSOT description; per-symbol `chg_pct` computation detail; new paragraph on `dayChangePct()` helper (formula, guard, usage). (4) All surfaces (derivatives legs, MarketPulse positions, pulseColumns) read `byKey[sym].chg_pct` directly — no surface re-computes percentage; single computation source prevents divergence. |

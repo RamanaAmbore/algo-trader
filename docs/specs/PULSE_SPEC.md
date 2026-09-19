@@ -1232,29 +1232,43 @@ For Snapshot EXP column (MarketPulse Derivatives view):
 
 ### 17.1 Payoff Chart Spot Price Resolution (liveSpot)
 
-The payoff overlay derives a canonical spot price (`liveSpot`) in a four-tier ladder
+The payoff overlay derives a canonical spot price (`liveSpot`) in a five-tier ladder
 to ensure the chart displays immediately on page load, without waiting for SSE ticks
-or broker polls:
+or broker polls. All tiers now refresh on every SSE tick, not only on 5-second polls:
 
 **Resolution order** (first non-null value wins):
-1. **SSE tick on spot-anchor contract** — live tick from WebSocket subscription
-2. **SSE tick on underlying** — live tick if the underlying itself is subscribed (gated on `isMarketOpen()` post-close)
-3. **`candidatePositions[*].underlying_ltp`** (backend-stamped, positions.py Pass 3)
+1. **SSE tick from `symbolStore` snapshot** — live tick via `getSnapshot(root)?.ltp` from 
+   reactive symbol store (4Hz cadence, commit d8633d4e). Result: layover (OptionsPayoff) 
+   and snapshot grid spot prices refresh on every SSE tick instead of only on 5-second 
+   `batchQuote` poll.
+2. **SSE tick on spot-anchor contract** — fallback live tick from WebSocket subscription
+3. **SSE tick on underlying** — live tick if the underlying itself is subscribed (gated on 
+   `isMarketOpen()` post-close)
+4. **`candidatePositions[*].underlying_ltp`** (backend-stamped, positions.py Pass 3)
    — available immediately on page load from broker settlement data; eliminates 
    "Resolving spot…" placeholder during SSE warmup
-4. **`batchQuote _underlyingQuotes[underlying].ltp`** (30s poll fallback) — broker 
+5. **`batchQuote _underlyingQuotes[underlying].ltp`** (30s poll fallback) — broker 
    quote cycle refresh
-5. **`strategy.spot`** (stale server value) — last-resort static value from page load
+6. **`strategy.spot`** (stale server value) — last-resort static value from page load
 
 **Post-close SSE gate (Sep 2026)**:
-Tier 2 (resolved contract from `symbolStore`) is now gated on `isMarketOpen()`. 
-Post-close, the resolver skips to Tier 3 (REST `batchQuote` endpoint) to prevent 
+Tier 3 (resolved contract from `symbolStore`) is now gated on `isMarketOpen()`. 
+Post-close, the resolver skips to Tier 4 (REST `batchQuote` endpoint) to prevent 
 stale intraday SSE-written `ltp_ts > 0` values from blocking updated REST quotes after 
 MCX settlement.
 
+**Spot price tick refresh (Sep 2026, commit d8633d4e)**:
+`getUnderlyingSpot(root)` in `underlyingSpotStore.svelte.js` reads Tier 1 
+(`getSnapshot(root)?.ltp` from `symbolStore`) first, falling back to 
+`_quotes[root]?.ltp`. Snapshot grid also uses `getSnapshot(g.underlying)?.ltp` as 
+LTP fallback. Result: all derivatives page spot-price displays now update live on 
+every SSE tick (4Hz), not only on 5s `batchQuote` poll cycles.
+
 **Rationale**: Broker-stamped `underlying_ltp` appears instantly in candidatePositions 
 without waiting for SSE subscription to activate, allowing the payoff chart to render 
-with a real spot estimate on first paint instead of showing a loading state.
+with a real spot estimate on first paint instead of showing a loading state. SSE-sourced 
+spot prices provide real-time feedback during active trading without waiting for 
+poll cycles.
 
 ### 17.2 OptionsPayoff Overlay — SPOT and CHG% Flash on Tick
 
@@ -1304,8 +1318,11 @@ LTP column, displaying intraday price change percentage for each leg.
 **Column definition**:
 - **Header**: "Chg %" (displayed with canonical text color)
 - **Width**: 56px (compact, right-aligned)
-- **Value**: Computed change% = `(ltp − prev_close) / prev_close × 100`, falls back to 
-  `c.change_pct` (broker-supplied field when computed value unavailable)
+- **Value** (commit d8633d4e, chg% SSOT): `CandidateLegRow._chgPct` reads primary 
+  source from `positionsDerivedStore.byKey[c.symbol]?.chg_pct` (eliminates race 
+  condition on tab return where `c.chg_pct` is null during re-fetch). Falls back to 
+  computed `(ltp − prev_close) / prev_close × 100` → `c.change_pct` (broker-supplied 
+  field when computed value unavailable)
 - **Format**: Percentage with % suffix (e.g. "+2.45%", "−1.30%"); null → "—"
 - **Styling**: Directional text color via `cell-pos` / `cell-neg` / `cell-flat` (green 
   for positive, red for negative, gray for zero or stale close)
@@ -1318,9 +1335,18 @@ LTP column, displaying intraday price change percentage for each leg.
   subscription, providing real-time directional feedback on price movement
 - Flash timing: sub-second, same cadence as LTP flash
 
+**chg% SSOT pattern (Sep 2026, commit d8633d4e)**:
+Same pattern applied in `pulseColumns._dayPnlPctValueGetter` — Pulse grid chg% cells 
+read primary source from `positionsDerivedStore.byKey[row.tradingsymbol]?.chg_pct` 
+before falling back to `row.change_pct`. This ensures all chg% displays (legs, pulse 
+grids, snapshot card) draw from a single canonical store, eliminating stale values 
+during tab switches and re-fetch cycles.
+
 **Impact**: Operators now see live per-leg price change% in the Derivatives Legs grid, 
 synchronized with intraday tick updates. Chg% flash provides consistent visual feedback 
-alongside LTP flash, reducing need to cross-reference to MarketPulse or other surfaces.
+alongside LTP flash. Race-condition protection via store-first read ensures chg% remains 
+populated during tab hibernation exit and market-state transitions, reducing need to 
+cross-reference to MarketPulse or other surfaces.
 
 ### 17.4b Legs Totals Row — Amber Container Background Only
 
