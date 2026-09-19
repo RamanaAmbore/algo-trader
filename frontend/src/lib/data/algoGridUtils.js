@@ -50,20 +50,17 @@ export const agDirCell = (p) =>
   `ag-right-aligned-cell ${p.value > 0 ? 'pnl-gain' : p.value < 0 ? 'pnl-loss' : 'pnl-zero'}`;
 
 /**
- * cellStyle factory — direction-coloured text only (no background tint).
- * Use in grids where row background must stay neutral (e.g. NavBreakdown).
+ * cellClass factory — direction-coloured text only (no background tint).
+ * Uses dir-gain / dir-loss / dir-flat CSS classes (text-only with !important,
+ * overriding the base .ag-cell !important rule by last-declaration order).
  * Color convention matches NavStrip pill values:
  *   positive → --algo-green, negative → --algo-amber, zero/neutral → --algo-slate
  * @param {import('ag-grid-community').CellClassParams} p
- * @returns {{ color: string }}
+ * @returns {string}
  */
 export const agDirCellText = (p) => {
   const v = p.value ?? 0;
-  return {
-    color: v > 0 ? 'var(--algo-green)'
-         : v < 0 ? 'var(--algo-amber)'
-         : 'var(--algo-slate)',
-  };
+  return `ag-right-aligned-cell ${v > 0 ? 'dir-gain' : v < 0 ? 'dir-loss' : 'dir-flat'}`;
 };
 
 /**

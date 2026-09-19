@@ -1,50 +1,93 @@
-# Plan: NAV/Capital/Equity grid color scheme — green/amber/neutral, CSS variable consistency
+# Plan: Fix agDirCellText colors + Lifetime→P&L rename + SPOT→LTP in payoff overlay
 
 ## Context
-NavBreakdown ag-Grid cells use `agDirCellText` from algoGridUtils.js. Currently:
-- Positive → `--algo-green` ✓
-- Negative → `--algo-red` ✗ (should be amber — red signals danger; amber signals caution, matching NavStrip pill convention)
-- Zero → `--algo-dim` (#94a3b8) ✗ (should be `--algo-slate` #c8d8f0 — same as all other neutral/non-directional cells)
+Three separate fixes:
 
-The zero/dim gap is what creates the "off-white vs bright white" inconsistency the operator sees: zero directional cells are #94a3b8 while neutral non-directional cells are #c8d8f0. Making zero use `--algo-slate` unifies them.
+**1. Color not applying (root cause):**
+`agDirCellText` was implemented as `cellStyle` (inline style object). But `app.css` has
+`.ag-theme-algo .ag-cell { color: var(--algo-slate) !important; }`. CSS `!important` in a
+class rule beats inline styles without `!important`. So all directional cells show slate
+regardless of value. Fix: convert `agDirCellText` to `cellClass` function using new
+text-only CSS classes with `!important`.
 
-Additionally, the totals-row color in app.css is hardcoded `#fbbf24` — should be `var(--algo-amber)` for variable reusability.
+**2. Lifetime label rename:**
+`_pCols` and `_hCols` in NavBreakdown both have `headerName: 'Lifetime'` for the cumulative
+P&L column. User wants both renamed to `'P&L'`.
 
-NavBreakdown is the only consumer of `agDirCellText` (NavStrip popup windows share the same component), so the fix propagates automatically.
+**3. SPOT → LTP in OptionsPayoff overlay:**
+`OptionsPayoff.svelte` line ~747: `<span class="ps-k">SPOT</span>` labels the underlying
+price row in the payoff stats overlay. User wants it renamed to `LTP`.
 
-## Task
-Two-file change:
-1. `agDirCellText` in algoGridUtils.js — change negative to `--algo-amber`, zero to `--algo-slate`
-2. `app.css` totals-row color — `#fbbf24` → `var(--algo-amber)`
-
-## Color scheme after fix
-
-| Value | Color variable | Hex | Matches NavStrip |
-|---|---|---|---|
-| Positive | `--algo-green` | `#4ade80` | `.ps-pos` ✓ |
-| Negative | `--algo-amber` | `#fbbf24` | amber pill convention ✓ |
-| Zero/neutral | `--algo-slate` | `#c8d8f0` | `.ps-flat` ✓ |
-| Non-directional | `--algo-slate` (CSS default) | `#c8d8f0` | consistent ✓ |
-
-`agDirCell` (used in positions/legs/snapshot grids, with background tints) is NOT touched — red loss is correct there.
+## CSS specificity proof for new classes
+- `.ag-theme-algo .ag-cell { color: slate !important }` — (0,2,0) + !important
+- `.ag-theme-algo .dir-gain { color: green !important }` — (0,2,0) + !important
+  → same specificity, last-declared wins → dir-gain wins ✓
+- `.ag-theme-algo .ag-row.totals-row .ag-cell { color: amber !important }` — (0,3,0) + !important
+  → higher specificity → totals row stays amber ✓
 
 ## Agents
-- frontend: Two-file change:
+- frontend: Three-file change:
 
-  **File 1: `frontend/src/lib/data/algoGridUtils.js`** — update `agDirCellText`:
+  **File 1: `frontend/src/app.css`**
+  After the existing `.ag-theme-algo .pnl-gain/.pnl-loss/.pnl-zero` block (around line 699-701),
+  add three new text-only direction classes:
+  ```css
+  .ag-theme-algo .dir-gain { color: var(--algo-green) !important; }
+  .ag-theme-algo .dir-loss { color: var(--algo-amber) !important; }
+  .ag-theme-algo .dir-flat { color: var(--algo-slate) !important; }
+  ```
+
+  **File 2: `frontend/src/lib/data/algoGridUtils.js`**
+  Replace the `agDirCellText` export entirely — change from cellStyle object to cellClass string:
   ```js
+  /**
+   * cellClass factory — direction-coloured text only (no background tint).
+   * Uses dir-gain / dir-loss / dir-flat CSS classes (text-only with !important,
+   * overriding the base .ag-cell rule). Color convention matches NavStrip pills:
+   *   positive → --algo-green, negative → --algo-amber, zero/neutral → --algo-slate
+   * @param {import('ag-grid-community').CellClassParams} p
+   * @returns {string}
+   */
   export const agDirCellText = (p) => {
     const v = p.value ?? 0;
-    return {
-      color: v > 0 ? 'var(--algo-green)'
-           : v < 0 ? 'var(--algo-amber)'
-           : 'var(--algo-slate)',
-    };
+    return `ag-right-aligned-cell ${v > 0 ? 'dir-gain' : v < 0 ? 'dir-loss' : 'dir-flat'}`;
   };
   ```
-  Also update the JSDoc comment above it to note amber for negative + slate for zero.
 
-  **File 2: `frontend/src/app.css`** — find the `.ag-theme-algo .ag-row.totals-row .ag-cell` rule and change `color: #fbbf24 !important` to `color: var(--algo-amber) !important`. This is the only hardcoded color in the ag-theme-algo section that has a matching variable. Do NOT change any other lines.
+  **File 3: `frontend/src/lib/NavBreakdown.svelte`**
+  a) For every directional column def that currently has:
+       `cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText`
+     Change to:
+       `cellClass: agDirCellText`
+     (agDirCellText now includes the right-aligned class in its return string)
+  
+  Affected columns (6 total):
+  - `_pCols`: day_pnl, lifetime, expiry
+  - `_cCols`: liveCash
+  - `_hCols`: todayMtm, lifetime
+
+  b) Remove `agDirCellText` from whatever it was used in `cellStyle:` and remove `cellStyle`
+     property from those column defs.
+
+  c) In `_pCols` — find `{ field: 'lifetime', headerName: 'Lifetime', ...}` and change to
+     `headerName: 'P&L'`
+
+  d) In `_hCols` — find `{ field: 'lifetime', headerName: 'Lifetime', ...}` and change to
+     `headerName: 'P&L'`
+
+  e) Also update `_caption` strings in the $derived if they reference "Lifetime P&L" — change
+     `'Today MTM | Current Value | Lifetime P&L'` to `'Today MTM | Current Value | P&L'`
+     and `'Day P&L | Lifetime P&L (Σ pnl) | Expiry P&L (lognormal projection)'` to
+     `'Day P&L | P&L (Σ pnl) | Expiry P&L (lognormal projection)'`
+
+  f) Also update the CSV export column header:
+     In the P slot export: `{ header: 'Lifetime P&L', key: 'lifetimePnl', ... }` → `{ header: 'P&L', ... }`
+     In the H slot export: `{ header: 'Lifetime P&L', key: 'lifetimePnl', ... }` → `{ header: 'P&L', ... }`
+
+  **File 4: `frontend/src/lib/OptionsPayoff.svelte`**
+  Line ~747: change `<span class="ps-k">SPOT</span>` to `<span class="ps-k">LTP</span>`
+  This renames the underlying price label in the payoff stats overlay from "SPOT" to "LTP".
+  No other changes to OptionsPayoff.svelte.
 
 - backend: skip
 - broker: skip
@@ -58,12 +101,11 @@ Two-file change:
 - playwright: no
 
 ## Commit message
-fix(NavBreakdown): apply green/amber/slate color scheme — amber for negative, slate for neutral, CSS variable for totals-row
+fix(NavBreakdown): cellClass dir-gain/dir-loss/dir-flat for directional colors; rename Lifetime→P&L; SPOT→LTP in payoff overlay
 
 ## Done when
-- NavBreakdown directional P&L cells: positive = green, negative = amber, zero = slate
-- NavStrip popup windows: same (NavBreakdown component shared)
-- Totals row: still amber, now via `var(--algo-amber)` not hardcoded `#fbbf24`
-- Non-directional cells (margin, value): unchanged slate
-- `agDirCell` (positions/legs grids): unchanged (red loss stays)
+- NavBreakdown P/H slot directional cells show green (positive) / amber (negative) / slate (zero)
+- "Lifetime" column header shows "P&L" in P slot and H slot
+- OptionsPayoff stats overlay shows "LTP" instead of "SPOT"
+- Totals row still amber (higher CSS specificity wins)
 - svelte-check 0 errors

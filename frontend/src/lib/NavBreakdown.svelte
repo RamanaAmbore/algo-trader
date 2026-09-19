@@ -360,13 +360,13 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'lifetime', headerName: 'Lifetime',   minWidth: 80, flex: 1,
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
+    { field: 'lifetime', headerName: 'P&L',         minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   const _mCols = [
@@ -391,7 +391,7 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'collateral', headerName: 'Collateral',  minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
@@ -405,13 +405,13 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'value',     headerName: 'Value',        minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
-    { field: 'lifetime',  headerName: 'Lifetime',     minWidth: 80, flex: 1,
+    { field: 'lifetime',  headerName: 'P&L',          minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', cellStyle: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   // Grid creation — lazy, one per slot.
@@ -477,10 +477,10 @@
 
   /** Caption text per slot. */
   const _caption = $derived.by(() => {
-    if (activeSlot === 'P') return 'Day P&L | Lifetime P&L (Σ pnl) | Expiry P&L (lognormal projection)';
+    if (activeSlot === 'P') return 'Day P&L | P&L (Σ pnl) | Expiry P&L (lognormal projection)';
     if (activeSlot === 'M') return 'Available = Total − used margin | Total = used + available';
     if (activeSlot === 'C') return 'Cash Avail (CA) = live deployable cash | Total = CA + long option premiums';
-    if (activeSlot === 'H') return 'Today MTM | Current Value | Lifetime P&L';
+    if (activeSlot === 'H') return 'Today MTM | Current Value | P&L';
     return '';
   });
 
@@ -494,7 +494,7 @@
       exportRowsToCsv(rows, [
         { header: 'Account',      key: 'account' },
         { header: 'Day P&L',      key: 'dayPnl',      format: (v) => v == null ? '' : String(v) },
-        { header: 'Lifetime P&L', key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
+        { header: 'P&L',          key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
         { header: 'Expiry P&L',   key: 'expiryPnl',   format: (v) => v == null ? '' : String(v) },
       ], 'nav-p-breakdown.csv');
     } else if (activeSlot === 'M') {
@@ -529,7 +529,7 @@
         { header: 'Account',      key: 'account' },
         { header: 'Today MTM',    key: 'todayMtm',    format: (v) => v == null ? '' : String(v) },
         { header: 'Value',        key: 'value',        format: (v) => v == null ? '' : String(v) },
-        { header: 'Lifetime P&L', key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
+        { header: 'P&L',          key: 'lifetimePnl', format: (v) => v == null ? '' : String(v) },
       ], 'nav-h-breakdown.csv');
     }
   }

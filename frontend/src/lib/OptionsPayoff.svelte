@@ -744,7 +744,7 @@
              title={spotAnchor?.source === 'futures'
                ? `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
-          <span class="ps-k">SPOT</span>
+          <span class="ps-k">LTP</span>
           <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
         </div>
         {#if spotPct != null}

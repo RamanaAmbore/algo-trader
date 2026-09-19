@@ -699,6 +699,9 @@
 .ag-theme-algo .pnl-loss { color: var(--algo-red)   !important; background-color: var(--algo-red-pnl-bg)   !important; }
 .ag-theme-algo .pnl-gain { color: var(--algo-green) !important; background-color: var(--algo-green-pnl-bg) !important; }
 .ag-theme-algo .pnl-zero { color: var(--algo-dim) !important; }
+.ag-theme-algo .dir-gain { color: var(--algo-green) !important; }
+.ag-theme-algo .dir-loss { color: var(--algo-amber) !important; }
+.ag-theme-algo .dir-flat { color: var(--algo-slate) !important; }
 
 /* Long vs short positions — distinct colour family from loss/gain so
    the operator doesn't conflate "side of the book" with "in profit".
