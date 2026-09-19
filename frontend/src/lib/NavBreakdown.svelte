@@ -374,16 +374,16 @@
       cellClass: 'ag-col-fill ag-col-acct' },
     { field: 'usedMargin',  headerName: 'Used',        minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'availMargin', headerName: 'Avail',       minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'totalMargin', headerName: 'Total',       minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+      cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'utilPct',     headerName: 'Util %',      minWidth: 64, flex: 0.8,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: 'ag-right-aligned-cell', valueFormatter: agPctFmt },
+      cellClass: agDirCellText, valueFormatter: agPctFmt },
   ];
 
   const _cCols = [
