@@ -433,7 +433,7 @@ describe('dayChangePct', () => {
     expect(dayChangePct(-300, 10000)).toBeCloseTo(-3);
   });
 
-  it('coerces string inputs', () => {
-    expect(dayChangePct('200', '5000')).toBeCloseTo(4);
+  it('zero dayPnl returns 0% not null', () => {
+    expect(dayChangePct(0, 5000)).toBeCloseTo(0);
   });
 });
