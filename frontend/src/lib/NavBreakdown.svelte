@@ -23,6 +23,9 @@
 <script>
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
+  import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCell, agPctFmt } from '$lib/data/algoGridUtils.js';
+  ModuleRegistry.registerModules([AllCommunityModule]);
   import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
@@ -235,30 +238,36 @@
     expiryPnl:   _pByAcct.reduce((s, r) => s + (r.expiryPnl ?? 0), 0),
   }));
 
-  // ── M slot — per-account Avail Margin + Total Margin from funds ──────
+  // ── M slot — per-account Avail Margin + Used Margin + Total Margin ──
   const _mByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
       const f = _funds.find(x => String(x.account) === acct);
       const availMargin = Number(f?.avail_margin ?? 0);
       const usedMargin  = Number(f?.used_margin  ?? 0);
       const totalMargin = availMargin + usedMargin;
-      return { account: acct, availMargin, totalMargin };
+      const utilPct     = totalMargin > 0 ? usedMargin / totalMargin : 0;
+      return { account: acct, availMargin, usedMargin, totalMargin, utilPct };
     });
   });
 
-  const _mTotal = $derived.by(() => ({
-    availMargin: _mByAcct.reduce((s, r) => s + r.availMargin, 0),
-    totalMargin: _mByAcct.reduce((s, r) => s + r.totalMargin, 0),
-  }));
+  const _mTotal = $derived.by(() => {
+    const availMargin = _mByAcct.reduce((s, r) => s + r.availMargin, 0);
+    const usedMargin  = _mByAcct.reduce((s, r) => s + r.usedMargin, 0);
+    const totalMargin = availMargin + usedMargin;
+    const utilPct     = totalMargin > 0 ? usedMargin / totalMargin : 0;
+    return { availMargin, usedMargin, totalMargin, utilPct };
+  });
 
-  // ── C slot — per-account Live Cash + Total Cash ──────────────────────
+  // ── C slot — per-account Live Cash + Collateral + Total Cash ─────────
   // Total Cash = live_cash + long-option premium paid
   // Long-option premium = Σ avg_price × qty for CE/PE with qty > 0
+  // Collateral = broker-reported pledged-stock collateral from funds row
   const _cByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
       const f = _funds.find(x => String(x.account) === acct);
       const _lc = Number(f?.live_cash ?? 0);
-      const liveCash = _lc !== 0 ? _lc : Number(f?.cash ?? 0);
+      const liveCash   = _lc !== 0 ? _lc : Number(f?.cash ?? 0);
+      const collateral = Number(f?.collateral ?? 0);
       const optPremium = _positions
         .filter(p =>
           String(p.account) === acct &&
@@ -268,13 +277,14 @@
         )
         .reduce((s, p) => s + Number(p.average_price ?? 0) * Number(p.quantity ?? 0), 0);
       const totalCash = liveCash + optPremium;
-      return { account: acct, liveCash, totalCash };
+      return { account: acct, liveCash, collateral, totalCash };
     });
   });
 
   const _cTotal = $derived.by(() => ({
-    liveCash:  _cByAcct.reduce((s, r) => s + r.liveCash, 0),
-    totalCash: _cByAcct.reduce((s, r) => s + r.totalCash, 0),
+    liveCash:   _cByAcct.reduce((s, r) => s + r.liveCash, 0),
+    collateral: _cByAcct.reduce((s, r) => s + r.collateral, 0),
+    totalCash:  _cByAcct.reduce((s, r) => s + r.totalCash, 0),
   }));
 
   // ── H slot — per-account Today MTM + Value + Lifetime from holdings ──
@@ -327,6 +337,144 @@
     return aggCompact(v);
   }
 
+  // ── ag-Grid containers and instances ─────────────────────────────────
+  /** @type {HTMLElement|null} */
+  let _pEl = $state(null);
+  /** @type {HTMLElement|null} */
+  let _mEl = $state(null);
+  /** @type {HTMLElement|null} */
+  let _cEl = $state(null);
+  /** @type {HTMLElement|null} */
+  let _hEl = $state(null);
+  /** @type {import('ag-grid-community').GridApi|null} */
+  let _pGrid = null;
+  /** @type {import('ag-grid-community').GridApi|null} */
+  let _mGrid = null;
+  /** @type {import('ag-grid-community').GridApi|null} */
+  let _cGrid = null;
+  /** @type {import('ag-grid-community').GridApi|null} */
+  let _hGrid = null;
+
+  const _pCols = [
+    { field: 'account',  headerName: 'Account',   width: 76, minWidth: 60, maxWidth: 92,
+      cellClass: 'ag-col-fill ag-col-acct' },
+    { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+    { field: 'lifetime', headerName: 'Lifetime',   minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+    { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+  ];
+
+  const _mCols = [
+    { field: 'account',     headerName: 'Account',    width: 76, minWidth: 60, maxWidth: 92,
+      cellClass: 'ag-col-fill ag-col-acct' },
+    { field: 'usedMargin',  headerName: 'Used',        minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+    { field: 'availMargin', headerName: 'Avail',       minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+    { field: 'totalMargin', headerName: 'Total',       minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+    { field: 'utilPct',     headerName: 'Util %',      minWidth: 64, flex: 0.8,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agPctFmt },
+  ];
+
+  const _cCols = [
+    { field: 'account',    headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
+      cellClass: 'ag-col-fill ag-col-acct' },
+    { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+    { field: 'collateral', headerName: 'Collateral',  minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+    { field: 'totalCash',  headerName: 'Total Cash',  minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+  ];
+
+  const _hCols = [
+    { field: 'account',   headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
+      cellClass: 'ag-col-fill ag-col-acct' },
+    { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+    { field: 'value',     headerName: 'Value',        minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: 'ag-right-aligned-cell', valueFormatter: agAggFmt },
+    { field: 'lifetime',  headerName: 'Lifetime',     minWidth: 80, flex: 1,
+      type: 'numericColumn', headerClass: NUMERIC_HDR,
+      cellClass: agDirCell, valueFormatter: agAggFmt },
+  ];
+
+  // Grid creation — lazy, one per slot.
+  $effect(() => {
+    if (activeSlot !== 'P' || !_pEl || _pGrid) return;
+    _pGrid = createGrid(_pEl, { ...mkBaseGridOpts(), columnDefs: _pCols, rowData: [], domLayout: 'autoHeight' });
+  });
+  $effect(() => {
+    if (activeSlot !== 'M' || !_mEl || _mGrid) return;
+    _mGrid = createGrid(_mEl, { ...mkBaseGridOpts(), columnDefs: _mCols, rowData: [], domLayout: 'autoHeight' });
+  });
+  $effect(() => {
+    if (activeSlot !== 'C' || !_cEl || _cGrid) return;
+    _cGrid = createGrid(_cEl, { ...mkBaseGridOpts(), columnDefs: _cCols, rowData: [], domLayout: 'autoHeight' });
+  });
+  $effect(() => {
+    if (activeSlot !== 'H' || !_hEl || _hGrid) return;
+    _hGrid = createGrid(_hEl, { ...mkBaseGridOpts(), columnDefs: _hCols, rowData: [], domLayout: 'autoHeight' });
+  });
+
+  // Row-data updates.
+  $effect(() => {
+    if (!_pGrid) return;
+    _pGrid.setGridOption('rowData', _pByAcct.map(r => ({
+      account: r.account, day_pnl: r.dayPnl, lifetime: r.lifetimePnl, expiry: r.expiryPnl,
+    })));
+    _pGrid.setGridOption('pinnedBottomRowData', [{
+      account: 'TOTAL', day_pnl: _pTotal.dayPnl,
+      lifetime: _pTotal.lifetimePnl, expiry: _pTotal.expiryPnl,
+    }]);
+  });
+  $effect(() => {
+    if (!_mGrid) return;
+    _mGrid.setGridOption('rowData', _mByAcct.map(r => ({
+      account: r.account, usedMargin: r.usedMargin, availMargin: r.availMargin,
+      totalMargin: r.totalMargin, utilPct: r.utilPct,
+    })));
+    _mGrid.setGridOption('pinnedBottomRowData', [{
+      account: 'TOTAL', usedMargin: _mTotal.usedMargin, availMargin: _mTotal.availMargin,
+      totalMargin: _mTotal.totalMargin, utilPct: _mTotal.utilPct,
+    }]);
+  });
+  $effect(() => {
+    if (!_cGrid) return;
+    _cGrid.setGridOption('rowData', _cByAcct.map(r => ({
+      account: r.account, liveCash: r.liveCash, collateral: r.collateral, totalCash: r.totalCash,
+    })));
+    _cGrid.setGridOption('pinnedBottomRowData', [{
+      account: 'TOTAL', liveCash: _cTotal.liveCash,
+      collateral: _cTotal.collateral, totalCash: _cTotal.totalCash,
+    }]);
+  });
+  $effect(() => {
+    if (!_hGrid) return;
+    _hGrid.setGridOption('rowData', _hByAcct.map(r => ({
+      account: r.account, todayMtm: r.todayMtm, value: r.value, lifetime: r.lifetimePnl,
+    })));
+    _hGrid.setGridOption('pinnedBottomRowData', [{
+      account: 'TOTAL', todayMtm: _hTotal.todayMtm,
+      value: _hTotal.value, lifetime: _hTotal.lifetimePnl,
+    }]);
+  });
+
   /** Caption text per slot. */
   const _caption = $derived.by(() => {
     if (activeSlot === 'P') return 'Day P&L | Lifetime P&L (Σ pnl) | Expiry P&L (lognormal projection)';
@@ -352,22 +500,25 @@
     } else if (activeSlot === 'M') {
       const rows = [
         ..._mByAcct,
-        { account: 'TOTAL', availMargin: _mTotal.availMargin, totalMargin: _mTotal.totalMargin },
+        { account: 'TOTAL', availMargin: _mTotal.availMargin, usedMargin: _mTotal.usedMargin, totalMargin: _mTotal.totalMargin, utilPct: _mTotal.utilPct },
       ];
       exportRowsToCsv(rows, [
         { header: 'Account',      key: 'account' },
         { header: 'Avail Margin', key: 'availMargin', format: (v) => v == null ? '' : String(v) },
+        { header: 'Used Margin',  key: 'usedMargin',  format: (v) => v == null ? '' : String(v) },
         { header: 'Total Margin', key: 'totalMargin', format: (v) => v == null ? '' : String(v) },
+        { header: 'Util %',       key: 'utilPct',     format: (v) => v == null ? '' : `${Math.round(v * 100)}%` },
       ], 'nav-m-breakdown.csv');
     } else if (activeSlot === 'C') {
       const rows = [
         ..._cByAcct,
-        { account: 'TOTAL', liveCash: _cTotal.liveCash, totalCash: _cTotal.totalCash },
+        { account: 'TOTAL', liveCash: _cTotal.liveCash, collateral: _cTotal.collateral, totalCash: _cTotal.totalCash },
       ];
       exportRowsToCsv(rows, [
-        { header: 'Account',    key: 'account' },
-        { header: 'Live Cash',  key: 'liveCash',  format: (v) => v == null ? '' : String(v) },
-        { header: 'Total Cash', key: 'totalCash', format: (v) => v == null ? '' : String(v) },
+        { header: 'Account',     key: 'account' },
+        { header: 'Live Cash',   key: 'liveCash',   format: (v) => v == null ? '' : String(v) },
+        { header: 'Collateral',  key: 'collateral', format: (v) => v == null ? '' : String(v) },
+        { header: 'Total Cash',  key: 'totalCash',  format: (v) => v == null ? '' : String(v) },
       ], 'nav-c-breakdown.csv');
     } else if (activeSlot === 'H') {
       const rows = [
@@ -386,109 +537,10 @@
 
 {#if _hasData}
   <div class="nav-bd-wrap">
-    {#if activeSlot === 'P'}
-      <table class="algo-table nav-bd-table">
-        <thead>
-          <tr>
-            <th scope="col" class="nav-bd-acct">Account</th>
-            <th scope="col">Day P&L</th>
-            <th scope="col">Lifetime</th>
-            <th scope="col">Expiry</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _pByAcct as r (r.account)}
-            <tr>
-              <td class="nav-bd-acct">{r.account}</td>
-              <td class="nav-num {_cls(r.dayPnl)}">{_fmt(r.dayPnl)}</td>
-              <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
-              <td class="nav-num {_cls(r.expiryPnl)}">{_fmt(r.expiryPnl)}</td>
-            </tr>
-          {/each}
-          <tr class="nav-bd-total">
-            <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num">{_fmt(_pTotal.dayPnl)}</td>
-            <td class="nav-num">{_fmt(_pTotal.lifetimePnl)}</td>
-            <td class="nav-num">{_fmt(_pTotal.expiryPnl)}</td>
-          </tr>
-        </tbody>
-      </table>
-    {:else if activeSlot === 'M'}
-      <table class="algo-table nav-bd-table">
-        <thead>
-          <tr>
-            <th scope="col" class="nav-bd-acct">Account</th>
-            <th scope="col">Avail Margin</th>
-            <th scope="col">Total Margin</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _mByAcct as r (r.account)}
-            <tr>
-              <td class="nav-bd-acct">{r.account}</td>
-              <td class="nav-num {_cls(r.availMargin)}">{_fmt(r.availMargin)}</td>
-              <td class="nav-num {_cls(r.totalMargin)}">{_fmt(r.totalMargin)}</td>
-            </tr>
-          {/each}
-          <tr class="nav-bd-total">
-            <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num">{_fmt(_mTotal.availMargin)}</td>
-            <td class="nav-num">{_fmt(_mTotal.totalMargin)}</td>
-          </tr>
-        </tbody>
-      </table>
-    {:else if activeSlot === 'C'}
-      <table class="algo-table nav-bd-table">
-        <thead>
-          <tr>
-            <th scope="col" class="nav-bd-acct">Account</th>
-            <th scope="col">Live Cash</th>
-            <th scope="col">Total Cash</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _cByAcct as r (r.account)}
-            <tr>
-              <td class="nav-bd-acct">{r.account}</td>
-              <td class="nav-num {_cls(r.liveCash)}">{_fmt(r.liveCash)}</td>
-              <td class="nav-num {_cls(r.totalCash)}">{_fmt(r.totalCash)}</td>
-            </tr>
-          {/each}
-          <tr class="nav-bd-total">
-            <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num">{_fmt(_cTotal.liveCash)}</td>
-            <td class="nav-num">{_fmt(_cTotal.totalCash)}</td>
-          </tr>
-        </tbody>
-      </table>
-    {:else if activeSlot === 'H'}
-      <table class="algo-table nav-bd-table">
-        <thead>
-          <tr>
-            <th scope="col" class="nav-bd-acct">Account</th>
-            <th scope="col">Today MTM</th>
-            <th scope="col">Value</th>
-            <th scope="col">Lifetime</th>
-          </tr>
-        </thead>
-        <tbody>
-          {#each _hByAcct as r (r.account)}
-            <tr>
-              <td class="nav-bd-acct">{r.account}</td>
-              <td class="nav-num {_cls(r.todayMtm)}">{_fmt(r.todayMtm)}</td>
-              <td class="nav-num {_cls(r.value)}">{_fmt(r.value)}</td>
-              <td class="nav-num {_cls(r.lifetimePnl)}">{_fmt(r.lifetimePnl)}</td>
-            </tr>
-          {/each}
-          <tr class="nav-bd-total">
-            <td class="nav-bd-acct">TOTAL</td>
-            <td class="nav-num">{_fmt(_hTotal.todayMtm)}</td>
-            <td class="nav-num">{_fmt(_hTotal.value)}</td>
-            <td class="nav-num">{_fmt(_hTotal.lifetimePnl)}</td>
-          </tr>
-        </tbody>
-      </table>
-    {/if}
+    {#if activeSlot === 'P'}<div bind:this={_pEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
+    {#if activeSlot === 'M'}<div bind:this={_mEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
+    {#if activeSlot === 'C'}<div bind:this={_cEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
+    {#if activeSlot === 'H'}<div bind:this={_hEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
     <!-- Caption — slot-specific formula footnote so the operator
          glances and knows what each column means without hovering. -->
     <div class="nav-bd-caption">
@@ -525,12 +577,6 @@
 {/if}
 
 <style>
-  /* NavBreakdown — visual rhythm matches .hist-table (History page)
-     and the updated ag-theme-algo: 26px rows, deep-dark header with
-     muted-slate text + amber bottom border, slate cell borders, cyan
-     row-hover tint, monospace numerics. Plain HTML table avoids ag-Grid
-     overhead for 2–4 rows but is visually indistinguishable. */
-
   .nav-bd-wrap {
     display: flex;
     flex-direction: column;
@@ -549,74 +595,7 @@
     background: var(--card-bg-elevated);
   }
 
-  /* .nav-bd-table width:100% removed — algo-table global provides it. */
-
-  /* Header — deep-dark bg + muted-slate text + amber bottom border:
-     mirrors the .hist-table reference (History page). */
-  .nav-bd-table thead th {
-    height: 28px;              /* matches --ag-header-height: 28px in ag-theme-algo */
-    text-align: right;
-    font-weight: 800;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    font-size: 0.6rem;         /* matches --ag-header-font-size in ag-theme-algo */
-    color: var(--c-muted);            /* --text-muted / var(--algo-muted) */
-    background: rgba(15,23,42,0.30); /* matches ag-theme-algo header bg */
-    padding: 0 3px;            /* matches ag-theme-algo cell padding */
-    border-right: 1px solid rgba(126,151,184,0.18);
-    border-bottom: 1px solid rgba(251,191,36,0.30); /* amber accent */
-    white-space: nowrap;
-    vertical-align: middle;
-  }
-  .nav-bd-table thead th:last-child { border-right: none; }
-  .nav-bd-table thead th.nav-bd-acct {
-    text-align: left;
-  }
-
-  /* Body rows */
-  .nav-bd-table tbody td {
-    height: 26px;              /* matches _baseGridOpts rowHeight: 26 */
-    padding: 0 3px;            /* matches ag-theme-algo cell padding */
-    border-bottom: 1px solid rgba(126,151,184,0.10); /* slate row divider */
-    border-right: 1px solid rgba(126,151,184,0.10);  /* slate col divider */
-    white-space: nowrap;
-    vertical-align: middle;
-  }
-  .nav-bd-table tbody td:last-child { border-right: none; }
-  .nav-bd-table tbody tr:last-child td { border-bottom: none; }
-
-  .nav-bd-acct {
-    text-align: left;
-    color: var(--algo-slate);
-    font-weight: 600;
-  }
-
-  .nav-num {
-    text-align: right;
-    font-variant-numeric: tabular-nums;
-  }
-
-  /* Direction palette matches the algo theme tokens used across
-     PerformancePage / MarketPulse / ag-theme-algo pnl-gain/pnl-loss. */
-  .nav-up   { color: var(--c-long); }
-  .nav-down { color: var(--c-short); }
-  .nav-zero { color: var(--algo-slate); }
-
-  /* TOTAL row — amber tint mirrors ag-theme-algo totals-row rule.
-     border-top 2px amber matches the ag-Grid TOTAL row treatment.
-     Layered over opaque #1d2a44 base to prevent scroll bleed. */
-  .nav-bd-total td {
-    background:
-      linear-gradient(rgba(251,191,36,0.22), rgba(251,191,36,0.22)),
-      #1d2a44 !important;
-    color: var(--c-action) !important;
-    border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    text-transform: uppercase;
-  }
-  /* TOTAL row always renders amber — direction classes don't apply. */
+  .nav-bd-ag { width: 100%; }
 
   .nav-bd-caption {
     display: flex;
@@ -708,12 +687,4 @@
     color: #67e8f9;
   }
 
-  /* Mobile: tighten padding so columns fit comfortably on a
-     360px viewport without column wrap or horizontal scroll. */
-  @media (max-width: 600px) {
-    .nav-bd-table          { font-size: 0.65rem; }
-    .nav-bd-table thead th { font-size: 0.6rem; padding: 0 2px; }
-    .nav-bd-table tbody td { padding: 0 2px; }
-    .nav-bd-caption        { font-size: 0.55rem; }
-  }
 </style>
