@@ -2124,17 +2124,8 @@
         bind:value={_capEqTab}
         compact={true}
       />
-      <!-- Single shared account picker — applies to whichever tab is
-           active. NAV per-account breakdown, Capital's Margin + Funds
-           rows, Equity's Positions + Holdings summaries all scope by
-           this filter. Operator intent carries across tab flips
-           without re-picking. -->
-      <AccountMultiSelect
-        bind:value={_eqAccounts}
-        options={_availableAccounts.map(a => ({ value: a, label: a }))} />
       <!-- Explicit `flex:1` spacer pushes the icon trio to the card's
-           right edge regardless of how wide the AccountMultiSelect
-           grows. Same idiom as before the NAV-tab addition. -->
+           right edge. -->
       <span class="cap-eq-spacer"></span>
       <!-- These three CardControls blocks live inline intentionally:
            this header has no title — AlgoTabs IS the card identifier.
