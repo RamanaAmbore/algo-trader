@@ -24,8 +24,7 @@
   //   onOpenChartTicket(c)  — fired for non-actionable rows (opens Chart tab)
   //   onContextMenu(c, ev)  — parent sets _ctxMenu from right-click / long-press
 
-  import { untrack } from 'svelte';
-  import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
+  import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
@@ -107,17 +106,16 @@
   );
 
   const _ltpFromFallback = $derived(!!(lg && lg.ltp_source === 'avg_cost'));
-  const pnl = $derived(
-    c._residualQty != null
-      ? ((ltp != null && cost != null && !_ltpFromFallback)
-          ? (ltp - cost) * displayQty + Number(c.realised || 0)
-          : null)
-      : (c.pnl != null
-          ? Number(c.pnl)
-          : (ltp != null && cost != null && !_ltpFromFallback
-              ? (ltp - cost) * displayQty + Number(c.realised || 0)
-              : null))
-  );
+  // pnl: store-first for real positions; formula-only for residual splits (not in store).
+  const pnl = $derived.by(() => {
+    if (c._residualQty == null) {
+      const stored = positionsDerivedStore.get(c.symbol).pnl;
+      if (stored != null) return stored;
+    }
+    if (ltp != null && cost != null && !_ltpFromFallback)
+      return (ltp - cost) * displayQty + Number(c.realised || 0);
+    return c.pnl != null ? Number(c.pnl) : null;
+  });
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');
@@ -130,18 +128,10 @@
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
-  // Chg % — same logical path as Pulse positions (_dayPnlPctValueGetter):
-  //   day_pnl / prev_market_value × 100
-  // Primary source: positionsDerivedStore.byKey (live reactive, never resets on
-  // tab switch — fixes the race condition where c.chg_pct is null during the
-  // re-fetch window when returning from another tab).
-  // For F&O options where prev_close = 0, avg_cost is used as the reference price.
-  const _chgPct = $derived.by(() => {
-    const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
-    if (stored != null) return stored;
-    if (c.chg_pct != null && c.chg_pct !== 0) return c.chg_pct;
-    return untrack(() => getSnapshot(c.symbol))?.day_change_pct ?? null;
-  });
+  // Chg % — SSOT from positionsDerivedStore (day_pnl / prev_mv × 100).
+  // Store uses avg_cost as denominator for intraday positions (oq=0, prev_close=0)
+  // so this value is non-null even for new F&O legs opened today.
+  const _chgPct = $derived(positionsDerivedStore.get(c.symbol).chg_pct);
 
   // Cumulative day % for flash tier — uses the SSOT _chgPct, falls back to 1 (middle tier).
   const _legDayPct = $derived(_chgPct != null ? Math.abs(_chgPct) : 1);

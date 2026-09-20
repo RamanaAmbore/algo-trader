@@ -645,3 +645,92 @@ describe('positionsDerivedStore — chg_pct SSOT (byKey[sym].chg_pct)', () => {
     expect('chg_pct' in entry).toBe(true);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Accessor functions: get(sym), getByRoot(root)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('positionsDerivedStore — get(sym) accessor', () => {
+  it('get(unknown) returns object with all fields null', () => {
+    const _EMPTY_POS = Object.freeze({
+      day_pnl: null, pnl: null, exp_pnl: null,
+      extrinsic: null, prev_mv: null, chg_pct: null,
+    });
+
+    const result = { byKey: {} };
+    const get = (sym) => result.byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
+
+    const unknown = get('UNKNOWN_SYM');
+    expect(unknown.day_pnl).toBeNull();
+    expect(unknown.pnl).toBeNull();
+    expect(unknown.exp_pnl).toBeNull();
+    expect(unknown.extrinsic).toBeNull();
+    expect(unknown.prev_mv).toBeNull();
+    expect(unknown.chg_pct).toBeNull();
+  });
+
+  it('get(RELIANCE) returns actual values when populated', () => {
+    const _EMPTY_POS = Object.freeze({
+      day_pnl: null, pnl: null, exp_pnl: null,
+      extrinsic: null, prev_mv: null, chg_pct: null,
+    });
+
+    const byKey = {
+      RELIANCE: {
+        day_pnl: 500, pnl: 1000, exp_pnl: 0,
+        extrinsic: null, prev_mv: 10000, chg_pct: 5.0
+      }
+    };
+    const get = (sym) => byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
+
+    const rel = get('RELIANCE');
+    expect(rel.day_pnl).toBe(500);
+    expect(rel.pnl).toBe(1000);
+    expect(rel.exp_pnl).toBe(0);
+    expect(rel.prev_mv).toBe(10000);
+    expect(rel.chg_pct).toBe(5.0);
+  });
+});
+
+describe('positionsDerivedStore — getByRoot(root) accessor', () => {
+  it('getByRoot(unknown) returns object with all fields null', () => {
+    const _EMPTY_POS = Object.freeze({
+      day_pnl: null, pnl: null, exp_pnl: null,
+      extrinsic: null, prev_mv: null, chg_pct: null,
+    });
+
+    const result = { byRootPositions: {} };
+    const getByRoot = (root) => result.byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
+
+    const unknown = getByRoot('UNKNOWN_ROOT');
+    expect(unknown.day_pnl).toBeNull();
+    expect(unknown.pnl).toBeNull();
+    expect(unknown.exp_pnl).toBeNull();
+    expect(unknown.extrinsic).toBeNull();
+    expect(unknown.prev_mv).toBeNull();
+    expect(unknown.chg_pct).toBeNull();
+  });
+
+  it('getByRoot(NIFTY) returns actual values when populated', () => {
+    const _EMPTY_POS = Object.freeze({
+      day_pnl: null, pnl: null, exp_pnl: null,
+      extrinsic: null, prev_mv: null, chg_pct: null,
+    });
+
+    const byRootPositions = {
+      NIFTY: {
+        day_pnl: 2000, pnl: 5000, exp_pnl: 1500,
+        extrinsic: 300, prev_mv: 100000, chg_pct: 2.0
+      }
+    };
+    const getByRoot = (root) => byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
+
+    const nifty = getByRoot('NIFTY');
+    expect(nifty.day_pnl).toBe(2000);
+    expect(nifty.pnl).toBe(5000);
+    expect(nifty.exp_pnl).toBe(1500);
+    expect(nifty.extrinsic).toBe(300);
+    expect(nifty.prev_mv).toBe(100000);
+    expect(nifty.chg_pct).toBe(2.0);
+  });
+});

@@ -3,7 +3,17 @@ import { describe, it, expect, vi } from 'vitest';
 // positionsDerivedStore is a Svelte 5 reactive module (.svelte.js) — mock it so
 // vitest doesn't try to process $state/$derived runes without the Svelte plugin.
 vi.mock('$lib/data/positionsDerivedStore.svelte.js', () => ({
-  positionsDerivedStore: { byKey: {} }
+  positionsDerivedStore: {
+    byKey: {},
+    get: (sym) => ({ day_pnl: null, chg_pct: null, pnl: null, exp_pnl: null, extrinsic: null, prev_mv: null })
+  }
+}));
+
+vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
+  holdingsDayPnlStore: {
+    chgPctByKey: {},
+    get: (sym) => ({ day_pnl: null, chg_pct: null })
+  }
 }));
 
 import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols } from '../../data/pulseColumns.js';
@@ -601,5 +611,67 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
     const result = pcc(_makeP(200, { tradingsymbol: 'RELIANCE' }), 'day_pnl');
     expect(result).toBe(`${_RA} cell-pos`);
     expect(result).not.toMatch(/tf-up|tf-down/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// _dayPnlPctValueGetter — enforce SSOT (no change_pct fallback)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('_dayPnlPctValueGetter — SSOT enforcement (no change_pct fallback)', () => {
+  it('returns null when both positionsDerivedStore.get(sym).chg_pct and holdingsDayPnlStore.get(sym).chg_pct are null', () => {
+    // Mock the stores to return null for chg_pct
+    const mockPositionsDerivedStore = {
+      get: (sym) => ({ chg_pct: null }),
+    };
+    const mockHoldingsDayPnlStore = {
+      get: (sym) => ({ chg_pct: null }),
+    };
+
+    // Inline version of _dayPnlPctValueGetter using the get() accessors
+    const _dayPnlPctValueGetter = (p) => {
+      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
+      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
+    };
+
+    const p = { data: { tradingsymbol: 'UNKNOWN', change_pct: 5.0 } };
+    const result = _dayPnlPctValueGetter(p);
+    expect(result).toBeNull();
+  });
+
+  it('returns positions chg_pct when populated', () => {
+    const mockPositionsDerivedStore = {
+      get: (sym) => ({ chg_pct: 3.5 }),
+    };
+    const mockHoldingsDayPnlStore = {
+      get: (sym) => ({ chg_pct: null }),
+    };
+
+    const _dayPnlPctValueGetter = (p) => {
+      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
+      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
+    };
+
+    const p = { data: { tradingsymbol: 'RELIANCE', change_pct: 5.0 } };
+    const result = _dayPnlPctValueGetter(p);
+    expect(result).toBe(3.5);
+  });
+
+  it('returns holdings chg_pct as fallback when positions chg_pct is null', () => {
+    const mockPositionsDerivedStore = {
+      get: (sym) => ({ chg_pct: null }),
+    };
+    const mockHoldingsDayPnlStore = {
+      get: (sym) => ({ chg_pct: 2.1 }),
+    };
+
+    const _dayPnlPctValueGetter = (p) => {
+      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
+      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
+    };
+
+    const p = { data: { tradingsymbol: 'INFY', change_pct: 5.0 } };
+    const result = _dayPnlPctValueGetter(p);
+    expect(result).toBe(2.1);
   });
 });

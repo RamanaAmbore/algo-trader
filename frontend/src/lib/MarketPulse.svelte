@@ -1994,8 +1994,7 @@
     // Exp P&L totals — read from positionsDerivedStore so it tracks live.
     if (r.qty_pos) {
       const sym = String(r.tradingsymbol || '').toUpperCase();
-      const expPnl = positionsDerivedStore.byKey[sym]?.exp_pnl;
-      if (expPnl != null) acc.exp_pnl += Number(expPnl) || 0;
+      acc.exp_pnl += positionsDerivedStore.get(sym).exp_pnl ?? 0;
     }
   }
 
@@ -3615,9 +3614,7 @@
         ..._origDayPnlCol,
         valueGetter: p => {
           const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-          const storeVal = positionsDerivedStore.byKey[sym]?.day_pnl;
-          if (storeVal != null) return storeVal;
-          return p.data?.day_pnl ?? null;
+          return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
         },
       };
     }

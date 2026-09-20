@@ -16,12 +16,28 @@
 
 import { portfolioStore } from './portfolioStore.svelte.js';
 
+const _EMPTY_HOLD = Object.freeze({ day_pnl: null, chg_pct: null });
+
 export const holdingsDayPnlStore = {
   get total()        { return portfolioStore.holdings.total ?? 0;       },
   get byKey()        { return portfolioStore.holdings.byKey;            },
   get byAccount()    { return portfolioStore.holdings.byAccount;        },
   get chg_pct()      { return portfolioStore.holdings.chg_pct ?? null;  },
   get chgPctByKey()  { return portfolioStore.holdings.chgPctByKey ?? {}; },
+
+  /**
+   * Get holdings day P&L by symbol. Returns _EMPTY_HOLD if not found.
+   * @param {string} sym
+   * @returns {{ day_pnl: number|null, chg_pct: number|null }}
+   */
+  get(sym) {
+    const sym_upper = String(sym || '').toUpperCase();
+    return {
+      day_pnl: this.byKey[sym_upper] ?? null,
+      chg_pct: this.chgPctByKey[sym_upper] ?? null,
+    };
+  },
+
   /**
    * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
    * and aggregate values. Delegates to portfolioStore.setHoldingsFromPulse.

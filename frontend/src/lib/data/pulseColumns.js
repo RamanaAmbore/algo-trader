@@ -464,17 +464,12 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
 // ─── mkRightColDefs private helpers ─────────────────────────────────
 
 // Day P&L % — one-day return on yesterday's market value (close × qty).
-// Primary: positionsDerivedStore.byKey[sym].chg_pct (pre-computed SSOT).
-// Fallback: change_pct field on the row (watchlist / mover rows without a
-// live position entry in the derived store).
+// SSOT: positionsDerivedStore.get(sym) → holdingsDayPnlStore.get(sym).
+// No broker change_pct fallback — that field is a raw market-data % unrelated
+// to the portfolio day P&L % (different denominator, diverges from store).
 function _dayPnlPctValueGetter(p) {
   const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-  const posStored = positionsDerivedStore.byKey[sym]?.chg_pct;
-  if (posStored != null) return posStored;
-  const holdStored = holdingsDayPnlStore.chgPctByKey[sym];
-  if (holdStored != null) return holdStored;
-  const cp = Number(p.data?.change_pct);
-  return Number.isFinite(cp) ? cp : null;
+  return positionsDerivedStore.get(sym).chg_pct ?? holdingsDayPnlStore.get(sym).chg_pct;
 }
 
 // P&L as % of cost basis.
@@ -727,7 +722,7 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
       // exposure — hide rather than show "—".
       if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return getDerivedByKey()[sym]?.exp_pnl ?? null;
+      return positionsDerivedStore.get(sym).exp_pnl;
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
@@ -754,7 +749,7 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
       // Only meaningful for derivative positions.
       if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return getDerivedByKey()[sym]?.extrinsic ?? null;
+      return positionsDerivedStore.get(sym).extrinsic;
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',

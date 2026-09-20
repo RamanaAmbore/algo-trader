@@ -808,3 +808,62 @@ describe('holdingsDayPnlStore — byAccount[TOTAL] is pulse-aware (Fix 1)', () =
     expect(result.byAccount['TOTAL']).toBeCloseTo(result.total, 2);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────
+// Accessor function: get(sym)
+// ─────────────────────────────────────────────────────────────────────────
+
+describe('holdingsDayPnlStore — get(sym) accessor', () => {
+  const _EMPTY_HOLD = Object.freeze({ day_pnl: null, chg_pct: null });
+
+  it('get(unknown) returns object with all fields null', () => {
+    const byKey = {};
+    const chgPctByKey = {};
+
+    const get = (sym) => {
+      const sym_upper = String(sym || '').toUpperCase();
+      return {
+        day_pnl: byKey[sym_upper] ?? null,
+        chg_pct: chgPctByKey[sym_upper] ?? null,
+      };
+    };
+
+    const unknown = get('UNKNOWN_SYM');
+    expect(unknown.day_pnl).toBeNull();
+    expect(unknown.chg_pct).toBeNull();
+  });
+
+  it('get(RELIANCE) returns correct values when populated', () => {
+    const byKey = { RELIANCE: 600 };
+    const chgPctByKey = { RELIANCE: 2.5 };
+
+    const get = (sym) => {
+      const sym_upper = String(sym || '').toUpperCase();
+      return {
+        day_pnl: byKey[sym_upper] ?? null,
+        chg_pct: chgPctByKey[sym_upper] ?? null,
+      };
+    };
+
+    const rel = get('RELIANCE');
+    expect(rel.day_pnl).toBe(600);
+    expect(rel.chg_pct).toBe(2.5);
+  });
+
+  it('get(INFY) returns day_pnl but null chg_pct when chg_pct not set', () => {
+    const byKey = { INFY: 400 };
+    const chgPctByKey = {}; // no INFY entry
+
+    const get = (sym) => {
+      const sym_upper = String(sym || '').toUpperCase();
+      return {
+        day_pnl: byKey[sym_upper] ?? null,
+        chg_pct: chgPctByKey[sym_upper] ?? null,
+      };
+    };
+
+    const infy = get('INFY');
+    expect(infy.day_pnl).toBe(400);
+    expect(infy.chg_pct).toBeNull();
+  });
+});

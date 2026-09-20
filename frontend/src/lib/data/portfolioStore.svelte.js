@@ -102,9 +102,15 @@ const _posTier2 = $derived.by(() => {
         qty: p._qty, avg: p._avg, dcvRow: p },
       p._ltp, { marketOpen }
     );
-    // prev_mv: null when prev_close missing — no avg fallback
-    const prev_mv = p._prev_close != null && p._prev_close > 0
-      ? p._prev_close * Math.abs(p._qty) : null;
+    // prev_mv: prev_close × |qty| for overnight positions.
+    // For new intraday positions (oq=0, no prior session close), fall back to
+    // avg_cost so chg_pct has a valid denominator (day_pnl / avg_cost × 100).
+    // Overnight positions with prev_close=0 remain null — avg_cost ≠ prior close.
+    const oq = Number(p?.overnight_quantity ?? 0);
+    const prev_mv =
+      p._prev_close != null && p._prev_close > 0 ? p._prev_close * Math.abs(p._qty)
+      : oq === 0 && p._avg > 0                    ? p._avg       * Math.abs(p._qty)
+      : null;
 
     let exp_pnl = null, extrinsic = null;
     if (isFO && p._qty !== 0) {

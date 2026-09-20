@@ -16,6 +16,11 @@
 
 import { portfolioStore } from './portfolioStore.svelte.js';
 
+const _EMPTY_POS = Object.freeze({
+  day_pnl: null, pnl: null, exp_pnl: null,
+  extrinsic: null, prev_mv: null, chg_pct: null,
+});
+
 export const positionsDerivedStore = {
   /** { day_pnl, exp_pnl, extrinsic } — aggregate totals */
   get total()           { return portfolioStore.positions.total;              },
@@ -34,6 +39,24 @@ export const positionsDerivedStore = {
    * exp_pnl, extrinsic, pnl } } — NOT the same as holdings.byKey scalars.
    */
   get byRootHoldings()  { return portfolioStore.positions.byRootHoldings;    },
+
+  /**
+   * Get derived position by symbol. Returns _EMPTY_POS if not found.
+   * @param {string} sym
+   * @returns {{ day_pnl: number|null, pnl: number|null, exp_pnl: number|null, extrinsic: number|null, prev_mv: number|null, chg_pct: number|null }}
+   */
+  get(sym) {
+    return this.byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
+  },
+
+  /**
+   * Get derived position by root symbol (F&O underlying). Returns _EMPTY_POS if not found.
+   * @param {string} root
+   * @returns {{ day_pnl: number|null, pnl: number|null, exp_pnl: number|null, extrinsic: number|null, prev_mv: number|null, chg_pct: number|null }}
+   */
+  getByRoot(root) {
+    return this.byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
+  },
 
   // no-op: MarketPulse used to override day P&L via this. Now the store is
   // the sole SSOT — Pulse no longer needs to push overrides.

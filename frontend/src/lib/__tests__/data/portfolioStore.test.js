@@ -134,7 +134,16 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     bk.day_pnl += day_pnl;
     bk.pnl     += pnl;
     const prev_close = Number(p?.previous_close) || Number(p?.close_price) || 0;
-    bk.prev_mv = (bk.prev_mv || 0) + (prev_close > 0 ? prev_close * Math.abs(qty) : 0);
+    const oq = Number(p?.overnight_quantity ?? 0);
+    // prev_mv: avg fallback for new intraday positions (oq=0, no prior session close)
+    let prev_mv_contrib = 0;
+    if (prev_close > 0) {
+      prev_mv_contrib = prev_close * Math.abs(qty);
+    } else if (oq === 0 && avg > 0) {
+      // new intraday position: use avg_cost as denominator
+      prev_mv_contrib = avg * Math.abs(qty);
+    }
+    bk.prev_mv = (bk.prev_mv || 0) + prev_mv_contrib;
     if (exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + exp_pnl;
     if (extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + extrinsic;
 
@@ -802,5 +811,44 @@ describe('portfolioStore — chg_pct tier aggregation', () => {
     // chg_pct was computed in the loop
     expect(bk.chg_pct).not.toBeNull();
     expect(typeof bk.chg_pct).toBe('number');
+  });
+
+  it('prev_mv uses avg_cost fallback when oq=0 (new intraday position, no prior session close)', () => {
+    const pos = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      quantity: 25,
+      average_price: 22800,
+      previous_close: 0,
+      close_price: 0,
+      overnight_quantity: 0,
+      exchange: 'NFO',
+    });
+    const result = _computePortfolioPositions([pos], [], {
+      livePosDay: () => 500,
+    });
+    const bk = result.byKey['NIFTY25JAN24500CE'];
+    // prev_close = 0, oq = 0, so prev_mv = avg * qty = 22800 * 25 = 570000
+    expect(bk.prev_mv).toBe(22800 * 25);
+    // chg_pct = 500 / 570000 * 100
+    expect(bk.chg_pct).toBeCloseTo((500 / (22800 * 25)) * 100, 4);
+  });
+
+  it('prev_mv is null for overnight position with prev_close=0 (no spurious avg fallback)', () => {
+    const pos = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      quantity: 25,
+      average_price: 23000,
+      previous_close: 0,
+      close_price: 0,
+      overnight_quantity: 25,
+      exchange: 'NFO',
+    });
+    const result = _computePortfolioPositions([pos], [], {
+      livePosDay: () => 300,
+    });
+    const bk = result.byKey['NIFTY25JAN24500CE'];
+    // overnight position with prev_close = 0: prev_mv should be null (no avg fallback)
+    expect(bk.prev_mv).toBe(0);
+    expect(bk.chg_pct).toBeNull();
   });
 });

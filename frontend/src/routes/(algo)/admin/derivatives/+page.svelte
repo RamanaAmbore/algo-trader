@@ -914,7 +914,7 @@
     const groups = _byUnderlyingTotals;
     untrack(() => {
       for (const g of groups) {
-        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.byRootPositions[g.underlying]?.day_pnl ?? 0);
+        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.getByRoot(g.underlying).day_pnl ?? 0);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
       }
     });
@@ -969,13 +969,11 @@
     untrack(() => {
       for (const c of candidates) {
         const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
-        flash.update(`leg:${k}:day`, _candDayPnl(c));
+        flash.update(`leg:${k}:day`, positionsDerivedStore.get(c.symbol).day_pnl);
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
         flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
         flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
-        flash.update(`leg:${k}:chg`, (c.prev_close ?? 0) > 0 && c.ltp != null
-          ? ((Number(c.ltp) - Number(c.prev_close)) / Number(c.prev_close)) * 100
-          : null);
+        flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
       }
     });
   });
@@ -1702,8 +1700,7 @@
           const snap = getSnapshot(root);
           if (snap?.ltp != null) {
             flash.update(`leg:${k}:ltp`, Number(snap.ltp));
-            const _pc = c.prev_close != null ? Number(c.prev_close) : 0;
-            if (_pc > 0) flash.update(`leg:${k}:chg`, ((Number(snap.ltp) - _pc) / _pc) * 100);
+            flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
           }
         }
       }
@@ -4554,7 +4551,7 @@
               enabled={_isLegEnabled(c)}
               dayPnl={_candDayPnl(c)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
-              extrinsic={positionsDerivedStore.byKey[String(c.symbol || '').toUpperCase()]?.extrinsic ?? null}
+              extrinsic={positionsDerivedStore.get(c.symbol).extrinsic}
               legExpired={_isLegExpired(c)}
               {strategy}
               {flash}
@@ -4700,10 +4697,10 @@
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         const _q      = _underlyingQuotes[g.underlying];
-        const _snRow  = positionsDerivedStore.byRootPositions[g.underlying];
-        const dayVal  = _snRow?.day_pnl ?? 0;
-        const pnlVal  = _snRow?.pnl     ?? 0;
-        const expVal  = _snRow?.exp_pnl ?? 0;
+        const _snRow  = positionsDerivedStore.getByRoot(g.underlying);
+        const dayVal  = _snRow.day_pnl ?? 0;
+        const pnlVal  = _snRow.pnl     ?? 0;
+        const expVal  = _snRow.exp_pnl ?? 0;
         return {
           underlying:  g.underlying,
           spot:        _q ? _q.ltp        : '',
@@ -4785,11 +4782,11 @@
                each metric (candidatesDayPnl, candidatesActualPnl,
                _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
                code should be used for both." -->
-          {@const _snRow   = positionsDerivedStore.byRootPositions[g.underlying]}
-          {@const _dayVal  = _snRow?.day_pnl   ?? 0}
-          {@const _pnlVal  = _snRow?.pnl       ?? 0}
-          {@const _expVal  = _snRow?.exp_pnl   ?? 0}
-          {@const _extVal  = _snRow?.extrinsic ?? 0}
+          {@const _snRow   = positionsDerivedStore.getByRoot(g.underlying)}
+          {@const _dayVal  = _snRow.day_pnl   ?? 0}
+          {@const _pnlVal  = _snRow.pnl       ?? 0}
+          {@const _expVal  = _snRow.exp_pnl   ?? 0}
+          {@const _extVal  = _snRow.extrinsic ?? 0}
           <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
             <span class="byund-und">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
