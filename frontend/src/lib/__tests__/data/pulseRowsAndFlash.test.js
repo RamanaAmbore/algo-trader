@@ -29,10 +29,13 @@
 
 import { describe, it, expect, vi } from 'vitest';
 
-// positionsDerivedStore is a Svelte 5 reactive module (.svelte.js) — mock it so
-// vitest doesn't try to process $state/$derived runes without the Svelte plugin.
+// positionsDerivedStore + holdingsDayPnlStore are Svelte 5 reactive modules
+// (.svelte.js) — mock them so vitest doesn't process $state/$derived runes.
 vi.mock('$lib/data/positionsDerivedStore.svelte.js', () => ({
-  positionsDerivedStore: { byKey: {} }
+  positionsDerivedStore: { byKey: {}, get: () => ({ chg_pct: null }) }
+}));
+vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
+  holdingsDayPnlStore: { get: () => ({ day_pnl: null, chg_pct: null }), byKey: {}, total: 0 }
 }));
 
 import { mergePositionRows, mergeHoldingRows, makeRowFactory } from '../../data/pulseUnified.js';
