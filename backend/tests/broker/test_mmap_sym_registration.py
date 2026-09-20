@@ -303,7 +303,7 @@ class TestLtpGapLog:
         df = pd.DataFrame([{
             "tradingsymbol": "NIFTY26JUL25000CE",
             "last_price": 150.0,
-            "close_price": 150.002,   # within 0.005 epsilon of last_price
+            "prev_close": 150.002,   # within 0.005 epsilon of last_price
         }])
 
         ticker = MagicMock()
@@ -329,7 +329,7 @@ class TestLtpGapLog:
         df = pd.DataFrame([{
             "tradingsymbol": "NIFTY26JUL25000CE",
             "last_price": 150.0,
-            "close_price": 155.0,    # far from last_price → no gap log
+            "prev_close": 155.0,    # far from last_price → no gap log
         }])
 
         ticker = MagicMock()
@@ -352,7 +352,7 @@ class TestLtpGapLog:
         df = pd.DataFrame([{
             "tradingsymbol": "RELIANCE",
             "last_price": 2900.0,
-            "close_price": 2900.001,
+            "prev_close": 2900.001,
         }])
 
         ticker = MagicMock()

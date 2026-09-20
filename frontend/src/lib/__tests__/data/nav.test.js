@@ -13,7 +13,7 @@ import {
 
 describe('baseDayPnlForPosition', () => {
   it('authoritative path: prev_settlement_pnl finite → pnl - prev_settlement_pnl', () => {
-    const p = { pnl: 5000, prev_settlement_pnl: 3000, overnight_quantity: 2, day_change_val: 0, close_price: 50, average_price: 45 };
+    const p = { pnl: 5000, prev_settlement_pnl: 3000, overnight_quantity: 2, day_change_val: 0, prev_close: 50, average_price: 45 };
     expect(baseDayPnlForPosition(p)).toBe(2000);
   });
 
@@ -28,34 +28,34 @@ describe('baseDayPnlForPosition', () => {
   });
 
   it('fallback: prev_settlement_pnl absent, oq > 0, dcv !== 0 → returns dcv', () => {
-    const p = { pnl: 2000, overnight_quantity: 3, day_change_val: 1200, close_price: 100, average_price: 90 };
+    const p = { pnl: 2000, overnight_quantity: 3, day_change_val: 1200, prev_close: 100, average_price: 90 };
     expect(baseDayPnlForPosition(p)).toBe(1200);
   });
 
   it('Case 3: oq > 0, dcv === 0, close > 0 → pnl - oq*(close - avg)', () => {
     // e.g. oq=2, close=100, avg=80 → overnight_carry = 2*(100-80)=40; day P&L = 200 - 40 = 160
-    const p = { pnl: 200, overnight_quantity: 2, day_change_val: 0, close_price: 100, average_price: 80 };
+    const p = { pnl: 200, overnight_quantity: 2, day_change_val: 0, prev_close: 100, average_price: 80 };
     expect(baseDayPnlForPosition(p)).toBe(160);
   });
 
   it('Case 4: oq > 0, dcv === 0, close <= 0 → returns 0 (MCX zero-close guard)', () => {
-    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, close_price: 0, average_price: 80 };
+    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, prev_close: 0, average_price: 80 };
     expect(baseDayPnlForPosition(p)).toBe(0);
   });
 
   it('Case 4: close negative → returns 0', () => {
-    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, close_price: -1, average_price: 80 };
+    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, prev_close: -1, average_price: 80 };
     expect(baseDayPnlForPosition(p)).toBe(0);
   });
 
   it('new intraday position: oq === 0, pnl !== 0 → returns pnl', () => {
     // oq=0, dcv=0, close=0 → pnl - 0*(0-avg) = pnl
-    const p = { pnl: 750, overnight_quantity: 0, day_change_val: 0, close_price: 0, average_price: 100 };
+    const p = { pnl: 750, overnight_quantity: 0, day_change_val: 0, prev_close: 0, average_price: 100 };
     expect(baseDayPnlForPosition(p)).toBe(750);
   });
 
   it('all zeros → returns 0', () => {
-    const p = { pnl: 0, overnight_quantity: 0, day_change_val: 0, close_price: 0, average_price: 0 };
+    const p = { pnl: 0, overnight_quantity: 0, day_change_val: 0, prev_close: 0, average_price: 0 };
     expect(baseDayPnlForPosition(p)).toBe(0);
   });
 
@@ -66,7 +66,7 @@ describe('baseDayPnlForPosition', () => {
   });
 
   it('uses avg_cost fallback when average_price absent', () => {
-    const p = { pnl: 300, overnight_quantity: 1, day_change_val: 0, close_price: 200, avg_cost: 190 };
+    const p = { pnl: 300, overnight_quantity: 1, day_change_val: 0, prev_close: 200, avg_cost: 190 };
     expect(baseDayPnlForPosition(p)).toBe(300 - 1 * (200 - 190));  // 290
   });
 
@@ -81,7 +81,7 @@ describe('baseDayPnlForPosition', () => {
   it('short overnight, valid dcv → fast-path returns dcv directly', () => {
     // oq = -5 (short), dcv = -2000 (valid non-zero), close > 0
     // Expected: -2000 (dcv returned directly, guard now oq !== 0)
-    const p = { pnl: -2000, overnight_quantity: -5, day_change_val: -2000, close_price: 100, average_price: 110 };
+    const p = { pnl: -2000, overnight_quantity: -5, day_change_val: -2000, prev_close: 100, average_price: 110 };
     expect(baseDayPnlForPosition(p)).toBe(-2000);
   });
 
@@ -89,14 +89,14 @@ describe('baseDayPnlForPosition', () => {
     // oq = -100, close = 0, pnl = 50000, avg = 5000
     // Without fix: 50000 - (-100)*(0 - 5000) = 50000 + 500000 = 550000
     // With fix: Case 4 fires (oq !== 0 && dcv === 0 && close <= 0) → 0
-    const p = { pnl: 50000, overnight_quantity: -100, day_change_val: 0, close_price: 0, average_price: 5000 };
+    const p = { pnl: 50000, overnight_quantity: -100, day_change_val: 0, prev_close: 0, average_price: 5000 };
     expect(baseDayPnlForPosition(p)).toBe(0);
   });
 
   it('short overnight, dcv = 0 and close > 0 → falls through to formula', () => {
     // oq = -5, dcv = 0, pnl = -1000, close = 150, avg = 160
     // Expected: pnl - oq*(close - avg) = -1000 - (-5)*(150 - 160) = -1000 - 50 = -1050
-    const p = { pnl: -1000, overnight_quantity: -5, day_change_val: 0, close_price: 150, average_price: 160 };
+    const p = { pnl: -1000, overnight_quantity: -5, day_change_val: 0, prev_close: 150, average_price: 160 };
     expect(baseDayPnlForPosition(p)).toBe(-1050);
   });
 });
@@ -107,7 +107,7 @@ describe('aggregateDayPnlForPositions', () => {
   it('sums baseDayPnlForPosition across rows', () => {
     const rows = [
       { pnl: 5000, prev_settlement_pnl: 3000 },  // → 2000
-      { pnl: 1000, overnight_quantity: 0, day_change_val: 0, close_price: 0 }, // new pos → 1000
+      { pnl: 1000, overnight_quantity: 0, day_change_val: 0, prev_close: 0 }, // new pos → 1000
     ];
     expect(aggregateDayPnlForPositions(rows)).toBe(3000);
   });
