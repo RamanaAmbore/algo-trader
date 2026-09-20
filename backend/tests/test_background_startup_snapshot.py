@@ -235,9 +235,16 @@ class TestStartupSnapshotWeekendSkip:
 # Integration: verify logs match background.py code
 # ---------------------------------------------------------------------------
 
+def _get_startup_block(src: str) -> str:
+    """Extract the _ds_startup_snapshot function body from background.py source."""
+    start = src.find("async def _ds_startup_snapshot(")
+    end = src.find("\nasync def _ds_tick_prev_close_fix", start)
+    return src[start:end] if start != -1 else ""
+
+
 def test_startup_decision_matches_background_py_guard_sequence():
     """Smoke test: guard sequence in _startup_decision matches
-    the actual code structure in background.py::_task_daily_snapshot.
+    the actual code structure in background.py::_ds_startup_snapshot.
 
     This is a stale-code guard: if someone refactors the startup block
     and changes the guard order or logic, this test reminds them to
@@ -247,25 +254,18 @@ def test_startup_decision_matches_background_py_guard_sequence():
 
     bg_file = Path(__file__).parent.parent / "api" / "background.py"
     src = bg_file.read_text(encoding="utf-8")
-
-    # Find the startup snapshot block
-    startup_start = src.find("# ── startup snapshot")
-    startup_end = src.find("# ── settlement pass deduplication", startup_start)
-    startup_block = src[startup_start:startup_end]
+    startup_block = _get_startup_block(src)
 
     # Verify the guard sequence is present
-    assert "if _today_d.weekday() >= 5:" in startup_block, (
+    assert "today_d.weekday() >= 5" in startup_block, (
         "startup block must check weekday >= 5 first"
     )
-    assert "elif _nse_open or _mcx_open:" in startup_block, (
+    assert "elif nse_open or mcx_open:" in startup_block, (
         "startup block must check nse_open or mcx_open second"
     )
     assert "await _snapshot_fire(" in startup_block, (
         "startup block must have else case with _snapshot_fire"
     )
-
-    # Verify no other guard branches
-    assert "else:" in startup_block  # Should have exactly one else clause
 
 
 def test_startup_block_fires_with_market_open_false():
@@ -275,11 +275,7 @@ def test_startup_block_fires_with_market_open_false():
 
     bg_file = Path(__file__).parent.parent / "api" / "background.py"
     src = bg_file.read_text(encoding="utf-8")
-
-    # Find the startup snapshot block
-    startup_start = src.find("# ── startup snapshot")
-    startup_end = src.find("# ── settlement pass deduplication", startup_start)
-    startup_block = src[startup_start:startup_end]
+    startup_block = _get_startup_block(src)
 
     # Verify the fire call includes market_open=False
     assert 'await _snapshot_fire("startup", market_open=False)' in startup_block, (
@@ -293,11 +289,7 @@ def test_weekend_skip_message_in_background_py():
 
     bg_file = Path(__file__).parent.parent / "api" / "background.py"
     src = bg_file.read_text(encoding="utf-8")
-
-    # Find the startup snapshot block
-    startup_start = src.find("# ── startup snapshot")
-    startup_end = src.find("# ── settlement pass deduplication", startup_start)
-    startup_block = src[startup_start:startup_end]
+    startup_block = _get_startup_block(src)
 
     # Verify weekend skip message is present
     assert "skipping startup snapshot — weekend" in startup_block, (

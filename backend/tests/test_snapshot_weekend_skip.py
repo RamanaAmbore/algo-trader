@@ -94,9 +94,9 @@ def test_background_py_contains_weekend_guard():
     import pathlib
     src = pathlib.Path(__file__).parent.parent / "api" / "background.py"
     text = src.read_text()
-    assert "_today_d.weekday() >= 5" in text, (
-        "Weekend guard missing from background.py _task_daily_snapshot. "
-        "The guard `if _today_d.weekday() >= 5` must be present."
+    assert "today_d.weekday() >= 5" in text, (
+        "Weekend guard missing from background.py _ds_startup_snapshot. "
+        "The guard `if today_d.weekday() >= 5` must be present."
     )
     assert "skipping startup snapshot — weekend" in text, (
         "Weekend skip log message not found — guard may have been removed or renamed."
