@@ -63,6 +63,8 @@ class TestHoldingsRowsMarketOpenOverride:
 
     def test_market_open_true_during_nse_window_ltp_is_null(self):
         """market_open=True (default) + time inside NSE window → ltp=NULL (mid-session suppressed)."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
         # 11:00 IST — inside NSE session; with market_open=True the time-of-day
@@ -70,8 +72,9 @@ class TestHoldingsRowsMarketOpenOverride:
         now_ist = datetime(2026, 8, 14, 11, 0, 0, tzinfo=IST)  # Thursday (weekday)
         raw = [self._make_holding_row()]
 
-        rows = _holdings_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist,
-                              market_open=True)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist,
+                                  market_open=True)
 
         assert len(rows) == 1
         r = rows[0]
@@ -156,13 +159,16 @@ class TestPositionsRowsMarketOpenOverride:
 
     def test_positions_market_open_true_during_nse_window_ltp_null(self):
         """Positions: market_open=True at 11:00 IST → ltp=NULL (mid-session)."""
+        from unittest.mock import patch
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
         now_ist = datetime(2026, 8, 14, 11, 0, 0, tzinfo=IST)
         raw = [self._make_position_row("NFO")]
 
-        rows = _positions_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist,
-                               market_open=True)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows("KITE_ACC", date(2026, 8, 14), raw, now_ist,
+                                   market_open=True)
 
         assert len(rows) == 1
         r = rows[0]

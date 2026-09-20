@@ -177,12 +177,14 @@ class TestHoldingsRowsMarketOpen:
 
     def test_holdings_market_open_true_mid_session_emits_null_ltp(self, now_10am_ist):
         """market_open=True (default) + 10:00 IST → ltp is None (mid-session)."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        rows = _holdings_rows(
-            "ZG0790", _D, [_HOLDING_INFY], now_10am_ist,
-            market_open=True  # Respect time-of-day
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows(
+                "ZG0790", _D, [_HOLDING_INFY], now_10am_ist,
+                market_open=True  # Respect time-of-day
+            )
         assert len(rows) == 1
         assert rows[0]["ltp"] is None, \
             f"Expected ltp=None with market_open=True at 10:00 IST (mid-session), got {rows[0]['ltp']}"
@@ -202,12 +204,14 @@ class TestHoldingsRowsMarketOpen:
 
     def test_holdings_market_open_true_mid_session_emits_null_day_pnl(self, now_11am_ist):
         """market_open=True + 11:00 IST → day_pnl is None (mid-session)."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        rows = _holdings_rows(
-            "ZG0790", _D, [_HOLDING_INFY], now_11am_ist,
-            market_open=True
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows(
+                "ZG0790", _D, [_HOLDING_INFY], now_11am_ist,
+                market_open=True
+            )
         assert len(rows) == 1
         assert rows[0]["day_pnl"] is None, \
             f"Expected day_pnl=None with market_open=True at 11:00 IST (mid-session), got {rows[0]['day_pnl']}"
@@ -240,10 +244,13 @@ class TestHoldingsRowsMarketOpen:
 
     def test_holdings_market_open_default_is_true(self, now_10am_ist):
         """market_open defaults to True → time-of-day check applies."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        # Omit market_open — should default to True
-        rows = _holdings_rows("ZG0790", _D, [_HOLDING_INFY], now_10am_ist)
+        # Omit market_open — should default to True; patch is_exchange_open so
+        # mid-session detection works without a populated _CACHE (fail-closed fix).
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows("ZG0790", _D, [_HOLDING_INFY], now_10am_ist)
         assert len(rows) == 1
         assert rows[0]["ltp"] is None, \
             f"Expected ltp=None at 10:00 IST with market_open=True (default), got {rows[0]['ltp']}"
@@ -270,12 +277,14 @@ class TestPositionsRowsMarketOpen:
 
     def test_positions_market_open_true_mid_session_emits_null_ltp(self, now_10am_ist):
         """market_open=True + 10:00 IST → ltp is None (mid-session for NFO)."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
-        rows = _positions_rows(
-            "ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist,
-            market_open=True
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows(
+                "ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist,
+                market_open=True
+            )
         assert len(rows) == 1
         assert rows[0]["ltp"] is None, \
             f"Expected ltp=None with market_open=True at 10:00 IST (mid-session), got {rows[0]['ltp']}"
@@ -296,12 +305,14 @@ class TestPositionsRowsMarketOpen:
 
     def test_positions_market_open_true_mid_session_emits_null_day_pnl(self, now_10am_ist):
         """market_open=True + 10:00 IST → day_pnl is None (mid-session)."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
-        rows = _positions_rows(
-            "ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist,
-            market_open=True
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows(
+                "ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist,
+                market_open=True
+            )
         assert len(rows) == 1
         assert rows[0]["day_pnl"] is None, \
             f"Expected day_pnl=None with market_open=True at 10:00 IST (mid-session), got {rows[0]['day_pnl']}"
@@ -321,21 +332,25 @@ class TestPositionsRowsMarketOpen:
 
     def test_positions_mcx_market_open_true_at_1535(self, now_1535_ist):
         """MCX at 15:35 (mid-session): market_open=True → ltp=None."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
-        rows = _positions_rows(
-            "ZG0790", _D, [_POSITION_MCX_CRUDEOIL], now_1535_ist,
-            market_open=True
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows(
+                "ZG0790", _D, [_POSITION_MCX_CRUDEOIL], now_1535_ist,
+                market_open=True
+            )
         assert len(rows) == 1
         assert rows[0]["ltp"] is None, \
             f"Expected ltp=None at 15:35 (MCX mid-session), got {rows[0]['ltp']}"
 
     def test_positions_market_open_default_is_true(self, now_10am_ist):
         """market_open defaults to True → time-of-day check applies."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _positions_rows
 
-        rows = _positions_rows("ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist)
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _positions_rows("ZG0790", _D, [_POSITION_NIFTY_FUT], now_10am_ist)
         assert len(rows) == 1
         assert rows[0]["ltp"] is None, \
             f"Expected ltp=None at 10:00 IST with market_open=True (default), got {rows[0]['ltp']}"
@@ -438,10 +453,11 @@ class TestSnapshotDailyBookMarketOpen:
             with patch.object(ds, "_get_connections", return_value=MagicMock(conn={"ZG0790": MagicMock()})):
                 with patch("backend.api.algo.daily_snapshot.timestamp_indian", return_value=now_10am_ist):
                     with patch.object(registry, "all_brokers", return_value=[broker_mock]):
-                        result = await ds.snapshot_daily_book(
-                            target_date=_D,
-                            market_open=True  # Default
-                        )
+                        with patch.object(ds._exchange_clock, "is_exchange_open", return_value=True):
+                            result = await ds.snapshot_daily_book(
+                                target_date=_D,
+                                market_open=True  # Default
+                            )
 
         assert result["holdings_rows"] == 1
         assert result["positions_rows"] == 1
@@ -470,8 +486,9 @@ class TestSnapshotDailyBookMarketOpen:
             with patch.object(ds, "_get_connections", return_value=MagicMock(conn={"ZG0790": MagicMock()})):
                 with patch("backend.api.algo.daily_snapshot.timestamp_indian", return_value=now_10am_ist):
                     with patch.object(registry, "all_brokers", return_value=[broker_mock]):
-                        # Omit market_open
-                        result = await ds.snapshot_daily_book(target_date=_D)
+                        with patch.object(ds._exchange_clock, "is_exchange_open", return_value=True):
+                            # Omit market_open
+                            result = await ds.snapshot_daily_book(target_date=_D)
 
         assert result["holdings_rows"] == 1
 
@@ -653,12 +670,14 @@ class TestMarketOpenPayloadIntegrity:
 
     def test_holdings_payload_has_null_ltp_when_market_open_true_midsession(self, now_10am_ist):
         """When market_open=True + mid-session, payload snapshot_extras.ltp should be None."""
+        import backend.api.algo.daily_snapshot as _ds
         from backend.api.algo.daily_snapshot import _holdings_rows
 
-        rows = _holdings_rows(
-            "ZG0790", _D, [_HOLDING_INFY], now_10am_ist,
-            market_open=True
-        )
+        with patch.object(_ds._exchange_clock, "is_exchange_open", return_value=True):
+            rows = _holdings_rows(
+                "ZG0790", _D, [_HOLDING_INFY], now_10am_ist,
+                market_open=True
+            )
 
         assert len(rows) == 1
         payload = json.loads(rows[0]["payload_json"])

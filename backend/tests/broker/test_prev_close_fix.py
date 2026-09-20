@@ -303,9 +303,10 @@ class TestFixDailyBookPrevCloseHolidayNoop:
         mock_ctx.execute = AsyncMock(return_value=mock_result)
         mock_ctx.commit = AsyncMock()
 
-        with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
-            with patch("backend.api.algo.daily_snapshot.async_session",
-                       return_value=mock_ctx):
-                result = await daily_snapshot.fix_daily_book_prev_close(now_ist=now_ist)
+        with patch.object(exchange_clock, "_is_market_day_today", return_value=True):
+            with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
+                with patch("backend.api.algo.daily_snapshot.async_session",
+                           return_value=mock_ctx):
+                    result = await daily_snapshot.fix_daily_book_prev_close(now_ist=now_ist)
 
         assert result == 5, f"Expected rowcount=5, got {result!r}"

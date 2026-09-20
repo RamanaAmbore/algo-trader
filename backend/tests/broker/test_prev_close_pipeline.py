@@ -155,10 +155,11 @@ class TestFixDailyBookPrevCloseRewritten:
         mock_ctx.execute = AsyncMock(return_value=mock_result)
         mock_ctx.commit = AsyncMock()
 
-        with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
-            with patch("backend.api.algo.daily_snapshot.async_session",
-                       return_value=mock_ctx):
-                result = await fix_daily_book_prev_close(now_ist=now_ist)
+        with patch.object(exchange_clock, "_is_market_day_today", return_value=True):
+            with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
+                with patch("backend.api.algo.daily_snapshot.async_session",
+                           return_value=mock_ctx):
+                    result = await fix_daily_book_prev_close(now_ist=now_ist)
 
         assert result == 3, f"Expected 3 rows updated, got {result}"
         # Verify the SQL used the correct columns
@@ -187,10 +188,11 @@ class TestFixDailyBookPrevCloseRewritten:
         mock_ctx.execute = AsyncMock(return_value=mock_result)
         mock_ctx.commit = AsyncMock()
 
-        with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
-            with patch("backend.api.algo.daily_snapshot.async_session",
-                       return_value=mock_ctx):
-                result = await fix_daily_book_prev_close(now_ist=now_ist)
+        with patch.object(exchange_clock, "_is_market_day_today", return_value=True):
+            with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
+                with patch("backend.api.algo.daily_snapshot.async_session",
+                           return_value=mock_ctx):
+                    result = await fix_daily_book_prev_close(now_ist=now_ist)
 
         assert result == 5, f"Expected 5 rows updated, got {result}"
         call_args = mock_ctx.execute.call_args
@@ -217,10 +219,11 @@ class TestFixDailyBookPrevCloseRewritten:
         mock_ctx.execute = AsyncMock(return_value=mock_result)
         mock_ctx.commit = AsyncMock()
 
-        with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
-            with patch("backend.api.algo.daily_snapshot.async_session",
-                       return_value=mock_ctx):
-                result = await fix_daily_book_prev_close(now_ist=now_ist)
+        with patch.object(exchange_clock, "_is_market_day_today", return_value=True):
+            with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
+                with patch("backend.api.algo.daily_snapshot.async_session",
+                           return_value=mock_ctx):
+                    result = await fix_daily_book_prev_close(now_ist=now_ist)
 
         # First call is prev_close UPDATE (has backup COALESCE); second is day_pnl recompute.
         call_args = mock_ctx.execute.call_args_list[0]
@@ -377,10 +380,11 @@ class TestSessionOpenNoCorruption:
         mock_ctx.execute = AsyncMock(side_effect=_capture_sql)
         mock_ctx.commit = AsyncMock()
 
-        with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
-            with patch("backend.api.algo.daily_snapshot.async_session",
-                       return_value=mock_ctx):
-                result = await fix_daily_book_prev_close(now_ist=now_ist)
+        with patch.object(exchange_clock, "_is_market_day_today", return_value=True):
+            with patch.object(exchange_clock, "get_nse_open_time", return_value=time(8, 0)):
+                with patch("backend.api.algo.daily_snapshot.async_session",
+                           return_value=mock_ctx):
+                    result = await fix_daily_book_prev_close(now_ist=now_ist)
 
         # Verify the SQL filters for yesterday's rows
         assert captured_sql is not None, "SQL must be executed"
