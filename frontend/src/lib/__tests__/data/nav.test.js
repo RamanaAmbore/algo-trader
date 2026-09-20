@@ -130,7 +130,7 @@ describe('livePositionDayPnl', () => {
     pollLtp: 102,
     qty: 5,
     avg: 98,
-    dcvRow: { pnl: 10, overnight_quantity: 5, day_change_val: 10, close_price: 100 },
+    dcvRow: { pnl: 10, overnight_quantity: 5, day_change_val: 10, prev_close: 100 },
     ...overrides,
   });
 
@@ -150,7 +150,7 @@ describe('livePositionDayPnl', () => {
       prev_settlement_pnl: -5000,  // same → baseDayPnlForPosition = 0
       overnight_quantity: 100,
       day_change_val: 0,
-      close_price: 930,
+      prev_close: 930,
     };
     const result = livePositionDayPnl(
       { closePx: 930, pollLtp: 850, qty: 100, avg: 1000, dcvRow },
@@ -162,7 +162,7 @@ describe('livePositionDayPnl', () => {
 
   it('market closed, closePx = 0 → falls back to baseDayPnlForPosition', () => {
     // No prior-session close available — cannot apply price formula; use brokerDcv.
-    const dcvRow = { pnl: 500, prev_settlement_pnl: null, overnight_quantity: 5, day_change_val: 500, close_price: 0 };
+    const dcvRow = { pnl: 500, prev_settlement_pnl: null, overnight_quantity: 5, day_change_val: 500, prev_close: 0 };
     const result = livePositionDayPnl(
       { closePx: 0, pollLtp: 102, qty: 5, avg: 98, dcvRow },
       null,
@@ -182,7 +182,7 @@ describe('livePositionDayPnl', () => {
 
   it('new position: closePx=0, avg>0 → (liveLtp - avg) * qty', () => {
     const fields = makeFields({ closePx: 0, pollLtp: 0, qty: 3, avg: 50,
-      dcvRow: { pnl: 0, overnight_quantity: 0, day_change_val: 0, close_price: 0 } });
+      dcvRow: { pnl: 0, overnight_quantity: 0, day_change_val: 0, prev_close: 0 } });
     // closePx=0, avg>0, qty≠0 → (60 - 50)*3 = 30
     const result = livePositionDayPnl(fields, 60, { marketOpen: true });
     expect(result).toBe(30);
@@ -205,7 +205,7 @@ describe('livePositionDayPnl', () => {
     // Change A regression test: pollLtp=0 must not drop brokerDcv.
     // Before fix: realisedToday = 0   → result = 0 + (6450-6400)*1 = 50 (wrong)
     // After fix:  realisedToday = 200 → result = 200 + (6450-6400)*1 = 250 (correct)
-    const dcvRow = { pnl: 800, overnight_quantity: 1, day_change_val: 200, close_price: 6400 };
+    const dcvRow = { pnl: 800, overnight_quantity: 1, day_change_val: 200, prev_close: 6400 };
     // baseDayPnlForPosition: oq=1, dcv=200 (non-zero) → 200
     const fields = { closePx: 6400, pollLtp: 0, qty: 1, avg: 6200, dcvRow };
     const result = livePositionDayPnl(fields, 6450, { marketOpen: true });
@@ -225,7 +225,7 @@ describe('livePositionDayPnl', () => {
       pollLtp: 98,
       qty: -5,
       avg: 105,
-      dcvRow: { pnl: -10, overnight_quantity: -5, day_change_val: 10, close_price: 100 },
+      dcvRow: { pnl: -10, overnight_quantity: -5, day_change_val: 10, prev_close: 100 },
     };
     const result = livePositionDayPnl(fields, 97, { marketOpen: true });
     expect(result).toBe(15);
@@ -241,8 +241,7 @@ describe('livePositionDayPnl', () => {
       quantity: 5,
       pnl: 1500,          // (300 - avg) × 5 = lifetime pnl
       day_change_val: 0,
-      close_price: 0,
-      previous_close: 0,
+      prev_close: 0,
       average_price: 250,  // entry cost from prior sessions
     };
     const result = livePositionDayPnl(
@@ -262,8 +261,7 @@ describe('livePositionDayPnl', () => {
       quantity: 5,
       pnl: 300,           // (310 - 250) × 5
       day_change_val: 0,
-      close_price: 0,
-      previous_close: 0,
+      prev_close: 0,
       average_price: 250,
     };
     const result = livePositionDayPnl(
@@ -284,7 +282,7 @@ describe('livePositionDayPnl', () => {
     const result = livePositionDayPnl(
       { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
         dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 0, pnl: 150,
-                  previous_close: 5800, average_price: 5700 } },
+                  prev_close: 5800, average_price: 5700 } },
       5860,
       { marketOpen: true }
     );
@@ -301,7 +299,7 @@ describe('livePositionDayPnl', () => {
     const result = livePositionDayPnl(
       { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
         dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 50, pnl: 150,
-                  previous_close: 5800, average_price: 5700 } },
+                  prev_close: 5800, average_price: 5700 } },
       5860,
       { marketOpen: true }
     );

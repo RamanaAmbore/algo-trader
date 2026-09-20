@@ -403,43 +403,41 @@ describe('buildCleanLegs — expired-leg safety-net filter', () => {
 // buildPositionRowFromBroker — prev_close field priority
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('buildPositionRowFromBroker — prev_close uses previous_close over close_price', () => {
-  it('uses previous_close when close_price is 0 (stale overnight)', () => {
+describe('buildPositionRowFromBroker — prev_close field (canonical post-rename)', () => {
+  it('passes through prev_close from broker row', () => {
     const row = buildPositionRowFromBroker({
       tradingsymbol: 'NIFTY25SEP24000CE',
-      previous_close: 500,
-      close_price: 0,
+      prev_close: 500,
       quantity: 50,
       account: 'ZG0790',
     }, 'live');
     expect(row.prev_close).toBe(500);
   });
 
-  it('falls back to close_price when previous_close is 0 or absent', () => {
+  it('returns null when prev_close is absent', () => {
     const row = buildPositionRowFromBroker({
       tradingsymbol: 'NIFTY25SEP24000CE',
-      previous_close: 0,
-      close_price: 300,
       quantity: 50,
       account: 'ZG0790',
     }, 'live');
-    expect(row.prev_close).toBe(300);
+    expect(row.prev_close).toBeNull();
   });
 
-  it('previous_close wins when both fields are non-zero', () => {
+  it('returns null when prev_close is 0 (falsy)', () => {
     const row = buildPositionRowFromBroker({
       tradingsymbol: 'NIFTY25SEP24000CE',
-      previous_close: 500,
-      close_price: 300,
+      prev_close: 0,
       quantity: 50,
       account: 'ZG0790',
     }, 'live');
-    expect(row.prev_close).toBe(500);
+    expect(row.prev_close).toBeNull();
   });
 
-  it('returns null when both previous_close and close_price are absent', () => {
+  it('legacy close_price field is ignored (not mapped to prev_close)', () => {
+    // After rename, close_price in the broker payload is no longer read.
     const row = buildPositionRowFromBroker({
       tradingsymbol: 'NIFTY25SEP24000CE',
+      close_price: 300,
       quantity: 50,
       account: 'ZG0790',
     }, 'live');
@@ -479,12 +477,11 @@ describe('buildPositionRowFromBroker — prev_settlement_pnl propagation', () =>
 // buildHoldingRowFromBroker — prev_close field priority
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('buildHoldingRowFromBroker — prev_close uses previous_close over close_price', () => {
-  it('uses previous_close when close_price is 0 (stale overnight)', () => {
+describe('buildHoldingRowFromBroker — prev_close field (canonical post-rename)', () => {
+  it('passes through prev_close from broker row', () => {
     const row = buildHoldingRowFromBroker({
       tradingsymbol: 'RELIANCE',
-      previous_close: 500,
-      close_price: 0,
+      prev_close: 500,
       quantity: 10,
       opening_quantity: 10,
       account: 'ZG0790',
@@ -492,27 +489,36 @@ describe('buildHoldingRowFromBroker — prev_close uses previous_close over clos
     expect(row.prev_close).toBe(500);
   });
 
-  it('falls back to close_price when previous_close is 0 or absent', () => {
+  it('returns null when prev_close is absent', () => {
     const row = buildHoldingRowFromBroker({
       tradingsymbol: 'RELIANCE',
-      previous_close: 0,
-      close_price: 300,
       quantity: 10,
       opening_quantity: 10,
       account: 'ZG0790',
     });
-    expect(row.prev_close).toBe(300);
+    expect(row.prev_close).toBeNull();
   });
 
-  it('previous_close wins when both fields are non-zero', () => {
+  it('returns null when prev_close is 0 (falsy)', () => {
     const row = buildHoldingRowFromBroker({
       tradingsymbol: 'RELIANCE',
-      previous_close: 500,
+      prev_close: 0,
+      quantity: 10,
+      opening_quantity: 10,
+      account: 'ZG0790',
+    });
+    expect(row.prev_close).toBeNull();
+  });
+
+  it('legacy close_price field is ignored (not mapped to prev_close)', () => {
+    // After rename, close_price in the broker payload is no longer read.
+    const row = buildHoldingRowFromBroker({
+      tradingsymbol: 'RELIANCE',
       close_price: 300,
       quantity: 10,
       opening_quantity: 10,
       account: 'ZG0790',
     });
-    expect(row.prev_close).toBe(500);
+    expect(row.prev_close).toBeNull();
   });
 });
