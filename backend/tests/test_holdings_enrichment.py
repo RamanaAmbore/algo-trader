@@ -37,7 +37,7 @@ def _make_holdings_row(include_pnl: bool = True, include_dcv: bool = False, **kw
         'opening_quantity': 100,
         'average_price': 150.0,
         'last_price': 200.0,
-        'close_price': 150.0,
+        'prev_close': 150.0,  # canonical column name post-rename
         'day_change': 0.0,
     }
     if include_pnl:
@@ -60,7 +60,7 @@ def _prepare_df(rows: list[dict]) -> pd.DataFrame:
     # Ensure all numeric columns are properly typed (polars pass needs this)
     numeric_cols = [
         'quantity', 'opening_quantity', 'average_price', 'last_price',
-        'close_price', 'pnl', 'day_change', 'day_change_val'
+        'prev_close', 'pnl', 'day_change', 'day_change_val'
     ]
     for col in numeric_cols:
         if col in df.columns:
@@ -88,7 +88,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
             quantity=50,
             opening_quantity=100,
             last_price=200.0,
-            close_price=150.0,
+            prev_close=150.0,
         )])
 
         df = _enrich_holdings_minimal(df)
@@ -185,7 +185,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
             quantity=0,
             opening_quantity=100,
             last_price=200.0,
-            close_price=150.0,
+            prev_close=150.0,
         )])
 
         df = _enrich_holdings_minimal(df)
@@ -208,7 +208,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
             quantity=100,
             opening_quantity=100,
             last_price=200.0,
-            close_price=150.0,
+            prev_close=150.0,
         )])
 
         df = _enrich_holdings_minimal(df)
@@ -267,7 +267,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
                 opening_quantity=100,
                 average_price=150.0,
                 last_price=200.0,
-                close_price=150.0,
+                prev_close=150.0,
             ),
             _make_holdings_row(
                 tradingsymbol='INFY',
@@ -275,7 +275,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
                 opening_quantity=100,
                 average_price=1500.0,
                 last_price=1600.0,
-                close_price=1500.0,
+                prev_close=1500.0,
             ),
             _make_holdings_row(
                 tradingsymbol='TCS',
@@ -283,7 +283,7 @@ class TestHoldingsQuantityVsOpeningQuantity:
                 opening_quantity=50,
                 average_price=3500.0,
                 last_price=3700.0,
-                close_price=3500.0,
+                prev_close=3500.0,
             ),
         ])
 

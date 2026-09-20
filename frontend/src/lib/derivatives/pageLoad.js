@@ -72,7 +72,7 @@ export function buildPositionRowFromBroker(p, source) {
     source,
     avg_cost: p?.average_price != null ? Number(p.average_price) : null,
     ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
-    prev_close: Number(p?.previous_close) || Number(p?.close_price) || null,
+    prev_close: Number(p?.prev_close) || null,
     pnl:      p?.pnl != null ? Number(p.pnl) : 0,
     realised: p?.realised != null ? Number(p.realised) : 0,
     day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
@@ -107,7 +107,7 @@ export function buildHoldingRowFromBroker(h) {
     opening_qty: openingQty,
     avg_cost:   h?.average_price != null ? Number(h.average_price) : null,
     ltp:        h?.last_price    != null ? Number(h.last_price)    : null,
-    prev_close: Number(h?.previous_close) || Number(h?.close_price) || null,
+    prev_close: Number(h?.prev_close) || null,
     pnl:        h?.pnl != null ? Number(h.pnl) : 0,
     day_change_val: h?.day_change_val != null ? Number(h.day_change_val) : 0,
   };

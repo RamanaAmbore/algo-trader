@@ -1368,7 +1368,7 @@ def fetch_holdings(*args, **kwargs):
     NAV-consistency guarantee (Approach A): the cached value is a
     single-element list containing the post-backfill concatenated
     DataFrame. `backfill_market_data` runs once here — it patches
-    close_price + last_price from PriceBroker.quote(), then
+    prev_close + last_price from PriceBroker.quote(), then
     recomputes day_change_val, pnl, cur_val, and pnl_percentage.
     Every consumer (route + compute_firm_nav) then reads the SAME
     patched cur_val so NavCard and /performance agree.
@@ -1392,7 +1392,7 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     handle for backwards compatibility with the original Kite-only
     path. Every adapter normalises its response to the Kite-shape
     column set used by downstream UI (tradingsymbol, average_price,
-    opening_quantity, pnl, day_change, close_price, etc.)."""
+    opening_quantity, pnl, day_change, prev_close, etc.)."""
     df_holdings = pd.DataFrame()
     # Circuit-breaker guard: skip SDK call when the breaker is OPEN.
     # Half-open state admits one probe attempt (breaker closes or
@@ -1442,6 +1442,7 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
             _record_fetch(account, ok=False, error="broker.holdings() returned None")
             return df_holdings
         df_holdings = pd.DataFrame(rows)
+        df_holdings.rename(columns={'close_price': 'prev_close'}, inplace=True)
 
         if not df_holdings.empty:
             df_holdings["account"] = account
@@ -1457,7 +1458,7 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     # math here is the difference between an empty response and a 500
     # KeyError on 'average_price'). Also guard each column reference
     # individually: a normaliser that omits one of the Kite-shape
-    # columns (e.g. Groww doesn't always carry close_price) won't break
+    # columns (e.g. Groww doesn't always carry prev_close) won't break
     # the others.
     if df_holdings.empty:
         return df_holdings
@@ -1588,7 +1589,7 @@ def _build_holdings_dcv_expr(
     holdings compute day P&L only on the unsold portion.
     """
     _ltp = _col_f64("last_price")
-    _cls = _col_f64("close_price")
+    _cls = _col_f64("prev_close")
     _qty = _col_f64("quantity")
     if has_avg and has_pnl:
         _avg2      = _col_f64("average_price")
@@ -1626,12 +1627,12 @@ def _apply_holdings_dcv_fallback(df: pd.DataFrame) -> None:
     Mutates df in place; no-op when required columns absent.
     """
     _qty_col = "quantity" if "quantity" in df.columns else "opening_quantity"
-    _cols = ("day_change", "day_change_val", "close_price", _qty_col)
+    _cols = ("day_change", "day_change_val", "prev_close", _qty_col)
     if not all(c in df.columns for c in _cols):
         return
     _f_dcv = pd.to_numeric(df["day_change_val"],  errors="coerce").fillna(0)
     _f_dc  = pd.to_numeric(df["day_change"],       errors="coerce").fillna(0)
-    _f_cls = pd.to_numeric(df["close_price"],      errors="coerce").fillna(0)
+    _f_cls = pd.to_numeric(df["prev_close"],        errors="coerce").fillna(0)
     _f_qty = pd.to_numeric(df[_qty_col],           errors="coerce").fillna(0)
     _mask  = (_f_dcv == 0) & (_f_dc != 0) & (_f_cls > 0) & (_f_qty != 0)
     if _mask.any():
@@ -1669,7 +1670,7 @@ def _build_holdings_computed_exprs(
 
     if has_close and has_avg:
         exprs.append(
-            (_col_f64("close_price") - _col_f64("average_price"))
+            (_col_f64("prev_close") - _col_f64("average_price"))
             .alias("price_change")
         )
 
@@ -1759,7 +1760,7 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     has_ltp    = "last_price"     in cols
     has_avg    = "average_price"  in cols
     has_qty    = "quantity"       in cols  # remaining shares after partial sells
-    has_close  = "close_price"    in cols
+    has_close  = "prev_close"     in cols
     has_pnl    = "pnl"            in cols
     has_invval = "inv_val"        in cols
     has_dcv    = "day_change_val" in cols
@@ -2053,6 +2054,7 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             _record_fetch(account, ok=False, error="broker.positions() returned None")
             return df_positions
         df_positions = pd.DataFrame(net_rows)
+        df_positions.rename(columns={'close_price': 'prev_close'}, inplace=True)
         _record_fetch(account, ok=True)
         # One-time diagnostic — verifies Kite ships day_buy_value in
         # lot-units (lots × price) vs absolute ₹. Fires once per
@@ -2107,7 +2109,7 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
 
     _ltp = _col_f64('last_price')
     _avg = _col_f64('average_price')
-    _cls = _col_f64('close_price')
+    _cls = _col_f64('prev_close')
     _qty = _col_f64('quantity')
 
     _pnl_calc = (_ltp - _avg) * _qty
@@ -2177,7 +2179,7 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         _dcv_expr.alias("day_change_val"),
     ])
     # Second pass: percentages that depend on the first pass results.
-    # Contract A note: a position opened TODAY has close_price=0 (no prior
+    # Contract A note: a position opened TODAY has prev_close=0 (no prior
     # session for this symbol), so |close × qty| collapses to 0 and the
     # percent would round to 0. Fall back to |avg × qty| (= notional at
     # entry) so opened-today rows still show a meaningful Day % — the same
@@ -2216,13 +2218,13 @@ def backfill_market_data(df) -> int:
       account-specific facts → trust the source broker
         (avg_price, quantity, opening_quantity, realised, account)
       market-data facts → one canonical source for the whole book
-        (close_price, last_price, day_change_*, instrument identity)
+        (prev_close, last_price, day_change_*, instrument identity)
 
     Kite's `quote()` is the most complete market-data feed across
     Dhan / Groww / Kite, so we route every market-data lookup
     through `PriceBroker.quote()` (which prefers Kite, then falls
     through to Dhan, then Groww via the registry's preference
-    order). Source brokers that already populate close_price /
+    order). Source brokers that already populate prev_close /
     last_price keep their values — backfill only kicks in on
     zero / missing, never overwriting a non-zero broker value.
 
@@ -2233,7 +2235,7 @@ def backfill_market_data(df) -> int:
     called the lookup inside the per-account `@for_all_accounts`
     body and burned N quote() calls per poll).
 
-    No-op when both close_price and last_price are already
+    No-op when both prev_close and last_price are already
     populated on every row (Kite always returns them; Dhan + Groww
     sometimes don't). Exception-safe: a PriceBroker outage leaves
     rows untouched and downstream P&L fallback behaviour matches
@@ -2244,7 +2246,7 @@ def backfill_market_data(df) -> int:
     """
     if df is None or df.empty:
         return 0
-    if 'close_price' not in df.columns and 'last_price' not in df.columns:
+    if 'prev_close' not in df.columns and 'last_price' not in df.columns:
         return 0
 
     _missing, _key_per_row, _unique_keys = _bmd_build_key_index(df)
@@ -2270,28 +2272,28 @@ def _bmd_build_key_index(df):
 
     Returns (mask_series, key_per_row_list, unique_keys_list). When no
     row needs backfill, returns (None, [], [])."""
-    # A row needs backfill if EITHER close_price or last_price is
+    # A row needs backfill if EITHER prev_close or last_price is
     # zero / missing. Unions across both criteria so the single
     # batched quote call covers everything.
-    _cls_missing = (pd.to_numeric(df['close_price'], errors='coerce').fillna(0).le(0)
-                    if 'close_price' in df.columns
+    _cls_missing = (pd.to_numeric(df['prev_close'], errors='coerce').fillna(0).le(0)
+                    if 'prev_close' in df.columns
                     else pd.Series(False, index=df.index))
     _ltp_missing = (pd.to_numeric(df['last_price'], errors='coerce').fillna(0).le(0)
                     if 'last_price' in df.columns
                     else pd.Series(False, index=df.index))
     _missing = _cls_missing | _ltp_missing
 
-    # Stale fingerprint: overnight F&O position where Kite REST LTP = close_price
+    # Stale fingerprint: overnight F&O position where Kite REST LTP = prev_close
     # (WS tick not yet received; day_change_val collapses to 0 when ltp = cls).
     # Extend the backfill batch so PriceBroker.quote() delivers a fresh LTP and
     # _bmd_recompute_derived can fix day_change_val = (fresh_ltp - cls) × qty.
     _FO_EXCH = {'NFO', 'MCX', 'CDS', 'BFO'}
     if ('overnight_quantity' in df.columns and 'exchange' in df.columns
-            and 'last_price' in df.columns and 'close_price' in df.columns):
+            and 'last_price' in df.columns and 'prev_close' in df.columns):
         _oq_s   = pd.to_numeric(df['overnight_quantity'], errors='coerce').fillna(0)
         _exch_s = df['exchange'].fillna('').astype(str).str.upper()
         _ltp_s  = pd.to_numeric(df['last_price'],  errors='coerce').fillna(0)
-        _cls_s  = pd.to_numeric(df['close_price'], errors='coerce').fillna(0)
+        _cls_s  = pd.to_numeric(df['prev_close'],  errors='coerce').fillna(0)
         _stale_fp = (
             (_oq_s != 0) &
             (_exch_s.isin(_FO_EXCH)) &
@@ -2436,7 +2438,7 @@ def _bmd_patch_one_row(
     df, idx, k: str, has_close: bool, has_ltp: bool,
     close_lookup: dict, ltp_lookup: dict,
 ) -> tuple[bool, bool]:
-    """Patch close_price + last_price on ONE row where the source broker
+    """Patch prev_close + last_price on ONE row where the source broker
     came back with 0. Never overwrites a non-zero broker value.
 
     Returns (touched, from_stale_cache):
@@ -2445,10 +2447,10 @@ def _bmd_patch_one_row(
         in-process cache (row should be marked `last_price_stale=True`)."""
     touched = False
     from_stale = False
-    if has_close and _bmd_is_missing_val(df.at[idx, 'close_price']):
+    if has_close and _bmd_is_missing_val(df.at[idx, 'prev_close']):
         cls_p = close_lookup.get(k)
         if cls_p:
-            df.at[idx, 'close_price'] = cls_p
+            df.at[idx, 'prev_close'] = cls_p
             touched = True
     if has_ltp and _bmd_is_missing_val(df.at[idx, 'last_price']):
         ltp_p = ltp_lookup.get(k)
@@ -2503,7 +2505,7 @@ def _bmd_log_unresolved(unresolved: list[str], unique_keys) -> None:
 
 
 def _bmd_patch_rows(df, row_indices, key_per_row, close_lookup, ltp_lookup, unique_keys) -> set:
-    """Patch close_price + last_price in place, but ONLY on rows
+    """Patch prev_close + last_price in place, but ONLY on rows
     where the source broker came back with 0. Never overwrite a
     non-zero broker value — Dhan/Groww LTP may be a fresher tick
     than the snapshot-time Kite quote.
@@ -2511,7 +2513,7 @@ def _bmd_patch_rows(df, row_indices, key_per_row, close_lookup, ltp_lookup, uniq
     Rows rescued via last-known-good cache get `last_price_stale=True`.
     Emits a warning log for symbols that resolved neither close nor LTP.
     Returns the set of patched row indices."""
-    has_close = 'close_price' in df.columns
+    has_close = 'prev_close' in df.columns
     has_ltp   = 'last_price'  in df.columns
     patched_indices: set = set()
     stale_patched_indices: set = set()  # rows rescued by last-good cache
@@ -2546,7 +2548,7 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
 
     _idx_array = pd.Index(sorted(patched_indices))
     _ltp_p = pd.to_numeric(df.loc[_idx_array, 'last_price'], errors='coerce').fillna(0)
-    _cls_p = pd.to_numeric(df.loc[_idx_array, 'close_price'], errors='coerce').fillna(0)
+    _cls_p = pd.to_numeric(df.loc[_idx_array, 'prev_close'], errors='coerce').fillna(0)
     _qty_p = pd.to_numeric(df.loc[_idx_array, _qty_col], errors='coerce').fillna(0)
     _dcv_p = (_ltp_p - _cls_p) * _qty_p
     _valid_p = (_ltp_p > 0) & (_cls_p > 0)

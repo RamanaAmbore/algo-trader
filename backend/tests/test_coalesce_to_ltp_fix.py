@@ -62,23 +62,23 @@ class TestPositionsSqlNoCOALESCE:
 
     def test_sql_selects_daily_book_ltp_as_ref_close(self):
         src = Path("backend/api/routes/positions.py").read_text()
-        # Updated: now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) AS ref_close
-        # so pre-fix holiday snapshots (ltp=NULL, close_price>0) are included.
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close" in src, (
-            "positions.py must select COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close"
+        # Simplified: uses ltp AS ref_close directly (daily_book.ltp is the
+        # canonical settlement LTP; the COALESCE fallback to close_price was removed).
+        assert "ltp AS ref_close" in src, (
+            "positions.py must select 'ltp AS ref_close' in _fetch_snapshot_close_map "
+            "(simplified from COALESCE after prev_close rename)"
         )
 
     def test_discriminating_case_previous_close_ignored(self):
-        """When daily_book has previous_close=105 but ltp=100, ref_close must be 100.
+        """When daily_book has ltp=100 (actual settlement), prev_close must be set to 100.
 
-        Old COALESCE would return 105 (BHAV-copy, stale), causing epsilon
-        check to pass (Kite close_price is also 105), so no patch.
-        New code returns 100 (actual settlement), epsilon differs from 105,
-        so close_price gets patched.
+        Old COALESCE(previous_close, ltp) would return the stale BHAV-copy value.
+        New code uses ltp directly from daily_book, which is the actual settlement LTP.
+        After the prev_close rename, the function patches raw['prev_close'] not close_price.
         """
         from backend.api.routes.positions import _override_stale_close_from_snapshot
 
-        # Build a positions DataFrame — close_price=105 (Kite stale), ltp=110
+        # Build a positions DataFrame — prev_close=105 (Kite stale), ltp=110
         df = pd.DataFrame([{
             'account': 'TEST001',
             'tradingsymbol': 'RELIANCE',
@@ -87,7 +87,7 @@ class TestPositionsSqlNoCOALESCE:
             'overnight_quantity': 10,
             'average_price': 90.0,
             'last_price': 110.0,
-            'close_price': 105.0,
+            'prev_close': 105.0,  # Kite stale (renamed from close_price)
             'pnl': 200.0,
             'day_change_val': (110.0 - 105.0) * 10,
             'm2m': 200.0,
@@ -97,7 +97,7 @@ class TestPositionsSqlNoCOALESCE:
 
         mock_time = datetime(2026, 8, 23, 9, 0, 0, tzinfo=IST)
         mock_result = MagicMock()
-        # DB returns ltp=100 (not previous_close=105)
+        # DB returns ltp=100 (actual settlement)
         mock_result.all.return_value = [("TEST001", "RELIANCE", 100.0, 200.0)]
 
         mock_session = AsyncMock()
@@ -112,10 +112,10 @@ class TestPositionsSqlNoCOALESCE:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        # close_price must be patched from 105 → 100 (using ltp=100, not previous_close=105)
-        assert abs(df.iloc[0]['close_price'] - 100.0) < 0.01, (
-            f"close_price must be patched to daily_book.ltp=100, got {df.iloc[0]['close_price']}. "
-            "COALESCE(previous_close, ltp) would have returned 105, leaving close_price=105."
+        # prev_close must be patched from 105 → 100 (using ltp=100 from daily_book)
+        assert abs(df.iloc[0]['prev_close'] - 100.0) < 0.01, (
+            f"prev_close must be patched to daily_book.ltp=100, got {df.iloc[0]['prev_close']}. "
+            "Old COALESCE would have kept 105 (stale BHAV-copy); new ltp-direct always patches."
         )
 
 
@@ -157,10 +157,11 @@ class TestHoldingsSqlNoCOALESCE:
         )
 
     def test_discriminating_case_previous_close_ignored(self):
-        """When previous_close=102 but ltp=100, ref_close must be 100.
+        """When daily_book ltp=100 (actual settlement), prev_close must be set to 100.
 
-        Old COALESCE(previous_close, ltp): returns 102 → epsilon vs Kite 102 → no patch.
-        New ltp-direct: returns 100 → epsilon vs Kite 102 → patch fires.
+        Old COALESCE(previous_close, ltp): would return stale BHAV value.
+        New ltp-direct: always sets prev_close = ltp from daily_book (actual settlement).
+        After the prev_close rename, the function patches raw['prev_close'] not close_price.
         """
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
@@ -172,7 +173,7 @@ class TestHoldingsSqlNoCOALESCE:
             'opening_quantity': 10,
             'average_price': 90.0,
             'last_price': 110.0,
-            'close_price': 102.0,   # Kite stale (matches stale previous_close)
+            'prev_close': 102.0,   # Kite stale (renamed from close_price)
             'pnl': (110.0 - 90.0) * 10,
             'day_change': 110.0 - 102.0,
             'day_change_val': (110.0 - 102.0) * 10,
@@ -182,7 +183,7 @@ class TestHoldingsSqlNoCOALESCE:
 
         mock_time = datetime(2026, 8, 23, 9, 0, 0, tzinfo=IST)
         mock_result = MagicMock()
-        # DB returns ltp=100 (actual settlement — different from previous_close=102)
+        # DB returns ltp=100 (actual settlement)
         mock_result.all.return_value = [("TEST001", "RELIANCE", 100.0)]
 
         mock_session = AsyncMock()
@@ -197,12 +198,12 @@ class TestHoldingsSqlNoCOALESCE:
         ):
             asyncio.run(_override_stale_close_for_holdings(df))
 
-        # Must patch: ref_close=100 differs from close_price=102 by 2.0 > epsilon 0.005
-        assert abs(df.iloc[0]['close_price'] - 100.0) < 0.01, (
-            f"close_price must be patched to ltp=100, got {df.iloc[0]['close_price']}. "
-            "COALESCE would have returned previous_close=102 == close_price → no patch."
+        # prev_close must be set to 100 (from daily_book.ltp)
+        assert abs(df.iloc[0]['prev_close'] - 100.0) < 0.01, (
+            f"prev_close must be patched to ltp=100, got {df.iloc[0]['prev_close']}. "
+            "Old COALESCE would have kept stale BHAV value; new ltp-direct always patches."
         )
-        # day_change_val must be recomputed: (ltp-new_close)*qty = (110-100)*10 = 100
+        # day_change_val must be recomputed: (ltp-prev_close)*qty = (110-100)*10 = 100
         expected_dcv = (110.0 - 100.0) * 10
         assert abs(df.iloc[0]['day_change_val'] - expected_dcv) < 0.01, (
             f"day_change_val must be recomputed after close patch. "

@@ -165,8 +165,8 @@ class TestFixDailyBookPrevCloseRewritten:
         # Verify the SQL used the correct columns
         call_args = mock_ctx.execute.call_args
         sql_text = str(call_args[0][0]) if call_args else ""
-        assert "previous_close" in sql_text, (
-            "overnight mode must use previous_close as reference"
+        assert "prev_close" in sql_text, (
+            "overnight mode must use prev_close as reference"
         )
 
     async def test_fix_daily_book_prev_close_integration_new_session_mode(self):
@@ -228,7 +228,7 @@ class TestFixDailyBookPrevCloseRewritten:
         # First call is prev_close UPDATE (has backup COALESCE); second is day_pnl recompute.
         call_args = mock_ctx.execute.call_args_list[0]
         sql_text = str(call_args[0][0]) if call_args else ""
-        assert "previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)" in sql_text, (
+        assert "prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)" in sql_text, (
             "Backup persistence must use COALESCE pattern"
         )
 
@@ -260,9 +260,9 @@ class TestSnapshotRowPreviousCloseSource:
             previous_close=Decimal("1510.0"),  # broker close_price
         )
 
-        # The row's close_price should be set from previous_close param
-        assert row.close_price == 1510.0, (
-            "close_price must use the previous_close parameter (from broker close_price)"
+        # The row's prev_close should be set from previous_close param
+        assert row.prev_close == 1510.0, (
+            "prev_close must use the previous_close parameter (from broker prev_close)"
         )
 
     def test_holdings_row_uses_close_price_not_ltp(self):
@@ -284,10 +284,10 @@ class TestSnapshotRowPreviousCloseSource:
             previous_close=Decimal("1820.0"),
         )
 
-        # close_price is the prior-session settlement (from broker close_price),
+        # prev_close is the prior-session settlement (from broker prev_close),
         # not today's ltp
-        assert row.close_price == 1820.0, (
-            "close_price must use previous_close from broker, not ltp"
+        assert row.prev_close == 1820.0, (
+            "prev_close must use previous_close from broker, not ltp"
         )
         assert row.last_price == 1850.0, (
             "last_price (ltp) must remain unchanged"
@@ -310,8 +310,8 @@ class TestPreviousCloseBackupPersistence:
         from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
         sql_text = str(_UPSERT_SQL)
-        assert "previous_close = daily_book.previous_close" in sql_text, (
-            "UPSERT must preserve previous_close immutable (no rolling-shift)"
+        assert "prev_close     = daily_book.prev_close" in sql_text, (
+            "UPSERT must preserve prev_close immutable (no rolling-shift)"
         )
 
     def test_previous_close_backup_comment_in_codebase(self):
@@ -339,8 +339,8 @@ class TestPreviousCloseNoRollingShiftCorruption:
         # The immutable pattern: COALESCE(EXCLUDED.prev_close, daily_book.prev_close)
         # which means: use EXCLUDED's value if provided, else keep the existing value.
         # This prevents the rolling-shift bug where ltp would overwrite it.
-        assert "previous_close = COALESCE(" in sql_text or "previous_close = daily_book.previous_close" in sql_text, (
-            "previous_close must be preserved immutable (not overwritten by ltp)"
+        assert "prev_close     = daily_book.prev_close" in sql_text or "prev_close = COALESCE(" in sql_text, (
+            "prev_close must be preserved immutable (not overwritten by ltp)"
         )
 
 

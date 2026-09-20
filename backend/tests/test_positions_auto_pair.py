@@ -31,7 +31,7 @@ def _make_position(
         product="MIS",
         quantity=quantity,
         average_price=100.0,
-        close_price=100.0,
+        prev_close=100.0,
         pnl=0.0,
         last_price=100.0,
         unrealised=0.0,

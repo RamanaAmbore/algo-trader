@@ -101,9 +101,9 @@ def test_holdings_reader_backup_wins_when_prev_close_equals_ltp():
         prev_ltp=None,
     )
     holding_row, inv, cur, total_pnl_out, day_change = _build_holding_row_from_snapshot(row)
-    # close_price should reflect the backup, not ltp
-    assert abs(holding_row.close_price - 374.10) < 0.01, (
-        f"Expected close_price=374.10 (backup), got {holding_row.close_price}"
+    # prev_close should reflect the backup, not ltp
+    assert abs(holding_row.prev_close - 374.10) < 0.01, (
+        f"Expected prev_close=374.10 (backup), got {holding_row.prev_close}"
     )
 
 
@@ -122,8 +122,8 @@ def test_holdings_reader_backup_preferred_over_prev_ltp():
         prev_ltp=360.00,           # also available, but backup should win
     )
     holding_row, inv, cur, total_pnl_out, day_change = _build_holding_row_from_snapshot(row)
-    assert abs(holding_row.close_price - 374.10) < 0.01, (
-        f"Expected close_price=374.10 (backup wins over prev_ltp), got {holding_row.close_price}"
+    assert abs(holding_row.prev_close - 374.10) < 0.01, (
+        f"Expected prev_close=374.10 (backup wins over prev_ltp), got {holding_row.prev_close}"
     )
 
 
@@ -166,9 +166,9 @@ def test_positions_reader_uses_previous_close_directly():
         f"Expected day_change_val={expected_day_pnl:.2f} (from previous_close), "
         f"got {pos_row.day_change_val}"
     )
-    # close_price on the returned PositionRow should reflect previous_close
-    assert abs(pos_row.close_price - prev_close) < 0.01, (
-        f"Expected close_price={prev_close} (from previous_close), got {pos_row.close_price}"
+    # prev_close on the returned PositionRow should reflect previous_close
+    assert abs(pos_row.prev_close - prev_close) < 0.01, (
+        f"Expected prev_close={prev_close} (from previous_close), got {pos_row.prev_close}"
     )
 
 
@@ -183,9 +183,9 @@ async def test_fix_daily_book_prev_close_sql_contains_backup_coalesce():
     from backend.api.algo import daily_snapshot as _ds
 
     source = inspect.getsource(_ds.fix_daily_book_prev_close)
-    assert "previous_close_backup = COALESCE" in source, (
+    assert "prev_close_backup = COALESCE" in source, (
         "fix_daily_book_prev_close SQL must set "
-        "previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)"
+        "prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)"
     )
 
 

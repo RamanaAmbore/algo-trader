@@ -1,17 +1,17 @@
-"""Tests for holdings route close_price override — Gap 2 fix.
+"""Tests for holdings route prev_close override — Gap 2 fix.
 
-Invariant: close_price = prior session settlement LTP, frozen off-market.
+Invariant: prev_close = prior session settlement LTP, frozen off-market.
 Kite REST API's close_price field drifts post-settlement (becomes equal to LTP),
-making (ltp - close) × qty = 0 and zeroing out holdings day P&L off-market.
+making (ltp - prev_close) × qty = 0 and zeroing out holdings day P&L off-market.
 
 This test suite verifies _override_stale_close_for_holdings (Gap 2) which:
   1. Queries daily_book for pre-08:00 IST snapshots (kind='holdings')
-  2. Replaces stale close_price with the snapshot LTP per (account, tradingsymbol)
-  3. Skips rows where snapshot == close (within epsilon 0.005) — already correct
+  2. Replaces stale prev_close with the snapshot LTP per (account, tradingsymbol)
+  3. Skips rows where snapshot == prev_close (within epsilon 0.005) — already correct
   4. Leaves the DataFrame unchanged when no snapshot exists or DB fails
   5. Recomputes day_change_val on patched rows — _enrich_holdings ran inside
      broker_apis.fetch_holdings (before this override fires), so day_change_val
-     was computed against the stale close_price and must be corrected here.
+     was computed against the stale prev_close and must be corrected here.
 """
 
 import asyncio
@@ -31,7 +31,12 @@ def _make_holdings_df(
     close_price: float = 150.0,
     average_price: float = 145.0,
 ) -> pd.DataFrame:
-    """Build a minimal holdings DataFrame for close-override tests."""
+    """Build a minimal holdings DataFrame for close-override tests.
+
+    Uses `prev_close` as the canonical column name (renamed from `close_price`
+    in the prev_close unification refactor). The `close_price` parameter name
+    is retained for test readability.
+    """
     return pd.DataFrame([{
         'account': account,
         'tradingsymbol': tradingsymbol,
@@ -40,7 +45,7 @@ def _make_holdings_df(
         'opening_quantity': quantity,
         'average_price': average_price,
         'last_price': last_price,
-        'close_price': close_price,
+        'prev_close': close_price,  # canonical column name post-rename
         'pnl': (last_price - average_price) * quantity,
         'day_change': last_price - close_price,
         'day_change_val': 0.0,
@@ -96,14 +101,14 @@ class TestHoldingsCloseOverrideForHoldings:
     """Unit tests for _override_stale_close_for_holdings (Gap 2)."""
 
     def test_stale_close_replaced_by_snapshot_ltp(self):
-        """Stale Kite close_price (150) replaced by pre-08:00 snapshot (145).
+        """Stale Kite prev_close (150) replaced by pre-08:00 snapshot (145).
 
         Setup:
-          broker close_price = 150 (drifted to settlement)
+          broker prev_close = 150 (drifted to settlement)
           snapshot ltp = 145 (captured before 08:00 IST — modelled by mock row)
           last_price = 150, quantity = 50, average_price = 140
 
-        Expected: close_price patched to 145.
+        Expected: prev_close patched to 145.
         """
         df = _make_holdings_df(
             account="TEST001",
@@ -118,8 +123,8 @@ class TestHoldingsCloseOverrideForHoldings:
 
         df = _run_close_override_for_holdings(df, snapshot_rows)
 
-        assert abs(df.iloc[0]['close_price'] - 145.0) < 0.01, (
-            f"close_price should be 145.0 (snapshot), got {df.iloc[0]['close_price']}"
+        assert abs(df.iloc[0]['prev_close'] - 145.0) < 0.01, (
+            f"prev_close should be 145.0 (snapshot), got {df.iloc[0]['prev_close']}"
         )
 
         # day_change_val must also be recomputed: (ltp - snapped_close) × qty
@@ -131,18 +136,18 @@ class TestHoldingsCloseOverrideForHoldings:
         )
 
     def test_skips_when_no_snapshot(self):
-        """No snapshot for symbol → close_price unchanged, no crash."""
+        """No snapshot for symbol → prev_close unchanged, no crash."""
         df = _make_holdings_df(
             last_price=150.0,
             close_price=150.0,
         )
-        original_close = float(df.iloc[0]['close_price'])
+        original_close = float(df.iloc[0]['prev_close'])
 
         df = _run_close_override_for_holdings(df, snapshot_rows=[])
 
-        assert abs(df.iloc[0]['close_price'] - original_close) < 0.01, (
-            f"close_price must remain {original_close} when no snapshot, "
-            f"got {df.iloc[0]['close_price']}"
+        assert abs(df.iloc[0]['prev_close'] - original_close) < 0.01, (
+            f"prev_close must remain {original_close} when no snapshot, "
+            f"got {df.iloc[0]['prev_close']}"
         )
 
     def test_skips_zero_snapshot_ltp(self):
@@ -150,33 +155,33 @@ class TestHoldingsCloseOverrideForHoldings:
         # The DB WHERE clause has `ltp > 0`, so zero-LTP rows are excluded.
         # Simulated here by returning no rows from mock.
         df = _make_holdings_df(close_price=150.0)
-        original_close = float(df.iloc[0]['close_price'])
+        original_close = float(df.iloc[0]['prev_close'])
 
         # Zero-ltp row filtered by SQL; mock returns empty
         df = _run_close_override_for_holdings(df, snapshot_rows=[])
 
-        assert abs(df.iloc[0]['close_price'] - original_close) < 0.01, (
-            "close_price must not change when no valid snapshot LTP exists"
+        assert abs(df.iloc[0]['prev_close'] - original_close) < 0.01, (
+            "prev_close must not change when no valid snapshot LTP exists"
         )
 
     def test_skips_post_08am_snapshot(self):
         """Post-08:00 IST snapshots are excluded via SQL WHERE captured_at < cutoff.
 
         Simulated by mock returning no rows (the SQL would have filtered them).
-        Expected: close_price unchanged.
+        Expected: prev_close unchanged.
         """
         df = _make_holdings_df(close_price=140.0, last_price=150.0)
-        original_close = float(df.iloc[0]['close_price'])
+        original_close = float(df.iloc[0]['prev_close'])
 
         # Post-gate snapshots are excluded from DB result → empty mock
         df = _run_close_override_for_holdings(df, snapshot_rows=[])
 
-        assert abs(df.iloc[0]['close_price'] - original_close) < 0.01, (
-            "close_price must not be patched when no pre-08:00 snapshot exists"
+        assert abs(df.iloc[0]['prev_close'] - original_close) < 0.01, (
+            "prev_close must not be patched when no pre-08:00 snapshot exists"
         )
 
     def test_epsilon_guard_skips_near_identical_values(self):
-        """Snapshot ltp within epsilon of current close → no patch.
+        """Snapshot ltp within epsilon of current prev_close → no patch.
 
         Protects against spurious rewrites when values agree within 0.005.
         """
@@ -186,7 +191,7 @@ class TestHoldingsCloseOverrideForHoldings:
 
         df = _run_close_override_for_holdings(df, [("TEST001", "RELIANCE", SNAP)])
 
-        assert abs(df.iloc[0]['close_price'] - CLOSE) < 0.01, (
+        assert abs(df.iloc[0]['prev_close'] - CLOSE) < 0.01, (
             "epsilon guard must skip patching for near-identical values"
         )
 
@@ -202,25 +207,25 @@ class TestHoldingsCloseOverrideForHoldings:
         df = _run_close_override_for_holdings(df, [("TEST001", "RELIANCE", 145.0)])
 
         t1_rel = df[(df['account'] == 'TEST001') & (df['tradingsymbol'] == 'RELIANCE')].iloc[0]
-        assert abs(t1_rel['close_price'] - 145.0) < 0.01, "TEST001/RELIANCE should be patched"
+        assert abs(t1_rel['prev_close'] - 145.0) < 0.01, "TEST001/RELIANCE should be patched"
 
         t2_rel = df[(df['account'] == 'TEST002') & (df['tradingsymbol'] == 'RELIANCE')].iloc[0]
-        assert abs(t2_rel['close_price'] - 150.0) < 0.01, "TEST002/RELIANCE must not be patched"
+        assert abs(t2_rel['prev_close'] - 150.0) < 0.01, "TEST002/RELIANCE must not be patched"
 
         t1_infy = df[(df['account'] == 'TEST001') & (df['tradingsymbol'] == 'INFY')].iloc[0]
-        assert abs(t1_infy['close_price'] - 1500.0) < 0.01, "TEST001/INFY must not be patched"
+        assert abs(t1_infy['prev_close'] - 1500.0) < 0.01, "TEST001/INFY must not be patched"
 
     def test_close_price_patch_enables_correct_dcv_after_enrich(self):
         """Complementary path: when day_change_val column is absent, override
         cannot recompute it (guard skips), so _enrich_holdings must compute it
-        correctly against the already-patched close_price.
+        correctly against the already-patched prev_close.
 
         In the real fetch pipeline day_change_val IS present (set by
         _enrich_holdings before the override). This test covers the edge case
         where a broker adapter omits the column entirely.
 
         When day_change_val is absent the enrichment uses the formula
-        (ltp - close) × qty. With the corrected close (130 not 140),
+        (ltp - prev_close) × qty. With the corrected prev_close (130 not 140),
         the expected DCV = (150 - 130) × 100 = 2 000, not (150 - 140) × 100 = 1 000.
         """
         from backend.brokers.broker_apis import _enrich_holdings
@@ -235,21 +240,21 @@ class TestHoldingsCloseOverrideForHoldings:
             'opening_quantity': 100,
             'average_price': 120.0,
             'last_price': 150.0,
-            'close_price': 140.0,  # stale — will be patched to 130
+            'prev_close': 140.0,  # stale — will be patched to 130
             'pnl': (150.0 - 120.0) * 100,  # 3000
         }])
 
         # Apply close override
         df = _run_close_override_for_holdings(df, [("TEST001", "RELIANCE", 130.0)])
-        assert abs(df.iloc[0]['close_price'] - 130.0) < 0.01, "close_price must be patched"
+        assert abs(df.iloc[0]['prev_close'] - 130.0) < 0.01, "prev_close must be patched"
 
-        # Enrich — no day_change_val column → formula path: (ltp - close) × qty
+        # Enrich — no day_change_val column → formula path: (ltp - prev_close) × qty
         df = _enrich_holdings(df)
 
         # day_change_val = (150 - 130) × 100 = 2 000
         expected_dcv = (150.0 - 130.0) * 100
         assert abs(df.iloc[0]['day_change_val'] - expected_dcv) < 0.5, (
-            f"day_change_val must reflect corrected close (130, not 140). "
+            f"day_change_val must reflect corrected prev_close (130, not 140). "
             f"Expected {expected_dcv}, got {df.iloc[0]['day_change_val']}"
         )
 
@@ -275,7 +280,7 @@ class TestHoldingsCloseOverrideForHoldings:
 
         IST = ZoneInfo("Asia/Kolkata")
         df = _make_holdings_df(close_price=150.0)
-        original_close = float(df.iloc[0]['close_price'])
+        original_close = float(df.iloc[0]['prev_close'])
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("DB error"))
@@ -293,12 +298,12 @@ class TestHoldingsCloseOverrideForHoldings:
         ):
             asyncio.run(_override_stale_close_for_holdings(df))
 
-        assert abs(df.iloc[0]['close_price'] - original_close) < 0.01, (
-            "close_price must be unchanged when DB query fails"
+        assert abs(df.iloc[0]['prev_close'] - original_close) < 0.01, (
+            "prev_close must be unchanged when DB query fails"
         )
 
     def test_inv_val_and_pnl_unchanged_by_close_override(self):
-        """Override close_price only. inv_val and pnl depend on avg+qty+ltp, not close."""
+        """Override prev_close only. inv_val and pnl depend on avg+qty+ltp, not close."""
         from backend.brokers.broker_apis import _enrich_holdings
 
         df = _make_holdings_df(
@@ -309,7 +314,7 @@ class TestHoldingsCloseOverrideForHoldings:
         )
         df['pnl'] = (160.0 - 140.0) * 50  # 1000
 
-        # Apply close override: new close = 130 (stale was 150)
+        # Apply close override: new prev_close = 130 (stale was 150)
         df = _run_close_override_for_holdings(df, [("TEST001", "RELIANCE", 130.0)])
 
         # Enrich to compute derived cols
@@ -333,7 +338,7 @@ class TestHoldingsCloseOverrideForHoldings:
         from backend.api.routes.holdings import _override_stale_close_for_holdings
 
         # Missing 'account' column
-        df = pd.DataFrame([{'tradingsymbol': 'RELIANCE', 'close_price': 100.0}])
+        df = pd.DataFrame([{'tradingsymbol': 'RELIANCE', 'prev_close': 100.0}])
 
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
@@ -394,15 +399,15 @@ class TestHoldingsCloseOverrideForHoldings:
         )
 
     def test_db_failure_leaves_previous_close_column_absent(self):
-        """P2-B fix: DB exception must NOT create a previous_close=0.0 column.
+        """P2-B fix: DB exception must NOT zero out the prev_close column.
 
-        Before the fix, raw['previous_close'] = 0.0 was set unconditionally
+        Before the fix, raw['prev_close'] = 0.0 was set unconditionally
         BEFORE the DB try/except. On exception the function returned early,
-        leaving all rows with previous_close=0.0. The frontend then showed
+        leaving all rows with prev_close=0.0. The frontend then showed
         Day P&L% = 0 for every holding because the denominator was 0.
 
-        After the fix, the init is placed AFTER the query succeeds. A DB
-        failure returns early without ever touching the column — so the
+        After the fix, the init only happens when the column is absent. A DB
+        failure returns early without zeroing the column — so the
         broker's own value (set by _enrich_holdings) is preserved.
         """
         from backend.api.routes.holdings import _override_stale_close_for_holdings
@@ -411,9 +416,9 @@ class TestHoldingsCloseOverrideForHoldings:
         IST = ZoneInfo("Asia/Kolkata")
         df = _make_holdings_df(close_price=150.0)
 
-        # Verify the helper doesn't inject previous_close upfront
-        assert 'previous_close' not in df.columns, (
-            "Test precondition: _make_holdings_df must not include previous_close"
+        # Verify the helper sets prev_close to the broker value (150.0)
+        assert df.iloc[0]['prev_close'] == 150.0, (
+            "Test precondition: _make_holdings_df must set prev_close to close_price param"
         )
 
         mock_session = AsyncMock()
@@ -432,22 +437,21 @@ class TestHoldingsCloseOverrideForHoldings:
         ):
             asyncio.run(_override_stale_close_for_holdings(df))
 
-        # The column must be absent — not set to 0.0 — so broker's value is used.
-        assert 'previous_close' not in df.columns, (
-            "On DB failure, previous_close column must remain absent "
-            "(not initialised to 0.0). Got previous_close="
-            + str(df.get('previous_close', 'ABSENT'))
+        # The broker-supplied prev_close must be preserved (not zeroed out).
+        assert abs(df.iloc[0]['prev_close'] - 150.0) < 0.01, (
+            "On DB failure, prev_close must retain broker-supplied value (150.0), "
+            "not be zeroed. Got prev_close=" + str(df.iloc[0]['prev_close'])
         )
 
     def test_zero_close_price_patched_from_snapshot_ltp(self):
-        """Regression test: close_price = 0 (BHAV not yet distributed) must be
+        """Regression test: prev_close = 0 (BHAV not yet distributed) must be
         replaced by daily_book.ltp and must NOT produce day_change_percentage = 100%.
 
-        Bug: when Kite's BHAV copy hasn't been distributed yet, previous_close = 0.
-        The old COALESCE(previous_close, ltp) path would use ltp as close → day
+        Bug: when Kite's BHAV copy hasn't been distributed yet, prev_close = 0.
+        The old COALESCE(prev_close, ltp) path would use ltp as close → day
         change % = (ltp - ltp)/ltp = 0 (masked), or ltp-as-close → P&L% = 100%
         when the denominator used avg instead of close. daily_book.ltp = 150.0
-        is the prior-session settlement and must become close_price and previous_close.
+        is the prior-session settlement and must become prev_close.
         """
         df = _make_holdings_df(
             account="TEST001",
@@ -462,27 +466,23 @@ class TestHoldingsCloseOverrideForHoldings:
 
         df = _run_close_override_for_holdings(df, snapshot_rows)
 
-        # close_price must be patched from 0 → 150.0
-        assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
-            f"close_price must be patched to 150.0 (daily_book.ltp), "
-            f"got {df.iloc[0]['close_price']}"
+        # prev_close must be patched from 0 → 150.0
+        assert abs(df.iloc[0]['prev_close'] - 150.0) < 0.01, (
+            f"prev_close must be patched to 150.0 (daily_book.ltp), "
+            f"got {df.iloc[0]['prev_close']}"
         )
-        # previous_close must also be written
-        assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
-            f"previous_close must be 150.0, got {df.iloc[0]['previous_close']}"
-        )
-        # day_change_val = (ltp - close) * qty = (155 - 150) * 100 = 500
+        # day_change_val = (ltp - prev_close) * qty = (155 - 150) * 100 = 500
         expected_dcv = (155.0 - 150.0) * 100
         assert abs(df.iloc[0]['day_change_val'] - expected_dcv) < 0.01, (
             f"day_change_val must be {expected_dcv} (not 0 or 15500), "
             f"got {df.iloc[0]['day_change_val']}"
         )
         # day_change_percentage must NOT be 100% — that was the bug symptom
-        if df.iloc[0]['previous_close'] > 0:
+        if df.iloc[0]['prev_close'] > 0:
             dcp = df.iloc[0].get('day_change_percentage', None)
             if dcp is not None:
                 assert abs(dcp) < 50.0, (
-                    f"day_change_percentage must not be ~100% when close_price was 0; "
+                    f"day_change_percentage must not be ~100% when prev_close was 0; "
                     f"got {dcp:.2f}%"
                 )
 
@@ -565,10 +565,10 @@ def test_snap_compute_day_pnl_zero_close_returns_none():
 def test_fix_daily_book_prev_close_second_update_present():
     """Structural: fix_daily_book_prev_close must contain the NULL day_pnl recompute UPDATE.
 
-    When a snapshot is taken with close_price=0 (missed-snapshot recovery or MCX
+    When a snapshot is taken with prev_close=0 (missed-snapshot recovery or MCX
     overwrite), day_pnl is stored as NULL. fix_daily_book_prev_close at 08:00 IST
-    patches previous_close from BHAV. It must also recompute day_pnl for those NULL
-    rows using (ltp - previous_close) × qty, otherwise Priority 1 in
+    patches prev_close from BHAV. It must also recompute day_pnl for those NULL
+    rows using (ltp - prev_close) × qty, otherwise Priority 1 in
     _compute_holding_day_change returns NULL/0 and P&L stays wrong until market open.
     """
     import inspect
@@ -578,11 +578,11 @@ def test_fix_daily_book_prev_close_second_update_present():
 
     assert "day_pnl IS NULL" in src, (
         "fix_daily_book_prev_close must contain a second UPDATE for rows with day_pnl IS NULL. "
-        "These rows were captured when close_price=0 (BHAV lag) and need day_pnl recomputed "
-        "once previous_close is patched from BHAV."
+        "These rows were captured when prev_close=0 (BHAV lag) and need day_pnl recomputed "
+        "once prev_close is patched from BHAV."
     )
-    assert "day_pnl" in src and "previous_close" in src and (
-        "ltp - previous_close" in src or "previous_close" in src
+    assert "day_pnl" in src and "prev_close" in src and (
+        "ltp - prev_close" in src or "prev_close" in src
     ), (
-        "fix_daily_book_prev_close must SET day_pnl using (ltp - previous_close) in the second UPDATE"
+        "fix_daily_book_prev_close must SET day_pnl using (ltp - prev_close) in the second UPDATE"
     )

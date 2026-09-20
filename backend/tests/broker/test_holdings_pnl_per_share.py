@@ -240,7 +240,7 @@ def _make_holdings_df(**kwargs) -> pd.DataFrame:
         quantity=10,
         average_price=100.0,
         last_price=120.0,
-        close_price=110.0,
+        prev_close=110.0,
         pnl=200.0,
         inv_val=1000.0,
         day_change_val=0.0,
@@ -289,11 +289,11 @@ class TestEnrichHoldingsPnlPerShare:
         from backend.brokers.broker_apis import _enrich_holdings
 
         df = pd.DataFrame([
-            dict(quantity=10, average_price=100.0, last_price=110.0, close_price=100.0,
+            dict(quantity=10, average_price=100.0, last_price=110.0, prev_close=100.0,
                  pnl=100.0, inv_val=1000.0, day_change_val=0.0),
-            dict(quantity=5,  average_price=200.0, last_price=220.0, close_price=200.0,
+            dict(quantity=5,  average_price=200.0, last_price=220.0, prev_close=200.0,
                  pnl=100.0, inv_val=1000.0, day_change_val=0.0),
-            dict(quantity=0,  average_price=150.0, last_price=160.0, close_price=150.0,
+            dict(quantity=0,  average_price=150.0, last_price=160.0, prev_close=150.0,
                  pnl=50.0,  inv_val=0.0,    day_change_val=0.0),
         ])
         result = _enrich_holdings(df)
@@ -330,13 +330,13 @@ class TestBuildHoldingRowFromSnapshot:
                 day_pnl, total_pnl, _cap, prev_ltp, previous_close_backup)
 
     def test_previous_close_populated(self):
-        """previous_close from daily_book must be forwarded to HoldingRow.previous_close."""
+        """previous_close from daily_book must be forwarded to HoldingRow.prev_close."""
         from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
         raw_row = self._make_raw_row(previous_close=1550.0, ltp=1600.0)
         row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
-        assert row.previous_close == pytest.approx(1550.0), (
-            "HoldingRow.previous_close must be set from daily_book previous_close "
+        assert row.prev_close == pytest.approx(1550.0), (
+            "HoldingRow.prev_close must be set from daily_book previous_close "
             "(no corruption since |1550 - 1600| = 50 >> 0.01 threshold)"
         )
 
@@ -352,7 +352,7 @@ class TestBuildHoldingRowFromSnapshot:
         raw_row = self._make_raw_row(previous_close=None, ltp=1600.0, prev_ltp=1545.0,
                                      previous_close_backup=None)
         row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
-        assert row.previous_close == pytest.approx(1545.0), (
+        assert row.prev_close == pytest.approx(1545.0), (
             "When previous_close is None and prev_ltp is available, "
             "safety net must fill in prev_ltp (1545.0)"
         )
@@ -364,9 +364,9 @@ class TestBuildHoldingRowFromSnapshot:
         raw_row = self._make_raw_row(previous_close=None, ltp=1600.0, prev_ltp=None,
                                      previous_close_backup=None)
         row, _inv, _cur, _pnl, _dcv = _build_holding_row_from_snapshot(raw_row)
-        assert row.previous_close == pytest.approx(0.0), (
+        assert row.prev_close == pytest.approx(0.0), (
             "When previous_close, backup, and prev_ltp are all missing, "
-            "HoldingRow.previous_close must be 0.0"
+            "HoldingRow.prev_close must be 0.0"
         )
 
     def test_pnl_per_share_populated(self):

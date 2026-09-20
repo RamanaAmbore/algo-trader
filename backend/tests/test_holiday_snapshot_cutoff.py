@@ -416,8 +416,7 @@ class TestOverrideStalCloseForHoldings:
 
             await _override_stale_close_for_holdings(raw)
 
-        assert raw.at[0, "previous_close"] == 980.0
-        assert raw.at[0, "close_price"] == 980.0
+        assert raw.at[0, "prev_close"] == 980.0
 
     @pytest.mark.asyncio
     async def test_holdings_no_snapshot_no_patch(self):
@@ -442,7 +441,7 @@ class TestOverrideStalCloseForHoldings:
 
             await _override_stale_close_for_holdings(raw)
 
-        assert "previous_close" not in raw.columns or raw.at[0, "previous_close"] == 0.0
+        assert "prev_close" not in raw.columns or raw.at[0, "prev_close"] == 0.0
 
     @pytest.mark.asyncio
     async def test_holdings_live_single_query(self):
@@ -468,7 +467,7 @@ class TestOverrideStalCloseForHoldings:
 
             await _override_stale_close_for_holdings(raw)
 
-        assert raw.at[0, "previous_close"] == 2000.0
+        assert raw.at[0, "prev_close"] == 2000.0
 
 
 # =============================================================================

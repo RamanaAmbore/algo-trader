@@ -31,7 +31,7 @@ def _pos_row(**kwargs) -> pd.DataFrame:
     base = {
         "last_price": 200.0,
         "average_price": 190.0,
-        "close_price": 195.0,
+        "prev_close": 195.0,
         "quantity": 10,
     }
     base.update(kwargs)
@@ -125,7 +125,7 @@ class TestEnrichPositionsDhanRow:
         df = _pos_row(
             last_price=105.0,
             average_price=100.0,
-            close_price=102.0,
+            prev_close=102.0,
             quantity=100,
             pnl=500.0,
             realised=3000.0,
@@ -138,7 +138,7 @@ class TestEnrichPositionsDhanRow:
         df = _pos_row(
             last_price=0.0,
             average_price=100.0,
-            close_price=102.0,
+            prev_close=102.0,
             quantity=0,
             pnl=0.0,
             realised=-800.0,
@@ -161,7 +161,7 @@ class TestEnrichPositionsGrowwRow:
         df = _pos_row(
             last_price=110.0,
             average_price=100.0,
-            close_price=105.0,
+            prev_close=105.0,
             quantity=200,
             pnl=4000.0,
             realised=1500.0,
@@ -174,7 +174,7 @@ class TestEnrichPositionsGrowwRow:
         df = _pos_row(
             last_price=108.0,
             average_price=100.0,
-            close_price=105.0,
+            prev_close=105.0,
             quantity=50,
             pnl=400.0,
             realised=600.0,

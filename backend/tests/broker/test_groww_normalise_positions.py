@@ -12,13 +12,13 @@ Scenario catalogue:
   1. All fields valid, long position → correct positive day_change_val
   2. All fields valid, short position (negative qty) → correct negative day_change_val
   3. ltp=0 (cold LTP cache on startup) → day_change_val=0.0
-  4. close_price=0 (missing previous_close) → day_change_val=0.0
+  4. prev_close=0 (missing previous_close) → day_change_val=0.0
   5. qty=0 (flat position) → day_change_val=0.0
   6. Both ltp and close absent from payload → day_change_val=0.0
-  7. close_price via fallback key "previous_close" → computed correctly
+  7. prev_close via fallback key "previous_close" → computed correctly
   8. ltp via fallback key "ltp" → computed correctly
   9. multiple positions in response → each row computed independently
- 10. day_change_val present in output dict alongside last_price and close_price
+ 10. day_change_val present in output dict alongside last_price and prev_close
 """
 
 from __future__ import annotations
@@ -200,7 +200,7 @@ def test_day_change_val_multiple_positions():
 
 
 # ---------------------------------------------------------------------------
-# Scenario 10: day_change_val present alongside last_price and close_price
+# Scenario 10: day_change_val present alongside last_price and prev_close
 # ---------------------------------------------------------------------------
 
 def test_day_change_val_present_in_output_dict():
@@ -214,10 +214,10 @@ def test_day_change_val_present_in_output_dict():
     row = result["net"][0]
     assert "day_change_val" in row
     assert "last_price" in row
-    assert "close_price" in row
-    # Confirm last_price and close_price are still populated correctly
+    assert "prev_close" in row
+    # Confirm last_price and prev_close are still populated correctly
     assert row["last_price"] == pytest.approx(10500.0)
-    assert row["close_price"] == pytest.approx(10400.0)
+    assert row["prev_close"] == pytest.approx(10400.0)
     # (10500 - 10400) * 2 = 200.0
     assert row["day_change_val"] == pytest.approx(200.0)
 

@@ -4,11 +4,11 @@ Dhan holdings normaliser — fallback computation tests.
 History: Dhan's holdings endpoint returns avgCostPrice + lastTradedPrice
 reliably but frequently omits previousClosePrice / unrealisedProfit /
 dayChange (or returns them as 0). Without a derivation:
-  close_price = 0  → day_change_pct = -100 % across every Dhan row
-  pnl         = 0  → P&L column reads 0 even on big movers
+  prev_close = 0  → day_change_pct = -100 % across every Dhan row
+  pnl        = 0  → P&L column reads 0 even on big movers
 
 Production data observed (DH3747 / TEJASNET): qty=15, avg=1332.9,
-last=498.3 — but pnl came through as 0 and close_price as 0. The
+last=498.3 — but pnl came through as 0 and prev_close as 0. The
 normaliser now derives both when Dhan omits them.
 """
 
@@ -36,26 +36,26 @@ def test_holdings_derives_pnl_when_omitted():
     assert r["last_price"] == 498.3
     # Derived pnl: (498.3 - 1332.9) × 15 = -12519
     assert abs(r["pnl"] - (-12519.0)) < 0.01
-    # When previousClosePrice is missing, close_price is left at 0 so
+    # When previousClosePrice is missing, prev_close is left at 0 so
     # the broker_apis.backfill_market_data helper can batch-fetch a
     # real prior-day close via PriceBroker.quote() across every missing
-    # row. Pre-fix fallback set close_price = last_price → day_change=0
+    # row. Pre-fix fallback set prev_close = last_price → day_change=0
     # which silently masked these rows from the backfill mask. Contract
     # changed Jun 2026 (audit fix); see _normalise_holdings docstring.
-    assert r["close_price"] == 0.0
+    assert r["prev_close"] == 0.0
     # day_change is per-share delta (per Kite convention & CLAUDE.md).
-    # When close_price=0, it's computed as (last_price - 0) = last_price
+    # When prev_close=0, it's computed as (last_price - 0) = last_price
     # per-share. Downstream: day_change_val = day_change * qty.
     # The broker_apis.backfill_market_data pass recomputes day_change
-    # after patching close_price from a PriceBroker.quote() call.
+    # after patching prev_close from a PriceBroker.quote() call.
     assert abs(r["day_change"] - 498.3) < 0.01
-    # day_change_percentage IS gated on close_price > 0 (avoid div-by-zero)
+    # day_change_percentage IS gated on prev_close > 0 (avoid div-by-zero)
     # so the operator-facing % column reads 0 until backfill lands.
     assert r["day_change_percentage"] == 0.0
 
 
 def test_holdings_uses_dhan_values_when_present():
-    # When Dhan returns close_price + pnl + day_pct_raw, use them for
+    # When Dhan returns prev_close + pnl + day_pct_raw, use them for
     # those fields. However, day_change is ALWAYS recomputed from
     # (last - close) to ensure per-share semantics (never qty-multiplied).
     # Dhan's dayChange field is TOTAL (qty-scaled) so we ignore it.
@@ -73,7 +73,7 @@ def test_holdings_uses_dhan_values_when_present():
     }]
     rows = _normalise_holdings({"data": resp})
     r = rows[0]
-    assert r["close_price"] == 2480.0
+    assert r["prev_close"] == 2480.0
     assert r["pnl"] == 999.99      # passed through, not derived
     # day_change = last - close = 2500 - 2480 = 20.0 per-share
     assert r["day_change"] == 20.0
@@ -82,8 +82,8 @@ def test_holdings_uses_dhan_values_when_present():
 
 
 def test_holdings_derives_day_change_with_close_price():
-    # close_price IS present, day_change isn't. Derive day_change from
-    # per-share difference (last - close), NOT qty-multiplied.
+    # prev_close IS present, day_change isn't. Derive day_change from
+    # per-share difference (last - prev_close), NOT qty-multiplied.
     resp = [{
         "tradingSymbol":  "TCS",
         "exchange":       "NSE",
@@ -94,7 +94,7 @@ def test_holdings_derives_day_change_with_close_price():
     }]
     rows = _normalise_holdings({"data": resp})
     r = rows[0]
-    assert r["close_price"] == 3550.0
+    assert r["prev_close"] == 3550.0
     # day_change = last - close = 3600 - 3550 = 50 per-share
     # downstream: day_change_val = 50 × 5 = 250
     assert abs(r["day_change"] - 50.0) < 0.01

@@ -41,9 +41,9 @@ def _run_fetch_positions_direct(net_rows):
     if df.empty:
         return df
 
-    df['day_change'] = df['last_price'] - df['close_price']
+    df['day_change'] = df['last_price'] - df['prev_close']
     df['day_change_val'] = df['day_change'] * df['quantity']
-    prev_val = (df['close_price'] * df['quantity']).abs()
+    prev_val = (df['prev_close'] * df['quantity']).abs()
     df['day_change_percentage'] = (
         df['day_change_val'] / prev_val.replace(0, pd.NA) * 100
     ).fillna(0)
@@ -57,13 +57,13 @@ def _run_fetch_positions_direct(net_rows):
 def test_positions_response_includes_day_change_columns():
     """day_change_val and day_change_percentage are present and correct."""
     last_price  = 22100.0
-    close_price = 22000.0
+    prev_close = 22000.0
     quantity    = 50
     multiplier  = 1
 
     net_rows = _make_net_rows([dict(
         last_price=last_price,
-        close_price=close_price,
+        prev_close=prev_close,
         quantity=quantity,
         multiplier=multiplier,
     )])
@@ -74,8 +74,8 @@ def test_positions_response_includes_day_change_columns():
     assert "day_change_percentage" in df.columns, "day_change_percentage missing"
 
     eff_qty      = quantity * multiplier                        # 50
-    expected_val = (last_price - close_price) * eff_qty        # 100 * 50 = 5000.0
-    expected_pct = expected_val / abs(close_price * eff_qty) * 100  # ≈ 0.4545…
+    expected_val = (last_price - prev_close) * eff_qty        # 100 * 50 = 5000.0
+    expected_pct = expected_val / abs(prev_close * eff_qty) * 100  # ≈ 0.4545…
 
     assert abs(df.iloc[0]["day_change_val"] - expected_val) < 0.01, \
         f"day_change_val: expected {expected_val}, got {df.iloc[0]['day_change_val']}"
@@ -85,10 +85,10 @@ def test_positions_response_includes_day_change_columns():
 
 
 def test_positions_day_change_zero_when_close_is_zero():
-    """close_price = 0 must yield day_change_percentage = 0, not NaN or Inf."""
+    """prev_close = 0 must yield day_change_percentage = 0, not NaN or Inf."""
     net_rows = _make_net_rows([dict(
         last_price=100.0,
-        close_price=0.0,
+        prev_close=0.0,
         quantity=10,
         multiplier=1,
     )])
@@ -96,7 +96,7 @@ def test_positions_day_change_zero_when_close_is_zero():
 
     assert not df.empty
     val = df.iloc[0]["day_change_percentage"]
-    assert val == 0.0, f"Expected 0.0 when close_price=0, got {val}"
+    assert val == 0.0, f"Expected 0.0 when prev_close=0, got {val}"
     assert not math.isnan(float(val)), "day_change_percentage must not be NaN"
     assert not math.isinf(float(val)), "day_change_percentage must not be Inf"
 
@@ -116,8 +116,8 @@ def test_override_stale_ltp_from_ticker_pnl_patch_no_name_error():
     df = pd.DataFrame([{
         'tradingsymbol': 'CRUDEOIL26JUL6900PE',
         'exchange': 'MCX',
-        'last_price': 220.0,   # stale REST LTP (== close → day_change 0)
-        'close_price': 220.0,
+        'last_price': 220.0,   # stale REST LTP (== prev_close → day_change 0)
+        'prev_close': 220.0,
         'quantity': 10,
         'overnight_quantity': 10,
         'day_buy_quantity': 0,
@@ -151,12 +151,12 @@ def test_override_stale_ltp_from_ticker_pnl_patch_no_name_error():
 
 
 # ---------------------------------------------------------------------------
-# _override_stale_close_from_snapshot — MCX overnight stale close_price fix
+# _override_stale_close_from_snapshot — MCX overnight stale prev_close fix
 #
 # Five quality dimensions:
 #   SSOT        — _override_stale_close_from_snapshot is the single patch
-#                 path for stale Kite close_price; tested in isolation here.
-#   Correctness — MCX overnight: snapshot ltp replaces stale Kite close_price,
+#                 path for stale Kite prev_close; tested in isolation here.
+#   Correctness — MCX overnight: snapshot ltp replaces stale Kite prev_close,
 #                 day_change_val is recomputed against the corrected baseline.
 #                 Mid-session (today's) snapshot excluded by captured_at filter.
 #   Performance — pure in-memory; no broker or network calls.
@@ -167,7 +167,7 @@ def test_override_stale_ltp_from_ticker_pnl_patch_no_name_error():
 
 def _make_mcx_df(
     last_price: float = 264.5,
-    close_price: float = 180.0,
+    prev_close: float = 180.0,
     quantity: int = 10,
     overnight_quantity: int = 10,
     account: str = "ZG0790",
@@ -179,7 +179,7 @@ def _make_mcx_df(
         'tradingsymbol': symbol,
         'exchange': 'MCX',
         'last_price': last_price,
-        'close_price': close_price,
+        'prev_close': prev_close,
         'quantity': quantity,
         'overnight_quantity': overnight_quantity,
         'day_buy_quantity': 0,
@@ -227,16 +227,16 @@ def _run_close_override(df: pd.DataFrame, snapshot_rows: list) -> pd.DataFrame:
 class TestOverrideStaleCloseFromSnapshot:
     """Unit tests for _override_stale_close_from_snapshot.
 
-    Scenario context: Kite REST positions endpoint ships `close_price` that
+    Scenario context: Kite REST positions endpoint ships `prev_close` that
     lags the prior session's authoritative EOD during the MCX overnight window
-    (23:30 to next 09:00 IST). The function patches `close_price` from
+    (23:30 to next 09:00 IST). The function patches `prev_close` from
     `daily_book` snapshots captured BEFORE today's midnight IST, then
     recomputes `day_change_val` so the per-share P&L reflects the actual
     move since the correct prior-session close.
     """
 
     def test_mcx_overnight_close_price_replaced_by_snapshot_ltp(self):
-        """MCX overnight: stale Kite close_price (180.0) replaced by
+        """MCX overnight: stale Kite prev_close (180.0) replaced by
         daily_book.ltp (220.0); day_change_val recomputed accordingly.
 
         Numbers: last_price=264.5, corrected_close=220.0, qty=10 (overnight)
@@ -250,7 +250,7 @@ class TestOverrideStaleCloseFromSnapshot:
 
         df = _make_mcx_df(
             last_price=LAST_PRICE,
-            close_price=STALE_CLOSE,
+            prev_close=STALE_CLOSE,
             quantity=QTY,
             overnight_quantity=QTY,
         )
@@ -258,9 +258,9 @@ class TestOverrideStaleCloseFromSnapshot:
         snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP, PREV_PNL)]
         df = _run_close_override(df, snapshot_rows)
 
-        assert abs(df.at[0, 'close_price'] - SNAPSHOT_LTP) < 0.005, (
-            f"close_price should be {SNAPSHOT_LTP} (snapshot ltp), "
-            f"got {df.at[0, 'close_price']}"
+        assert abs(df.at[0, 'prev_close'] - SNAPSHOT_LTP) < 0.005, (
+            f"prev_close should be {SNAPSHOT_LTP} (snapshot ltp), "
+            f"got {df.at[0, 'prev_close']}"
         )
         expected_dcv = (LAST_PRICE - SNAPSHOT_LTP) * QTY  # 445.0
         assert abs(df.at[0, 'day_change_val'] - expected_dcv) < 0.5, (
@@ -274,30 +274,30 @@ class TestOverrideStaleCloseFromSnapshot:
 
     def test_no_pre_midnight_snapshot_leaves_close_price_unchanged(self):
         """When daily_book returns no rows (simulates the captured_at < midnight
-        filter excluding today-only snapshots), close_price must be unchanged.
+        filter excluding today-only snapshots), prev_close must be unchanged.
 
         This guards the 2026-06-22 regression: a mid-session deploy's startup
         snapshot would collapse day_change_val to zero if it were used as the
         close baseline.
         """
         ORIGINAL_CLOSE = 180.0
-        df = _make_mcx_df(close_price=ORIGINAL_CLOSE)
+        df = _make_mcx_df(prev_close=ORIGINAL_CLOSE)
         df = _run_close_override(df, snapshot_rows=[])
 
-        assert abs(df.at[0, 'close_price'] - ORIGINAL_CLOSE) < 0.005, (
-            f"close_price must remain {ORIGINAL_CLOSE} when no pre-midnight "
-            f"snapshot exists; got {df.at[0, 'close_price']}"
+        assert abs(df.at[0, 'prev_close'] - ORIGINAL_CLOSE) < 0.005, (
+            f"prev_close must remain {ORIGINAL_CLOSE} when no pre-midnight "
+            f"snapshot exists; got {df.at[0, 'prev_close']}"
         )
 
     def test_epsilon_guard_skips_rounding_noise(self):
-        """Snapshot ltp within epsilon=0.005 of current close_price → no patch.
+        """Snapshot ltp within epsilon=0.005 of current prev_close → no patch.
 
         Protects against spurious rewrites when Kite's float repr and snapshot
         storage agree within floating-point precision.
         """
         CLOSE = 220.0
         SNAP = 220.003  # within 0.005 epsilon
-        df = _make_mcx_df(close_price=CLOSE, last_price=250.0)
+        df = _make_mcx_df(prev_close=CLOSE, last_price=250.0)
         original_dcv = float(df.at[0, 'day_change_val'])
 
         df = _run_close_override(
@@ -305,8 +305,8 @@ class TestOverrideStaleCloseFromSnapshot:
             snapshot_rows=[("ZG0790", "CRUDEOIL26JUL6900PE", SNAP, 500.0)],
         )
 
-        assert abs(df.at[0, 'close_price'] - CLOSE) < 0.005, (
-            "close_price must not be patched for sub-epsilon difference"
+        assert abs(df.at[0, 'prev_close'] - CLOSE) < 0.005, (
+            "prev_close must not be patched for sub-epsilon difference"
         )
         assert abs(df.at[0, 'day_change_val'] - original_dcv) < 0.005, (
             "day_change_val must not be recomputed when epsilon guard skips"
@@ -315,8 +315,8 @@ class TestOverrideStaleCloseFromSnapshot:
     def test_only_matching_account_symbol_patched(self):
         """Snapshot map keyed by (account, symbol) — only matching row patched."""
         df = pd.concat([
-            _make_mcx_df(account="ZG0790", last_price=264.5, close_price=180.0),
-            _make_mcx_df(account="ZJ6294", last_price=264.5, close_price=180.0),
+            _make_mcx_df(account="ZG0790", last_price=264.5, prev_close=180.0),
+            _make_mcx_df(account="ZJ6294", last_price=264.5, prev_close=180.0),
         ], ignore_index=True)
 
         snapshot_rows = [("ZG0790", "CRUDEOIL26JUL6900PE", 220.0, 500.0)]
@@ -325,11 +325,11 @@ class TestOverrideStaleCloseFromSnapshot:
         zg = df[df['account'] == 'ZG0790'].iloc[0]
         zj = df[df['account'] == 'ZJ6294'].iloc[0]
 
-        assert abs(zg['close_price'] - 220.0) < 0.005, (
-            f"ZG0790 close_price should be patched to 220.0, got {zg['close_price']}"
+        assert abs(zg['prev_close'] - 220.0) < 0.005, (
+            f"ZG0790 prev_close should be patched to 220.0, got {zg['prev_close']}"
         )
-        assert abs(zj['close_price'] - 180.0) < 0.005, (
-            "ZJ6294 close_price must remain 180.0 (no snapshot for this account)"
+        assert abs(zj['prev_close'] - 180.0) < 0.005, (
+            "ZJ6294 prev_close must remain 180.0 (no snapshot for this account)"
         )
 
     def test_empty_dataframe_returns_without_db_call(self):
@@ -347,15 +347,15 @@ class TestOverrideStaleCloseFromSnapshot:
         mock_session.__aenter__.assert_not_called()
 
     def test_db_failure_leaves_dataframe_unchanged(self):
-        """DB query failure must not mutate close_price (logs warning, returns)."""
+        """DB query failure must not mutate prev_close (logs warning, returns)."""
         from backend.api.routes.positions import _override_stale_close_from_snapshot
         from zoneinfo import ZoneInfo
 
         ist = ZoneInfo("Asia/Kolkata")
         midnight = datetime(2026, 7, 8, 0, 0, 0, tzinfo=ist)
 
-        df = _make_mcx_df(close_price=180.0)
-        original_close = float(df.at[0, 'close_price'])
+        df = _make_mcx_df(prev_close=180.0)
+        original_close = float(df.at[0, 'prev_close'])
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("DB gone"))
@@ -371,17 +371,17 @@ class TestOverrideStaleCloseFromSnapshot:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert abs(df.at[0, 'close_price'] - original_close) < 0.005, (
-            "close_price must be unchanged when DB query fails"
+        assert abs(df.at[0, 'prev_close'] - original_close) < 0.005, (
+            "prev_close must be unchanged when DB query fails"
         )
 
     def test_mcx_option_second_pass_updates_when_first_finds_nothing(self):
         """MCX second-pass fallback: first-pass returns nothing; second pass provides
-        daily_book.previous_close=214.6 for CRUDEOIL26SEP7900PE.
+        daily_book.prev_close=214.6 for CRUDEOIL26SEP7900PE.
 
         Simulates MCX option snapshots captured AFTER 08:00 IST (after the time-window
         cutoff), meaning no rows come back from the first-pass query.  The second pass
-        should populate previous_close and close_price from daily_book.previous_close.
+        should populate prev_close and close_price from daily_book.prev_close.
         """
         from backend.api.routes.positions import _override_stale_close_from_snapshot
         from zoneinfo import ZoneInfo
@@ -392,7 +392,7 @@ class TestOverrideStaleCloseFromSnapshot:
 
         df = _make_mcx_df(
             last_price=LAST_PRICE,
-            close_price=0.0,
+            prev_close=0.0,
             quantity=QTY,
             overnight_quantity=QTY,
             symbol="CRUDEOIL26SEP7900PE",
@@ -424,11 +424,8 @@ class TestOverrideStaleCloseFromSnapshot:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert df.at[0, 'previous_close'] == FALLBACK_PREV_CLOSE, (
-            f"second-pass fallback must set previous_close={FALLBACK_PREV_CLOSE}, got {df.at[0, 'previous_close']}"
-        )
-        assert df.at[0, 'close_price'] == FALLBACK_PREV_CLOSE, (
-            f"second-pass fallback must patch close_price={FALLBACK_PREV_CLOSE}, got {df.at[0, 'close_price']}"
+        assert df.at[0, 'prev_close'] == FALLBACK_PREV_CLOSE, (
+            f"second-pass fallback must set prev_close={FALLBACK_PREV_CLOSE}, got {df.at[0, 'prev_close']}"
         )
         # execute called twice: first pass + second pass
         assert mock_session.execute.call_count == 2, (
@@ -456,7 +453,7 @@ class TestOverrideStaleCloseFromSnapshot:
 
         df = _make_mcx_df(
             last_price=LAST_PRICE,
-            close_price=180.0,
+            prev_close=180.0,
             quantity=QTY,
             overnight_quantity=QTY,
             symbol="CRUDEOIL26SEP7900PE",
@@ -465,7 +462,7 @@ class TestOverrideStaleCloseFromSnapshot:
         ist = ZoneInfo("Asia/Kolkata")
         midnight = datetime(2026, 8, 31, 0, 0, 0, tzinfo=ist)
 
-        # First pass: returns ltp for the symbol → previous_close set to 220.0
+        # First pass: returns ltp for the symbol → prev_close set to 220.0
         mock_result1 = MagicMock()
         mock_result1.all.return_value = [("ZG0790", "CRUDEOIL26SEP7900PE", FIRST_PASS_LTP, None)]
         # Second pass should NOT be called; stub with sentinel to detect accidental calls
@@ -486,12 +483,12 @@ class TestOverrideStaleCloseFromSnapshot:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert df.at[0, 'previous_close'] == FIRST_PASS_LTP, (
-            f"first-pass ltp must win; expected previous_close={FIRST_PASS_LTP}, got {df.at[0, 'previous_close']}"
+        assert df.at[0, 'prev_close'] == FIRST_PASS_LTP, (
+            f"first-pass ltp must win; expected prev_close={FIRST_PASS_LTP}, got {df.at[0, 'prev_close']}"
         )
         # Second pass must not have been triggered (execute called only once)
         assert mock_session.execute.call_count == 1, (
-            f"second-pass must not fire when first-pass populated previous_close; "
+            f"second-pass must not fire when first-pass populated prev_close; "
             f"got {mock_session.execute.call_count} execute calls"
         )
 
@@ -500,9 +497,9 @@ class TestOverrideStaleCloseFromSnapshot:
 # Ordering contract + Case 1/3 backstop coexistence
 #
 # The close-override must run BEFORE _build_polars_summary (so corrected
-# close_price feeds the summary day_change_percentage denominator) and
+# prev_close feeds the summary day_change_percentage denominator) and
 # BEFORE the Case 1/3 pnl backstop (so day_change_val is computed from
-# the correct close_price before the rescue condition evaluates dcv == 0).
+# the correct prev_close before the rescue condition evaluates dcv == 0).
 # ---------------------------------------------------------------------------
 
 class TestFetchOrderingAndCoexistence:
@@ -570,7 +567,7 @@ class TestFetchOrderingAndCoexistence:
         """Mixed DataFrame: overnight MCX row (stale close) + new position
         (overnight_qty=0, ltp=0, pnl != 0). After close-override:
           Row A: close_price patched to 220.0, day_change_val = 445.0.
-          Row B: close_price untouched, day_change_val stays 0.0
+          Row B: prev_close untouched, day_change_val stays 0.0
             (ltp==0 gate in _compute_day_change_val prevents recompute;
              Case 1 backstop in _fetch() handles Row B separately).
         """
@@ -581,7 +578,7 @@ class TestFetchOrderingAndCoexistence:
 
         row_a = {
             'account': 'ZG0790', 'tradingsymbol': 'CRUDEOIL26JUL6900PE',
-            'exchange': 'MCX', 'last_price': 264.5, 'close_price': STALE_CLOSE,
+            'exchange': 'MCX', 'last_price': 264.5, 'prev_close': STALE_CLOSE,
             'quantity': 10, 'overnight_quantity': 10,
             'day_buy_quantity': 0, 'day_sell_quantity': 0,
             'day_buy_value': 0.0, 'day_sell_value': 0.0,
@@ -591,7 +588,7 @@ class TestFetchOrderingAndCoexistence:
         }
         row_b = {
             'account': 'ZG0790', 'tradingsymbol': 'GOLDM26AUGFUT',
-            'exchange': 'MCX', 'last_price': 0.0, 'close_price': 6800.0,
+            'exchange': 'MCX', 'last_price': 0.0, 'prev_close': 6800.0,
             'quantity': 5, 'overnight_quantity': 0,
             'day_buy_quantity': 5, 'day_sell_quantity': 0,
             'day_buy_value': 34000.0, 'day_sell_value': 0.0,
@@ -622,16 +619,16 @@ class TestFetchOrderingAndCoexistence:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert abs(df.at[0, 'close_price'] - SNAPSHOT_LTP) < 0.005, (
-            f"Row A close_price should be {SNAPSHOT_LTP}, got {df.at[0, 'close_price']}"
+        assert abs(df.at[0, 'prev_close'] - SNAPSHOT_LTP) < 0.005, (
+            f"Row A prev_close should be {SNAPSHOT_LTP}, got {df.at[0, 'prev_close']}"
         )
         expected_dcv_a = (264.5 - SNAPSHOT_LTP) * 10  # 445.0
         assert abs(df.at[0, 'day_change_val'] - expected_dcv_a) < 0.5, (
             f"Row A day_change_val should be ~{expected_dcv_a}, "
             f"got {df.at[0, 'day_change_val']}"
         )
-        assert abs(df.at[1, 'close_price'] - 6800.0) < 0.005, (
-            "Row B close_price must remain 6800.0 (no snapshot entry for GOLDM)"
+        assert abs(df.at[1, 'prev_close'] - 6800.0) < 0.005, (
+            "Row B prev_close must remain 6800.0 (no snapshot entry for GOLDM)"
         )
         # day_change_val stays 0.0: ltp==0 prevents _compute_day_change_val
         # from recomputing; Case 1 backstop rescues via pnl later in _fetch().
@@ -798,8 +795,8 @@ async def test_prev_batch_excludes_todays_snapshots_uses_yesterday_ltp():
     row = result.rows[0]
 
     # close_price must come from prev_ltp (98.0), not ltp (100.0)
-    assert abs(row.close_price - 98.0) < 0.001, (
-        f"close_price should be 98.0 (prev_ltp), got {row.close_price}"
+    assert abs(row.prev_close - 98.0) < 0.001, (
+        f"close_price should be 98.0 (prev_ltp), got {row.prev_close}"
     )
 
 
@@ -847,8 +844,8 @@ async def test_prev_batch_null_ltp_rows_excluded():
     row = result.rows[0]
 
     # close_price must fall back to previous_close (97.0)
-    assert abs(row.close_price - 97.0) < 0.001, (
-        f"close_price should fall back to 97.0 (previous_close), got {row.close_price}"
+    assert abs(row.prev_close - 97.0) < 0.001, (
+        f"close_price should fall back to 97.0 (previous_close), got {row.prev_close}"
     )
 
 

@@ -63,7 +63,7 @@ class TestCase1_NewPosition:
         )
 
     def test_new_position_zero_close_does_not_leak(self):
-        """close_price=0 must NOT combine with LTP to yield a phantom (LTP−0)×qty."""
+        """prev_close=0 must NOT combine with LTP to yield a phantom (LTP−0)×qty."""
         from backend.api.algo.pnl_math import decomposed_intraday_pnl
         # naive (LTP − 0) × 10 = 1050 would be wrong. Decomposed → 50.
         result = decomposed_intraday_pnl(
@@ -88,7 +88,7 @@ class TestCase1_NewPosition:
             'day_buy_value': 1000.0,
             'day_sell_value': 0.0,
             'last_price': 105.0,
-            'close_price': 0.0,
+            'prev_close': 0.0,
             'average_price': 100.0,
         }])
         result = _enrich_positions(df)
@@ -118,7 +118,7 @@ class TestCase2_PartialClose:
             product='NRML',
             quantity=6,
             average_price=100.0,
-            close_price=100.0,
+            prev_close=100.0,
             pnl=145.0,        # unrealised 25 + realised 120
             last_price=105.0,
             unrealised=25.0,  # 6 × (105 − 100)
@@ -177,7 +177,7 @@ class TestCase3_FullyClosedIntraday:
             'day_buy_value': 1000.0,      # bought 10 @ 100
             'day_sell_value': 1200.0,     # sold 10 @ 120
             'last_price': 120.0,
-            'close_price': 100.0,
+            'prev_close': 100.0,
             'average_price': 100.0,
             'pnl': 200.0,                 # realised = sv − bv = +200
             'realised': 200.0,
@@ -205,7 +205,7 @@ class TestCase3_FullyClosedIntraday:
             'day_buy_value': 1000.0,
             'day_sell_value': 1200.0,
             'last_price': 120.0,
-            'close_price': 100.0,
+            'prev_close': 100.0,
             'average_price': 100.0,
             'pnl': 0.0,         # unrealised = 0 for closed position
             'realised': 200.0,  # realised gain from the day trade
@@ -233,7 +233,7 @@ class TestCase3_FullyClosedIntraday:
             'day_buy_value': 1000.0,
             'day_sell_value': 1200.0,
             'last_price': 0.0,         # <-- Kite dropped it
-            'close_price': 100.0,
+            'prev_close': 100.0,
             'average_price': 100.0,
             'pnl': 200.0,
             'realised': 200.0,
@@ -273,7 +273,7 @@ class TestCase3_FullyClosedIntraday:
             'day_buy_value': 590000.0,
             'day_sell_value': 592500.0,
             'last_price': 0.0,           # Kite dropped it
-            'close_price': 5900.0,
+            'prev_close': 5900.0,
             'average_price': 5900.0,
             'pnl': 2500.0,               # broker-shipped pnl (round-trip profit)
             'realised': 0.0,             # MCX accounting quirk — zeroed
@@ -329,7 +329,7 @@ class TestCase3_LTPPatchSkipsFlatRows:
             'quantity': 0,                # fully closed
             'last_price': 0.0,            # Kite dropped it
             'realised': 200.0,
-            'close_price': 100.0,
+            'prev_close': 100.0,
         }])
 
         ticker = MagicMock()
@@ -356,7 +356,7 @@ class TestCase3_LTPPatchSkipsFlatRows:
             'tradingsymbol': 'NIFTY26JULFUT',
             'quantity': 10,               # open position
             'last_price': 100.0,
-            'close_price': 100.0,
+            'prev_close': 100.0,
         }])
 
         ticker = MagicMock()
@@ -378,7 +378,7 @@ class TestCase3_LTPPatchSkipsFlatRows:
             'tradingsymbol': 'GOLDBEES',
             'opening_quantity': 0,        # never held / fully closed
             'last_price': 0.0,
-            'close_price': 1800.0,
+            'prev_close': 1800.0,
         }])
 
         ticker = MagicMock()
@@ -420,7 +420,7 @@ class TestCase3_SettledFlatNotAnimating:
                 product='NRML',
                 quantity=0,               # <-- flat
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=200.0,
                 last_price=120.0,
                 realised=200.0,
@@ -458,7 +458,7 @@ class TestCase3_SettledFlatNotAnimating:
                 product='NRML',
                 quantity=10,              # <-- open
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=50.0,
                 last_price=105.0,
             ),
@@ -504,7 +504,7 @@ class TestCase1_NewPositionDcvRescue:
             'day_buy_value': 590000.0,    # 100 × 5900 fill
             'day_sell_value': 0.0,
             'last_price': 0.0,            # Kite REST lag pre-first-tick
-            'close_price': 5850.0,
+            'prev_close': 5850.0,
             'average_price': 5900.0,
             'pnl': -400.0,                # Kite's own-side computed
             'realised': 0.0,
@@ -536,7 +536,7 @@ class TestCase1_NewPositionDcvRescue:
             'day_buy_value': 1000000.0,   # 50 × 20000 fill
             'day_sell_value': 0.0,
             'last_price': 0.0,
-            'close_price': 19950.0,
+            'prev_close': 19950.0,
             'average_price': 20000.0,
             'pnl': -2500.0,
             'realised': 0.0,
@@ -570,7 +570,7 @@ class TestCase1_NewPositionDcvRescue:
             'day_buy_value': 1000000.0,
             'day_sell_value': 0.0,
             'last_price': 20050.0,        # ticker patched
-            'close_price': 19950.0,
+            'prev_close': 19950.0,
             'average_price': 20000.0,
             'pnl': 2500.0,
             'realised': 0.0,
@@ -604,7 +604,7 @@ class TestCase1_NewPositionDcvRescue:
             'day_buy_value': 0.0,
             'day_sell_value': 0.0,
             'last_price': 0.0,            # Kite lag; DO NOT rescue via pnl
-            'close_price': 19950.0,
+            'prev_close': 19950.0,
             'average_price': 19900.0,
             'pnl': 5000.0,                # Kite-shipped lifetime pnl
             'realised': 0.0,
@@ -645,7 +645,7 @@ class TestSameSymbolAggregation:
                 product='NRML',
                 quantity=10,
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=50.0,
                 last_price=105.0,
                 day_change_val=50.0,
@@ -657,7 +657,7 @@ class TestSameSymbolAggregation:
                 product='NRML',
                 quantity=5,
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=25.0,
                 last_price=105.0,
                 day_change_val=25.0,
@@ -687,7 +687,7 @@ class TestSameSymbolAggregation:
                 product='NRML',
                 quantity=6,
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=145.0,
                 last_price=105.0,
                 unrealised=25.0,
@@ -702,7 +702,7 @@ class TestSameSymbolAggregation:
                 product='NRML',
                 quantity=0,
                 average_price=100.0,
-                close_price=100.0,
+                prev_close=100.0,
                 pnl=200.0,
                 last_price=120.0,
                 realised=200.0,

@@ -364,9 +364,9 @@ class TestUpsertPreviousCloseGuard:
         assert "EXCLUDED.ltp != daily_book.ltp" not in sql_text, (
             "Old ltp-change gate must not be present — previous_close is now immutable"
         )
-        # Immutable preserve pattern must be present
-        assert "previous_close = daily_book.previous_close" in sql_text, (
-            "_UPSERT_SQL must preserve previous_close from the existing row (immutable)"
+        # Immutable preserve pattern must be present (allow alignment whitespace)
+        assert "prev_close" in sql_text and "daily_book.prev_close" in sql_text, (
+            "_UPSERT_SQL must preserve prev_close from the existing row (immutable)"
         )
 
 

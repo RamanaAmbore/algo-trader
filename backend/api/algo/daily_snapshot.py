@@ -826,8 +826,8 @@ def _funds_rows(account: str, target_date: date, raw: list[dict]) -> list[dict]:
 _UPSERT_SQL = text("""
     INSERT INTO daily_book
         (date, account, segment, kind, symbol, exchange,
-         qty, lots, lot_size, avg_cost, ltp, day_pnl, total_pnl, previous_close,
-         previous_close_backup,
+         qty, lots, lot_size, avg_cost, ltp, day_pnl, total_pnl, prev_close,
+         prev_close_backup,
          payload_json, captured_at)
     VALUES
         (:date, :account, :segment, :kind, :symbol, :exchange,
@@ -848,8 +848,8 @@ _UPSERT_SQL = text("""
                          END,
         day_pnl        = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN COALESCE(EXCLUDED.day_pnl, daily_book.day_pnl) ELSE daily_book.day_pnl END,
         total_pnl      = EXCLUDED.total_pnl,
-        previous_close = daily_book.previous_close,
-        previous_close_backup = COALESCE(daily_book.previous_close_backup, daily_book.previous_close),
+        prev_close     = daily_book.prev_close,
+        prev_close_backup = COALESCE(daily_book.prev_close_backup, daily_book.prev_close),
         payload_json   = CASE WHEN EXCLUDED.ltp IS NOT NULL THEN EXCLUDED.payload_json ELSE daily_book.payload_json END,
         captured_at    = EXCLUDED.captured_at
 """)
@@ -864,6 +864,9 @@ async def _upsert_rows(rows: list[dict]) -> int:
         r["captured_at"] = now_utc
         # Seed previous_close_backup with the same value as previous_close on first INSERT.
         # ON CONFLICT preserves the first-ever written value via COALESCE.
+        # NOTE: the dict keys are still "previous_close" / "previous_close_backup" because
+        # they bind to the SQL named params :previous_close / :previous_close_backup;
+        # the INSERT column names are now prev_close / prev_close_backup (post-rename).
         if "previous_close_backup" not in r:
             r["previous_close_backup"] = r.get("previous_close")
     async with async_session() as session:
@@ -953,14 +956,14 @@ async def fix_daily_book_prev_close(
     *,
     settlement_map: "dict[tuple[str, str], float] | None" = None,
 ) -> int:
-    """Update previous_close for today's daily_book rows.
+    """Update prev_close for today's daily_book rows.
 
     Two modes depending on the time of day (overnight or new-session mode):
 
     Overnight mode (now_ist < today's session open):
-      Reads yesterday's daily_book.previous_close (= prior-prior-session settlement).
-      Updates only rows where previous_close ≈ ltp (stale data from prior bug).
-      Saves old value into previous_close_backup before overwriting.
+      Reads yesterday's daily_book.prev_close (= prior-prior-session settlement).
+      Updates only rows where prev_close ≈ ltp (stale data from prior bug).
+      Saves old value into prev_close_backup before overwriting.
       After fix: day_change = (today's settlement - prior-prior-session) × qty,
       showing yesterday's session performance during the closed-hours window.
 
@@ -990,9 +993,9 @@ async def fix_daily_book_prev_close(
     today_open = midnight.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)
 
     if now_ist < today_open:
-        ref_col = "previous_close"
-        ref_cond = "previous_close IS NOT NULL AND previous_close > 0"
-        epsilon = 0.005   # only fix rows where previous_close ≈ ltp (wrong)
+        ref_col = "prev_close"
+        ref_cond = "prev_close IS NOT NULL AND prev_close > 0"
+        epsilon = 0.005   # only fix rows where prev_close ≈ ltp (wrong)
         mode = "overnight"
     else:
         ref_col = "ltp"
@@ -1002,7 +1005,7 @@ async def fix_daily_book_prev_close(
 
     # New-session mode with settlement_map: update rows using broker close_price directly.
     # This covers rows created between 00:30–07:59 IST (maintenance restart) where
-    # the stored previous_close may be stale.
+    # the stored prev_close may be stale.
     if mode == "new-session" and settlement_map:
         try:
             updated = 0
@@ -1012,8 +1015,8 @@ async def fix_daily_book_prev_close(
                         continue
                     result = await session.execute(text("""
                         UPDATE daily_book d
-                        SET previous_close        = :close_price,
-                            previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)
+                        SET prev_close        = :close_price,
+                            prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)
                         WHERE d.date = :today
                           AND d.account = :account
                           AND d.symbol = :symbol
@@ -1022,14 +1025,14 @@ async def fix_daily_book_prev_close(
                            "close_price": close_price})
                     updated += result.rowcount
                 await session.commit()
-                # Recompute day_pnl for rows where close_price was 0 at snapshot time
+                # Recompute day_pnl for rows where prev_close was 0 at snapshot time
                 # (day_pnl written as NULL by _snap_holding_eod_vals / _snap_compute_day_pnl guard).
                 result2 = await session.execute(text("""
                     UPDATE daily_book
-                    SET day_pnl = (ltp - previous_close) * qty
+                    SET day_pnl = (ltp - prev_close) * qty
                     WHERE date = :today
                       AND day_pnl IS NULL
-                      AND previous_close IS NOT NULL AND previous_close > 0
+                      AND prev_close IS NOT NULL AND prev_close > 0
                       AND ltp IS NOT NULL AND ltp > 0
                       AND kind IN ('holdings', 'positions')
                 """), {"today": today})
@@ -1061,28 +1064,28 @@ async def fix_daily_book_prev_close(
                     ORDER BY kind, account, symbol, date DESC
                 )
                 UPDATE daily_book d
-                SET previous_close        = r.ref_close,
-                    previous_close_backup = COALESCE(d.previous_close_backup, d.previous_close)
+                SET prev_close        = r.ref_close,
+                    prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)
                 FROM prev_ref r
                 WHERE d.kind = r.kind
                   AND d.account = r.account
                   AND d.symbol = r.symbol
                   AND d.date = :today
                   AND d.ltp IS NOT NULL AND d.ltp > 0
-                  AND ABS(COALESCE(d.previous_close, 0) - d.ltp) < :epsilon
+                  AND ABS(COALESCE(d.prev_close, 0) - d.ltp) < :epsilon
             """), {"today": today, "epsilon": epsilon})
             await session.commit()
             updated = result.rowcount
-        # Recompute day_pnl for rows where close_price was 0 at snapshot time
+        # Recompute day_pnl for rows where prev_close was 0 at snapshot time
         # (day_pnl written as NULL by _snap_holding_eod_vals / _snap_compute_day_pnl guard).
         try:
             async with async_session() as session2:
                 result2 = await session2.execute(text("""
                     UPDATE daily_book
-                    SET day_pnl = (ltp - previous_close) * qty
+                    SET day_pnl = (ltp - prev_close) * qty
                     WHERE date = :today
                       AND day_pnl IS NULL
-                      AND previous_close IS NOT NULL AND previous_close > 0
+                      AND prev_close IS NOT NULL AND prev_close > 0
                       AND ltp IS NOT NULL AND ltp > 0
                       AND kind IN ('holdings', 'positions')
                 """), {"today": today})

@@ -52,7 +52,7 @@ async def test_positions_snapshot_closed_hours_enriches_greeks():
                 product="MIS",
                 quantity=10,
                 average_price=2800.0,
-                close_price=2850.0,
+                prev_close=2850.0,
                 pnl=500.0,
                 last_price=2850.0,
                 underlying_ltp=None,  # not an option; no underlying
@@ -65,7 +65,7 @@ async def test_positions_snapshot_closed_hours_enriches_greeks():
                 product="NRML",
                 quantity=10,
                 average_price=150.0,
-                close_price=150.0,
+                prev_close=150.0,
                 pnl=0.0,
                 last_price=150.0,  # option premium (non-zero so enrichment runs)
                 underlying_ltp=None,  # BUG: this must be filled by enrichment
@@ -246,7 +246,7 @@ async def test_positions_snapshot_enrichment_zero_spot_price_skip():
                 product="NRML",
                 quantity=1,
                 average_price=500.0,
-                close_price=500.0,
+                prev_close=500.0,
                 pnl=0.0,
                 last_price=500.0,  # non-zero option premium
                 underlying_ltp=None,
@@ -321,7 +321,7 @@ async def test_enrich_position_greeks_direct_call():
             product="NRML",
             quantity=10,
             average_price=150.0,
-            close_price=150.0,
+            prev_close=150.0,
             pnl=0.0,
             last_price=150.0,
             underlying_ltp=None,  # will be filled by enrichment
@@ -379,7 +379,7 @@ async def test_enrich_position_greeks_non_option_rows_unchanged():
             product="MIS",
             quantity=10,
             average_price=2800.0,
-            close_price=2850.0,
+            prev_close=2850.0,
             pnl=500.0,
             last_price=2850.0,
             underlying_ltp=None,
@@ -391,7 +391,7 @@ async def test_enrich_position_greeks_non_option_rows_unchanged():
             product="NRML",
             quantity=50,
             average_price=23000.0,
-            close_price=23100.0,
+            prev_close=23100.0,
             pnl=5000.0,
             last_price=23100.0,
             underlying_ltp=None,

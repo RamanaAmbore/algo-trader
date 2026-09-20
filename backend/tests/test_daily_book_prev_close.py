@@ -76,9 +76,10 @@ async def test_fix_daily_book_prev_close_overnight_uses_previous_close():
     sql_str = str(sql_obj)
     params = call_args[0][1]
 
-    # Overnight: must read previous_close (not raw ltp) from yesterday
-    assert "previous_close" in sql_str, (
-        f"Overnight mode: SQL must reference 'previous_close' column; got:\n{sql_str}"
+    # Overnight: must read prev_close (renamed from previous_close) from yesterday
+    assert "prev_close" in sql_str, (
+        f"Overnight mode: SQL must reference 'prev_close' column (renamed from previous_close); "
+        f"got:\n{sql_str}"
     )
     # epsilon must be 0.005 for targeted repair
     assert abs(params["epsilon"] - 0.005) < 1e-9, (

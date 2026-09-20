@@ -166,7 +166,7 @@ async def test_positions_closed_hours_returns_snapshot_no_broker():
                 product="NRML",
                 quantity=50,
                 average_price=23000.0,
-                close_price=23100.0,
+                prev_close=23100.0,
                 pnl=5000.0,
                 last_price=23100.0,
             )
@@ -269,7 +269,7 @@ async def test_holdings_closed_hours_returns_snapshot_no_broker():
                 exchange="NSE",
                 quantity=10,
                 average_price=2800.0,
-                close_price=2900.0,
+                prev_close=2900.0,
                 inv_val=28000.0,
                 cur_val=29000.0,
                 pnl=1000.0,

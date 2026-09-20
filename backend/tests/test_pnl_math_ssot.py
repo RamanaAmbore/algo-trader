@@ -206,7 +206,7 @@ class TestRecomputeRowPercentages:
             "tradingsymbol":       ["NIFTY24DEC23000CE", "CRUDEOIL26JUL6900PE", "GOLDM26JUL"],
             "quantity":            [50.0, 10.0, 100.0],
             "average_price":       [200.0, 250.0, 6500.0],
-            "close_price":         [190.0, 220.0, 0.0],    # row 2: opened today
+            "prev_close":          [190.0, 220.0, 0.0],    # row 2: opened today (renamed from close_price)
             "last_price":          [210.0, 264.5, 6800.0],
             # day_change_val correctly updated by override:
             "day_change_val":      [(210-190)*50, (264.5-220)*10, (6800-6500)*100],
@@ -305,7 +305,7 @@ class TestRecomputeRowPercentages:
         df = pd.DataFrame({
             "opening_quantity":      [10.0],
             "average_price":         [1400.0],
-            "close_price":           [1380.0],
+            "prev_close":            [1380.0],  # renamed from close_price
             "day_change_val":        [(1420.0 - 1380.0) * 10],  # =400
             "pnl":                   [(1420.0 - 1400.0) * 10],  # =200
             "day_change_percentage": [0.0],   # stale

@@ -123,9 +123,9 @@ def test_build_holding_row_close_price_is_previous_close():
     )
     row, inv_val, cur_val, total_pnl_f, day_pnl_f = _build_holding_row_from_snapshot(raw_row)
 
-    assert math.isclose(row.close_price, 1600.0, rel_tol=1e-6), (
-        f"Expected close_price=1600.0 (previous_close), got {row.close_price}. "
-        "close_price must be previous_close, not ltp."
+    assert math.isclose(row.prev_close, 1600.0, rel_tol=1e-6), (
+        f"Expected prev_close=1600.0 (previous_close), got {row.prev_close}. "
+        "prev_close must be previous_close, not ltp."
     )
     # last_price (display) should still be ltp
     assert math.isclose(row.last_price, 1800.0, rel_tol=1e-6), (
@@ -134,7 +134,11 @@ def test_build_holding_row_close_price_is_previous_close():
 
 
 def test_build_holding_row_close_price_fallback_to_ltp_when_no_prev_close():
-    """When previous_close is zero/None, fall back to ltp for close_price."""
+    """When previous_close is zero, prev_close stays 0 (no fallback to ltp).
+
+    New same-day buys have no prior settlement — prev_close=0 is correct;
+    the Day P&L backstop handles them via the pnl field directly.
+    """
     from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
     raw_row = (
@@ -150,15 +154,15 @@ def test_build_holding_row_close_price_fallback_to_ltp_when_no_prev_close():
     )
     row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-    # No previous_close → close_price falls back to ltp
-    assert math.isclose(row.close_price, 1050.0, rel_tol=1e-6), (
-        f"Expected close_price=1050.0 (ltp fallback when prev_close=0), "
-        f"got {row.close_price}"
+    # No previous_close → prev_close stays 0 (new buy today, no prior settlement)
+    assert row.prev_close == 0.0, (
+        f"Expected prev_close=0.0 (same-day buy, no prior session), "
+        f"got {row.prev_close}"
     )
 
 
 def test_build_holding_row_close_price_not_ltp_when_prev_close_present():
-    """Regression guard: close_price must differ from ltp when prev_close is set."""
+    """Regression guard: prev_close must differ from ltp when prev_close is set."""
     from backend.api.routes.holdings import _build_holding_row_from_snapshot
 
     ltp = 200.0
@@ -177,11 +181,11 @@ def test_build_holding_row_close_price_not_ltp_when_prev_close_present():
     )
     row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-    assert row.close_price != ltp, (
-        f"close_price={row.close_price} equals ltp={ltp}. "
-        "This is the regression — close_price must be previous_close when available."
+    assert row.prev_close != ltp, (
+        f"prev_close={row.prev_close} equals ltp={ltp}. "
+        "This is the regression — prev_close must be previous_close when available."
     )
-    assert math.isclose(row.close_price, previous_close, rel_tol=1e-6)
+    assert math.isclose(row.prev_close, previous_close, rel_tol=1e-6)
 
 
 # ---------------------------------------------------------------------------

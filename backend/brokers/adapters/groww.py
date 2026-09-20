@@ -1470,7 +1470,7 @@ def _normalise_holdings(resp: Any) -> list[dict]:
         # send. Some Groww account shapes omit these and rely on the
         # consumer (e.g. our /performance UI) to compute them.
         #
-        # Honest close_price (slice P4): pre-fix `close = ltp` when
+        # Honest prev_close (slice P4): pre-fix `close = ltp` when
         # Groww omitted previous_close. That made day_change = 0 →
         # silently masked these rows from broker_apis.backfill_market_data
         # (which patches a real prior close via PriceBroker.quote()),
@@ -1490,7 +1490,7 @@ def _normalise_holdings(resp: Any) -> list[dict]:
             "t1_quantity":     t1_qty,
             "average_price":   avg,
             "last_price":      ltp,
-            "close_price":     close,
+            "prev_close":      close,
             "pnl":             pnl,
             "day_change":      day_change,
             "day_change_percentage": day_change_pct,
@@ -1554,7 +1554,7 @@ def _normalise_positions(resp: Any) -> dict:
             # makes the broker_apis multiply a safe no-op for Groww
             # regardless of what's in Groww's positions payload.
             "multiplier":      1,
-            "close_price":     _close_g,
+            "prev_close":      _close_g,
             "average_price":   _gf(p, "average_price", "net_price"),
             "last_price":      _ltp_g,
             "buy_price":       _gf(p, "buy_price", "buy_avg_price"),

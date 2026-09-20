@@ -44,7 +44,7 @@ def _make_holding_row(
         quantity=quantity,
         opening_quantity=quantity,
         average_price=average_price,
-        close_price=close_price,
+        prev_close=close_price,
         last_price=last_price,
         inv_val=average_price * quantity,
         cur_val=last_price * quantity,
@@ -57,7 +57,6 @@ def _make_holding_row(
         price_source="live",
         current_price=last_price,
         is_animating=False,
-        previous_close=0.0,
         pnl_per_share=0.0,
     )
 
@@ -243,8 +242,8 @@ class TestHoldingsOverrideStaleCloseDBFailurePath:
         # 1. previous_close column should NOT be added (function returned early)
         # 2. The function should have logged a warning (not tested here)
         # 3. DataFrame columns unchanged (except those that existed before)
-        assert 'previous_close' not in df.columns, (
-            "previous_close should NOT be added when DB query fails"
+        assert 'prev_close' not in df.columns, (
+            "prev_close should NOT be added when DB query fails"
         )
         assert set(df.columns) == original_columns, (
             "DataFrame columns should remain unchanged when DB query fails"
@@ -287,8 +286,8 @@ class TestHoldingsOverrideStaleCloseDBFailurePath:
         # Function should return after the "if not snapshot_map" check (line 454-455)
         # This is BEFORE previous_close column is initialized (line 461-462)
         # So previous_close should NOT be in the DataFrame
-        assert 'previous_close' not in df.columns, (
-            "previous_close should NOT be added when snapshot_map is empty"
+        assert 'prev_close' not in df.columns, (
+            "prev_close should NOT be added when snapshot_map is empty"
         )
         assert set(df.columns) == original_columns, (
             "DataFrame columns should remain unchanged when snapshot_map is empty"
@@ -342,15 +341,15 @@ class TestHoldingsOverrideStaleCloseDBFailurePath:
         ):
             await _override_stale_close_for_holdings(df)
 
-        # RELIANCE should have previous_close patched
+        # RELIANCE should have prev_close patched
         reliance_row = df[df['tradingsymbol'] == 'RELIANCE'].iloc[0]
-        assert reliance_row['previous_close'] == 148.5, (
-            "RELIANCE should have snapshot previous_close = 148.5"
+        assert reliance_row['prev_close'] == 148.5, (
+            "RELIANCE should have snapshot prev_close = 148.5"
         )
 
         # INFY should remain at 0.0 (no snapshot)
         infy_row = df[df['tradingsymbol'] == 'INFY'].iloc[0]
-        assert infy_row['previous_close'] == 0.0, (
+        assert infy_row['prev_close'] == 0.0, (
             "INFY should remain at 0.0 (no snapshot entry)"
         )
 

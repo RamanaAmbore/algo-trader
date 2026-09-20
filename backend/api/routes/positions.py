@@ -274,8 +274,8 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
-                       db.captured_at, COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close,
-                       pb.prev_ltp, pb.prev_settlement_pnl, db.previous_close_backup
+                       db.captured_at, db.prev_close AS previous_close,
+                       pb.prev_ltp, pb.prev_settlement_pnl, db.prev_close_backup
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
@@ -325,7 +325,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'product',
-    'quantity', 'average_price', 'close_price', 'last_price',
+    'quantity', 'average_price', 'last_price',
     'pnl', 'pnl_percentage', 'unrealised', 'realised',
     'day_change', 'day_change_val', 'day_change_percentage',
     # Intraday split — used by Candidates grid to detect closed-then-
@@ -342,8 +342,8 @@ _ROW_COLS = [
     # Yesterday's total_pnl from daily_book — None for positions opened today.
     'prev_settlement_pnl',
     # Frozen prior-session settlement price — set by _override_stale_close_from_snapshot
-    # for every matched row (independent of the epsilon close_price patch).
-    'previous_close',
+    # for every matched row.
+    'prev_close',
 ]
 
 _TTL = 30
@@ -489,7 +489,7 @@ async def _process_overlay_row(r, kind: str, snap_map: dict, ref_close_map: dict
                 dcp = (dcv / prev_val * 100.0) if prev_val else 0.0
                 replaced = _msc.structs.replace(
                     replaced, day_change_val=dcv, day_change_percentage=dcp,
-                    close_price=ref_close,
+                    prev_close=ref_close,
                 )
     return replaced
 
@@ -581,7 +581,7 @@ def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
       account, pnl, day_change_val, day_change_percentage, day_prev_val
     """
     df = df.with_columns(
-        (pl.col('close_price') * pl.col('quantity')).abs().alias('_prev_val')
+        (pl.col('prev_close') * pl.col('quantity')).abs().alias('_prev_val')
     )
     sum_cols = [c for c in ('pnl', 'day_change_val', '_prev_val') if c in df.columns]
     if sum_cols:
@@ -799,7 +799,7 @@ def _compute_day_change_val(raw: pd.DataFrame, sel: pd.Index) -> pd.Series:
     the intraday columns aren't all present (Dhan / Groww adapters).
     """
     _ltp = pd.to_numeric(raw.loc[sel, 'last_price'], errors='coerce').fillna(0)
-    _cls = pd.to_numeric(raw.loc[sel, 'close_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[sel, 'prev_close'], errors='coerce').fillna(0)
     if _INTRADAY_FIELDS.issubset(raw.columns):
         _oq = pd.to_numeric(raw.loc[sel, 'overnight_quantity'], errors='coerce').fillna(0)
         _bq = pd.to_numeric(raw.loc[sel, 'day_buy_quantity'],   errors='coerce').fillna(0)
@@ -842,7 +842,7 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     # (computed against the pre-patch LTP === close_price, i.e. zero).
     _sel = pd.Index(res.patched_idx)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
-    _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[_sel, 'prev_close'], errors='coerce').fillna(0)
     _dcv_calc = _compute_day_change_val(raw, _sel)
     raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
@@ -943,11 +943,11 @@ async def _fetch_snapshot_close_map(
             result = await session.execute(_sql_text("""
                     SELECT DISTINCT ON (account, symbol)
                            account, symbol,
-                           COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close,
+                           ltp AS ref_close,
                            total_pnl
                     FROM daily_book
                     WHERE kind = 'positions'
-                      AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
+                      AND ltp IS NOT NULL AND ltp > 0
                       AND captured_at < :today_08
                     ORDER BY account, symbol, captured_at DESC
                 """), {"today_08": today_08})
@@ -970,13 +970,13 @@ def _patch_close_from_snapshot_map(
     """Apply snapshot LTP values to ``raw`` row-by-row.
 
     For every row matched in *snapshot_map*:
-    - Sets ``previous_close`` unconditionally (the frozen prior-session
+    - Sets ``prev_close`` unconditionally (the frozen prior-session
       settlement price consumed by the frontend formula).
-    - Replaces ``close_price`` only when the snapshot LTP diverges from
-      Kite's value by more than a tiny epsilon (0.005) — protects against
-      rounding noise.
+    - Replaces ``prev_close`` only when the snapshot LTP diverges from
+      the current value by more than a tiny epsilon (0.005) — protects
+      against rounding noise.
 
-    Returns the list of indices where ``close_price`` was actually patched.
+    Returns the list of indices where ``prev_close`` was actually patched.
     """
     patched_idx: list = []
     for idx in raw.index:
@@ -984,30 +984,29 @@ def _patch_close_from_snapshot_map(
         snap_ltp = snapshot_map.get(key)
         if snap_ltp is None:
             continue
-        # Set previous_close for ALL matched rows regardless of epsilon check —
+        # Set prev_close for ALL matched rows regardless of epsilon check —
         # this is the frozen prior-session settlement price consumed by the
-        # frontend's (ltp − previous_close) × qty formula.
-        raw.at[idx, 'previous_close'] = snap_ltp
+        # frontend's (ltp − prev_close) × qty formula.
         try:
-            current_close = float(raw.at[idx, 'close_price']) if pd.notna(raw.at[idx, 'close_price']) else 0.0
+            current_close = float(raw.at[idx, 'prev_close']) if pd.notna(raw.at[idx, 'prev_close']) else 0.0
         except (TypeError, ValueError):
             current_close = 0.0
+        raw.at[idx, 'prev_close'] = snap_ltp
         if abs(snap_ltp - current_close) <= 0.005:
             continue
-        raw.at[idx, 'close_price'] = snap_ltp
         patched_idx.append(idx)
     return patched_idx
 
 
 async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
-    """Fallback for rows whose ``previous_close`` is still 0 after the first pass.
+    """Fallback for rows whose ``prev_close`` is still 0 after the first pass.
 
-    Reads ``daily_book.ltp`` (not ``previous_close``) because the snapshot at
-    23:45 IST is captured before the MCX BHAV publishes at 00:15 IST, so
-    ``previous_close`` at that time equals last-traded ≈ ltp (stale).
+    Reads ``daily_book.ltp`` directly because the snapshot at 23:45 IST is
+    captured before the MCX BHAV publishes at 00:15 IST, so the stored
+    ``prev_close`` at that time equals last-traded ≈ ltp (stale).
     ``daily_book.ltp`` in the settlement snapshot IS the settlement price.
 
-    Only fires when at least one row still has ``previous_close == 0.0``.
+    Only fires when at least one row still has ``prev_close == 0.0``.
     Returns the list of indices patched.  On any DB error logs a warning and
     returns ``[]``.
     """
@@ -1015,7 +1014,7 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
     from sqlalchemy import text as _sql_text
 
     patched_idx2: list = []
-    zero_mask = raw['previous_close'] == 0.0
+    zero_mask = raw['prev_close'] == 0.0
     if not zero_mask.any():
         return patched_idx2
 
@@ -1024,10 +1023,10 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
     try:
         async with async_session() as session:
             result2 = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS previous_close
+                SELECT DISTINCT ON (account, symbol) account, symbol, ltp AS prev_close
                 FROM daily_book
                 WHERE kind = 'positions'
-                  AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
+                  AND ltp IS NOT NULL AND ltp > 0
                   AND symbol = ANY(:syms)
                 ORDER BY account, symbol, captured_at DESC
             """), {"syms": syms_needing_fallback})
@@ -1040,8 +1039,7 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
             fallback_close = fallback_map.get(key2)
             if fallback_close is None:
                 continue
-            raw.at[idx, 'previous_close'] = fallback_close
-            raw.at[idx, 'close_price'] = fallback_close
+            raw.at[idx, 'prev_close'] = fallback_close
             patched_idx2.append(idx)
     except Exception as e:
         logger.warning(f"positions: close-override second-pass query failed: {e}")
@@ -1049,27 +1047,24 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
 
 
 async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
-    """Replace ``close_price`` with the most-recent daily_book snapshot LTP
-    per (account, tradingsymbol). When found, recomputes the decomposed
+    """Set ``prev_close`` from the most-recent daily_book snapshot LTP per
+    (account, tradingsymbol). When found, recomputes the decomposed
     day_change_val so the row reflects the actual move since the prior
     session's authoritative close.
 
-    Uses ``daily_book.ltp`` directly (not COALESCE with ``previous_close``).
-    ``previous_close`` is populated from Kite's stale BHAV-copy API and is
-    unreliable during the overnight window — it always passes the epsilon
-    check, meaning ``close_price`` would never be patched. ``daily_book.ltp``
-    is the actual settlement LTP captured at session end and is the
-    canonical prior-session reference price.
+    Uses ``daily_book.ltp`` directly — the actual settlement LTP captured
+    at session end and the canonical prior-session reference price.
 
-    Only triggers when the snapshot LTP differs from Kite's reported
-    close_price by more than a tiny epsilon — rows where Kite is already
-    current pass through unchanged."""
+    All matched rows have ``prev_close`` set unconditionally."""
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
 
-    # Initialise previous_close column unconditionally so the column always
-    # exists even when no DB rows match or the query raises.
-    raw['previous_close'] = 0.0
+    # Ensure prev_close column exists; do NOT clobber broker-supplied values.
+    # Old code wrote to a separate 'previous_close' scratch column; after the
+    # rename to 'prev_close', zeroing unconditionally would wipe the
+    # broker-supplied prior-close value for rows that get no snapshot match.
+    if 'prev_close' not in raw.columns:
+        raw['prev_close'] = 0.0
 
     if not (raw["account"].notna() & raw["tradingsymbol"].notna()).any():
         return
@@ -1102,12 +1097,12 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     # (Uses module-level _INTRADAY_FIELDS via _compute_day_change_val.)
     _sel = pd.Index(all_patched)
     _ltp = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
-    _cls = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0)
+    _cls = pd.to_numeric(raw.loc[_sel, 'prev_close'], errors='coerce').fillna(0)
     _dcv_calc = _compute_day_change_val(raw, _sel)
     raw.loc[_sel, 'day_change_val'] = _dcv_calc.where(_ltp > 0, raw.loc[_sel, 'day_change_val'])
     raw.loc[_sel, 'day_change'] = _ltp - _cls
     # Recompute day_change_percentage + pnl_percentage on patched rows.
-    # close_price was replaced above and day_change_val just recomputed;
+    # prev_close was set above and day_change_val just recomputed;
     # without this step the percentage columns lag the absolute columns
     # (same fix applied to _override_stale_ltp_from_ticker above).
     recompute_row_percentages(raw, _sel)
@@ -1116,7 +1111,7 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     if patched_idx2:
         logger.info(
             f"positions: close-override second-pass (MCX option fallback) patched "
-            f"{len(patched_idx2)}/{len(raw)} rows from daily_book.previous_close"
+            f"{len(patched_idx2)}/{len(raw)} rows from daily_book.prev_close"
         )
 
 
@@ -1160,9 +1155,9 @@ async def _build_paper_positions_response() -> PositionsResponse:
     # Paper positions don't carry overnight/buy/sell decomposition so
     # we always use the naive formula here — this is correct for paper
     # because every fill happened during the current session.
-    if 'last_price' in raw.columns and 'close_price' in raw.columns:
+    if 'last_price' in raw.columns and 'prev_close' in raw.columns:
         _ltp_s  = pd.to_numeric(raw['last_price'],  errors='coerce').fillna(0)
-        _cls_s  = pd.to_numeric(raw['close_price'], errors='coerce').fillna(0)
+        _cls_s  = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
         _qty_s  = pd.to_numeric(raw['quantity'],     errors='coerce').fillna(0)
         raw['day_change_val'] = naive_day_pnl(_ltp_s, _cls_s, _qty_s)
         raw['day_change'] = _ltp_s - _cls_s

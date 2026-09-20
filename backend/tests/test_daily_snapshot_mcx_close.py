@@ -58,8 +58,8 @@ async def db_session():
         Column("ltp", Numeric, nullable=True),
         Column("day_pnl", Numeric, nullable=True),
         Column("total_pnl", Numeric, nullable=True),
-        Column("previous_close", Float, nullable=True),
-        Column("previous_close_backup", Float, nullable=True),
+        Column("prev_close", Float, nullable=True),          # renamed from previous_close
+        Column("prev_close_backup", Float, nullable=True),   # renamed from previous_close_backup
         Column("payload_json", Text, nullable=True),
         Column("captured_at", DateTime(timezone=True), nullable=False),
         UniqueConstraint("date", "account", "kind", "symbol",

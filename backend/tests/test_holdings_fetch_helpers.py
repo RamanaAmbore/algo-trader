@@ -194,7 +194,7 @@ def _mock_holding(account: str, account_stale: bool):
     return HoldingRow(
         account=account, tradingsymbol="X", exchange="NSE",
         quantity=1, opening_quantity=1,
-        average_price=100.0, close_price=100.0, last_price=100.0,
+        average_price=100.0, prev_close=100.0, last_price=100.0,
         inv_val=100.0, cur_val=100.0, pnl=0.0, pnl_percentage=0.0,
         day_change_val=0.0, day_change_percentage=0.0,
         last_price_stale=False, account_stale=account_stale,

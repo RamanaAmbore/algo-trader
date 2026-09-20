@@ -6,15 +6,15 @@ holdings day P&L, and cash/margin behavior during closed hours.
 
 Five windows (IST):
   W1 | 09:00–09:15 | NSE closed | MCX open  | MCX LTP updates don't stale-zero day P&L
-  W2 | 09:15–15:30 | NSE open   | MCX open  | Normal session: formula (ltp−previous_close)×qty fires
-  W3 | 15:30–23:30 | NSE closed | MCX open  | CRITICAL: close_price=ltp=settlement, previous_close>0
+  W2 | 09:15–15:30 | NSE open   | MCX open  | Normal session: formula (ltp−prev_close)×qty fires
+  W3 | 15:30–23:30 | NSE closed | MCX open  | CRITICAL: close_price=ltp=settlement, prev_close>0
   W4 | 23:30–09:00 | NSE closed | MCX closed| Snapshot served; no broker; last cached funds returned
-  W5 | Day boundary| Closed→Open| —        | previous_close frozen, ltp resets, formula correct
+  W5 | Day boundary| Closed→Open| —        | prev_close frozen, ltp resets, formula correct
 
 Quality dimensions:
-  1. SSOT    — previous_close frozen from daily_book; used directly (not proxied)
+  1. SSOT    — prev_close frozen from daily_book; used directly (not proxied)
   2. Perf    — zero broker calls when market closed (verified call_count == 0)
-  3. Stale   — source grep: COALESCE(previous_close, ltp) in positions.py SQL
+  3. Stale   — source grep: COALESCE(prev_close, ltp) in positions.py SQL
   4. Reuse   — apply_day_change_backstop from pnl_math
   5. Correct — explicit W3 + W5 edge-case assertions + golden values
 """
@@ -46,8 +46,7 @@ def _make_position_df(
     quantity: int = 50,
     overnight_quantity: int = 50,
     last_price: float = 23150.0,
-    close_price: float = 23100.0,
-    previous_close: float = 23000.0,
+    prev_close: float = 23100.0,
     average_price: float = 22800.0,
     pnl: float = 17500.0,
     day_change_val: float = 0.0,
@@ -55,7 +54,7 @@ def _make_position_df(
     pnl_percentage: float = 0.0,
 ) -> pd.DataFrame:
     """Minimal positions DataFrame shaped like broker adapter produces.
-    Includes previous_close field (new in this fix)."""
+    Includes prev_close field."""
     return pd.DataFrame([{
         "account": account,
         "tradingsymbol": symbol,
@@ -64,8 +63,7 @@ def _make_position_df(
         "overnight_quantity": overnight_quantity,
         "average_price": average_price,
         "last_price": last_price,
-        "close_price": close_price,
-        "previous_close": previous_close,
+        "prev_close": prev_close,
         "pnl": pnl,
         "day_change_val": day_change_val,
         "day_change_percentage": day_change_percentage,
@@ -80,8 +78,7 @@ def _make_holding_df(
     quantity: int = 50,
     opening_quantity: int = 50,
     last_price: float = 150.0,
-    close_price: float = 150.0,
-    previous_close: float = 148.0,
+    prev_close: float = 148.0,
     average_price: float = 140.0,
     pnl: float = 500.0,
     day_change_val: float = 0.0,
@@ -97,8 +94,7 @@ def _make_holding_df(
         "opening_quantity": opening_quantity,
         "average_price": average_price,
         "last_price": last_price,
-        "close_price": close_price,
-        "previous_close": previous_close,
+        "prev_close": prev_close,
         "inv_val": average_price * quantity,
         "cur_val": last_price * quantity,
         "pnl": pnl,
@@ -117,9 +113,9 @@ class TestW2NormalSessionPositions:
     """W2: 09:15–15:30, both NSE and MCX open, normal trading."""
 
     def test_w2_overnight_position_formula_path(self):
-        """Overnight position with prior close. Formula (ltp−previous_close)×qty fires.
+        """Overnight position with prior close. Formula (ltp−prev_close)×qty fires.
 
-        Position: overnight_quantity=10, quantity=10, ltp=495.0, previous_close=488.5
+        Position: overnight_quantity=10, quantity=10, ltp=495.0, prev_close=488.5
         Expected: day_change_val = (495.0 − 488.5) × 10 = 65.0
         """
         from backend.api.algo.pnl_math import apply_day_change_backstop
@@ -128,8 +124,7 @@ class TestW2NormalSessionPositions:
             quantity=10,
             overnight_quantity=10,
             last_price=495.0,
-            previous_close=488.5,
-            close_price=490.0,  # Kite close (potentially stale)
+            prev_close=488.5,
             average_price=480.0,
             pnl=150.0,
             day_change_val=0.0,  # will be filled by backstop or formula
@@ -137,19 +132,19 @@ class TestW2NormalSessionPositions:
 
         result = apply_day_change_backstop(df)
 
-        # After backstop: should use previous_close in the formula
+        # After backstop: should use prev_close in the formula
         # When day_change_val=0 and pnl≠0, Case 2 fires:
-        # day_change_val = pnl − (close − avg) × oq
-        # = 150 − (490 − 480) × 10 = 150 − 100 = 50.0
-        # This is the backstop recovery. Frontend will compute (ltp − previous_close) × qty
-        assert result.iloc[0]["day_change_val"] == 50.0, (
-            f"Case 2 backstop should set day_change_val=50.0, got {result.iloc[0]['day_change_val']}"
+        # day_change_val = pnl − (prev_close − avg) × oq
+        # = 150 − (488.5 − 480) × 10 = 150 − 85 = 65.0
+        # This is the backstop recovery. Frontend will compute (ltp − prev_close) × qty
+        assert result.iloc[0]["day_change_val"] == 65.0, (
+            f"Case 2 backstop should set day_change_val=65.0, got {result.iloc[0]['day_change_val']}"
         )
 
     def test_w2_nse_holding_day_pnl(self):
-        """Holding with previous_close. Day P&L = (ltp − previous_close) × quantity.
+        """Holding with prev_close. Day P&L = (ltp − prev_close) × quantity.
 
-        Holding: quantity=20, ltp=155.0, previous_close=150.0
+        Holding: quantity=20, ltp=155.0, prev_close=150.0
         Expected: day_pnl = (155.0 − 150.0) × 20 = 100.0
 
         Note: backstop Case 2 uses quantity as the overnight_quantity proxy
@@ -161,8 +156,7 @@ class TestW2NormalSessionPositions:
         df = _make_holding_df(
             quantity=20,
             last_price=155.0,
-            previous_close=150.0,
-            close_price=155.0,
+            prev_close=150.0,
             average_price=140.0,
             pnl=300.0,
             day_change_val=0.0,
@@ -184,9 +178,9 @@ class TestW2NormalSessionHoldings:
     """W2: Holdings during normal NSE session."""
 
     def test_w2_holding_formula_path(self):
-        """Holding with ltp and previous_close both available and different.
+        """Holding with ltp and prev_close both available and different.
 
-        Holding: quantity=10, ltp=2950.0, previous_close=2930.0, pnl=500.0
+        Holding: quantity=10, ltp=2950.0, prev_close=2930.0, pnl=500.0
         Backstop Case 1 fires (oq defaults to 0, dcv=0, pnl≠0) → day_change_val = pnl
 
         Note: Holdings don't have an overnight_quantity field, so the backstop
@@ -196,8 +190,7 @@ class TestW2NormalSessionHoldings:
         df = _make_holding_df(
             quantity=10,
             last_price=2950.0,
-            previous_close=2930.0,
-            close_price=2940.0,  # Kite close
+            prev_close=2930.0,
             average_price=2900.0,
             pnl=500.0,
             day_change_val=0.0,
@@ -222,18 +215,18 @@ class TestW3SettlementDriftCritical:
 
     def test_w3_settlement_drift_close_price_equals_ltp(self):
         """At settlement, Kite resets close_price → ltp (both = settlement_price).
-        previous_close remains frozen from yesterday. Formula must use previous_close.
+        prev_close remains frozen from yesterday. Formula must use prev_close.
 
         Scenario:
           - settlement_price = 495.0
           - close_price = 495.0 (Kite reset)
           - ltp = 495.0 (same)
-          - previous_close = 488.5 (frozen — yesterday's close)
+          - prev_close = 488.5 (frozen — yesterday's close)
           - quantity = 10
           - Expected day_change_val = (495.0 − 488.5) × 10 = 65.0
 
-        Without previous_close fix: (495 − 495) × 10 = 0 → WRONG
-        With previous_close fix: (495 − 488.5) × 10 = 65.0 → CORRECT
+        Without prev_close fix: (495 − 495) × 10 = 0 → WRONG
+        With prev_close fix: (495 − 488.5) × 10 = 65.0 → CORRECT
         """
         from backend.api.algo.pnl_math import apply_day_change_backstop
 
@@ -243,8 +236,7 @@ class TestW3SettlementDriftCritical:
             quantity=10,
             overnight_quantity=10,
             last_price=settlement_price,
-            close_price=settlement_price,  # Kite reset to settlement
-            previous_close=488.5,  # frozen yesterday's close
+            prev_close=488.5,  # frozen yesterday's close
             average_price=485.0,
             pnl=100.0,
             day_change_val=0.0,
@@ -256,70 +248,66 @@ class TestW3SettlementDriftCritical:
         # day_change_val = pnl − (close − avg) × oq
         # = 100 − (495 − 485) × 10 = 100 − 100 = 0.0
         # This is NOT the right formula for W3. The REAL day_change_val should
-        # come from the market data layer using previous_close.
-        # However, the backstop in positions.py can't see previous_close directly —
+        # come from the market data layer using prev_close.
+        # However, the backstop in positions.py can't see prev_close directly —
         # it only works on stored day_change_val. The fix is that the route handler
-        # or the route's polars expression should use previous_close in the formula.
+        # or the route's polars expression should use prev_close in the formula.
         # For now, we verify the backstop doesn't make it worse.
         assert result is not None
         assert "day_change_val" in result.columns
 
     def test_w3_previous_close_non_zero_when_close_equals_ltp(self):
-        """Verify previous_close field exists and is non-zero even when close=ltp."""
+        """Verify prev_close field exists and is non-zero even when close=ltp."""
         df = _make_position_df(
             quantity=10,
             overnight_quantity=10,
             last_price=495.0,
-            close_price=495.0,
-            previous_close=488.5,
+            prev_close=488.5,
             average_price=485.0,
         )
 
-        assert "previous_close" in df.columns, "previous_close field must be present"
-        assert df.iloc[0]["previous_close"] != 0.0, (
-            "previous_close must be non-zero (frozen value from yesterday)"
+        assert "prev_close" in df.columns, "prev_close field must be present"
+        assert df.iloc[0]["prev_close"] != 0.0, (
+            "prev_close must be non-zero (frozen value from yesterday)"
         )
-        assert abs(df.iloc[0]["previous_close"] - 488.5) < 0.001, (
-            f"previous_close should be 488.5, got {df.iloc[0]['previous_close']}"
+        assert abs(df.iloc[0]["prev_close"] - 488.5) < 0.001, (
+            f"prev_close should be 488.5, got {df.iloc[0]['prev_close']}"
         )
 
     def test_w3_holding_settlement_drift(self):
-        """Holdings at W3: close_price=ltp=settlement, previous_close frozen.
-        Day P&L formula should use previous_close, not close_price.
+        """Holdings at W3: close_price=ltp=settlement, prev_close frozen.
+        Day P&L formula should use prev_close, not close_price.
 
-        Holding: quantity=20, ltp=950.0, close_price=950.0, previous_close=945.0
+        Holding: quantity=20, ltp=950.0, close_price=950.0, prev_close=945.0
         Expected: (950 − 945) × 20 = 100.0 (not 0)
         """
         df = _make_holding_df(
             quantity=20,
             last_price=950.0,
-            close_price=950.0,  # settlement
-            previous_close=945.0,  # frozen
+            prev_close=945.0,  # frozen
             average_price=940.0,
             pnl=400.0,
         )
 
-        assert df.iloc[0]["previous_close"] == 945.0
+        assert df.iloc[0]["prev_close"] == 945.0
         # Verify the field is available for frontend to use
-        assert df.iloc[0]["previous_close"] != df.iloc[0]["close_price"], (
-            "previous_close must differ from close_price at settlement"
+        assert "prev_close" in df.columns, (
+            "prev_close must be in columns"
         )
 
     def test_w3_epsilon_guard_within_0_005(self):
-        """Positions within epsilon (0.005) of snapshot use COALESCE(previous_close, ltp).
-        Verify close_price close to settlement still gets previous_close set.
+        """Positions within epsilon (0.005) of snapshot use COALESCE(prev_close, ltp).
+        Verify close_price close to settlement still gets prev_close set.
 
         Scenario:
           - close_price = 495.003 (within epsilon of settlement 495.0)
-          - previous_close = 488.5 (should be set independently)
+          - prev_close = 488.5 (should be set independently)
         """
         df = _make_position_df(
-            close_price=495.003,  # within epsilon
-            previous_close=488.5,
+            prev_close=488.5,
         )
-        # After override: close_price may NOT change (within epsilon)
-        # But previous_close MUST be set (independent write)
-        assert df.iloc[0]["previous_close"] == 488.5
+        # After override: prev_close MUST be set (independent write)
+        assert df.iloc[0]["prev_close"] == 488.5
 
 
 # ===========================================================================
@@ -391,15 +379,15 @@ class TestW4BothClosedSnapshot:
 # ===========================================================================
 
 class TestW5DayBoundary:
-    """W5: Next day open. previous_close frozen at yesterday's settlement, ltp resets."""
+    """W5: Next day open. prev_close frozen at yesterday's settlement, ltp resets."""
 
     def test_w5_previous_close_frozen_from_yesterday(self):
-        """At W5 (next day open), previous_close is the prior session's settlement.
+        """At W5 (next day open), prev_close is the prior session's settlement.
         ltp resets to new session's first tick. Formula must not zero.
 
         Scenario (Friday EOD → Monday open):
           - Friday settlement: close_price = 495.0 (frozen until next open)
-          - Monday pre-open: previous_close = 495.0 (frozen)
+          - Monday pre-open: prev_close = 495.0 (frozen)
           - Monday first tick: ltp = 500.0 (new session)
           - day_change_val (Kite): 0.0 (gate zeroed it, LTP was 0 pre-tick)
           - quantity = 10
@@ -413,8 +401,7 @@ class TestW5DayBoundary:
             quantity=10,
             overnight_quantity=10,
             last_price=500.0,  # new session's first tick
-            close_price=495.0,  # frozen from Friday EOD
-            previous_close=495.0,  # frozen from Friday settlement
+            prev_close=495.0,  # frozen from Friday settlement
             average_price=485.0,
             pnl=150.0,  # Kite computed pnl on their side
             day_change_val=0.0,  # gate zeroed it pre-LTP
@@ -442,8 +429,7 @@ class TestW5DayBoundary:
             quantity=5,
             overnight_quantity=0,  # new position
             last_price=200.0,
-            close_price=0.0,  # no prior session close
-            previous_close=0.0,  # N/A for new position
+            prev_close=0.0,  # no prior session close for new position
             average_price=195.0,
             pnl=25.0,
             day_change_val=0.0,
@@ -457,22 +443,21 @@ class TestW5DayBoundary:
         )
 
     def test_w5_holding_previous_close_frozen_across_weekend(self):
-        """Holding across a weekend: previous_close = Friday settlement (frozen).
+        """Holding across a weekend: prev_close = Friday settlement (frozen).
 
-        Holding: quantity=30, ltp=3000.0, previous_close=2950.0, close_price=2950.0
-        Expected: (3000 − 2950) × 30 = 1500.0 (using frozen previous_close)
+        Holding: quantity=30, ltp=3000.0, prev_close=2950.0, close_price=2950.0
+        Expected: (3000 − 2950) × 30 = 1500.0 (using frozen prev_close)
         """
         df = _make_holding_df(
             quantity=30,
             last_price=3000.0,
-            previous_close=2950.0,  # Friday settlement (frozen across weekend)
-            close_price=2950.0,  # Kite's close (same initially)
+            prev_close=2950.0,  # Friday settlement (frozen across weekend)
             average_price=2900.0,
             pnl=3000.0,
         )
 
-        assert df.iloc[0]["previous_close"] == 2950.0, (
-            "previous_close must be frozen from Friday's settlement"
+        assert df.iloc[0]["prev_close"] == 2950.0, (
+            "prev_close must be frozen from Friday's settlement"
         )
         # Day P&L formula: (3000 − 2950) × 30 = 1500.0
         expected_day_pnl = (3000.0 - 2950.0) * 30
@@ -487,9 +472,10 @@ class TestSourceIntegrity:
     """Verify the fix is present in source files (SSOT + stale-code guard)."""
 
     def test_positions_schema_has_previous_close(self):
-        """PositionRow schema in schemas.py includes previous_close: float = 0.0"""
+        """PositionRow schema in schemas.py includes prev_close: float = 0.0 (default)"""
         from backend.api.schemas import PositionRow
 
+        # Do NOT pass prev_close to verify the default value
         row = PositionRow(
             account="TEST",
             tradingsymbol="NIFTY25JUNFUT",
@@ -497,18 +483,17 @@ class TestSourceIntegrity:
             product="NRML",
             quantity=10,
             average_price=23000.0,
-            close_price=23100.0,
             pnl=1000.0,
         )
-        assert hasattr(row, "previous_close"), (
-            "PositionRow must have previous_close attribute"
+        assert hasattr(row, "prev_close"), (
+            "PositionRow must have prev_close attribute"
         )
-        assert row.previous_close == 0.0, "Default must be 0.0"
+        assert row.prev_close == 0.0, "Default must be 0.0"
 
     def test_positions_route_uses_ltp_not_coalesce(self):
         """Positions close-override path must use daily_book.ltp directly (not COALESCE).
 
-        The COALESCE(daily_book.previous_close, ltp) was the bug — previous_close is
+        The COALESCE(daily_book.prev_close, ltp) was the bug — prev_close is
         populated from Kite's stale BHAV-copy API. Fix: daily_book.ltp as ref_close.
 
         After the CC refactor the SQL lives in _fetch_snapshot_close_map; the test
@@ -542,40 +527,40 @@ class TestSourceIntegrity:
 
         # Updated: SQL now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) so pre-fix
         # holiday snapshots (ltp=NULL, close_price>0) are included. The old wrong pattern
-        # COALESCE(previous_close, ltp) must still be absent.
-        assert "COALESCE(daily_book.previous_close" not in sql_literal, (
-            "SQL must NOT use COALESCE(daily_book.previous_close, ...) — that was the old BHAV bug"
+        # COALESCE(prev_close, ltp) must still be absent.
+        assert "COALESCE(daily_book.prev_close" not in sql_literal, (
+            "SQL must NOT use COALESCE(daily_book.prev_close, ...) — that was the old BHAV bug"
         )
-        assert "COALESCE(previous_close" not in sql_literal.lower(), (
-            "SQL must NOT use COALESCE(previous_close, ...) — use ltp with close_price fallback"
+        assert "COALESCE(prev_close" not in sql_literal.lower(), (
+            "SQL must NOT use COALESCE(prev_close, ...) — use ltp with close_price fallback"
         )
         assert "ltp" in sql_literal.lower(), "SQL must reference ltp"
 
     def test_holdings_schema_has_previous_close(self):
-        """HoldingRow schema in schemas.py includes previous_close: float = 0.0"""
+        """HoldingRow schema in schemas.py includes prev_close: float = 0.0 (default)"""
         from backend.api.schemas import HoldingRow
 
+        # Do NOT pass prev_close to verify the default value
         row = HoldingRow(
             account="TEST",
             tradingsymbol="RELIANCE",
             exchange="NSE",
             quantity=10,
             average_price=2800.0,
-            close_price=2900.0,
             inv_val=28000.0,
             cur_val=29000.0,
             pnl=1000.0,
             pnl_percentage=3.57,
         )
-        assert hasattr(row, "previous_close"), (
-            "HoldingRow must have previous_close attribute"
+        assert hasattr(row, "prev_close"), (
+            "HoldingRow must have prev_close attribute"
         )
-        assert row.previous_close == 0.0, "Default must be 0.0"
+        assert row.prev_close == 0.0, "Default must be 0.0"
 
     def test_holdings_route_uses_ltp_not_coalesce(self):
         """_override_stale_close_for_holdings must use daily_book.ltp directly.
 
-        The COALESCE(daily_book.previous_close, ltp) was the bug — previous_close is
+        The COALESCE(daily_book.prev_close, ltp) was the bug — prev_close is
         populated from Kite's stale BHAV-copy API. Fix: daily_book.ltp as ref_close.
         """
         import re
@@ -595,7 +580,7 @@ class TestSourceIntegrity:
         sql_match = re.search(r'_sql_text\("""(.*?)"""', fn_text, re.DOTALL)
         sql_literal = sql_match.group(1) if sql_match else fn_text
         assert "COALESCE" not in sql_literal.upper(), (
-            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
+            "SQL must NOT use COALESCE — prev_close is stale BHAV-copy; use daily_book.ltp directly"
         )
         assert "ltp" in sql_literal.lower() and "ref_close" in sql_literal.lower(), (
             "SQL must reference ltp AS ref_close (not COALESCE)"
@@ -623,10 +608,9 @@ class TestClosedHoursPerformance:
                     product="NRML",
                     quantity=50,
                     average_price=23000.0,
-                    close_price=23100.0,
+                    prev_close=23100.0,
                     pnl=5000.0,
                     last_price=23100.0,
-                    previous_close=23000.0,
                 )
             ],
             summary=[
@@ -679,13 +663,12 @@ class TestClosedHoursPerformance:
                     exchange="NSE",
                     quantity=10,
                     average_price=2800.0,
-                    close_price=2900.0,
+                    prev_close=2850.0,
                     inv_val=28000.0,
                     cur_val=29000.0,
                     pnl=1000.0,
                     pnl_percentage=3.57,
                     last_price=2900.0,
-                    previous_close=2850.0,
                 )
             ],
             summary=[
@@ -880,7 +863,7 @@ def _run_pos_override(
     """Invoke _override_stale_close_from_snapshot with a mocked DB session.
 
     snapshot_rows: list of (account, symbol, ref_close, total_pnl) 4-tuples
-    representing COALESCE(previous_close, ltp), total_pnl rows from daily_book.
+    representing COALESCE(prev_close, ltp), total_pnl rows from daily_book.
     """
     from backend.api.routes.positions import _override_stale_close_from_snapshot
 
@@ -908,28 +891,29 @@ def _run_pos_override(
 
 
 class TestPositionsPreviousCloseOverride:
-    """Tests for the _override_stale_close_from_snapshot previous_close fix.
+    """Tests for the _override_stale_close_from_snapshot prev_close fix.
 
     Mandatory behaviours:
-      1. previous_close written for ALL matched rows (not just epsilon-patched ones)
-      2. COALESCE: when daily_book.previous_close is non-null, that value is used;
+      1. prev_close written for ALL matched rows (not just epsilon-patched ones)
+      2. COALESCE: when daily_book.prev_close is non-null, that value is used;
          when null (field absent/None), ltp is used instead
       3. Column initialised to 0.0 before DB call (safe on DB failure)
     """
 
     def test_previous_close_in_positions_row_cols(self):
-        """'previous_close' must appear in _ROW_COLS for polars select to pass it through."""
+        """'prev_close' must appear in _ROW_COLS for polars select to pass it through."""
         from backend.api.routes.positions import _ROW_COLS
 
-        assert "previous_close" in _ROW_COLS, (
-            "'previous_close' must be listed in positions._ROW_COLS so the polars "
+        assert "prev_close" in _ROW_COLS, (
+            "'prev_close' must be listed in positions._ROW_COLS so the polars "
             "select includes it before _dict_to_position_row constructs PositionRow objects"
         )
 
     def test_position_row_schema_has_previous_close(self):
-        """PositionRow must declare previous_close: float = 0.0."""
+        """PositionRow must declare prev_close: float = 0.0 (default)."""
         from backend.api.schemas import PositionRow
 
+        # Do NOT pass prev_close to verify default value
         row = PositionRow(
             account="TEST001",
             tradingsymbol="NIFTY25JUNFUT",
@@ -937,32 +921,31 @@ class TestPositionsPreviousCloseOverride:
             product="NRML",
             quantity=50,
             average_price=23000.0,
-            close_price=23100.0,
             pnl=5000.0,
         )
-        assert hasattr(row, "previous_close"), (
-            "PositionRow must declare previous_close field — add to schemas.py"
+        assert hasattr(row, "prev_close"), (
+            "PositionRow must declare prev_close field — add to schemas.py"
         )
-        assert row.previous_close == 0.0, "Default value must be 0.0"
+        assert row.prev_close == 0.0, "Default value must be 0.0"
 
     def test_previous_close_set_for_all_matched_rows_including_epsilon(self):
         """Row within epsilon of snapshot: close_price NOT patched, but
-        previous_close MUST still be set (independent write).
+        prev_close MUST still be set (independent write).
 
         Row A: close_price=23100.0, ref_close=23100.003 → within epsilon,
-               close_price unchanged BUT previous_close must be 23100.003.
+               close_price unchanged BUT prev_close must be 23100.003.
         Row B: close_price=23000.0, ref_close=23100.0 → > epsilon,
-               both close_price and previous_close patched to 23100.0.
+               both close_price and prev_close patched to 23100.0.
         """
         df = pd.concat([
             _make_position_df(
                 account="T1", symbol="NIFTY25JUNFUT",
-                last_price=23150.0, close_price=23100.0,
+                last_price=23150.0, prev_close=23100.0,
                 overnight_quantity=50, quantity=50,
             ),
             _make_position_df(
                 account="T1", symbol="BANKNIFTY25JUNFUT",
-                last_price=48000.0, close_price=47500.0,
+                last_price=48000.0, prev_close=47500.0,
                 overnight_quantity=25, quantity=25,
             ),
         ], ignore_index=True)
@@ -975,54 +958,65 @@ class TestPositionsPreviousCloseOverride:
         row_nifty = df[df["tradingsymbol"] == "NIFTY25JUNFUT"].iloc[0]
         row_bank = df[df["tradingsymbol"] == "BANKNIFTY25JUNFUT"].iloc[0]
 
-        # NIFTY: close_price must NOT be patched (within epsilon)
-        assert abs(row_nifty["close_price"] - 23100.0) < 0.01, (
-            "close_price must not change when within epsilon"
-        )
-        # NIFTY: previous_close MUST be set
-        assert abs(row_nifty["previous_close"] - 23100.003) < 0.001, (
-            f"previous_close must be written even when close_price is NOT patched, "
-            f"got {row_nifty['previous_close']}"
+        # NIFTY: prev_close MUST be set
+        assert abs(row_nifty["prev_close"] - 23100.003) < 0.001, (
+            f"prev_close must be written for all rows, "
+            f"got {row_nifty['prev_close']}"
         )
 
-        # BANKNIFTY: both patched
-        assert abs(row_bank["close_price"] - 47800.0) < 0.01
-        assert abs(row_bank["previous_close"] - 47800.0) < 0.001
+        # BANKNIFTY: prev_close patched
+        assert abs(row_bank["prev_close"] - 47800.0) < 0.001
 
-    def test_previous_close_zero_for_rows_with_no_snapshot(self):
-        """Row with no snapshot entry → previous_close initialised to 0.0.
-        Column must exist regardless (initialised unconditionally).
+    def test_previous_close_preserved_for_rows_with_no_snapshot(self):
+        """Row with no snapshot entry → broker-supplied prev_close is preserved.
+
+        After the close_price→prev_close rename, the column is the same field
+        used by both the broker adapter (as the prior-close reference) and the
+        snapshot override. When the snapshot map is empty (no DB match),
+        the broker-supplied value must NOT be zeroed — that would wipe the
+        valid overnight reference price for positions that weren't in the DB.
+
+        Old test name was 'test_previous_close_zero_for_rows_with_no_snapshot'
+        which reflected the previous behaviour where the column was always
+        initialised to 0 before the DB call. After the fix, the guard is:
+          if 'prev_close' not in raw.columns: raw['prev_close'] = 0.0
+        so existing broker-supplied values are preserved.
         """
-        df = _make_position_df(last_price=23150.0, close_price=23100.0)
+        df = _make_position_df(last_price=23150.0, prev_close=23100.0)
         df = _run_pos_override(df, [])  # empty snapshot_map
 
-        assert "previous_close" in df.columns, (
-            "previous_close column must be added even when snapshot_map is empty"
+        assert "prev_close" in df.columns, (
+            "prev_close column must exist even when snapshot_map is empty"
         )
-        assert df.iloc[0]["previous_close"] == 0.0, (
-            "Unmatched row must have previous_close=0.0, not NaN or missing"
+        # Broker-supplied prev_close (23100.0) must be preserved for unmatched rows
+        assert df.iloc[0]["prev_close"] == pytest.approx(23100.0), (
+            "Unmatched rows must preserve broker-supplied prev_close, not be zeroed"
         )
 
     def test_previous_close_uses_coalesce_value(self):
-        """The ref_close column (COALESCE(previous_close, ltp)) is stored directly.
-        Simulated by passing the frozen daily_book.previous_close as ref_close.
+        """The ref_close column (COALESCE(prev_close, ltp)) is stored directly.
+        Simulated by passing the frozen daily_book.prev_close as ref_close.
         """
-        df = _make_position_df(last_price=23150.0, close_price=23000.0)
-        coalesced_ref = 22950.0   # frozen previous_close beats raw ltp (23050.0)
+        df = _make_position_df(last_price=23150.0, prev_close=23000.0)
+        coalesced_ref = 22950.0   # frozen prev_close beats raw ltp (23050.0)
         df = _run_pos_override(df, [("TEST001", "NIFTY25JUNFUT", coalesced_ref, None)])
 
-        assert abs(df.iloc[0]["previous_close"] - coalesced_ref) < 0.001, (
-            f"previous_close must store the COALESCE'd ref_close ({coalesced_ref}), "
-            f"got {df.iloc[0]['previous_close']}"
+        assert abs(df.iloc[0]["prev_close"] - coalesced_ref) < 0.001, (
+            f"prev_close must store the COALESCE'd ref_close ({coalesced_ref}), "
+            f"got {df.iloc[0]['prev_close']}"
         )
-        # close_price also patched (23000 → 22950, diff > epsilon)
-        assert abs(df.iloc[0]["close_price"] - coalesced_ref) < 0.001
 
     def test_previous_close_column_initialised_before_db_call(self):
-        """Column must exist even when the DB query raises (initialised at top of function)."""
+        """Column must exist even when the DB query raises; broker-supplied value preserved.
+
+        When the broker adapter already put prev_close in the DataFrame, the
+        DB failure guard ('if prev_close not in raw.columns: raw[prev_close]=0')
+        does NOT fire — the broker value survives. The column still exists and
+        carries the broker-supplied value rather than 0.0.
+        """
         from backend.api.routes.positions import _override_stale_close_from_snapshot
 
-        df = _make_position_df()
+        df = _make_position_df()  # carries prev_close=23100.0 by default
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(side_effect=RuntimeError("DB down"))
@@ -1040,16 +1034,16 @@ class TestPositionsPreviousCloseOverride:
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 
-        assert "previous_close" in df.columns, (
-            "previous_close column must be initialised before DB call so it "
-            "exists even on DB failure"
+        assert "prev_close" in df.columns, (
+            "prev_close column must exist even on DB failure"
         )
-        assert df.iloc[0]["previous_close"] == 0.0
+        # Broker-supplied 23100.0 is preserved (not zeroed) since column already existed
+        assert df.iloc[0]["prev_close"] == pytest.approx(23100.0)
 
     def test_sql_uses_ltp_not_coalesce_in_positions(self):
         """DB query in _override_stale_close_from_snapshot must use daily_book.ltp directly.
 
-        The COALESCE(daily_book.previous_close, ltp) was the bug: previous_close is populated
+        The COALESCE(daily_book.prev_close, ltp) was the bug: prev_close is populated
         from Kite's stale BHAV-copy API, so COALESCE returns the stale value → epsilon check
         passes → no patching → wrong day P&L. Fix: use daily_book.ltp as ref_close directly.
         """
@@ -1088,27 +1082,27 @@ class TestPositionsPreviousCloseOverride:
             asyncio.run(_override_stale_close_from_snapshot(df))
 
         # First-pass query + optional second-pass fallback: at least 1 query, at most 2.
-        # (Second pass fires when previous_close stays 0 after the first pass.)
+        # (Second pass fires when prev_close stays 0 after the first pass.)
         assert len(captured_sql) >= 1, "at least one SQL query must execute"
         sql_lower = captured_sql[0].lower()
         # Updated: SQL now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) to include
-        # pre-fix holiday snapshots. The old wrong pattern COALESCE(previous_close,...) must be absent.
-        assert "coalesce(daily_book.previous_close" not in sql_lower, (
-            "First-pass SQL must NOT use COALESCE(daily_book.previous_close,...) — that was the old BHAV bug"
+        # pre-fix holiday snapshots. The old wrong pattern COALESCE(prev_close,...) must be absent.
+        assert "coalesce(daily_book.prev_close" not in sql_lower, (
+            "First-pass SQL must NOT use COALESCE(daily_book.prev_close,...) — that was the old BHAV bug"
         )
-        assert "coalesce(previous_close" not in sql_lower, (
-            "First-pass SQL must NOT use COALESCE(previous_close,...)"
+        assert "coalesce(prev_close" not in sql_lower, (
+            "First-pass SQL must NOT use COALESCE(prev_close,...)"
         )
         assert "ltp" in sql_lower, "First-pass SQL must reference ltp"
         assert "positions" in sql_lower, "First-pass SQL must filter on kind='positions'"
 
     def test_previous_close_per_account_symbol(self):
-        """Each (account, symbol) combination gets its own previous_close."""
+        """Each (account, symbol) combination gets its own prev_close."""
         df = pd.concat([
             _make_position_df(account="ACC1", symbol="NIFTY25JUNFUT",
-                              last_price=23100.0, close_price=23000.0),
+                              last_price=23100.0, prev_close=23000.0),
             _make_position_df(account="ACC2", symbol="NIFTY25JUNFUT",
-                              last_price=23100.0, close_price=23000.0),
+                              last_price=23100.0, prev_close=23000.0),
         ], ignore_index=True)
 
         df = _run_pos_override(df, [
@@ -1119,11 +1113,11 @@ class TestPositionsPreviousCloseOverride:
         acc1 = df[df["account"] == "ACC1"].iloc[0]
         acc2 = df[df["account"] == "ACC2"].iloc[0]
 
-        assert abs(acc1["previous_close"] - 22950.0) < 0.001, (
-            f"ACC1 previous_close should be 22950.0, got {acc1['previous_close']}"
+        assert abs(acc1["prev_close"] - 22950.0) < 0.001, (
+            f"ACC1 prev_close should be 22950.0, got {acc1['prev_close']}"
         )
-        assert abs(acc2["previous_close"] - 22980.0) < 0.001, (
-            f"ACC2 previous_close should be 22980.0, got {acc2['previous_close']}"
+        assert abs(acc2["prev_close"] - 22980.0) < 0.001, (
+            f"ACC2 prev_close should be 22980.0, got {acc2['prev_close']}"
         )
 
 

@@ -142,10 +142,10 @@ def _maybe_log_ltp_gap(raw: pd.DataFrame, idx, sym_s: str, current: float) -> No
     """Ticker has no sample and broker value equals close_price — that's
     the exact condition that causes LTP/close flicker on the frontend.
     """
-    if 'close_price' not in raw.columns:
+    if 'prev_close' not in raw.columns:
         return
     try:
-        _close_val = raw.at[idx, 'close_price']
+        _close_val = raw.at[idx, 'prev_close']
         _close_f = float(_close_val) if pd.notna(_close_val) else None
     except (TypeError, ValueError):
         _close_f = None

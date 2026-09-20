@@ -174,8 +174,7 @@ def test_patch_close_from_snapshot_map_zero_close_price():
     df = pd.DataFrame([{
         'account': 'TEST001',
         'tradingsymbol': 'E2E',
-        'close_price': 0.0,      # Kite BHAV not yet distributed
-        'previous_close': 0.0,
+        'prev_close': 0.0,      # Kite BHAV not yet distributed
     }])
 
     # daily_book.ltp = 150.0 is the prior-session settlement price
@@ -183,18 +182,14 @@ def test_patch_close_from_snapshot_map_zero_close_price():
 
     patched_idx = _patch_close_from_snapshot_map(df, snapshot_map)
 
-    # close_price must be patched from 0 → 150.0
-    assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
-        f"close_price must be patched to 150.0 when BHAV close_price = 0; "
-        f"got {df.iloc[0]['close_price']}"
-    )
-    # previous_close must also be set unconditionally
-    assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
-        f"previous_close must be 150.0; got {df.iloc[0]['previous_close']}"
+    # prev_close must be patched from 0 → 150.0
+    assert abs(df.iloc[0]['prev_close'] - 150.0) < 0.01, (
+        f"prev_close must be patched to 150.0 when BHAV close_price = 0; "
+        f"got {df.iloc[0]['prev_close']}"
     )
     # The function must report this row as patched
     assert len(patched_idx) == 1, (
-        f"Expected 1 patched row for zero close_price, got {len(patched_idx)}"
+        f"Expected 1 patched row for zero prev_close, got {len(patched_idx)}"
     )
 
 
@@ -212,16 +207,12 @@ def test_patch_close_from_snapshot_map_uses_ltp_not_previous_close():
     df = pd.DataFrame([{
         'account': 'ZG1234',
         'tradingsymbol': 'HFCL',
-        'close_price': 0.0,
-        'previous_close': 0.0,
+        'prev_close': 0.0,
     }])
 
     snapshot_map = {('ZG1234', 'HFCL'): 150.0}
     _patch_close_from_snapshot_map(df, snapshot_map)
 
-    assert abs(df.iloc[0]['close_price'] - 150.0) < 0.01, (
-        "close_price must come from daily_book.ltp (snapshot_map value), not BHAV previous_close"
-    )
-    assert abs(df.iloc[0]['previous_close'] - 150.0) < 0.01, (
-        "previous_close must be set to daily_book.ltp value"
+    assert abs(df.iloc[0]['prev_close'] - 150.0) < 0.01, (
+        "prev_close must come from daily_book.ltp (snapshot_map value)"
     )

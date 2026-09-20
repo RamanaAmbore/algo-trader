@@ -1558,13 +1558,12 @@ class DailyBook(Base):
     day_pnl: Mapped[Optional[float]]  = mapped_column(Numeric(16, 4), nullable=True)
     total_pnl: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     # Frozen first-write per (date, account, kind, symbol). Captures
-    # Kite's close_price at the first snapshot of each trading day —
-    # which equals yesterday's official settlement before Kite overwrites
-    # it at EOD. COALESCE in the UPSERT ensures subsequent writes never
+    # the prior-session settlement LTP at the first snapshot of each
+    # trading day. COALESCE in the UPSERT ensures subsequent writes never
     # overwrite a non-NULL value. Used by _positions_snapshot() to supply
-    # a correct close_price during closed-hours reads instead of LTP.
-    previous_close: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
-    previous_close_backup: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    # a correct prev_close during closed-hours reads instead of LTP.
+    prev_close: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
+    prev_close_backup: Mapped[Optional[float]] = mapped_column(Numeric(16, 4), nullable=True)
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # raw row for forensics
     captured_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),

@@ -38,12 +38,16 @@ from unittest.mock import MagicMock, patch
 
 def _pos_df(last_price: float = 0.0, close_price: float = 220.0,
              quantity: int = 10, pnl: float = 0.0) -> pd.DataFrame:
-    """Minimal positions DataFrame row matching broker_apis shape."""
+    """Minimal positions DataFrame row matching broker_apis shape.
+    Uses ``prev_close`` (the canonical name after the close_price→prev_close
+    rename refactor) so production helpers read the correct column.
+    The ``close_price`` parameter is kept for backward-compatible call-sites.
+    """
     return pd.DataFrame([{
         'tradingsymbol': 'CRUDEOIL26JUL6900PE',
         'exchange': 'MCX',
         'last_price': last_price,
-        'close_price': close_price,
+        'prev_close': close_price,     # renamed: broker renames close_price→prev_close
         'quantity': quantity,
         'overnight_quantity': quantity,
         'day_buy_quantity': 0,
@@ -60,12 +64,15 @@ def _pos_df(last_price: float = 0.0, close_price: float = 220.0,
 
 def _hold_df(last_price: float = 0.0, close_price: float = 1800.0,
               opening_quantity: int = 10) -> pd.DataFrame:
-    """Minimal holdings DataFrame row matching broker_apis shape."""
+    """Minimal holdings DataFrame row matching broker_apis shape.
+    Uses ``prev_close`` (canonical name after rename refactor).
+    The ``close_price`` parameter is kept for backward-compatible call-sites.
+    """
     return pd.DataFrame([{
         'tradingsymbol': 'GOLDBEES',
         'exchange': 'NSE',
         'last_price': last_price,
-        'close_price': close_price,
+        'prev_close': close_price,     # renamed: broker renames close_price→prev_close
         'opening_quantity': opening_quantity,
         'average_price': 1750.0,
         'pnl': 0.0,

@@ -200,12 +200,12 @@ async def test_overlay_snapshot_tags_rows_live_when_all_open():
         PositionRow(
             account="ZG0790", tradingsymbol="NIFTY26JULFUT", exchange="NFO",
             product="NRML", quantity=50, average_price=22000.0,
-            close_price=22100.0, last_price=22150.0, pnl=7500.0,
+            prev_close=22100.0, last_price=22150.0, pnl=7500.0,
         ),
         PositionRow(
             account="ZG0790", tradingsymbol="CRUDEOIL26JULFUT", exchange="MCX",
             product="NRML", quantity=100, average_price=6800.0,
-            close_price=6820.0, last_price=6850.0, pnl=5000.0,
+            prev_close=6820.0, last_price=6850.0, pnl=5000.0,
         ),
     ]
 
@@ -233,12 +233,12 @@ async def test_overlay_snapshot_tags_closed_exchange_rows_as_snapshot():
         PositionRow(  # NSE (closed)
             account="ZG0790", tradingsymbol="NIFTY26JULFUT", exchange="NFO",
             product="NRML", quantity=50, average_price=22000.0,
-            close_price=22100.0, last_price=22150.0, pnl=7500.0,
+            prev_close=22100.0, last_price=22150.0, pnl=7500.0,
         ),
         PositionRow(  # MCX (open)
             account="ZG0790", tradingsymbol="CRUDEOIL26JULFUT", exchange="MCX",
             product="NRML", quantity=100, average_price=6800.0,
-            close_price=6820.0, last_price=6850.0, pnl=5000.0,
+            prev_close=6820.0, last_price=6850.0, pnl=5000.0,
         ),
     ]
 
@@ -284,7 +284,7 @@ async def test_overlay_snapshot_closed_row_without_snapshot_still_tagged():
         PositionRow(
             account="ZG0790", tradingsymbol="NEWCONTRACT26AUG", exchange="NFO",
             product="NRML", quantity=1, average_price=100.0,
-            close_price=100.0, last_price=105.0, pnl=5.0,
+            prev_close=100.0, last_price=105.0, pnl=5.0,
         ),
     ]
     with patch(
@@ -315,7 +315,7 @@ async def test_holdings_overlay_recomputes_cur_val_on_overlay():
         HoldingRow(
             account="ZG0790", tradingsymbol="INFY", exchange="NSE",
             quantity=100, opening_quantity=100, average_price=1500.0,
-            close_price=1600.0, last_price=1700.0,
+            prev_close=1600.0, last_price=1700.0,
             inv_val=150000.0, cur_val=170000.0,
             pnl=20000.0, pnl_percentage=13.3,
         ),

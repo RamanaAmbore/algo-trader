@@ -82,7 +82,7 @@ const _posTier1 = $derived.by(() => {
       ...p,
       _sym:        sym,
       _ltp:        snap?.ltp ?? Number(p?.last_price ?? 0),
-      _prev_close: Number(p?.previous_close) || Number(p?.close_price) || null,
+      _prev_close: Number(p?.prev_close) || null,
       _qty:        Number(p?.quantity ?? 0),
       _avg:        Number(p?.average_price ?? 0),
       _pnl:        Number(p?.pnl ?? 0),
@@ -223,7 +223,7 @@ const _holdTier1 = $derived.by(() => {
     return {
       ...h,
       _sym:        sym,
-      _prev_close: Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || null,
+      _prev_close: Number(h?.prev_close) || null,
       _held_qty:   Number(h?.quantity ?? 0),
       _ltp:        (snapLtp != null && snapLtp > 0) ? Number(snapLtp) : Number(h?.last_price ?? 0),
       _dcv:        Number(h?.day_change_val) || 0,

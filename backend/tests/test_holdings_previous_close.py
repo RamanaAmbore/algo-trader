@@ -41,7 +41,7 @@ def _make_raw_df(
     quantity: int = 50,
     opening_quantity: int = 50,
     last_price: float = 150.0,
-    close_price: float = 150.0,
+    close_price: float = 150.0,  # kept for call-site compat; stored as prev_close
     average_price: float = 140.0,
     pnl: float = 500.0,
     day_change_val: float = 0.0,
@@ -49,7 +49,10 @@ def _make_raw_df(
     day_change_percentage: float = 0.0,
     pnl_percentage: float = 0.0,
 ) -> pd.DataFrame:
-    """Minimal holdings DataFrame shaped like _fetch() produces."""
+    """Minimal holdings DataFrame shaped like _fetch() produces.
+    Uses ``prev_close`` (canonical name after close_price→prev_close rename).
+    The ``close_price`` parameter is kept for backward-compatible call-sites.
+    """
     return pd.DataFrame([{
         "account": account,
         "tradingsymbol": symbol,
@@ -58,7 +61,7 @@ def _make_raw_df(
         "opening_quantity": opening_quantity,
         "average_price": average_price,
         "last_price": last_price,
-        "close_price": close_price,
+        "prev_close": close_price,    # renamed: broker adapter uses prev_close
         "inv_val": average_price * quantity,
         "cur_val": last_price * quantity,
         "pnl": pnl,
@@ -116,8 +119,8 @@ class TestPreviousCloseInHoldingRowSchema:
     through _ROW_COLS → polars select → _build_holding_rows.
     """
 
-    def test_holding_row_has_previous_close_attribute(self):
-        """HoldingRow struct declares previous_close with default 0.0."""
+    def test_holding_row_has_prev_close_attribute(self):
+        """HoldingRow struct declares prev_close (renamed from previous_close) with default 0.0."""
         from backend.api.schemas import HoldingRow
 
         row = HoldingRow(
@@ -126,19 +129,18 @@ class TestPreviousCloseInHoldingRowSchema:
             exchange="NSE",
             quantity=50,
             average_price=140.0,
-            close_price=145.0,
             inv_val=7000.0,
             cur_val=7500.0,
             pnl=500.0,
             pnl_percentage=7.14,
         )
-        assert hasattr(row, "previous_close"), (
-            "HoldingRow must declare previous_close field — add to schemas.py"
+        assert hasattr(row, "prev_close"), (
+            "HoldingRow must declare prev_close field (renamed from previous_close)"
         )
-        assert row.previous_close == 0.0, "Default value must be 0.0"
+        assert row.prev_close == 0.0, "Default value must be 0.0"
 
-    def test_holding_row_previous_close_accepts_nonzero_value(self):
-        """HoldingRow.previous_close carries the value when explicitly supplied."""
+    def test_holding_row_prev_close_accepts_nonzero_value(self):
+        """HoldingRow.prev_close carries the value when explicitly supplied."""
         from backend.api.schemas import HoldingRow
 
         row = HoldingRow(
@@ -147,56 +149,55 @@ class TestPreviousCloseInHoldingRowSchema:
             exchange="NSE",
             quantity=50,
             average_price=140.0,
-            close_price=145.0,
             inv_val=7000.0,
             cur_val=7500.0,
             pnl=500.0,
             pnl_percentage=7.14,
-            previous_close=143.5,
+            prev_close=143.5,
         )
-        assert abs(row.previous_close - 143.5) < 0.001, (
-            f"previous_close must be 143.5, got {row.previous_close}"
+        assert abs(row.prev_close - 143.5) < 0.001, (
+            f"prev_close must be 143.5, got {row.prev_close}"
         )
 
     def test_previous_close_in_row_cols(self):
-        """'previous_close' must appear in _ROW_COLS for polars select."""
+        """'prev_close' must appear in _ROW_COLS for polars select."""
         from backend.api.routes.holdings import _ROW_COLS
 
-        assert "previous_close" in _ROW_COLS, (
-            "'previous_close' must be listed in _ROW_COLS so the polars select "
+        assert "prev_close" in _ROW_COLS, (
+            "'prev_close' must be listed in _ROW_COLS so the polars select "
             "includes it before _build_holding_rows constructs HoldingRow objects"
         )
 
     def test_previous_close_flows_from_dataframe_to_holding_row(self):
-        """End-to-end: override sets previous_close in raw DataFrame →
-        polars select includes it → HoldingRow.previous_close is non-zero.
+        """End-to-end: override sets prev_close in raw DataFrame →
+        polars select includes it → HoldingRow.prev_close is non-zero.
         """
         import polars as pl
         from backend.api.routes.holdings import _ROW_COLS, _build_holding_rows
 
         df = _make_raw_df(
             last_price=155.0,
-            close_price=155.0,  # will be patched (differs from snap 144.0)
+            close_price=155.0,  # stored as prev_close; will be patched (differs from snap 144.0)
             average_price=140.0,
             pnl=750.0,
         )
 
-        # snapshot: ref_close=144.0 (> 0.005 from close_price=155.0 → patched)
+        # snapshot: ref_close=144.0 (> 0.005 from prev_close=155.0 → patched)
         df = _run_override(df, [("TEST001", "RELIANCE", 144.0)])
 
-        assert "previous_close" in df.columns
-        assert abs(df.iloc[0]["previous_close"] - 144.0) < 0.001
+        assert "prev_close" in df.columns
+        assert abs(df.iloc[0]["prev_close"] - 144.0) < 0.001
 
         # Verify polars path
         pl_df = pl.from_pandas(df)
         row_cols = [c for c in _ROW_COLS if c in pl_df.columns]
-        assert "previous_close" in row_cols
+        assert "prev_close" in row_cols
         df_rows = pl_df.select(row_cols)
 
         rows = _build_holding_rows(df_rows, {})
         assert len(rows) == 1
-        assert abs(rows[0].previous_close - 144.0) < 0.001, (
-            f"HoldingRow.previous_close must be 144.0, got {rows[0].previous_close}"
+        assert abs(rows[0].prev_close - 144.0) < 0.001, (
+            f"HoldingRow.prev_close must be 144.0, got {rows[0].prev_close}"
         )
 
 
@@ -234,18 +235,13 @@ class TestPreviousCloseWrittenForAllRows:
         row_rel = df[df["tradingsymbol"] == "REL"].iloc[0]
         row_infy = df[df["tradingsymbol"] == "INFY"].iloc[0]
 
-        # REL: Fix 6 — close_price MUST now be patched to ref_close (no epsilon guard).
-        assert abs(row_rel["close_price"] - 145.003) < 0.001, (
-            "close_price must be set to ref_close even when diff < 0.005 (Fix 6 removed epsilon guard)"
-        )
-        # REL: previous_close must also be set.
-        assert abs(row_rel["previous_close"] - 145.003) < 0.001, (
-            f"previous_close must be written for row REL, got {row_rel['previous_close']}"
+        # REL: prev_close MUST now be patched to ref_close (no epsilon guard for the write).
+        assert abs(row_rel["prev_close"] - 145.003) < 0.001, (
+            "prev_close must be set to ref_close even when diff < 0.005"
         )
 
-        # INFY: both patched.
-        assert abs(row_infy["close_price"] - 1480.0) < 0.001
-        assert abs(row_infy["previous_close"] - 1480.0) < 0.001
+        # INFY: patched.
+        assert abs(row_infy["prev_close"] - 1480.0) < 0.001
 
     def test_previous_close_absent_when_snapshot_map_empty(self):
         """P2-B fix: empty snapshot_map → early return → previous_close column absent.
@@ -260,10 +256,14 @@ class TestPreviousCloseWrittenForAllRows:
         df = _make_raw_df(last_price=150.0, close_price=148.0)
         df = _run_override(df, [])  # snapshot_map will be empty → early return
 
-        # After P2-B fix: column absent when no snapshot entries exist.
-        assert "previous_close" not in df.columns, (
-            "P2-B fix: previous_close column must be absent when snapshot_map is "
-            "empty (early return preserves broker's own value instead of 0.0)"
+        # After P2-B fix: prev_close column absent when no snapshot entries exist.
+        # (The broker adapter puts prev_close in the DataFrame before this function,
+        #  so check that no ADDITIONAL write happened from the override.)
+        # The column may already exist from broker; what matters is no DB-sourced zero-init.
+        # Since _make_raw_df includes prev_close=148.0, the column exists but was not
+        # overwritten (no snapshot match). Test: column value stays at broker-supplied 148.0.
+        assert "prev_close" not in df.columns or df.iloc[0]["prev_close"] == pytest.approx(148.0), (
+            "P2-B fix: when snapshot_map empty, prev_close must not be zeroed"
         )
 
     def test_previous_close_uses_coalesce_value(self):
@@ -275,12 +275,10 @@ class TestPreviousCloseWrittenForAllRows:
         coalesced = 143.0   # frozen previous_close beats raw ltp (152.0)
         df = _run_override(df, [("TEST001", "RELIANCE", coalesced)])
 
-        assert abs(df.iloc[0]["previous_close"] - coalesced) < 0.001, (
-            f"previous_close must store the COALESCE'd value ({coalesced}), "
-            f"got {df.iloc[0]['previous_close']}"
+        assert abs(df.iloc[0]["prev_close"] - coalesced) < 0.001, (
+            f"prev_close must store the ref_close value ({coalesced}), "
+            f"got {df.iloc[0]['prev_close']}"
         )
-        # close_price also patched (130 → 143, diff > epsilon)
-        assert abs(df.iloc[0]["close_price"] - coalesced) < 0.001
 
     def test_sql_uses_ltp_not_coalesce(self):
         """DB query must use daily_book.ltp directly — NOT COALESCE(previous_close, ltp).
@@ -348,11 +346,11 @@ class TestPreviousCloseWrittenForAllRows:
         acc1 = df[df["account"] == "ACC1"].iloc[0]
         acc2 = df[df["account"] == "ACC2"].iloc[0]
 
-        assert abs(acc1["previous_close"] - 195.0) < 0.001, (
-            f"ACC1 previous_close should be 195.0, got {acc1['previous_close']}"
+        assert abs(acc1["prev_close"] - 195.0) < 0.001, (
+            f"ACC1 prev_close should be 195.0, got {acc1['prev_close']}"
         )
-        assert abs(acc2["previous_close"] - 197.0) < 0.001, (
-            f"ACC2 previous_close should be 197.0, got {acc2['previous_close']}"
+        assert abs(acc2["prev_close"] - 197.0) < 0.001, (
+            f"ACC2 prev_close should be 197.0, got {acc2['prev_close']}"
         )
 
     def test_previous_close_column_absent_on_db_failure(self):
@@ -384,12 +382,15 @@ class TestPreviousCloseWrittenForAllRows:
         ):
             asyncio.run(_override_stale_close_for_holdings(df))
 
-        # After P2-B fix: column must be absent on DB failure so broker's
-        # own close_price / previous_close (from _enrich_holdings) is used.
-        assert "previous_close" not in df.columns, (
-            "P2-B fix: previous_close column must be absent when DB query fails "
-            "— initialising to 0.0 before the query causes wrong Day P&L% display"
-        )
+        # After P2-B fix: when DB fails, the column is either absent (broker did not
+        # supply it) or retains its broker-supplied value (not zeroed).
+        # _make_raw_df() supplies prev_close=150.0 by default, so the column exists.
+        # On DB failure, the function returns early without zeroing it.
+        if "prev_close" in df.columns:
+            assert df.iloc[0]["prev_close"] != 0.0, (
+                "P2-B fix: prev_close must NOT be zeroed on DB failure — "
+                "broker-supplied value must be preserved"
+            )
 
 
 # ===========================================================================

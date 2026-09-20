@@ -78,19 +78,20 @@ def test_migrate_daily_book_backfill_previous_close_sql_has_correct_pattern():
     assert "FROM   daily_book p" in src or "FROM daily_book p" in src, (
         "SQL must join FROM daily_book p (alias for prior-day lookup)"
     )
-    assert "SET    previous_close = p.ltp" in src or "SET previous_close = p.ltp" in src, (
-        "SQL must SET previous_close = p.ltp"
+    assert "SET    prev_close = p.ltp" in src or "SET prev_close = p.ltp" in src, (
+        "SQL must SET prev_close = p.ltp (renamed from previous_close)"
     )
 
 
 def test_migrate_daily_book_backfill_previous_close_sql_has_null_guard():
-    """WHERE clause contains t.previous_close IS NULL guard (idempotent)."""
+    """WHERE clause contains t.prev_close IS NULL guard (idempotent)."""
     import inspect
     import backend.api.database as _db
 
     src = inspect.getsource(_db._migrate_daily_book_backfill_previous_close)
-    assert "t.previous_close IS NULL" in src, (
-        "WHERE clause must check t.previous_close IS NULL to skip already-filled rows"
+    assert "t.prev_close IS NULL" in src, (
+        "WHERE clause must check t.prev_close IS NULL to skip already-filled rows "
+        "(renamed from previous_close)"
     )
 
 
@@ -168,10 +169,11 @@ def test_migrate_daily_book_backfill_previous_close_is_idempotent():
     import backend.api.database as _db
 
     src = inspect.getsource(_db._migrate_daily_book_backfill_previous_close)
-    # The WHERE clause checks t.previous_close IS NULL,
+    # The WHERE clause checks t.prev_close IS NULL (renamed from previous_close),
     # so any already-filled rows are never touched.
-    assert "t.previous_close IS NULL" in src, (
-        "WHERE clause must ensure idempotency by checking t.previous_close IS NULL"
+    assert "t.prev_close IS NULL" in src, (
+        "WHERE clause must ensure idempotency by checking t.prev_close IS NULL "
+        "(renamed from previous_close)"
     )
 
 
@@ -301,8 +303,9 @@ async def test_migrate_daily_book_backfill_previous_close_sql_contains_previous_
     await _db._migrate_daily_book_backfill_previous_close(mock_conn)
 
     assert captured_sql is not None
-    assert "previous_close IS NULL" in captured_sql, (
-        f"SQL must check 'previous_close IS NULL' for idempotence, got: {captured_sql[:300]}"
+    assert "prev_close IS NULL" in captured_sql, (
+        f"SQL must check 'prev_close IS NULL' for idempotence (renamed from previous_close), "
+        f"got: {captured_sql[:300]}"
     )
 
 

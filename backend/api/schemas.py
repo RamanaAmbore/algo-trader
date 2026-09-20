@@ -18,7 +18,6 @@ class HoldingRow(msgspec.Struct):
     exchange: str
     quantity: int
     average_price: float
-    close_price: float
     inv_val: float
     cur_val: float
     pnl: float
@@ -51,12 +50,10 @@ class HoldingRow(msgspec.Struct):
     # Per-row price source tag — three values under the unified animation
     # model (Jul 2026):
     #   • "live"                 — exchange open, broker/ticker LTP
-    #   • "snapshot_settled"     — exchange closed and Kite has published
-    #                              close_price (post-45m settled window)
-    #   • "snapshot_unsettled"   — exchange closed but broker close_price
-    #                              not yet available (pre-settled window)
-    # Legacy value "snapshot" is still accepted by consumers until Commit 2
-    # ships the resolver — treat it as equivalent to "snapshot_settled".
+    #   • "snapshot_settled"     — exchange closed and settled window passed
+    #   • "snapshot_unsettled"   — exchange closed, pre-settled window
+    # Legacy value "snapshot" is still accepted by consumers — treat it as
+    # equivalent to "snapshot_settled".
     price_source: str = "live"
     # Unified-model alias for last_price. Populated alongside last_price
     # in the route overlay so consumers can migrate off the LTP-specific
@@ -66,15 +63,15 @@ class HoldingRow(msgspec.Struct):
     # Whether cells on this row should render tick-flash / freshness
     # shimmer animations. True while the row's exchange is currently
     # open; False on closed-exchange snapshot rows so cells render
-    # static (no green/red pulse on the frozen close_price). Frontend's
+    # static (no green/red pulse on the frozen prev_close). Frontend's
     # tick-flash cellClass reads this to gate the flash primitive.
     is_animating: bool = True
-    # Frozen prior-session settlement price (COALESCE from daily_book —
+    # Frozen prior-session settlement price (from daily_book.ltp —
     # never overwritten once set). Used by the frontend as the reference
-    # close for holdings day P&L so the formula `(ltp − previous_close) × qty`
-    # stays correct even when Kite's `close_price` has drifted post-settlement.
+    # close for holdings day P&L so the formula `(ltp − prev_close) × qty`
+    # stays correct even when Kite's broker close has drifted post-settlement.
     # Zero means "not yet available" (cold boot / first deploy).
-    previous_close: float = 0.0
+    prev_close: float = 0.0
     # P&L per share = total pnl / quantity. Useful for per-unit return
     # display without exposing quantity. Zero when quantity is 0 (e.g.
     # fully-sold holdings still in the snapshot).
@@ -120,7 +117,6 @@ class PositionRow(msgspec.Struct):
     product: str
     quantity: int
     average_price: float
-    close_price: float
     pnl: float
     last_price: float = 0.0
     pnl_percentage: float = 0.0
@@ -176,12 +172,10 @@ class PositionRow(msgspec.Struct):
     # Per-row price source tag — three values under the unified animation
     # model (Jul 2026):
     #   • "live"                 — exchange open, broker/ticker LTP
-    #   • "snapshot_settled"     — exchange closed and Kite has published
-    #                              close_price (post-45m settled window)
-    #   • "snapshot_unsettled"   — exchange closed but broker close_price
-    #                              not yet available (pre-settled window)
-    # Legacy value "snapshot" is still accepted by consumers until Commit 2
-    # ships the resolver — treat it as equivalent to "snapshot_settled".
+    #   • "snapshot_settled"     — exchange closed and settled window passed
+    #   • "snapshot_unsettled"   — exchange closed, pre-settled window
+    # Legacy value "snapshot" is still accepted by consumers — treat it as
+    # equivalent to "snapshot_settled".
     price_source: str = "live"
     # Unified-model alias for last_price. Populated alongside last_price
     # in the route overlay so consumers can migrate off the LTP-specific
@@ -191,7 +185,7 @@ class PositionRow(msgspec.Struct):
     # Whether cells on this row should render tick-flash / freshness
     # shimmer animations. True while the row's exchange is currently
     # open; False on closed-exchange snapshot rows so cells render
-    # static (no green/red pulse on the frozen close_price). Frontend's
+    # static (no green/red pulse on the frozen prev_close). Frontend's
     # tick-flash cellClass reads this to gate the flash primitive.
     is_animating: bool = True
     # True when no AlgoOrder with status='OPEN' matches this position's
@@ -215,13 +209,13 @@ class PositionRow(msgspec.Struct):
     # position rows that already have an active GTT attached, so the
     # operator doesn't accidentally create a duplicate.
     has_gtt: bool = False
-    # Frozen prior-session settlement price (COALESCE from daily_book —
-    # never overwritten once set). Mirrors HoldingRow.previous_close.
+    # Frozen prior-session settlement price (from daily_book.ltp —
+    # never overwritten once set). Mirrors HoldingRow.prev_close.
     # Used by the frontend as the reference close for positions day P&L
-    # so the formula `(ltp − previous_close) × qty` stays correct even
-    # when Kite's `close_price` has drifted post-settlement (W3 window).
+    # so the formula `(ltp − prev_close) × qty` stays correct even
+    # when the broker's close has drifted post-settlement (W3 window).
     # Zero means "not yet available" (cold boot / first deploy).
-    previous_close: float = 0.0
+    prev_close: float = 0.0
 
 
 class PositionsSummaryRow(msgspec.Struct):

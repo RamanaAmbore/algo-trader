@@ -22,7 +22,7 @@ def _make_mcx_position_row(
     account: str = "ZG0790",
     symbol: str = "CRUDEOIL26JUL6900PE",
     last_price: float = 264.5,
-    close_price: float = 220.0,
+    close_price: float = 220.0,  # kept for compat; mapped to prev_close below
     quantity: int = 10,
 ) -> dict:
     """Build a minimal positions DataFrame row for testing."""
@@ -32,7 +32,7 @@ def _make_mcx_position_row(
         'exchange': 'MCX',
         'product': 'NRML',
         'last_price': last_price,
-        'close_price': close_price,
+        'prev_close': close_price,  # renamed from close_price — _override contract
         'quantity': quantity,
         'overnight_quantity': quantity,
         'day_buy_quantity': 0,
@@ -205,8 +205,8 @@ class TestPrevSettlementPnlPopulation:
         df = _run_override_stale_close_from_snapshot(df, snapshot_rows)
 
         # Both patches should apply
-        assert abs(df.at[0, 'close_price'] - SNAPSHOT_LTP) < 0.005, \
-            f"close_price should be {SNAPSHOT_LTP}, got {df.at[0, 'close_price']}"
+        assert abs(df.at[0, 'prev_close'] - SNAPSHOT_LTP) < 0.005, \
+            f"prev_close should be {SNAPSHOT_LTP}, got {df.at[0, 'prev_close']}"
         assert df.at[0, 'prev_settlement_pnl'] == PREV_PNL, \
             f"prev_settlement_pnl should be {PREV_PNL}, got {df.at[0, 'prev_settlement_pnl']}"
 
@@ -226,7 +226,7 @@ class TestPrevSettlementPnlIntegration:
             product="NRML",
             quantity=10,
             average_price=200.0,
-            close_price=220.0,
+            prev_close=220.0,
             pnl=645.0,
             prev_settlement_pnl=500.0,  # Set explicitly
         )
@@ -243,7 +243,7 @@ class TestPrevSettlementPnlIntegration:
             product="NRML",
             quantity=10,
             average_price=200.0,
-            close_price=220.0,
+            prev_close=220.0,
             pnl=100.0,
             # prev_settlement_pnl not set
         )
@@ -262,7 +262,7 @@ class TestPrevSettlementPnlIntegration:
             product="NRML",
             quantity=10,
             average_price=200.0,
-            close_price=220.0,
+            prev_close=220.0,
             pnl=645.0,
             prev_settlement_pnl=500.0,
         )

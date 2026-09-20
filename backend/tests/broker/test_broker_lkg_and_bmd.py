@@ -33,7 +33,7 @@ def _make_positions_df(**overrides) -> pd.DataFrame:
         "tradingsymbol":    "NIFTY24JUN22000CE",
         "exchange":         "NFO",
         "last_price":       150.0,
-        "close_price":      100.0,
+        "prev_close":       100.0,
         "opening_quantity": 10,
         "average_price":    90.0,
         "pnl":              600.0,
@@ -62,7 +62,7 @@ class TestBmdRecomputeDerived:
         """Pre-existing non-zero day_change_val must survive bmd recompute."""
         df = _make_positions_df(
             last_price=150.0,
-            close_price=100.0,
+            prev_close=100.0,
             opening_quantity=10,
             day_change_val=500.0,   # non-zero: Dhan/Groww decomposed value
         )
@@ -73,7 +73,7 @@ class TestBmdRecomputeDerived:
         # Redo with a value that differs from the naive formula result.
         df2 = _make_positions_df(
             last_price=150.0,
-            close_price=100.0,
+            prev_close=100.0,
             opening_quantity=10,
             day_change_val=999.0,   # definitely NOT (150-100)*10=500
         )
@@ -88,7 +88,7 @@ class TestBmdRecomputeDerived:
         naive (ltp - close) * qty formula when ltp and close are valid."""
         df = _make_positions_df(
             last_price=150.0,
-            close_price=100.0,
+            prev_close=100.0,
             opening_quantity=10,
             day_change_val=0.0,     # broker sent 0 — needs filling
         )
@@ -104,7 +104,7 @@ class TestBmdRecomputeDerived:
         naive formula when ltp and close are valid."""
         df = _make_positions_df(
             last_price=200.0,
-            close_price=180.0,
+            prev_close=180.0,
             opening_quantity=5,
             day_change_val=float('nan'),
         )
@@ -121,7 +121,7 @@ class TestBmdRecomputeDerived:
         returns cleanly via sorted([]) producing an empty Index."""
         df = _make_positions_df(
             last_price=150.0,
-            close_price=100.0,
+            prev_close=100.0,
             opening_quantity=10,
             day_change_val=777.0,
         )
@@ -135,7 +135,7 @@ class TestBmdRecomputeDerived:
         preserved — the guard is zero/NaN only, not positive-only."""
         df = _make_positions_df(
             last_price=150.0,
-            close_price=100.0,
+            prev_close=100.0,
             opening_quantity=-10,   # short
             day_change_val=-300.0,  # non-zero negative
         )

@@ -31,18 +31,18 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def test_daily_book_orm_has_previous_close_column():
-    """DailyBook model declares a `previous_close` Float column."""
+    """DailyBook model declares a `prev_close` Float column (renamed from previous_close)."""
     from backend.api.models import DailyBook
     from sqlalchemy import inspect as _inspect
 
     mapper = _inspect(DailyBook)
     col_names = [c.key for c in mapper.columns]
-    assert "previous_close" in col_names, (
-        "DailyBook ORM model must have a 'previous_close' column"
+    assert "prev_close" in col_names, (
+        "DailyBook ORM model must have a 'prev_close' column"
     )
-    col = mapper.columns["previous_close"]
+    col = mapper.columns["prev_close"]
     # Nullable (positions without a prior-day snapshot yield NULL)
-    assert col.nullable is True, "previous_close must be nullable"
+    assert col.nullable is True, "prev_close must be nullable"
 
 
 def test_migration_ddl_present_in_database_py():
@@ -54,8 +54,8 @@ def test_migration_ddl_present_in_database_py():
     assert "_migrate_daily_book_previous_close" in src, (
         "database.py must contain _migrate_daily_book_previous_close function"
     )
-    assert "ADD COLUMN IF NOT EXISTS previous_close" in src, (
-        "Migration DDL must include ALTER TABLE ... ADD COLUMN IF NOT EXISTS previous_close"
+    assert "ADD COLUMN IF NOT EXISTS prev_close" in src, (
+        "Migration DDL must include ALTER TABLE ... ADD COLUMN IF NOT EXISTS prev_close"
     )
     assert "await _migrate_daily_book_previous_close(conn)" in src, (
         "_migrate_daily_book_previous_close must be called inside init_db()"
@@ -83,9 +83,9 @@ def test_backfill_migration_present_and_wired():
         "database.py must declare async def _migrate_daily_book_backfill_previous_close(conn)"
     )
 
-    # 2. Perf — idempotency guard via WHERE previous_close IS NULL
-    assert "t.previous_close IS NULL" in src, (
-        "Backfill UPDATE must filter WHERE t.previous_close IS NULL so already-filled "
+    # 2. Perf — idempotency guard via WHERE prev_close IS NULL
+    assert "t.prev_close IS NULL" in src, (
+        "Backfill UPDATE must filter WHERE t.prev_close IS NULL so already-filled "
         "rows are never touched (idempotent)"
     )
 
@@ -113,9 +113,9 @@ def test_backfill_migration_present_and_wired():
         "_migrate_daily_book_previous_close in init_db (column must exist first)"
     )
 
-    # 5. UX — SET previous_close = p.ltp reads from prior-day row alias p
-    assert "SET    previous_close = p.ltp" in src or "SET previous_close = p.ltp" in src, (
-        "Backfill UPDATE must SET previous_close = p.ltp "
+    # 5. UX — SET prev_close = p.ltp reads from prior-day row alias p
+    assert "SET    prev_close = p.ltp" in src or "SET prev_close = p.ltp" in src, (
+        "Backfill UPDATE must SET prev_close = p.ltp "
         "(prior-day row's ltp, not a constant)"
     )
 
@@ -149,8 +149,8 @@ async def test_backfill_migration_idempotency_logic():
     sql = captured_sql[0].lower()
 
     assert "update daily_book" in sql, "SQL must UPDATE daily_book"
-    assert "previous_close is null" in sql, (
-        "SQL must filter WHERE previous_close IS NULL for idempotency"
+    assert "prev_close is null" in sql, (
+        "SQL must filter WHERE prev_close IS NULL for idempotency"
     )
     assert "select max(" in sql, (
         "SQL must contain a correlated MAX sub-SELECT to find the most recent prior date"
@@ -177,11 +177,10 @@ def test_upsert_sql_coalesce_freeze():
     from backend.api.algo.daily_snapshot import _UPSERT_SQL
 
     sql = _UPSERT_SQL.text.lower()
-    assert "previous_close" in sql, "_UPSERT_SQL must include previous_close column"
-    # New pattern: CASE WHEN EXCLUDED.ltp IS NOT NULL AND (...) THEN ... ELSE daily_book.previous_close END
-    # Previous old pattern (COALESCE freeze) has been intentionally removed.
-    assert "daily_book.previous_close" in sql, (
-        "UPSERT must reference daily_book.previous_close for conditional update"
+    assert "prev_close" in sql, "_UPSERT_SQL must include prev_close column"
+    # New pattern: prev_close = daily_book.prev_close (immutable freeze on conflict)
+    assert "daily_book.prev_close" in sql, (
+        "UPSERT must reference daily_book.prev_close for conditional update"
     )
 
 
@@ -313,8 +312,8 @@ def test_positions_snapshot_select_includes_previous_close():
     from backend.api.routes import positions_helpers as _helpers
 
     src = inspect.getsource(_pos_module._positions_snapshot)
-    assert "db.previous_close" in src, (
-        "_positions_snapshot SELECT must include db.previous_close"
+    assert "db.prev_close" in src, (
+        "_positions_snapshot SELECT must include db.prev_close"
     )
     # After the prev_close_val priority fix, the authoritative settlement
     # (actual_previous_close) is passed directly — not the prev_ltp fallback.
@@ -347,8 +346,8 @@ def test_build_snapshot_position_row_uses_previous_close_as_close_price():
         previous_close=22800.0,  # prior-session settlement
     )
 
-    assert row.close_price == pytest.approx(22800.0, rel=1e-6), (
-        f"close_price={row.close_price} must use previous_close=22800.0 "
+    assert row.prev_close == pytest.approx(22800.0, rel=1e-6), (
+        f"prev_close={row.prev_close} must use previous_close=22800.0 "
         "not LTP=23200.0 when previous_close is provided"
     )
     # last_price (LTP) must not be changed
@@ -374,8 +373,8 @@ def test_build_snapshot_position_row_falls_back_to_ltp_when_no_previous_close():
         extras={},
         previous_close=None,
     )
-    assert row.close_price == pytest.approx(LTP, rel=1e-6), (
-        "close_price must fall back to LTP when previous_close is None"
+    assert row.prev_close == pytest.approx(LTP, rel=1e-6), (
+        "prev_close must fall back to LTP when previous_close is None"
     )
 
 
@@ -396,8 +395,8 @@ def test_build_snapshot_position_row_falls_back_to_ltp_when_previous_close_zero(
         extras={},
         previous_close=0.0,
     )
-    assert row.close_price == pytest.approx(LTP, rel=1e-6), (
-        "close_price must fall back to LTP when previous_close=0.0 (invalid)"
+    assert row.prev_close == pytest.approx(LTP, rel=1e-6), (
+        "prev_close must fall back to LTP when previous_close=0.0 (invalid)"
     )
 
 
@@ -439,8 +438,8 @@ def test_snapshot_day_pnl_nonzero_with_previous_close():
         f"day_change_val={row.day_change_val} must equal stored day_pnl "
         f"({STORED_DAY_PNL}), not collapse to 0"
     )
-    # close_price is the frozen settlement, not LTP
-    assert row.close_price == pytest.approx(22800.0, rel=1e-6)
+    # prev_close is the frozen settlement, not LTP
+    assert row.prev_close == pytest.approx(22800.0, rel=1e-6)
     # last_price is still the snapshot LTP
     assert row.last_price == pytest.approx(23200.0, rel=1e-6)
 
@@ -494,12 +493,12 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
     assert len(resp.rows) == 1
     row = resp.rows[0]
 
-    assert row.close_price == pytest.approx(22800.0, rel=1e-6), (
-        f"close_price={row.close_price} must equal previous_close=22800.0 "
+    assert row.prev_close == pytest.approx(22800.0, rel=1e-6), (
+        f"prev_close={row.prev_close} must equal previous_close=22800.0 "
         "(fallback when prev_ltp is absent) — not LTP=23200.0"
     )
     assert row.last_price == pytest.approx(23200.0, rel=1e-6), (
-        "last_price must remain LTP=23200.0 (unchanged by close_price logic)"
+        "last_price must remain LTP=23200.0 (unchanged by prev_close logic)"
     )
 
 
@@ -555,9 +554,9 @@ def test_build_row_from_snapshot_raw_previous_close_beats_prev_ltp():
     )
     assert abs(row.day_change_val) > 0, "day_change_val must be non-zero"
 
-    # close_price must use the frozen settlement, not LTP
-    assert row.close_price == pytest.approx(PREV_CLOSE, rel=1e-6), (
-        f"close_price={row.close_price} must equal previous_close={PREV_CLOSE}"
+    # prev_close must use the frozen settlement, not LTP
+    assert row.prev_close == pytest.approx(PREV_CLOSE, rel=1e-6), (
+        f"prev_close={row.prev_close} must equal previous_close={PREV_CLOSE}"
     )
 
 

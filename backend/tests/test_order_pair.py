@@ -42,7 +42,7 @@ def _make_row(account: str, tradingsymbol: str, exchange: str, quantity: int):
         product="NRML",
         quantity=quantity,
         average_price=100.0,
-        close_price=100.0,
+        prev_close=100.0,
         pnl=0.0,
     )
 
@@ -494,7 +494,7 @@ def test_position_row_default_has_gtt():
         product="CNC",
         quantity=10,
         average_price=1500.0,
-        close_price=1505.0,
+        prev_close=1505.0,
         pnl=50.0,
     )
     assert row.has_gtt is False

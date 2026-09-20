@@ -144,7 +144,7 @@ def test_hold_tag_closed_row_snap_day_pnl_non_zero():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,  # Fri settlement
+        prev_close=2050.0,  # Fri settlement
         last_price=2050.0,   # broker's stale value
         inv_val=200000.0,
         cur_val=205000.0,
@@ -186,7 +186,7 @@ def test_hold_tag_closed_row_snap_day_pnl_is_none():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         last_price=2050.0,
         inv_val=200000.0,
         cur_val=205000.0,
@@ -224,7 +224,7 @@ def test_hold_tag_closed_row_snap_day_pnl_is_zero():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         last_price=2050.0,
         inv_val=200000.0,
         cur_val=205000.0,
@@ -263,7 +263,7 @@ def test_hold_tag_closed_row_snap_day_pnl_negative():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2100.0,  # Today opened high
+        prev_close=2100.0,  # Today opened high
         last_price=2100.0,
         inv_val=200000.0,
         cur_val=210000.0,
@@ -305,7 +305,7 @@ async def test_overlay_snapshot_unpacks_snap_data_tuple():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         last_price=2050.0,
         inv_val=200000.0,
         cur_val=205000.0,
@@ -317,7 +317,6 @@ async def test_overlay_snapshot_unpacks_snap_data_tuple():
         price_source="broker",
         current_price=2050.0,
         is_animating=False,
-        previous_close=2050.0,
         pnl_per_share=50.0,
     )
 
@@ -365,7 +364,7 @@ def test_hold_tag_closed_row_guards_against_invalid_snap_data():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         last_price=2050.0,
         inv_val=200000.0,
         cur_val=205000.0,
@@ -377,7 +376,6 @@ def test_hold_tag_closed_row_guards_against_invalid_snap_data():
         price_source="broker",
         current_price=2050.0,
         is_animating=False,
-        previous_close=2050.0,
         pnl_per_share=50.0,
     )
 
@@ -446,7 +444,7 @@ async def test_weekend_holding_uses_eod_day_pnl_not_price_delta():
         quantity=100,
         opening_quantity=100,
         average_price=2000.0,
-        close_price=2050.0,  # Fri EOD
+        prev_close=2050.0,  # Fri EOD
         last_price=2050.0,   # broker's stale Fri EOD
         inv_val=200000.0,
         cur_val=205000.0,
@@ -458,7 +456,6 @@ async def test_weekend_holding_uses_eod_day_pnl_not_price_delta():
         price_source="broker",
         current_price=2050.0,
         is_animating=False,
-        previous_close=2050.0,
         pnl_per_share=50.0,
     )
 

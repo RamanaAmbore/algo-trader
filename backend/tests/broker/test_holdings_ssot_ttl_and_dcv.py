@@ -140,8 +140,7 @@ class TestHoldingsDcvRecomputeAllRows:
             "tradingsymbol": tradingsymbol,
             "account": account,
             "last_price": ltp,
-            "close_price": close_price,
-            "previous_close": 0.0,      # will be written by the function
+            "prev_close": close_price,  # will be overwritten by the function
             "quantity": quantity,
             "pnl": pnl,
             "day_change_val": (ltp - close_price) * quantity,
@@ -167,7 +166,7 @@ class TestHoldingsDcvRecomputeAllRows:
         with patch("backend.api.database.async_session", side_effect=lambda: _make_db_ctx(snapshot_map)):
             await _override_stale_close_for_holdings(raw)
 
-        assert raw.at[0, "previous_close"] == pytest.approx(500.0)
+        assert raw.at[0, "prev_close"] == pytest.approx(500.0)
         assert raw.at[0, "day_change_val"] == pytest.approx(1000.0)
 
     @pytest.mark.asyncio
@@ -188,9 +187,9 @@ class TestHoldingsDcvRecomputeAllRows:
         with patch("backend.api.database.async_session", side_effect=lambda: _make_db_ctx(snapshot_map)):
             await _override_stale_close_for_holdings(raw)
 
-        # |505 - 480| = 25 > 0.005 → close_price patched to 480
+        # |505 - 480| = 25 > 0.005 → prev_close patched to 480
         # dcv = (505 - 480) * 50 = 1250
-        assert raw.at[0, "previous_close"] == pytest.approx(480.0)
+        assert raw.at[0, "prev_close"] == pytest.approx(480.0)
         assert raw.at[0, "day_change_val"] == pytest.approx(1250.0)
 
     @pytest.mark.asyncio
@@ -207,7 +206,8 @@ class TestHoldingsDcvRecomputeAllRows:
         with patch("backend.api.database.async_session", side_effect=lambda: _make_db_ctx(snapshot_map)):
             await _override_stale_close_for_holdings(raw)
 
-        assert raw.at[0, "previous_close"] == pytest.approx(0.0)
+        # No snapshot entry → prev_close stays at broker value (195.0), not overwritten
+        assert raw.at[0, "prev_close"] == pytest.approx(195.0)
         assert raw.at[0, "day_change_val"] == pytest.approx(999.0)
 
 

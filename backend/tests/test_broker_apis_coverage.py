@@ -1369,7 +1369,7 @@ class TestEnrichHoldings:
             "last_price": [2600.0],
             "average_price": [2400.0],
             "opening_quantity": [10],
-            "close_price": [2550.0],
+            "prev_close": [2550.0],  # renamed from close_price — _enrich_holdings contract
             "pnl": [2000.0],   # broker-supplied
             "day_change_val": [None],
         })
@@ -1404,11 +1404,16 @@ class TestEnrichPositions:
     """Test _enrich_positions Polars enrichment."""
 
     def test_basic_columns_produce_day_change(self):
-        """_enrich_positions with minimal columns computes day_change."""
+        """_enrich_positions with minimal columns computes day_change.
+
+        Note: broker layer renames close_price → prev_close before calling
+        _enrich_positions (line 2057 in broker_apis.py). Tests that call
+        _enrich_positions directly must use the post-rename column name.
+        """
         df = pd.DataFrame({
             "last_price": [200.0],
             "average_price": [190.0],
-            "close_price": [195.0],
+            "prev_close": [195.0],  # renamed from close_price — _enrich_positions contract
             "quantity": [10],
         })
         result = broker_apis._enrich_positions(df)
@@ -1420,7 +1425,7 @@ class TestEnrichPositions:
         df = pd.DataFrame({
             "last_price": [200.0],
             "average_price": [190.0],
-            "close_price": [195.0],
+            "prev_close": [195.0],  # renamed from close_price — _enrich_positions contract
             "quantity": [10],
             "overnight_quantity": [5],
             "day_buy_quantity": [5],
@@ -1439,7 +1444,7 @@ class TestEnrichPositions:
         df = pd.DataFrame({
             "last_price": [200.0],
             "average_price": [190.0],
-            "close_price": [195.0],
+            "prev_close": [195.0],  # renamed from close_price — _enrich_positions contract
             "quantity": [10],
             "pnl": [999.0],   # broker-supplied value
         })
@@ -1522,8 +1527,8 @@ class TestBmdPatchOneRow:
     """Test _bmd_patch_one_row close/ltp patching."""
 
     def test_patches_close_and_ltp_from_lookups(self):
-        """Patches close_price and last_price from lookups."""
-        df = pd.DataFrame({"close_price": [0.0], "last_price": [0.0]})
+        """Patches prev_close and last_price from lookups."""
+        df = pd.DataFrame({"prev_close": [0.0], "last_price": [0.0]})
         touched, from_stale = broker_apis._bmd_patch_one_row(
             df, 0, "NFO:X", True, True,
             close_lookup={"NFO:X": 100.0},
@@ -1531,12 +1536,12 @@ class TestBmdPatchOneRow:
         )
         assert touched is True
         assert from_stale is False
-        assert df.at[0, "close_price"] == pytest.approx(100.0)
+        assert df.at[0, "prev_close"] == pytest.approx(100.0)
         assert df.at[0, "last_price"] == pytest.approx(105.0)
 
     def test_uses_stale_cache_when_ltp_lookup_empty(self):
         """Falls back to last-known-good cache when ltp_lookup has no value."""
-        df = pd.DataFrame({"close_price": [0.0], "last_price": [0.0]})
+        df = pd.DataFrame({"prev_close": [0.0], "last_price": [0.0]})
         with patch.object(broker_apis, "get_last_good_ltp", return_value=99.0):
             touched, from_stale = broker_apis._bmd_patch_one_row(
                 df, 0, "NFO:X", True, True,
@@ -1549,7 +1554,7 @@ class TestBmdPatchOneRow:
 
     def test_does_not_overwrite_nonzero_ltp(self):
         """Does not overwrite an existing non-zero last_price."""
-        df = pd.DataFrame({"close_price": [0.0], "last_price": [200.0]})
+        df = pd.DataFrame({"prev_close": [0.0], "last_price": [200.0]})
         touched, from_stale = broker_apis._bmd_patch_one_row(
             df, 0, "NFO:X", True, True,
             close_lookup={"NFO:X": 100.0},
@@ -1583,7 +1588,7 @@ class TestBmdRecomputeDerived:
         """_bmd_recompute_derived updates day_change_val on patched rows."""
         df = pd.DataFrame({
             "last_price": [105.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "day_change_val": [0.0],
         })
@@ -1595,7 +1600,7 @@ class TestBmdRecomputeDerived:
         """Empty patched_indices is a no-op."""
         df = pd.DataFrame({
             "last_price": [105.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "day_change_val": [0.0],
         })
@@ -1792,11 +1797,11 @@ class TestBmdBuildKeyIndex:
         assert unique_keys == []
 
     def test_zero_close_price_detected_as_missing(self):
-        """Row with close_price=0 is marked as missing."""
+        """Row with prev_close=0 is marked as missing (renamed from close_price)."""
         df = pd.DataFrame({
             "tradingsymbol": ["RELIANCE"],
             "exchange": ["NSE"],
-            "close_price": [0.0],
+            "prev_close": [0.0],  # renamed from close_price — _bmd_build_key_index contract
             "last_price": [2600.0],
         })
         missing, key_per_row, unique_keys = broker_apis._bmd_build_key_index(df)
@@ -1845,11 +1850,11 @@ class TestBmdPatchRows:
     """Test _bmd_patch_rows full row-patching loop."""
 
     def test_patches_missing_rows_from_lookups(self):
-        """_bmd_patch_rows patches close_price and last_price on missing rows."""
+        """_bmd_patch_rows patches prev_close and last_price on missing rows."""
         df = pd.DataFrame({
             "tradingsymbol": ["RELIANCE", "INFY"],
             "exchange": ["NSE", "NSE"],
-            "close_price": [0.0, 2500.0],   # RELIANCE missing, INFY ok
+            "prev_close": [0.0, 2500.0],   # RELIANCE missing, INFY ok; renamed from close_price
             "last_price": [0.0, 2510.0],
         })
         row_indices = [0]  # only row 0 needs patching
@@ -1862,7 +1867,7 @@ class TestBmdPatchRows:
             df, row_indices, key_per_row, close_lookup, ltp_lookup, unique_keys
         )
         assert 0 in patched
-        assert df.at[0, "close_price"] == pytest.approx(2540.0)
+        assert df.at[0, "prev_close"] == pytest.approx(2540.0)
         assert df.at[0, "last_price"] == pytest.approx(2560.0)
 
     def test_skips_rows_with_empty_key(self):
@@ -1884,7 +1889,7 @@ class TestBmdRecomputeDerivedBranches:
         """_bmd_recompute_derived recomputes pnl from (ltp-avg)*qty."""
         df = pd.DataFrame({
             "last_price": [110.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "average_price": [95.0],
             "pnl": [0.0],
@@ -1900,7 +1905,7 @@ class TestBmdRecomputeDerivedBranches:
         """_bmd_recompute_derived updates day_change_percentage."""
         df = pd.DataFrame({
             "last_price": [110.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "day_change_val": [0.0],
             "day_change_percentage": [0.0],
@@ -1913,7 +1918,7 @@ class TestBmdRecomputeDerivedBranches:
         """_bmd_recompute_derived updates cur_val and pnl_percentage when inv_val present."""
         df = pd.DataFrame({
             "last_price": [110.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "average_price": [100.0],
             "pnl": [0.0],
@@ -1966,11 +1971,11 @@ class TestBackfillMarketData:
         assert result == 0
 
     def test_patches_zero_close_price(self):
-        """backfill_market_data patches rows with zero close_price."""
+        """backfill_market_data patches rows with zero prev_close (renamed from close_price)."""
         df = pd.DataFrame({
             "tradingsymbol": ["RELIANCE"],
             "exchange": ["NSE"],
-            "close_price": [0.0],
+            "prev_close": [0.0],  # renamed from close_price — backfill_market_data contract
             "last_price": [2600.0],
             "opening_quantity": [10],
         })
@@ -1979,7 +1984,7 @@ class TestBackfillMarketData:
         with patch.object(broker_apis, "_bmd_fetch_lookups", return_value=(close_lookup, ltp_lookup)):
             result = broker_apis.backfill_market_data(df)
         assert result == 1
-        assert df.at[0, "close_price"] == pytest.approx(2550.0)
+        assert df.at[0, "prev_close"] == pytest.approx(2550.0)
 
 
 class TestEnrichPositionsM2mBranch:
@@ -1990,7 +1995,7 @@ class TestEnrichPositionsM2mBranch:
         df = pd.DataFrame({
             "last_price": [200.0],
             "average_price": [190.0],
-            "close_price": [195.0],
+            "prev_close": [195.0],  # renamed from close_price — _enrich_positions contract
             "quantity": [10],
             "m2m": [75.0],   # broker-supplied m2m
         })
@@ -2095,7 +2100,7 @@ class TestEnrichPositionsDayChangeValBranch:
         df = pd.DataFrame({
             "last_price": [200.0],
             "average_price": [190.0],
-            "close_price": [195.0],
+            "prev_close": [195.0],  # renamed from close_price — _enrich_positions contract
             "quantity": [10],
             "day_change_val": [42.0],   # broker-supplied, no m2m, no intraday
         })
@@ -2130,7 +2135,7 @@ class TestBmdRecomputeDerivedDayChangeColumn:
         """_bmd_recompute_derived updates day_change = ltp - close."""
         df = pd.DataFrame({
             "last_price": [110.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "day_change_val": [0.0],
             "day_change": [0.0],
@@ -2142,7 +2147,7 @@ class TestBmdRecomputeDerivedDayChangeColumn:
         """_bmd_recompute_derived includes realised in pnl calculation."""
         df = pd.DataFrame({
             "last_price": [110.0],
-            "close_price": [100.0],
+            "prev_close": [100.0],  # renamed from close_price — _bmd_recompute_derived contract
             "opening_quantity": [10],
             "average_price": [100.0],
             "pnl": [0.0],

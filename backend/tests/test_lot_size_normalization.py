@@ -519,8 +519,9 @@ class TestUpsertSQLFixes:
             "Old ltp=0 rolling-shift guard must not be present"
         )
         # New immutable pattern: preserve the existing DB value on conflict
-        assert 'previous_close = daily_book.previous_close' in sql_str, (
-            "UPSERT must preserve previous_close from the existing row (immutable)"
+        # Column renamed from previous_close to prev_close in rename refactor
+        assert 'prev_close     = daily_book.prev_close' in sql_str, (
+            "UPSERT must preserve prev_close from the existing row (immutable)"
         )
 
     def test_upsert_sql_adds_lots_and_lot_size_columns(self):

@@ -995,7 +995,7 @@ async def _preload_db_lkg_cache() -> None:
             "opening_quantity": _qty,
             "average_price":    _avg,
             "last_price":       _ltp,
-            "close_price":      _ltp,
+            "prev_close":       _ltp,
             "day_change_val":   float(row.day_pnl or 0.0),
             "pnl":              float(row.total_pnl or 0.0),
             # Pre-compute derived value columns so downstream consumers
@@ -2034,7 +2034,7 @@ def _snapshot_restart_ticker() -> None:
 
 
 async def _build_settlement_map() -> "dict[tuple[str, str], float]":
-    """Fetch broker holdings+positions and return (account, symbol) → close_price map.
+    """Fetch broker holdings+positions and return (account, symbol) → prev_close map.
 
     Used at 08:00 IST to supply settlement prices to fix_daily_book_prev_close.
     Errors from either fetch are logged and skipped; an empty dict is safe (function falls back).
@@ -2044,12 +2044,12 @@ async def _build_settlement_map() -> "dict[tuple[str, str], float]":
     def _extract(df, update: bool) -> None:
         if df.empty:
             return
-        if not {"account", "tradingsymbol", "close_price"}.issubset(df.columns):
+        if not {"account", "tradingsymbol", "prev_close"}.issubset(df.columns):
             return
         for row in df.itertuples(index=False):
             acct = str(getattr(row, "account", "") or "")
             sym  = str(getattr(row, "tradingsymbol", "") or "")
-            cp   = float(getattr(row, "close_price", 0) or 0)
+            cp   = float(getattr(row, "prev_close", 0) or 0)
             if acct and sym and cp > 0:
                 if update:
                     settlement_map[(acct, sym)] = cp

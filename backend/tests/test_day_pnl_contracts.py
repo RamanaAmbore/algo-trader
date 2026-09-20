@@ -260,7 +260,7 @@ class TestEnrichPositionsContracts:
             'account':             ['ZG0001'] * 6,
             'exchange':            ['NSE'] * 6,
             'last_price':          [105.0,    95.0,    105.0,   102.0, 98.0,   101.0],
-            'close_price':         [0.0,      0.0,     0.0,     100.0, 100.0,  100.0],
+            'prev_close':          [0.0,      0.0,     0.0,     100.0, 100.0,  100.0],
             'average_price':       [100.0,    100.0,   100.0,   100.0, 100.0,  100.0],
             'quantity':            [10,       -10,     0,       100,   50,     60],
             'overnight_quantity':  [0,        0,       0,       100,   50,     100],

@@ -342,7 +342,7 @@ class TestClosedHoursRouteReturnsSnapshot:
                     product="NRML",
                     quantity=50,
                     average_price=22800.0,
-                    close_price=23045.0,   # settled close
+                    prev_close=23045.0,   # settled close (renamed from close_price)
                     pnl=12250.0,
                     last_price=23045.0,
                     day_change_val=settled_dcv,
@@ -411,7 +411,7 @@ class TestClosedHoursRouteReturnsSnapshot:
                     exchange="NSE",
                     quantity=10,
                     average_price=2800.0,
-                    close_price=2948.0,
+                    prev_close=2948.0,
                     inv_val=28000.0,
                     cur_val=29480.0,
                     pnl=1480.0,

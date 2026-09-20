@@ -611,39 +611,49 @@ async def _migrate_code_metrics_perf_snapshots(conn) -> None:
 
 
 async def _migrate_daily_book_previous_close(conn) -> None:
-    """Add previous_close column to daily_book (idempotent).
+    """Add prev_close column to daily_book (idempotent).
 
     Frozen first-write per (date, account, kind, symbol): captures
-    Kite's close_price at the first snapshot of each trading day —
-    the prior-session official settlement. COALESCE in the UPSERT
-    ensures subsequent intraday writes never overwrite a non-NULL value.
-    Used by _positions_snapshot() to supply a correct close_price during
-    closed-hours reads instead of LTP.
+    the prior-session settlement LTP at the first snapshot of each
+    trading day. COALESCE in the UPSERT ensures subsequent intraday
+    writes never overwrite a non-NULL value. Used by _positions_snapshot()
+    to supply a correct prev_close during closed-hours reads instead of LTP.
+
+    Originally added the column as `previous_close`; the rename migration
+    _migrate_daily_book_rename_prev_close runs after this and renames it.
+    This ADD COLUMN is still needed for the very first deploy on a fresh DB.
     """
     from sqlalchemy import text
-    await conn.execute(text(
-        "ALTER TABLE daily_book "
-        "ADD COLUMN IF NOT EXISTS previous_close DOUBLE PRECISION"
-    ))
+    # On a post-rename DB, prev_close already exists — the IF NOT EXISTS guard
+    # makes this a no-op.  On a fresh DB, create prev_close directly.
+    has_prev_close = (await conn.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name='daily_book' AND column_name='previous_close'"
+    ))).fetchone()
+    if not has_prev_close:
+        await conn.execute(text(
+            "ALTER TABLE daily_book "
+            "ADD COLUMN IF NOT EXISTS prev_close DOUBLE PRECISION"
+        ))
 
 
 async def _migrate_daily_book_backfill_previous_close(conn) -> None:
-    """Backfill previous_close for historical daily_book rows that have NULL.
+    """Backfill prev_close for historical daily_book rows that have NULL.
 
-    Rows written before the previous_close column was added (May–Aug 2026)
-    have previous_close = NULL. For each such row, use the most recent prior
+    Rows written before the prev_close column was added (May–Aug 2026)
+    have prev_close = NULL. For each such row, use the most recent prior
     trading day's ltp from the same (account, symbol, kind) as the reference.
 
-    The UPDATE is idempotent: WHERE previous_close IS NULL means already-filled
+    The UPDATE is idempotent: WHERE prev_close IS NULL means already-filled
     rows are never touched. Rows with no prior ltp data remain NULL (first-ever
     snapshot for that symbol — acceptable).
     """
     from sqlalchemy import text
     await conn.execute(text("""
         UPDATE daily_book t
-        SET    previous_close = p.ltp
+        SET    prev_close = p.ltp
         FROM   daily_book p
-        WHERE  t.previous_close IS NULL
+        WHERE  t.prev_close IS NULL
           AND  p.ltp IS NOT NULL
           AND  p.account = t.account
           AND  p.symbol  = t.symbol
@@ -660,18 +670,54 @@ async def _migrate_daily_book_backfill_previous_close(conn) -> None:
 
 
 async def _migrate_daily_book_previous_close_backup(conn) -> None:
-    """Add previous_close_backup column to daily_book (idempotent).
+    """Add prev_close_backup column to daily_book (idempotent).
 
-    Saved by fix_daily_book_prev_close before it overwrites previous_close
+    Saved by fix_daily_book_prev_close before it overwrites prev_close
     with yesterday's ltp. Allows reader safety nets in holdings.py and
     positions_helpers.py to fall back to the original value when the
-    rolling-shift UPSERT corrupts previous_close (i.e. sets it equal to ltp).
+    rolling-shift UPSERT corrupts prev_close (i.e. sets it equal to ltp).
+
+    Originally added as `previous_close_backup`; the rename migration
+    _migrate_daily_book_rename_prev_close renames it after this.
     """
     from sqlalchemy import text
-    await conn.execute(text(
-        "ALTER TABLE daily_book "
-        "ADD COLUMN IF NOT EXISTS previous_close_backup DOUBLE PRECISION"
+    has_backup = (await conn.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name='daily_book' AND column_name='previous_close_backup'"
+    ))).fetchone()
+    if not has_backup:
+        await conn.execute(text(
+            "ALTER TABLE daily_book "
+            "ADD COLUMN IF NOT EXISTS prev_close_backup DOUBLE PRECISION"
+        ))
+
+
+async def _migrate_daily_book_rename_prev_close(conn) -> None:
+    """Rename previous_close → prev_close and previous_close_backup → prev_close_backup
+    in daily_book (idempotent).
+
+    Only runs when the old column names still exist (pre-rename deploy).
+    After rename, subsequent boots see only prev_close / prev_close_backup and
+    skip this migration entirely.
+    """
+    from sqlalchemy import text
+    result = await conn.execute(text(
+        "SELECT column_name FROM information_schema.columns "
+        "WHERE table_name='daily_book' AND column_name='previous_close'"
     ))
+    if result.fetchone():
+        await conn.execute(text(
+            "ALTER TABLE daily_book RENAME COLUMN previous_close TO prev_close"
+        ))
+        # Only rename backup if it also exists under the old name.
+        bk = await conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name='daily_book' AND column_name='previous_close_backup'"
+        ))
+        if bk.fetchone():
+            await conn.execute(text(
+                "ALTER TABLE daily_book RENAME COLUMN previous_close_backup TO prev_close_backup"
+            ))
 
 
 async def _migrate_algo_orders_chase_timing(conn) -> None:
@@ -833,6 +879,7 @@ async def init_db() -> None:
         await _migrate_daily_book_previous_close(conn)
         await _migrate_daily_book_backfill_previous_close(conn)
         await _migrate_daily_book_previous_close_backup(conn)
+        await _migrate_daily_book_rename_prev_close(conn)
         await _migrate_algo_orders_chase_timing(conn)
         await _migrate_algo_orders_intent(conn)
         await _migrate_algo_orders_gtt_order_id(conn)

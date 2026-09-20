@@ -29,7 +29,7 @@ def _base_holding(**overrides) -> pd.DataFrame:
         average_price=900.0,
         quantity=100,              # remaining shares (after any partial sells)
         opening_quantity=100,      # display-only — same as quantity when no sells
-        close_price=950.0,
+        prev_close=950.0,
         day_change=5.0,            # ltp - close = 955 - 950
         day_change_val=0.0,        # broker shipped 0 — triggers fallback
         pnl=5500.0,                # broker total pnl (not used for dcv here)
@@ -54,10 +54,10 @@ class TestDhanHoldingsDayChangeFallback:
         assert result.loc[0, "day_change_val"] == pytest.approx(750.0)
 
     def test_fallback_does_not_fire_when_close_zero(self):
-        """Guard: close_price must be > 0 for fallback to fire."""
-        # With close_price=0, the polars path itself won't produce a
+        """Guard: prev_close must be > 0 for fallback to fire."""
+        # With prev_close=0, the polars path itself won't produce a
         # valid dcv, and the fallback guard (_f_cls > 0) should block it.
-        df = _base_holding(close_price=0.0)
+        df = _base_holding(prev_close=0.0)
         result = _enrich_holdings(df)
         # dcv stays 0 — both polars and pandas fallback blocked
         assert result.loc[0, "day_change_val"] == pytest.approx(0.0)
@@ -105,11 +105,11 @@ class TestDhanHoldingsDayChangeFallback:
             # Row 0: dcv == 0 → fallback should fire → 5 * 100 = 500
             dict(last_price=955.0, average_price=900.0,
                  quantity=100, opening_quantity=100,
-                 close_price=950.0, day_change=5.0, day_change_val=0.0, pnl=5500.0),
+                 prev_close=950.0, day_change=5.0, day_change_val=0.0, pnl=5500.0),
             # Row 1: dcv already valid → must not change
             dict(last_price=955.0, average_price=900.0,
                  quantity=100, opening_quantity=100,
-                 close_price=950.0, day_change=5.0, day_change_val=750.0, pnl=5500.0),
+                 prev_close=950.0, day_change=5.0, day_change_val=750.0, pnl=5500.0),
         ])
         result = _enrich_holdings(df)
         assert result.loc[0, "day_change_val"] == pytest.approx(500.0)
@@ -137,7 +137,7 @@ class TestHoldingsPartialSell:
             average_price=100.0,
             quantity=100,           # remaining after partial sell
             opening_quantity=200,   # original lot — display-only
-            close_price=105.0,
+            prev_close=105.0,
             pnl=1_000.0,            # broker total pnl on remaining qty
             day_change_val=0.0,
             day_change=5.0,         # ltp - close = 110 - 105
@@ -167,14 +167,14 @@ class TestHoldingsPartialSell:
         Force the Dhan fallback path: supply `day_change` but set `pnl=None`
         so the polars pnl-branch can't fire the decomposed formula.
         """
-        # Remove close_price to force the (ltp-close)*qty formula to miss
+        # Remove prev_close to force the (ltp-close)*qty formula to miss
         # and activate the day_change × qty fallback in pandas.
         df = pd.DataFrame([dict(
             last_price=110.0,
             average_price=100.0,
             quantity=100,
             opening_quantity=200,
-            close_price=105.0,
+            prev_close=105.0,
             day_change=5.0,       # ltp - close; non-zero triggers fallback
             day_change_val=0.0,   # broker shipped 0 — fallback activates
             pnl=1000.0,

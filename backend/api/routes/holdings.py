@@ -59,8 +59,8 @@ _HOLDINGS_SNAPSHOT_SQL = """
         ORDER BY db.account, db.symbol, db.captured_at DESC
     )
     SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
-           db.ltp, db.previous_close, db.day_pnl, db.total_pnl, db.captured_at,
-           pb.prev_ltp, db.previous_close_backup
+           db.ltp, db.prev_close, db.day_pnl, db.total_pnl, db.captured_at,
+           pb.prev_ltp, db.prev_close_backup
     FROM daily_book db
     JOIN latest_batch lb
       ON db.account = lb.account AND db.captured_at = lb.max_at
@@ -130,7 +130,7 @@ async def _query_holdings_snapshot_rows():
 def _compute_holding_day_change(
     day_pnl_f: float,
     ltp_f: float,
-    previous_close_f: float,
+    prev_close_f: float,
     prev_ltp_f: "float | None",
     qty_i: int,
 ) -> float:
@@ -139,15 +139,15 @@ def _compute_holding_day_change(
     Priority:
       1. Stored EOD day_pnl when non-zero — Kite's authoritative session value.
          Immune to prev_ltp differences across dev/prod DB histories.
-      2. Price recompute using prior-session close: (ltp - previous_close) * qty.
-      3. Prior-batch LTP fallback when previous_close is absent/zero:
+      2. Price recompute using prior-session close: (ltp - prev_close) * qty.
+      3. Prior-batch LTP fallback when prev_close is absent/zero:
          (ltp - prev_ltp) * qty.
       4. Zero when no reference price is available.
     """
     if day_pnl_f is not None and day_pnl_f != 0.0:
         return day_pnl_f
-    if previous_close_f > 0:
-        return (ltp_f - previous_close_f) * qty_i
+    if prev_close_f > 0:
+        return (ltp_f - prev_close_f) * qty_i
     if prev_ltp_f is not None and prev_ltp_f > 0:
         return (ltp_f - prev_ltp_f) * qty_i
     return 0.0
@@ -158,54 +158,49 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
     per-account sums (inv, cur, total_pnl, day_pnl) that the caller
     aggregates into HoldingsSummaryRow.
     """
-    (account, symbol, exchange, qty, avg_cost, ltp, previous_close,
+    (account, symbol, exchange, qty, avg_cost, ltp, prev_close,
      day_pnl, total_pnl, _captured_at, prev_ltp) = raw_row[:11]
-    previous_close_backup = raw_row[11] if len(raw_row) > 11 else None
+    prev_close_backup = raw_row[11] if len(raw_row) > 11 else None
 
-    avg_cost_f       = float(avg_cost)       if avg_cost       is not None else 0.0
-    ltp_f            = float(ltp)            if ltp             is not None else 0.0
-    previous_close_f = float(previous_close) if previous_close is not None else 0.0
-    total_pnl_f      = float(total_pnl)      if total_pnl       is not None else 0.0
-    day_pnl_f        = float(day_pnl)        if day_pnl         is not None else 0.0
-    qty_i            = int(qty)              if qty             is not None else 0
-    inv_val          = avg_cost_f * qty_i
-    cur_val          = ltp_f      * qty_i
+    avg_cost_f    = float(avg_cost)    if avg_cost    is not None else 0.0
+    ltp_f         = float(ltp)         if ltp         is not None else 0.0
+    prev_close_f  = float(prev_close)  if prev_close  is not None else 0.0
+    total_pnl_f   = float(total_pnl)   if total_pnl   is not None else 0.0
+    day_pnl_f     = float(day_pnl)     if day_pnl     is not None else 0.0
+    qty_i         = int(qty)           if qty         is not None else 0
+    inv_val       = avg_cost_f * qty_i
+    cur_val       = ltp_f      * qty_i
 
     # pnl_percentage: pnl / |avg × qty| × 100
     # (inv_val = avg_cost_f × qty_i, so use that directly)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
-    # `previous_close` is the rolling-shift of the prior daily_book.ltp set at
+    # `prev_close` is the rolling-shift of the prior daily_book.ltp set at
     # each UPSERT — it holds the prior-session settlement price (pre-08:00).
     # `prev_ltp` is the most-recent batch LTP and converges toward the current
     # LTP during a session, which would make day_change ≈ 0. Use
-    # `previous_close` as the primary reference and fall back to `prev_ltp`
-    # only when `previous_close` is absent or zero. Mirrors positions_helpers.py.
+    # `prev_close` as the primary reference and fall back to `prev_ltp`
+    # only when `prev_close` is absent or zero. Mirrors positions_helpers.py.
     prev_ltp_f = float(prev_ltp) if prev_ltp is not None and float(prev_ltp) > 0 else None
-    # Safety net: when previous_close was corrupted by the rolling-shift UPSERT
-    # (i.e. previous_close ≈ ltp, meaning no real prior-session data), fall back
-    # to previous_close_backup (saved before the fix_daily_book_prev_close
-    # overwrote previous_close) or to prev_ltp from the prior snapshot batch.
-    backup_f = float(previous_close_backup) if previous_close_backup else 0.0
-    previous_close_f = _resolve_previous_close(previous_close_f, ltp_f, backup_f, prev_ltp_f)
+    # Safety net: when prev_close was corrupted by the rolling-shift UPSERT
+    # (i.e. prev_close ≈ ltp, meaning no real prior-session data), fall back
+    # to prev_close_backup (saved before the fix_daily_book_prev_close
+    # overwrote prev_close) or to prev_ltp from the prior snapshot batch.
+    backup_f = float(prev_close_backup) if prev_close_backup else 0.0
+    prev_close_f = _resolve_previous_close(prev_close_f, ltp_f, backup_f, prev_ltp_f)
     # Priority: stored EOD day_pnl is authoritative when non-zero (it was
     # computed by the broker at session end, so it already accounts for
     # intraday buys/sells). Only recompute from prices when day_pnl_f == 0
     # (null or genuinely zero — e.g. symbol held flat all day).
-    day_change_val = _compute_holding_day_change(day_pnl_f, ltp_f, previous_close_f, prev_ltp_f, qty_i)
-    # day_change_percentage: day_change_val / |previous_close × qty| × 100
+    day_change_val = _compute_holding_day_change(day_pnl_f, ltp_f, prev_close_f, prev_ltp_f, qty_i)
+    # day_change_percentage: day_change_val / |prev_close × qty| × 100
     # Use yesterday's close price as the denominator (NOT LTP, which would
-    # understate the move). Fallback to avg_cost when previous_close is
+    # understate the move). Fallback to avg_cost when prev_close is
     # missing/zero (same-day buys / cold-boot).
     day_change_percentage = (
-        (day_change_val / (previous_close_f * abs(qty_i)) * 100)
-        if previous_close_f > 0 and qty_i != 0
+        (day_change_val / (prev_close_f * abs(qty_i)) * 100)
+        if prev_close_f > 0 and qty_i != 0
         else 0.0
     )
-    # Use yesterday's close as close_price (same pattern as
-    # build_snapshot_position_row in positions_helpers.py lines 232-236).
-    # Fallback to ltp_f when previous_close is zero/missing (same-day
-    # buys / cold-boot where no prior-session close exists).
-    close_price_f = previous_close_f if previous_close_f > 0 else ltp_f
     row = HoldingRow(
         account=str(account),
         tradingsymbol=str(symbol),
@@ -213,7 +208,6 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
         quantity=qty_i,
         opening_quantity=qty_i,
         average_price=avg_cost_f,
-        close_price=close_price_f,
         last_price=ltp_f,
         inv_val=inv_val,
         cur_val=cur_val,
@@ -225,7 +219,7 @@ def _build_holding_row_from_snapshot(raw_row) -> tuple[HoldingRow, float, float,
         price_source="snapshot_settled",
         current_price=ltp_f,
         is_animating=False,
-        previous_close=previous_close_f,
+        prev_close=prev_close_f,
         pnl_per_share=total_pnl_f / qty_i if qty_i != 0 else 0.0,
     )
     return row, inv_val, cur_val, total_pnl_f, day_change_val
@@ -320,7 +314,7 @@ async def _holdings_snapshot() -> Optional[HoldingsResponse]:
 
 _ROW_COLS = [
     'account', 'tradingsymbol', 'exchange', 'quantity', 'opening_quantity',
-    'average_price', 'close_price', 'last_price', 'inv_val', 'cur_val',
+    'average_price', 'last_price', 'inv_val', 'cur_val',
     'pnl', 'pnl_percentage', 'day_change', 'day_change_val', 'day_change_percentage',
     # Staleness flag — True when last_price came from the last-known-good
     # cache rather than a live broker or ticker source.
@@ -329,10 +323,10 @@ _ROW_COLS = [
     # from broker_apis' LKG frame cache because the account's circuit
     # breaker was OPEN. Preserves DH6847 rows across breaker-open cycles.
     'account_stale',
-    # Prior-session settlement LTP from daily_book (direct, not COALESCE).
-    # Exposed to frontend so it can compute `(ltp − previous_close) × qty`
-    # independently of whether Kite's `close_price` has drifted.
-    'previous_close',
+    # Prior-session settlement LTP from daily_book (direct ltp, not COALESCE).
+    # Exposed to frontend so it can compute `(ltp − prev_close) × qty`
+    # independently of whether the broker's close has drifted.
+    'prev_close',
     # P&L per share = total pnl / quantity. Zero when quantity is 0.
     'pnl_per_share',
 ]
@@ -367,8 +361,8 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     # holdings must not include the already-sold portion.
     _qty_col = 'quantity' if 'quantity' in raw.columns else 'opening_quantity'
     _ltp_p = pd.to_numeric(raw.loc[_sel, 'last_price'], errors='coerce').fillna(0)
-    _cls_p = pd.to_numeric(raw.loc[_sel, 'close_price'], errors='coerce').fillna(0) \
-             if 'close_price' in raw.columns else pd.Series(0.0, index=_sel)
+    _cls_p = pd.to_numeric(raw.loc[_sel, 'prev_close'], errors='coerce').fillna(0) \
+             if 'prev_close' in raw.columns else pd.Series(0.0, index=_sel)
     _qty_p = pd.to_numeric(raw.loc[_sel, _qty_col], errors='coerce').fillna(0)
     _dcv = (_ltp_p - _cls_p) * _qty_p
     if 'day_change_val' in raw.columns:
@@ -411,36 +405,24 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
 
 
 async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
-    """Replace `close_price` with the frozen prior-session reference price
-    per (account, tradingsymbol) for holdings rows, and write `previous_close`
-    for every row (regardless of whether `close_price` is patched).
+    """Set `prev_close` per (account, tradingsymbol) for holdings rows from
+    the frozen prior-session reference price in daily_book, then recompute
+    day_change_val for all rows where prev_close > 0.
 
     The reference price is `daily_book.ltp` from the most-recent pre-08:00 IST
     snapshot. `daily_book.ltp` is the actual settlement LTP captured at session
     end and is the canonical prior-session reference price.
 
-    `previous_close` (Kite's BHAV-copy field) is deliberately NOT used here.
-    Kite populates `previous_close` from the BHAV-copy API which lags until
-    ~08:00 IST the next trading day. Using it via COALESCE caused the epsilon
-    check to always pass (stale value equals stale close_price), so `close_price`
-    was never patched. Using `daily_book.ltp` directly fixes this.
-
-    `previous_close` is written to rows that have a matching daily_book
-    snapshot entry.  Rows with no snapshot entry receive 0.0 (initialised
-    after the query succeeds).  On DB failure the column is left absent so
-    the broker's own `close_price` / `previous_close` field (set by
-    `_enrich_holdings`) is used instead of a hard zero.
-
-    `close_price` is synced to ref_close unconditionally for every row that
-    has a snapshot entry — no epsilon guard (the old epsilon guard caused the
-    denominator and numerator to reference different prices when Kite's
-    BHAV-copy value was close to the snapshot).
+    `prev_close` is written to rows that have a matching daily_book snapshot
+    entry. Rows with no snapshot entry receive 0.0 (initialised after the query
+    succeeds). On DB failure the column is left absent so the broker's own
+    value is used instead of a hard zero.
 
     Runs AFTER backfill_market_data and AFTER `_enrich_holdings` (which runs
     inside `broker_apis.fetch_holdings` per-account). Because `_enrich_holdings`
-    has already computed `day_change_val` against the stale `close_price`, this
-    function recomputes `day_change_val` on close_price-patched rows after
-    updating `close_price`.
+    has already computed `day_change_val` against the broker's own close, this
+    function recomputes `day_change_val` using (ltp − prev_close) × qty after
+    setting prev_close.
     """
     if raw.empty or 'tradingsymbol' not in raw.columns or 'account' not in raw.columns:
         return
@@ -479,31 +461,22 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     if not snapshot_map:
         return
 
-    # Ensure previous_close column exists — initialised to 0.0 for rows that
+    # Ensure prev_close column exists — initialised to 0.0 for rows that
     # have no matching snapshot entry.  Placed here (after the query succeeds)
     # so that a DB failure returns early above, leaving the column absent and
     # letting the broker's own value be used by downstream consumers.
-    if 'previous_close' not in raw.columns:
-        raw['previous_close'] = 0.0
+    if 'prev_close' not in raw.columns:
+        raw['prev_close'] = 0.0
 
-    # Write previous_close for ALL rows that have a snapshot entry (not just
-    # rows where close_price gets patched). Rows with no snapshot entry keep 0.0.
+    # Write prev_close for ALL rows that have a snapshot entry.
+    # Rows with no snapshot entry keep 0.0.
     patched_indices: list = []
     for idx in raw.index:
         key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
         ref_close = snapshot_map.get(key)
         if ref_close is None:
             continue
-        # Always write previous_close unconditionally.
-        raw.at[idx, 'previous_close'] = ref_close
-        # Always sync close_price to ref_close — unconditional, no epsilon guard.
-        # This ensures _recompute_day_change_pct (which uses close_price as the
-        # percentage denominator) is always consistent with day_change_val
-        # (which uses previous_close = ref_close).  The old epsilon guard
-        # (abs(ref_close - current_close) <= 0.005) silently skipped rows where
-        # Kite's BHAV-copy value was close to the snapshot — causing the
-        # denominator and numerator to reference different prices.
-        raw.at[idx, 'close_price'] = ref_close
+        raw.at[idx, 'prev_close'] = ref_close
         patched_indices.append(idx)
 
     if patched_indices:
@@ -511,21 +484,11 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
             f"holdings: close-override patched {len(patched_indices)}/{len(raw)} rows from daily_book"
         )
 
-    # Recompute day_change_val for ALL rows where previous_close > 0 — not
-    # just the close_price-patched rows.  Rows where close_price already
-    # matched the snapshot (epsilon ≤ 0.005) still need a fresh
-    # (ltp − previous_close) × qty because _enrich_holdings ran against the
-    # stale Kite close_price before this function was called.
-    #
-    # For Dhan/Groww rows: backfill_market_data sets close_price ≈ ohlc.close
-    # (today's settlement ≈ ltp), so (ltp - close_price) × qty ≈ 0 and the
-    # row falls through the epsilon guard unchanged. Recomputing against
-    # previous_close gives the correct (ltp - prev_close) × qty value.
-    #
-    # close_price patch log is kept separate (above) — it tracks the number of
-    # rows where the broker value diverged, which is the metric that matters for
-    # the Kite BHAV-copy lag diagnostic.
-    pc_series = pd.to_numeric(raw['previous_close'], errors='coerce').fillna(0)
+    # Recompute day_change_val for ALL rows where prev_close > 0 — not
+    # just the newly-patched rows. Rows that already had the correct value
+    # still need a fresh (ltp − prev_close) × qty because _enrich_holdings
+    # ran against the broker's own close before this function was called.
+    pc_series = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
     all_pc_indices = raw.index[pc_series > 0].tolist()
     if all_pc_indices and 'day_change_val' in raw.columns:
         _ltp = pd.to_numeric(raw.loc[all_pc_indices, 'last_price'], errors='coerce').fillna(0)
@@ -578,7 +541,7 @@ def _hold_tag_closed_row(r, snap_data, _msc) -> object:
     if has_snapshot and price is not None:
         qty = int(getattr(r, "quantity", 0) or getattr(r, "opening_quantity", 0))
         snap_price = float(price)
-        close_px = float(getattr(r, "close_price", 0.0) or 0.0)
+        close_px = float(getattr(r, "prev_close", 0.0) or 0.0)
         replace_kwargs["last_price"] = snap_price
         replace_kwargs["cur_val"] = snap_price * qty
         dcv = _compute_holding_day_change(snap_day_pnl or 0.0, snap_price, close_px, None, qty)
@@ -747,10 +710,9 @@ async def _fetch() -> HoldingsResponse:
     if raw.empty:
         return HoldingsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
 
-    # Replace broker's drifted close_price with the prior-session EOD LTP
-    # from daily_book. Also writes previous_close to all rows and recomputes
-    # day_change_val for ALL rows with previous_close > 0 using
-    # (ltp - previous_close) × qty — the canonical holdings day P&L formula.
+    # Set prev_close per-row from the prior-session EOD LTP in daily_book
+    # and recompute day_change_val for ALL rows with prev_close > 0 using
+    # (ltp - prev_close) × qty — the canonical holdings day P&L formula.
     await _override_stale_close_for_holdings(raw)
 
     df = pl.from_pandas(raw)

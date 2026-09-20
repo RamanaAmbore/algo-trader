@@ -35,14 +35,14 @@ import pandas as pd
 def _recompute_day_change_pct(
     df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
 ) -> None:
-    """Recompute day_change_percentage in-place. Primary denom: |close × qty|;
-    fallback: |avg × qty| for opened-today rows where close_price == 0."""
+    """Recompute day_change_percentage in-place. Primary denom: |prev_close × qty|;
+    fallback: |avg × qty| for opened-today rows where prev_close == 0."""
     if "day_change_percentage" not in df.columns or "day_change_val" not in df.columns:
         return
     _dcv = pd.to_numeric(df.loc[sel_mask, "day_change_val"], errors="coerce").fillna(0)
     _cls = (
-        pd.to_numeric(df.loc[sel_mask, "close_price"], errors="coerce").fillna(0)
-        if "close_price" in df.columns
+        pd.to_numeric(df.loc[sel_mask, "prev_close"], errors="coerce").fillna(0)
+        if "prev_close" in df.columns
         else pd.Series(0.0, index=sel_mask)
     )
     _avg = (
@@ -125,7 +125,7 @@ def decomposed_intraday_pnl(
     Args:
         oq:  overnight_quantity   — qty carried into today's session
         ltp: last_price           — live mark
-        cls: close_price          — prior session's authoritative close
+        cls: prev_close           — prior session's authoritative close
         bq:  day_buy_quantity     — qty bought today
         bv:  day_buy_value        — notional spent today (qty × fill)
         sv:  day_sell_value       — notional received today (qty × fill)
@@ -157,7 +157,7 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
 
       Case 2 — overnight position where the LTP gate zeroed dcv but broker
         pnl is valid (overnight_quantity > 0, day_change_val == 0, pnl != 0,
-        close_price > 0, average_price > 0). Recovery mirrors the frontend
+        prev_close > 0, average_price > 0). Recovery mirrors the frontend
         SSOT `baseDayPnlForPosition` formula:
             day_pnl = pnl − (close − avg) × oq
         This strips out the overnight carry so only today's session P&L
@@ -175,6 +175,10 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     The rescue mirrors the frontend SSOT `baseDayPnlForPosition` in
     `frontend/src/lib/data/nav.js` so route, background task, NAV math,
     snapshot writers, and alerts all agree.
+
+    Column name: the DataFrame is expected to have `prev_close` (not
+    `close_price`); the fallback `raw.get('close_price', ...)` is kept as
+    a backward-compat shim for any caller that hasn't migrated yet.
 
     Returns a copy of `raw` with `day_change_val` restored where the mask
     fires. If `raw` is empty or lacks the required columns, returns it
@@ -197,7 +201,7 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
         raw.get('pnl', pd.Series(dtype=float)), errors='coerce'
     ).fillna(0)
     _cls = pd.to_numeric(
-        raw.get('close_price', pd.Series(dtype=float)), errors='coerce'
+        raw.get('prev_close', raw.get('close_price', pd.Series(dtype=float))), errors='coerce'
     ).fillna(0)
     _avg = pd.to_numeric(
         raw.get('average_price', pd.Series(dtype=float)), errors='coerce'
@@ -211,7 +215,7 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
     # Case 3: fully closed intraday round-trip (qty=0, oq=0, dcv zeroed, pnl non-zero).
     # Requires oq=0 — closed OVERNIGHT positions (qty=0, oq>0) must NOT fall through
     # here, because pnl for those rows = total gain since entry price, not today's
-    # session gain. Case 2 handles the overnight-closed path when close_price is
+    # session gain. Case 2 handles the overnight-closed path when prev_close is
     # available; when it isn't (e.g. Dhan adapter), dcv stays 0 (conservative).
     _case3 = (_qty == 0) & (_oq == 0) & (_dcv == 0) & (_pnl != 0)
 

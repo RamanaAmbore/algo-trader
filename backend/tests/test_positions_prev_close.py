@@ -1,21 +1,22 @@
 """
-Tests for previous_close COALESCE unification in positions.py.
+Tests for prev_close unification in positions.py.
 
-Context: Three SQL sites were changed from:
-  ltp AS prev_close WHERE ltp IS NOT NULL AND ltp > 0
+Context: SQL query sites were simplified from:
+  COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close
 to:
-  COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS prev_close
-  WHERE COALESCE(...) IS NOT NULL
+  ltp AS ref_close WHERE ltp IS NOT NULL AND ltp > 0
 
-This change ensures that holiday snapshot rows with ltp=NULL but close_price > 0
-are no longer silently excluded. The COALESCE pattern gives ltp priority when
-both are present (ltp != 0), then falls back to close_price != 0 when ltp is
-NULL or 0, and finally excludes only when BOTH are NULL or 0.
+This is consistent with the rename refactor: close_price/previous_close →
+prev_close throughout. The daily_book column is now `prev_close` and the
+DataFrame column is also `prev_close`. The COALESCE fallback to close_price
+was removed because the canonical source for prior-session settlement LTP is
+now daily_book.ltp (not close_price, which is the stale BHAV copy).
 
 Tests cover:
-  1. SQL text assertions — verify COALESCE pattern appears in source
-  2. Behavioral assertions — mock DB rows to verify ltp=NULL + close_price > 0
-     are included and close_price wins in the COALESCE
+  1. SQL text assertions — verify the simplified ltp pattern appears in source
+  2. Behavioral assertions — mock DB rows to verify correct prev_close population
+  3. _apply_second_pass_fallback uses `prev_close` column (not `previous_close`)
+  4. _positions_snapshot uses `db.prev_close AS previous_close` in SELECT
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 # ===========================================================================
 
 class TestSQLTextPatterns:
-    """Verify that the COALESCE patterns appear in the SQL source."""
+    """Verify that the simplified ltp pattern appears in the SQL source."""
 
     @staticmethod
     def _read_sql_from_function(func) -> str:
@@ -40,61 +41,52 @@ class TestSQLTextPatterns:
         src = inspect.getsource(func)
         return src
 
-    def test_fetch_snapshot_close_map_sql_uses_coalesce(self):
-        """_fetch_snapshot_close_map must use COALESCE for ref_close."""
+    def test_fetch_snapshot_close_map_sql_uses_ltp_as_ref_close(self):
+        """_fetch_snapshot_close_map must use `ltp AS ref_close` for ref_close."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         src = self._read_sql_from_function(_fetch_snapshot_close_map)
 
-        # Verify the COALESCE pattern is present
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))" in src, (
-            "_fetch_snapshot_close_map SQL must contain "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))"
+        # Verify the simplified pattern is present — ltp is the canonical source
+        assert "ltp AS ref_close" in src, (
+            "_fetch_snapshot_close_map SQL must contain 'ltp AS ref_close'"
         )
-        # Verify the SELECT column uses COALESCE
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close" in src, (
-            "_fetch_snapshot_close_map must SELECT "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close"
-        )
-        # Verify WHERE condition uses COALESCE
-        assert "WHERE kind = 'positions'" in src and \
-               "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL" in src, (
+        # Verify WHERE condition filters by ltp IS NOT NULL AND ltp > 0
+        assert "ltp IS NOT NULL AND ltp > 0" in src, (
             "_fetch_snapshot_close_map WHERE clause must filter by "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL"
+            "'ltp IS NOT NULL AND ltp > 0'"
+        )
+        # Verify it queries positions kind
+        assert "kind = 'positions'" in src, (
+            "_fetch_snapshot_close_map must query kind = 'positions'"
         )
 
-    def test_apply_second_pass_fallback_sql_uses_coalesce(self):
-        """_apply_second_pass_fallback must use COALESCE for previous_close."""
+    def test_apply_second_pass_fallback_sql_uses_ltp_as_prev_close(self):
+        """_apply_second_pass_fallback must use `ltp AS prev_close` in SELECT."""
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         src = self._read_sql_from_function(_apply_second_pass_fallback)
 
-        # Verify the COALESCE pattern appears
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))" in src, (
-            "_apply_second_pass_fallback SQL must contain "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))"
+        # Verify the simplified pattern is present
+        assert "ltp AS prev_close" in src, (
+            "_apply_second_pass_fallback SQL must contain 'ltp AS prev_close'"
         )
-        # Verify it's in the SELECT for previous_close
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS previous_close" in src, (
-            "_apply_second_pass_fallback must SELECT "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS previous_close"
-        )
-        # Verify the WHERE condition uses COALESCE
-        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL" in src, (
+        # Verify WHERE condition filters by ltp IS NOT NULL AND ltp > 0
+        assert "ltp IS NOT NULL AND ltp > 0" in src, (
             "_apply_second_pass_fallback WHERE clause must filter by "
-            "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL"
+            "'ltp IS NOT NULL AND ltp > 0'"
         )
 
-    def test_positions_snapshot_sql_uses_coalesce(self):
-        """_positions_snapshot SELECT must use COALESCE for previous_close."""
+    def test_positions_snapshot_sql_uses_db_prev_close(self):
+        """_positions_snapshot SELECT must use `db.prev_close AS previous_close`."""
         from backend.api.routes.positions import _positions_snapshot
 
         src = self._read_sql_from_function(_positions_snapshot)
 
-        # Verify the COALESCE pattern in the main SELECT
-        assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
-            "_positions_snapshot must SELECT "
-            "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close"
+        # Verify the renamed column is used
+        assert "db.prev_close AS previous_close" in src, (
+            "_positions_snapshot must SELECT 'db.prev_close AS previous_close' "
+            "(renamed from db.previous_close)"
         )
 
 
@@ -103,23 +95,17 @@ class TestSQLTextPatterns:
 # ===========================================================================
 
 class TestFetchSnapshotCloseMapBehavior:
-    """Test _fetch_snapshot_close_map behavior with COALESCE logic."""
+    """Test _fetch_snapshot_close_map behavior — ltp-only logic."""
 
     @pytest.mark.asyncio
-    async def test_includes_null_ltp_row(self):
-        """Row with ltp=NULL, close_price=2850.0 must be included.
-
-        The COALESCE pattern should use close_price as the ref_close value
-        when ltp is NULL. This ensures holiday snapshots with no fresh LTP
-        but a stale close_price still provide a reference price.
-        """
+    async def test_includes_non_zero_ltp_row(self):
+        """Row with ltp=2850.0 must be included in snapshot_map."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'CRUDEOIL26JUL6900PE',
-            'ltp': None,
-            'close_price': 2850.0,
+            'prev_close': 0.0,
         }])
 
         mock_result = MagicMock()
@@ -134,30 +120,26 @@ class TestFetchSnapshotCloseMapBehavior:
         with patch('backend.api.database.async_session', return_value=mock_session):
             snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(
                 raw,
-                cutoff=None  # Cutoff not used in this test; mocked result is returned
+                cutoff=None
             )
 
         assert ('ZG0790', 'CRUDEOIL26JUL6900PE') in snapshot_map, (
-            "Row with ltp=NULL, close_price=2850.0 must be included in snapshot_map"
+            "Row with ltp=2850.0 must be included in snapshot_map"
         )
         assert abs(snapshot_map[('ZG0790', 'CRUDEOIL26JUL6900PE')] - 2850.0) < 0.01, (
-            f"ref_close must be 2850.0 (from close_price), got "
+            f"ref_close must be 2850.0 (from ltp), got "
             f"{snapshot_map[('ZG0790', 'CRUDEOIL26JUL6900PE')]}"
         )
 
     @pytest.mark.asyncio
-    async def test_ltp_wins_over_close_price(self):
-        """Row with ltp=2800.0, close_price=2850.0 must use ltp as ref_close.
-
-        COALESCE prioritizes ltp when both are present and non-zero.
-        """
+    async def test_ltp_used_as_ref_close(self):
+        """Row with ltp=2800.0 must use ltp as ref_close."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'CRUDEOIL26JUL6900PE',
-            'ltp': 2800.0,
-            'close_price': 2850.0,
+            'prev_close': 0.0,
         }])
 
         mock_result = MagicMock()
@@ -176,23 +158,22 @@ class TestFetchSnapshotCloseMapBehavior:
             )
 
         assert abs(snapshot_map[('ZG0790', 'CRUDEOIL26JUL6900PE')] - 2800.0) < 0.01, (
-            f"ref_close must be 2800.0 (ltp wins), got "
+            f"ref_close must be 2800.0 (ltp), got "
             f"{snapshot_map[('ZG0790', 'CRUDEOIL26JUL6900PE')]}"
         )
 
     @pytest.mark.asyncio
-    async def test_both_zero_excluded(self):
-        """Row with ltp=0, close_price=0 must be excluded (COALESCE returns NULL)."""
+    async def test_zero_ltp_excluded_by_db(self):
+        """Row with ltp=0 or NULL is filtered out by the DB query (ltp > 0)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'SYMBOL',
-            'ltp': 0.0,
-            'close_price': 0.0,
+            'prev_close': 0.0,
         }])
 
-        # DB returns empty result because COALESCE(...) IS NOT NULL filtered it out
+        # DB returns empty result because ltp IS NOT NULL AND ltp > 0 filtered it out
         mock_result = MagicMock()
         mock_result.all.return_value = []
 
@@ -208,28 +189,23 @@ class TestFetchSnapshotCloseMapBehavior:
             )
 
         assert ('ZG0790', 'SYMBOL') not in snapshot_map, (
-            "Row with ltp=0, close_price=0 must be excluded"
+            "Row with ltp=0 must be excluded (filtered by DB)"
         )
 
     @pytest.mark.asyncio
-    async def test_ltp_zero_falls_back_to_close_price(self):
-        """Row with ltp=0, close_price=2850.0 must use close_price as ref_close.
-
-        COALESCE NULLIF(ltp, 0) returns NULL when ltp=0, so it falls back to
-        NULLIF(close_price, 0) which is 2850.0.
-        """
+    async def test_total_pnl_stored_in_prev_pnl_map(self):
+        """total_pnl must be stored in prev_pnl_map alongside ref_close."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'SYMBOL',
-            'ltp': 0.0,
-            'close_price': 2850.0,
+            'prev_close': 0.0,
         }])
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'SYMBOL', 2850.0, 500.0)  # ref_close from close_price
+            ('ZG0790', 'SYMBOL', 2850.0, 12500.0)  # ref_close, total_pnl
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -242,30 +218,29 @@ class TestFetchSnapshotCloseMapBehavior:
                 cutoff=None
             )
 
-        assert abs(snapshot_map[('ZG0790', 'SYMBOL')] - 2850.0) < 0.01, (
-            f"ref_close must be 2850.0 (fallback to close_price), got "
-            f"{snapshot_map[('ZG0790', 'SYMBOL')]}"
+        assert abs(prev_pnl_map[('ZG0790', 'SYMBOL')] - 12500.0) < 0.01, (
+            f"prev_pnl_map must have total_pnl=12500.0, got "
+            f"{prev_pnl_map[('ZG0790', 'SYMBOL')]}"
         )
 
 
 class TestApplySecondPassFallbackBehavior:
-    """Test _apply_second_pass_fallback behavior with COALESCE logic."""
+    """Test _apply_second_pass_fallback behavior — reads `prev_close` column."""
 
     @pytest.mark.asyncio
-    async def test_includes_null_ltp_row(self):
-        """Second-pass: row with ltp=NULL, close_price=2850.0 must provide fallback."""
+    async def test_patches_zero_prev_close_rows(self):
+        """Second-pass: row with prev_close=0.0 must be patched with ltp from DB."""
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'CRUDEOIL26SEP7900PE',
-            'previous_close': 0.0,
-            'close_price': 0.0,
+            'prev_close': 0.0,  # renamed from previous_close
         }])
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'CRUDEOIL26SEP7900PE', 2850.0)  # previous_close from COALESCE
+            ('ZG0790', 'CRUDEOIL26SEP7900PE', 2850.0)  # prev_close from ltp
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -276,28 +251,24 @@ class TestApplySecondPassFallbackBehavior:
             patched = await _apply_second_pass_fallback(raw)
 
         assert 0 in patched, "Row index 0 should be patched"
-        assert abs(raw.at[0, 'previous_close'] - 2850.0) < 0.01, (
-            f"previous_close must be 2850.0, got {raw.at[0, 'previous_close']}"
-        )
-        assert abs(raw.at[0, 'close_price'] - 2850.0) < 0.01, (
-            f"close_price must be 2850.0, got {raw.at[0, 'close_price']}"
+        assert abs(raw.at[0, 'prev_close'] - 2850.0) < 0.01, (
+            f"prev_close must be 2850.0, got {raw.at[0, 'prev_close']}"
         )
 
     @pytest.mark.asyncio
-    async def test_ltp_wins_over_close_price_second_pass(self):
-        """Second-pass: when ltp=2800.0, close_price=2850.0, ltp should win."""
+    async def test_ltp_stored_as_prev_close_second_pass(self):
+        """Second-pass: ltp=2800.0 from DB is stored as prev_close."""
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'SYMBOL',
-            'previous_close': 0.0,
-            'close_price': 0.0,
+            'prev_close': 0.0,
         }])
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'SYMBOL', 2800.0)  # COALESCE returns ltp=2800.0
+            ('ZG0790', 'SYMBOL', 2800.0)  # ltp=2800.0 returned as prev_close
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -307,23 +278,22 @@ class TestApplySecondPassFallbackBehavior:
         with patch('backend.api.database.async_session', return_value=mock_session):
             patched = await _apply_second_pass_fallback(raw)
 
-        assert abs(raw.at[0, 'previous_close'] - 2800.0) < 0.01, (
-            f"previous_close must be 2800.0 (ltp wins), got {raw.at[0, 'previous_close']}"
+        assert abs(raw.at[0, 'prev_close'] - 2800.0) < 0.01, (
+            f"prev_close must be 2800.0 (from ltp), got {raw.at[0, 'prev_close']}"
         )
 
     @pytest.mark.asyncio
-    async def test_both_null_excluded_second_pass(self):
-        """Second-pass: row with ltp=NULL, close_price=NULL must be excluded."""
+    async def test_no_db_result_leaves_prev_close_unchanged(self):
+        """Second-pass: when DB returns nothing, prev_close stays at 0.0."""
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'SYMBOL',
-            'previous_close': 0.0,
-            'close_price': 0.0,
+            'prev_close': 0.0,
         }])
 
-        # DB returns empty result because COALESCE(...) IS NOT NULL filtered it out
+        # DB returns empty result
         mock_result = MagicMock()
         mock_result.all.return_value = []
 
@@ -336,39 +306,37 @@ class TestApplySecondPassFallbackBehavior:
             patched = await _apply_second_pass_fallback(raw)
 
         assert 0 not in patched, (
-            "Row with ltp=NULL, close_price=NULL must not be patched"
+            "Row with no DB result must not be patched"
         )
-        assert raw.at[0, 'previous_close'] == 0.0, (
-            "previous_close must remain 0.0 (no fallback available)"
+        assert raw.at[0, 'prev_close'] == 0.0, (
+            "prev_close must remain 0.0 (no fallback available)"
         )
 
     @pytest.mark.asyncio
-    async def test_ltp_zero_falls_back_to_close_price_second_pass(self):
-        """Second-pass: row with ltp=0, close_price=2850.0 must use close_price."""
+    async def test_non_zero_prev_close_rows_skipped(self):
+        """Second-pass: rows where prev_close != 0.0 are not patched (skipped early)."""
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         raw = pd.DataFrame([{
             'account': 'ZG0790',
             'tradingsymbol': 'SYMBOL',
-            'previous_close': 0.0,
-            'close_price': 0.0,
+            'prev_close': 2700.0,  # already set — should not be queried
         }])
 
-        mock_result = MagicMock()
-        mock_result.all.return_value = [
-            ('ZG0790', 'SYMBOL', 2850.0)  # COALESCE falls back to close_price
-        ]
         mock_session = AsyncMock()
-        mock_session.execute = AsyncMock(return_value=mock_result)
+        mock_session.execute = AsyncMock(return_value=MagicMock())
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
-        with patch('backend.api.database.async_session', return_value=mock_session):
+        with patch('backend.api.database.async_session', return_value=mock_session) as mock_db:
             patched = await _apply_second_pass_fallback(raw)
 
-        assert abs(raw.at[0, 'previous_close'] - 2850.0) < 0.01, (
-            f"previous_close must be 2850.0 (fallback to close_price), "
-            f"got {raw.at[0, 'previous_close']}"
+        # No patching should occur; DB should not be called
+        assert 0 not in patched, "Row 0 should not be patched (prev_close was already set)"
+        assert raw.at[0, 'prev_close'] == 2700.0, "prev_close must remain 2700.0"
+        # async_session should NOT be called (zero_mask has no True values)
+        assert mock_db.call_count == 0, (
+            "_apply_second_pass_fallback must not query DB when no rows need patching"
         )
 
     @pytest.mark.asyncio
@@ -377,9 +345,9 @@ class TestApplySecondPassFallbackBehavior:
         from backend.api.routes.positions import _apply_second_pass_fallback
 
         raw = pd.DataFrame([
-            {'account': 'ZG0790', 'tradingsymbol': 'SYM1', 'previous_close': 2700.0, 'close_price': 0.0},  # idx 0: not zero
-            {'account': 'ZG0790', 'tradingsymbol': 'SYM2', 'previous_close': 0.0, 'close_price': 0.0},    # idx 1: zero
-            {'account': 'ZG0790', 'tradingsymbol': 'SYM3', 'previous_close': 0.0, 'close_price': 0.0},    # idx 2: zero
+            {'account': 'ZG0790', 'tradingsymbol': 'SYM1', 'prev_close': 2700.0},  # idx 0: not zero
+            {'account': 'ZG0790', 'tradingsymbol': 'SYM2', 'prev_close': 0.0},     # idx 1: zero
+            {'account': 'ZG0790', 'tradingsymbol': 'SYM3', 'prev_close': 0.0},     # idx 2: zero
         ])
 
         mock_result = MagicMock()
@@ -396,95 +364,86 @@ class TestApplySecondPassFallbackBehavior:
             patched = await _apply_second_pass_fallback(raw)
 
         # Row 0 not in patched (was already non-zero)
-        assert 0 not in patched, "Row 0 should not be patched (previous_close was already set)"
+        assert 0 not in patched, "Row 0 should not be patched (prev_close was already set)"
         # Rows 1, 2 should be in patched
         assert 1 in patched and 2 in patched, "Rows 1 and 2 should be patched"
         # Verify values
-        assert abs(raw.at[1, 'previous_close'] - 2800.0) < 0.01
-        assert abs(raw.at[2, 'previous_close'] - 2850.0) < 0.01
+        assert abs(raw.at[1, 'prev_close'] - 2800.0) < 0.01
+        assert abs(raw.at[2, 'prev_close'] - 2850.0) < 0.01
 
 
 class TestPositionsSnapshotSQLLogic:
-    """Test that _positions_snapshot SELECT uses COALESCE correctly."""
+    """Test that _positions_snapshot SELECT uses db.prev_close correctly."""
 
     @pytest.mark.asyncio
-    async def test_snapshot_sql_coalesce_column_exists(self):
-        """Verify that _positions_snapshot's SELECT includes the COALESCE AS previous_close."""
+    async def test_snapshot_sql_uses_renamed_column(self):
+        """Verify that _positions_snapshot's SELECT uses db.prev_close AS previous_close."""
         from backend.api.routes.positions import _positions_snapshot
 
-        # Verify the source contains the SELECT with COALESCE
         src = inspect.getsource(_positions_snapshot)
-        assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
-            "_positions_snapshot must SELECT the COALESCE pattern as previous_close"
+        assert "db.prev_close AS previous_close" in src, (
+            "_positions_snapshot must SELECT 'db.prev_close AS previous_close' "
+            "after the rename refactor"
         )
-        # Verify it's not using the old pattern (ltp AS prev_close)
-        # (We check that old pattern is NOT there in the relevant part)
-        # This is a soft check — we mainly verify the new pattern is present.
+        # Verify it's not using the old column name directly
+        # (The column is now `prev_close` in daily_book, not `previous_close`)
+        assert "db.previous_close AS previous_close" not in src, (
+            "_positions_snapshot must not use 'db.previous_close' — "
+            "the DB column was renamed to prev_close"
+        )
 
 
 # ===========================================================================
-# Integration: Verify old patterns are replaced
+# Integration: Verify current patterns are present
 # ===========================================================================
 
-def test_fetch_snapshot_close_map_no_old_pattern():
-    """Verify _fetch_snapshot_close_map does NOT use old ltp IS NOT NULL pattern alone."""
+def test_fetch_snapshot_close_map_uses_ltp_pattern():
+    """Verify _fetch_snapshot_close_map uses ltp AS ref_close (not COALESCE)."""
     from backend.api.routes.positions import _fetch_snapshot_close_map
 
     src = inspect.getsource(_fetch_snapshot_close_map)
 
-    # The function should NOT have the old pattern in the ref_close SELECT
-    # (It may have ltp IS NOT NULL in the latest_batch CTE for snapshot exclusion,
-    #  but not in the ref_close column itself or in the WHERE clause.)
-    # Look for the problematic old pattern: "ltp IS NOT NULL AND ltp > 0" in the
-    # SELECT or WHERE of the main query (not the CTE for latest_batch filtering).
-    lines = src.split('\n')
-    in_main_query = False
-    for i, line in enumerate(lines):
-        # Detect if we're in the main SELECT...FROM...WHERE (not a CTE definition)
-        if 'SELECT' in line and 'DISTINCT ON' in line and 'account, symbol' in line:
-            in_main_query = True
-        if in_main_query:
-            # Old pattern in WHERE: "AND ltp IS NOT NULL AND ltp > 0"
-            if 'AND ltp IS NOT NULL AND ltp > 0' in line:
-                pytest.fail(
-                    f"_fetch_snapshot_close_map still uses old pattern "
-                    f"'AND ltp IS NOT NULL AND ltp > 0' at line {i+1}: {line}"
-                )
+    # The function should use the simplified ltp-only pattern
+    assert "ltp AS ref_close" in src, (
+        "_fetch_snapshot_close_map must use 'ltp AS ref_close' "
+        "(COALESCE fallback to close_price was removed)"
+    )
 
 
-def test_apply_second_pass_fallback_no_old_pattern():
-    """Verify _apply_second_pass_fallback does NOT use old ltp IS NOT NULL pattern."""
+def test_apply_second_pass_fallback_reads_prev_close_column():
+    """Verify _apply_second_pass_fallback reads raw['prev_close'] not raw['previous_close']."""
     from backend.api.routes.positions import _apply_second_pass_fallback
 
     src = inspect.getsource(_apply_second_pass_fallback)
 
-    # Verify no old pattern in WHERE clause
-    if 'AND ltp IS NOT NULL AND ltp > 0' in src:
-        pytest.fail(
-            "_apply_second_pass_fallback still uses old pattern "
-            "'AND ltp IS NOT NULL AND ltp > 0'"
-        )
-
-
-def test_positions_snapshot_no_old_pattern_in_select():
-    """Verify _positions_snapshot does NOT use old 'ltp AS' pattern for previous_close."""
-    from backend.api.routes.positions import _positions_snapshot
-
-    src = inspect.getsource(_positions_snapshot)
-
-    # The old pattern would be something like "db.ltp AS previous_close"
-    # We verify the new pattern is there instead
-    assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
-        "_positions_snapshot must use COALESCE pattern for previous_close"
+    # The function must reference the renamed column
+    assert "prev_close" in src, (
+        "_apply_second_pass_fallback must use 'prev_close' column (not 'previous_close')"
+    )
+    # The old column name must not appear as a DataFrame access
+    assert "raw['previous_close']" not in src, (
+        "_apply_second_pass_fallback must not access raw['previous_close'] — "
+        "DataFrame column was renamed to prev_close"
     )
 
 
-def test_positions_snapshot_does_not_use_ltp_as_previous_close():
-    """Guard: _positions_snapshot must not use db.ltp for previous_close (causes chg%=0)."""
+def test_positions_snapshot_uses_prev_close_db_column():
+    """Verify _positions_snapshot uses db.prev_close from daily_book."""
     from backend.api.routes.positions import _positions_snapshot
 
     src = inspect.getsource(_positions_snapshot)
-    assert "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close" not in src, (
-        "_positions_snapshot must not derive previous_close from db.ltp — "
-        "ltp is today's settlement; previous_close must come from db.previous_close (BHAV at 08:00)"
+    assert "db.prev_close" in src, (
+        "_positions_snapshot must reference 'db.prev_close' (renamed DB column)"
+    )
+
+
+def test_positions_snapshot_does_not_use_old_previous_close_column():
+    """Guard: _positions_snapshot must not use db.previous_close (old column name)."""
+    from backend.api.routes.positions import _positions_snapshot
+
+    src = inspect.getsource(_positions_snapshot)
+    # Specific guard: the old column reference pattern should not appear
+    assert "db.previous_close AS previous_close" not in src, (
+        "_positions_snapshot must not use db.previous_close — "
+        "the daily_book column was renamed to prev_close"
     )

@@ -41,13 +41,13 @@ class TestUpsertImmutability:
 
         sql_text = str(_UPSERT_SQL)
 
-        # Immutable preserve pattern must be present.
-        assert "previous_close = daily_book.previous_close" in sql_text, (
-            "UPSERT SQL must preserve previous_close unchanged on update"
+        # Immutable preserve pattern must be present (column renamed to prev_close).
+        assert "prev_close     = daily_book.prev_close" in sql_text, (
+            "UPSERT SQL must preserve prev_close unchanged on update"
         )
 
         # Old rolling-shift CASE expression must NOT be present.
-        assert "THEN daily_book.ltp ELSE daily_book.previous_close END" not in sql_text, (
+        assert "THEN daily_book.ltp ELSE daily_book.prev_close END" not in sql_text, (
             "Rolling-shift CASE expression was removed — should not be present"
         )
 

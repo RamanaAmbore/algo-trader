@@ -346,7 +346,7 @@ async def test_mode_both_unions_live_and_paper(app, async_client):
 
     live_row = PositionRow(
         account="ZG0790", tradingsymbol="NIFTY24DECFUT", exchange="NFO",
-        product="NRML", quantity=50, average_price=23000.0, close_price=23000.0,
+        product="NRML", quantity=50, average_price=23000.0, prev_close=23000.0,
         last_price=23100.0, pnl=5000.0,
     )
     live_resp = PositionsResponse(
@@ -355,7 +355,7 @@ async def test_mode_both_unions_live_and_paper(app, async_client):
 
     paper_row = PositionRow(
         account="ZG0790", tradingsymbol="BANKNIFTY24DECFUT", exchange="NFO",
-        product="NRML", quantity=15, average_price=51000.0, close_price=51000.0,
+        product="NRML", quantity=15, average_price=51000.0, prev_close=51000.0,
         last_price=51500.0, pnl=7500.0, mode="paper",
     )
     paper_resp = PositionsResponse(

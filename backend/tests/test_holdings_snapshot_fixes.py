@@ -8,7 +8,7 @@ Covers:
            LTP in daily_book.ltp; (b) calling the override would produce
            (ltp - ltp) × qty = 0 day_change_val since both cutoffs resolve to today
            08:00. The override remains active only on the live broker path.
-  Fix 6 — _override_stale_close_for_holdings always sets close_price=ref_close
+  Fix 6 — _override_stale_close_for_holdings always sets prev_close=ref_close
            (epsilon guard removed)
   Fix 7 — _overlay_snapshot_for_closed_exchanges patches day_change_val,
            day_change_percentage, and close_price for closed-exchange rows
@@ -41,7 +41,7 @@ def _make_raw_row(
     qty=10,
     avg_cost=2000.0,
     ltp=2100.0,
-    previous_close=2050.0,
+    prev_close=2050.0,
     day_pnl=500.0,
     total_pnl=1000.0,
     prev_ltp=2050.0,
@@ -49,7 +49,7 @@ def _make_raw_row(
     """Build a tuple matching the _HOLDINGS_SNAPSHOT_SQL column order."""
     captured_at = datetime(2026, 8, 27, 15, 30, tzinfo=timezone.utc)
     return (account, symbol, exchange, qty, avg_cost, ltp,
-            previous_close, day_pnl, total_pnl, captured_at, prev_ltp)
+            prev_close, day_pnl, total_pnl, captured_at, prev_ltp)
 
 
 @pytest.mark.asyncio
@@ -105,7 +105,7 @@ async def test_holdings_snapshot_uses_stored_day_pnl_directly():
     from backend.api.routes import holdings as _hol_mod
 
     # day_pnl=500 should be used directly as day_change_val
-    raw_rows = [_make_raw_row(ltp=2100.0, previous_close=2050.0, day_pnl=500.0)]
+    raw_rows = [_make_raw_row(ltp=2100.0, prev_close=2050.0, day_pnl=500.0)]
 
     with patch.object(_hol_mod, "_query_holdings_snapshot_rows",
                       new=AsyncMock(return_value=raw_rows)):
@@ -118,20 +118,20 @@ async def test_holdings_snapshot_uses_stored_day_pnl_directly():
     assert abs(row.day_change_val - 500.0) < 0.01, (
         f"day_change_val should be stored day_pnl=500, got {row.day_change_val}"
     )
-    # previous_close from snapshot row is preserved as-is (no DB re-query)
-    assert row.previous_close == 2050.0, (
-        f"previous_close should be the stored value 2050.0, got {row.previous_close}"
+    # prev_close from snapshot row is preserved as-is (no DB re-query)
+    assert row.prev_close == 2050.0, (
+        f"prev_close should be the stored value 2050.0, got {row.prev_close}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Fix 6 — epsilon guard removed: close_price always set to ref_close
+# Fix 6 — epsilon guard removed: prev_close always set to ref_close
 # ---------------------------------------------------------------------------
 
 @pytest.mark.asyncio
 async def test_override_stale_close_no_epsilon_guard_small_diff():
-    """_override_stale_close_for_holdings must set close_price=ref_close even when
-    the difference from the current close_price is less than 0.005 (epsilon removed)."""
+    """_override_stale_close_for_holdings must set prev_close=ref_close even when
+    the difference from the current prev_close is less than 0.005 (epsilon removed)."""
     from backend.api.routes import holdings as _hol_mod
 
     # Difference < 0.005 — the old epsilon guard would have skipped this row.
@@ -141,12 +141,11 @@ async def test_override_stale_close_no_epsilon_guard_small_diff():
     raw = pd.DataFrame([{
         "account": "ZG0001",
         "tradingsymbol": "RELIANCE",
-        "close_price": current_close,
+        "prev_close": current_close,
         "last_price": 2100.0,
         "quantity": 10,
         "day_change_val": 500.0,
         "day_change": 50.0,
-        "previous_close": 0.0,
     }])
 
     fake_snapshot_map = {("ZG0001", "RELIANCE"): ref_close_in_db}
@@ -166,13 +165,10 @@ async def test_override_stale_close_no_epsilon_guard_small_diff():
 
         await _hol_mod._override_stale_close_for_holdings(raw)
 
-    # After the fix, close_price MUST equal ref_close_in_db (no epsilon gate).
-    assert raw.at[0, "close_price"] == ref_close_in_db, (
-        f"close_price should be {ref_close_in_db} (no epsilon guard), "
-        f"but got {raw.at[0, 'close_price']}"
-    )
-    assert raw.at[0, "previous_close"] == ref_close_in_db, (
-        f"previous_close should be {ref_close_in_db}, got {raw.at[0, 'previous_close']}"
+    # After the fix, prev_close MUST equal ref_close_in_db (no epsilon gate).
+    assert raw.at[0, "prev_close"] == ref_close_in_db, (
+        f"prev_close should be {ref_close_in_db} (no epsilon guard), "
+        f"but got {raw.at[0, 'prev_close']}"
     )
 
 
@@ -186,12 +182,11 @@ async def test_override_stale_close_always_sets_close_price_zero_diff():
     raw = pd.DataFrame([{
         "account": "ZG0001",
         "tradingsymbol": "INFY",
-        "close_price": ref_close,  # already equal
+        "prev_close": ref_close,  # already equal
         "last_price": 2060.0,
         "quantity": 5,
         "day_change_val": 50.0,
         "day_change": 10.0,
-        "previous_close": 0.0,
     }])
 
     with patch("backend.api.database.async_session") as mock_async_session:
@@ -203,15 +198,14 @@ async def test_override_stale_close_always_sets_close_price_zero_diff():
         ))
         await _hol_mod._override_stale_close_for_holdings(raw)
 
-    # close_price must equal ref_close (set unconditionally, even when equal).
-    assert raw.at[0, "close_price"] == ref_close
-    assert raw.at[0, "previous_close"] == ref_close
+    # prev_close must equal ref_close (set unconditionally, even when equal).
+    assert raw.at[0, "prev_close"] == ref_close
 
 
 def test_override_stale_close_source_no_epsilon_guard():
     """Static check: holdings.py must NOT execute 'continue' after the epsilon
     guard 'if abs(ref_close - current_close) <= 0.005: continue' in
-    _override_stale_close_for_holdings — the guard must be removed so close_price
+    _override_stale_close_for_holdings — the guard must be removed so prev_close
     is always set unconditionally."""
     import re
     from pathlib import Path
@@ -225,7 +219,7 @@ def test_override_stale_close_source_no_epsilon_guard():
     assert "if abs(ref_close - current_close)" not in src, (
         "The live epsilon guard 'if abs(ref_close - current_close)...' must be removed "
         "from _override_stale_close_for_holdings (Fix 6). "
-        "close_price should always be set to ref_close unconditionally."
+        "prev_close should always be set to ref_close unconditionally."
     )
 
 
@@ -243,12 +237,11 @@ def _make_position_row(**kwargs):
         product="MIS",
         quantity=10,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         pnl=500.0,
         last_price=2100.0,
         day_change_val=500.0,
         day_change_percentage=2.44,
-        previous_close=2050.0,
     )
     defaults.update(kwargs)
     return PositionRow(**defaults)
@@ -267,8 +260,7 @@ async def test_overlay_snapshot_patches_day_change_for_closed_nfo_row():
         last_price=150.0,
         day_change_val=0.0,       # stale broker value
         day_change_percentage=0.0,
-        close_price=145.0,        # broker's drifted close
-        previous_close=140.0,
+        prev_close=140.0,
     )
     mcx_row = _make_position_row(
         tradingsymbol="CRUDEOIL26AUGFUT",
@@ -277,8 +269,7 @@ async def test_overlay_snapshot_patches_day_change_for_closed_nfo_row():
         last_price=8500.0,
         day_change_val=1000.0,    # live, must not be touched
         day_change_percentage=1.2,
-        close_price=8400.0,
-        previous_close=8400.0,
+        prev_close=8400.0,
     )
 
     ref_close_for_nfo = 142.0  # true prior-session settlement LTP
@@ -317,8 +308,8 @@ async def test_overlay_snapshot_patches_day_change_for_closed_nfo_row():
         f"NFO day_change_percentage should be {expected_dcp:.2f}, "
         f"got {nfo_out.day_change_percentage:.2f}"
     )
-    assert nfo_out.close_price == ref_close_for_nfo, (
-        f"NFO close_price should be {ref_close_for_nfo}, got {nfo_out.close_price}"
+    assert nfo_out.prev_close == ref_close_for_nfo, (
+        f"NFO prev_close should be {ref_close_for_nfo}, got {nfo_out.prev_close}"
     )
 
     # MCX row assertions — nothing patched (exchange open).
@@ -327,9 +318,6 @@ async def test_overlay_snapshot_patches_day_change_for_closed_nfo_row():
     )
     assert mcx_out.day_change_percentage == 1.2, (
         "MCX day_change_percentage must not be changed (exchange is open)"
-    )
-    assert mcx_out.close_price == 8400.0, (
-        "MCX close_price must not be changed (exchange is open)"
     )
 
 
@@ -344,7 +332,7 @@ async def test_overlay_snapshot_no_ref_close_leaves_day_change_unchanged():
         quantity=10,
         last_price=200.0,
         day_change_val=300.0,    # broker value to preserve
-        close_price=170.0,
+        prev_close=170.0,
     )
 
     def _exchange_closed_mock(exch: str) -> bool:
@@ -383,7 +371,7 @@ async def test_overlay_snapshot_holdings_path_skips_ref_close_query():
         quantity=10,
         opening_quantity=10,
         average_price=2000.0,
-        close_price=2050.0,
+        prev_close=2050.0,
         last_price=2100.0,
         inv_val=20000.0,
         cur_val=21000.0,

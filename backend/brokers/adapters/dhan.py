@@ -1747,7 +1747,7 @@ def _dhan_normalise_one_holding(h: dict) -> dict:
         "t1_quantity":           _dhan_int(h.get("t1Qty")),
         "average_price":         avg_price,
         "last_price":            last_price,
-        "close_price":           close_price,
+        "prev_close":            close_price,
         "pnl":                   pnl,
         "day_change":            day_change,
         "day_change_percentage": day_chg_pct,
@@ -1840,7 +1840,7 @@ def _normalise_position_row(p: dict) -> dict:
         # so the broker_apis day_change_val formula treats it the same
         # as Kite's contract-qty (no extra multiplication needed).
         "multiplier":      1,
-        "close_price":     close,
+        "prev_close":      close,
         "average_price":   avg,
         "last_price":      ltp,
         "buy_price":       float(p.get("buyAvg",       0) or 0),

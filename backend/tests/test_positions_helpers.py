@@ -20,7 +20,7 @@ def _make_row(
     account="ZG0790",
     pnl=1000.0,
     day_change_val=200.0,
-    close_price=500.0,
+    prev_close=500.0,
     quantity=10,
 ):
     from backend.api.schemas import PositionRow
@@ -31,8 +31,8 @@ def _make_row(
         product="NRML",
         quantity=quantity,
         average_price=490.0,
-        close_price=close_price,
-        last_price=close_price + day_change_val / quantity,
+        prev_close=prev_close,
+        last_price=prev_close + day_change_val / quantity,
         pnl=pnl,
         pnl_percentage=0.0,
         day_change_val=day_change_val,
@@ -71,9 +71,9 @@ def test_build_summary_single_account():
 
     rows = [
         _make_row("ZG0790", pnl=1000.0, day_change_val=200.0,
-                  close_price=500.0, quantity=10),
+                  prev_close=500.0, quantity=10),
         _make_row("ZG0790", pnl=500.0,  day_change_val=100.0,
-                  close_price=250.0, quantity=5),
+                  prev_close=250.0, quantity=5),
     ]
     summary = build_summary_from_rows(rows)
 
@@ -98,9 +98,9 @@ def test_build_summary_two_accounts():
 
     rows = [
         _make_row("ZG0790", pnl=1000.0, day_change_val=200.0,
-                  close_price=500.0, quantity=10),
+                  prev_close=500.0, quantity=10),
         _make_row("ZJ6294", pnl=2000.0, day_change_val=400.0,
-                  close_price=200.0, quantity=5),
+                  prev_close=200.0, quantity=5),
     ]
     summary = build_summary_from_rows(rows)
 
@@ -128,7 +128,7 @@ def test_build_summary_zero_prev_val():
     from backend.api.routes.positions_helpers import build_summary_from_rows
 
     rows = [_make_row("ZG0790", pnl=500.0, day_change_val=100.0,
-                      close_price=0.0, quantity=5)]
+                      prev_close=0.0, quantity=5)]
     summary = build_summary_from_rows(rows)
     by_acct = {s.account: s for s in summary}
     assert by_acct["ZG0790"].day_change_percentage == 0.0
@@ -366,12 +366,12 @@ def test_branch_b_uses_previous_close_not_ltp():
     assert row.prev_settlement_pnl is None, \
         f"Expected prev_settlement_pnl=None, got {row.prev_settlement_pnl}"
     # Branch B: close_price must be previous_close (320), not ltp (335)
-    assert math.isclose(row.close_price, 320.0, rel_tol=1e-6), \
-        f"Expected close_price=320.0 (previous_close), got {row.close_price}"
+    assert math.isclose(row.prev_close, 320.0, rel_tol=1e-6), \
+        f"Expected close_price=320.0 (previous_close), got {row.prev_close}"
     oq = row.overnight_quantity
     # day-P&L = pnl - oq × (close_price - avg_price)
     # = 2500 - 100 × (320 - 310) = 2500 - 1000 = 1500
-    expected_day = row.pnl - oq * (row.close_price - row.average_price)
+    expected_day = row.pnl - oq * (row.prev_close - row.average_price)
     assert math.isclose(expected_day, 1500.0, rel_tol=1e-6), \
         f"Expected day_pnl=1500.0, got {expected_day}"
 
@@ -393,8 +393,8 @@ def test_previous_close_used_when_provided_and_positive():
         extras={},
         previous_close=Decimal("210.0"),
     )
-    assert math.isclose(row.close_price, 210.0, rel_tol=1e-6), \
-        f"Expected close_price=210.0 (previous_close), got {row.close_price}"
+    assert math.isclose(row.prev_close, 210.0, rel_tol=1e-6), \
+        f"Expected close_price=210.0 (previous_close), got {row.prev_close}"
 
 
 def test_previous_close_falls_back_to_ltp_when_zero():
@@ -414,8 +414,8 @@ def test_previous_close_falls_back_to_ltp_when_zero():
         extras={},
         previous_close=Decimal("0.0"),  # New position, no prior close
     )
-    assert math.isclose(row.close_price, 105.0, rel_tol=1e-6), \
-        f"Expected close_price=105.0 (ltp fallback), got {row.close_price}"
+    assert math.isclose(row.prev_close, 105.0, rel_tol=1e-6), \
+        f"Expected close_price=105.0 (ltp fallback), got {row.prev_close}"
 
 
 def test_prev_settlement_pnl_negative_value():
@@ -489,8 +489,8 @@ def test_prev_settlement_pnl_coexists_with_close_override():
         prev_settlement_pnl=100.0,
     )
     # Both patches should apply
-    assert math.isclose(row.close_price, 220.0, rel_tol=1e-6), \
-        f"Expected close_price=220.0 (previous_close), got {row.close_price}"
+    assert math.isclose(row.prev_close, 220.0, rel_tol=1e-6), \
+        f"Expected close_price=220.0 (previous_close), got {row.prev_close}"
     assert row.prev_settlement_pnl == 100.0, \
         f"Expected prev_settlement_pnl=100.0, got {row.prev_settlement_pnl}"
     # day_pnl = 645 - 100 = 545
@@ -700,7 +700,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=500.0, ltp_f=2100.0, previous_close_f=2050.0,
+            day_pnl_f=500.0, ltp_f=2100.0, prev_close_f=2050.0,
             prev_ltp_f=2040.0, qty_i=10
         )
         # day_pnl wins: prev_ltp only fires when day_pnl=0 AND previous_close=0
@@ -711,7 +711,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=500.0, ltp_f=2100.0, previous_close_f=0.0,
+            day_pnl_f=500.0, ltp_f=2100.0, prev_close_f=0.0,
             prev_ltp_f=None, qty_i=10
         )
         assert result == 500.0, f"day_pnl should be Priority 1, got {result}"
@@ -721,7 +721,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=2050.0,
+            day_pnl_f=0.0, ltp_f=2100.0, prev_close_f=2050.0,
             prev_ltp_f=None, qty_i=10
         )
         expected = (2100.0 - 2050.0) * 10  # 500.0
@@ -734,7 +734,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=0.0,
+            day_pnl_f=0.0, ltp_f=2100.0, prev_close_f=0.0,
             prev_ltp_f=2040.0, qty_i=10
         )
         expected = (2100.0 - 2040.0) * 10  # 600.0
@@ -747,7 +747,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=0.0, ltp_f=2100.0, previous_close_f=0.0,
+            day_pnl_f=0.0, ltp_f=2100.0, prev_close_f=0.0,
             prev_ltp_f=None, qty_i=10
         )
         assert result == 0.0, f"Expected 0.0 when no reference available, got {result}"
@@ -757,7 +757,7 @@ class TestComputeHoldingDayChange:
         from backend.api.routes.holdings import _compute_holding_day_change
 
         result = _compute_holding_day_change(
-            day_pnl_f=-800.0, ltp_f=1900.0, previous_close_f=1980.0,
+            day_pnl_f=-800.0, ltp_f=1900.0, prev_close_f=1980.0,
             prev_ltp_f=None, qty_i=10
         )
         assert result == -800.0, f"Expected -800.0, got {result}"

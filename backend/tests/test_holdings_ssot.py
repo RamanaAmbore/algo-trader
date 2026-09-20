@@ -177,7 +177,7 @@ def test_hold_tag_closed_row_delegates_to_compute_helper():
         quantity=50,
         opening_quantity=50,
         average_price=1800.0,
-        close_price=1820.0,
+        prev_close=1820.0,
         last_price=1820.0,
         inv_val=90000.0,
         cur_val=91000.0,

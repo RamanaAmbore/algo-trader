@@ -36,10 +36,10 @@ def _resolve_previous_close(
     backup_f: float,
     prev_ltp_f: "float | None" = None,
 ) -> float:
-    """Return a corrected previous_close, falling back when NULL or ≈ ltp.
+    """Return a corrected prev_close, falling back when NULL or ≈ ltp.
 
     When `pc_f` is zero/missing or equal to `ltp_f` within 0.01 (rolling-shift
-    corruption where previous_close was overwritten by the current LTP), try
+    corruption where prev_close was overwritten by the current LTP), try
     `backup_f` first, then `prev_ltp_f` (prior snapshot batch LTP). Returns
     the original `pc_f` when no correction is needed.
     """
@@ -107,7 +107,7 @@ def build_summary_from_rows(
         dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + row.day_change_val
         prev_by_account[acct] = (
             prev_by_account.get(acct, 0.0)
-            + abs(row.close_price * row.quantity)
+            + abs(row.prev_close * row.quantity)
         )
 
     summary: list[PositionsSummaryRow] = []
@@ -245,11 +245,13 @@ def build_snapshot_position_row(
     ``daily_snapshot.py`` so closed-hours readers are always consistent
     with what was persisted.
 
-    ``previous_close`` — when provided and > 0, used as ``close_price``
-    instead of LTP. This is the prior-session official settlement captured
-    at the first snapshot of the day and frozen via COALESCE in the UPSERT.
-    The frontend's ``baseDayPnlForPosition`` reads ``close_price`` to
-    compute day-P&L; without this fix overnight positions always show 0.
+    ``previous_close`` — when provided and > 0, used as ``prev_close``
+    (prior-session official settlement) on the returned PositionRow.
+    Must be computed BEFORE resolve_snapshot_day_pct so the correct
+    denominator (prior-session close × qty, not LTP × qty) is used.
+    Without this, prev_close = LTP and baseDayPnlForPosition computes
+    total_pnl - oq×(ltp-ltp) = total_pnl - 0, which collapses correctly
+    only for new positions; for overnight positions the day-P&L becomes 0.
 
     ``prev_settlement_pnl`` — frozen yesterday's total_pnl from the
     most-recent daily_book snapshot captured before midnight IST. When set,
@@ -271,13 +273,9 @@ def build_snapshot_position_row(
     inv_val = abs(avg_cost_f * qty_i)
     pnl_pct = (total_pnl_f / inv_val * 100.0) if inv_val else 0.0
 
-    # Use the frozen prior-session settlement as close_price when available.
-    # Must be computed BEFORE resolve_snapshot_day_pct so the correct
-    # denominator (prior-session close × qty, not LTP × qty) is used.
-    # Without this, close_price = LTP and baseDayPnlForPosition computes
-    # total_pnl - oq×(ltp-ltp) = total_pnl - 0 which collapses correctly
-    # only for new positions; for overnight positions the day-P&L becomes 0.
-    close_price_f = (
+    # prev_close: frozen prior-session settlement price (from daily_book.ltp).
+    # Falls back to ltp_f when unavailable (same-day buys / cold-boot).
+    prev_close_f = (
         float(previous_close)
         if previous_close is not None and float(previous_close) > 0
         else ltp_f
@@ -285,7 +283,7 @@ def build_snapshot_position_row(
 
     day_pct = resolve_snapshot_day_pct(
         day_pnl, day_pnl_f, ltp_f, qty_i, inv_val, extras,
-        close_price_f=close_price_f,
+        close_price_f=prev_close_f,
     )
 
     # overnight_quantity: use the value from payload_json when provided by the
@@ -300,9 +298,8 @@ def build_snapshot_position_row(
         product=product,
         quantity=qty_i,
         average_price=avg_cost_f,
-        close_price=close_price_f,
-        last_price=ltp_f,
         pnl=total_pnl_f,
+        last_price=ltp_f,
         pnl_percentage=pnl_pct,
         day_change_val=day_pnl_f,
         day_change_percentage=day_pct,
@@ -312,6 +309,7 @@ def build_snapshot_position_row(
         current_price=ltp_f,
         is_animating=False,
         prev_settlement_pnl=prev_settlement_pnl,
+        prev_close=prev_close_f,
     )
 
 
@@ -332,8 +330,9 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     """Build a PositionRow from a 14-column daily_book raw snapshot tuple.
 
     Column order: account, symbol, exchange, qty, avg_cost, ltp,
-    day_pnl, total_pnl, payload_json, captured_at, previous_close,
-    prev_ltp, prev_settlement_pnl, previous_close_backup.
+    day_pnl, total_pnl, payload_json, captured_at, prev_close (aliased
+    as 'previous_close' in the SQL), prev_ltp, prev_settlement_pnl,
+    prev_close_backup.
 
     Extracted from ``_positions_snapshot`` to reduce that function's CC.
     """
@@ -347,12 +346,11 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # lots × lot_size before the row was written.  No multiplier needed here.
     effective_qty = qty or 0
 
-    # `previous_close` is the broker's close_price written at snapshot time and
-    # frozen by COALESCE on the first daily UPSERT — it is the official prior-session
-    # settlement price (Kite confirms this via BHAV by 08:00 IST).
+    # `previous_close` (daily_book.prev_close aliased in SQL) is the prior-session
+    # settlement LTP frozen by COALESCE on the first daily UPSERT.
     # Read it directly: if it is absent or zero, there is no prior-session reference
     # available (cold-boot first day). The corruption guard (pc ≈ ltp) is no longer
-    # applied — at session open ltp == previous_close is valid because no intraday
+    # applied — at session open ltp == prev_close is valid because no intraday
     # movement has occurred yet.
     _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else 0.0
     actual_previous_close = float(_pc_raw) if _pc_raw and float(_pc_raw) > 0 else None

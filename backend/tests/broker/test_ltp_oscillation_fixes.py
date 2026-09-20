@@ -675,7 +675,7 @@ class TestBmdStaleFingerprint:
 
         df = pd.DataFrame([{
             'overnight_quantity': 5, 'exchange': 'NFO',
-            'last_price': 150.0, 'close_price': 150.0,
+            'last_price': 150.0, 'prev_close': 150.0,
             'tradingsymbol': 'INFY25AUG25C100CE',
         }])
         mask, _, _ = _bmd_build_key_index(df)
@@ -690,7 +690,7 @@ class TestBmdStaleFingerprint:
 
         df = pd.DataFrame([{
             'overnight_quantity': 0, 'exchange': 'NFO',
-            'last_price': 150.0, 'close_price': 150.0,
+            'last_price': 150.0, 'prev_close': 150.0,
             'tradingsymbol': 'INFY25AUG25C100CE',
         }])
         mask, _, _ = _bmd_build_key_index(df)
@@ -707,7 +707,7 @@ class TestBmdStaleFingerprint:
 
         df = pd.DataFrame([{
             'overnight_quantity': 5, 'exchange': 'NSE',
-            'last_price': 150.0, 'close_price': 150.0,
+            'last_price': 150.0, 'prev_close': 150.0,
             'tradingsymbol': 'INFY',
         }])
         mask, _, _ = _bmd_build_key_index(df)
@@ -723,7 +723,7 @@ class TestBmdStaleFingerprint:
 
         df = pd.DataFrame([{
             'overnight_quantity': -1, 'exchange': 'MCX',
-            'last_price': 5000.0, 'close_price': 5000.0,
+            'last_price': 5000.0, 'prev_close': 5000.0,
             'tradingsymbol': 'CRUDEOIL25AUGFUT',
         }])
         mask, _, _ = _bmd_build_key_index(df)

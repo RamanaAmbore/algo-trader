@@ -56,7 +56,7 @@ def _make_positions_df(
         'day_change_val': 0.0,
         'day_change_percentage': 0.0,
         'pnl_percentage': 0.0,
-        'previous_close': 0.0,
+        'prev_close': 0.0,
     }])
 
 
@@ -228,32 +228,32 @@ class TestPositionsSecondPassFallback:
         Expected: Fallback reads ltp=5800.0, not stale previous_close=5810.0.
         """
         df = _make_positions_df(close_price=5800.0)
-        df['previous_close'] = 0.0  # Not set by first pass
+        df['prev_close'] = 0.0  # Not set by first pass
 
-        # Fallback query returns (account, symbol, previous_close) from daily_book.
-        # However, the fix changed this to read ltp, not previous_close.
+        # Fallback query returns (account, symbol, prev_close) from daily_book.
+        # The fix reads ltp (aliased as prev_close), not the old previous_close column.
         # The mock simulates the corrected query that reads ltp.
         fallback_rows = [("ACC1", "CRUDEOIL24NOVFUT", 5800.0)]  # This is ltp
 
         patched_idx = _run_apply_second_pass_fallback(df, fallback_rows)
 
         assert len(patched_idx) == 1, "Second pass should have patched one row"
-        assert abs(df.at[0, 'previous_close'] - 5800.0) < 0.01, (
-            f"previous_close must be 5800.0 (ltp), got {df.at[0, 'previous_close']}"
+        assert abs(df.at[0, 'prev_close'] - 5800.0) < 0.01, (
+            f"prev_close must be 5800.0 (ltp), got {df.at[0, 'prev_close']}"
         )
 
     def test_second_pass_skips_when_previous_close_already_set(self):
-        """When previous_close is already > 0 from first pass, second pass
+        """When prev_close is already > 0 from first pass, second pass
         doesn't fire."""
         df = _make_positions_df()
-        df['previous_close'] = 5750.0  # Already set by first pass
+        df['prev_close'] = 5750.0  # Already set by first pass
 
         fallback_rows = []  # Not called
 
         patched_idx = _run_apply_second_pass_fallback(df, fallback_rows)
 
         assert len(patched_idx) == 0, (
-            "Second pass should not fire when previous_close > 0"
+            "Second pass should not fire when prev_close > 0"
         )
 
     def test_second_pass_handles_multiple_zero_rows(self):
@@ -263,7 +263,7 @@ class TestPositionsSecondPassFallback:
             _make_positions_df("ACC1", "CRUDEOIL24NOVFUT", quantity=100, close_price=5800.0),
             _make_positions_df("ACC1", "GOLDM24OCTFUT", quantity=50, close_price=7500.0),
         ], ignore_index=True)
-        df['previous_close'] = 0.0
+        df['prev_close'] = 0.0
 
         fallback_rows = [
             ("ACC1", "CRUDEOIL24NOVFUT", 5800.0),
@@ -273,8 +273,8 @@ class TestPositionsSecondPassFallback:
         patched_idx = _run_apply_second_pass_fallback(df, fallback_rows)
 
         assert len(patched_idx) == 2, f"Expected 2 rows patched, got {len(patched_idx)}"
-        assert abs(df.at[0, 'previous_close'] - 5800.0) < 0.01
-        assert abs(df.at[1, 'previous_close'] - 7500.0) < 0.01
+        assert abs(df.at[0, 'prev_close'] - 5800.0) < 0.01
+        assert abs(df.at[1, 'prev_close'] - 7500.0) < 0.01
 
 
 # =============================================================================
@@ -374,11 +374,8 @@ class TestHoldingsSnapshotCloseSingleRow:
 
         df = _run_override_stale_close_for_holdings(df, snapshot_rows)
 
-        assert abs(df.at[0, 'close_price'] - 2450.0) < 0.01, (
-            f"close_price must be 2450.0, got {df.at[0, 'close_price']}"
-        )
-        assert abs(df.at[0, 'previous_close'] - 2450.0) < 0.01, (
-            f"previous_close must be 2450.0, got {df.at[0, 'previous_close']}"
+        assert abs(df.at[0, 'prev_close'] - 2450.0) < 0.01, (
+            f"prev_close must be 2450.0, got {df.at[0, 'prev_close']}"
         )
         # day_change_val must be recomputed: (ltp - close) * qty = (2500 - 2450) * 50 = 2500
         expected_dcv = (2500.0 - 2450.0) * 50
@@ -400,8 +397,8 @@ class TestHoldingsSnapshotCloseSingleRow:
 
         df = _run_override_stale_close_for_holdings(df, snapshot_rows)
 
-        assert abs(df.at[0, 'close_price'] - 2450.0) < 0.01, "RELIANCE close must be 2450.0"
-        assert abs(df.at[1, 'close_price'] - 3150.0) < 0.01, "INFY close must be 3150.0"
+        assert abs(df.at[0, 'prev_close'] - 2450.0) < 0.01, "RELIANCE close must be 2450.0"
+        assert abs(df.at[1, 'prev_close'] - 3150.0) < 0.01, "INFY close must be 3150.0"
 
     def test_holdings_snapshot_no_crash_empty_result(self):
         """Empty snapshot_rows (no matching daily_book entry) must not crash."""
@@ -414,7 +411,7 @@ class TestHoldingsSnapshotCloseSingleRow:
         assert abs(df.at[0, 'close_price'] - original_close) < 0.01, (
             "close_price must be unchanged when no snapshot"
         )
-        # previous_close must not be set (column absent or remains 0.0 if init happened)
+        # prev_close must not be set (column absent or remains 0.0 if init happened)
         # per the design, if snapshot_map is empty, the function returns early
 
     def test_holdings_snapshot_accounts_keyed_separately(self):
@@ -431,8 +428,8 @@ class TestHoldingsSnapshotCloseSingleRow:
 
         df = _run_override_stale_close_for_holdings(df, snapshot_rows)
 
-        assert abs(df.at[0, 'close_price'] - 2450.0) < 0.01, "ACC1/RELIANCE must use 2450.0"
-        assert abs(df.at[1, 'close_price'] - 2420.0) < 0.01, "ACC2/RELIANCE must use 2420.0"
+        assert abs(df.at[0, 'prev_close'] - 2450.0) < 0.01, "ACC1/RELIANCE must use 2450.0"
+        assert abs(df.at[1, 'prev_close'] - 2420.0) < 0.01, "ACC2/RELIANCE must use 2420.0"
 
 
 class TestIntegrationDayPnlAfterSingleRowPatch:
@@ -446,7 +443,7 @@ class TestIntegrationDayPnlAfterSingleRowPatch:
             last_price=5850.0,   # Current LTP
             quantity=100,
         )
-        df['previous_close'] = 0.0
+        df['prev_close'] = 0.0
 
         # Single-row snapshot with settlement price
         snapshot_rows = [("ACC1", "CRUDEOIL24NOVFUT", 5750.0, 0.0)]
@@ -463,7 +460,7 @@ class TestIntegrationDayPnlAfterSingleRowPatch:
         from backend.api.routes.positions import _patch_close_from_snapshot_map
         patched_idx = _patch_close_from_snapshot_map(df, snapshot_map)
         assert len(patched_idx) == 1, "One row should be patched"
-        assert abs(df.at[0, 'close_price'] - 5750.0) < 0.01
+        assert abs(df.at[0, 'prev_close'] - 5750.0) < 0.01
 
         # Recompute day_change_val: (ltp - close) × qty = (5850 - 5750) × 100 = 10000
         expected_dcv = (5850.0 - 5750.0) * 100

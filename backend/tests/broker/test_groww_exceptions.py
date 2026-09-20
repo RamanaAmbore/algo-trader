@@ -565,7 +565,7 @@ class TestNormalisePositionsDayChangeVal:
         assert len(result["net"]) == 1, "Expected 1 position in net"
         pos = result["net"][0]
         assert pos["last_price"] == 100.0
-        assert pos["close_price"] == 95.0
+        assert pos["prev_close"] == 95.0
         assert pos["quantity"] == 50
         assert pos["day_change_val"] == 250.0, (
             f"expected (100-95)*50=250 but got {pos['day_change_val']}"
@@ -592,7 +592,7 @@ class TestNormalisePositionsDayChangeVal:
         result = _normalise_positions(resp)
         pos = result["net"][0]
         assert pos["last_price"] == 0
-        assert pos["close_price"] == 500.0
+        assert pos["prev_close"] == 500.0
         assert pos["quantity"] == 10
         assert pos["day_change_val"] == 0.0, (
             f"expected 0 when ltp=0 but got {pos['day_change_val']}"
@@ -619,7 +619,7 @@ class TestNormalisePositionsDayChangeVal:
         result = _normalise_positions(resp)
         pos = result["net"][0]
         assert pos["last_price"] == 1800.0
-        assert pos["close_price"] == 0
+        assert pos["prev_close"] == 0
         assert pos["quantity"] == 5
         assert pos["day_change_val"] == 0.0, (
             f"expected 0 when close=0 but got {pos['day_change_val']}"
@@ -646,7 +646,7 @@ class TestNormalisePositionsDayChangeVal:
         result = _normalise_positions(resp)
         pos = result["net"][0]
         assert pos["last_price"] == 1500.0
-        assert pos["close_price"] == 1600.0
+        assert pos["prev_close"] == 1600.0
         assert pos["quantity"] == -50
         # (1500-1600)*(-50) = (-100)*(-50) = 5000.0
         assert pos["day_change_val"] == 5000.0, (
@@ -674,7 +674,7 @@ class TestNormalisePositionsDayChangeVal:
         result = _normalise_positions(resp)
         pos = result["net"][0]
         assert pos["last_price"] == 3500.0
-        assert pos["close_price"] == 3400.0
+        assert pos["prev_close"] == 3400.0
         assert pos["quantity"] == 0
         assert pos["day_change_val"] == 0.0, (
             f"expected 0 when qty=0 but got {pos['day_change_val']}"

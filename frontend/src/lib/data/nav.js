@@ -88,7 +88,7 @@ export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
  * function (or a wrapper that calls it) instead of reading `p.day_change_val`
  * directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, previous_close?: number|null, close_price?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
+ * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
@@ -103,7 +103,7 @@ export function baseDayPnlForPosition(p) {
   // Overnight hold with no prevPnl: use frozen day_change_val directly.
   // Avoids the close_price=0 trap post-MCX session when Kite returns stale zero.
   const dcv   = Number(p?.day_change_val ?? 0);
-  const close = Number(p?.previous_close) || Number(p?.close_price) || Number(p?.prev_close) || 0;
+  const close = Number(p?.prev_close) || 0;
   const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
   if (oq !== 0 && dcv !== 0) return dcv;
   if (oq !== 0 && dcv === 0) {

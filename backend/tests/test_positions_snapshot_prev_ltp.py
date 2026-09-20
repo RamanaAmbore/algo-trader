@@ -165,7 +165,7 @@ async def test_positions_snapshot_prev_ltp_preference_over_previous_close():
     # For now, test that when previous_close is the ONLY close price info,
     # it gets used (existing behavior). The real test of prev_ltp preference
     # happens in the integration test below with mocked DB.
-    assert row.close_price == pytest.approx(TODAY_SETTLEMENT, rel=1e-6), (
+    assert row.prev_close == pytest.approx(TODAY_SETTLEMENT, rel=1e-6), (
         "Without prev_ltp passed, close_price uses previous_close"
     )
 
@@ -339,8 +339,8 @@ async def test_positions_snapshot_end_to_end_prev_ltp_preference():
     row = resp.rows[0]
 
     # Core fix: close_price = frozen prior-session settlement (5400), not prev_ltp (5500)
-    assert row.close_price == pytest.approx(5400.0, rel=1e-6), (
-        f"close_price={row.close_price} must use frozen previous_close=5400, "
+    assert row.prev_close == pytest.approx(5400.0, rel=1e-6), (
+        f"close_price={row.prev_close} must use frozen previous_close=5400, "
         f"not prev_ltp=5500 (which ≈ today's LTP and would give day_change≈0)"
     )
 
@@ -395,8 +395,8 @@ async def test_positions_snapshot_prev_ltp_fallback_to_previous_close():
     row = resp.rows[0]
 
     # Fallback to previous_close when prev_ltp is NULL
-    assert row.close_price == pytest.approx(5350.0, rel=1e-6), (
-        f"close_price={row.close_price} should fallback to previous_close=5350 "
+    assert row.prev_close == pytest.approx(5350.0, rel=1e-6), (
+        f"close_price={row.prev_close} should fallback to previous_close=5350 "
         f"when prev_ltp is NULL"
     )
 
@@ -459,7 +459,7 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
     # Position 1: ZG0790 / NIFTY
     # previous_close=5500 (frozen settlement) wins over prev_ltp=5400
     nifty_row = next(r for r in resp.rows if r.tradingsymbol == "NIFTY26JULFUT")
-    assert nifty_row.close_price == pytest.approx(5500.0, rel=1e-6), (
+    assert nifty_row.prev_close == pytest.approx(5500.0, rel=1e-6), (
         "NIFTY close_price should use frozen previous_close=5500 (not prev_ltp=5400)"
     )
     assert nifty_row.prev_settlement_pnl == pytest.approx(4000.0, rel=1e-6)
@@ -467,7 +467,7 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
     # Position 2: ZJ6294 / CRUDEOIL (new, prev_ltp=None)
     # previous_close=5400 is the sole reference (prev_ltp=NULL → fallback to previous_close)
     crudeoil_row = next(r for r in resp.rows if r.tradingsymbol == "CRUDEOIL26AUGFUT")
-    assert crudeoil_row.close_price == pytest.approx(5400.0, rel=1e-6), (
+    assert crudeoil_row.prev_close == pytest.approx(5400.0, rel=1e-6), (
         "CRUDEOIL close_price should use previous_close=5400 (prev_ltp=NULL)"
     )
     assert crudeoil_row.prev_settlement_pnl is None, "CRUDEOIL is new"
@@ -475,7 +475,7 @@ async def test_positions_snapshot_multiple_accounts_and_symbols():
     # Position 3: ZG0790 / GOLDM
     # previous_close=6850 (frozen settlement) wins over prev_ltp=6810
     goldm_row = next(r for r in resp.rows if r.tradingsymbol == "GOLDM26AUGFUT")
-    assert goldm_row.close_price == pytest.approx(6850.0, rel=1e-6), (
+    assert goldm_row.prev_close == pytest.approx(6850.0, rel=1e-6), (
         "GOLDM close_price should use frozen previous_close=6850 (not prev_ltp=6810)"
     )
     assert goldm_row.prev_settlement_pnl == pytest.approx(10.0, rel=1e-6)
@@ -547,8 +547,8 @@ async def test_positions_snapshot_day_pnl_not_collapsed_after_close():
     row = resp.rows[0]
 
     # close_price = frozen settlement (5400), not prev_ltp (5500)
-    assert row.close_price == pytest.approx(PREVIOUS_CLOSE, rel=1e-6), (
-        f"close_price={row.close_price} should be frozen previous_close={PREVIOUS_CLOSE}, "
+    assert row.prev_close == pytest.approx(PREVIOUS_CLOSE, rel=1e-6), (
+        f"close_price={row.prev_close} should be frozen previous_close={PREVIOUS_CLOSE}, "
         f"not prev_ltp={PREV_LTP} (which ≈ today's LTP and would give day_change=0)"
     )
 

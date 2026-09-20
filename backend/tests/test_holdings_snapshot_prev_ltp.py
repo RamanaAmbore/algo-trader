@@ -289,8 +289,8 @@ class TestBuildHoldingRowFromSnapshotPrevLtp:
         )
         row, *_ = _build_holding_row_from_snapshot(raw_row)
 
-        assert row.close_price == pytest.approx(1600.0, rel=1e-5), (
-            "close_price must be set to previous_close (frozen settlement)"
+        assert row.prev_close == pytest.approx(1600.0, rel=1e-5), (
+            "prev_close must be set to previous_close (frozen settlement)"
         )
 
     def test_11_column_tuple_required(self):
