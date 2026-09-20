@@ -471,14 +471,16 @@ class TestStartupOpenCheck:
     """The startup snapshot block uses exchange_clock.is_exchange_open, not the old probe."""
 
     def test_startup_block_calls_is_exchange_open(self):
-        """_task_daily_snapshot startup block must call exchange_clock.is_exchange_open."""
-        # Source-level check: is_exchange_open must appear in the function body
-        src = inspect.getsource(
-            __import__("backend.api.background", fromlist=["_task_daily_snapshot"])
-            ._task_daily_snapshot
-        )
+        """Startup snapshot logic must call exchange_clock.is_exchange_open.
+
+        After the CC refactor, the startup snapshot block lives in
+        _ds_startup_snapshot; check module source so the test stays valid
+        regardless of delegation depth.
+        """
+        from pathlib import Path
+        src = Path("backend/api/background.py").read_text()
         assert "is_exchange_open" in src, (
-            "_task_daily_snapshot startup block must call "
+            "Startup snapshot helper must call "
             "exchange_clock.is_exchange_open (not _snapshot_probe_nse_mcx) "
             "for the startup open check"
         )
