@@ -774,7 +774,7 @@
         pnl,
         inv_val: 0,
         ltp: Number(p.last_price ?? p.ltp ?? 0),
-        day_pct: positionsDerivedStore.byKey[String(p.tradingsymbol || p.symbol || '').toUpperCase()]?.chg_pct ?? null,
+        day_pct: positionsDerivedStore.get(p.tradingsymbol || p.symbol).chg_pct,
       });
     }
     return _aggregateBySymbol(raw)

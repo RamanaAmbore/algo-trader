@@ -1,173 +1,309 @@
-# Plan: Daily session lifecycle — SessionGuard + event-driven ticker + prev_close correctness
+# Plan: SSOT enforcement — all derived fields in store, surfaces read-only
 
 ## Context
 
-Root cause: `exchange_clock._CACHE` empty after restart → `is_any_segment_open()` fail-open
-returns `True` on weekends → live broker path runs → `prev_settlement_pnl` cancellation
-causes chg% = 0. Fix requires a correct market-day derivation, a clean session lifecycle,
-and a recovery process that catches up missed timed events on restart without DB persistence.
+`chg%` shows 0 in derivatives legs. Root cause is broader: **consumer surfaces (CandidateLegRow,
+pulseColumns, derivatives flash effect) each carry independent fallback chains that diverge from
+each other and from portfolioStore**. Pulse and Legs show different `chg%` values for the same
+position because they read different broker fields when the store returns null.
 
----
+**Architectural rule**: All derivation logic belongs in the store. Surfaces read the stored value
+and show null if null. No consumer has its own fallback chain.
 
-## Timed events (market open day)
+**The immediate trigger** (chg% reset to zero): SWR refresh ~30s after page load switches from
+snapshot path (daily_book, correct prev_close) to live broker path. Live broker data can have
+`close_price = 0` (MCX call-auction gap, stale ticker). portfolioStore Tier 2 then computes
+`prev_mv = null` → `chg_pct = null`. Consumers fall back to divergent broker fields.
 
-Six one-time events fire in order on every market day:
+**All violations identified** (from audit of CandidateLegRow.svelte, pulseColumns.js, +page.svelte):
 
-| Event | Time | Responsibility |
-|---|---|---|
-| `MarketCalendar` | 04:00 | Derive market day from `exchange_schedule` + overrides |
-| `CloseReset` | 08:00 | Fetch BHAV via Kite REST → update `previous_close` in `daily_book` — idempotent |
-| `NonMcxClose` | `exchange_schedule.close_time` (NON-MCX) | Gate flips — NON-MCX closed; unsubscribe NON-MCX symbols at close + 1 min (WebSocket stays open for MCX) |
-| `NonMcxSnapshot` | `_effective_snapshot_time()` NON-MCX | EOD DB write — `daily_book` rows |
-| `McxClose` | `exchange_schedule.close_time` (MCX) | Gate flips — MCX closed; stop ticker at close + 1 min (WebSocket teardown) |
-| `McxSnapshot` | `_effective_snapshot_time()` MCX | EOD DB write — `daily_book` rows |
+1. `portfolioStore Tier 2` — `prev_mv = null` when `prev_close = 0`, even for new intraday
+   positions where `avg_cost` is a valid denominator (no prior session close exists by design).
+2. `CandidateLegRow._chgPct` — 3-tier cascade: store → `c.chg_pct` → `symbolStore.day_change_pct`.
+3. `CandidateLegRow.pnl` — formula `(ltp - cost) * displayQty + realised` duplicates store computation.
+4. `+page.svelte flash chg` — inline formula `(ltp - prev_close) / prev_close * 100`, diverges from store.
+5. `+page.svelte flash day` — calls `_candDayPnl(c)` (independent `livePositionDayPnl` computation).
+6. `pulseColumns._dayPnlPctValueGetter` — falls back to `change_pct` broker field (market-data %, not day P&L %).
 
-**Snapshot time derivation** (`_effective_snapshot_time(row)`):
-- `snapshot_time` NULL in `exchange_schedule` → `close_time + 15 min`
-- `snapshot_time` set explicitly → use that value
+## Task
 
-Snapshot is not independently scheduled — always derived from close unless overridden.
+**Frontend changes only** — enforce SSOT: fix the store denominator, then strip all fallback chains
+from consumers. Surfaces only read; store owns all logic.
 
-`is_exchange_closed_now()` re-derives from `exchange_schedule` + current time on every call
-(used by `closed_hours_or_broker()` gate). No sentinel needed.
+## Agents
 
-**Why REST for snapshot, not WebSocket**: KiteTicker stops streaming at market close (15:30
-NON-MCX, 23:30 MCX). Call auction settlement (NON-MCX) and MCX final price are computed
-after the WebSocket stops. REST `last_price` at snapshot time captures the settled price.
+- frontend: implement all changes below
+- frontend-test: add/update Vitest tests for portfolioStore prev_mv denominator fix, CandidateLegRow chg_pct SSOT, pulseColumns change_pct removal
+- backend: skip
+- broker: skip
+- doc: skip
+- backend-test: skip
+- playwright: skip
 
----
+## Changes
 
-## SessionGuard
+### 0a. `positionsDerivedStore.svelte.js` — add `get(sym)` and `getByRoot(root)` accessors
 
-Runs at every server startup. No DB persistence — all events are idempotent via API:
-- `CloseReset`: Kite REST always returns correct BHAV after 08:00 regardless of how many times called.
-- `NonMcxSnapshot` / `McxSnapshot`: Kite REST `last_price` always returns correct price —
-  live if market open, frozen settlement if closed.
+```javascript
+const _EMPTY_POS = Object.freeze({
+  day_pnl: null, pnl: null, exp_pnl: null,
+  extrinsic: null, prev_mv: null, chg_pct: null,
+});
 
-**Startup sequence:**
+export function get(sym) {
+  return byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
+}
 
-```
-1. Recovery (unconditional — no market day check):
-   a. time ≥ 08:00               → run CloseReset
-   b. time ≥ NonMcxClose time    → run NonMcxClose (gate flip + unsubscribe at close+1min)
-   c. time ≥ NonMcxSnapshot time → run NonMcxSnapshot
-   d. time ≥ McxClose time       → run McxClose (gate flip + stop_ticker at close+1min)
-   e. time ≥ McxSnapshot time    → run McxSnapshot
-
-2. Derive market day from exchange_schedule (_is_market_day_today())
-   Not a market day → done
-
-3. Market day + market currently open → schedule future timed events at their times
-```
-
-Recovery works without symbol fetch — REST fetch needs no instrument tokens.
-Ticker callbacks (unsubscribe/stop) are no-ops when ticker is already stopped.
-
----
-
-## KiteTicker lifecycle — event-driven, no timers
-
-| Current | New |
-|---|---|
-| `unsubscribe_non_mcx()` at 16:15 hardcoded sentinel | `unsubscribe_non_mcx()` at `NonMcxClose time + 1 min` (15:31) |
-| `stop_ticker()` at 00:30 hardcoded sentinel | `stop_ticker()` at `McxClose time + 1 min` (23:31) |
-| `start_ticker()` at 08:00 | unchanged — token rotation still requires 08:00 restart |
-
-Unsubscribe/stop fire 1 minute after close — independent of snapshot. Snapshot uses REST
-and does not require the ticker to be running.
-
-**Full sequence:**
-```
-NonMcxClose (15:30) → unsubscribe NON-MCX symbols (15:31, WebSocket stays open for MCX)
-NonMcxSnapshot (15:45) → fetch via REST, write daily_book
-
-McxClose (23:30) → stop ticker entirely (23:31, WebSocket teardown)
-McxSnapshot (23:45) → fetch via REST, write daily_book
+export function getByRoot(root) {
+  return byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
+}
 ```
 
-1-minute buffer ensures last ticks from the closing minute are captured before disconnecting.
-KiteTicker stops streaming MCX ticks at close — stop at close + 1 min aligns with this.
-
-All times derived from `exchange_schedule.close_time` — not hardcoded. Date-specific overrides
-flow through automatically. 15:30 / 23:30 are defaults only.
-
-Removes: `_unsub_nonmcx_done` sentinel (16:15), `_ticker_stop_done` sentinel (00:30).
-Adds: scheduled `unsubscribe_non_mcx()` at `NonMcxClose + 1 min`; `stop_ticker()` at `McxClose + 1 min`.
+All positions lookups: `positionsDerivedStore.get(sym).field` or `positionsDerivedStore.getByRoot(root).field`.
 
 ---
 
-## MarketCalendar fix: weekend gap in `load_today_open_time()`
+### 0b. `holdingsDayPnlStore.svelte.js` — add `get(sym)` accessor
 
-**Problem**: On weekends, `_effective_gate_rows("NON-MCX")` returns `[]` → falls to
-`not rows` branch → `_TODAY_MARKET_OPEN = time(8, 0)` (wrongly named `_TODAY_NSE_OPEN` in current code) → CloseReset fires on weekends with stale BHAV.
+`holdingsDayPnlStore` currently exposes separate maps (`chgPctByKey`, etc.) not a unified `byKey`.
+Frontend agent must either (a) unify to `byKey[sym] = { day_pnl, chg_pct }` and add `get(sym)`,
+or (b) have `get(sym)` assemble the object from existing maps — whichever is least disruptive.
+Do NOT change computation logic, only add the accessor.
 
-**Fix**: Replace `_TODAY_NSE_OPEN` with `_is_market_day_today() -> bool`. Reads purely
-from `exchange_schedule` via `_effective_gate_rows()` (DB-backed cache) — no hardcoded times:
+```javascript
+const _EMPTY_HOLD = Object.freeze({ day_pnl: null, chg_pct: null });
 
-```python
-def _is_market_day_today() -> bool:
-    non_mcx = _effective_gate_rows("NON-MCX")
-    mcx     = _effective_gate_rows("MCX")
-    non_mcx_open = bool(non_mcx) and non_mcx[0].open_time is not None
-    mcx_open     = bool(mcx)     and mcx[0].open_time     is not None
-    return non_mcx_open or mcx_open
+export function get(sym) {
+  return byKey[String(sym || '').toUpperCase()] ?? _EMPTY_HOLD;
+}
 ```
 
-- `_effective_gate_rows()` applies weekday filter + date-specific overrides from `exchange_schedule`
-- `open_time IS NOT NULL` → market open; holidays set `open_time = NULL` → closed
-- `[]` rows → weekend (weekday filter excludes Sat/Sun) → `False`
-- All schedule decisions (open/close/snapshot times, holidays, special sessions) come from
-  `exchange_schedule` — no hardcoding anywhere in this path
-
-SessionGuard uses `_is_market_day_today()` directly. No downstream process calls
-`get_nse_open_time()` — all gate on `_is_market_day_today()`.
-
-**Fix fail-open bug**: `is_any_segment_open()` line 282: `if not _CACHE: return True` →
-change to `return False` (fail-closed — empty cache means schedule not loaded, not market open).
-
 ---
 
-## exchange_schedule: nullable snapshot_time
+### 1. `portfolioStore.svelte.js` — Tier 2 `prev_mv` denominator (root cause of chg%=0)
 
-`snapshot_time` column made nullable. Default = `close_time + 15 min` when NULL.
-Seed rows use NULL (derived). Date-specific overrides can still set it explicitly.
+**Location**: `_posTier2` block, ~line 105
 
-**File**: `backend/api/helpers/exchange_clock.py`
+```javascript
+// Before
+const prev_mv = p._prev_close != null && p._prev_close > 0
+  ? p._prev_close * Math.abs(p._qty) : null;
 
-```python
-def _effective_snapshot_time(row) -> time | None:
-    if row.snapshot_time:
-        return row.snapshot_time
-    if row.close_time:
-        dt = datetime.combine(date.today(), row.close_time) + timedelta(minutes=15)
-        return dt.time()
-    return None
+// After — avg fallback for new intraday positions (oq=0, no prior session close)
+const oq = Number(p?.overnight_quantity ?? 0);
+const prev_mv =
+  p._prev_close != null && p._prev_close > 0 ? p._prev_close * Math.abs(p._qty)
+  : oq === 0 && p._avg > 0                    ? p._avg       * Math.abs(p._qty)
+  : null;
 ```
 
-`sessions_with_snapshot_time_now()` calls `_effective_snapshot_time(row)` instead of
-reading `row.snapshot_time` directly.
-
-Migration in `seed_and_warm()`: `UPDATE exchange_schedule SET snapshot_time = NULL WHERE source = 'system'`
+Overnight positions with `prev_close=0` stay null — avg_cost ≠ prior close, honest unknown.
 
 ---
 
-## Files to change
+### 2. `CandidateLegRow.svelte` — `_chgPct` (lines 139–144)
 
-| File | Change |
-|---|---|
-| `backend/api/helpers/exchange_clock.py` | Add `_is_market_day_today()`, `_effective_snapshot_time()`; fix fail-closed in `is_any_segment_open()` |
-| `backend/api/background.py` | **Recovery**: new `_session_guard()` runs at startup — time-gated unconditional catchup (CloseReset, NonMcxClose+unsubscribe, NonMcxSnapshot, McxClose+stop_ticker, McxSnapshot); then market day check; then schedule future timed events if open. Remove 16:15 + 00:30 hardcoded sentinels. |
-| `backend/api/algo/daily_snapshot.py` | Gate CloseReset on `_is_market_day_today()`; derive snapshot times via `_effective_snapshot_time()` |
+```javascript
+// Before — 3-tier broker fallback
+const _chgPct = $derived.by(() => {
+  const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
+  if (stored != null) return stored;
+  if (c.chg_pct != null && c.chg_pct !== 0) return c.chg_pct;
+  return untrack(() => getSnapshot(c.symbol))?.day_change_pct ?? null;
+});
+
+// After
+const _chgPct = $derived(positionsDerivedStore.get(c.symbol).chg_pct);
+```
 
 ---
+
+### 3. `CandidateLegRow.svelte` — `pnl` (lines 110–120)
+
+```javascript
+// Before — formula duplicates store
+const pnl = $derived(
+  c._residualQty != null
+    ? ((ltp != null && cost != null && !_ltpFromFallback)
+        ? (ltp - cost) * displayQty + Number(c.realised || 0) : null)
+    : (c.pnl != null ? Number(c.pnl)
+        : (ltp != null && cost != null && !_ltpFromFallback
+            ? (ltp - cost) * displayQty + Number(c.realised || 0) : null))
+);
+
+// After — store first; formula only for residual positions (not in store)
+const pnl = $derived.by(() => {
+  if (c._residualQty == null) {
+    const stored = positionsDerivedStore.get(c.symbol).pnl;
+    if (stored != null) return stored;
+  }
+  if (ltp != null && cost != null && !_ltpFromFallback)
+    return (ltp - cost) * displayQty + Number(c.realised || 0);
+  return c.pnl != null ? Number(c.pnl) : null;
+});
+```
+
+---
+
+### 4. `+page.svelte` — flash chg (~line 976)
+
+```javascript
+// Before — LTP price % (wrong metric, diverges from store)
+flash.update(`leg:${k}:chg`, (c.prev_close ?? 0) > 0 && c.ltp != null
+  ? ((Number(c.ltp) - Number(c.prev_close)) / Number(c.prev_close)) * 100 : null);
+
+// After
+flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
+```
+
+---
+
+### 5. `+page.svelte` — flash day / `_candDayPnl` (~lines 960–981)
+
+```javascript
+// Before — independent livePositionDayPnl() call
+flash.update(`leg:${k}:day`, _candDayPnl(c));
+
+// After
+flash.update(`leg:${k}:day`, positionsDerivedStore.get(c.symbol).day_pnl);
+```
+
+`_candDayPnl` function: remove if no other callers remain (frontend agent must verify).
+
+---
+
+### 6. `+page.svelte` — `extrinsic` prop on CandidateLegRow (~line 4557)
+
+```javascript
+// Before
+extrinsic={positionsDerivedStore.byKey[String(c.symbol || '').toUpperCase()]?.extrinsic ?? null}
+
+// After
+extrinsic={positionsDerivedStore.get(c.symbol).extrinsic}
+```
+
+---
+
+### 7. `+page.svelte` — `byRootPositions` access (~line 4703)
+
+```javascript
+// Before
+const _snRow = positionsDerivedStore.byRootPositions[g.underlying];
+const dayVal = _snRow?.day_pnl ?? 0;
+const pnlVal = _snRow?.pnl ?? 0;
+const expVal = _snRow?.exp_pnl ?? 0;
+
+// After
+const _snRow = positionsDerivedStore.getByRoot(g.underlying);
+const dayVal = _snRow.day_pnl ?? 0;
+const pnlVal = _snRow.pnl ?? 0;
+const expVal = _snRow.exp_pnl ?? 0;
+```
+
+---
+
+### 8. `pulseColumns.js` — `_dayPnlPctValueGetter` (lines 470–478)
+
+```javascript
+// Before — if-chain + broker change_pct fallback
+const posStored = positionsDerivedStore.byKey[sym]?.chg_pct;
+if (posStored != null) return posStored;
+const holdStored = holdingsDayPnlStore.chgPctByKey[sym];
+if (holdStored != null) return holdStored;
+const cp = Number(p.data?.change_pct);
+return Number.isFinite(cp) ? cp : null;
+
+// After — ?? chain, no if statements
+return positionsDerivedStore.get(sym).chg_pct ?? holdingsDayPnlStore.get(sym).chg_pct;
+```
+
+---
+
+### 9. `pulseColumns.js` — `exp_pnl` getter (~line 730)
+
+```javascript
+// Before
+return getDerivedByKey()[sym]?.exp_pnl ?? null;
+
+// After
+return positionsDerivedStore.get(sym).exp_pnl;
+```
+
+---
+
+### 10. `pulseColumns.js` — `extrinsic` getter (~line 757)
+
+```javascript
+// Before
+return getDerivedByKey()[sym]?.extrinsic ?? null;
+
+// After
+return positionsDerivedStore.get(sym).extrinsic;
+```
+
+---
+
+### 11. `MarketPulse.svelte` — `exp_pnl` accumulator (~line 1997)
+
+```javascript
+// Before
+const expPnl = positionsDerivedStore.byKey[sym]?.exp_pnl;
+if (expPnl != null) acc.exp_pnl += Number(expPnl) || 0;
+
+// After
+acc.exp_pnl += positionsDerivedStore.get(sym).exp_pnl ?? 0;
+```
+
+---
+
+### 12. `MarketPulse.svelte` — `day_pnl` per-row getter (~line 3618)
+
+```javascript
+// Before
+const storeVal = positionsDerivedStore.byKey[sym]?.day_pnl;
+if (storeVal != null) return storeVal;
+return p.data?.day_pnl ?? null;
+
+// After — store first, row field as fallback (row is per-position; store is per-symbol aggregate)
+return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
+```
+
+---
+
+### Out of scope (acceptable — not store violations)
+
+- `CandidateLegRow.ltp` — reads from `liveSnap(sym)` (symbolStore); `lg?.ltp` is legAnalytics (store-derived); acceptable.
+- `pulseColumns.pnl_pct` — pure ratio math `(pnl / _cost_basis) * 100`; no store analog.
+- `pulseColumns.weight_pct` — relative % requiring portfolio total; column-local math.
+- `_candDayPnl` for draft legs — drafts are never in the store; local formula is the only option.
+- `_mergedEv/_mergedPop/_mergedEvPct` — equity+option payoff merge not supported by backend.
+
+## Tests
+
+- pytest: no
+- svelte-check: yes
+- playwright: no
+
+Vitest only (`frontend/src/lib/__tests__/data/`):
+- `portfolioStore.test.js`: `prev_mv` uses `avg_cost` when `oq=0` and `prev_close=0`
+- `portfolioStore.test.js`: `prev_mv` null for overnight with `prev_close=0` (no spurious avg fallback)
+- `positionsDerivedStore.test.js`: `get(unknown)` returns `_EMPTY_POS` with all fields null
+- `positionsDerivedStore.test.js`: `getByRoot(unknown)` returns `_EMPTY_POS` with all fields null
+- `holdingsDayPnlStore.test.js`: `get(unknown)` returns `_EMPTY_HOLD` with all fields null
+- `pulseColumns.test.js`: chg% returns null (not `change_pct`) when both stores return null
+
+## Commit message
+
+fix(portfolioStore,derivatives): SSOT enforcement — get(sym) accessors on all stores, prev_mv avg fallback for intraday, strip all broker-field fallbacks
 
 ## Done when
-- `SessionGuard` runs at startup, recovers missed timed events via idempotent API calls — no DB persistence
-- `_is_market_day_today()` correctly returns False on weekends/holidays
-- `is_any_segment_open()` fails closed (not open) when cache is empty
-- `CloseReset` never runs on non-market days
-- `unsubscribe_non_mcx()` at `NonMcxClose + 1 min` (no 16:15 hardcoded timer)
-- `stop_ticker()` at `McxClose + 1 min` (no 00:30 hardcoded timer)
-- `snapshot_time` derived from `close_time + 15` when NULL in `exchange_schedule`
-- chg% and day_pnl correct on weekends/off-market hours
-- All new tests pass
+
+- `positionsDerivedStore.get(sym)`, `getByRoot(root)`, and `holdingsDayPnlStore.get(sym)` all return `_EMPTY` for unknown symbols
+- No consumer writes `byKey[sym]?.field` or `chgPctByKey[sym]` — every lookup uses `get(sym).field`
+- `portfolioStore` Tier 2 `prev_mv` uses `avg_cost` fallback for `oq=0` intraday positions
+- `CandidateLegRow._chgPct` is one line; `pnl` reads store first
+- `+page.svelte` flash chg/day use `get(sym)` — no inline formulas
+- `pulseColumns` all getters use `get(sym)` — no `change_pct` fallback, no `getDerivedByKey()[sym]?.`
+- `MarketPulse` `exp_pnl` and `day_pnl` use `get(sym)`
+- Pulse and Legs show identical `chg%` for the same position
+- Vitest 0 failures; svelte-check 0 errors
