@@ -69,7 +69,7 @@ def _extract_snapshot_extras(r: dict, ltp_val: float | None,
         "high":            _f(ohlc.get("high")),
         "low":             _f(ohlc.get("low")),
         "close_settled":   _f(ohlc.get("close")) if settled else None,
-        "prev_close":      _f(r.get("close_price")),
+        "prev_close":      _f(r.get("close_price") or r.get("prev_close")),
         "volume":          (int(r.get("volume")) if r.get("volume") is not None else None),
         "oi":              (int(r.get("oi"))     if r.get("oi")     is not None else None),
         "day_change_val":  _f(r.get("day_change")),
@@ -393,13 +393,17 @@ def _snap_holding_eod_vals(
     # holidays). Fall back to close_price / previous_close so the row survives
     # the _is_zero_payload_row guard and Pulse shows prior-session prices.
     if not mid_session and not ltp_val:
-        _fallback = r.get("close_price") or r.get("previous_close")
+        _fallback = r.get("close_price") or r.get("prev_close") or r.get("previous_close")
         if _fallback:
             ltp_val = float(_fallback)
     # When close_price=0, Kite's day_change = ltp - 0 = ltp (BHAV not yet published).
     # Storing day_pnl = ltp × qty would yield 100% day P&L%. Write None so the
     # UPSERT COALESCE preserves the existing correct value from the NON-MCX snapshot.
-    _close_price = r.get("close_price")
+    # Check for zero-close guard: Kite sets close_price=0 when BHAV not yet published.
+    # Must check close_price explicitly (not via `or`) so close_price=0 still fires
+    # the guard rather than silently falling through to prev_close.
+    _raw_close_price = r.get("close_price")
+    _close_price = _raw_close_price if _raw_close_price is not None else r.get("prev_close")
     _close_zero = _close_price is not None and float(_close_price) == 0.0
     day_pnl_v = None if mid_session or _close_zero else (
         float(day_change) * qty if day_change is not None else None
@@ -464,7 +468,8 @@ def _holdings_rows(
             "day_pnl":        day_pnl_v,
             "total_pnl":      total_pnl_v,
             "previous_close": (
-                float(r["close_price"]) if r.get("close_price") else None
+                float(r.get("close_price") or r.get("prev_close"))
+                if (r.get("close_price") or r.get("prev_close")) else None
             ),
             "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
         })
@@ -541,7 +546,7 @@ def _snap_position_eod_vals(
         return None, None, None, False
     ltp_val = r.get("last_price")
     ltp_val = float(ltp_val) if ltp_val is not None else None
-    effective_close = close_ref if close_ref is not None else r.get("close_price")
+    effective_close = close_ref if close_ref is not None else (r.get("close_price") or r.get("prev_close"))
     day_pnl = _snap_compute_day_pnl(r, ltp_val, effective_close, qty, multiplier)
     _unrealised   = r.get("pnl")
     _realised     = r.get("realised")
@@ -588,7 +593,8 @@ def _position_previous_close(
     """
     if oq_raw == 0 and avg_px > 0 and qty_contracts != 0:
         return avg_px
-    return pos_close_ref or (float(r["close_price"]) if r.get("close_price") else None)
+    _cp = r.get("close_price") or r.get("prev_close")
+    return pos_close_ref or (float(_cp) if _cp else None)
 
 
 def _positions_load_lot_index() -> dict:
@@ -717,9 +723,10 @@ def _positions_rows(
 
         # When market_open=False (e.g., holiday startup), force EOD mode unconditionally.
         mid_session = False if not market_open else _exchange_clock.is_exchange_open(exchange)
-        # Use broker's close_price directly as prior-session settlement reference.
-        # Falls back to None when close_price is absent/zero (cold-boot first day).
-        _broker_close = r.get("close_price")
+        # Use broker's close_price/prev_close as prior-session settlement reference.
+        # Falls back to None when absent/zero (cold-boot first day).
+        # Kite raw rows use "close_price"; Dhan/Groww normalized rows use "prev_close".
+        _broker_close = r.get("close_price") or r.get("prev_close")
         pos_close_ref = float(_broker_close) if _broker_close else None
         # Captured AT EOD (after the exchange closes) this is the correct
         # day_pnl. Captured MID-SESSION it's a partial-day value — skip.

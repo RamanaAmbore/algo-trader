@@ -562,6 +562,61 @@ def test_snap_compute_day_pnl_zero_close_returns_none():
     )
 
 
+def test_snap_holding_eod_vals_dhan_prev_close_field():
+    """Dhan/Groww normalized rows use prev_close (not close_price).
+
+    After the broker rename, _snap_holding_eod_vals must accept broker rows
+    that carry prev_close instead of close_price. Without the fix, zero-close
+    guard fires (close_price absent → None → _close_zero=False → day_pnl computed
+    using day_change; but prev_close is not used at all — snapshot stores wrong value).
+
+    Contract: a Dhan row with prev_close=630.0 must NOT fire the zero-close guard
+    (because prev_close is nonzero), so day_pnl is computed normally.
+    """
+    from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+    # Dhan normalized row: uses prev_close, no close_price key
+    r = {
+        "last_price": 640.0,
+        "prev_close": 630.0,   # Dhan/Groww field name
+        "day_change": 10.0,    # 640 - 630
+        "pnl": 0.0,
+        "quantity": 5,
+        "opening_quantity": 5,
+    }
+    ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+
+    assert ltp_val == pytest.approx(640.0)
+    # day_pnl = day_change × qty = 10 × 5 = 50 (prev_close > 0 → guard does not fire)
+    assert day_pnl_v == pytest.approx(50.0), (
+        f"Expected day_pnl_v=50.0 for Dhan row with prev_close=630.0, got {day_pnl_v}."
+    )
+
+
+def test_snap_holding_eod_vals_dhan_zero_prev_close_guard():
+    """Dhan row with prev_close=0 must fire the zero-close guard (day_pnl=None).
+
+    If a Dhan row arrives with prev_close=0 (no BHAV yet), the guard must still
+    fire to prevent day_change=last_price being stored as 100% day move.
+    """
+    from backend.api.algo.daily_snapshot import _snap_holding_eod_vals
+
+    r = {
+        "last_price": 630.20,
+        "prev_close": 0,       # no BHAV published yet
+        "day_change": 630.20,
+        "pnl": 0.0,
+        "quantity": 90,
+        "opening_quantity": 90,
+    }
+    ltp_val, day_pnl_v, total_pnl_v = _snap_holding_eod_vals(r, mid_session=False)
+
+    assert ltp_val == pytest.approx(630.20)
+    assert day_pnl_v is None, (
+        f"Expected day_pnl_v=None when prev_close=0 (Dhan row), got {day_pnl_v}."
+    )
+
+
 def test_fix_daily_book_prev_close_second_update_present():
     """Structural: fix_daily_book_prev_close must contain the NULL day_pnl recompute UPDATE.
 
