@@ -62,8 +62,10 @@ class TestPositionsSqlNoCOALESCE:
 
     def test_sql_selects_daily_book_ltp_as_ref_close(self):
         src = Path("backend/api/routes/positions.py").read_text()
-        assert "daily_book.ltp AS ref_close" in src, (
-            "positions.py must select `daily_book.ltp AS ref_close` directly"
+        # Updated: now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) AS ref_close
+        # so pre-fix holiday snapshots (ltp=NULL, close_price>0) are included.
+        assert "COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close" in src, (
+            "positions.py must select COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close"
         )
 
     def test_discriminating_case_previous_close_ignored(self):

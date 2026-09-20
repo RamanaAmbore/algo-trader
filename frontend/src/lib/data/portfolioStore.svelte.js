@@ -111,6 +111,8 @@ const _posTier2 = $derived.by(() => {
       p._prev_close != null && p._prev_close > 0 ? p._prev_close * Math.abs(p._qty)
       : oq === 0 && p._avg > 0                    ? p._avg       * Math.abs(p._qty)
       : null;
+    if (prev_mv === null && oq !== 0)
+      console.warn('[portfolioStore] prev_mv null:', p._sym, 'prev_close=', p._prev_close, 'oq=', oq);
 
     let exp_pnl = null, extrinsic = null;
     if (isFO && p._qty !== 0) {

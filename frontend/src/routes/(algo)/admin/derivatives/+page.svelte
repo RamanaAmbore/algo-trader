@@ -3888,13 +3888,8 @@
     // dropdown and option-chain rendering both depend on these; nothing
     // useful paints until they land. loadPositions fires immediately
     // (no await) so it races in parallel with the instruments await below.
-    //
-    // fresh=true bypasses the backend 30s TTL cache on mount so the
-    // underlying dropdown reflects positions that changed while the
-    // operator was on a different page (e.g. just placed an order on
-    // /orders then navigated here). The stale-while-revalidate cache
-    // above still provides an instant paint of the previous state.
-    loadPositions({ fresh: true });
+    // portfolioStore is the reactive SSOT and manages its own SWR TTL refresh.
+    loadPositions();
     // Cold-start: seed NIFTY only when positions are not yet cached.
     // When positionsStore.value already has entries (e.g. page revisit with
     // a warm store), skip the NIFTY seed so the auto-select $effect can pick

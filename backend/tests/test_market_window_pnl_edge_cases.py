@@ -540,10 +540,16 @@ class TestSourceIntegrity:
         assert sql_match, "_fetch_snapshot_close_map must contain a _sql_text(\"\"\"...\"\"\") block"
         sql_literal = sql_match.group(1)
 
-        assert "COALESCE" not in sql_literal.upper(), (
-            "SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
+        # Updated: SQL now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) so pre-fix
+        # holiday snapshots (ltp=NULL, close_price>0) are included. The old wrong pattern
+        # COALESCE(previous_close, ltp) must still be absent.
+        assert "COALESCE(daily_book.previous_close" not in sql_literal, (
+            "SQL must NOT use COALESCE(daily_book.previous_close, ...) — that was the old BHAV bug"
         )
-        assert "daily_book.ltp" in sql_literal.lower(), "SQL must reference daily_book.ltp as ref_close"
+        assert "COALESCE(previous_close" not in sql_literal.lower(), (
+            "SQL must NOT use COALESCE(previous_close, ...) — use ltp with close_price fallback"
+        )
+        assert "ltp" in sql_literal.lower(), "SQL must reference ltp"
 
     def test_holdings_schema_has_previous_close(self):
         """HoldingRow schema in schemas.py includes previous_close: float = 0.0"""
@@ -1085,20 +1091,16 @@ class TestPositionsPreviousCloseOverride:
         # (Second pass fires when previous_close stays 0 after the first pass.)
         assert len(captured_sql) >= 1, "at least one SQL query must execute"
         sql_lower = captured_sql[0].lower()
-        assert "coalesce" not in sql_lower, (
-            "First-pass SQL must NOT use COALESCE — previous_close is stale BHAV-copy; use daily_book.ltp directly"
+        # Updated: SQL now uses COALESCE(NULLIF(ltp,0), NULLIF(close_price,0)) to include
+        # pre-fix holiday snapshots. The old wrong pattern COALESCE(previous_close,...) must be absent.
+        assert "coalesce(daily_book.previous_close" not in sql_lower, (
+            "First-pass SQL must NOT use COALESCE(daily_book.previous_close,...) — that was the old BHAV bug"
         )
-        assert "ltp" in sql_lower, "First-pass SQL must reference daily_book.ltp as ref_close"
+        assert "coalesce(previous_close" not in sql_lower, (
+            "First-pass SQL must NOT use COALESCE(previous_close,...)"
+        )
+        assert "ltp" in sql_lower, "First-pass SQL must reference ltp"
         assert "positions" in sql_lower, "First-pass SQL must filter on kind='positions'"
-        # If a second-pass query ran, it must use previous_close (not ltp) and no COALESCE.
-        if len(captured_sql) >= 2:
-            sql2_lower = captured_sql[1].lower()
-            assert "coalesce" not in sql2_lower, (
-                "Second-pass SQL must NOT use COALESCE"
-            )
-            assert "previous_close" in sql2_lower, (
-                "Second-pass SQL must read daily_book.previous_close for the MCX option fallback"
-            )
 
     def test_previous_close_per_account_symbol(self):
         """Each (account, symbol) combination gets its own previous_close."""

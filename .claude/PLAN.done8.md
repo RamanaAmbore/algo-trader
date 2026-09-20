@@ -1,309 +1,165 @@
-# Plan: SSOT enforcement — all derived fields in store, surfaces read-only
+# Plan: Fix chg% null — unified prev_close source + remove fresh:true
 
 ## Context
 
-`chg%` shows 0 in derivatives legs. Root cause is broader: **consumer surfaces (CandidateLegRow,
-pulseColumns, derivatives flash effect) each carry independent fallback chains that diverge from
-each other and from portfolioStore**. Pulse and Legs show different `chg%` values for the same
-position because they read different broker fields when the store returns null.
+`chg%` is correct on Pulse (initial load) but resets to null after navigating to the derivatives
+page, then Pulse also shows null on return.
 
-**Architectural rule**: All derivation logic belongs in the store. Surfaces read the stored value
-and show null if null. No consumer has its own fallback chain.
+**Root cause — two different prev_close sources (the core bug):**
 
-**The immediate trigger** (chg% reset to zero): SWR refresh ~30s after page load switches from
-snapshot path (daily_book, correct prev_close) to live broker path. Live broker data can have
-`close_price = 0` (MCX call-auction gap, stale ticker). portfolioStore Tier 2 then computes
-`prev_mv = null` → `chg_pct = null`. Consumers fall back to divergent broker fields.
+The backend has two paths that return `previous_close`, and they read from **different columns**:
 
-**All violations identified** (from audit of CandidateLegRow.svelte, pulseColumns.js, +page.svelte):
+| Path | Triggered by | Column read | Notes |
+|------|-------------|-------------|-------|
+| Live path | market open + `?fresh=1` or SWR expiry | `daily_book.ltp` | `_override_stale_close_from_snapshot` |
+| Snapshot path | market closed | `daily_book.previous_close` | `_positions_snapshot` SQL |
 
-1. `portfolioStore Tier 2` — `prev_mv = null` when `prev_close = 0`, even for new intraday
-   positions where `avg_cost` is a valid denominator (no prior session close exists by design).
-2. `CandidateLegRow._chgPct` — 3-tier cascade: store → `c.chg_pct` → `symbolStore.day_change_pct`.
-3. `CandidateLegRow.pnl` — formula `(ltp - cost) * displayQty + realised` duplicates store computation.
-4. `+page.svelte flash chg` — inline formula `(ltp - prev_close) / prev_close * 100`, diverges from store.
-5. `+page.svelte flash day` — calls `_candDayPnl(c)` (independent `livePositionDayPnl` computation).
-6. `pulseColumns._dayPnlPctValueGetter` — falls back to `change_pct` broker field (market-data %, not day P&L %).
+These columns have different values:
+- `daily_book.ltp` = broker `last_price` at settlement (canonical, set by `daily_snapshot.py`)
+- `daily_book.previous_close` = broker `close_price` (BHAV) at snapshot write time
+
+For **pre-fix holiday-restart snapshots** (before the `market_open=False` fix), `ltp = NULL` because
+ltp was suppressed mid-session. But `previous_close` (BHAV) is still populated.
+
+→ Snapshot path: `db.previous_close` is non-zero → chg% correct on Pulse (initial load / market closed)  
+→ Live path: first pass `WHERE ltp IS NOT NULL AND ltp > 0` excludes these rows →
+  `previous_close = 0.0` → `_prev_close = null` → `prev_mv = null` → `chg_pct = null`
+
+**Trigger on derivatives mount:** `loadPositions({ fresh: true })` (line 3897) bypasses the 30s
+SWR cache and forces the live path even when market is closed, triggering this regression every
+time the derivatives page is opened.
+
+**Fix — two layers:**
+
+1. **Primary (architectural):** Remove `fresh: true` from derivatives mount. `portfolioStore` is
+   now reactive SSOT — `chg%` recomputes automatically when `ltp` or `prev_close` changes. The
+   SWR store's 30s TTL handles data freshness. Forcing a live-path bypass on every mount is
+   architecturally wrong and corrupts `prev_close`.
+
+2. **Unification (correctness):** Both the live path AND the snapshot path must use the same
+   `prev_close` source: `COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))` from `daily_book`.
+   - Live path first pass (`_fetch_snapshot_close_map`): change `ltp` → COALESCE
+   - Live path second pass (`_apply_second_pass_fallback`): change `ltp` → COALESCE
+   - Snapshot path (`_positions_snapshot` SQL): change `db.previous_close` → COALESCE(db.ltp, db.close_price)
+
+   This unification means a session-restart after a holiday (or any scenario with null-ltp rows)
+   returns the same `prev_close` whether market is open or closed.
 
 ## Task
 
-**Frontend changes only** — enforce SSOT: fix the store denominator, then strip all fallback chains
-from consumers. Surfaces only read; store owns all logic.
+1. **Frontend fix** — `derivatives/+page.svelte` line 3897: `loadPositions({ fresh: true })` →
+   `loadPositions()`. Reactive SSOT store handles chg% without forced cache bypass.
+2. **Frontend diagnostic** — `portfolioStore.svelte.js` Tier 2: add `console.warn` after
+   `prev_mv` computation so any future null path surfaces in browser console.
+3. **Backend unification** — `positions.py`: change all three query sites to use
+   `COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0))` as the `prev_close` value:
+   - `_fetch_snapshot_close_map` (~lines 943–953): `ltp AS ref_close` → COALESCE; filter update
+   - `_apply_second_pass_fallback` (~lines 1026–1033): same
+   - `_positions_snapshot` SQL (~line 277): `db.previous_close` → COALESCE(db.ltp, db.close_price)
+4. **Backend test** — pytest for all three SQL paths (null-ltp + close_price fallback).
 
 ## Agents
 
-- frontend: implement all changes below
-- frontend-test: add/update Vitest tests for portfolioStore prev_mv denominator fix, CandidateLegRow chg_pct SSOT, pulseColumns change_pct removal
-- backend: skip
+- frontend: (1) remove `fresh: true` from `loadPositions` in `derivatives/+page.svelte` line 3897;
+  (2) add `console.warn` in `portfolioStore.svelte.js` Tier 2 after `prev_mv`
+- backend: unify all three `prev_close` SQL sites in `backend/api/routes/positions.py`
+- backend-test: add pytest for all three query paths covering null-ltp + close_price fallback
 - broker: skip
 - doc: skip
-- backend-test: skip
 - playwright: skip
 
 ## Changes
 
-### 0a. `positionsDerivedStore.svelte.js` — add `get(sym)` and `getByRoot(root)` accessors
+### 1. `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — line 3897
 
-```javascript
-const _EMPTY_POS = Object.freeze({
-  day_pnl: null, pnl: null, exp_pnl: null,
-  extrinsic: null, prev_mv: null, chg_pct: null,
-});
-
-export function get(sym) {
-  return byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
-}
-
-export function getByRoot(root) {
-  return byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
-}
+```diff
+-    loadPositions({ fresh: true });
++    loadPositions();
 ```
 
-All positions lookups: `positionsDerivedStore.get(sym).field` or `positionsDerivedStore.getByRoot(root).field`.
-
----
-
-### 0b. `holdingsDayPnlStore.svelte.js` — add `get(sym)` accessor
-
-`holdingsDayPnlStore` currently exposes separate maps (`chgPctByKey`, etc.) not a unified `byKey`.
-Frontend agent must either (a) unify to `byKey[sym] = { day_pnl, chg_pct }` and add `get(sym)`,
-or (b) have `get(sym)` assemble the object from existing maps — whichever is least disruptive.
-Do NOT change computation logic, only add the accessor.
+### 2. `frontend/src/lib/data/portfolioStore.svelte.js` — Tier 2, after `prev_mv`
 
 ```javascript
-const _EMPTY_HOLD = Object.freeze({ day_pnl: null, chg_pct: null });
-
-export function get(sym) {
-  return byKey[String(sym || '').toUpperCase()] ?? _EMPTY_HOLD;
-}
+if (prev_mv === null && oq !== 0)
+  console.warn('[portfolioStore] prev_mv null:', p._sym, 'prev_close=', p._prev_close, 'oq=', oq);
 ```
 
 ---
 
-### 1. `portfolioStore.svelte.js` — Tier 2 `prev_mv` denominator (root cause of chg%=0)
+### 3. `backend/api/routes/positions.py` — three query sites
 
-**Location**: `_posTier2` block, ~line 105
+**3a. `_fetch_snapshot_close_map` first pass (~lines 943–953)**
+```python
+# Current:
+SELECT DISTINCT ON (account, symbol)
+       account, symbol, ltp AS ref_close, total_pnl
+FROM daily_book
+WHERE kind = 'positions'
+  AND ltp IS NOT NULL AND ltp > 0
+  AND captured_at < :today_08
+ORDER BY account, symbol, captured_at DESC
 
-```javascript
-// Before
-const prev_mv = p._prev_close != null && p._prev_close > 0
-  ? p._prev_close * Math.abs(p._qty) : null;
-
-// After — avg fallback for new intraday positions (oq=0, no prior session close)
-const oq = Number(p?.overnight_quantity ?? 0);
-const prev_mv =
-  p._prev_close != null && p._prev_close > 0 ? p._prev_close * Math.abs(p._qty)
-  : oq === 0 && p._avg > 0                    ? p._avg       * Math.abs(p._qty)
-  : null;
+# Fix:
+SELECT DISTINCT ON (account, symbol)
+       account, symbol,
+       COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close,
+       total_pnl
+FROM daily_book
+WHERE kind = 'positions'
+  AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
+  AND captured_at < :today_08
+ORDER BY account, symbol, captured_at DESC
 ```
 
-Overnight positions with `prev_close=0` stay null — avg_cost ≠ prior close, honest unknown.
+**3b. `_apply_second_pass_fallback` second pass (~lines 1026–1033)**
+```python
+# Current:
+SELECT DISTINCT ON (account, symbol) account, symbol, ltp AS previous_close
+FROM daily_book WHERE kind = 'positions'
+  AND ltp IS NOT NULL AND ltp > 0
+  AND symbol = ANY(:syms)
+ORDER BY account, symbol, captured_at DESC
 
----
-
-### 2. `CandidateLegRow.svelte` — `_chgPct` (lines 139–144)
-
-```javascript
-// Before — 3-tier broker fallback
-const _chgPct = $derived.by(() => {
-  const stored = positionsDerivedStore.byKey[c.symbol]?.chg_pct;
-  if (stored != null) return stored;
-  if (c.chg_pct != null && c.chg_pct !== 0) return c.chg_pct;
-  return untrack(() => getSnapshot(c.symbol))?.day_change_pct ?? null;
-});
-
-// After
-const _chgPct = $derived(positionsDerivedStore.get(c.symbol).chg_pct);
+# Fix:
+SELECT DISTINCT ON (account, symbol) account, symbol,
+       COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS previous_close
+FROM daily_book WHERE kind = 'positions'
+  AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
+  AND symbol = ANY(:syms)
+ORDER BY account, symbol, captured_at DESC
 ```
 
----
-
-### 3. `CandidateLegRow.svelte` — `pnl` (lines 110–120)
-
-```javascript
-// Before — formula duplicates store
-const pnl = $derived(
-  c._residualQty != null
-    ? ((ltp != null && cost != null && !_ltpFromFallback)
-        ? (ltp - cost) * displayQty + Number(c.realised || 0) : null)
-    : (c.pnl != null ? Number(c.pnl)
-        : (ltp != null && cost != null && !_ltpFromFallback
-            ? (ltp - cost) * displayQty + Number(c.realised || 0) : null))
-);
-
-// After — store first; formula only for residual positions (not in store)
-const pnl = $derived.by(() => {
-  if (c._residualQty == null) {
-    const stored = positionsDerivedStore.get(c.symbol).pnl;
-    if (stored != null) return stored;
-  }
-  if (ltp != null && cost != null && !_ltpFromFallback)
-    return (ltp - cost) * displayQty + Number(c.realised || 0);
-  return c.pnl != null ? Number(c.pnl) : null;
-});
+**3c. `_positions_snapshot` SQL snapshot path (~line 277)**
+```python
+# Current: db.previous_close
+# Fix: COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close
+# (in the SELECT list only — do NOT change the latest_batch CTE filter)
 ```
 
 ---
-
-### 4. `+page.svelte` — flash chg (~line 976)
-
-```javascript
-// Before — LTP price % (wrong metric, diverges from store)
-flash.update(`leg:${k}:chg`, (c.prev_close ?? 0) > 0 && c.ltp != null
-  ? ((Number(c.ltp) - Number(c.prev_close)) / Number(c.prev_close)) * 100 : null);
-
-// After
-flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
-```
-
----
-
-### 5. `+page.svelte` — flash day / `_candDayPnl` (~lines 960–981)
-
-```javascript
-// Before — independent livePositionDayPnl() call
-flash.update(`leg:${k}:day`, _candDayPnl(c));
-
-// After
-flash.update(`leg:${k}:day`, positionsDerivedStore.get(c.symbol).day_pnl);
-```
-
-`_candDayPnl` function: remove if no other callers remain (frontend agent must verify).
-
----
-
-### 6. `+page.svelte` — `extrinsic` prop on CandidateLegRow (~line 4557)
-
-```javascript
-// Before
-extrinsic={positionsDerivedStore.byKey[String(c.symbol || '').toUpperCase()]?.extrinsic ?? null}
-
-// After
-extrinsic={positionsDerivedStore.get(c.symbol).extrinsic}
-```
-
----
-
-### 7. `+page.svelte` — `byRootPositions` access (~line 4703)
-
-```javascript
-// Before
-const _snRow = positionsDerivedStore.byRootPositions[g.underlying];
-const dayVal = _snRow?.day_pnl ?? 0;
-const pnlVal = _snRow?.pnl ?? 0;
-const expVal = _snRow?.exp_pnl ?? 0;
-
-// After
-const _snRow = positionsDerivedStore.getByRoot(g.underlying);
-const dayVal = _snRow.day_pnl ?? 0;
-const pnlVal = _snRow.pnl ?? 0;
-const expVal = _snRow.exp_pnl ?? 0;
-```
-
----
-
-### 8. `pulseColumns.js` — `_dayPnlPctValueGetter` (lines 470–478)
-
-```javascript
-// Before — if-chain + broker change_pct fallback
-const posStored = positionsDerivedStore.byKey[sym]?.chg_pct;
-if (posStored != null) return posStored;
-const holdStored = holdingsDayPnlStore.chgPctByKey[sym];
-if (holdStored != null) return holdStored;
-const cp = Number(p.data?.change_pct);
-return Number.isFinite(cp) ? cp : null;
-
-// After — ?? chain, no if statements
-return positionsDerivedStore.get(sym).chg_pct ?? holdingsDayPnlStore.get(sym).chg_pct;
-```
-
----
-
-### 9. `pulseColumns.js` — `exp_pnl` getter (~line 730)
-
-```javascript
-// Before
-return getDerivedByKey()[sym]?.exp_pnl ?? null;
-
-// After
-return positionsDerivedStore.get(sym).exp_pnl;
-```
-
----
-
-### 10. `pulseColumns.js` — `extrinsic` getter (~line 757)
-
-```javascript
-// Before
-return getDerivedByKey()[sym]?.extrinsic ?? null;
-
-// After
-return positionsDerivedStore.get(sym).extrinsic;
-```
-
----
-
-### 11. `MarketPulse.svelte` — `exp_pnl` accumulator (~line 1997)
-
-```javascript
-// Before
-const expPnl = positionsDerivedStore.byKey[sym]?.exp_pnl;
-if (expPnl != null) acc.exp_pnl += Number(expPnl) || 0;
-
-// After
-acc.exp_pnl += positionsDerivedStore.get(sym).exp_pnl ?? 0;
-```
-
----
-
-### 12. `MarketPulse.svelte` — `day_pnl` per-row getter (~line 3618)
-
-```javascript
-// Before
-const storeVal = positionsDerivedStore.byKey[sym]?.day_pnl;
-if (storeVal != null) return storeVal;
-return p.data?.day_pnl ?? null;
-
-// After — store first, row field as fallback (row is per-position; store is per-symbol aggregate)
-return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
-```
-
----
-
-### Out of scope (acceptable — not store violations)
-
-- `CandidateLegRow.ltp` — reads from `liveSnap(sym)` (symbolStore); `lg?.ltp` is legAnalytics (store-derived); acceptable.
-- `pulseColumns.pnl_pct` — pure ratio math `(pnl / _cost_basis) * 100`; no store analog.
-- `pulseColumns.weight_pct` — relative % requiring portfolio total; column-local math.
-- `_candDayPnl` for draft legs — drafts are never in the store; local formula is the only option.
-- `_mergedEv/_mergedPop/_mergedEvPct` — equity+option payoff merge not supported by backend.
 
 ## Tests
 
-- pytest: no
+- pytest: yes
 - svelte-check: yes
 - playwright: no
 
-Vitest only (`frontend/src/lib/__tests__/data/`):
-- `portfolioStore.test.js`: `prev_mv` uses `avg_cost` when `oq=0` and `prev_close=0`
-- `portfolioStore.test.js`: `prev_mv` null for overnight with `prev_close=0` (no spurious avg fallback)
-- `positionsDerivedStore.test.js`: `get(unknown)` returns `_EMPTY_POS` with all fields null
-- `positionsDerivedStore.test.js`: `getByRoot(unknown)` returns `_EMPTY_POS` with all fields null
-- `holdingsDayPnlStore.test.js`: `get(unknown)` returns `_EMPTY_HOLD` with all fields null
-- `pulseColumns.test.js`: chg% returns null (not `change_pct`) when both stores return null
+New file `backend/tests/test_positions_prev_close.py` (or add to `test_positions_route.py`):
+- First pass: `ltp = NULL, close_price = 2850.0` → `ref_close = 2850.0`
+- First pass: `ltp = 2800.0, close_price = 2850.0` → `ref_close = 2800.0` (ltp wins)
+- First pass: `ltp = NULL, close_price = NULL` → row excluded
+- Second pass: same three cases for `previous_close`
+- Snapshot path: `db.ltp = NULL, db.close_price = 2850.0` → `previous_close = 2850.0`
 
 ## Commit message
 
-fix(portfolioStore,derivatives): SSOT enforcement — get(sym) accessors on all stores, prev_mv avg fallback for intraday, strip all broker-field fallbacks
+fix(positions): unify prev_close to COALESCE(ltp, close_price) across live + snapshot paths; remove fresh:true from derivatives mount
 
 ## Done when
 
-- `positionsDerivedStore.get(sym)`, `getByRoot(root)`, and `holdingsDayPnlStore.get(sym)` all return `_EMPTY` for unknown symbols
-- No consumer writes `byKey[sym]?.field` or `chgPctByKey[sym]` — every lookup uses `get(sym).field`
-- `portfolioStore` Tier 2 `prev_mv` uses `avg_cost` fallback for `oq=0` intraday positions
-- `CandidateLegRow._chgPct` is one line; `pnl` reads store first
-- `+page.svelte` flash chg/day use `get(sym)` — no inline formulas
-- `pulseColumns` all getters use `get(sym)` — no `change_pct` fallback, no `getDerivedByKey()[sym]?.`
-- `MarketPulse` `exp_pnl` and `day_pnl` use `get(sym)`
-- Pulse and Legs show identical `chg%` for the same position
-- Vitest 0 failures; svelte-check 0 errors
+- Navigating to derivatives page does NOT reset chg% to null
+- Returning to Pulse: chg% unchanged from before navigation
+- Live path and snapshot path return same `previous_close` for same symbol
+- Browser console: `[portfolioStore] prev_mv null:` does NOT fire for overnight positions
+- pytest: all three SQL path tests green
+- svelte-check: 0 errors

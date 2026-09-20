@@ -274,7 +274,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
-                       db.captured_at, db.previous_close,
+                       db.captured_at, COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close,
                        pb.prev_ltp, pb.prev_settlement_pnl, db.previous_close_backup
                 FROM daily_book db
                 JOIN latest_batch lb
@@ -943,11 +943,11 @@ async def _fetch_snapshot_close_map(
             result = await session.execute(_sql_text("""
                     SELECT DISTINCT ON (account, symbol)
                            account, symbol,
-                           daily_book.ltp AS ref_close,
+                           COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS ref_close,
                            total_pnl
                     FROM daily_book
                     WHERE kind = 'positions'
-                      AND ltp IS NOT NULL AND ltp > 0
+                      AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
                       AND captured_at < :today_08
                     ORDER BY account, symbol, captured_at DESC
                 """), {"today_08": today_08})
@@ -1024,10 +1024,10 @@ async def _apply_second_pass_fallback(raw: pd.DataFrame) -> list:
     try:
         async with async_session() as session:
             result2 = await session.execute(_sql_text("""
-                SELECT DISTINCT ON (account, symbol) account, symbol, ltp AS previous_close
+                SELECT DISTINCT ON (account, symbol) account, symbol, COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) AS previous_close
                 FROM daily_book
                 WHERE kind = 'positions'
-                  AND ltp IS NOT NULL AND ltp > 0
+                  AND COALESCE(NULLIF(ltp, 0), NULLIF(close_price, 0)) IS NOT NULL
                   AND symbol = ANY(:syms)
                 ORDER BY account, symbol, captured_at DESC
             """), {"syms": syms_needing_fallback})
