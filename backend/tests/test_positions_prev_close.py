@@ -92,9 +92,9 @@ class TestSQLTextPatterns:
         src = self._read_sql_from_function(_positions_snapshot)
 
         # Verify the COALESCE pattern in the main SELECT
-        assert "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
+        assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
             "_positions_snapshot must SELECT "
-            "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close"
+            "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close"
         )
 
 
@@ -414,7 +414,7 @@ class TestPositionsSnapshotSQLLogic:
 
         # Verify the source contains the SELECT with COALESCE
         src = inspect.getsource(_positions_snapshot)
-        assert "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
+        assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
             "_positions_snapshot must SELECT the COALESCE pattern as previous_close"
         )
         # Verify it's not using the old pattern (ltp AS prev_close)
@@ -474,6 +474,17 @@ def test_positions_snapshot_no_old_pattern_in_select():
 
     # The old pattern would be something like "db.ltp AS previous_close"
     # We verify the new pattern is there instead
-    assert "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
+    assert "COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close" in src, (
         "_positions_snapshot must use COALESCE pattern for previous_close"
+    )
+
+
+def test_positions_snapshot_does_not_use_ltp_as_previous_close():
+    """Guard: _positions_snapshot must not use db.ltp for previous_close (causes chg%=0)."""
+    from backend.api.routes.positions import _positions_snapshot
+
+    src = inspect.getsource(_positions_snapshot)
+    assert "COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close" not in src, (
+        "_positions_snapshot must not derive previous_close from db.ltp — "
+        "ltp is today's settlement; previous_close must come from db.previous_close (BHAV at 08:00)"
     )

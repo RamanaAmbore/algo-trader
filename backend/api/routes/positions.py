@@ -274,7 +274,7 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
                 )
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
-                       db.captured_at, COALESCE(NULLIF(db.ltp, 0), NULLIF(db.close_price, 0)) AS previous_close,
+                       db.captured_at, COALESCE(NULLIF(db.previous_close, 0), NULLIF(db.close_price, 0)) AS previous_close,
                        pb.prev_ltp, pb.prev_settlement_pnl, db.previous_close_backup
                 FROM daily_book db
                 JOIN latest_batch lb
