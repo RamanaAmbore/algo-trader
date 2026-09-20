@@ -66,6 +66,12 @@ _expiry_last_run_date: "date | None" = None
 # 30-second polls land in the ±1 min snapshot_time window.
 _snapshot_fired_today: dict[str, "date | None"] = {"NON-MCX": None, "MCX": None}
 
+# Ticker lifecycle sentinels — module scope so _session_guard can seed them
+# at startup and _task_daily_snapshot's main loop respects the state without
+# re-firing events already handled during startup recovery.
+_unsub_nonmcx_done_global:   "date | None" = None  # non-MCX unsub sentinel
+_ticker_stop_done_global:    "date | None" = None  # full ticker stop sentinel
+
 
 # ---------------------------------------------------------------------------
 # Segment config helpers
@@ -2065,6 +2071,121 @@ async def _build_settlement_map() -> "dict[tuple[str, str], float]":
     return settlement_map
 
 
+async def _session_guard() -> None:
+    """Run at server startup to recover timed events missed during downtime.
+
+    Works without DB persistence — all event functions are idempotent via
+    the broker REST API (Kite returns correct settled prices regardless of
+    how many times called). Recovers up to five events in time order:
+
+      a. CloseReset     (≥ 08:00 IST) — prev_close new-session transition
+      b. NonMcxClose    (≥ NON-MCX close_time) — gate flip + non-MCX unsub
+      c. NonMcxSnapshot (≥ NON-MCX effective snapshot_time) — EOD daily_book write
+      d. McxClose       (≥ MCX close_time) — gate flip + ticker stop
+      e. McxSnapshot    (≥ MCX effective snapshot_time) — EOD daily_book write
+
+    After recovery, checks if today is a market day. If not, returns early.
+    If it is, future timed events are left to the _task_daily_snapshot main
+    loop (already handles scheduling via exchange_clock + dedup sentinels).
+
+    Module-scope sentinels (_unsub_nonmcx_done_global, _ticker_stop_done_global)
+    are seeded here so the main loop does not double-fire events already
+    handled during startup.
+    """
+    global _snapshot_fired_today, _unsub_nonmcx_done_global, _ticker_stop_done_global
+
+    from backend.api.helpers.exchange_clock import (
+        _is_market_day_today,
+        _effective_gate_rows,
+        _effective_snapshot_time,
+    )
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    now = timestamp_indian()
+    now_t = now.time()
+    today = now.date()
+
+    logger.info("SessionGuard: startup recovery — %s IST", now_t.strftime("%H:%M"))
+
+    # ── a. CloseReset: prev_close new-session transition (≥ 08:00) ────────────
+    if now_t >= dtime(8, 0):
+        try:
+            logger.info("SessionGuard: running CloseReset (prev_close transition)")
+            _settlement_map = await _build_settlement_map()
+            await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
+        except Exception as _exc:
+            logger.warning("SessionGuard: CloseReset failed — %s", _exc)
+
+    # ── b. NonMcxClose: non-MCX unsub (≥ NON-MCX close_time + 1 min) ─────────
+    non_mcx_rows = _effective_gate_rows("NON-MCX")
+    _non_mcx_close: "dtime | None" = non_mcx_rows[0].close_time if non_mcx_rows else None
+    if _non_mcx_close is not None:
+        _non_mcx_unsub_t = (
+            datetime.combine(now.date(), _non_mcx_close) + timedelta(minutes=1)
+        ).time()
+        if now_t >= _non_mcx_unsub_t:
+            try:
+                logger.info("SessionGuard: running NonMcxClose (non-MCX unsub)")
+                await _snapshot_unsub_nonmcx()
+                _unsub_nonmcx_done_global = today
+            except Exception as _exc:
+                logger.warning("SessionGuard: NonMcxClose failed — %s", _exc)
+
+    # ── c. NonMcxSnapshot (≥ effective snapshot_time) ─────────────────────────
+    if non_mcx_rows:
+        _non_mcx_snap_t = _effective_snapshot_time(non_mcx_rows[0])
+        if _non_mcx_snap_t is not None and now_t >= _non_mcx_snap_t:
+            if _snapshot_fired_today.get("NON-MCX") != today:
+                try:
+                    logger.info("SessionGuard: running NonMcxSnapshot (NON-MCX EOD write)")
+                    await _snapshot_fire("nse", market_open=False)
+                    _snapshot_fired_today["NON-MCX"] = today
+                except Exception as _exc:
+                    logger.warning("SessionGuard: NonMcxSnapshot failed — %s", _exc)
+
+    # ── d. McxClose: full ticker stop (≥ MCX close_time + 1 min) ─────────────
+    mcx_rows = _effective_gate_rows("MCX")
+    _mcx_close: "dtime | None" = mcx_rows[0].close_time if mcx_rows else None
+    if _mcx_close is not None:
+        _mcx_stop_t = (
+            datetime.combine(now.date(), _mcx_close) + timedelta(minutes=1)
+        ).time()
+        # 00:30 IST crosses midnight — compare against adjusted date reference
+        # for times in the [00:00, 02:00) window (post-midnight = prior trade day).
+        _is_post_midnight = now_t < dtime(2, 0)
+        _stop_date = today - timedelta(days=1) if _is_post_midnight else today
+        _effective_stop = _is_post_midnight or now_t >= _mcx_stop_t
+        if _effective_stop and _ticker_stop_done_global != _stop_date:
+            try:
+                logger.info("SessionGuard: running McxClose (ticker stop)")
+                _snapshot_stop_ticker()
+                _ticker_stop_done_global = _stop_date
+            except Exception as _exc:
+                logger.warning("SessionGuard: McxClose failed — %s", _exc)
+
+    # ── e. McxSnapshot (≥ effective snapshot_time) ────────────────────────────
+    if mcx_rows:
+        _mcx_snap_t = _effective_snapshot_time(mcx_rows[0])
+        if _mcx_snap_t is not None:
+            # MCX snapshot time (≈23:45) is pre-midnight — for post-midnight
+            # restarts (now_t < 02:00) treat as already past.
+            _mcx_snap_past = now_t >= _mcx_snap_t or now_t < dtime(2, 0)
+            if _mcx_snap_past and _snapshot_fired_today.get("MCX") != today:
+                try:
+                    logger.info("SessionGuard: running McxSnapshot (MCX EOD write)")
+                    await _snapshot_fire("mcx", market_open=False)
+                    _snapshot_fired_today["MCX"] = today
+                except Exception as _exc:
+                    logger.warning("SessionGuard: McxSnapshot failed — %s", _exc)
+
+    # ── market-day check ───────────────────────────────────────────────────────
+    if not _is_market_day_today():
+        logger.info("SessionGuard: not a trading day today — no future events scheduled")
+        return
+
+    logger.info("SessionGuard: trading day confirmed — future timed events handled by main loop")
+
+
 async def _task_daily_snapshot() -> None:
     """
     Daily close snapshot task.
@@ -2129,13 +2250,12 @@ async def _task_daily_snapshot() -> None:
     # are mid-session) can stamp wrong previous_close values.
 
     # ── ticker lifecycle dedup sentinels ──────────────────────────────
-    # Close/settlement snapshot triggers are now driven by
-    # exchange_clock.sessions_with_snapshot_time_now() — no per-pass
-    # dedup sentinels needed (minute-precision match fires exactly once).
-    # Ticker lifecycle events still use date-keyed sentinels because they
-    # are not represented in the exchange_schedule table.
-    _unsub_nonmcx_done:   Optional[date] = None  # 16:15 NSE-close unsub
-    _ticker_stop_done:    Optional[date] = None  # 00:30 full ticker stop
+    # _unsub_nonmcx_done_global and _ticker_stop_done_global are module-scope
+    # so _session_guard can seed them at startup and the loop respects any
+    # already-executed recovery steps.
+    # _ticker_restart_done and _prev_close_fix_done remain local —
+    # they only fire forward (no recovery path needed).
+    global _unsub_nonmcx_done_global, _ticker_stop_done_global
     _ticker_restart_done: Optional[date] = None  # 08:00 post-token-refresh restart
     _prev_close_fix_done: Optional[date] = None  # 08:00 prev_close new-session transition
 
@@ -2173,28 +2293,47 @@ async def _task_daily_snapshot() -> None:
             await fix_daily_book_prev_close(now, settlement_map=_settlement_map or None)
             _prev_close_fix_done = today
 
-        # ---- Ticker: drop non-MCX subscriptions at 16:15 IST ----------
-        # NSE/BSE close at 15:30; OFS/special sessions end by ~16:15.
-        # Non-MCX tokens are unsubscribed so the WebSocket payload drops to
-        # MCX-only volume for the evening session.  Guarded [16:15, 17:00)
-        # to avoid double-firing on service restart within that window.
-        if (dtime(16, 15) <= now.time() < dtime(17, 0)
-                and _unsub_nonmcx_done != today):
-            logger.info("Background: 16:15 IST — unsubscribing non-MCX tokens")
-            await _snapshot_unsub_nonmcx()
-            _unsub_nonmcx_done = today
+        # ---- Ticker: drop non-MCX subscriptions at NON-MCX close + 1 min -----
+        # Scheduled 1 minute after NON-MCX close_time (default 15:30 → 15:31).
+        # Derived from exchange_schedule so date-specific overrides shift the
+        # time automatically. Seeded by _session_guard at startup so a restart
+        # after the window does not re-fire.
+        _non_mcx_unsub_rows = exchange_clock._effective_gate_rows("NON-MCX")
+        _non_mcx_close_t = _non_mcx_unsub_rows[0].close_time if _non_mcx_unsub_rows else None
+        if _non_mcx_close_t is not None:
+            _non_mcx_unsub_thresh = (
+                datetime.combine(today, _non_mcx_close_t) + timedelta(minutes=1)
+            ).time()
+            if now.time() >= _non_mcx_unsub_thresh and _unsub_nonmcx_done_global != today:
+                logger.info(
+                    "Background: %s IST — unsubscribing non-MCX tokens",
+                    _non_mcx_unsub_thresh.strftime("%H:%M"),
+                )
+                await _snapshot_unsub_nonmcx()
+                _unsub_nonmcx_done_global = today
 
-        # ---- Ticker: full stop at 00:30 IST ----------------------------
-        # MCX settles at 00:15; connection is idle after that.  Stopping
-        # here frees the Twisted reactor + socket ahead of the 08:00
-        # restart with a fresh daily access_token.  Guarded [00:30, 02:00)
-        # to avoid spurious stop on a daytime restart.
-        if dtime(0, 30) <= now.time() < dtime(2, 0):
-            _stop_date = today - timedelta(days=1)  # trade-date reference
-            if _ticker_stop_done != _stop_date:
-                logger.info("Background: 00:30 IST — stopping KiteTicker (post-MCX-settlement)")
+        # ---- Ticker: full stop at MCX close + 1 min ----------------------------
+        # Scheduled 1 minute after MCX close_time (default 23:30 → 23:31).
+        # MCX settles around 23:30; stopping 1 min later captures final ticks
+        # before WebSocket teardown. Derived from exchange_schedule — no hardcoded
+        # time. Post-midnight guard [00:00, 02:00) handles the date-rollover case
+        # where now_t < MCX close_t but the event is in the past.
+        _mcx_stop_rows = exchange_clock._effective_gate_rows("MCX")
+        _mcx_close_t = _mcx_stop_rows[0].close_time if _mcx_stop_rows else None
+        if _mcx_close_t is not None:
+            _mcx_stop_thresh = (
+                datetime.combine(today, _mcx_close_t) + timedelta(minutes=1)
+            ).time()
+            _is_post_midnight_loop = now.time() < dtime(2, 0)
+            _stop_date = today - timedelta(days=1) if _is_post_midnight_loop else today
+            _mcx_stop_due = _is_post_midnight_loop or now.time() >= _mcx_stop_thresh
+            if _mcx_stop_due and _ticker_stop_done_global != _stop_date:
+                logger.info(
+                    "Background: %s IST — stopping KiteTicker (post-MCX-settlement)",
+                    _mcx_stop_thresh.strftime("%H:%M"),
+                )
                 _snapshot_stop_ticker()
-                _ticker_stop_done = _stop_date
+                _ticker_stop_done_global = _stop_date
 
         # ---- Ticker: restart at 08:00 IST with fresh daily token -------
         # Daily access_token is refreshed by _task_holiday_refresh at 05:30
@@ -6106,6 +6245,11 @@ async def on_startup(app) -> None:
     from backend.api.routes.algo import start_persist_flush
     logger.info("Background: calling start_persist_flush")
     start_persist_flush()
+    logger.info("Background: running session guard (startup recovery)")
+    try:
+        await _session_guard()
+    except Exception as _sg_exc:
+        logger.warning("Background: session guard failed (non-fatal) — %s", _sg_exc)
     logger.info("Background: start_persist_flush done, creating tasks")
     app.state.bg_tasks = [
         asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),

@@ -64,7 +64,8 @@ async def test_fix_daily_book_prev_close_overnight_uses_previous_close():
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.commit = AsyncMock()
 
-    with patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
+    with patch("backend.api.algo.daily_snapshot._exchange_clock._is_market_day_today", return_value=True), \
+         patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
         updated = await fix_daily_book_prev_close(now_ist)
 
     assert updated == 3, f"Expected 3 updated rows, got {updated}"
@@ -110,7 +111,8 @@ async def test_fix_daily_book_prev_close_new_session_uses_ltp():
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.commit = AsyncMock()
 
-    with patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
+    with patch("backend.api.algo.daily_snapshot._exchange_clock._is_market_day_today", return_value=True), \
+         patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
         updated = await fix_daily_book_prev_close(now_ist)
 
     assert updated == 7, f"Expected 7 updated rows, got {updated}"
@@ -252,7 +254,8 @@ async def test_fix_daily_book_prev_close_exception_returns_zero():
     mock_session.__aenter__ = AsyncMock(side_effect=RuntimeError("DB down"))
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
-    with patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
+    with patch("backend.api.algo.daily_snapshot._exchange_clock._is_market_day_today", return_value=True), \
+         patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
         result = await fix_daily_book_prev_close(now_ist)
 
     assert result == 0, "Exception path must return 0"
@@ -277,7 +280,8 @@ async def test_fix_daily_book_prev_close_default_now_ist():
     mock_session.execute = AsyncMock(return_value=mock_result)
     mock_session.commit = AsyncMock()
 
-    with patch("backend.api.algo.daily_snapshot.timestamp_indian", return_value=fake_now), \
+    with patch("backend.api.algo.daily_snapshot._exchange_clock._is_market_day_today", return_value=True), \
+         patch("backend.api.algo.daily_snapshot.timestamp_indian", return_value=fake_now), \
          patch("backend.api.algo.daily_snapshot.async_session", return_value=mock_session):
         updated = await fix_daily_book_prev_close()  # no now_ist arg
 

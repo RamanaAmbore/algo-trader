@@ -971,6 +971,14 @@ async def fix_daily_book_prev_close(
       ltp == prev_close at session open is intentionally valid — no intraday
       movement has occurred yet.
     """
+    # Gate: do not run on non-trading days (weekends / holidays).
+    # _is_market_day_today() reads from the DB-backed exchange_schedule cache,
+    # which returns False on weekends (weekday filter) and holidays (open_time=None).
+    # Fail-open when cache is empty so a cold-boot doesn't skip the transition.
+    if not _exchange_clock._is_market_day_today():
+        logger.info("[PREV-CLOSE-FIX] skipped — not a trading day today")
+        return 0
+
     if now_ist is None:
         now_ist = timestamp_indian()
     midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)

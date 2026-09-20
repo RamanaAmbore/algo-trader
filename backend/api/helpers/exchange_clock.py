@@ -238,11 +238,11 @@ def is_exchange_open(exchange: str) -> bool:
     a subset of exchanges (e.g. Muhurat trading covers NSE+BSE but not NFO+BFO —
     the override row has exchanges=['NSE','BSE'] so NFO correctly stays closed).
 
-    Fail-open: returns True if the cache is empty or the exchange is
-    not found — so callers default to calling the live broker.
+    Fail-closed: returns False if the cache is empty — empty cache means
+    schedule not loaded; callers default to snapshot path, not live broker.
     """
     if not _CACHE:
-        return True  # Fail-open: assume market open if cache not warmed.
+        return False  # Fail-closed: schedule not loaded → treat as closed.
     upper = exchange.upper()
     gate = _exchange_to_gate(exchange)
     if gate is None:
@@ -280,7 +280,7 @@ def is_any_segment_open(exchanges: list[str] | None = None) -> bool:
         cached rows.
     """
     if not _CACHE:
-        return True  # Fail-open.
+        return False  # Fail-closed: empty cache means schedule not loaded, not market open.
 
     upper_set = {e.upper() for e in exchanges} if exchanges else None
     gates = {r.gate for r in _CACHE}
@@ -321,7 +321,8 @@ def is_market_active_for_prev_close() -> bool:
             now_t = now.time().replace(second=0, microsecond=0)
             if row.open_time <= now_t < row.close_time:
                 return True
-            if row.snapshot_time is not None and row.close_time <= now_t <= row.snapshot_time:
+            _snap_t = _effective_snapshot_time(row)
+            if _snap_t is not None and row.close_time <= now_t <= _snap_t:
                 return True
     return False
 
@@ -346,6 +347,45 @@ def is_trading_day_today() -> bool:
     return False
 
 
+def _is_market_day_today() -> bool:
+    """Return True when at least one gate has a trading session today.
+
+    Reads purely from the DB-backed cache via _effective_gate_rows() which
+    applies the weekday filter and date-specific overrides.
+
+    - Weekends: weekday filter excludes Sat/Sun → _effective_gate_rows returns
+      [] for both gates → False.
+    - Holidays: date-override row with open_time=None → open_time is None → False.
+    - Normal trading day: open_time is not None → True.
+
+    Fail-closed: returns False when the cache is empty — schedule not loaded
+    means we cannot confirm a market day; downstream processes skip safely.
+    """
+    if not _CACHE:
+        return False  # fail-closed: schedule not loaded → not a market day
+    non_mcx = _effective_gate_rows("NON-MCX")
+    mcx     = _effective_gate_rows("MCX")
+    non_mcx_open = bool(non_mcx) and non_mcx[0].open_time is not None
+    mcx_open     = bool(mcx)     and mcx[0].open_time     is not None
+    return non_mcx_open or mcx_open
+
+
+def _effective_snapshot_time(row: "ExchangeSchedule") -> "time | None":
+    """Return the effective snapshot time for *row*.
+
+    If ``row.snapshot_time`` is set explicitly, return that value.
+    Otherwise derive it as ``row.close_time + 15 minutes``.
+    Returns None when both snapshot_time and close_time are absent.
+    """
+    if row.snapshot_time:
+        return row.snapshot_time
+    if row.close_time:
+        from datetime import datetime as _dt, timedelta as _td, date as _date
+        dt = _dt.combine(_date.today(), row.close_time) + _td(minutes=15)
+        return dt.time()
+    return None
+
+
 def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["ExchangeSchedule"]:
     """Return rows whose ``snapshot_time`` is within ± *tolerance_minutes* of now.
 
@@ -360,9 +400,12 @@ def sessions_with_snapshot_time_now(tolerance_minutes: int = 1) -> list["Exchang
     matched: list["ExchangeSchedule"] = []
     for gate in {r.gate for r in _CACHE}:
         for row in _effective_gate_rows(gate):
-            if row.open_time is None or row.snapshot_time is None:
+            if row.open_time is None:
                 continue
-            snap_dt = datetime.combine(datetime.today(), row.snapshot_time)
+            snap_t = _effective_snapshot_time(row)
+            if snap_t is None:
+                continue
+            snap_dt = datetime.combine(datetime.today(), snap_t)
             now_dt  = datetime.combine(datetime.today(), now_t)
             if abs((snap_dt - now_dt).total_seconds()) <= delta.total_seconds():
                 matched.append(row)
@@ -416,7 +459,7 @@ _SEED_ROWS: list[dict] = [
         "is_open": True,
         "open_time": time(8, 0),
         "close_time": time(15, 30),
-        "snapshot_time": time(15, 45),
+        "snapshot_time": None,  # Derived: close_time + 15 min = 15:45 via _effective_snapshot_time()
         "snapshot_reset_time": time(8, 0),
         "weekdays": [0, 1, 2, 3, 4],
         "source": "system",
@@ -428,7 +471,7 @@ _SEED_ROWS: list[dict] = [
         "is_open": True,
         "open_time": time(8, 0),
         "close_time": time(23, 30),
-        "snapshot_time": time(23, 45),
+        "snapshot_time": None,  # Derived: close_time + 15 min = 23:45 via _effective_snapshot_time()
         "snapshot_reset_time": time(8, 0),
         "weekdays": [0, 1, 2, 3, 4],
         "source": "system",
@@ -497,6 +540,14 @@ async def seed_and_warm() -> None:
                       AND source = 'system'
                       AND close_time != '15:30'
                 """))
+                # --- migration: make snapshot_time nullable for system rows ---------------
+                # snapshot_time is now derived via _effective_snapshot_time() as
+                # close_time + 15 min when NULL. System rows carry the default values
+                # (15:45 / 23:45) which match this derivation exactly — set to NULL so
+                # a close_time change automatically shifts the snapshot time.
+                await session.execute(_text(
+                    "UPDATE exchange_schedule SET snapshot_time = NULL WHERE source = 'system' AND date IS NULL"
+                ))
                 # --- migration: add Mon–Fri weekday restriction to default system rows ------
                 # Servers seeded before this migration have weekdays=NULL which makes
                 # is_exchange_open() return True on Saturday/Sunday between 08:00–15:30 IST.
