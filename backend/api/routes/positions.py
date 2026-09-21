@@ -630,11 +630,18 @@ def _apply_flat_row_hygiene(raw: "pd.DataFrame") -> None:
         return
     if 'day_change' in raw.columns:
         raw.loc[_flat_mask, 'day_change'] = 0.0
-    # day_change_val: the absolute ₹ move for a flat intraday position is
-    # zero by definition; leaving it non-zero would cause phantom P&L in
-    # the NavStrip performance slot.
+    # day_change_val: only zero when pnl is also zero (break-even round-trip).
+    # When abs(pnl) > 0.005 the backstop (apply_day_change_backstop Case 3)
+    # has already restored dcv = pnl for this closed intraday row — preserve it
+    # so the NavStrip P slot shows the realised gain/loss, not phantom zero.
+    # Half-paisa threshold (0.005) matches _override_stale_close_from_snapshot.
     if 'day_change_val' in raw.columns:
-        raw.loc[_flat_mask, 'day_change_val'] = 0.0
+        _pnl_raw = (
+            raw['pnl'] if 'pnl' in raw.columns
+            else _pd.Series(0.0, index=raw.index)
+        )
+        _pnl = _pd.to_numeric(_pnl_raw, errors='coerce').fillna(0)
+        raw.loc[_flat_mask & (_pnl.abs() < 0.005), 'day_change_val'] = 0.0
     # day_change_percentage: denominator collapses to 0 when qty=0;
     # undefined percentage — zero it rather than show a spurious value.
     if 'day_change_percentage' in raw.columns:

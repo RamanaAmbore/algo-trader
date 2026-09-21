@@ -513,6 +513,7 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
+    border-bottom: 1px solid rgba(126,151,184,0.25);
   }
   .cand-sym-acct {
     position: relative;

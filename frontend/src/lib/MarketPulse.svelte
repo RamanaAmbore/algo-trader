@@ -1744,7 +1744,13 @@
       if (pA !== pB) return pB - pA;
     }
     const ua = _mrUgKey(a), ub = _mrUgKey(b);
-    if (ua !== ub) return ua.localeCompare(ub);
+    if (ua !== ub) {
+      const ra = groupOrder[ua] ?? null, rb = groupOrder[ub] ?? null;
+      if (ra !== null && rb !== null) return ra - rb;
+      if (ra !== null) return -1;
+      if (rb !== null) return  1;
+      return ua.localeCompare(ub);
+    }
     const ta = _mrTier(a), tb = _mrTier(b);
     if (ta !== tb) return ta - tb;
     return String(a.tradingsymbol || '').localeCompare(String(b.tradingsymbol || ''));
@@ -5027,6 +5033,13 @@
      between the 5d chart column and LTP. */
   :global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
     border-right: 1px solid var(--algo-amber-border-soft) !important;
+  }
+  /* Vertically center cell content in all pulse bucket cells.
+     Target .ag-cell-value (inner wrapper), NOT .ag-cell — see ag-Grid issue #3828. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell-value) {
+    display: flex !important;
+    align-items: center !important;
+    height: 100%;
   }
   /* Header underline retired — `.ag-theme-algo .ag-header` (app.css)
      already applies `border-bottom: 1px solid var(--algo-amber-border-soft)`

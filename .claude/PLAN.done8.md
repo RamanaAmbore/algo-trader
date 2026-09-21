@@ -1,135 +1,241 @@
-# Plan: Flash discipline — ltp/spot/chg% only; subtle NavStrip heartbeat
+# Plan: Pulse grid fixes + derivatives page polish
 
 ## Context
-Rule: only `ltp`, `spot`, and `chg%` columns should produce a flash animation on any
-surface. Everything else (day_pnl, pnl, cur_val, etc.) may be refreshed for valueGetter
-re-evaluation but must NOT trigger a visible flash CSS animation. Audit found two
-violation categories and a heartbeat that is too intense.
+Six distinct defects + two UI improvements across MarketPulse, the derivatives page, and
+the backend day P&L pipeline. Each fix is independent; all target user-visible regressions
+or missing behaviour.
 
-## Violations to fix
+## Implementation
 
-### 1 — PerformancePage: pnl + day_pnl get tf-up/tf-down flash (violation)
-File: `frontend/src/lib/PerformancePage.svelte`
+---
 
-The `_perfFlash.classOf()` callback is applied to pnl and day_pnl column cellClass
-definitions. This applies `tf-up`/`tf-down` (350ms background flash) to those cells on
-every LTP tick. Fix: remove `_perfFlash.classOf()` from the pnl and day_pnl column
-cellClass. Keep it on day_pnl_pct (chg%) only. The LTP column flash is correct — keep.
+### Fix 1 — `_compareMainRows` groupOrder (MarketPulse.svelte ~line 1746)
 
-### 2 — PositionStrip: per-tick rainbow shimmer on entire strip (violation)
-File: `frontend/src/lib/PositionStrip.svelte`
-
-`cell-freshness-pulse` (rainbow-fade 1.0s) fires on every SSE tick via tickBus and
-blankets the whole strip. This is not scoped to ltp/chg% values — it fires on any tick.
-Fix: remove the rainbow shimmer entirely from PositionStrip. The amber heartbeat (poll
-cycle) is sufficient feedback. If tick-arrival indication is desired, scope it narrowly
-to the ltp display cell in the strip, not the whole strip.
-
-### 3 — PositionStrip heartbeat: too intense, should be subtler
-File: `frontend/src/lib/PositionStrip.svelte` + `frontend/src/app.css`
-
-Current `ps-heartbeat-pulse` peaks at `rgba(251,191,36, 1.00)` + `box-shadow: 0 2px 10px
-0 rgba(251,191,36, 0.55)` at the 30% mark — very visible. The heartbeat is correctly
-triggered by `_dataChangedTick` (fires when broker poll returns new data, ~30s cycle).
-The trigger is correct; make the animation more subtle:
-
-```css
-@keyframes ps-heartbeat-pulse {
-  0%   { border-bottom-color: rgba(251, 191, 36, 0.20); }
-  30%  { border-bottom-color: rgba(251, 191, 36, 0.55); }
-  100% { border-bottom-color: rgba(251, 191, 36, 0.20); }
+Replace:
+```js
+const ua = _mrUgKey(a), ub = _mrUgKey(b);
+if (ua !== ub) return ua.localeCompare(ub);
+```
+With:
+```js
+const ua = _mrUgKey(a), ub = _mrUgKey(b);
+if (ua !== ub) {
+  const ra = groupOrder[ua] ?? null, rb = groupOrder[ub] ?? null;
+  if (ra !== null && rb !== null) return ra - rb;
+  if (ra !== null) return -1;
+  if (rb !== null) return  1;
+  return ua.localeCompare(ub);
 }
 ```
-Remove the box-shadow entirely. Peak opacity drops from 1.00 → 0.55, resting from 0.30 → 0.20. No box-shadow glow.
 
-### 4 — Derivatives snapshot grid: Day P&L flash (violation)
-File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` (line ~4769)
+### Fix 2 — `_topRowsFor` movers sort (no change needed)
 
-The snapshot grid renders a row per underlying group. The Day P&L span has
-`{flash.classOf(`${g.underlying}:day_w`)}` — this applies a flash animation to Day P&L
-on every LTP tick. Only ltp and chg% cells should flash. Fix: remove
-`{flash.classOf(`${g.underlying}:day_w`)}` from that span. The LTP and CHG% cells
-in the same row already use `flash.classOf(...)` correctly — keep those.
+**Council finding**: `_topRowsFor` sorts by `|change_pct|` descending — this is intentional.
+Movers always show the biggest gainers/losers by magnitude regardless of operator group
+preference. Adding `groupOrder` here would cause double-invalidation (Performance concern)
+and semantically wrong behaviour (movers ordered by operator rank, not magnitude).
 
-### 5 — Legs + exp close symbol column: match positions symbol visual style
-File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`
+The ▲/▼ buttons on mover rows still call `moveGroup()` and update `groupOrder` (for use by
+Fix 1 in the positions/holdings/watchlist grids). No code change needed in `_topRowsFor`.
 
-The symbol span uses `font-mono cand-sym cand-sym-acct` with a nested `sym-main` span.
-PerformancePage positions symbol uses `perf-sym-cell`. The text-formatting logic
-(rootOfLabel / formatSymbol) is already consistent. The visual mismatch is CSS:
+### Note on reactivity
+`_compareMainRows` is used inside `mainRows ($derived.by)`. Since `groupOrder` is `$state`,
+reading it inside `_compareMainRows` (which runs inside the `$derived.by` closure) makes the
+derived reactive to `groupOrder` changes automatically — the derived already depends on
+`groupOrder` via line 2949 (`groupOrder; detachedSymbols;`), so no change needed there.
 
-- Read `frontend/src/app.css` and PerformancePage-scoped CSS to find `.perf-sym-cell`
-  font-family / font-size / font-weight / color definitions.
-- Align CandidateLegRow's outer symbol span and `.sym-main` to match `perf-sym-cell`
-  in font treatment. If `perf-sym-cell` is not monospace, remove `font-mono` from
-  CandidateLegRow's outer symbol span.
-- Keep chip decorations (STOCK, PROXY, CLOSED, OPEN, ~, D) — informational only.
-- Keep CE/PE option-type coloring (`sym-ce` / `sym-pe`) — derivatives context only.
+`_topRowsFor` is called inside `winRows/$derived` and `loseRows/$derived`. Reading
+`groupOrder` inside `_topRowsFor` registers it as a dependency of those deriveds, so
+clicking ▲/▼ in the movers grid will trigger a re-sort.
 
-This change applies to both legs and exp close tabs (both rendered by CandidateLegRow).
+### Fix 3 — Pulse grid cell vertical alignment
 
-### 6 — Payoff overlay spot + chg%: already implemented, verify after liveSpot fix
-File: `frontend/src/lib/OptionsPayoff.svelte` (lines 422-757)
+**Root cause**: ag-Grid `.ag-cell` uses `display: inline-block; height: 100%` by default.
+Only `.ag-col-sym` has `display: flex; align-items: center` (app.css line 1170). Non-sym
+cells top-align their content, leaving visible dark space above/below. Meanwhile the sym
+cell's background-color tint fills the full 28px (including empty space above/below
+centered content), creating the "color patterns at top and bottom" effect. The legs grid
+(CandidateLegRow CSS subgrid) avoids this because CSS grid cells fill their track height
+naturally without a padding gap.
 
-Flash already exists:
-- SPOT: `_spotFlash.classOf('spot')` applied to the LTP `<span>` — background flash on every spot change
-- CHG%: `_tcFlashClass(dir, mag)` applied to the CHG% `<span>` when `_spotFlash` is active — text-color flash
+**Fix**: In `frontend/src/lib/MarketPulse.svelte` scoped `<style>`, add inside the
+existing `.mp-bucket-wrap` scope (after the existing ag-cell border-stripping rules
+at line ~5021):
 
-These were invisible before because `liveSpot` was falling through to `strategy.spot` (5s stale poll), so spot barely changed and flash barely fired. After our liveSpot fix (deployed), spot now updates at SSE tick cadence → flash fires on every tick. No code change needed. Verify in browser.
+```css
+/* Flex-center content inside all pulse bucket cells via the inner value wrapper,
+   NOT the outer .ag-cell. Targeting .ag-cell directly breaks text-overflow ellipsis
+   (ag-Grid issue #3828). .ag-cell-value is the correct target for vertical centering. */
+:global(.mp-bucket-wrap .ag-theme-algo .ag-cell-value) {
+  display: flex !important;
+  align-items: center !important;
+  height: 100%;
+}
+```
 
-If flash still doesn't appear for GOLDM: the `spot_anchor_contract` for GOLDM is not resolving to a subscribed symbol in symbolStore. That's a subscription/token gap, not a flash bug — surfaced correctly now that fallback tiers are removed.
+This vertically centers cell content in all pulse grid cells without disrupting ag-Grid's
+cell positioning or text-overflow ellipsis. The sym column's own flex centering
+(app.css:1170, on `.ag-col-sym` which is the outer cell) remains unchanged.
 
-## Surfaces that are already correct (no change needed)
+---
 
-- **MarketPulse grids**: ltp + day_pnl_pct flash via `_ltpFlashClass` + `tf-up/down`.
-  day_pnl / pnl / cur_val are in cascade refreshCells for valueGetter re-evaluation but
-  their cellClass returns only `RA` / `dirCls` — no flash animation. ✓
-- **Pinned / Watchlist grids**: only ltp, sparkline, left_change_pct refresh. ✓
-- **Gainers / Losers grids**: only ltp, sparkline in flash path. ✓
-- **PerformancePage LTP column**: ltp-flash-up/down + tc-flash correct. ✓
-- **Derivatives legs grid (LTP + chg%)**: CandidateLegRow flash already scoped to LTP/chg%. ✓
-- **Derivatives exp close grid**: uses same CandidateLegRow component — row formatting
-  (background, text color, layout) is already identical to legs. ✓
+### Fix 4 — Day P&L Case 3: intraday exit shows 0 instead of realised P&L
 
-## Agents
-- backend: skip
-- frontend: Make five targeted edits:
-  1. `PerformancePage.svelte`: Find every column definition that applies `_perfFlash.classOf()`
-     to its cellClass. Remove it from pnl and day_pnl columns — keep only on day_pnl_pct
-     (chg%). Read the file first to identify exact line numbers.
-  2. `PositionStrip.svelte`: Remove the `cell-freshness-pulse` shimmer — find the tickBus
-     subscription that calls `_shimmer.notify('strip')` and the binding that applies
-     `cell-freshness-pulse` class to the strip element, and remove both. Verify no other
-     tick-per-event animation remains on the strip element itself.
-  3. `app.css`: Update `ps-heartbeat-pulse` keyframes — remove box-shadow lines, reduce
-     peak amber from 1.00→0.55 and rest from 0.30→0.20.
-  4. `derivatives/+page.svelte` (snapshot grid, line ~4769): Remove
-     `{flash.classOf(`${g.underlying}:day_w`)}` from the Day P&L span only. LTP and CHG%
-     flash calls in the same row stay untouched.
-  5. `CandidateLegRow.svelte` (symbol column): Read `app.css` to find `.perf-sym-cell`
-     font definitions; align the outer symbol span (and `.sym-main`) font treatment to
-     match. If `perf-sym-cell` is not monospace, remove `font-mono` from the outer span.
-     Preserve all chip decorations and CE/PE coloring.
-  Write/update tests: add a Vitest test asserting `_perfFlash.classOf()` is NOT in the
-  pnl column's cellClass callback return value (or verify by checking the flash is scoped
-  to day_pnl_pct only).
-- broker: skip
-- doc: skip
-- backend-test: skip
-- playwright: skip
+**File: `backend/api/routes/positions.py`**
+
+**Root cause**: `_apply_flat_row_hygiene()` (lines ~608–641) runs AFTER
+`apply_day_change_backstop()`. The hygiene function zeroes `day_change_val` for every row
+where `quantity=0 AND overnight_quantity=0`, which is the exact mask for Case 3
+(fully closed intraday). This overwrites the backstop's correct restoration
+`dcv = pnl` for rows where `pnl != 0`.
+
+**Fix**: Exclude rows with realised P&L from the hygiene mask. In `_apply_flat_row_hygiene`,
+change the zero-out line to only apply when `pnl == 0`:
+
+```python
+# current (lines ~636-637):
+if 'day_change_val' in raw.columns:
+    raw.loc[_flat_mask, 'day_change_val'] = 0.0
+
+# replace with:
+if 'day_change_val' in raw.columns:
+    _pnl = pd.to_numeric(raw.get('pnl', pd.Series(dtype=float)), errors='coerce').fillna(0)
+    # Only zero day_change_val when pnl is also zero (break-even round-trip).
+    # Preserve when abs(pnl) > 0.005 — Case 3 intraday exit with realised gain/loss.
+    # Uses half-paisa threshold (0.005) consistent with _override_stale_close_from_snapshot.
+    raw.loc[_flat_mask & (_pnl.abs() < 0.005), 'day_change_val'] = 0.0
+```
+
+Case 1 (new entry, oq=0, qty>0) and Case 2 (closed overnight, oq>0) are unaffected —
+Case 1 rows have `qty > 0` (not in flat mask), Case 2 rows have `oq > 0` (also not in
+flat mask since mask requires `oq == 0`).
+
+---
+
+### Fix 5 — Payoff overlay LTP/chg% not flashing on value refresh
+
+**File: `frontend/src/lib/OptionsPayoff.svelte`**
+
+**Root cause** (to verify during impl): `_spotFlash.update('spot', spot)` at line 423 fires
+when the `spot` prop changes. `spot` comes from `liveSpot` in the parent (derived from
+`liveSnap(anchor)?.ltp`), which updates on SSE ticks. If the underlying isn't actively
+ticking (market closed or no KiteTicker subscription), `spot` doesn't change → no flash.
+
+**Investigation + fix**: In impl, read lines 740–760 (overlay LTP/chg% rendering) and
+lines 418–424 (flash wiring). Verify: (a) whether the flash fires on SSE tick vs only on
+manual refresh path; (b) whether `_spotFlash.threshold: 0` prevents flash when price
+unchanged. If tick flash IS correctly wired, check if the `_spotFlash` `classOf()` call
+is actually applied to the rendered span. If the flash class isn't appearing in the DOM,
+add a CSS rule for `.ltp-flash-up` / `.ltp-flash-down` scoped to the overlay.
+
+---
+
+### Fix 6 — Payoff chart loading state visibility
+
+**File: `frontend/src/lib/OptionsPayoff.svelte`**
+
+**Root cause**: The loading branch (lines ~693–714) already renders `"Resolving spot…"`
+text. The UX council confirmed this is correct — a shimmer would be meaningless for a
+chart whose shape isn't known at load time. The actual issue is visibility: the text may
+not be styled prominently enough for the operator to notice.
+
+**Fix**: Read the current `.payoff-empty` CSS in `OptionsPayoff.svelte`. If the text is
+low-contrast (opacity or small font), boost it to `color: var(--algo-slate); font-size:
+var(--fs-sm)` with a subtle pulse animation (`@keyframes pulse-opacity`) so the operator
+sees active loading feedback rather than a blank area. Keep the existing `"Resolving spot…"`
+copy — do NOT replace with a shimmer bar.
+
+---
+
+### Fix 7 — Checkbox multi-selection in legs/exp close
+
+**File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`**
+
+**Root cause (to verify)**: Individual row checkbox binding is correct (`enabledSymbols[enKey(c)]`).
+The suspected issue is the master-checkbox `indeterminate` tri-state logic
+(`allCandidatesOn` / `someCandidatesOn`, lines ~1998–2035). When a single row is toggled,
+`someCandidatesOn` changes, which may re-trigger the master checkbox's `indeterminate`
+attribute update and visually appear to "select" all rows.
+
+**Fix**: In impl agent, verify whether checking a single row checkbox changes
+`enabledSymbols` entries for only that row. If the visual multi-row selection is purely
+the master-checkbox DOM state (indeterminate visual affecting all `<input type=checkbox>`
+in the same form via shared name/group), isolate the master checkbox from the row
+checkboxes (add `name="master"` vs row-level `name="leg-{i}"`). If it IS a real data
+fan-out, inspect the `onchange` handler in `+page.svelte`.
+
+---
+
+### Fix 8 — Reduce ST→Symbol spacing in legs/exp close grid
+
+**File: `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`**
+
+Change line 5976 from `column-gap: 0.6rem` to `column-gap: 0.35rem` in `.cand-grid`:
+
+```css
+/* current */
+column-gap: 0.6rem;
+
+/* replace with */
+column-gap: 0.35rem;
+```
+
+This tightens the gap between ALL columns (checkbox → ST → symbol → LTP…) uniformly.
+The 28px ST column + smaller gap will no longer appear as a wide dead zone before the
+symbol text.
+
+---
+
+### Fix 9 — Add bottom border between symbol cells in legs/exp close
+
+**File: `frontend/src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte`**
+
+Add a horizontal row-separator specifically to the `.cand-sym` cell so adjacent rows in
+the legs/exp-close grid have a clear visual boundary at the symbol column:
+
+```css
+/* current .cand-sym (line 512): */
+.cand-sym {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+/* add: */
+.cand-sym {
+  border-bottom: 1px solid rgba(126,151,184,0.25);
+}
+```
+
+Scoped to `CandidateLegRow.svelte` so it only applies in the legs/exp-close grid, not
+the candidate picker or other surfaces.
+
+---
 
 ## Tests
-- pytest: no
-- svelte-check: yes
-- playwright: no
+- Add a Vitest test verifying the groupOrder-aware sort for positions and movers rows
+  (test via `sortUnifiedRows` from `pulseUnified.js` with a non-alphabetical groupOrder map)
+- Add a pytest unit test for `_apply_flat_row_hygiene` in `backend/tests/test_positions_route.py`
+  confirming Case 3 rows (qty=0, oq=0, pnl≠0) retain their `day_change_val` after hygiene
+- svelte-check must exit 0 errors
+- vitest run must pass
+
+## Agents
+- frontend: Fix 1, 2, 3, 5, 6, 7, 8, 9
+- backend: Fix 4
+- backend-test: pytest for Fix 4
+- playwright: skip
 
 ## Commit message
-fix(flash): restrict flash to ltp/chg% only; remove PositionStrip rainbow shimmer; subtle heartbeat; align legs/exp-close symbol style
+fix(pulse+derivatives+pnl): groupOrder sort, cell alignment, Case 3 day P&L, payoff flash/skeleton, legs spacing + border
 
 ## Done when
-- PerformancePage: only ltp and day_pnl_pct columns have flash CSS applied
-- PositionStrip: no rainbow shimmer on SSE ticks; amber heartbeat remains (poll cycle only)
-- Heartbeat CSS: no box-shadow; peak amber 0.55, rest 0.20
-- Derivatives snapshot grid: Day P&L cell has no flash class
-- CandidateLegRow symbol column: font treatment matches perf-sym-cell
-- svelte-check 0 errors
+- ▲/▼ buttons in pulse grid visually reorder positions/holdings/watchlist/movers grids
+- All pulse grid cells are vertically centered (no visible top/bottom spacing gap)
+- Intraday exit (same-day open + close) shows correct realised day P&L (not 0)
+- Payoff overlay LTP/chg% flash animates on tick update
+- Payoff chart shows a skeleton/spinner while payoff data is loading
+- Checking a single leg row selects only that row (no multi-row visual bleed)
+- ST→Symbol gap visibly tighter in legs/exp close grid
+- Horizontal separator visible between symbol cells in legs/exp close rows
+- pytest and vitest pass with 0 failures

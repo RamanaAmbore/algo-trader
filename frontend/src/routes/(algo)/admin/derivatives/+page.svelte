@@ -5973,7 +5973,7 @@
       minmax(62px, max-content)            /* theta */
       minmax(56px, max-content)            /* vega */
       minmax(62px, max-content);           /* ev */
-    column-gap: 0.6rem;
+    column-gap: 0.35rem;
     width: max-content;
   }
   /* Amber TOTAL stratum — single rule drives both Snapshot (byund-row-total > span)

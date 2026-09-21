@@ -1432,15 +1432,26 @@
     border-color: rgba(251,191,36,0.65);
   }
 
+  @keyframes pulse-opacity {
+    0%, 100% { opacity: 0.7; }
+    50%       { opacity: 1.0; }
+  }
   .payoff-empty {
     height: var(--chart-h, 280px);
     display: flex;
     align-items: center;
     justify-content: center;
-    color: var(--text-muted);
-    font-size: var(--fs-md);
+    color: var(--algo-slate);
+    font-size: var(--fs-sm);
     font-family: monospace;
+    animation: pulse-opacity 1.5s ease-in-out infinite;
   }
+  /* Directional tick-flash classes for the spot LTP overlay.
+     The global ltp-flash-up/down keyframes live in app.css.
+     These scoped rules ensure the animation fires correctly when
+     _spotFlash emits these class names from inside the component. */
+  .ltp-flash-up   { animation: ltp-flash-up   0.3s ease-out; }
+  .ltp-flash-down { animation: ltp-flash-down 0.3s ease-out; }
   .payoff-legend {
     display: flex;
     gap: 0.9rem;
