@@ -713,6 +713,86 @@ describe('mkDeltaCol — TOTAL row renders empty string (Fix 5)', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// cur_val valueGetter — live LTP × held qty (Fix: live cur_val)
+// ---------------------------------------------------------------------------
+
+describe('cur_val valueGetter — live LTP × held qty', () => {
+  function getCurValCol(getLiveLtpSnap) {
+    const opts = { ...makeOpts(), getLiveLtpSnap };
+    const cols = mkRightColDefs(opts);
+    const col = cols.find(c => c.colId === 'cur_val');
+    if (!col) throw new Error('cur_val column not found');
+    return col;
+  }
+
+  it('returns ltp * qty_hold when snap has a positive LTP for the symbol', () => {
+    const snap = { RELIANCE: 2500 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: 10, tradingsymbol: 'RELIANCE', quote_symbol: '' } });
+    expect(result).toBe(25000);
+  });
+
+  it('falls back to p.data.cur_val when snap LTP is 0', () => {
+    const snap = { RELIANCE: 0 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: 10, tradingsymbol: 'RELIANCE', quote_symbol: '', cur_val: 9999 } });
+    expect(result).toBe(9999);
+  });
+
+  it('falls back to p.data.cur_val when symbol is not in snap', () => {
+    const snap = {};
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: 5, tradingsymbol: 'INFY', quote_symbol: '', cur_val: 5500 } });
+    expect(result).toBe(5500);
+  });
+
+  it('uses quote_symbol when present (non-empty) instead of tradingsymbol', () => {
+    const snap = { NIFTY: 24500 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: 2, tradingsymbol: 'NIFTY24OPTCE', quote_symbol: 'NIFTY', cur_val: 0 } });
+    expect(result).toBe(49000);
+  });
+
+  it('returns null when qty_hold is 0', () => {
+    const snap = { RELIANCE: 2500 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: 0, tradingsymbol: 'RELIANCE', quote_symbol: '' } });
+    expect(result).toBeNull();
+  });
+
+  it('returns p.data.cur_val when getLiveLtpSnap is not provided (undefined)', () => {
+    const col = getCurValCol(undefined);
+    const result = col.valueGetter({ data: { qty_hold: 3, tradingsymbol: 'TCS', quote_symbol: '', cur_val: 1200 } });
+    expect(result).toBe(1200);
+  });
+
+  it('returns p.data.cur_val for _isTotal rows regardless of snap', () => {
+    const snap = { TOTAL: 9999 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { _isTotal: true, cur_val: 500000 } });
+    expect(result).toBe(500000);
+  });
+
+  it('returns null for _isTotal rows with no cur_val', () => {
+    const col = getCurValCol(() => ({}));
+    const result = col.valueGetter({ data: { _isTotal: true } });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when data is null or undefined', () => {
+    const col = getCurValCol(() => ({}));
+    expect(col.valueGetter({ data: null })).toBeNull();
+  });
+
+  it('handles negative qty_hold (absolute value used for multiplication)', () => {
+    const snap = { HDFC: 1700 };
+    const col = getCurValCol(() => snap);
+    const result = col.valueGetter({ data: { qty_hold: -5, tradingsymbol: 'HDFC', quote_symbol: '', cur_val: 0 } });
+    expect(result).toBe(8500);
+  });
+});
+
 describe('mkThetaCol — TOTAL row renders empty string (Fix 5)', () => {
   const aggFmtGrid = vi.fn(({ value }) => `agg:${value}`);
   const col = mkThetaCol({ RA: 'ra-cls', numericHdr: 'ag-right-aligned-header', aggFmtGrid });

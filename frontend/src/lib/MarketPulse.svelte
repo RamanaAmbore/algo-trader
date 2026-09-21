@@ -2280,7 +2280,7 @@
     if (_flashRefreshTimer) return;
     _flashRefreshTimer = setTimeout(() => {
       _flashRefreshTimer = null;
-      const cols = ['ltp', 'sparkline', 'day_pnl_pct'];
+      const cols = ['ltp', 'sparkline', 'day_pnl_pct', 'cur_val'];
       if (gridPinnedReady && gridPinned && topTab === 'pinned')
         try { gridPinned.refreshCells({ columns: ['ltp', 'sparkline'], force: true }); } catch (_) {}
       if (gridWatchReady && gridWatch && typeof topTab === 'number')
@@ -2347,7 +2347,7 @@
       _scheduleIdle(() => {
         const _ltpCols = ['ltp', 'sparkline'];
         const _cascadeCols = hasCascade
-          ? ['ltp', 'sparkline', 'day_pnl', 'pnl']
+          ? ['ltp', 'sparkline', 'day_pnl', 'pnl', 'cur_val']
           : _ltpCols;
         if (gridPinnedReady    && gridPinned    && topTab === 'pinned')    gridPinned.refreshCells({ columns: _ltpCols, force: true });
         if (gridWatchReady     && gridWatch     && typeof topTab === 'number') gridWatch.refreshCells({ columns: _ltpCols, force: true });
@@ -3604,6 +3604,7 @@
       getMpFlash: () => _mpFlash,
       getLtpFlashUp: () => _ltpFlashUp,
       getLtpFlashDown: () => _ltpFlashDown,
+      getLiveLtpSnap: () => _liveLtpSnap,
     });
     // Patch the day_pnl column to prefer positionsDerivedStore (the 4 Hz SSOT)
     // for positions rows, falling back to the row's own day_pnl (holdings).

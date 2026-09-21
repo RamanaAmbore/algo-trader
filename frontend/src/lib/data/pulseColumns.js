@@ -516,6 +516,7 @@ function _qtyNetValueGetter(p) {
  *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  *   getLtpFlashUp?: () => Set<string>,
  *   getLtpFlashDown?: () => Set<string>,
+ *   getLiveLtpSnap?: () => Record<string, number>,
  * }} opts
  * @returns {any[]}
  */
@@ -528,6 +529,7 @@ export function mkRightColDefs({
   getMpFlash,
   getLtpFlashUp,
   getLtpFlashDown,
+  getLiveLtpSnap,
 }) {
   return /** @type {any[]} */ ([
     { headerName: 'St', field: 'pair_group_key', colId: 'pos_state',
@@ -621,6 +623,16 @@ export function mkRightColDefs({
       width: 78, type: 'numericColumn', headerClass: numericHdr,
       cellClass: RA,
       valueFormatter: aggFmtGrid,
+      valueGetter: (p) => {
+        if (!p.data || p.data._isTotal) return p.data?.cur_val ?? null;
+        const heldAbs = Math.abs(Number(p.data.qty_hold) || 0);
+        if (heldAbs === 0) return null;
+        if (!getLiveLtpSnap) return p.data.cur_val;
+        const quoteSym = String(p.data.quote_symbol || '').toUpperCase();
+        const sym = String(p.data.tradingsymbol || '').toUpperCase();
+        const ltp = getLiveLtpSnap()[quoteSym || sym];
+        return (ltp > 0) ? ltp * heldAbs : p.data.cur_val;
+      },
       headerTooltip: 'Live LTP × held qty — current market value of this holding.' },
     openCol,
     volCol,
