@@ -27,7 +27,6 @@
   import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
@@ -215,8 +214,8 @@
 
   const _pByAcct = $derived.by(() => {
     return _scopedAccounts.map(acct => {
-      const rows = _positions.filter(p => String(p.account) === acct);
-      const dayPnl      = rows.reduce((s, p) => s + baseDayPnlForPosition(p), 0);
+      const rows        = _positions.filter(p => String(p.account) === acct);
+      const dayPnl      = positionsDayPnlStore.byAccount[acct.toUpperCase()] ?? 0;
       const lifetimePnl = rows.reduce((s, p) => s + Number(p.pnl ?? 0), 0);
       const expiryPnl   = expiryByAcct.get(acct) ?? _expiryFallback.get(acct) ?? null;
       return { account: acct, dayPnl, lifetimePnl, expiryPnl };
@@ -230,7 +229,7 @@
     // NOTE: positionsDayPnlStore.total is a global total — it does NOT scope to
     // accountFilter. If this component is ever rendered with a non-empty accountFilter,
     // the TOTAL dayPnl will reflect all accounts, not just the filtered subset.
-    // Per-account rows still use baseDayPnlForPosition (accountFilter-aware). This
+    // Per-account rows use positionsDayPnlStore.byAccount (live-LTP-aware). This
     // is acceptable for the current NavStrip use-case (no filter) but would need a
     // filtered variant if a filtered NavBreakdown needs strict TOTAL consistency.
     dayPnl:      positionsDayPnlStore.total,

@@ -34,6 +34,8 @@ const _byKeyProxy = new Proxy({}, {
 export const positionsDayPnlStore = {
   get total() { return portfolioStore.positions.total.day_pnl ?? 0; },
   get byKey() { return _byKeyProxy; },
+  /** Per-account positions day P&L, keyed by UPPERCASE account + 'TOTAL'. */
+  get byAccount() { return portfolioStore.positions.byAccount ?? {}; },
   setFromPulse() {},
 };
 

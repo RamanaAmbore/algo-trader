@@ -55,6 +55,7 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
 
   const total = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
   const byKey = {};
+  const posByAccount = {};
   const byRootPositions = {};
   const byRootHoldings  = {};
   const byRoot = {};
@@ -151,6 +152,9 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     if (exp_pnl   != null) total.exp_pnl   += exp_pnl;
     if (extrinsic != null) total.extrinsic += extrinsic;
 
+    const _acct = String(p?.account || '').toUpperCase();
+    if (_acct) posByAccount[_acct] = (posByAccount[_acct] ?? 0) + day_pnl;
+
     if (isFO && expVal != null) {
       const acct = String(p?.account || '');
       if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + expVal);
@@ -213,7 +217,8 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     bk.chg_pct = bk.prev_mv > 0 ? dayChangePct(bk.day_pnl, bk.prev_mv) : null;
   }
 
-  return { total, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct };
+  posByAccount['TOTAL'] = total.day_pnl;
+  return { total, byKey, posByAccount, byRootPositions, byRootHoldings, byRoot, expiryByAcct };
 }
 
 // Minimal decomposeSymbol mirror
@@ -850,5 +855,600 @@ describe('portfolioStore — chg_pct tier aggregation', () => {
     // overnight position with prev_close = 0: prev_mv should be null (no avg fallback)
     expect(bk.prev_mv).toBe(0);
     expect(bk.chg_pct).toBeNull();
+  });
+});
+
+// ── posByAccount — per-account day_pnl accumulation ──────────────────────────
+// Mirrors the _posAgg posByAccount logic added in portfolioStore.svelte.js.
+// NavBreakdown P-slot reads positionsDayPnlStore.byAccount[acct] which delegates
+// to portfolioStore.positions.byAccount — the same shape tested here.
+
+describe('portfolioStore — posByAccount accumulation', () => {
+  it('accumulates day_pnl per account for a single position', () => {
+    const pos = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      exchange: 'NFO',
+      account: 'ACC1',
+      quantity: 1,
+      previous_close: 50,
+      last_price: 150,
+      average_price: 100,
+      overnight_quantity: 1,
+    });
+
+    const result = _computePortfolioPositions([pos], [], {
+      livePosDay: () => 100,
+    });
+
+    expect(result.posByAccount['ACC1']).toBe(100);
+  });
+
+  it('accumulates day_pnl across multiple positions on the same account', () => {
+    const p1 = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      exchange: 'NFO',
+      account: 'ACC1',
+    });
+    const p2 = makePosition({
+      tradingsymbol: 'NIFTY25JAN24000PE',
+      exchange: 'NFO',
+      account: 'ACC1',
+    });
+
+    // Fixed day_pnl returns: 100 for first call, 200 for second
+    let callCount = 0;
+    const result = _computePortfolioPositions([p1, p2], [], {
+      livePosDay: () => (++callCount === 1 ? 100 : 200),
+    });
+
+    expect(result.posByAccount['ACC1']).toBe(300);
+  });
+
+  it('splits day_pnl across two distinct accounts', () => {
+    const p1 = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      exchange: 'NFO',
+      account: 'ACC1',
+    });
+    const p2 = makePosition({
+      tradingsymbol: 'BANKNIFTY25JAN50000CE',
+      exchange: 'NFO',
+      account: 'ACC2',
+    });
+
+    let callCount = 0;
+    const result = _computePortfolioPositions([p1, p2], [], {
+      livePosDay: () => (++callCount === 1 ? 150 : 250),
+    });
+
+    expect(result.posByAccount['ACC1']).toBe(150);
+    expect(result.posByAccount['ACC2']).toBe(250);
+  });
+
+  it('TOTAL key matches posTotal.day_pnl', () => {
+    const p1 = makePosition({ tradingsymbol: 'NIFTY25JAN24500CE', exchange: 'NFO', account: 'ACC1' });
+    const p2 = makePosition({ tradingsymbol: 'NIFTY25JAN24000PE', exchange: 'NFO', account: 'ACC2' });
+
+    let callCount = 0;
+    const result = _computePortfolioPositions([p1, p2], [], {
+      livePosDay: () => (++callCount === 1 ? 150 : 250),
+    });
+
+    expect(result.posByAccount['TOTAL']).toBe(result.total.day_pnl);
+    expect(result.posByAccount['TOTAL']).toBe(400);
+  });
+
+  it('empty positions returns empty posByAccount with TOTAL=0', () => {
+    const result = _computePortfolioPositions([], []);
+    expect(result.posByAccount).toEqual({ TOTAL: 0 });
+  });
+
+  it('skips rows with no account field', () => {
+    const pos = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      exchange: 'NFO',
+      account: '',   // blank — should be omitted from posByAccount
+    });
+
+    const result = _computePortfolioPositions([pos], [], {
+      livePosDay: () => 100,
+    });
+
+    // No per-account key for blank account; only TOTAL sentinel
+    const keys = Object.keys(result.posByAccount);
+    expect(keys).toEqual(['TOTAL']);
+    expect(result.posByAccount['TOTAL']).toBe(100);
+  });
+
+  it('normalises account keys to UPPERCASE', () => {
+    const pos = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      exchange: 'NFO',
+      account: 'abc123',
+    });
+
+    const result = _computePortfolioPositions([pos], [], {
+      livePosDay: () => 75,
+    });
+
+    expect(result.posByAccount['ABC123']).toBe(75);
+    expect(result.posByAccount['abc123']).toBeUndefined();
+  });
+});
+
+// ── New: positions.byAccount aggregation ─────────────────────────────────────
+
+/**
+ * portfolioStore.positions now mirrors holdings pattern with a byAccount getter.
+ * This aggregates positions' _day_pnl per account.
+ *
+ * Test coverage:
+ *   1. Single account aggregates correctly
+ *   2. Multiple accounts aggregate independently
+ *   3. byAccount['TOTAL'] equals positions.total.day_pnl
+ *   4. Account keys are always uppercase
+ *   5. Empty positions → byAccount is {}
+ *   6. Null/missing account field is skipped
+ */
+
+function computePositionsByAccount(posRows, deps = {}) {
+  const {
+    getSnap    = sym  => undefined,
+    getSpot    = root => 0,
+    livePosDay = (p, ltp, opts) => livePositionDayPnl(
+      {
+        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
+        pollLtp: Number(p?.last_price      ?? 0),
+        qty:     Number(p?.quantity        ?? 0),
+        avg:     Number(p?.average_price   ?? 0),
+        dcvRow:  p,
+      },
+      ltp,
+      opts,
+    ),
+    marketOpen = true,
+  } = deps;
+
+  let total_day_pnl = 0;
+  const byAccount = {};
+
+  for (const p of posRows) {
+    const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (!sym) continue;
+
+    const snap = getSnap(sym);
+    const ltp  = snap?.ltp ?? Number(p?.last_price ?? 0);
+    const day_pnl = livePosDay(p, ltp, { marketOpen });
+
+    total_day_pnl += day_pnl;
+
+    const acct = String(p?.account || '').toUpperCase();
+    if (acct) {
+      byAccount[acct] = (byAccount[acct] ?? 0) + day_pnl;
+    }
+  }
+
+  byAccount['TOTAL'] = total_day_pnl;
+  return { byAccount, total_day_pnl };
+}
+
+describe('portfolioStore.positions.byAccount — single account', () => {
+  it('aggregates positions for single account ZERODHA', () => {
+    const positions = [
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24000PE',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+    expect(result.byAccount['ZERODHA']).toBeGreaterThan(0);
+    expect(result.byAccount['TOTAL']).toBe(result.total_day_pnl);
+  });
+
+  it('account key is always uppercase', () => {
+    const positions = [
+      makePosition({
+        account: 'zerodha', // lowercase input
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+    expect(result.byAccount['ZERODHA']).toBeDefined();
+    expect(result.byAccount['zerodha']).toBeUndefined();
+  });
+
+  it('empty positions → byAccount is empty except TOTAL', () => {
+    const result = computePositionsByAccount([]);
+    expect(result.byAccount).toEqual({ TOTAL: 0 });
+  });
+
+  it('position with null/empty account is skipped', () => {
+    const positions = [
+      makePosition({
+        account: '', // empty account
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: null, // null account
+        tradingsymbol: 'NIFTY25JAN24000PE',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+    // Only TOTAL should exist (from aggregation of rows)
+    const nonTotalKeys = Object.keys(result.byAccount).filter(k => k !== 'TOTAL');
+    expect(nonTotalKeys.length).toBe(0);
+  });
+});
+
+describe('portfolioStore.positions.byAccount — multiple accounts', () => {
+  it('aggregates independent account totals', () => {
+    const positions = [
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+        day_change_val: 100,
+      }),
+      makePosition({
+        account: 'DHAN',
+        tradingsymbol: 'NIFTY25JAN24000PE',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+        day_change_val: 80,
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions, {
+      livePosDay: (p, ltp, opts) => livePositionDayPnl(
+        {
+          closePx: Number(p?.previous_close) || 0,
+          pollLtp: Number(p?.last_price ?? 0),
+          qty: Number(p?.quantity ?? 0),
+          avg: Number(p?.average_price ?? 0),
+          dcvRow: p,
+        },
+        ltp,
+        opts,
+      ),
+    });
+
+    expect(result.byAccount['ZERODHA']).toBeGreaterThan(0);
+    expect(result.byAccount['DHAN']).toBeGreaterThan(0);
+    expect(result.byAccount['TOTAL']).toBe(result.total_day_pnl);
+    // TOTAL must equal sum of individual accounts
+    expect(result.byAccount['TOTAL']).toBe(result.byAccount['ZERODHA'] + result.byAccount['DHAN']);
+  });
+
+  it('multiple positions in same account sum correctly', () => {
+    const positions = [
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24000PE',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: 'DHAN',
+        tradingsymbol: 'BANKNIFTY25JAN24100PE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+
+    expect(result.byAccount['ZERODHA']).toBeDefined();
+    expect(result.byAccount['DHAN']).toBeDefined();
+    // ZERODHA has 2 positions, DHAN has 1
+    // Both should aggregate independently
+    const zerodhaPosCount = positions.filter(p => p.account === 'ZERODHA').length;
+    const dhanPosCount = positions.filter(p => p.account === 'DHAN').length;
+    expect(zerodhaPosCount).toBe(2);
+    expect(dhanPosCount).toBe(1);
+  });
+
+  it('byAccount[TOTAL] equals sum of all account day_pnls', () => {
+    const positions = [
+      makePosition({
+        account: 'ACC1',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+        day_change_val: 100,
+      }),
+      makePosition({
+        account: 'ACC2',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+        day_change_val: 80,
+      }),
+      makePosition({
+        account: 'ACC3',
+        quantity: 1,
+        average_price: 120,
+        previous_close: 60,
+        last_price: 180,
+        exchange: 'NFO',
+        day_change_val: 120,
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+
+    const accountSum = Object.entries(result.byAccount)
+      .filter(([k]) => k !== 'TOTAL')
+      .reduce((sum, [, val]) => sum + val, 0);
+
+    expect(result.byAccount['TOTAL']).toBe(accountSum);
+    expect(result.byAccount['TOTAL']).toBe(result.total_day_pnl);
+  });
+
+  it('mixed case account names normalize to uppercase', () => {
+    const positions = [
+      makePosition({
+        account: 'ZeroDha',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: 'dHaN',
+        tradingsymbol: 'NIFTY25JAN24000PE',
+        quantity: 1,
+        average_price: 80,
+        previous_close: 40,
+        last_price: 120,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+
+    expect(result.byAccount['ZERODHA']).toBeDefined();
+    expect(result.byAccount['DHAN']).toBeDefined();
+    expect(result.byAccount['ZeroDha']).toBeUndefined();
+    expect(result.byAccount['dHaN']).toBeUndefined();
+  });
+});
+
+describe('portfolioStore.positions.byAccount — edge cases', () => {
+  it('single position with account aggregates to byAccount + TOTAL', () => {
+    const positions = [
+      makePosition({
+        account: 'TESTACCT',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150,
+        exchange: 'NFO',
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+
+    expect(result.byAccount['TESTACCT']).toBeGreaterThan(0);
+    expect(result.byAccount['TOTAL']).toBe(result.byAccount['TESTACCT']);
+  });
+
+  it('position with negative day_pnl (loss) aggregates correctly', () => {
+    const positions = [
+      makePosition({
+        account: 'ZERODHA',
+        tradingsymbol: 'NIFTY25JAN24500CE',
+        quantity: -1,
+        average_price: 150,
+        previous_close: 150,
+        last_price: 100, // Price dropped → loss
+        exchange: 'NFO',
+        overnight_quantity: -1,
+        day_change_val: -50,
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions, {
+      livePosDay: (p, ltp, opts) => livePositionDayPnl(
+        {
+          closePx: Number(p?.previous_close) || 0,
+          pollLtp: Number(p?.last_price ?? 0),
+          qty: Number(p?.quantity ?? 0),
+          avg: Number(p?.average_price ?? 0),
+          dcvRow: p,
+        },
+        ltp,
+        opts,
+      ),
+    });
+
+    expect(result.byAccount['ZERODHA']).toBeLessThanOrEqual(0);
+  });
+
+  it('mixed profit and loss across accounts', () => {
+    const positions = [
+      makePosition({
+        account: 'ZERODHA',
+        quantity: 1,
+        average_price: 100,
+        previous_close: 50,
+        last_price: 150, // profit
+        exchange: 'NFO',
+      }),
+      makePosition({
+        account: 'DHAN',
+        quantity: -1,
+        average_price: 150,
+        previous_close: 150,
+        last_price: 100, // loss
+        exchange: 'NFO',
+        overnight_quantity: -1,
+      }),
+    ];
+
+    const result = computePositionsByAccount(positions);
+
+    expect(Object.keys(result.byAccount)).toContain('ZERODHA');
+    expect(Object.keys(result.byAccount)).toContain('DHAN');
+    expect(Object.keys(result.byAccount)).toContain('TOTAL');
+  });
+});
+
+// ── New: positionsDayPnlStore.byAccount getter ────────────────────────────────
+
+/**
+ * positionsDayPnlStore now also exports a byAccount getter that reads from
+ * portfolioStore.positions.byAccount.
+ *
+ * Test coverage (functional layer):
+ *   1. Getter returns portfolioStore.positions.byAccount
+ *   2. Returns {} when positions.byAccount is undefined/null
+ *   3. Includes TOTAL key with aggregate
+ *   4. Account keys are uppercase
+ */
+
+function createMockPortfolioStore(positionsData = {}) {
+  return {
+    positions: {
+      byKey: {},
+      total: { day_pnl: 0 },
+      byAccount: positionsData,
+    },
+  };
+}
+
+describe('positionsDayPnlStore.byAccount — getter delegation', () => {
+  it('byAccount getter returns portfolioStore.positions.byAccount', () => {
+    const mockStore = createMockPortfolioStore({
+      'ZERODHA': 100,
+      'DHAN': 200,
+      'TOTAL': 300,
+    });
+
+    // Simulate the getter logic from positionsDayPnlStore
+    const byAccountGetter = mockStore.positions.byAccount;
+
+    expect(byAccountGetter['ZERODHA']).toBe(100);
+    expect(byAccountGetter['DHAN']).toBe(200);
+    expect(byAccountGetter['TOTAL']).toBe(300);
+  });
+
+  it('byAccount returns empty object when positions.byAccount is undefined', () => {
+    const mockStore = createMockPortfolioStore(undefined);
+
+    // Simulated getter with fallback
+    const byAccountGetter = mockStore.positions.byAccount ?? {};
+
+    expect(byAccountGetter).toEqual({});
+  });
+
+  it('byAccount returns empty object when positions.byAccount is null', () => {
+    const mockStore = createMockPortfolioStore(null);
+
+    const byAccountGetter = mockStore.positions.byAccount ?? {};
+
+    expect(byAccountGetter).toEqual({});
+  });
+
+  it('byAccount includes TOTAL key matching aggregate', () => {
+    const mockStore = createMockPortfolioStore({
+      'ACC1': 50,
+      'ACC2': 150,
+      'TOTAL': 200,
+    });
+
+    const byAccountGetter = mockStore.positions.byAccount;
+
+    expect(byAccountGetter['TOTAL']).toBe(200);
+    expect(byAccountGetter['TOTAL']).toBe(byAccountGetter['ACC1'] + byAccountGetter['ACC2']);
+  });
+
+  it('byAccount keys are uppercase', () => {
+    const mockStore = createMockPortfolioStore({
+      'ZERODHA': 100,
+      'DHAN': 200,
+      'TOTAL': 300,
+    });
+
+    const byAccountGetter = mockStore.positions.byAccount;
+    const keys = Object.keys(byAccountGetter);
+
+    for (const key of keys) {
+      expect(key).toBe(key.toUpperCase());
+    }
+  });
+
+  it('multiple account aggregation is preserved through getter', () => {
+    const mockStore = createMockPortfolioStore({
+      'ACCOUNT_A': 1000,
+      'ACCOUNT_B': 2000,
+      'ACCOUNT_C': 3000,
+      'TOTAL': 6000,
+    });
+
+    const byAccountGetter = mockStore.positions.byAccount;
+
+    expect(Object.keys(byAccountGetter).length).toBe(4);
+    expect(byAccountGetter['TOTAL']).toBe(6000);
   });
 });

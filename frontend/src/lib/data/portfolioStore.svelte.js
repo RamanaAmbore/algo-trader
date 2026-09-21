@@ -154,6 +154,7 @@ const _posAgg = $derived.by(() => {
   if (!_posTier3) return null;
   const posTotal      = { day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null };
   const posByKey      = {};
+  const posByAccount  = {};
   const byRootPos     = {};
   const byRoot        = {};
   const expiryByAcct  = new Map();
@@ -169,6 +170,9 @@ const _posAgg = $derived.by(() => {
 
     posTotal.day_pnl += p._day_pnl;
     posTotal.prev_mv += p._prev_mv ?? 0;
+
+    const _acct = String(p.account || '').toUpperCase();
+    if (_acct) posByAccount[_acct] = (posByAccount[_acct] ?? 0) + p._day_pnl;
     if (p._exp_pnl   != null) posTotal.exp_pnl   += p._exp_pnl;
     if (p._extrinsic != null) posTotal.extrinsic += p._extrinsic;
 
@@ -208,7 +212,8 @@ const _posAgg = $derived.by(() => {
     r.chg_pct = r.prev_mv > 0 ? dayChangePct(r.day_pnl, r.prev_mv) : null;
   }
 
-  return { posTotal, posByKey, byRoot, byRootPos, expiryByAcct };
+  posByAccount['TOTAL'] = posTotal.day_pnl;
+  return { posTotal, posByKey, posByAccount, byRoot, byRootPos, expiryByAcct };
 });
 
 // ── Holdings tiers ────────────────────────────────────────────────────────────
@@ -332,6 +337,7 @@ const _fundsAgg = $derived.by(() => {
 const _EMPTY_POSITIONS = {
   total:          { day_pnl: 0, exp_pnl: 0, extrinsic: 0, prev_mv: 0, chg_pct: null },
   byKey:          {},
+  byAccount:      {},
   byRootPositions:{},
   byRootHoldings: {},
   byRoot:         {},
@@ -347,6 +353,7 @@ const _portfolio = $derived.by(() => {
     positions: {
       total:           _posAgg.posTotal,
       byKey:           _posAgg.posByKey,
+      byAccount:       _posAgg.posByAccount,
       byRoot:          _posAgg.byRoot,
       byRootPositions: _posAgg.byRootPos,
       byRootHoldings:  _byRootHoldings,
