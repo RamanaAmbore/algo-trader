@@ -1994,7 +1994,7 @@
     // Exp P&L totals — read from positionsDerivedStore so it tracks live.
     if (r.qty_pos) {
       const sym = String(r.tradingsymbol || '').toUpperCase();
-      acc.exp_pnl += positionsDerivedStore.get(sym).exp_pnl ?? 0;
+      acc.exp_pnl += positionsDerivedStore.get(sym, 0).exp_pnl;
     }
   }
 
@@ -5090,11 +5090,6 @@
       #1d2a44 !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
-  }
-  /* TOTAL row cell dividers — amber hairline so the aggregate row
-     reads as one visual unit with clear column boundaries. */
-  :global(.ag-theme-algo .mp-total-row .ag-cell) {
-    border-right: 1px solid rgba(251, 191, 36, 0.30) !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
      direction tint so the row reads as an aggregate, not as a

@@ -647,42 +647,67 @@ describe('positionsDerivedStore — chg_pct SSOT (byKey[sym].chg_pct)', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Accessor functions: get(sym), getByRoot(root)
+// Accessor functions: get(sym, fallback?), getByRoot(root, fallback?)
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('positionsDerivedStore — get(sym) accessor', () => {
-  it('get(unknown) returns object with all fields null', () => {
-    const _EMPTY_POS = Object.freeze({
-      day_pnl: null, pnl: null, exp_pnl: null,
-      extrinsic: null, prev_mv: null, chg_pct: null,
-    });
+// Mirror the new get() / getByRoot() from positionsDerivedStore.svelte.js.
+function makeGet(byKey) {
+  return (sym, fallback = null) => {
+    const r = byKey[String(sym || '').toUpperCase()];
+    if (!r) return { day_pnl: fallback, pnl: fallback, exp_pnl: fallback, extrinsic: fallback, prev_mv: fallback, chg_pct: fallback };
+    return {
+      day_pnl:   r.day_pnl   ?? fallback,
+      pnl:       r.pnl       ?? fallback,
+      exp_pnl:   r.exp_pnl   ?? fallback,
+      extrinsic: r.extrinsic ?? fallback,
+      prev_mv:   r.prev_mv   ?? fallback,
+      chg_pct:   r.chg_pct   ?? fallback,
+    };
+  };
+}
 
-    const result = { byKey: {} };
-    const get = (sym) => result.byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
+function makeGetByRoot(byRootPositions) {
+  return (root, fallback = null) => {
+    const r = byRootPositions[String(root || '').toUpperCase()];
+    if (!r) return { day_pnl: fallback, pnl: fallback, exp_pnl: fallback, extrinsic: fallback, prev_mv: fallback, chg_pct: fallback };
+    return {
+      day_pnl:   r.day_pnl   ?? fallback,
+      pnl:       r.pnl       ?? fallback,
+      exp_pnl:   r.exp_pnl   ?? fallback,
+      extrinsic: r.extrinsic ?? fallback,
+      prev_mv:   r.prev_mv   ?? fallback,
+      chg_pct:   r.chg_pct   ?? fallback,
+    };
+  };
+}
 
-    const unknown = get('UNKNOWN_SYM');
-    expect(unknown.day_pnl).toBeNull();
-    expect(unknown.pnl).toBeNull();
-    expect(unknown.exp_pnl).toBeNull();
-    expect(unknown.extrinsic).toBeNull();
-    expect(unknown.prev_mv).toBeNull();
-    expect(unknown.chg_pct).toBeNull();
+describe('positionsDerivedStore — get(sym, fallback?) accessor', () => {
+  it('get(unknown) — no fallback arg — returns null for all fields', () => {
+    const get = makeGet({});
+    const result = get('UNKNOWN_SYM');
+    expect(result.day_pnl).toBeNull();
+    expect(result.pnl).toBeNull();
+    expect(result.exp_pnl).toBeNull();
+    expect(result.extrinsic).toBeNull();
+    expect(result.prev_mv).toBeNull();
+    expect(result.chg_pct).toBeNull();
   });
 
-  it('get(RELIANCE) returns actual values when populated', () => {
-    const _EMPTY_POS = Object.freeze({
-      day_pnl: null, pnl: null, exp_pnl: null,
-      extrinsic: null, prev_mv: null, chg_pct: null,
+  it('get(unknown, 0) returns 0 for all absent fields', () => {
+    const get = makeGet({});
+    const result = get('UNKNOWN_SYM', 0);
+    expect(result.day_pnl).toBe(0);
+    expect(result.pnl).toBe(0);
+    expect(result.exp_pnl).toBe(0);
+    expect(result.extrinsic).toBe(0);
+    expect(result.prev_mv).toBe(0);
+    expect(result.chg_pct).toBe(0);
+  });
+
+  it('get(RELIANCE) returns store values when all fields are populated', () => {
+    const get = makeGet({
+      RELIANCE: { day_pnl: 500, pnl: 1000, exp_pnl: 0, extrinsic: null, prev_mv: 10000, chg_pct: 5.0 },
     });
-
-    const byKey = {
-      RELIANCE: {
-        day_pnl: 500, pnl: 1000, exp_pnl: 0,
-        extrinsic: null, prev_mv: 10000, chg_pct: 5.0
-      }
-    };
-    const get = (sym) => byKey[String(sym || '').toUpperCase()] ?? _EMPTY_POS;
-
     const rel = get('RELIANCE');
     expect(rel.day_pnl).toBe(500);
     expect(rel.pnl).toBe(1000);
@@ -690,41 +715,69 @@ describe('positionsDerivedStore — get(sym) accessor', () => {
     expect(rel.prev_mv).toBe(10000);
     expect(rel.chg_pct).toBe(5.0);
   });
-});
 
-describe('positionsDerivedStore — getByRoot(root) accessor', () => {
-  it('getByRoot(unknown) returns object with all fields null', () => {
-    const _EMPTY_POS = Object.freeze({
-      day_pnl: null, pnl: null, exp_pnl: null,
-      extrinsic: null, prev_mv: null, chg_pct: null,
+  it('get(RELIANCE, 0) uses fallback only for null extrinsic, not for set fields', () => {
+    // extrinsic = null in store → should become 0 (fallback)
+    // pnl = 1000 in store → must stay 1000
+    const get = makeGet({
+      RELIANCE: { day_pnl: 500, pnl: 1000, exp_pnl: 0, extrinsic: null, prev_mv: 10000, chg_pct: 5.0 },
     });
-
-    const result = { byRootPositions: {} };
-    const getByRoot = (root) => result.byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
-
-    const unknown = getByRoot('UNKNOWN_ROOT');
-    expect(unknown.day_pnl).toBeNull();
-    expect(unknown.pnl).toBeNull();
-    expect(unknown.exp_pnl).toBeNull();
-    expect(unknown.extrinsic).toBeNull();
-    expect(unknown.prev_mv).toBeNull();
-    expect(unknown.chg_pct).toBeNull();
+    const rel = get('RELIANCE', 0);
+    expect(rel.extrinsic).toBe(0);   // null → fallback
+    expect(rel.pnl).toBe(1000);      // set value preserved
+    expect(rel.day_pnl).toBe(500);   // set value preserved
   });
 
-  it('getByRoot(NIFTY) returns actual values when populated', () => {
-    const _EMPTY_POS = Object.freeze({
-      day_pnl: null, pnl: null, exp_pnl: null,
-      extrinsic: null, prev_mv: null, chg_pct: null,
+  it('uppercase normalisation: lower-case sym matches upper-case key', () => {
+    const get = makeGet({
+      NIFTY26JUNFUT: { day_pnl: 7500, pnl: 9000, exp_pnl: 5000, extrinsic: 200, prev_mv: 500000, chg_pct: 1.5 },
     });
+    const result = get('nifty26junfut', 0);
+    expect(result.day_pnl).toBe(7500);
+  });
 
-    const byRootPositions = {
-      NIFTY: {
-        day_pnl: 2000, pnl: 5000, exp_pnl: 1500,
-        extrinsic: 300, prev_mv: 100000, chg_pct: 2.0
-      }
-    };
-    const getByRoot = (root) => byRootPositions[String(root || '').toUpperCase()] ?? _EMPTY_POS;
+  it('exp_pnl field: get(sym, 0).exp_pnl is the safe accumulation pattern used in MarketPulse', () => {
+    // Validates the call site pattern: acc.exp_pnl += positionsDerivedStore.get(sym, 0).exp_pnl
+    const get = makeGet({
+      NIFTY23100CE: { day_pnl: 500, pnl: 1000, exp_pnl: 1250, extrinsic: 300, prev_mv: 50000, chg_pct: 1.0 },
+    });
+    let acc_exp_pnl = 0;
+    // Known symbol — exp_pnl = 1250
+    acc_exp_pnl += get('NIFTY23100CE', 0).exp_pnl;
+    expect(acc_exp_pnl).toBe(1250);
+    // Unknown symbol — exp_pnl = 0 (fallback), not NaN
+    acc_exp_pnl += get('UNKNOWN', 0).exp_pnl;
+    expect(acc_exp_pnl).toBe(1250);
+  });
+});
 
+describe('positionsDerivedStore — getByRoot(root, fallback?) accessor', () => {
+  it('getByRoot(unknown) — no fallback arg — returns null for all fields', () => {
+    const getByRoot = makeGetByRoot({});
+    const result = getByRoot('UNKNOWN_ROOT');
+    expect(result.day_pnl).toBeNull();
+    expect(result.pnl).toBeNull();
+    expect(result.exp_pnl).toBeNull();
+    expect(result.extrinsic).toBeNull();
+    expect(result.prev_mv).toBeNull();
+    expect(result.chg_pct).toBeNull();
+  });
+
+  it('getByRoot(unknown, 0) returns 0 for all absent fields', () => {
+    const getByRoot = makeGetByRoot({});
+    const result = getByRoot('UNKNOWN_ROOT', 0);
+    expect(result.day_pnl).toBe(0);
+    expect(result.pnl).toBe(0);
+    expect(result.exp_pnl).toBe(0);
+    expect(result.extrinsic).toBe(0);
+    expect(result.prev_mv).toBe(0);
+    expect(result.chg_pct).toBe(0);
+  });
+
+  it('getByRoot(NIFTY) returns store values when all fields are populated', () => {
+    const getByRoot = makeGetByRoot({
+      NIFTY: { day_pnl: 2000, pnl: 5000, exp_pnl: 1500, extrinsic: 300, prev_mv: 100000, chg_pct: 2.0 },
+    });
     const nifty = getByRoot('NIFTY');
     expect(nifty.day_pnl).toBe(2000);
     expect(nifty.pnl).toBe(5000);
@@ -732,5 +785,33 @@ describe('positionsDerivedStore — getByRoot(root) accessor', () => {
     expect(nifty.extrinsic).toBe(300);
     expect(nifty.prev_mv).toBe(100000);
     expect(nifty.chg_pct).toBe(2.0);
+  });
+
+  it('getByRoot(NIFTY, 0) — null field in store gets 0, set fields preserved', () => {
+    const getByRoot = makeGetByRoot({
+      NIFTY: { day_pnl: 2000, pnl: 5000, exp_pnl: 1500, extrinsic: null, prev_mv: 100000, chg_pct: null },
+    });
+    const nifty = getByRoot('NIFTY', 0);
+    expect(nifty.day_pnl).toBe(2000);   // set → preserved
+    expect(nifty.extrinsic).toBe(0);     // null → fallback
+    expect(nifty.chg_pct).toBe(0);       // null → fallback
+  });
+
+  it('day_pnl field: getByRoot(root, 0).day_pnl is the safe flash.update pattern used in derivatives', () => {
+    // Validates: flash.update(`${g.underlying}:day_w`, positionsDerivedStore.getByRoot(g.underlying, 0).day_pnl)
+    const getByRoot = makeGetByRoot({
+      NIFTY: { day_pnl: 8000, pnl: 12000, exp_pnl: 5000, extrinsic: 200, prev_mv: 200000, chg_pct: 4.0 },
+    });
+    // Known root
+    expect(getByRoot('NIFTY', 0).day_pnl).toBe(8000);
+    // Unknown root — 0 not NaN
+    expect(getByRoot('BANKNIFTY', 0).day_pnl).toBe(0);
+  });
+
+  it('lowercase root is normalised to uppercase key', () => {
+    const getByRoot = makeGetByRoot({
+      NIFTY: { day_pnl: 2000, pnl: 5000, exp_pnl: 1500, extrinsic: 300, prev_mv: 100000, chg_pct: 2.0 },
+    });
+    expect(getByRoot('nifty', 0).day_pnl).toBe(2000);
   });
 });

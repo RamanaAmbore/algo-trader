@@ -598,7 +598,6 @@
   border-top: 1px solid rgba(29,41,57,0.35) !important;
   border-bottom: 1px solid rgba(29,41,57,0.35) !important;
 }
-.ag-theme-ramboq .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(29,41,57,0.12) !important; }
 .ag-theme-algo .ag-row.totals-row {
   /* Stronger amber tint so the TOTAL row reads as a clear stratum
      above the data rows even when those rows carry their own bg
@@ -615,7 +614,6 @@
   border-top: 2px solid rgba(251,191,36,0.70) !important;
   border-bottom: 1px solid rgba(251,191,36,0.55) !important;
 }
-.ag-theme-algo .ag-row.totals-row .ag-cell { border-right: 1px solid rgba(251,191,36,0.30) !important; }
 
 /* ── LTP cell heat — two-axis encoding ─────────────────────────────────
    Operator: "color code ltp with background color if it is more than

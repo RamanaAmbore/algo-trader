@@ -916,7 +916,7 @@
     const groups = _byUnderlyingTotals;
     untrack(() => {
       for (const g of groups) {
-        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.getByRoot(g.underlying).day_pnl ?? 0);
+        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.getByRoot(g.underlying, 0).day_pnl);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
       }
     });
@@ -3590,8 +3590,8 @@
           bumpExcluded(_excluded, h?.account, {
             hold_pnl: Number(h?.pnl || 0),
             hold_day: holdingsDayPnlStore.get(
-              String(h?.tradingsymbol || h?.symbol || '').toUpperCase()
-            ).day_pnl ?? 0,
+              String(h?.tradingsymbol || h?.symbol || '').toUpperCase(), 0
+            ).day_pnl,
           });
           continue;
         }
@@ -5808,8 +5808,9 @@
   /* byund TOTAL > span: amber background/border/color/font-weight from shared
      .cand-row.cand-row-total, .byund-row-total > span rule above.
      Padding inherited from .byund-row > span. Direction tints below. */
-  .byund-row-total > .cell-pos { color: var(--algo-green-text-bright) !important; }
-  .byund-row-total > .cell-neg { color: var(--algo-red-text-bright) !important; }
+  .byund-row-total > .cell-pos  { color: var(--algo-green) !important; }
+  .byund-row-total > .cell-neg  { color: var(--algo-red) !important; }
+  .byund-row-total > .cell-flat { color: var(--algo-slate) !important; }
   .byund-empty {
     grid-column: 1 / -1;
     padding: 0.85rem 0.7rem;
@@ -6032,9 +6033,9 @@
   }
   .cand-row.cand-row-total > span.num { text-align: right; }
   /* Direction tints — lighter green/red readable against amber. */
-  .cand-row.cand-row-total > .cell-pos  { color: var(--algo-green-text-bright) !important; }
-  .cand-row.cand-row-total > .cell-neg  { color: var(--algo-red-text-bright) !important; }
-  .cand-row.cand-row-total > .cell-flat { color: rgba(251,191,36,0.75) !important; }
+  .cand-row.cand-row-total > .cell-pos  { color: var(--algo-green) !important; }
+  .cand-row.cand-row-total > .cell-neg  { color: var(--algo-red) !important; }
+  .cand-row.cand-row-total > .cell-flat { color: var(--algo-slate) !important; }
   .cand-total-label {
     color: var(--c-action);
     font-weight: 800;

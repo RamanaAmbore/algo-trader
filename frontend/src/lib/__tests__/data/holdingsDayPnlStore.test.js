@@ -810,60 +810,69 @@ describe('holdingsDayPnlStore — byAccount[TOTAL] is pulse-aware (Fix 1)', () =
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// Accessor function: get(sym)
+// Accessor function: get(sym, fallback?)
 // ─────────────────────────────────────────────────────────────────────────
 
-describe('holdingsDayPnlStore — get(sym) accessor', () => {
-  const _EMPTY_HOLD = Object.freeze({ day_pnl: null, chg_pct: null });
-
-  it('get(unknown) returns object with all fields null', () => {
-    const byKey = {};
-    const chgPctByKey = {};
-
-    const get = (sym) => {
+describe('holdingsDayPnlStore — get(sym, fallback?) accessor', () => {
+  // Mirror the new get() implementation from holdingsDayPnlStore.svelte.js.
+  function makeGet(byKey, chgPctByKey) {
+    return (sym, fallback = null) => {
       const sym_upper = String(sym || '').toUpperCase();
       return {
-        day_pnl: byKey[sym_upper] ?? null,
-        chg_pct: chgPctByKey[sym_upper] ?? null,
+        day_pnl: byKey[sym_upper] ?? fallback,
+        chg_pct: chgPctByKey[sym_upper] ?? fallback,
       };
     };
+  }
 
-    const unknown = get('UNKNOWN_SYM');
-    expect(unknown.day_pnl).toBeNull();
-    expect(unknown.chg_pct).toBeNull();
+  it('get(unknown) — no fallback arg — returns null for both fields', () => {
+    const get = makeGet({}, {});
+    const result = get('UNKNOWN_SYM');
+    expect(result.day_pnl).toBeNull();
+    expect(result.chg_pct).toBeNull();
   });
 
-  it('get(RELIANCE) returns correct values when populated', () => {
-    const byKey = { RELIANCE: 600 };
-    const chgPctByKey = { RELIANCE: 2.5 };
+  it('get(unknown, 0) returns 0 for both absent fields', () => {
+    const get = makeGet({}, {});
+    const result = get('UNKNOWN_SYM', 0);
+    expect(result.day_pnl).toBe(0);
+    expect(result.chg_pct).toBe(0);
+  });
 
-    const get = (sym) => {
-      const sym_upper = String(sym || '').toUpperCase();
-      return {
-        day_pnl: byKey[sym_upper] ?? null,
-        chg_pct: chgPctByKey[sym_upper] ?? null,
-      };
-    };
+  it('get(RELIANCE) returns correct values when populated (fallback irrelevant)', () => {
+    const get = makeGet({ RELIANCE: 600 }, { RELIANCE: 2.5 });
+    const result = get('RELIANCE');
+    expect(result.day_pnl).toBe(600);
+    expect(result.chg_pct).toBe(2.5);
+  });
 
-    const rel = get('RELIANCE');
-    expect(rel.day_pnl).toBe(600);
-    expect(rel.chg_pct).toBe(2.5);
+  it('get(RELIANCE, 0) returns store values, not fallback, when populated', () => {
+    const get = makeGet({ RELIANCE: 600 }, { RELIANCE: 2.5 });
+    const result = get('RELIANCE', 0);
+    // Store has real values — fallback must NOT override them
+    expect(result.day_pnl).toBe(600);
+    expect(result.chg_pct).toBe(2.5);
   });
 
   it('get(INFY) returns day_pnl but null chg_pct when chg_pct not set', () => {
-    const byKey = { INFY: 400 };
-    const chgPctByKey = {}; // no INFY entry
+    const get = makeGet({ INFY: 400 }, {});
+    const result = get('INFY');
+    expect(result.day_pnl).toBe(400);
+    expect(result.chg_pct).toBeNull();
+  });
 
-    const get = (sym) => {
-      const sym_upper = String(sym || '').toUpperCase();
-      return {
-        day_pnl: byKey[sym_upper] ?? null,
-        chg_pct: chgPctByKey[sym_upper] ?? null,
-      };
-    };
+  it('get(INFY, 0) returns day_pnl from store and 0 for absent chg_pct', () => {
+    const get = makeGet({ INFY: 400 }, {});
+    const result = get('INFY', 0);
+    expect(result.day_pnl).toBe(400);
+    // chg_pct not in store → fallback = 0
+    expect(result.chg_pct).toBe(0);
+  });
 
-    const infy = get('INFY');
-    expect(infy.day_pnl).toBe(400);
-    expect(infy.chg_pct).toBeNull();
+  it('uppercase normalisation: lower-case sym matches upper-case key', () => {
+    const get = makeGet({ WIPRO: 200 }, { WIPRO: 1.5 });
+    const result = get('wipro', 0);
+    expect(result.day_pnl).toBe(200);
+    expect(result.chg_pct).toBe(1.5);
   });
 });
