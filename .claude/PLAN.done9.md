@@ -1,119 +1,96 @@
-# Plan: Unify prev_close — eliminate close_price across the stack
+# Plan: Fix Pulse total row Day P&L + NavBreakdown total row styling
 
 ## Context
-`close_price` (broker API field) and `previous_close` (DB column, API response field) are
-the same concept — prior session's settlement price. Two names for one thing creates
-confusion and dual fallback chains. Unify to a single name: `prev_close`, matching how the
-frontend store already names it internally.
 
-**After this change:**
-- `daily_book` columns: `prev_close` (was `previous_close`), `prev_close_backup` (was `previous_close_backup`)
-- All broker adapter DataFrames: `prev_close` column (was `close_price`)
-- API response schemas: single `prev_close: float` field (replaces both `close_price` and `previous_close`)
-- Frontend reads only `p?.prev_close` — no fallback chain needed
+Two related issues in the grids:
+
+1. **Pulse positions total row Day P&L = 0**: The `day_pnl` valueGetter patched onto the
+   positions grid column (MarketPulse.svelte ~line 3615) reads `positionsDerivedStore.get(sym).day_pnl`
+   for per-symbol rows (correct). For the pinned total row, `sym = ""` (no tradingsymbol),
+   so it falls back to `p.data?.day_pnl` = sum of stale broker `day_change_val` values = 0.
+   Fix: detect `p.node?.rowPinned` and return `positionsDayPnlStore.total` instead.
+   `positionsDayPnlStore` is already imported at line 85.
+
+2. **NavBreakdown total rows look like regular rows**: The P/M/C/H grids in NavBreakdown
+   are created with `mkBaseGridOpts()` which has no `getRowClass`. The pinned bottom rows
+   have no CSS class applied. MarketPulse grids use `mp-total-row`; PerformancePage uses
+   `totals-row` (from app.css). NavBreakdown grids need `getRowClass` returning `'totals-row'`
+   for pinned rows (`account === 'TOTAL'`).
+
+## Files to change
+
+| File | Change |
+|------|--------|
+| `frontend/src/lib/MarketPulse.svelte` | ~line 3615: add `if (p.node?.rowPinned)` branch returning `positionsDayPnlStore.total` |
+| `frontend/src/lib/NavBreakdown.svelte` | Add `getRowClass` to each grid's `createGrid()` call (P/M/C/H grids) |
+
+## Detailed changes
+
+### 1. `MarketPulse.svelte` — Pulse positions total row Day P&L
+
+**Find (lines 3613–3619):**
+```javascript
+rightColDefs[_dayPnlColIdx] = {
+  ..._origDayPnlCol,
+  valueGetter: p => {
+    const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+    return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
+  },
+};
+```
+
+**Replace with:**
+```javascript
+rightColDefs[_dayPnlColIdx] = {
+  ..._origDayPnlCol,
+  valueGetter: p => {
+    if (p.node?.rowPinned) return positionsDayPnlStore.total ?? p.data?.day_pnl;
+    const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+    return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
+  },
+};
+```
+
+`positionsDayPnlStore` already imported at line 85.
+
+### 2. `NavBreakdown.svelte` — total row styling
+
+The `createGrid` calls for _pGrid, _mGrid, _cGrid, _hGrid each need a `getRowClass` option.
+Check the exact lines where each grid is initialized (around lines 419–431 from the explore).
+
+For each grid creation, add `getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : ''`:
+
+**Pattern (apply to all four P/M/C/H grids):**
+```javascript
+_pGrid = createGrid(_pEl, {
+  ...mkBaseGridOpts(),
+  columnDefs: _pCols,
+  rowData: [],
+  domLayout: 'autoHeight',
+  getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '',
+});
+```
+
+The `.totals-row` CSS class already exists in `frontend/src/app.css` (lines ~602–618) with
+amber background + border styling — the same look as PerformancePage total rows.
+
+**Scope:** Only the four grids that have a TOTAL row (P/M/C/H). Do not touch other grids.
 
 ## Agents
-
-### broker
-In `backend/brokers/`:
-
-**`broker_apis.py`**: All references to `'close_price'` column in DataFrames → `'prev_close'`.
-Includes `_col_f64("close_price")`, `_cols = ("day_change", "day_change_val", "close_price", ...)`,
-`_stale_ltp_mask()` close-price equality check, `_bmd_patch_one_row()` / `_bmd_patch_rows()` patching,
-backfill helpers. Also remove `close_price` from any output column lists and use `prev_close`.
-
-**`adapters/dhan.py`**: Output dicts use `"close_price": close_price` → `"prev_close": close_price`
-(lines ~1736, ~1750 for holdings and similar for positions).
-
-**`adapters/groww.py`**: Output dicts use `"close_price": close` → `"prev_close": close`
-(lines ~1493, ~1526 for holdings/positions).
-
-**`adapters/kite.py`** (or wherever Kite positions/holdings are normalized): rename `close_price` →
-`prev_close` in output DataFrame columns.
-
-### backend
-In `backend/api/`:
-
-**`models.py`**: Rename `DailyBook.previous_close` → `DailyBook.prev_close` and
-`DailyBook.previous_close_backup` → `DailyBook.prev_close_backup`.
-
-**`database.py`**: Add migration function `_migrate_daily_book_rename_prev_close()` that runs:
-```sql
-ALTER TABLE daily_book RENAME COLUMN previous_close TO prev_close;
-ALTER TABLE daily_book RENAME COLUMN previous_close_backup TO prev_close_backup;
-```
-Guard with `IF EXISTS` / check via `information_schema.columns`. Register in the startup
-migration runner alongside existing migrations.
-
-**`schemas.py`**: In `PositionRow` and `HoldingRow`:
-- Remove `close_price: float` field
-- Rename `previous_close: float = 0.0` → `prev_close: float = 0.0`
-
-**`routes/positions.py`**:
-- All `raw['close_price']` / `raw.at[idx, 'close_price']` → `raw['prev_close']`
-- All `raw['previous_close']` → `raw['prev_close']`
-- SQL queries on `daily_book`: `NULLIF(close_price, 0)` → remove (column doesn't exist; use only `ltp`)
-  - `_fetch_snapshot_close_map` line 946/950: `COALESCE(NULLIF(ltp,0), NULLIF(close_price,0))` → just `NULLIF(ltp,0)` (close_price never existed in daily_book)
-  - `_positions_snapshot` line 277: already uses `COALESCE(NULLIF(db.previous_close,0), NULLIF(db.close_price,0))` → `db.prev_close` (direct, no COALESCE needed; prev_close IS the correct column)
-  - `_apply_second_pass_fallback` lines ~1027-1030: same cleanup
-- Update `_ROW_COLS` to remove `close_price`, add `prev_close`
-- `_patch_close_from_snapshot_map()`: update field names
-
-**`routes/holdings.py`**:
-- All `raw['close_price']` → `raw['prev_close']`
-- All `raw['previous_close']` → `raw['prev_close']`
-- `_override_stale_close_for_holdings()`: update field names throughout
-- Update output column list
-
-**`algo/pnl_math.py`**: All `close_price` references → `prev_close`.
-
-**`algo/daily_snapshot.py`**:
-- Line 72: `"prev_close": _f(r.get("close_price"))` → `"prev_close": _f(r.get("prev_close"))`
-  (broker adapters now output `prev_close` directly)
-- All other `close_price` references → `prev_close`
-
-**`background.py`**: All `close_price` references → `prev_close`. Update `_fetch_settlement_map()`
-to look for `prev_close` column in DataFrames.
-
-**`algo/lot_ledger.py`**: `close_price` → `prev_close`.
-
-### frontend
-In `frontend/src/lib/`:
-
-**`data/portfolioStore.svelte.js`**:
-- Line 85: `Number(p?.previous_close) || Number(p?.close_price) || null` → `Number(p?.prev_close) || null`
-- Line 226 (holdings): `Number(h?.previous_close) || Number(h?.close_price) || Number(h?.ohlc?.close) || null` → `Number(h?.prev_close) || null`
-
-**`data/marketDataStores.svelte.js`**:
-- Lines 105, 135: `close: r.close_price` — `close_price` here is from OHLC market data (not position prev_close). Leave as-is OR rename if this is the same field. Check context before changing.
-
-**`derivatives/pageLoad.js`**:
-- Lines 75, 110: `prev_close: Number(p?.previous_close) || Number(p?.close_price) || null` → `prev_close: Number(p?.prev_close) || null`
-
-**`data/nav.js`**: Check and update any `close_price` / `previous_close` references.
-
-### backend-test
-Update ALL test files that reference `close_price`, `previous_close` in the context of
-positions/holdings DataFrames or API schemas. Key files:
-- `test_positions_prev_close.py` — update all SQL assertions to use `prev_close` not `previous_close`/`close_price`
-- `test_coalesce_to_ltp_fix.py` — update SQL pattern assertions
-- `test_market_window_pnl_edge_cases.py` — update `_make_position_df` / `_make_holding_df` fixtures (rename `close_price` param → `prev_close`, `previous_close` param → remove or merge)
-- `test_holdings_snapshot_fixes.py` — rename `close_price` → `prev_close`
-- Any other test that passes `close_price=` or `previous_close=` to position/holding fixtures
-Do NOT change tests for market data OHLC (those `close` / `close_price` fields are different)
+- frontend: apply both changes above
+- backend-test: skip
+- frontend-test: add Vitest test — valueGetter returns `positionsDayPnlStore.total` when `p.node.rowPinned` is set
 
 ## Tests
-- pytest: yes
+- pytest: no
 - svelte-check: yes
+- vitest: yes (new test for pinned-row branch)
 - playwright: no
 
 ## Commit message
-refactor(prev_close): unify close_price + previous_close → prev_close across stack; DB migration
+fix(MarketPulse,NavBreakdown): positions total row Day P&L from store; apply totals-row class to nav/capital/equity/holdings grids
 
 ## Done when
-- `daily_book` table has `prev_close` column (migration runs on startup)
-- All broker adapter DataFrames output `prev_close` instead of `close_price`
-- API response has single `prev_close` field; `close_price` removed from schemas
-- Frontend reads `p?.prev_close` only — no fallback chain
-- `daily_book` SQL uses `prev_close` directly (no `close_price` references)
-- pytest + svelte-check green
+- Pulse positions total row Day P&L shows correct non-zero value
+- Nav/capital/equity/holdings grids' total rows have amber background matching legs/pulse style
+- svelte-check 0 errors; vitest 0 failures

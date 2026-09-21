@@ -416,19 +416,19 @@
   // Grid creation — lazy, one per slot.
   $effect(() => {
     if (activeSlot !== 'P' || !_pEl || _pGrid) return;
-    _pGrid = createGrid(_pEl, { ...mkBaseGridOpts(), columnDefs: _pCols, rowData: [], domLayout: 'autoHeight' });
+    _pGrid = createGrid(_pEl, { ...mkBaseGridOpts(), columnDefs: _pCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
   });
   $effect(() => {
     if (activeSlot !== 'M' || !_mEl || _mGrid) return;
-    _mGrid = createGrid(_mEl, { ...mkBaseGridOpts(), columnDefs: _mCols, rowData: [], domLayout: 'autoHeight' });
+    _mGrid = createGrid(_mEl, { ...mkBaseGridOpts(), columnDefs: _mCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
   });
   $effect(() => {
     if (activeSlot !== 'C' || !_cEl || _cGrid) return;
-    _cGrid = createGrid(_cEl, { ...mkBaseGridOpts(), columnDefs: _cCols, rowData: [], domLayout: 'autoHeight' });
+    _cGrid = createGrid(_cEl, { ...mkBaseGridOpts(), columnDefs: _cCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
   });
   $effect(() => {
     if (activeSlot !== 'H' || !_hEl || _hGrid) return;
-    _hGrid = createGrid(_hEl, { ...mkBaseGridOpts(), columnDefs: _hCols, rowData: [], domLayout: 'autoHeight' });
+    _hGrid = createGrid(_hEl, { ...mkBaseGridOpts(), columnDefs: _hCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
   });
 
   // Row-data updates.
