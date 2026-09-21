@@ -219,7 +219,7 @@
   <!-- Context-menu is a secondary affordance (right-click / long-press).
        Primary symbol selection is via checkbox. No keyboard equivalent
        needed here — the context-menu items are also accessible via row buttons. -->
-  <span class="font-mono cand-sym cand-sym-acct"
+  <span class="cand-sym cand-sym-acct"
     oncontextmenu={(ev) => { ev.preventDefault(); onContextMenu(c, ev); }}
     use:longPress={(ev) => { onContextMenu(c, ev); }}>
     {#if (() => { const rl = rootOfLabel(c.symbol, c.exchange || ''); return rl !== c.symbol; })()}

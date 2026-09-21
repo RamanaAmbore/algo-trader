@@ -262,7 +262,8 @@
       // (tab just returned from hibernation — stores are reloading and a flurry
       // of ticks arrives before data stabilises). postHibernationRefiring clears
       // after all stores resolve or after a 3s max-wait timeout.
-      if (!get(postHibernationRefiring)) _shimmer.notify('strip');
+      // _shimmer.notify removed: cell-freshness-pulse rainbow fires on every SSE tick;
+      // flash discipline limits per-tick animation to ltp/spot/chg% columns only.
     });
   });
 
@@ -772,7 +773,7 @@
   // triggers the rainbow-fade keyframe defined in app.css.
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '') + ' ' + _shimmer.classOf('strip')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
       onclick={(e) => _openBreakdown(e, 'P')}
@@ -938,12 +939,9 @@
      with the per-cell directional flash. Operator: "I don't see any
      animation refreshing nav strip". */
   @keyframes ps-heartbeat-pulse {
-    0%   { border-bottom-color: rgba(251, 191, 36, 0.30);
-           box-shadow: 0 1px 0 0 rgba(251, 191, 36, 0.0); }
-    30%  { border-bottom-color: rgba(251, 191, 36, 1.00);
-           box-shadow: 0 2px 10px 0 rgba(251, 191, 36, 0.55); }
-    100% { border-bottom-color: rgba(251, 191, 36, 0.30);
-           box-shadow: 0 1px 0 0 rgba(251, 191, 36, 0.0); }
+    0%   { border-bottom-color: rgba(251, 191, 36, 0.20); }
+    30%  { border-bottom-color: rgba(251, 191, 36, 0.55); }
+    100% { border-bottom-color: rgba(251, 191, 36, 0.20); }
   }
   .ps-strip.ps-heartbeat {
     animation: ps-heartbeat-pulse 300ms ease-out forwards;

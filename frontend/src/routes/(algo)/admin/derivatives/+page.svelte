@@ -4766,7 +4766,7 @@
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num byund-chg-sep {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
-            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'} {flash.classOf(`${g.underlying}:day_w`)}">{aggCompact(_dayVal)}</span>
+            <span class="num {_dayVal > 0 ? 'cell-pos' : _dayVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_dayVal)}</span>
             <span class="num {_pnlVal > 0 ? 'cell-pos' : _pnlVal < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_pnlVal)}</span>
             <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-flat'}">{_expVal === 0 ? '—' : aggCompact(_expVal)}</span>
             <span class="num {_extVal > 0 ? 'cell-pos' : _extVal < 0 ? 'cell-neg' : 'cell-flat'}">{_extVal === 0 ? '—' : aggCompact(_extVal)}</span>
