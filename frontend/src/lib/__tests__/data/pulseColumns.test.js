@@ -1,4 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
+import { mkSymColLeft, mkSymColRight } from '../../data/pulseColumns.js';
+
 
 // positionsDerivedStore is a Svelte 5 reactive module (.svelte.js) — mock it so
 // vitest doesn't try to process $state/$derived runes without the Svelte plugin.
@@ -838,5 +840,33 @@ describe('mkThetaCol — TOTAL row renders empty string (Fix 5)', () => {
   it('normal row with a real theta value delegates to aggFmtGrid', () => {
     col.valueFormatter({ data: {}, value: -750 });
     expect(aggFmtGrid).toHaveBeenCalledWith({ value: -750 });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// ag-col-sym cellClass — mkSymColLeft + mkSymColRight (Change 1 + Change 2)
+// ---------------------------------------------------------------------------
+
+describe('mkSymColLeft — cellClass contains ag-col-sym', () => {
+  const col = mkSymColLeft({ symRenderer: (p) => p.data?.tradingsymbol });
+
+  it('cellClass contains ag-col-sym', () => {
+    expect(col.cellClass).toContain('ag-col-sym');
+  });
+
+  it('cellClass contains ag-col-sym-left', () => {
+    expect(col.cellClass).toContain('ag-col-sym-left');
+  });
+});
+
+describe('mkSymColRight — cellClass contains ag-col-sym', () => {
+  const col = mkSymColRight({ symRenderer: (p) => p.data?.tradingsymbol });
+
+  it('cellClass contains ag-col-sym', () => {
+    expect(col.cellClass).toContain('ag-col-sym');
+  });
+
+  it('cellClass does not contain ag-col-sym-left (right grid has no left variant)', () => {
+    expect(col.cellClass).not.toContain('ag-col-sym-left');
   });
 });

@@ -1071,7 +1071,7 @@
   --ag-border-color: rgba(255,255,255,0.08);
   --ag-font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   --ag-font-size: 0.72rem;
-  --ag-row-height: 24px;
+  --ag-row-height: 28px;
   --ag-header-height: 28px;
   --ag-wrapper-border-radius: 4px;
   --ag-input-background-color: #152033;
@@ -1166,6 +1166,11 @@
      grid (PerformancePage + watchlist) inherits it without per-column
      style. */
   font-variant-numeric: tabular-nums;
+}
+.ag-theme-algo .ag-col-sym {
+  display: flex !important;
+  align-items: center !important;
+  overflow: hidden;
 }
 .ag-theme-algo .ag-row {
   font-size: 0.72rem !important;
