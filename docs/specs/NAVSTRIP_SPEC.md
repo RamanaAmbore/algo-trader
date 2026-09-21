@@ -37,6 +37,14 @@ in width. Content scrolls vertically if needed. Dismiss via Escape key or clicki
 the panel. The panel coexists independently with any modal on the pill's **value slot**
 (e.g., the DayPnlBreakup modal on P:1 value).
 
+**NavBreakdown P-slot per-account day P&L source** (Sep 2026, commit 42b5573b):
+Each account row in the P-pill breakdown now reads `positionsDayPnlStore.byAccount[acct.toUpperCase()]`
+(live-LTP-aware via portfolioStore's `_posAgg` computation) instead of computing 
+`baseDayPnlForPosition(p)` on raw broker rows. The `portfolioStore.positions.byAccount` map
+accumulates `p._day_pnl` per account in the same pass as `byKey`, keyed uppercase with a 
+`'TOTAL'` entry for the grand total. This ensures NavBreakdown P-slot per-account values 
+match Pulse positions values exactly, eliminating stale `day_change_val` discrepancies.
+
 **NavBreakdown P:1 TOTAL row SSOT** (Aug 2026, commit b33d056b): The TOTAL row in the 
 P-pill breakdown reads `positionsDayPnlStore.total` directly (the canonical live day P&L 
 aggregate), ensuring the TOTAL always matches the P:1 pill value in the NavStrip exactly. 
@@ -517,6 +525,15 @@ richer floating overlay distinct from the compact tooltip style used elsewhere:
 This panel aesthetic matches the DayPnlBreakup modal so all overlay surfaces in the strip
 have a unified visual language.
 
+#### NavBreakdown TOTAL row styling
+
+All four NavBreakdown grids (P, M, C, H) apply consistent TOTAL row styling (Sep 2026, 
+commit 27a8e442): each grid's `getRowClass` callback checks `p.data?.account === 'TOTAL'` 
+and applies the `totals-row` CSS class. The class renders an amber background (22% opacity 
+overlay on `#1d2a44`) with amber top/bottom borders, matching the PerformancePage and 
+Derivatives legs grid TOTAL row visual treatment. This unified styling reinforces the 
+aggregate row across all breakdown grids.
+
 ### Per-slot hover hints
 
 Each slot value (except the clickable Day P&L) has an **ⓘ** icon immediately to its
@@ -749,3 +766,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-09-14 | v1.5 Exp P&L spot SSOT consolidation (underlyingSpotStore): (1) New module-level store `underlyingSpotStore.svelte.js` centralizes underlying spot quotes (`{ ROOT: { ltp, day_pct, prev_close } }`). Exported API: `getUnderlyingSpot(root)` (cached LTP or 0), `loadUnderlyingSpots(pairs)` (batchQuote fetch + symbolStore publish), `patchUnderlyingSpot(root, ltp)` (per-tick update). (2) PositionStrip simplified: `_resolveOptionSpot(p.underlying_ltp)` reduced to single `getUnderlyingSpot(root)` call; removed symbolStore fallback chain (3 key attempts). (3) Derivatives page delegates to shared store: `loadUnderlyingQuotes()` → `loadUnderlyingSpots()`, eliminating local state duplication. Both surfaces now read identical spot prices; NavStrip P:3 and derivatives Exp P&L no longer diverge. (4) Update §1 EXP Slot spec: Spot resolution now SSOT-first via store (5s batchQuote + per-tick patches). Added detailed subsection §1.4 "Exp P&L Spot Architecture" documenting store design, refresh cadence, per-tick patching. Updated §2 SSOT table: P:3 row now references `underlyingSpotStore` instead of backend Pass 3 enrichment. Added test case: Exp P&L convergence check. |
 | 2026-09-14 | v1.6 positionsDerivedStore unification: (1) New module-level store `positionsDerivedStore.svelte.js` unifies day P&L and expiry P&L computation across all surfaces (NavStrip, Pulse, Derivatives). Store exports `{ total, byKey }` with metrics `{ day_pnl, exp_pnl }` computed on 5s book-poll cadence + immediate postback fill. (2) §1 Pill Layout P:1 and P:3 slots updated — P:1 now reads `positionsDerivedStore.total.day_pnl` (5s cadence, no 4Hz Pulse-driven override); P:3 now reads `positionsDerivedStore.total.exp_pnl` (5s cadence). (3) §1.2 EXP Slot specification refactored: formula unchanged (open: intrinsic + realised, closed: realised || pnl), but **SSOT updated** to store reads instead of backend computation. Cadence changed from "4Hz throttled" to "5s book-poll + immediate postback". Spot resolution via `underlyingSpotStore.getUnderlyingSpot(root)` unchanged. (4) §2 Data Sources SSOT table refactored: P:1 entry now documents store-driven workflow (no `setFromPulse` override); P:3 entry details exp P&L computation and spot sourcing from `underlyingSpotStore`. (5) §1.4 new subsection "Positions Derived Store" comprehensive documentation — purpose, module path, data structure, cadence, data flow, consumers (PositionStrip P:1/P:3, Pulse grids, Derivatives page). All surfaces now converge on single `positionsDerivedStore` SSOT; 5s refresh cycle + immediate fills eliminate cross-page divergence. |
 | 2026-09-18 | v1.7 Day change percentage (`chg_pct`) architecture (commit d8633d4e): (1) New helper `dayChangePct(dayPnl, prevMv)` exported from `frontend/src/lib/data/nav.js` — pure function returning `(dayPnl / prevMv) × 100` or `null` when `prevMv ≤ 0`. Lives only in nav.js. (2) `positionsDerivedStore.byKey[sym]` shape expanded — each symbol entry now includes `{ day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct }`. `prev_mv` = reference market value (prev_close × \|qty\|, or avg if prev_close=0); `chg_pct` = `dayChangePct(day_pnl, prev_mv)` computed once per symbol at 4Hz. (3) §1.4 "Positions Derived Store" subsection expanded — data structure documentation updated to include `extrinsic`, `prev_mv`, `chg_pct` fields; per-symbol `prev_mv` SSOT description; per-symbol `chg_pct` computation detail; new paragraph on `dayChangePct()` helper (formula, guard, usage). (4) All surfaces (derivatives legs, MarketPulse positions, pulseColumns) read `byKey[sym].chg_pct` directly — no surface re-computes percentage; single computation source prevents divergence. |
+| 2026-09-20 | v1.8 NavBreakdown P-slot per-account day P&L + TOTAL row styling (commits 42b5573b, 27a8e442): (1) **Per-account data source change** (commit 42b5573b): Each NavBreakdown P account row now reads `positionsDayPnlStore.byAccount[acct.toUpperCase()]` (live-LTP-aware via `portfolioStore._posAgg`) instead of computing `baseDayPnlForPosition(p)` on raw broker rows. `portfolioStore.positions.byAccount` accumulates `p._day_pnl` per account in the same pass as `byKey`, keyed uppercase with a `'TOTAL'` entry for grand total. P-slot per-account values now match Pulse positions values exactly, eliminating stale `day_change_val` gaps. (2) **TOTAL row styling** (commit 27a8e442): All four NavBreakdown grids (P, M, C, H) now use `getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : ''` to apply `totals-row` CSS class (amber 22% opacity bg overlay on `#1d2a44` + amber top/bottom borders) to TOTAL rows, matching PerformancePage and Derivatives legs grid styling for visual consistency. Updated §1.2 "Pill label click-to-breakdown" and §6 "Pill label panel popups" subsections with per-account data flow and new TOTAL row styling subsection. |

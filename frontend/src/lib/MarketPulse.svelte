@@ -3613,7 +3613,9 @@
       rightColDefs[_dayPnlColIdx] = {
         ..._origDayPnlCol,
         valueGetter: p => {
-          if (p.node?.rowPinned) return positionsDayPnlStore.total ?? p.data?.day_pnl;
+          if (p.node?.rowPinned && p.data?._majorGroup === 'positions')
+            return positionsDayPnlStore.total ?? p.data?.day_pnl;
+          if (p.node?.rowPinned) return p.data?.day_pnl;
           const sym = String(p.data?.tradingsymbol || '').toUpperCase();
           return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
         },

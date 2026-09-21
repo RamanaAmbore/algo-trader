@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.19 — 2026-09-18  
+**Version**: 1.20 — 2026-09-20  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -596,10 +596,11 @@ Pulse's accurate in-memory values.
 
 Module-level singleton in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` (Aug 2026) 
 is the canonical source of truth for live holdings day P&L across all Pulse surfaces and 
-dashboard. It exports `{ total, byKey, byAccount }` where:
+dashboard. It exports `{ total, byKey, byAccount, chgPctByKey }` where:
 - `total` — sum of all holdings day P&L (₹ value, real-time)
 - `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol
 - `byAccount` — per-account holdings day P&L breakdown + `'TOTAL'` for pulse-scope aggregate
+- `chgPctByKey` — symbol-to-day_pnl_percent map (commit 869e4b78); delegates to `portfolioStore.holdings.chgPctByKey ?? {}`; used by `_dayPnlPctValueGetter` in `pulseColumns.js` for holdings Chg% column
 
 **Update direction — background perf task + Pulse coordinate**:
 - Background `_perf_fetch_all_broker_data()` task in `backend/api/background.py` now 
@@ -613,6 +614,11 @@ dashboard. It exports `{ total, byKey, byAccount }` where:
 - Dashboard `_holdingsSummary`, `_todayPnl`, `_holdingsFor` all now use 
   `(ltp - previous_close) × qty` formula (guarded: `previous_close > 0`) instead of 
   raw `day_change_val` from broker.
+- **Pulse override fix (commit 869e4b78)**: When `setHoldingsFromPulse(byKey, total)` is called 
+  by MarketPulse, the pulse-override branch now returns `chgPctByKey: base.chgPctByKey` 
+  alongside existing `total/byKey/byAccount/chg_pct`. Without this, `holdingsDayPnlStore.chgPctByKey` 
+  fell back to `{}` after first pulse update → holdings Chg% column showed null instead of 
+  percent values.
 
 **Data flow**:
 1. Background task fetches raw broker holdings via `@for_all_accounts` fan-out
@@ -714,7 +720,7 @@ Positions grid:
 - Lots (52px) — qty in F&O lot units; via `lotsForRow()` helper; null hidden
 - LTP (77px) — SSE tick + vs-avg/vs-prev heat; snapshot-frozen when is_animating=false
 - Avg (68px) — weighted average entry (directional tint: long green, short red, flat gray)
-- Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms); reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence, not Pulse-driven)
+- Day P&L (78px) — today's profit/loss; tick-flash on poll cycles (300ms); pinned TOTAL row reads from `positionsDayPnlStore.total` (commit 27a8e442), regular rows read from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence)
 - Close (68px) — previous close (muted)
 - P&L (78px) — lifetime profit/loss; directional + tick-flash
 - P&L % (64px) — P&L as % of cost basis
@@ -748,8 +754,8 @@ Holdings grid (St column filtered out):
 - **Derivatives candidates**: Per-root day P&L sums in overlay converge to Pulse positions TOTAL by reading `positionsDerivedStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings). `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root aggregation.
 
 **TOTAL row** (pinned bottom):
-- Positions: sums all filtered position rows; F&O-only expiry value appended to P pill slot 3
-- Holdings: sums all filtered holdings; day P&L = sum of per-row holdings day change
+- Positions: sums all filtered position rows; day P&L valueGetter reads `positionsDayPnlStore.total` for pinned rows (detection: `p.node?.rowPinned && p.data?._majorGroup === 'positions'`), ensuring TOTAL reflects accurate store-aggregated day P&L; F&O-only expiry value appended to P pill slot 3
+- Holdings: sums all filtered holdings; day P&L = `p.data?.day_pnl` (accumulated holdings total)
 - Styling: amber background (22% opacity) + borders to distinguish from data rows
 - P&L %-cell formula: `day_pnl / (close × qty)` per symbol, market-value-weighted for TOTAL
 

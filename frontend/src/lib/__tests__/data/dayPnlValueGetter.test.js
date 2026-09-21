@@ -1,19 +1,20 @@
 /**
  * dayPnlValueGetter.test.js
  *
- * Unit tests for the MarketPulse positions grid day_pnl column valueGetter.
+ * Unit tests for the MarketPulse positions and holdings grid day_pnl column valueGetter.
  *
- * The valueGetter handles two cases:
- *   1. Pinned rows (totals): returns positionsDayPnlStore.total
- *   2. Regular rows: returns positionsDerivedStore.get(sym).day_pnl
+ * The valueGetter handles three cases:
+ *   1. Pinned positions rows (totals): returns positionsDayPnlStore.total
+ *   2. Pinned holdings rows (totals): returns p.data.day_pnl (NOT store total)
+ *   3. Regular rows: returns positionsDerivedStore.get(sym).day_pnl
  *
  * Five quality dimensions:
- *   1. SSOT   — uses two canonical stores (positionsDayPnlStore.total and
- *               positionsDerivedStore.byKey[sym])
+ *   1. SSOT   — uses two canonical stores (positionsDayPnlStore.total for positions only;
+ *               positionsDerivedStore.byKey[sym] for regular rows)
  *   2. Perf   — pure unit test, no DOM / network, sub-millisecond
- *   3. Stale  — fallback to p.data.day_pnl when store values are null
+ *   3. Stale  — fallback to p.data.day_pnl when store values are null or grid is holdings
  *   4. Reuse  — cell composition (ag-Grid params object)
- *   5. UX     — pinned-row totals vs per-row derived values
+ *   5. UX     — pinned-row totals vs per-row derived values; holdings pinned rows use raw data
  */
 
 import { describe, it, expect } from 'vitest';
@@ -27,7 +28,9 @@ import { describe, it, expect } from 'vitest';
  * @returns {number|null} - day P&L value to display
  */
 function dayPnlValueGetter(p, storeTotalFn, derivedGetFn) {
-  if (p.node?.rowPinned) return storeTotalFn() ?? p.data?.day_pnl;
+  if (p.node?.rowPinned && p.data?._majorGroup === 'positions')
+    return storeTotalFn() ?? p.data?.day_pnl;
+  if (p.node?.rowPinned) return p.data?.day_pnl;
   const sym = String(p.data?.tradingsymbol || '').toUpperCase();
   return derivedGetFn(sym)?.day_pnl ?? p.data?.day_pnl;
 }
@@ -35,11 +38,11 @@ function dayPnlValueGetter(p, storeTotalFn, derivedGetFn) {
 // ── Test 1: Pinned rows (totals) ────────────────────────────────────────────
 
 describe('dayPnlValueGetter — pinned rows', () => {
-  it('p.node.rowPinned = "bottom": returns storeTotalFn() result, ignores tradingsymbol', () => {
-    // Scenario: totals row pinned at bottom with store total = 15000
+  it('p.node.rowPinned = "bottom" and _majorGroup = "positions": returns storeTotalFn() result, ignores tradingsymbol', () => {
+    // Scenario: totals row pinned at bottom with store total = 15000 for positions grid
     const p = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'RELIANCE', day_pnl: 999 }, // ignored
+      data: { _majorGroup: 'positions', tradingsymbol: 'RELIANCE', day_pnl: 999 }, // ignored
     };
     const storeTotalFn = () => 15000;
     const derivedGetFn = () => ({ day_pnl: null });
@@ -49,11 +52,11 @@ describe('dayPnlValueGetter — pinned rows', () => {
     expect(result).toBe(15000);
   });
 
-  it('p.node.rowPinned = "top": returns storeTotalFn() result (same logic as bottom)', () => {
-    // Scenario: totals row pinned at top
+  it('p.node.rowPinned = "top" and _majorGroup = "positions": returns storeTotalFn() result (same logic as bottom)', () => {
+    // Scenario: totals row pinned at top for positions grid
     const p = {
       node: { rowPinned: 'top' },
-      data: { tradingsymbol: 'INFY', day_pnl: 500 }, // ignored
+      data: { _majorGroup: 'positions', tradingsymbol: 'INFY', day_pnl: 500 }, // ignored
     };
     const storeTotalFn = () => 8500;
     const derivedGetFn = () => ({ day_pnl: null });
@@ -63,11 +66,11 @@ describe('dayPnlValueGetter — pinned rows', () => {
     expect(result).toBe(8500);
   });
 
-  it('p.node.rowPinned = "bottom" and storeTotalFn() = null: falls back to p.data.day_pnl', () => {
-    // Scenario: pinned row but store total is null (stale or empty)
+  it('p.node.rowPinned = "bottom", _majorGroup = "positions", and storeTotalFn() = null: falls back to p.data.day_pnl', () => {
+    // Scenario: pinned positions row but store total is null (stale or empty)
     const p = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'TCS', day_pnl: 1200 },
+      data: { _majorGroup: 'positions', tradingsymbol: 'TCS', day_pnl: 1200 },
     };
     const storeTotalFn = () => null;
     const derivedGetFn = () => ({ day_pnl: null });
@@ -77,12 +80,12 @@ describe('dayPnlValueGetter — pinned rows', () => {
     expect(result).toBe(1200);
   });
 
-  it('p.node.rowPinned = "bottom" and storeTotalFn() = 0: returns 0 (not falsy check)', () => {
-    // Scenario: store total is exactly zero (valid value, not null/undefined)
+  it('p.node.rowPinned = "bottom", _majorGroup = "positions", and storeTotalFn() = 0: returns 0 (not falsy check)', () => {
+    // Scenario: store total is exactly zero (valid value, not null/undefined) for positions
     // The ?? operator should NOT fall back to p.data.day_pnl when result is 0
     const p = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'HDFC', day_pnl: 5000 },
+      data: { _majorGroup: 'positions', tradingsymbol: 'HDFC', day_pnl: 5000 },
     };
     const storeTotalFn = () => 0;
     const derivedGetFn = () => ({ day_pnl: null });
@@ -92,11 +95,11 @@ describe('dayPnlValueGetter — pinned rows', () => {
     expect(result).toBe(0);
   });
 
-  it('p.node.rowPinned = "bottom" with negative total: returns negative value', () => {
-    // Scenario: portfolio is down; store total = -2500
+  it('p.node.rowPinned = "bottom", _majorGroup = "positions", with negative total: returns negative value', () => {
+    // Scenario: portfolio is down; store total = -2500 for positions
     const p = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'SBIN', day_pnl: 100 }, // ignored
+      data: { _majorGroup: 'positions', tradingsymbol: 'SBIN', day_pnl: 100 }, // ignored
     };
     const storeTotalFn = () => -2500;
     const derivedGetFn = () => ({ day_pnl: null });
@@ -104,6 +107,67 @@ describe('dayPnlValueGetter — pinned rows', () => {
     const result = dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
 
     expect(result).toBe(-2500);
+  });
+
+  it('p.node.rowPinned = "bottom" and _majorGroup = "holdings": returns p.data.day_pnl (NOT storeTotalFn)', () => {
+    // Scenario: pinned holdings row — must NOT use positionsDayPnlStore.total
+    // Holdings grid has its own total accounting
+    const p = {
+      node: { rowPinned: 'bottom' },
+      data: { _majorGroup: 'holdings', tradingsymbol: 'RELIANCE', day_pnl: 3500 },
+    };
+    const storeTotalFn = () => 15000; // positions store total (MUST BE IGNORED for holdings)
+    const derivedGetFn = () => ({ day_pnl: null });
+
+    const result = dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
+
+    // Must return holdings' own p.data.day_pnl, not positions store total
+    expect(result).toBe(3500);
+  });
+
+  it('p.node.rowPinned = "top" and _majorGroup = "holdings": returns p.data.day_pnl (top pin)', () => {
+    // Scenario: holdings pinned at top — same logic, different pin position
+    const p = {
+      node: { rowPinned: 'top' },
+      data: { _majorGroup: 'holdings', tradingsymbol: 'INFY', day_pnl: 5200 },
+    };
+    const storeTotalFn = () => 20000; // IGNORED for holdings
+    const derivedGetFn = () => ({ day_pnl: null });
+
+    const result = dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
+
+    expect(result).toBe(5200);
+  });
+
+  it('p.node.rowPinned = "bottom" with no _majorGroup: returns p.data.day_pnl (not storeTotalFn)', () => {
+    // Scenario: pinned row without _majorGroup (edge case) — treat as non-positions, use p.data.day_pnl
+    const p = {
+      node: { rowPinned: 'bottom' },
+      data: { tradingsymbol: 'TCS', day_pnl: 2100 }, // no _majorGroup key
+    };
+    const storeTotalFn = () => 18000; // IGNORED because _majorGroup is not 'positions'
+    const derivedGetFn = () => ({ day_pnl: null });
+
+    const result = dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
+
+    // Without _majorGroup === 'positions', use p.data.day_pnl
+    expect(result).toBe(2100);
+  });
+
+  it('p.node.rowPinned = "bottom", _majorGroup = "holdings", storeTotalFn() = 0: returns p.data.day_pnl', () => {
+    // Scenario: holdings pinned row with storeTotalFn() = 0 — must NOT treat 0 as fallback
+    // Holdings row must always use p.data.day_pnl, regardless of storeTotalFn
+    const p = {
+      node: { rowPinned: 'bottom' },
+      data: { _majorGroup: 'holdings', tradingsymbol: 'HDFC', day_pnl: 4700 },
+    };
+    const storeTotalFn = () => 0; // positions total is zero (IGNORED for holdings)
+    const derivedGetFn = () => ({ day_pnl: null });
+
+    const result = dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
+
+    // Must use holdings' p.data.day_pnl even when storeTotalFn is 0
+    expect(result).toBe(4700);
   });
 });
 
@@ -349,7 +413,7 @@ describe('dayPnlValueGetter — multiple symbols in grid', () => {
   });
 
   it('pinned row and two regular rows use correct source for each', () => {
-    // Scenario: totals row + two position rows
+    // Scenario: totals row (positions) + two position rows
     const storeTotalFn = () => 15500;
     const derivedGetFn = (sym) => {
       if (sym === 'RELIANCE') return { day_pnl: 3000 };
@@ -359,7 +423,7 @@ describe('dayPnlValueGetter — multiple symbols in grid', () => {
 
     const pTotals = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'TOTAL', day_pnl: 999 }, // ignored
+      data: { _majorGroup: 'positions', tradingsymbol: 'TOTAL', day_pnl: 999 }, // ignored
     };
     const pReliance = {
       node: { rowPinned: undefined },
@@ -374,20 +438,20 @@ describe('dayPnlValueGetter — multiple symbols in grid', () => {
     const resultReliance = dayPnlValueGetter(pReliance, storeTotalFn, derivedGetFn);
     const resultTcs = dayPnlValueGetter(pTcs, storeTotalFn, derivedGetFn);
 
-    expect(resultTotals).toBe(15500); // from storeTotalFn
-    expect(resultReliance).toBe(3000); // from derivedGetFn
-    expect(resultTcs).toBe(12500); // from derivedGetFn
+    expect(resultTotals).toBe(15500); // from storeTotalFn (positions pinned)
+    expect(resultReliance).toBe(3000); // from derivedGetFn (regular row)
+    expect(resultTcs).toBe(12500); // from derivedGetFn (regular row)
   });
 });
 
 // ── Test 5: SSOT contract validation ────────────────────────────────────────
 
 describe('dayPnlValueGetter — SSOT contract', () => {
-  it('always prefers storeTotalFn for pinned rows (never derivedGetFn)', () => {
-    // Validate: pinned rows NEVER call derivedGetFn, only storeTotalFn
+  it('pinned positions rows prefer storeTotalFn (never derivedGetFn) when _majorGroup = "positions"', () => {
+    // Validate: pinned positions rows NEVER call derivedGetFn, only storeTotalFn
     const p = {
       node: { rowPinned: 'bottom' },
-      data: { tradingsymbol: 'TEST', day_pnl: 100 },
+      data: { _majorGroup: 'positions', tradingsymbol: 'TEST', day_pnl: 100 },
     };
 
     let derivedGetFnCalled = false;
@@ -400,6 +464,25 @@ describe('dayPnlValueGetter — SSOT contract', () => {
     dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
 
     expect(derivedGetFnCalled).toBe(false);
+  });
+
+  it('pinned holdings rows never call storeTotalFn when _majorGroup = "holdings"', () => {
+    // Validate: pinned holdings rows use p.data.day_pnl, never storeTotalFn
+    const p = {
+      node: { rowPinned: 'bottom' },
+      data: { _majorGroup: 'holdings', tradingsymbol: 'TEST', day_pnl: 2500 },
+    };
+
+    let storeTotalFnCalled = false;
+    const storeTotalFn = () => {
+      storeTotalFnCalled = true;
+      return 5000;
+    };
+    const derivedGetFn = (sym) => ({ day_pnl: 999 });
+
+    dayPnlValueGetter(p, storeTotalFn, derivedGetFn);
+
+    expect(storeTotalFnCalled).toBe(false);
   });
 
   it('always prefers derivedGetFn for regular rows (calls both, prefers derived result)', () => {

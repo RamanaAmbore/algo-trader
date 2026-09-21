@@ -4278,6 +4278,62 @@ prices survive midnight reconciliation until replaced by Monday's 08:00 open sna
 - `backend/api/routes/positions.py::_positions_snapshot` (reader filter)
 - `backend/api/routes/holdings.py::get_holdings` (reader filter)
 
+### 21.5.9 Frontend data layer — portfolioStore + positionsDayPnlStore
+
+The frontend's unified reactive data layer consists of two stores:
+
+**`portfolioStore`** — module-level singleton in
+`frontend/src/lib/data/portfolioStore.svelte.js`. Computes all position and
+holdings aggregates via $derived.by layers (Tier 1: raw + LTP, Tier 2: day P&L
++ F&O Greeks, Tier 3: chg_pct). Exports:
+
+- `portfolioStore.positions` — `{ total, byKey, byRootPositions, byRootHoldings,
+  byRoot, expiryByAcct }`
+  - `total` — `{ day_pnl, exp_pnl, extrinsic, prev_mv, chg_pct }`
+  - `byKey` — per-symbol aggregates, same structure as total
+  - `byAccount` — per-account day P&L accumulation (UPPERCASE account codes)
+    including `TOTAL` key
+  - `byRoot` — for F&O, per-underlying (root symbol) aggregates with leg list
+  - `byRootPositions` — cross-hedge root aggregates
+  - `expiryByAcct` — expiry P&L per account (Map)
+- `portfolioStore.holdings` — `{ total, byKey, byAccount, chgPctByKey }` —
+  pulse-overridable
+  - `byAccount` — per-account holdings day P&L (UPPERCASE account + TOTAL)
+  - `chgPctByKey` — preserved from pulse override for accurate Chg% column
+- `portfolioStore.funds` — `{ total, byAccount }`
+- `setHoldingsFromPulse(byKey, total)` — MarketPulse calls this after each
+  unified grid build to sync holdings values
+
+**SWR null-guard:** When any dependency (`positionsStore`, `pulseHoldingsStore`,
+`fundsStore`) momentarily goes null during a 5s poll refresh, the last-known
+snapshot is returned instead of computing with empty arrays. Prevents
+derived values from zeroing during fetch transitions.
+
+**`positionsDayPnlStore`** — backward-compatibility shim in
+`frontend/src/lib/data/positionsDayPnlStore.svelte.js`. Delegates to
+`portfolioStore.positions` and exports a legacy numeric API so existing
+consumers (NavCard, NavBreakdown, MarketPulse) need no changes:
+
+- `.total` → number (= `portfolioStore.positions.total.day_pnl`)
+- `.byKey[sym]` → number (per-symbol day P&L via Proxy)
+- `.byAccount` → per-account day P&L including `TOTAL` key
+- `.setFromPulse()` → no-op
+
+**Consumers:**
+
+| Surface | Reader | Usage |
+|---|---|---|
+| NavBreakdown | P-slot | displays `positionsDayPnlStore.byAccount[acct]` per account |
+| MarketPulse TOTAL row | position grid footer | `positionsDayPnlStore.total` |
+| Derivatives page | Greeks aggregate | `positionsDayPnlStore.byKey[root]` per F&O underlying |
+
+**Files:**
+- `frontend/src/lib/data/portfolioStore.svelte.js` — unified SWR singleton
+- `frontend/src/lib/data/positionsDayPnlStore.svelte.js` — legacy shim + Proxy
+- `frontend/src/lib/PositionStrip.svelte` — holder of portfolioStore reference
+- `frontend/src/lib/MarketPulse.svelte` — calls `setHoldingsFromPulse` after each grid build
+- `frontend/src/lib/NavBreakdown.svelte` — P-slot reads `byAccount`
+
 ---
 
 ## 21.6 Persistence three-tier — cache → DB → broker

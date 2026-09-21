@@ -122,13 +122,8 @@
       if (Number.isFinite(v)) { dayPnl += v; any = true; }
     }
     for (const h of _accountFilter(_holdings, _eqAccounts)) {
-      const _hClose = Number(h.previous_close) || Number(h.close_price) || 0;
-      const _hLtp   = Number(h.last_price ?? 0);
-      const _hQty   = Number(h.quantity ?? 0);
-      const _hDcv   = Number(h.day_change_val ?? 0);
-      const v = (_hClose > 0 && Math.abs(_hLtp - _hClose) > 0.005)
-        ? (_hLtp - _hClose) * _hQty
-        : _hDcv;
+      const sym = String(h.tradingsymbol || h.symbol || '').toUpperCase();
+      const v = holdingsDayPnlStore.byKey[sym] ?? (Number(h.day_change_val) || 0);
       if (Number.isFinite(v)) { dayPnl += v; any = true; }
     }
     return any ? dayPnl : null;
@@ -731,12 +726,7 @@
     const raw = [];
     for (const h of _accountFilter(_holdings, accounts)) {
       const sym = String(h.tradingsymbol || h.symbol || '');
-      const _hClose2 = Number(h.previous_close) || Number(h.close_price) || 0;
-      const _hLtp2   = Number(h.last_price ?? 0);
-      const _hQty2   = Number(h.quantity ?? 0);
-      const pnl = (_hClose2 > 0 && Math.abs(_hLtp2 - _hClose2) > 0.005)
-        ? (_hLtp2 - _hClose2) * _hQty2
-        : Number(h.day_change_val ?? 0);
+      const pnl = holdingsDayPnlStore.byKey[sym.toUpperCase()] ?? (Number(h.day_change_val) || 0);
       if (!sym) continue;
       if (cls) {
         const c = classifyByIndex(sym);

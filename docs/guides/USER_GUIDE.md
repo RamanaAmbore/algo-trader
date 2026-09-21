@@ -168,6 +168,21 @@ You have NIFTY options and CRUDEOIL futures in your portfolio.
 - **CRUDEOIL futures panel:** shows live MCX tick — CRUDEOIL has been trading since 09:00. Day P&L updates in real time.
 - No "stale data" warning for CRUDEOIL — the platform knows MCX is open on NSE holidays.
 
+## Pulse — live positions and holdings at a glance
+
+The **Pulse** page (also called **MarketPulse** elsewhere) is your live monitor for
+positions, holdings, and market moves. It displays two linked grids: positions (left,
+amber header) and holdings (right, cyan header). Each row updates every second with live
+LTP from the market.
+
+**Holdings grid — the Chg% column** shows the percentage change for each holding since
+yesterday's close. When you filter the grid by account, the Chg% values now display
+correctly and update live as prices move. Previously, the column could show null values
+after applying the first account filter due to a display-state issue. Now all filter
+combinations return the accurate live-price percentage.
+
+---
+
 ## Day P&L — the four formulas (reference)
 
 The platform computes intraday profit/loss using one of four formulas based on position
@@ -240,7 +255,10 @@ modal — a detailed per-account, per-symbol table showing exactly how today's i
 or loss accumulated:
 
 **What the modal shows**:
-- Per-account subtotal at the top (sum of all symbols for that account)
+- Per-account subtotal at the top (sum of all symbols for that account), showing live-accurate
+  day P&L for each account (computed via the same `positionsDayPnlStore` used by MarketPulse
+  positions). Previously showed stale broker `day_change_val` which could display zero for MCX
+  positions or intraday positions that opened after session start.
 - Grand total across all accounts (should match the P pill value)
 - One row per symbol with non-zero day P&L, showing:
   - **prev_close**: yesterday's official settlement price (frozen at the first snapshot of
