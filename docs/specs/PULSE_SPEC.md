@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.20 — 2026-09-20  
+**Version**: 1.19 — 2026-09-21  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -163,7 +163,7 @@ See Section 5 for DB-first policy and fallback ladder.
 - **Positions** (Aug 2026 `_override_stale_close_from_snapshot` fix): `_override_stale_close_from_snapshot()` now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` as the reference close price and writes `previous_close` to ALL matched position rows (matching holdings fix 75a335f7). Frontend `positionsDayPnlStore`, `pulseUnified`, and `nav.js` now prefer `p.previous_close` (frozen official settlement) over `p.close_price` (Kite's mutable field). For snapshot readers in closed-hours mode, `prev_batch` CTE filters `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` within a 7-day lookback window to handle multi-day holiday gaps; `day_change_val` recompute uses `(ltp − previous_close) × qty` when `previous_close` > 0 (official settlement); falls back to `(ltp − prev_ltp) × qty` when unavailable
 - **Holdings** (Aug 2026): `_HOLDINGS_SNAPSHOT_SQL` now includes a `prev_batch` CTE (same pattern as positions) that finds the most-recent prior-day LTP per (account, symbol) within a 7-day lookback. `_build_holding_row_from_snapshot()` uses `(ltp - prev_ltp) × qty` when `prev_ltp > 0`, matching the positions closed-hours pattern. Holdings day P&L during closed hours is now computed from an actual price diff, not a stale stored value. Fallback to `(ltp - previous_close) × qty` when `prev_ltp` is unavailable/zero, consistent with live open-hours formula
 - Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly. Formula applies canonical fast-path (`day_change_val` guard) for ALL overnight positions (both longs and shorts). Short position guard corrected in commit 1769cffc: overnight quantity check is now `oq !== 0` (not `oq > 0`), ensuring short MCX positions receive the stale-close guard during the 23:30–09:00 IST window and avoiding catastrophic ₹5,00,000+ overstatement in day P&L.
-- **Flat row hygiene fix (commit ed63b9fe)**: `_apply_flat_row_hygiene` now zeros `day_change_val` ONLY for pure intraday round-trips — rows where `(quantity == 0) AND (overnight_quantity == 0)`. Closed overnight futures (qty=0, oq>0) now retain their correct backstop `day_change_val = pnl` from `apply_day_change_backstop` (Case 3), fixing missing day P&L on closed overnight F&O positions. Previous overly-broad mask `(quantity == 0)` was undoing backstop results for all flat rows including closed overnight legs.
+- **Flat row hygiene fix (commit ed63b9fe)**: `_apply_flat_row_hygiene` now zeros `day_change_val` ONLY when `abs(pnl) < 0.005` (break-even round-trips). When a realised gain/loss exists (pnl ≥ 0.005), `day_change_val` is preserved as the realised P&L. Addresses Case 3 (closed intraday, qty=0, oq=0): positions opened and closed on the same day now show realised P&L instead of 0. Previous mask `(quantity == 0)` was undoing backstop results from `apply_day_change_backstop` for all flat rows. Also: closed overnight futures (qty=0, oq>0) now retain their correct backstop `day_change_val = pnl` from the backstop (Case 2), fixing missing day P&L on closed overnight F&O positions.
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
 - NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
   (when `close_price === ltp`, the guard returns 0 to prevent distortion)
@@ -1116,6 +1116,18 @@ After ag-Grid's per-column sort, the component applies two grouping strategies:
 4. Rows without an underlying (cash equity, indices) remain individually sorted
 5. Detached symbols (operator drag-to-separate) sort individually at end of bucket
 
+**Manual group order override (commit 951c7b2e)** — When the operator clicks the ▲/▼ 
+buttons on a mover row or uses the UI to set a custom group ranking:
+- `groupOrder` rank map is populated in persistent cache (`rbq.cache.pulse:groupOrder`)
+- Groups with assigned ranks sort by rank value (lower rank = higher in list)
+- Groups with no rank fall after all ranked groups, sorted alphabetically
+- Affects positions/holdings/watchlist grid row order — groups respect the operator's 
+  explicit ordering preference across all grids
+- Movers grid (winners/losers) continues to sort by |change_pct| magnitude — unaffected 
+  by groupOrder (read-only refresh every 30s)
+- Rationale: operator-curated group priority persists across page reloads and drives 
+  consistent ordering across all portfolio grids
+
 **Order-pair grouping** (Aug 2026):
 - Rows with matching `pair_group_key` are kept adjacent: parent row immediately followed by all 
   child rows. This grouping applies AFTER option-underlying grouping and is independent of 
@@ -1209,6 +1221,34 @@ A helper `_legExpPnlDisplay(leg, spot)` provides the per-cell EXP value:
 - **Open leg** (qty ≠ 0): `expiryPnl(leg, spot) + (leg.realised || 0)`
 - **Closed leg** (qty = 0): `leg.realised || leg.pnl || 0` (not "—", fully realized)
 - Replaces direct `expiryPnl()` calls; ensures closed legs show locked-in values
+
+### 17.0 Day P&L Formula Reference — Three Cases
+
+The day P&L for any position depends on its lifecycle state. Three canonical cases 
+apply universally across all surfaces (Pulse grids, NavStrip, Dashboard, derivatives Legs):
+
+**Case 1: New position today** (oq = 0, qty > 0, pnl ≠ 0)
+- Condition: Position opened intraday; no overnight quantity
+- Formula: `day_change_val = pnl` (broker P&L is the authoritative value for new-today positions)
+- Fallback (backstop applied in `apply_day_change_backstop`): when `day_change_val = 0` but 
+  `pnl ≠ 0`, use pnl directly
+
+**Case 2: Closed overnight** (oq > 0, qty = 0, pnl ≠ 0)
+- Condition: Position held overnight, fully exited today
+- Formula: `day_change_val = (exit_price − close_price) × overnight_qty`
+- Fallback (backstop applied): when `day_change_val = 0` but `pnl ≠ 0`, recompute via 
+  `pnl − (close_price − avg_price) × overnight_qty`
+- Note: `close_price` must be frozen `previous_close` (prior session settlement), not Kite's 
+  mutable `close_price` field
+
+**Case 3: Closed intraday** (oq = 0, qty = 0, pnl ≠ 0)
+- Condition: Position opened and closed on the same trading day
+- Formula: `day_change_val = pnl` (realised P&L from the round-trip)
+- Hygiene (commit ed63b9fe): only zeroed when `abs(pnl) < 0.005` (break-even); when 
+  realised gain/loss exists (pnl ≥ 0.005), `day_change_val` is preserved
+- Impact: operators now see realised P&L for same-day closes instead of 0
+- Surfaces affected: Pulse positions grid, Derivatives Legs grid (CandidateLegRow), 
+  NavStrip P pill (positions day P&L), Dashboard
 
 **Payoff chart sync — dual-offset behaviour**:
 
@@ -2277,3 +2317,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-15 | v1.16 CSS tokens + LTP/day% text flash + Exp P&L scoping + tab-reconnect (commit 562c1a4b): (1) **§28 CSS Directional Flash Tokens** — new section documents canonical tokens (`--algo-green`, `--algo-red`, `--algo-dim`, `--algo-green-flash`, `--algo-red-flash`, `--algo-green-cascade`, `--algo-red-cascade`, `--algo-green-pnl-bg`, `--algo-red-pnl-bg`) for directional colors + animations. All cell color classes (`cell-pos/neg/flat`, `mp-pnl-cell`) now reference tokens instead of hardcoded hex. Palette updates now mechanical. (2) **§29 LTP & Spot & Day % Text-Color Flash** — new section documents new animation pair (`.ltp-tc-flash-up/down`, 500ms) for LTP, spot, and day%-change cells. Text color animates from `--algo-green-text` / `--algo-red-text` back to `inherit`. Applied to: LTP cells (all grids), spot price (derivatives), `change_pct` (left grid), `day_pnl_pct` (right grids). Reference price comparison: LTP vs `prev_close`, day% vs 0. SSE-driven (sub-second) + poll-cycle triggered (5–30s cadence). (3) **§30 Holdings & Positions Exp P&L Column Scoping** — new section documents Exp P&L / Extrinsic columns now scoped to **positions grid only**. Holdings rows return null, render "—". Rationale: holdings are long-term equity without derivatives overlay; no expiry value. Positions grid totals row sums Exp P&L across all F&O legs; holdings totals row omits. (4) **§31 Tab-Return SSE Reconnect** — new section documents permanent `visibilitychange` listener in `quoteStream.js:startQuoteStream()`. When browser tab returns to focus, listener calls `restartQuoteStream()` immediately. LTP ticks resume flowing within ~100ms; preserves real-time visibility across tab switches. Graceful fallback to polling if reconnect fails. Impact: all changes ship in commit 562c1a4b (CSS token consolidation, text-color flash intro, Exp P&L column scoping, SSE reconnect) with no behavior breaking changes — purely visual + UX refinement. |
 | 2026-09-18 | v1.17 Column width reductions + direction borders + derivatives tick flash (commit 307a8c5a): (1) **§13.9 Column Width Reductions** — new subsection documents numeric column width optimizations across all Pulse grids (Positions, Holdings, Pinned, Watchlist, Winners, Losers, Derivatives): Day P&L 78→58px, P&L 78→58px, Exp P&L 90→68px, Extrinsic 90→68px, derivatives St 38→28px. Rationale: compact `aggCompact` notation + mobile/narrow-screen scrolling reduction. (2) **§14 Direction border indicator** — extension documents right-edge colored border (signal long/short direction) now uniform across ALL Pulse grids: Positions/Holdings (existing `pos-long`/`pos-short` row classes → `ag-col-sym::after`), Pinned/Watchlist/Winners/Losers (new `chg-up`/`chg-down` cell classes → `ag-col-sym-left::after`), Derivatives Legs (existing `cand-sym-acct::after`), Derivatives Snapshot (new `byund-dir-long`/`byund-dir-short` → `byund-und::after`). All use canonical `--algo-green` / `--algo-red` tokens. (3) **§17.8 Derivatives Tick Flash** — new subsection (renumbered 17.9 for liveSnap) documents tick-flash extension to derivatives surfaces: Derivatives Legs LTP now carries dual flash classes (`:ltp` background + `:chg` text-color on tick), Derivatives Snapshot Day P&L cell flashes on `${underlying}:day_w` SSE ticks, Payoff Overlay Spot + Day P&L both animate (background + text-color). Impact: unified directional flash feedback across MarketPulse + derivatives pages; operators see consistent real-time visual language for price/P&L movement. |
 | 2026-09-18 | v1.18 Chg% right-border separator + derivatives legs chg% column + payoff legend update (commit 6310d70f): (1) **§14 Chg% right-border separator** — new subsection documents inset right-border CSS class `chg-right-sep` on chg% column across all grids (left: Pinned/Watchlist/Winners/Losers; right: Holdings). Holdings Lots column `lots-left-sep` retained when `qty_hold` defined. Derivatives Snapshot grid chg% span receives `byund-chg-sep` class. Separator marks semantic boundary between "market movement" (LTP/Chg%/day%) and "portfolio P&L" columns. (2) **§17.4a Derivatives Legs dedicated Chg% column** — new subsection documents new column after LTP displaying intraday change% = `(ltp − prev_close) / prev_close × 100`, falls back to `c.change_pct`. Width 56px, right-aligned, directional text color. CSS class `cand-chg-sep` marks right-border separator. Flash class `leg:${k}:chg` subscribed in `tickBus`; fires text-color flash (`.ltp-tc-flash-up/down`) on every 4Hz SSE tick. (3) **§17.4b Legs totals row styling** — new subsection documents removal of per-cell green/red backgrounds (`cand-pnl.cell-pos/neg`) from TOTAL row; amber container background now sole visual marker. Directional text colors retained for numeric columns. Rationale: simplifies visual hierarchy, eliminates color noise. (4) **§17.3 Payoff chart legend labels** — updated from "P&L" / "Exp P&L" to "Day P&L" / "Exp Val", clarifying curve semantics: solid amber curve = today's market-to-market P&L, dashed blue curve = expiry P&L if spot freezes at current level. Impact: operators see consistent terminology across derivatives page, MarketPulse legend tooltips, and payoff overlay. |
+| 2026-09-21 | v1.19 MarketPulse ▲/▼ group ordering + Case 3 day P&L fix (commit 951c7b2e): (1) **§15 Row Grouping (postSortGroups)** — new subsection "Manual group order override" documents `groupOrder` rank map populated when operator clicks ▲/▼ on movers. Groups with assigned ranks sort by rank value (lower=higher), no-rank groups follow alphabetically. Affects positions/holdings/watchlist grid row order. Movers grid unaffected (|change_pct| sort priority). Operator-curated ranking persists across reloads. (2) **§4.4 Flat row hygiene + §17.0 new subsection** — updated to document three canonical Day P&L cases. Case 3 (closed intraday, oq=0 qty=0 pnl≠0) now shows realised P&L instead of 0. Hygiene (commit ed63b9fe) only zeroes `day_change_val` when `abs(pnl) < 0.005` (break-even). When realised gain/loss exists (pnl ≥ 0.005), `day_change_val` preserved. Fixes same-day close positions showing ₹0 instead of actual P&L. Impact: Pulse positions grid, Derivatives Legs grid (CandidateLegRow), NavStrip P pill, Dashboard show correct realised P&L for round-trip closes. |
