@@ -390,10 +390,11 @@ export const portfolioStore = {
     const base = _portfolio?.holdings ?? _EMPTY_HOLDINGS;
     if (_pulseHoldingsTotal === null) return base;
     return {
-      total:     _pulseHoldingsTotal,
-      byKey:     _pulseHoldingsByKey ?? base.byKey,
-      byAccount: { ...base.byAccount, TOTAL: _pulseHoldingsTotal },
-      chg_pct:   base.chg_pct,
+      total:       _pulseHoldingsTotal,
+      byKey:       _pulseHoldingsByKey ?? base.byKey,
+      byAccount:   { ...base.byAccount, TOTAL: _pulseHoldingsTotal },
+      chg_pct:     base.chg_pct,
+      chgPctByKey: base.chgPctByKey,
     };
   },
 

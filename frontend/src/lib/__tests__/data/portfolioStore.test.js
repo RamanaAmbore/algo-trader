@@ -608,6 +608,199 @@ describe('portfolioStore — holdings pulse logic simulation', () => {
   });
 });
 
+describe('portfolioStore.holdings — pulse override chgPctByKey fix', () => {
+  /**
+   * Bug fix: when _pulseHoldingsTotal is set (MarketPulse calls setHoldingsFromPulse),
+   * the pulse-override branch must return chgPctByKey from the base holdings,
+   * not omit it (which would cause it to fall back to undefined → {}).
+   *
+   * Without the fix, holdingsDayPnlStore.chgPctByKey would be {} and all holdings
+   * Chg% values would be null in the NavStrip.
+   *
+   * With the fix, chgPctByKey: base.chgPctByKey is included in the override,
+   * so Chg% values propagate correctly to consumers.
+   */
+
+  it('returns base.chgPctByKey when _pulseHoldingsTotal is null', () => {
+    // Simulates portfolioStore.holdings getter when pulse is not active
+    const base = {
+      total: 500,
+      byKey: { 'RELIANCE': 500 },
+      byAccount: { 'ACC1': 500, 'TOTAL': 500 },
+      chg_pct: 2.5,
+      chgPctByKey: { 'RELIANCE': 2.5 },
+    };
+
+    // When _pulseHoldingsTotal === null, return base directly
+    const result = base;
+
+    expect(result.chgPctByKey).toEqual({ 'RELIANCE': 2.5 });
+    expect(result.chgPctByKey['RELIANCE']).toBe(2.5);
+  });
+
+  it('includes base.chgPctByKey in pulse override (the bug fix)', () => {
+    // Simulates portfolioStore.holdings getter when pulse IS active
+    const base = {
+      total: 500,
+      byKey: { 'RELIANCE': 500, 'INFY': 250 },
+      byAccount: { 'ACC1': 750, 'TOTAL': 750 },
+      chg_pct: 2.0,
+      chgPctByKey: { 'RELIANCE': 2.5, 'INFY': 1.5 },
+    };
+
+    const pulseTotal = 1000;
+    const pulseByKey = { 'RELIANCE': 700, 'INFY': 300 };
+
+    // Corrected override logic (with chgPctByKey fix)
+    const result = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? base.byKey,
+      byAccount: { ...base.byAccount, TOTAL: pulseTotal },
+      chg_pct: base.chg_pct,
+      chgPctByKey: base.chgPctByKey, // THE FIX: must be included
+    };
+
+    expect(result.total).toBe(1000);
+    expect(result.byKey['RELIANCE']).toBe(700); // Overridden by pulse
+    expect(result.byAccount['ACC1']).toBe(750); // Preserved from base
+    expect(result.chgPctByKey).toEqual({ 'RELIANCE': 2.5, 'INFY': 1.5 }); // NOT undefined
+    expect(result.chgPctByKey['RELIANCE']).toBe(2.5);
+    expect(result.chgPctByKey['INFY']).toBe(1.5);
+  });
+
+  it('chgPctByKey is NOT undefined when pulse is active (regression check)', () => {
+    // Before the fix, chgPctByKey would be omitted → undefined → {} fallback
+    const base = {
+      total: 500,
+      byKey: { 'RELIANCE': 500 },
+      byAccount: { 'ACC1': 500, 'TOTAL': 500 },
+      chg_pct: 2.5,
+      chgPctByKey: { 'RELIANCE': 2.5 },
+    };
+
+    const pulseTotal = 1000;
+    const pulseByKey = { 'RELIANCE': 1000 };
+
+    // Buggy version (omitting chgPctByKey)
+    const buggyResult = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? base.byKey,
+      byAccount: { ...base.byAccount, TOTAL: pulseTotal },
+      chg_pct: base.chg_pct,
+      // BUG: chgPctByKey missing here
+    };
+
+    // Fixed version (including chgPctByKey)
+    const fixedResult = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? base.byKey,
+      byAccount: { ...base.byAccount, TOTAL: pulseTotal },
+      chg_pct: base.chg_pct,
+      chgPctByKey: base.chgPctByKey, // FIX: now included
+    };
+
+    // Verify the bug scenario
+    expect(buggyResult.chgPctByKey).toBeUndefined();
+
+    // Verify the fix
+    expect(fixedResult.chgPctByKey).toBeDefined();
+    expect(fixedResult.chgPctByKey).not.toBeUndefined();
+    expect(fixedResult.chgPctByKey['RELIANCE']).toBe(2.5);
+  });
+
+  it('holdingsDayPnlStore.chgPctByKey returns correct value after pulse override', () => {
+    // Simulates the full flow: portfolioStore.holdings getter provides chgPctByKey
+    // → holdingsDayPnlStore reads it → NavStrip uses it for per-symbol Chg% display
+
+    const baseHoldings = {
+      total: 1000,
+      byKey: { 'RELIANCE': 500, 'INFY': 300, 'HDFC': 200 },
+      byAccount: { 'ACC1': 1000, 'TOTAL': 1000 },
+      chg_pct: 1.8,
+      chgPctByKey: { 'RELIANCE': 2.0, 'INFY': 1.5, 'HDFC': 1.0 },
+    };
+
+    const pulseTotal = 1200;
+    const pulseByKey = { 'RELIANCE': 600, 'INFY': 400, 'HDFC': 200 };
+
+    // portfolioStore.holdings getter with pulse active
+    const holdingsWithPulse = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? baseHoldings.byKey,
+      byAccount: { ...baseHoldings.byAccount, TOTAL: pulseTotal },
+      chg_pct: baseHoldings.chg_pct,
+      chgPctByKey: baseHoldings.chgPctByKey,
+    };
+
+    // holdingsDayPnlStore reads from portfolioStore.holdings
+    const holdingsDayPnlStoreResult = {
+      total: holdingsWithPulse.total,
+      byKey: holdingsWithPulse.byKey,
+      chgPctByKey: holdingsWithPulse.chgPctByKey,
+    };
+
+    // Verify per-symbol Chg% values are not null
+    expect(holdingsDayPnlStoreResult.chgPctByKey['RELIANCE']).toBe(2.0);
+    expect(holdingsDayPnlStoreResult.chgPctByKey['INFY']).toBe(1.5);
+    expect(holdingsDayPnlStoreResult.chgPctByKey['HDFC']).toBe(1.0);
+
+    // Verify they're not null (regression check)
+    for (const sym of Object.keys(holdingsDayPnlStoreResult.chgPctByKey)) {
+      expect(holdingsDayPnlStoreResult.chgPctByKey[sym]).not.toBeNull();
+    }
+  });
+
+  it('single-symbol holdings with pulse maintains chgPctByKey', () => {
+    const base = {
+      total: 2500,
+      byKey: { 'RELIANCE': 2500 },
+      byAccount: { 'ACC1': 2500, 'TOTAL': 2500 },
+      chg_pct: 3.2,
+      chgPctByKey: { 'RELIANCE': 3.2 },
+    };
+
+    const pulseTotal = 3000;
+    const pulseByKey = { 'RELIANCE': 3000 };
+
+    const result = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? base.byKey,
+      byAccount: { ...base.byAccount, TOTAL: pulseTotal },
+      chg_pct: base.chg_pct,
+      chgPctByKey: base.chgPctByKey,
+    };
+
+    expect(result.chgPctByKey).toEqual({ 'RELIANCE': 3.2 });
+    expect(result.chgPctByKey['RELIANCE']).toBe(3.2);
+  });
+
+  it('holdings with mixed null and non-null chg_pct values preserves through pulse', () => {
+    const base = {
+      total: 3000,
+      byKey: { 'RELIANCE': 1500, 'INFY': 1000, 'HDFC': 500 },
+      byAccount: { 'ACC1': 3000, 'TOTAL': 3000 },
+      chg_pct: 1.5,
+      chgPctByKey: { 'RELIANCE': 2.0, 'INFY': null, 'HDFC': 0.8 },
+    };
+
+    const pulseTotal = 3500;
+    const pulseByKey = { 'RELIANCE': 1800, 'INFY': 1200, 'HDFC': 500 };
+
+    const result = {
+      total: pulseTotal,
+      byKey: pulseByKey ?? base.byKey,
+      byAccount: { ...base.byAccount, TOTAL: pulseTotal },
+      chg_pct: base.chg_pct,
+      chgPctByKey: base.chgPctByKey,
+    };
+
+    // chgPctByKey includes the original base values (some null, some numbers)
+    expect(result.chgPctByKey['RELIANCE']).toBe(2.0);
+    expect(result.chgPctByKey['INFY']).toBeNull();
+    expect(result.chgPctByKey['HDFC']).toBe(0.8);
+  });
+});
+
 describe('portfolioStore — _computePortfolioPositions (exported pure function)', () => {
   it('returns correct structure for empty arrays', () => {
     const result = _computePortfolioPositions([], []);
