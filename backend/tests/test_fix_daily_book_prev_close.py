@@ -133,8 +133,3 @@ async def test_settlement_map_path_sets_ltp_equal_to_close_price():
         "aligns with prev_close at session open, making day P&L ≈ 0"
     )
     assert "prev_close" in first_sql, "UPDATE must still set prev_close = :close_price"
-    # A subsequent SQL must be the holdings-alignment step (prev_close = ltp)
-    # for holdings not in the settlement_map (e.g. no local ticker token)
-    assert any("kind = 'holdings'" in s and "prev_close = ltp" in s for s in executed_sqls), (
-        "Settlement_map path must align prev_close = ltp for holdings not in settlement_map"
-    )

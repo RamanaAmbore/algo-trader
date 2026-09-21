@@ -1,215 +1,137 @@
-# Plan: portfolioStore — Unified Reactive Data Architecture
+# Plan: CloseReset settlement_map — raw close_price without backfill/token
 
 ## Context
-The frontend has 14 race-prone sites where poll-based stores (`positionsStore`, `pulseHoldingsStore`, `fundsStore`) momentarily go null during a 5s refresh cycle. Every consumer independently uses `store.value ?? []` as fallback — producing zeros for `chg%`, `day_pnl`, `todayMtm`, `exp_pnl`, and `available funds` during the null gap. Root cause: no formal dependency hierarchy, no stale-while-revalidating guard, no single computation boundary.
 
-**Design decisions from architecture discussion:**
-- Symbol is the JOIN key linking WebSocket ticks → positions → holdings → instruments
-- Inputs have different natural cadences (WebSocket continuous, polls every 5s) — that's fine; the COMPUTATION cadence is unified at 4Hz via `symbolTickCount + 250ms throttle`
-- Options/futures map to a virtual root → one underlying spot resolved per root (not per leg)
-- Root is a first-class grouping key in the output (`byRoot`) for derivatives strategy view
-- One unified `portfolioStore` with ONE SWR null-guard replaces three separate derived stores
-- Poll-based stores must never produce zeros during revalidation — they hold last known snapshot
+`_build_settlement_map` fetches holdings+positions to get `close_price` per symbol at 8:00 IST.
+It calls `_fetch_holdings_direct` / `_fetch_positions_direct` which run the full enrichment
+pipeline including `_enrich_holdings` / `_enrich_positions` → `backfill_market_data`.
 
-**Fixes 10 visible bugs:** chg% zero on poll, chg% zero in legs, chg% lost on navigate derivatives→pulse, todayMtm zero in H-slot, NavBreakdown blanking, MarketPulse rows disappearing, PositionStrip animation glitch, OrderTicket ₹0 funds, Dashboard cards blanking, legs day_pnl/exp_pnl zeroing.
+`backfill_market_data` requires an instrument token to look up live LTP from the mmap tick
+buffer. Holdings with no registered token (e.g. HFCL, which hasn't been traded this session
+and isn't yet subscribed to KiteTicker) get `prev_close = 0` and are skipped from the
+settlement_map. CloseReset doesn't update them → ltp ≠ prev_close → day P&L ≠ 0 at 8:00.
 
-## Task
+The token is **not needed** for CloseReset. Kite REST already returns the correct `close_price`
+(BHAV) in the raw broker response — before enrichment. The enrichment pipeline is wasted work
+that corrupts the one column we need.
 
-### Step 1 — Create `portfolioStore.svelte.js` (replaces 3 stores)
-
-**File:** `frontend/src/lib/data/portfolioStore.svelte.js`
-
-Single `$derived.by()`, same 4Hz throttle via `symbolTickCount`. Required deps gated at top. Root-first computation order. Pure computation functions extracted for Vitest.
-
-**Required deps (gate — null → hold `_last`):**
-- `positionsStore.value` — qty, avg, prev_close, account, exchange
-- `pulseHoldingsStore.value` — qty, avg, previous_close, day_change_val, account
-- `fundsStore.value` — live_cash, avail_margin, used_margin, collateral, option_premium
-
-**Enrichment deps (never null, just keep ticking):**
-- `symbolStore` via `_tick` — own LTP per symbol
-- `underlyingSpotStore` — spot per root (resolved once per root via `getUnderlyingSpot(root)`)
-
-**Computation order inside `$derived.by()`:**
-
-```
-STEP 1 — Positions (root-first)
-  1a. For each position row: decomposeSymbol(sym) → { root, strike, kind }
-  1b. Resolve root spot ONCE per root: p.underlying_ltp || getUnderlyingSpot(root)
-      (one lookup per root, shared by all legs under that root)
-  1c. Per leg compute:
-        own_ltp  = getSnapshot(sym)?.ltp ?? p.last_price
-        day_pnl  = livePositionDayPnl({closePx, pollLtp, qty, avg, dcvRow}, own_ltp, {marketOpen})
-        chg_pct  = dayChangePct(day_pnl, prev_close × |qty|)
-        exp_pnl  = root_spot > 0 ? expiryPnl({symbol,qty,avg_cost,kind}, root_spot) + realised : null
-        extrinsic = exp_pnl != null ? exp_pnl - (own_ltp - avg) × qty : null
-  1d. Accumulate:
-        byKey[sym]     = { day_pnl, chg_pct, exp_pnl, extrinsic, pnl, prev_mv }
-        byRoot[root]   = { spot, legs:[], day_pnl, exp_pnl, extrinsic }  ← NEW
-        byAccount[acct]= { day_pnl, exp_pnl, pnl }
-        expiryByAcct   Map<acct, Σ exp_pnl>
-        total          { day_pnl, exp_pnl, extrinsic }
-
-STEP 2 — Holdings
-  For each holding row:
-    snap_ltp = getSnapshot(sym)?.ltp
-    live_ltp = snap_ltp > 0 ? snap_ltp : h.last_price
-    close_px = h.previous_close || h.close_price || h.ohlc?.close || 0
-    val      = close_px <= 0            ? dcv
-             : |live_ltp - close_px| > 0.005 ? (live_ltp - close_px) × qty
-             : dcv
-  Accumulate:
-    holdings.byKey[sym]     = val
-    holdings.byAccount[acct]= { day_pnl: Σval, value: Σ(live_ltp×qty), lifetime: Σh.pnl }
-    holdings.total          = Σval
-
-STEP 3 — Funds
-  For each fund row (account != 'TOTAL'):
-    totalMargin = used_margin + avail_margin
-    utilPct     = totalMargin > 0 ? used_margin / totalMargin × 100 : 0
-    totalCash   = (live_cash ?? cash) + long_option_premium
-  Accumulate:
-    funds.byAccount[acct] = { live_cash, avail_margin, used_margin, collateral, totalMargin, utilPct }
-    funds.total           = Σ all accounts
-```
-
-**Output shape:**
-```js
-{
-  positions: {
-    total:        { day_pnl, exp_pnl, extrinsic },
-    byKey:        { [sym]: { day_pnl, chg_pct, exp_pnl, extrinsic, pnl, prev_mv } },
-    byAccount:    { [acct]: { day_pnl, exp_pnl, pnl } },
-    byRoot:       { [root]: { spot, legs:string[], day_pnl, exp_pnl, extrinsic } },
-    expiryByAcct: Map<acct, number>,
-  },
-  holdings: {
-    total:     { day_pnl },
-    byKey:     { [sym]: number },
-    byAccount: { [acct]: { day_pnl, value, lifetime } },
-  },
-  funds: {
-    total:     { live_cash, avail_margin, used_margin, totalMargin, utilPct },
-    byAccount: { [acct]: { live_cash, avail_margin, used_margin, collateral, totalMargin, utilPct } },
-  },
-}
-```
-
-**Preserve `setFromPulse`:** MarketPulse calls `holdingsDayPnlStore.setFromPulse(byKey, total)` after buildUnified for filter-aware NavStrip H-slot. Wire as `portfolioStore.setHoldingsFromPulse(byKey, total)` — same override pattern, same `_pulseHoldingsByKey` / `_pulseHoldingsTotal` state variables. Holdings getters check pulse override first.
-
-**Preserve `_computeDerived` export:** pure function still exported from portfolioStore (or re-exported) so existing Vitest tests pass unchanged.
-
----
-
-### Step 2 — Convert 3 old stores to backward-compat shims
-
-**`positionsDerivedStore.svelte.js`** → import portfolioStore, re-export:
-```js
-export const positionsDerivedStore = {
-  get total()           { return portfolioStore.positions.total; },
-  get expiryTotal()     { return portfolioStore.positions.total.exp_pnl; },
-  get byKey()           { return portfolioStore.positions.byKey; },
-  get expiryByAcct()    { return portfolioStore.positions.expiryByAcct; },
-  get byRootPositions() { return portfolioStore.positions.byRoot; },
-  get byRootHoldings()  { return portfolioStore.holdings.byKey; },
-  setFromPulse() {},
-};
-export { _computeDerived } from './portfolioStore.svelte.js';
-```
-
-**`holdingsDayPnlStore.svelte.js`** → import portfolioStore, re-export:
-```js
-export const holdingsDayPnlStore = {
-  get total()     { return portfolioStore.holdings.total.day_pnl; },
-  get byKey()     { return portfolioStore.holdings.byKey; },
-  get byAccount() { return portfolioStore.holdings.byAccountForStrip; },
-  setFromPulse(byKey, total) { portfolioStore.setHoldingsFromPulse(byKey, total); },
-};
-```
-
-**`positionsDayPnlStore.svelte.js`** → already a shim pointing to positionsDerivedStore — update to point directly to portfolioStore:
-```js
-export const positionsDayPnlStore = {
-  get total()  { return portfolioStore.positions.total.day_pnl; },
-  get byKey()  { /* same Proxy pattern as today */ },
-  setFromPulse() {},
-};
-```
-
----
-
-### Step 3 — Fix all 14 consumer race sites
-
-All consumers currently do one of:
-- `store.value ?? []` → `portfolioStore.positions.rows` (never null, always last known)
-- Read `positionsDerivedStore.byKey[sym]` → reads shim → portfolioStore
-- Read `holdingsDayPnlStore.byAccount[key]` → reads shim → portfolioStore
-
-**PositionStrip.svelte** (lines 33, 40, 45, 133-135):
-- Remove `let positions = $state(positionsStore.value ?? [])` pattern × 3
-- P∆ slot: `portfolioStore.positions.total.day_pnl`
-- H∆ slot: `portfolioStore.holdings.total.day_pnl`
-- Fingerprint derived: use `portfolioStore.positions.byKey` key count (never null)
-
-**NavCard.svelte**: same pattern as PositionStrip — read from portfolioStore slots directly
-
-**NavBreakdown.svelte** (lines 69-87): remove 4× `$state` snapshots from raw stores:
-- P-slot: reads `expiryByAcct` → shim covers this
-- H-slot `todayMtm`: `portfolioStore.holdings.byAccount[key]?.day_pnl` (was holdingsDayPnlStore.byAccount)
-- M-slot: `portfolioStore.funds.byAccount[key]` (avail/used margin) — replaces direct fundsStore read
-- C-slot: `portfolioStore.funds.byAccount[key]` (live_cash, collateral) — replaces direct fundsStore read
-
-**MarketPulse.svelte** (lines 171, 200-201, 575, 771, 2756-2757):
-- `activeListsStore.value ?? []` → keep as-is (watchlist, not position data)
-- `pulsePositionsStore.value ?? []` × 2 → wrap with last-known pattern (keep as local `_lastPosRows`)
-- `pulseHoldingsStore.value ?? []` × 2 → wrap with `_lastHoldRows`
-- `fundsStore.value ?? []` → `portfolioStore.funds.byAccount` for display; keep raw store for OrderTicket
-- `moversStore.value ?? []` → keep as-is (movers are independent)
-
-**pulseColumns.js** `_dayPnlPctValueGetter`: already reads `positionsDerivedStore.byKey[sym]?.chg_pct` — shim covers, no change needed here. Shim ensures this never returns from an empty byKey during revalidation.
-
-**derivatives/+page.svelte** (lines 3530, 3568):
-- `pulsePositionsStore.value ?? []` → local `_lastDervPos` pattern (same as _lastCandidatesDayPnl)
-- `holdingsStore.value ?? []` → local `_lastDervHold` pattern
-
-**CandidateLegRow.svelte**: reads from positionsDerivedStore (shim) — no change if shim is correct
-
-**OrderTicket.svelte** (line 1315): `fundsStore.value ?? []` → `portfolioStore.funds.byAccount` for display
-
-**dashboard/+page.svelte** (lines 178-182): `store.value ?? []` × 3 → local last-known pattern per store
-
----
+Fix:
+1. Add `raw_only=True` path to `_fetch_holdings_local` and `_fetch_positions_local` that skips
+   `_enrich_holdings` / `_enrich_positions` and returns only `[account, tradingsymbol, prev_close]`.
+2. Replace `_fetch_holdings_direct` / `_fetch_positions_direct` in `_build_settlement_map` with
+   a new lightweight sync helper `_fetch_settlement_closes()` that calls `fetch_holdings(raw_only=True)`
+   and `fetch_positions(raw_only=True)`.
+3. Remove the holdings-alignment fallback from `fix_daily_book_prev_close` (the `result_h` block
+   that set `prev_close = ltp` for holdings not in settlement_map — it was a workaround that is
+   now obsolete).
+4. Update tests.
 
 ## Agents
+- backend: skip
+- frontend: skip
+- broker: In `broker_apis.py`, add `raw_only=False` to `_fetch_holdings_local` and the
+  corresponding positions function. In `background.py`, replace the enriched holdings/positions
+  fetch in `_build_settlement_map` with the raw path and add `_fetch_settlement_closes()`.
+  In `daily_snapshot.py`, remove the holdings-alignment fallback block.
+- doc: skip
+- backend-test: Update `test_fix_daily_book_prev_close.py` — remove the holdings-alignment
+  assertion. Add tests for `raw_only=True` in broker_apis (verify backfill is skipped and
+  `prev_close` is the raw broker value).
 
-- **frontend-phase1**: Create `portfolioStore.svelte.js` (full implementation per Steps 1 above) + convert `positionsDerivedStore.svelte.js`, `holdingsDayPnlStore.svelte.js`, `positionsDayPnlStore.svelte.js` to shims. 4 files. Run svelte-check after to verify shims compile clean.
+## Files to change
 
-- **frontend-phase2** (after phase1): Update consumers — `PositionStrip.svelte`, `NavCard.svelte`, `NavBreakdown.svelte`, `MarketPulse.svelte`, `OrderTicket.svelte`, `dashboard/+page.svelte`, `derivatives/+page.svelte`, `CandidateLegRow.svelte`. 8 files. All of these remove `store.value ?? []` and read from portfolioStore or its shims.
+### 1. `backend/brokers/broker_apis.py`
 
-- **backend-test** (Vitest, after phase1): Write `frontend/src/lib/__tests__/data/portfolioStore.test.js`:
-  - SWR guard: `positionsStore.value = null` → `portfolioStore.positions.byKey` equals last snapshot, not `{}`
-  - Root decomposition: NIFTY option → `byRoot["NIFTY"]` contains the leg
-  - Spot sharing: 3 NIFTY legs → `getUnderlyingSpot` called once, not 3×
-  - Holdings day_pnl: formula `(ltp − close) × qty` and dcv fallback
-  - Funds aggregation: `totalMargin`, `utilPct` computed correctly
-  - `_computeDerived` existing tests: still pass (pure function re-exported from portfolioStore)
+**`_fetch_holdings_local`** (line ~1387) — add `raw_only: bool = False`:
+```python
+@for_all_accounts
+def _fetch_holdings_local(connections=Connections, account=None, kite=None, broker=None, raw_only=False):
+    ...
+    df_holdings.rename(columns={'close_price': 'prev_close'}, inplace=True)
+    if not df_holdings.empty:
+        df_holdings["account"] = account
+        df_holdings["type"] = "H"
+    _record_fetch(account, ok=True)
 
-- **doc**: skip — architectural refactor, no operator-visible behaviour change in docs/specs
+    if raw_only:
+        cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_holdings.columns]
+        return df_holdings[cols]
+
+    df_holdings = _enrich_holdings(df_holdings)
+    ...
+```
+
+`fetch_holdings(raw_only=True)` already falls through to `_fetch_holdings_local` (non-empty kwargs
+→ not the SSOT cache path). No change to `fetch_holdings` needed.
+
+**`_fetch_positions_local`** (line ~2000) — same pattern: add `raw_only=False`; after rename +
+account tag, if `raw_only`: return `[account, tradingsymbol, prev_close]` subset; skip
+`_enrich_positions`.
+
+`fetch_positions(raw_only=True)` also falls through correctly (non-empty kwargs).
+
+### 2. `backend/api/background.py`
+
+**Add `_fetch_settlement_closes()`** (new sync function, near `_fetch_holdings_direct`):
+```python
+def _fetch_settlement_closes() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Raw close_price fetch for CloseReset — no enrichment, no backfill, no token needed."""
+    try:
+        frames_h = broker_apis.fetch_holdings(raw_only=True)
+        df_h = pd.concat(frames_h, ignore_index=True) if frames_h else pd.DataFrame()
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] raw holdings close fetch failed: %s", exc)
+        df_h = pd.DataFrame()
+    try:
+        frames_p = broker_apis.fetch_positions(raw_only=True)
+        df_p = pd.concat(frames_p, ignore_index=True) if frames_p else pd.DataFrame()
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] raw positions close fetch failed: %s", exc)
+        df_p = pd.DataFrame()
+    return df_h, df_p
+```
+
+**Modify `_build_settlement_map`** — replace the two separate `_run` calls:
+```python
+# Before:
+(df_h, _) = await asyncio.wait_for(_run(_fetch_holdings_direct), timeout=30)
+(df_p, _) = await asyncio.wait_for(_run(_fetch_positions_direct), timeout=30)
+
+# After:
+(df_h, df_p) = await asyncio.wait_for(_run(_fetch_settlement_closes), timeout=30)
+```
+
+### 3. `backend/api/algo/daily_snapshot.py`
+
+**Remove** the holdings-alignment block (the `result_h` block ~line 1037–1053):
+```python
+# REMOVE this entire block:
+result_h = await session.execute(text("""
+    UPDATE daily_book
+    SET prev_close = ltp
+    WHERE date = :today AND kind = 'holdings' ...
+"""), {"today": today})
+...
+```
+It was a workaround. The root cause is now fixed.
 
 ## Tests
-- pytest: no
-- svelte-check: yes
+- pytest: yes
+- svelte-check: no
 - playwright: no
 
+**`test_fix_daily_book_prev_close.py`**: remove the assertion that checks for the
+holdings-alignment SQL (`kind = 'holdings'` + `prev_close = ltp`).
+
+**New test** (in `backend/tests/broker/` or `backend/tests/`): verify that
+`fetch_holdings(raw_only=True)` returns `prev_close` from the raw broker response
+(not zeroed by backfill) and does NOT call `_enrich_holdings`.
+
 ## Commit message
-refactor(frontend): portfolioStore — unified reactive data store with SWR null-guard, root-first F&O computation, and byRoot aggregation replacing positionsDerivedStore + holdingsDayPnlStore + positionsDayPnlStore
+refactor(settlement_map): use raw REST close_price for CloseReset — skip backfill, no token needed
 
 ## Done when
-- svelte-check 0 errors
-- Vitest portfolioStore tests pass (SWR guard, byRoot, chg_pct, holdings, funds)
-- All existing `_computeDerived` Vitest tests still pass
-- `portfolioStore.positions.byKey[sym].chg_pct` never zero during poll refresh (verified by SWR test)
-- `portfolioStore.holdings.byAccount[acct].day_pnl` never zero during poll refresh
-- NavBreakdown H-slot todayMtm matches PerformancePage holdings day_pnl
-- chg% stable in positions, legs, and after navigate derivatives→pulse
-- No `store.value ?? []` left in any consumer (grep clean)
+`_build_settlement_map` gets close_price from raw Kite REST for all holdings+positions
+(including HFCL and other no-token symbols). `_enrich_holdings`/`backfill_market_data`
+not called during CloseReset. Holdings-alignment fallback in daily_snapshot removed.
+pytest green.

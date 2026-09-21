@@ -276,6 +276,24 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     return raw, summary
 
 
+def _fetch_settlement_closes() -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Raw close_price fetch for CloseReset — no enrichment, no backfill, no token needed."""
+    from backend.brokers import broker_apis
+    try:
+        frames_h = broker_apis.fetch_holdings(raw_only=True)
+        df_h = pd.concat(frames_h, ignore_index=True) if frames_h else pd.DataFrame()
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] raw holdings close fetch failed: %s", exc)
+        df_h = pd.DataFrame()
+    try:
+        frames_p = broker_apis.fetch_positions(raw_only=True)
+        df_p = pd.concat(frames_p, ignore_index=True) if frames_p else pd.DataFrame()
+    except Exception as exc:
+        logger.warning("[PREV-CLOSE-FIX] raw positions close fetch failed: %s", exc)
+        df_p = pd.DataFrame()
+    return df_h, df_p
+
+
 def _bg_build_underlying_keys(
     df_positions: "pd.DataFrame",
 ) -> "dict[str, str]":
@@ -2057,16 +2075,11 @@ async def _build_settlement_map() -> "dict[tuple[str, str], float]":
                     settlement_map.setdefault((acct, sym), cp)
 
     try:
-        (df_h, _) = await asyncio.wait_for(_run(_fetch_holdings_direct), timeout=30)
+        (df_h, df_p) = await asyncio.wait_for(_run(_fetch_settlement_closes), timeout=30)
         _extract(df_h, update=True)
-    except Exception as exc:
-        logger.warning("[PREV-CLOSE-FIX] holdings fetch for settlement_map failed: %s", exc)
-
-    try:
-        (df_p, _) = await asyncio.wait_for(_run(_fetch_positions_direct), timeout=30)
         _extract(df_p, update=False)
     except Exception as exc:
-        logger.warning("[PREV-CLOSE-FIX] positions fetch for settlement_map failed: %s", exc)
+        logger.warning("[PREV-CLOSE-FIX] settlement_closes fetch failed: %s", exc)
 
     return settlement_map
 

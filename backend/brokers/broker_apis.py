@@ -1385,7 +1385,7 @@ def fetch_holdings(*args, **kwargs):
 
 
 @for_all_accounts
-def _fetch_holdings_local(connections=Connections, account=None, kite=None, broker=None):
+def _fetch_holdings_local(connections=Connections, account=None, kite=None, broker=None, raw_only: bool = False):
     """Multi-broker holdings fetch. Uses the Broker ABC abstraction
     (broker.holdings()) when available so Dhan / Groww accounts route
     through their own adapters; falls back to the legacy `kite=`
@@ -1462,6 +1462,10 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     # the others.
     if df_holdings.empty:
         return df_holdings
+
+    if raw_only:
+        cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_holdings.columns]
+        return df_holdings[cols]
 
     df_holdings = _enrich_holdings(df_holdings)
     # Stash a shallow copy for the stale-substitute path when this
@@ -2013,7 +2017,7 @@ def _apply_mcx_multiplier(df: "pd.DataFrame") -> None:
 
 
 @for_all_accounts
-def _fetch_positions_local(connections=Connections, account=None, kite=None, broker=None):
+def _fetch_positions_local(connections=Connections, account=None, kite=None, broker=None, raw_only: bool = False):
     """Multi-broker positions fetch. Same broker-vs-kite resolution
     pattern as fetch_holdings; non-Kite adapters return Kite-shape
     rows via their respective normalisers."""
@@ -2072,6 +2076,10 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
 
     if df_positions.empty:
         return df_positions
+
+    if raw_only:
+        cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_positions.columns]
+        return df_positions[cols]
 
     df_positions = _enrich_positions(df_positions)
     # Stash a shallow copy for the stale-substitute path when this

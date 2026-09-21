@@ -1034,26 +1034,6 @@ async def fix_daily_book_prev_close(
                            "close_price": close_price})
                     updated += result.rowcount
                 await session.commit()
-                # Holdings not in settlement_map (e.g. no local ticker token so
-                # backfill returned close=0 and they were skipped by the cp>0 guard)
-                # still need prev_close aligned to ltp at session open.  We trust
-                # the stored ltp (actual NSE/MCX close from the overnight snapshot)
-                # and set prev_close = ltp so day P&L = 0 at session open.
-                result_h = await session.execute(text("""
-                    UPDATE daily_book
-                    SET prev_close = ltp
-                    WHERE date = :today
-                      AND kind = 'holdings'
-                      AND ltp IS NOT NULL AND ltp > 0
-                      AND ABS(COALESCE(prev_close, 0) - ltp) > 0.01
-                """), {"today": today})
-                await session.commit()
-                if result_h.rowcount:
-                    logger.info(
-                        "[PREV-CLOSE-FIX] aligned prev_close=ltp for %d holdings "
-                        "not in settlement_map (today=%s)",
-                        result_h.rowcount, today,
-                    )
                 # Recompute day_pnl for rows where prev_close was 0 at snapshot time
                 # (day_pnl written as NULL by _snap_holding_eod_vals / _snap_compute_day_pnl guard).
                 result2 = await session.execute(text("""
