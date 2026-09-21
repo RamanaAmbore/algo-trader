@@ -117,6 +117,7 @@ export function mkResolveCellLtp({ getLiveLtpSnap }) {
     const sym  = String(p.data.tradingsymbol || '').toUpperCase();
     const live = snap[sym];
     if (typeof live === 'number' && live > 0) return live;
+    // p.data.ltp is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
     const polled = Number(p.data.ltp);
     if (Number.isFinite(polled) && polled > 0) return polled;
     return null;
@@ -631,7 +632,7 @@ export function mkRightColDefs({
         const quoteSym = String(p.data.quote_symbol || '').toUpperCase();
         const sym = String(p.data.tradingsymbol || '').toUpperCase();
         const ltp = getLiveLtpSnap()[quoteSym || sym];
-        return (ltp > 0) ? ltp * heldAbs : p.data.cur_val;
+        return (ltp > 0) ? ltp * heldAbs : null;
       },
       headerTooltip: 'Live LTP × held qty — current market value of this holding.' },
     openCol,

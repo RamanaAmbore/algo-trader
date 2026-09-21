@@ -3618,6 +3618,7 @@
             return positionsDayPnlStore.total ?? p.data?.day_pnl;
           if (p.node?.rowPinned) return p.data?.day_pnl;
           const sym = String(p.data?.tradingsymbol || '').toUpperCase();
+          // p.data?.day_pnl is broker-reported day_change_val; valid before first symbolStore tick
           return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
         },
       };

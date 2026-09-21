@@ -1729,21 +1729,18 @@
   // commodity options the "spot" anchor is the front-month future), fall
   // back to strategy.underlying, fall back to the server value.
 
-  // Post-close liveSpot fallback: _throttledTick freezes when market is
-  // closed, but candidatePositions keeps updating via the book poller
-  // (post-settlement underlying_ltp). Cache the last non-zero
-  // underlying_ltp from positions so liveSpot stays current after close.
-  // Must be reactive (not untrack) so the overlay updates when the book
-  // poller lands a fresh settlement LTP.
-  let _postCloseUndLtp = $state(0);
-  $effect(() => {
-    if (isMarketOpen()) return;
-    for (const p of candidatePositions) {
-      const v = Number(/** @type {any} */ (p).underlying_ltp);
-      if (v > 0) { _postCloseUndLtp = v; return; }
-    }
-  });
-
+  // liveSpot — spot price for the payoff diagram and Greeks.
+  //
+  // Only SSE-tick sources are trusted (ltp_ts is live). Tiers 3-5 were
+  // removed: underlying_ltp (backend-polled, stale), strategy.spot
+  // (backend 5s poll, stale), and getSnapshot(root) (bare commodity root
+  // like "GOLDM" never matches a tick key in symbolStore). If no SSE tick
+  // is available yet, show blank rather than masking with a stale value.
+  //
+  // Tiers:
+  //   1a — anchor contract SSE tick   (strategy.spot_anchor_contract)
+  //   1b — strategy underlying SSE tick (strategy.underlying)
+  //   2  — resolved front-month contract SSE tick (covers MCX virtual roots)
   const liveSpot = $derived.by(() => {
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
@@ -1776,30 +1773,8 @@
       }
     }
 
-    // Tier 3: backend-stamped underlying_ltp from positions
-    for (const p of candidatePositions) {
-      const v = Number(/** @type {any} */ (p).underlying_ltp);
-      if (v > 0) {
-        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-posScan', value: v }));
-        return v;
-      }
-    }
-
-    // Tier 4: strategy.spot (backend poll, 5s)
-    if (stratMatchesSel && strategy?.spot != null) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '4-strategySpot', value: strategy?.spot }));
-      return strategy?.spot;
-    }
-
-    // Tier 5: symbolStore SSE snapshot (fresher than batchQuote cache)
-    const snapLtp = getSnapshot(selectedUnderlying)?.ltp;
-    if (snapLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '5-snap', key: selectedUnderlying, value: snapLtp }));
-      return snapLtp;
-    }
-
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
-    return stratMatchesSel ? strategy?.spot : undefined;
+    return undefined;
   });
 
   // Per-underlying live LTP map for the by-underlying totals table.

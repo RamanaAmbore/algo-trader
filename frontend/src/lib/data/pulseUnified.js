@@ -449,6 +449,7 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const liveQ = cq?.[`${exch}:${sym}`];
     const _hadLtp = _applyQuoteFields(row, snap, liveQ);
     if (!_hadLtp && row.ltp == null) {
+      // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
       row.ltp = r.last_price ?? null;
     }
     // Day P&L — livePositionDayPnl correctly handles mixed overnight +
@@ -540,6 +541,7 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
       row.close = Number(r.close_price) ?? null;
     }
     if (!_hadLtp) {
+      // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
       if (row.ltp == null) row.ltp = r.last_price ?? null;
       if (r.day_change != null && row.change == null)
         row.change = Number(r.day_change);

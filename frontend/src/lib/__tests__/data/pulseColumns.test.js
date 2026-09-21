@@ -714,10 +714,17 @@ describe('mkDeltaCol — TOTAL row renders empty string (Fix 5)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// cur_val valueGetter — live LTP × held qty (Fix: live cur_val)
+// cur_val valueGetter — null when no live tick; live LTP × held qty when snap present
+//
+// Architectural principle: no surface silently substitutes a stale value when
+// the symbolStore returns null/0. When ltp=0 or the symbol is absent from the
+// snap, the Value column returns null (blank) — not p.data.cur_val, which was
+// computed at buildUnified time and may be up to 10s stale.
+// The LTP column already shows the broker-seed via mkResolveCellLtp; Value
+// should be blank until the first live tick arrives.
 // ---------------------------------------------------------------------------
 
-describe('cur_val valueGetter — live LTP × held qty', () => {
+describe('cur_val valueGetter — null when no live tick (stale-masking fix)', () => {
   function getCurValCol(getLiveLtpSnap) {
     const opts = { ...makeOpts(), getLiveLtpSnap };
     const cols = mkRightColDefs(opts);
@@ -733,18 +740,26 @@ describe('cur_val valueGetter — live LTP × held qty', () => {
     expect(result).toBe(25000);
   });
 
-  it('falls back to p.data.cur_val when snap LTP is 0', () => {
+  it('returns null (not stale cur_val) when snap LTP is 0', () => {
     const snap = { RELIANCE: 0 };
     const col = getCurValCol(() => snap);
     const result = col.valueGetter({ data: { qty_hold: 10, tradingsymbol: 'RELIANCE', quote_symbol: '', cur_val: 9999 } });
-    expect(result).toBe(9999);
+    expect(result).toBeNull();
   });
 
-  it('falls back to p.data.cur_val when symbol is not in snap', () => {
-    const snap = {};
+  it('returns null (not stale cur_val) when getLiveLtpSnap returns {} (empty snap)', () => {
+    // This is the canonical stale-masking test: snap is empty, p.data.cur_val=1000
+    // (computed at buildUnified time, up to 10s stale). The cell must return null.
+    const col = getCurValCol(() => ({}));
+    const result = col.valueGetter({ data: { qty_hold: 5, tradingsymbol: 'INFY', quote_symbol: '', cur_val: 1000 } });
+    expect(result).toBeNull();
+  });
+
+  it('returns null when symbol is absent from snap (same as empty snap)', () => {
+    const snap = { OTHER: 500 };
     const col = getCurValCol(() => snap);
     const result = col.valueGetter({ data: { qty_hold: 5, tradingsymbol: 'INFY', quote_symbol: '', cur_val: 5500 } });
-    expect(result).toBe(5500);
+    expect(result).toBeNull();
   });
 
   it('uses quote_symbol when present (non-empty) instead of tradingsymbol', () => {
@@ -761,7 +776,10 @@ describe('cur_val valueGetter — live LTP × held qty', () => {
     expect(result).toBeNull();
   });
 
-  it('returns p.data.cur_val when getLiveLtpSnap is not provided (undefined)', () => {
+  it('returns p.data.cur_val when getLiveLtpSnap is not provided (undefined) — no-accessor path unchanged', () => {
+    // This branch (line: if (!getLiveLtpSnap) return p.data.cur_val) is outside the
+    // stale-masking fix scope — it fires only when the accessor itself is missing,
+    // not when the snap is empty. Retained as-is.
     const col = getCurValCol(undefined);
     const result = col.valueGetter({ data: { qty_hold: 3, tradingsymbol: 'TCS', quote_symbol: '', cur_val: 1200 } });
     expect(result).toBe(1200);
