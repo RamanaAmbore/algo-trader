@@ -213,8 +213,37 @@ test.describe('derivatives page (TOTAL row + Exp Close tab)', () => {
     }
   });
 
-  // ── Test 3: Perf — page loads derivatives under 15s ─────────────────────
-  test('3-Perf: /admin/derivatives page loads within 15s budget', async ({ page }) => {
+  // ── Test 3: TOTAL rows must not contain hardcoded '—' dashes ────────────
+  test('3-UX: TOTAL row .num spans contain no hardcoded em-dash', async ({ page }) => {
+    await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+
+    // Wait for page to settle.
+    await page.locator('.cand-grid, .byund-grid, h1').first().waitFor({ timeout: 15000 });
+    await page.waitForTimeout(300);
+
+    // Check Legs TOTAL row (.cand-row-total > span.num).
+    const legsNumSpans = page.locator('.cand-row.cand-row-total > span.num');
+    const legsCount = await legsNumSpans.count();
+    for (let i = 0; i < legsCount; i++) {
+      const text = await legsNumSpans.nth(i).textContent();
+      expect(text?.trim(), `Legs TOTAL span[${i}] should not be '—'`).not.toBe('—');
+    }
+
+    // Check Snapshot TOTAL row (.byund-row.byund-row-total > span.num).
+    const byundNumSpans = page.locator('.byund-row.byund-row-total > span.num');
+    const byundCount = await byundNumSpans.count();
+    for (let i = 0; i < byundCount; i++) {
+      const text = await byundNumSpans.nth(i).textContent();
+      expect(text?.trim(), `Snapshot TOTAL span[${i}] should not be '—'`).not.toBe('—');
+    }
+
+    console.log(
+      `[derivatives_total_expclose] checked ${legsCount} Legs TOTAL spans + ${byundCount} Snapshot TOTAL spans — no em-dashes`
+    );
+  });
+
+  // ── Test 4: Perf — page loads derivatives under 15s ─────────────────────
+  test('4-Perf: /admin/derivatives page loads within 15s budget', async ({ page }) => {
     const startTime = Date.now();
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
 

@@ -4617,12 +4617,12 @@
               <span></span>
               <span></span>
               <span class="cand-total-label">TOTAL</span>
-              <span class="num">—</span>
-              <span class="num">—</span><!-- chg % -->
-              <span class="num">—</span>
-              <span class="num">—</span>
-              <span class="num">—</span>
-              <span class="num">—</span><!-- P.Close — was missing, caused 1-column offset -->
+              <span class="num"></span>
+              <span class="num"></span><!-- chg % -->
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span>
+              <span class="num"></span><!-- P.Close — was missing, caused 1-column offset -->
               <span class="num tf-cell cand-pnl {_legsDayPnlTotal > 0 ? 'cell-pos' : _legsDayPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Day P&L across enabled F&O legs (excludes equity)">
                 {aggCompact(_legsDayPnlTotal)}
@@ -4641,8 +4641,8 @@
                     title="Σ Extrinsic value across all positions — total time value remaining in the portfolio.">
                 {aggCompact(positionsDerivedStore.total.extrinsic)}
               </span>
-              <span class="num">—</span>
-              <span class="num">—</span>
+              <span class="num"></span>
+              <span class="num"></span>
               <span class="num" title="Σ Δ across every selected leg (position-scaled).">{pctFmt(_tg.delta)}</span>
               <span class="num" title="Σ Γ across every selected leg (position-scaled).">{pctFmt(_tg.gamma)}</span>
               <span class="num {_tg.theta < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -4652,7 +4652,7 @@
               <span class="num" title="Σ 𝒱 across every selected leg (position-scaled).">{aggCompact(_tg.vega)}</span>
               <span class="num {(_mergedEv ?? 0) > 0 ? 'cell-pos' : (_mergedEv ?? 0) < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Strategy-level EV across every selected leg.">
-                {_mergedEv != null ? aggCompact(_mergedEv) : '—'}
+                {_mergedEv != null ? aggCompact(_mergedEv) : ''}
               </span>
             </div>
           {/if}
@@ -4809,17 +4809,17 @@
         {#if _byUnderlyingTotals.length > 0}
           <div class="byund-row byund-row-total">
             <span class="byund-und" title="F&O positions total">TOTAL</span>
-            <span class="num">—</span>
-            <span class="num">—</span>
-            <span class="num">—</span>
+            <span class="num"></span>
+            <span class="num"></span>
+            <span class="num"></span>
             <span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalDay)}</span>
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
-            <span class="num tf-cell {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}">{positionsDerivedStore.total.extrinsic === 0 ? '—' : aggCompact(positionsDerivedStore.total.extrinsic)}</span>
+            <span class="num tf-cell {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}">{positionsDerivedStore.total.extrinsic === 0 ? '' : aggCompact(positionsDerivedStore.total.extrinsic)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
-            <span class="num">{_byUnderlyingTotal.qty_fno || '—'}</span>
+            <span class="num">{_byUnderlyingTotal.qty_fno || ''}</span>
             <span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">
-              {_snapshotTotalEvFull !== 0 ? aggCompact(_snapshotTotalEvFull) : '—'}
+              {_snapshotTotalEvFull !== 0 ? aggCompact(_snapshotTotalEvFull) : ''}
             </span>
           </div>
         {/if}
