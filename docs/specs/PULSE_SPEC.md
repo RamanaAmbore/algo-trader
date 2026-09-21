@@ -941,10 +941,14 @@ MCX synthetic roots (e.g. "CRUDEOIL") to actual front-month contracts (e.g.
 - Resolved contract keys sent to `loadUnderlyingQuotes()` via `batchQuote`
 - Backend `batch_quote()` handler now also uses the resolved broker key for `seen_pairs` in 
   `_subscribe_batch_universe_to_ticker`, triggering real-time KiteTicker subscriptions
+- `_lastQuoteSig` (subscription cache hash) now includes `quoteKey` in addition to root symbol, 
+  ensuring a front-month rollover (same root, new contract tradingsymbol) triggers immediate 
+  re-subscription and payoff chart re-render
 
 **Impact**: MCX active-underlying spot prices now update live via SSE ticks throughout the
 trading day. Derivatives page spot-price display, payoff chart positioning, and EV 
-calculations reflect real-time MCX rates instead of freezing at page-load or settlement.
+calculations reflect real-time MCX rates instead of freezing at page-load or settlement. 
+Front-month futures rollovers are detected and resolved automatically without manual refresh.
 
 ---
 
@@ -1021,6 +1025,8 @@ the accessors so cells see current $state values on every redraw (not stale bind
 - MCX commodity special case: check `quote_symbol` first (resolved contract key) before raw symbol
 - Returns null (renders "—") when no positive price available
 - Poll-time LTP has `ltp_ts=0` so SSE ticks always win despite later poll completion time
+- Hover tooltip: `tooltipValueGetter` on `mkLtpCol` returns `"No live price"` when LTP is null, 
+  applied to all grids (MarketPulse left/right panels, Snapshot grid, Derivatives Legs grid)
 
 **Lot display** (F&O only):
 - `lotsForRow(row)` → returns lot count when `row.kind === 'fut'` or `'opt'`; null for equity/cash
