@@ -977,9 +977,10 @@ async def fix_daily_book_prev_close(
     New-session mode (now_ist >= today's session open, i.e. 08:00 IST):
       When settlement_map is provided (fetched from broker at 08:00 IST), updates
       today's daily_book rows using broker close_price values from that map.
+      Both ltp and prev_close are set to close_price so that
+      _override_stale_close_from_snapshot reads the correct settlement price,
+      making day P&L ≈ 0 at session open.
       Falls back to yesterday's daily_book.ltp when settlement_map is absent.
-      ltp == prev_close at session open is intentionally valid — no intraday
-      movement has occurred yet.
     """
     # Gate: do not run on non-trading days (weekends / holidays).
     # _is_market_day_today() reads from the DB-backed exchange_schedule cache,
@@ -1023,6 +1024,7 @@ async def fix_daily_book_prev_close(
                     result = await session.execute(text("""
                         UPDATE daily_book d
                         SET prev_close        = :close_price,
+                            ltp               = :close_price,
                             prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)
                         WHERE d.date = :today
                           AND d.account = :account
