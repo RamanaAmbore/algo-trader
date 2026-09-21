@@ -1,71 +1,19 @@
-# Plan: Fix MarketPulse grid symbol cell vertical alignment — uniform row height
+# Plan: Site improvements — GOLDM subscription, rollover sig, LTP tooltip, npm audit
 
-## Context
-MarketPulse grids show uneven visual row heights: rows with badge chips (P/H/W/U/M) in
-the symbol cell look taller than rows without. Root cause: two compounding CSS issues.
+## Task
+Four improvements identified in site audit and confirmed by the planning council (4 APPROVE · 2 CONCERN · 0 BLOCK):
 
-1. `--ag-row-height: 24px` in `.ag-theme-algo` makes ag-Grid derive `line-height: 24px`
-   for cells, but `rowHeight: 28` (JS) makes actual rows 28px. Content sits in a 24px
-   inline box within a 28px physical row.
-2. `.sym-badges` uses `display: inline-flex; vertical-align: middle` with badge chips
-   (`line-height: 12px`). The inline-flex + vertical-align: middle interacts with the
-   inline line-box differently when badges are present vs absent — causing the visual
-   "alternating padding" the operator sees.
+1. **GOLDM anchor subscription gap** — when `selectedUnderlying` has no portfolio positions (e.g. GOLDM from the dropdown), `_underlyingQuoteKeys` never includes it → `loadUnderlyingQuotes` never fires for GOLDM26JULFUT → KiteTicker never subscribes → `liveSnap` returns undefined → spot LTP blank in payoff + Greeks. Fix: extend `_underlyingQuoteKeys` ($derived at line 874 of `+page.svelte`) to also include `selectedUnderlying` when it is NOT already present in the portfolio set. Must remain gated on `void instrumentsReady` (already present at line 875) so cold-start doesn't resolve a synthetic MCX stub.
 
-Derivatives legs grid (CandidateLegRow) has no issue because it is a hand-rolled CSS
-Grid where every cell has `display: flex; align-items: center` explicitly.
+2. **Front-month rollover detection** — `_lastQuoteSig` at line 4003 keys only on `.root`; when GOLDM rolls from GOLDM26SEPFUT → GOLDM26OCTFUT the root stays "GOLDM", sig is unchanged, `loadUnderlyingQuotes` never re-fires. Fix: include `quoteKey` in the sig: `.map(p => p.root + ':' + p.quoteKey)`.
 
-## Fix (CSS-only, no JS changes)
+3. **LTP null tooltip** — pulse-grid LTP cells already show `—` via `numFmt` when `value == null`. The missing piece is context: add `tooltipValueGetter: (p) => p.value == null ? 'No live price' : null` to `mkLtpCol` in `pulseColumns.js` so the dash is explained on hover.
 
-Two rules in `frontend/src/app.css`:
-
-### 1 — Match `--ag-row-height` to JS `rowHeight: 28`
-In `.ag-theme-algo` CSS variables block (line ~1074), change:
-```css
---ag-row-height: 24px;
-```
-to:
-```css
---ag-row-height: 28px;
-```
-This aligns ag-Grid's internal `line-height` calculation with the actual rendered row
-height, eliminating the 4px dead-space mismatch.
-
-### 2 — Make `.ag-col-sym` a flex container
-Add a new CSS rule in `app.css` (after the existing `.ag-theme-algo .ag-cell` rule,
-around line 1169):
-```css
-.ag-theme-algo .ag-col-sym {
-  display: flex !important;
-  align-items: center !important;
-  overflow: hidden;
-}
-```
-This makes the symbol cell a proper flex container. Badge chips become flex items;
-`vertical-align: middle` on `.sym-badges` has no effect in flex context; all content
-(sym-main + badges + alias + action buttons) centers uniformly in the 28px cell
-regardless of whether the row has badges. Matches the `display: flex; align-items:
-center` pattern used in CandidateLegRow.
+4. **npm audit fix + Phase 2 comment removal** — run `npm audit fix` (no `--force`) in `frontend/` to patch HIGH/MODERATE js-yaml, browserslist, devalue, @vitest/mocker. Remove lines 16-17 (dead planning comment) in `MarketPulse.svelte`.
 
 ## Agents
 - backend: skip
-- frontend: Edit `frontend/src/app.css`:
-  1. In the `.ag-theme-algo` CSS variables block, find `--ag-row-height: 24px` and
-     change it to `--ag-row-height: 28px`.
-  2. After the `.ag-theme-algo .ag-cell { ... }` rule (around line 1169), add:
-     ```css
-     .ag-theme-algo .ag-col-sym {
-       display: flex !important;
-       align-items: center !important;
-       overflow: hidden;
-     }
-     ```
-  These are the only two changes. Do not touch any JS files, any other CSS rules, or
-  any Svelte files.
-  Write/update tests: add a Vitest test in `frontend/src/lib/__tests__/` verifying that
-  the ag-col-sym class is expected to be on the symbol column definition (check
-  pulseColumns.js exports mkSymColLeft / mkSymColRight have cellClass containing
-  'ag-col-sym').
+- frontend: (1) In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, extend `_underlyingQuoteKeys` at line 874 to also push `{ root: selectedUnderlying, quoteKey: r.quoteKey }` when `selectedUnderlying` is non-empty and not already covered by the `_byUnderlyingTotals` loop (use a `seen` Set). Keep `void instrumentsReady` guard. (2) At line 4003, change the sig to `.map(p => p.root + ':' + p.quoteKey).sort().join('|')` and update the comment at lines 3997-4000 to drop the incorrect "quoteKey change catches the same poll cycle" sentence. (3) In `frontend/src/lib/data/pulseColumns.js`, add `tooltipValueGetter: (p) => p.value == null ? 'No live price' : null` to the return value of `mkLtpCol` (after `valueFormatter`). (4) In `frontend/src/lib/MarketPulse.svelte`, delete lines 16-17 (the "Phase 2 additions (not wired yet)" comment). (5) Run `cd /Users/ramanambore/projects/ramboq/frontend && npm audit fix` (no --force). For every changed file write or update a test: pulseColumns change → update `frontend/src/lib/__tests__/data/pulseColumns.test.js` to assert `mkLtpCol` returns a `tooltipValueGetter` that returns "No live price" when `p.value == null` and `null` otherwise. The `_underlyingQuoteKeys` and `_lastQuoteSig` changes are component-internal state; confirm via `svelte-check` that no type errors are introduced.
 - broker: skip
 - doc: skip
 - backend-test: skip
@@ -77,9 +25,11 @@ center` pattern used in CandidateLegRow.
 - playwright: no
 
 ## Commit message
-fix(pulse): uniform symbol cell height — flex align ag-col-sym; match --ag-row-height to rowHeight:28
+fix(derivatives): subscribe selectedUnderlying to KiteTicker when not in portfolio; fix rollover sig; add LTP null tooltip
 
 ## Done when
-- MarketPulse grids: all rows visually same height regardless of badge presence
-- Symbol cell content vertically centered in every row
-- svelte-check 0 errors
+- Selecting GOLDM (or any MCX virtual root with no portfolio positions) in the derivatives page causes the resolved front-month futures contract to appear in `_underlyingQuoteKeys` → triggers `loadUnderlyingQuotes` → KiteTicker subscribes it → liveSpot populates within one SSE tick cycle
+- Changing `selectedUnderlying` on rollover day (when quoteKey changes but root stays the same) correctly fires `loadUnderlyingQuotes` again
+- Hovering over a `—` LTP cell in any pulse grid shows "No live price" tooltip
+- `svelte-check` exits 0 errors
+- `npx vitest run` passes with the new `tooltipValueGetter` assertion in `pulseColumns.test.js`

@@ -305,6 +305,7 @@ export function mkLtpCol({ getLiveLtpSnap, getLtpFlashUp, getLtpFlashDown, numFm
     cellClass: (p) => _ltpCellClass(p, RA, resolveCellLtp, getLtpFlashUp, getLtpFlashDown),
     valueGetter: resolveCellLtp,
     valueFormatter: (p) => p.data?._isTotal ? '' : numFmt({ value: p.value }),
+    tooltipValueGetter: (p) => p.value == null ? 'No live price' : null,
   };
 }
 

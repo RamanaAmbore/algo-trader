@@ -875,9 +875,17 @@
     void instrumentsReady; // re-derive after instruments load so findNearestFuture resolves MCX contracts
     /** @type {Array<{ root: string, quoteKey: string }>} */
     const out = [];
+    const seen = new Set();
     for (const g of _byUnderlyingTotals) {
       const r = resolveUnderlying(g.underlying, findNearestFuture);
-      if (r?.quoteKey) out.push({ root: g.underlying, quoteKey: r.quoteKey });
+      if (r?.quoteKey) { out.push({ root: g.underlying, quoteKey: r.quoteKey }); seen.add(g.underlying); }
+    }
+    // Include selectedUnderlying when not already covered by portfolio positions so
+    // freshly-selected MCX virtual roots (e.g. GOLDM with no open positions) get
+    // their front-month futures subscribed to KiteTicker via loadUnderlyingQuotes.
+    if (selectedUnderlying && !seen.has(selectedUnderlying)) {
+      const r = resolveUnderlying(selectedUnderlying, findNearestFuture);
+      if (r?.quoteKey) out.push({ root: selectedUnderlying, quoteKey: r.quoteKey });
     }
     return out;
   });
@@ -3994,13 +4002,11 @@
 
   // Refresh underlying quotes whenever the Snapshot universe changes
   // (a new underlying lands in the book, an old one drops out, the
-  // operator's account filter shrinks/grows the set). The signature
-  // is just the sorted root list — a quoteKey change without root
-  // changes (front-month roll on an MCX commodity) catches the same
-  // poll cycle below.
+  // operator's account filter shrinks/grows the set, or a front-month
+  // roll changes the quoteKey for an MCX commodity root).
   let _lastQuoteSig = '';
   $effect(() => {
-    const sig = _underlyingQuoteKeys.map(p => p.root).sort().join('|');
+    const sig = _underlyingQuoteKeys.map(p => `${p.root}:${p.quoteKey}`).sort().join('|');
     if (sig === _lastQuoteSig) return;
     _lastQuoteSig = sig;
     if (sig) loadUnderlyingQuotes();

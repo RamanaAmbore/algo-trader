@@ -18,7 +18,7 @@ vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
   }
 }));
 
-import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -868,5 +868,47 @@ describe('mkSymColRight — cellClass contains ag-col-sym', () => {
 
   it('cellClass does not contain ag-col-sym-left (right grid has no left variant)', () => {
     expect(col.cellClass).not.toContain('ag-col-sym-left');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mkLtpCol — tooltipValueGetter (Change 3)
+// ---------------------------------------------------------------------------
+
+describe('mkLtpCol — tooltipValueGetter', () => {
+  function makeLtpCol() {
+    return mkLtpCol({
+      getLiveLtpSnap:  () => ({}),
+      getLtpFlashUp:   () => new Set(),
+      getLtpFlashDown: () => new Set(),
+      numFmt:          ({ value }) => String(value ?? ''),
+      RA:              'ag-right-aligned-cell',
+      numericHdr:      'ag-right-aligned-header',
+    });
+  }
+
+  it('returns an object with a tooltipValueGetter function', () => {
+    const col = makeLtpCol();
+    expect(typeof col.tooltipValueGetter).toBe('function');
+  });
+
+  it('tooltipValueGetter returns "No live price" when value is null', () => {
+    const col = makeLtpCol();
+    expect(col.tooltipValueGetter({ value: null })).toBe('No live price');
+  });
+
+  it('tooltipValueGetter returns "No live price" when value is undefined', () => {
+    const col = makeLtpCol();
+    expect(col.tooltipValueGetter({ value: undefined })).toBe('No live price');
+  });
+
+  it('tooltipValueGetter returns null when value is a number (1234.5)', () => {
+    const col = makeLtpCol();
+    expect(col.tooltipValueGetter({ value: 1234.5 })).toBeNull();
+  });
+
+  it('tooltipValueGetter returns null when value is 0', () => {
+    const col = makeLtpCol();
+    expect(col.tooltipValueGetter({ value: 0 })).toBeNull();
   });
 });

@@ -12,9 +12,6 @@
   //   enableWatchlists    — show tab strip / add row / remove ×
   //   enableSourceToggles — show "P · Positions" / "H · Holdings" pills
   //   allowOrders         — row click opens SymbolPanel
-  //
-  // Phase 2 additions (not wired yet): accountFilter, showSummaryRows,
-  // showFundsCard.
 
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
