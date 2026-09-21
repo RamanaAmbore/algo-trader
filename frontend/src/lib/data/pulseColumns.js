@@ -804,8 +804,8 @@ export function mkDeltaCol({ RA, numericHdr }) {
     field: 'delta_pos', headerName: 'Δ pos', width: 62,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: RA,
-    valueFormatter: ({ value }) =>
-      value == null || value === 0 ? '—' : value.toFixed(2),
+    valueFormatter: (p) =>
+      p.data?._isTotal ? '' : (p.value == null || p.value === 0 ? '—' : p.value.toFixed(2)),
   };
 }
 
@@ -824,8 +824,8 @@ export function mkThetaCol({ RA, numericHdr, aggFmtGrid }) {
     field: 'theta_pos', headerName: 'Θ/day', width: 62,
     type: 'numericColumn', headerClass: numericHdr,
     cellClass: RA,
-    valueFormatter: ({ value }) =>
-      value == null || value === 0 ? '—' : aggFmtGrid({ value }),
+    valueFormatter: (p) =>
+      p.data?._isTotal ? '' : (p.value == null || p.value === 0 ? '—' : aggFmtGrid({ value: p.value })),
   };
 }
 

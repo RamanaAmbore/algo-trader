@@ -26,7 +26,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { mergePositionRows, makeRowFactory } from '../../data/pulseUnified.js';
+import { mergePositionRows, mergeHoldingRows, makeRowFactory } from '../../data/pulseUnified.js';
 import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
 
 // ── Shared test fixtures ──────────────────────────────────────────────────────
@@ -150,5 +150,190 @@ describe('mergePositionRows — marketOpen gate (Fix B)', () => {
     const result = byKey['NIFTY25AUG24000CE__pos'];
     // With live=null, livePositionDayPnl returns brokerDcv.
     expect(result.day_pnl).toBe(300);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mergeHoldingRows — holdClose guard (holdClose <= 0)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build a minimal holdings broker row.
+ * @param {Partial<any>} overrides
+ * @returns {any}
+ */
+function makeHoldingRow(overrides = {}) {
+  return {
+    tradingsymbol:   'TCS',
+    exchange:        'NSE',
+    symbol:          'TCS',
+    quantity:        100,
+    average_price:   2500,
+    last_price:      2700,
+    previous_close:  2650,   // Default to > 0 — can be overridden
+    close_price:     2650,   // Will be ignored per the fix
+    pnl:             20000,
+    day_change_val:  500,    // dcv — fallback when holdClose <= 0
+    ...overrides,
+  };
+}
+
+/**
+ * Build ctx for mergeHoldingRows.
+ * @param {Record<string, any>} snapMap  symbol → snap object
+ * @returns {any}
+ */
+function makeHoldingCtx(snapMap = {}) {
+  return {
+    snapOf: (sym) => snapMap[sym] ?? null,
+    getInst: null,
+    isMarketOpen: () => true, // Standard — holdings snapshot logic doesn't gate on market open
+  };
+}
+
+describe('mergeHoldingRows — holdClose guard', () => {
+  it('holdClose < 0: uses dcv (guard fires for negative previous_close)', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({ previous_close: -1, day_change_val: 500 });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // holdClose = -1 → guard fires → uses day_change_val = 500
+    expect(result.day_pnl).toBe(500);
+  });
+
+  it('holdClose = 0: uses dcv', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({ previous_close: 0, close_price: 0, day_change_val: 400 });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // holdClose = 0 → guard fires → uses day_change_val = 400
+    expect(result.day_pnl).toBe(400);
+  });
+
+  it('holdClose > 0 with valid ltp: uses (ltp - holdClose) * qty when epsilon check passes', () => {
+    const byKey = {};
+    // previous_close: 2650, ltp: 2700, qty: 100
+    // day_pnl = (2700 - 2650) * 100 = 5000
+    const holdingRow = makeHoldingRow({
+      previous_close: 2650,
+      last_price: 2700,
+      quantity: 100,
+      day_change_val: 0, // Not used
+    });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // holdClose = 2650 > 0, epsilon check: |2700 - 2650| = 50 > 0.005 → passes
+    // day_pnl = (2700 - 2650) * 100 = 5000
+    expect(result.day_pnl).toBe(5000);
+  });
+
+  it('close_price is ignored for holdClose: only previous_close is used', () => {
+    const byKey = {};
+    // previous_close: 0 (should fire guard), close_price: 2650 (should be ignored)
+    const holdingRow = makeHoldingRow({
+      previous_close: 0,
+      close_price: 2650,
+      day_change_val: 350,
+    });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // Old buggy code would compute: (2700 - 2650) * 100 = 5000
+    // Fixed code: holdClose = Number(previous_close) || Number(close_price) = 0
+    // Guard fires → uses day_change_val = 350
+    expect(result.day_pnl).toBe(350);
+    expect(result.day_pnl).not.toBe(5000); // Not the close_price formula result
+  });
+
+  it('holdClose > 0 but epsilon check fails: uses dcv', () => {
+    const byKey = {};
+    // previous_close: 2650.002, ltp: 2650 (post-settlement, within 0.005 epsilon)
+    // |2650 - 2650.002| = 0.002 ≤ 0.005 → epsilon check fails → uses dcv
+    const holdingRow = makeHoldingRow({
+      previous_close: 2650.002,
+      last_price: 2650,
+      day_change_val: 600,
+    });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // epsilon check fails → fallback to dcv
+    expect(result.day_pnl).toBe(600);
+  });
+
+  it('holdClose = holdAvg: uses dcv (Guard 2 — lifetime vs day P&L)', () => {
+    const byKey = {};
+    // average_price: 2500, previous_close: 2500 (same)
+    // Guard 2 fires → uses dcv, not lifetime formula
+    const holdingRow = makeHoldingRow({
+      average_price: 2500,
+      previous_close: 2500,
+      last_price: 2700,
+      quantity: 100,
+      day_change_val: 450,
+    });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // holdClose = 2500 = holdAvg → Guard 2 fires → uses dcv = 450
+    expect(result.day_pnl).toBe(450);
+  });
+
+  it('quantity = 0 (closed holding): day_pnl still uses proper formula', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({
+      quantity: 0,
+      previous_close: 2650,
+      last_price: 2700,
+      day_change_val: 0,
+    });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // qty = 0 → (2700 - 2650) * 0 = 0
+    expect(result.day_pnl).toBe(0);
+  });
+
+  it('snap ltp overrides last_price for day_pnl calculation', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({
+      previous_close: 2600,
+      last_price: 2700, // Ignored when snap has ltp
+      quantity: 100,
+    });
+    // snap.ltp: 2750 (live tick overrides last_price)
+    const ctx = makeHoldingCtx({ TCS: { ltp: 2750 } });
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result).toBeDefined();
+    // liveHold = 2750 (from snap), holdClose = 2600
+    // day_pnl = (2750 - 2600) * 100 = 15000
+    expect(result.day_pnl).toBe(15000);
   });
 });

@@ -23,6 +23,7 @@
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
   import { positionsStore, holdingsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
   import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
@@ -715,6 +716,7 @@
       filterQ: _filterByund,
       decomposeSymbol, targetsForProxy, getOptionUnderlyingLot,
       baseDayPnlForPosition,
+      holdingsDayPnlByKey: holdingsDayPnlStore.byKey,
     });
   });
 
@@ -3587,7 +3589,9 @@
         if (isFOSymbol(sym)) {
           bumpExcluded(_excluded, h?.account, {
             hold_pnl: Number(h?.pnl || 0),
-            hold_day: Number(h?.day_change_val || 0),
+            hold_day: holdingsDayPnlStore.get(
+              String(h?.tradingsymbol || h?.symbol || '').toUpperCase()
+            ).day_pnl ?? 0,
           });
           continue;
         }

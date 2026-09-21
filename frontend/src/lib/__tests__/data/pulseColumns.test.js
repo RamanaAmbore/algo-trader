@@ -16,7 +16,7 @@ vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
   }
 }));
 
-import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -673,5 +673,72 @@ describe('_dayPnlPctValueGetter — SSOT enforcement (no change_pct fallback)', 
     const p = { data: { tradingsymbol: 'INFY', change_pct: 5.0 } };
     const result = _dayPnlPctValueGetter(p);
     expect(result).toBe(2.1);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Fix 5 — mkDeltaCol / mkThetaCol: TOTAL row renders '' not '—'
+// ---------------------------------------------------------------------------
+
+describe('mkDeltaCol — TOTAL row renders empty string (Fix 5)', () => {
+  const col = mkDeltaCol({ RA: 'ra-cls', numericHdr: 'ag-right-aligned-header' });
+
+  it('TOTAL row with null value renders ""', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: null })).toBe('');
+  });
+
+  it('TOTAL row with 0 value renders ""', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: 0 })).toBe('');
+  });
+
+  it('TOTAL row with a real delta value renders ""', () => {
+    // TOTAL row always returns '' regardless of value
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: 1.25 })).toBe('');
+  });
+
+  it('normal row with null value renders "—"', () => {
+    expect(col.valueFormatter({ data: {}, value: null })).toBe('—');
+  });
+
+  it('normal row with 0 value renders "—"', () => {
+    expect(col.valueFormatter({ data: {}, value: 0 })).toBe('—');
+  });
+
+  it('normal row with a real delta value renders toFixed(2)', () => {
+    expect(col.valueFormatter({ data: {}, value: 0.75 })).toBe('0.75');
+  });
+
+  it('normal row with negative delta renders toFixed(2)', () => {
+    expect(col.valueFormatter({ data: {}, value: -0.5 })).toBe('-0.50');
+  });
+});
+
+describe('mkThetaCol — TOTAL row renders empty string (Fix 5)', () => {
+  const aggFmtGrid = vi.fn(({ value }) => `agg:${value}`);
+  const col = mkThetaCol({ RA: 'ra-cls', numericHdr: 'ag-right-aligned-header', aggFmtGrid });
+
+  it('TOTAL row with null value renders ""', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: null })).toBe('');
+  });
+
+  it('TOTAL row with 0 value renders ""', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: 0 })).toBe('');
+  });
+
+  it('TOTAL row with a real theta value renders ""', () => {
+    expect(col.valueFormatter({ data: { _isTotal: true }, value: -500 })).toBe('');
+  });
+
+  it('normal row with null value renders "—"', () => {
+    expect(col.valueFormatter({ data: {}, value: null })).toBe('—');
+  });
+
+  it('normal row with 0 value renders "—"', () => {
+    expect(col.valueFormatter({ data: {}, value: 0 })).toBe('—');
+  });
+
+  it('normal row with a real theta value delegates to aggFmtGrid', () => {
+    col.valueFormatter({ data: {}, value: -750 });
+    expect(aggFmtGrid).toHaveBeenCalledWith({ value: -750 });
   });
 });

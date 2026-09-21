@@ -73,6 +73,7 @@
   import { mkWeightPctCol, mkDeltaCol, mkThetaCol, mkNavBreakdownCols, _tcFlashClass } from '$lib/data/pulseColumns.js';
   import { postSortGroups2Level } from '$lib/data/pulseGridSetup.js';
   import { pairGroupSort } from '$lib/data/pairGroupSort.js';
+  import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
 
   // ModuleRegistry is registered inside onMount after the dynamic import.
 
@@ -860,7 +861,7 @@
     const sum = (f) => rows.reduce((s, r) => s + (Number(r[f]) || 0), 0);
     const total_pnl        = sum('pnl');
     const total_cur_val    = sum('cur_val');
-    const total_day_change = sum('day_change_val');
+    const total_day_change = holdingsDayPnlStore.total ?? sum('day_change_val');
     // Earlier this derived total_inv_val from cur_val - pnl. That's an
     // approximation that drifts when holdings have partial intraday
     // sells (opening_quantity ≠ quantity). The HoldingRow schema carries
@@ -895,8 +896,11 @@
     const total_day_change = aggregateDayPnlForPositions(rows);
     const total_cost_basis = rows.reduce(
       (s, r) => s + Math.abs(Number(r.average_price) || 0) * Math.abs(Number(r.quantity) || 0), 0);
-    const total_prev_val   = rows.reduce(
-      (s, r) => s + Math.abs(Number(r.close_price) || 0)   * Math.abs(Number(r.quantity) || 0), 0);
+    // Algebraically equivalent: prev_val = cur_val − day_pnl.
+    // Avoids stale BHAV-copy close_price (which lags until next-day 08:00 IST).
+    const total_cur_val    = rows.reduce(
+      (s, r) => s + Math.abs(Number(r.last_price) || 0) * Math.abs(Number(r.quantity) || 0), 0);
+    const total_prev_val   = total_cur_val - total_day_change;
     return {
       account: '',
       tradingsymbol: 'TOTAL',

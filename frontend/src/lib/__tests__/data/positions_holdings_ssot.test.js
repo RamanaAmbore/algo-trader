@@ -63,6 +63,7 @@ function makeHoldingRow(overrides = {}) {
     quantity:           10,
     opening_quantity:   10,
     average_price:      990,
+    previous_close:     1000,  // Use previous_close instead of close_price per fix
     close_price:        1000,
     last_price:         1005,
     pnl:                150,

@@ -376,6 +376,7 @@ export function computeExpiryBands({ annotated }) {
  *   targetsForProxy: (sym: string) => string[],
  *   getOptionUnderlyingLot: (root: string) => number,
  *   baseDayPnlForPosition: (p: any) => number,
+ *   holdingsDayPnlByKey?: Record<string, number>,
  * }} params
  * @returns {Array<{
  *   underlying: string,
@@ -391,6 +392,7 @@ export function rollupByUnderlying({
   filterQ,
   decomposeSymbol, targetsForProxy, getOptionUnderlyingLot,
   baseDayPnlForPosition,
+  holdingsDayPnlByKey = {},
 }) {
   const groups = new Map();
   const ensure = (root) => {
@@ -440,7 +442,8 @@ export function rollupByUnderlying({
     if (!sym) continue;
     const qty = Number(h.opening_qty ?? h.opening_quantity ?? h.quantity ?? h.qty) || 0;
     const pnl = Number(h.pnl) || 0;
-    const day = Number(h.day_change_val) || 0;
+    // Use holdingsDayPnlByKey[sym] if present (nullish coalescing), else fallback to day_change_val.
+    const day = (holdingsDayPnlByKey[sym] ?? Number(h.day_change_val)) || 0;
     const _targets = targetsForProxy(sym);
     const credits = _targets.length ? _targets : [sym];
     for (const root of credits) {

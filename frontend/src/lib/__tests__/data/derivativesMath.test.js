@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rawPosExpPnl } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rawPosExpPnl, rollupByUnderlying } from '$lib/data/derivativesMath.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal fixture helpers
@@ -364,5 +364,213 @@ describe('rawPosExpPnl', () => {
     };
     const result = rawPosExpPnl(c, spot, legAnalytics);
     expect(result).toBeCloseTo(30000, 2);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// rollupByUnderlying — holdingsDayPnlByKey param
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
+  /**
+   * Build a minimal position row for rollupByUnderlying input.
+   * Symbols should be F&O (futures/options) with format UNDERLYING+EXPIRY+TYPE.
+   * @param {string} sym  F&O symbol (e.g., 'NIFTY25SEPCFUT', 'TCS25SEPCFUT')
+   * @param {number} qty
+   * @param {Partial<any>} extra
+   * @returns {any}
+   */
+  function makePos(sym, qty, extra = {}) {
+    return {
+      symbol: sym,
+      tradingsymbol: sym,
+      quantity: qty,
+      pnl: 500,
+      source: 'live',
+      account: 'ACC1',
+      ...extra,
+    };
+  }
+
+  /**
+   * Build a minimal holding row for rollupByUnderlying input.
+   * @param {string} sym
+   * @param {number} qty
+   * @param {Partial<any>} extra
+   * @returns {any}
+   */
+  function makeHold(sym, qty, extra = {}) {
+    return {
+      symbol: sym,
+      tradingsymbol: sym,
+      quantity: qty,
+      opening_quantity: qty,
+      pnl: 1000,
+      day_change_val: 100,
+      account: 'ACC1',
+      ...extra,
+    };
+  }
+
+  /**
+   * Mock baseDayPnlForPosition that just returns a day_pnl from the position.
+   * @param {any} p
+   * @returns {number}
+   */
+  function mockBaseDayPnlForPosition(p) {
+    return Number(p.day_change_val ?? p.day_pnl ?? 0);
+  }
+
+  it('uses holdingsDayPnlByKey[sym] when present, overrides day_change_val', () => {
+    // Holdings row with day_change_val: 100, but holdingsDayPnlByKey['TCS']: 250
+    // Expected: day_with in rollup uses 250 (from override), not 100.
+    const holdings = [makeHold('TCS', 100, { day_change_val: 100 })];
+    const positions = [makePos('TCS25SEPCFUT', 50)]; // TCS future to satisfy legs_without > 0 for TCS root
+    const result = rollupByUnderlying({
+      positions,
+      holdings,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: (sym) => [],
+      getOptionUnderlyingLot: (root) => (root === 'TCS' ? 1 : 0),
+      baseDayPnlForPosition: mockBaseDayPnlForPosition,
+      holdingsDayPnlByKey: { TCS: 250 }, // Override 100 with 250
+    });
+
+    const tcsGroup = result.find((g) => g.underlying === 'TCS');
+    expect(tcsGroup).toBeDefined();
+    expect(tcsGroup.day_with).toBe(250);
+    expect(tcsGroup.day_with).not.toBe(100);
+  });
+
+  it('falls back to day_change_val when holdingsDayPnlByKey missing the symbol', () => {
+    // Holdings row with day_change_val: 200. holdingsDayPnlByKey: {} (empty)
+    // Expected: day_with uses 200 (fallback).
+    const holdings = [makeHold('INFY', 50, { day_change_val: 200 })];
+    const positions = [makePos('INFY25SEPCFUT', 50)]; // INFY future
+    const result = rollupByUnderlying({
+      positions,
+      holdings,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: (sym) => [],
+      getOptionUnderlyingLot: (root) => (root === 'INFY' ? 1 : 0),
+      baseDayPnlForPosition: mockBaseDayPnlForPosition,
+      holdingsDayPnlByKey: {}, // Empty map — fallback to day_change_val
+    });
+
+    const infyGroup = result.find((g) => g.underlying === 'INFY');
+    expect(infyGroup).toBeDefined();
+    expect(infyGroup.day_with).toBe(200);
+  });
+
+  it('defaults to empty holdingsDayPnlByKey when param is omitted', () => {
+    // Same as above, but param is not passed — should still use day_change_val.
+    const holdings = [makeHold('RELIANCE', 75, { day_change_val: 300 })];
+    const positions = [makePos('RELIANCE25SEPCFUT', 50)];
+    const result = rollupByUnderlying({
+      positions,
+      holdings,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: (sym) => [],
+      getOptionUnderlyingLot: (root) => (root === 'RELIANCE' ? 1 : 0),
+      baseDayPnlForPosition: mockBaseDayPnlForPosition,
+      // holdingsDayPnlByKey is omitted
+    });
+
+    const relianceGroup = result.find((g) => g.underlying === 'RELIANCE');
+    expect(relianceGroup).toBeDefined();
+    expect(relianceGroup.day_with).toBe(300);
+  });
+
+  it('holdingsDayPnlByKey = 0 for a symbol: uses 0, not day_change_val', () => {
+    // Holdings row with day_change_val: 500, but holdingsDayPnlByKey['HCLTECH']: 0
+    // Nullish coalescing: 0 ?? 500 → 0 (0 is not null/undefined)
+    // Expected: day_with uses 0.
+    const holdings = [makeHold('HCLTECH', 60, { day_change_val: 500 })];
+    const positions = [makePos('HCLTECH25SEPCFUT', 50)];
+    const result = rollupByUnderlying({
+      positions,
+      holdings,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: (sym) => [],
+      getOptionUnderlyingLot: (root) => (root === 'HCLTECH' ? 1 : 0),
+      baseDayPnlForPosition: mockBaseDayPnlForPosition,
+      holdingsDayPnlByKey: { HCLTECH: 0 }, // Override with 0
+    });
+
+    const hlcGroup = result.find((g) => g.underlying === 'HCLTECH');
+    expect(hlcGroup).toBeDefined();
+    expect(hlcGroup.day_with).toBe(0);
+    expect(hlcGroup.day_with).not.toBe(500);
+  });
+
+  it('multiple holdings with mixed override/fallback', () => {
+    // TCS gets override (250), INFY gets fallback (200), RELIANCE gets fallback (300).
+    const holdings = [
+      makeHold('TCS', 100, { day_change_val: 100 }),
+      makeHold('INFY', 50, { day_change_val: 200 }),
+      makeHold('RELIANCE', 75, { day_change_val: 300 }),
+    ];
+    const positions = [
+      makePos('TCS25SEPCFUT', 50),
+      makePos('INFY25SEPCFUT', 50),
+      makePos('RELIANCE25SEPCFUT', 50),
+    ];
+    const result = rollupByUnderlying({
+      positions,
+      holdings,
+      wantedSource: 'live',
+      matchAccount: () => true,
+      matchStrategy: () => true,
+      filterQ: '',
+      decomposeSymbol: (sym) => {
+        const m = /^([A-Z&]+?)\d+/.exec(sym);
+        return { root: m ? m[1] : sym };
+      },
+      targetsForProxy: (sym) => [],
+      getOptionUnderlyingLot: (root) => {
+        if (root === 'TCS') return 1;
+        if (root === 'INFY') return 1;
+        if (root === 'RELIANCE') return 1;
+        return 0;
+      },
+      baseDayPnlForPosition: mockBaseDayPnlForPosition,
+      holdingsDayPnlByKey: { TCS: 250 }, // Only TCS overridden
+    });
+
+    const tcsGroup = result.find((g) => g.underlying === 'TCS');
+    const infyGroup = result.find((g) => g.underlying === 'INFY');
+    const relianceGroup = result.find((g) => g.underlying === 'RELIANCE');
+
+    expect(tcsGroup.day_with).toBe(250);
+    expect(infyGroup.day_with).toBe(200);
+    expect(relianceGroup.day_with).toBe(300);
   });
 });
