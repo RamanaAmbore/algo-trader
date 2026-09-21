@@ -1,35 +1,75 @@
-# Plan: Site improvements — GOLDM subscription, rollover sig, LTP tooltip, npm audit
+# Plan: Sparkline column — symmetric left+right borders in pulse grids
 
-## Task
-Four improvements identified in site audit and confirmed by the planning council (4 APPROVE · 2 CONCERN · 0 BLOCK):
+## Context
+The sparkline (5d chart) column in MarketPulse pulse grids has a `border-right` separator
+restored as an exception to the global border-strip rule, but no `border-left`. The sym
+column to its left also has no right border (stripped by the same global rule), so the
+left edge of the sparkline column shows no visual separator. The right edge shows the
+amber separator. This is asymmetric and appears inconsistent across grids when the
+sym column's background tint ends and the bare sparkline starts.
 
-1. **GOLDM anchor subscription gap** — when `selectedUnderlying` has no portfolio positions (e.g. GOLDM from the dropdown), `_underlyingQuoteKeys` never includes it → `loadUnderlyingQuotes` never fires for GOLDM26JULFUT → KiteTicker never subscribes → `liveSnap` returns undefined → spot LTP blank in payoff + Greeks. Fix: extend `_underlyingQuoteKeys` ($derived at line 874 of `+page.svelte`) to also include `selectedUnderlying` when it is NOT already present in the portfolio set. Must remain gated on `void instrumentsReady` (already present at line 875) so cold-start doesn't resolve a synthetic MCX stub.
+**Root cause**: `MarketPulse.svelte` line 5034-5036:
+```css
+:global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
+  border-right: 1px solid var(--algo-amber-border-soft) !important;
+  /* border-left missing */
+}
+```
 
-2. **Front-month rollover detection** — `_lastQuoteSig` at line 4003 keys only on `.root`; when GOLDM rolls from GOLDM26SEPFUT → GOLDM26OCTFUT the root stays "GOLDM", sig is unchanged, `loadUnderlyingQuotes` never re-fires. Fix: include `quoteKey` in the sig: `.map(p => p.root + ':' + p.quoteKey)`.
+The global strip (lines 5027-5031) zeroes both `border-right` and `border-left` on ALL
+cells, then only spark-cell's right side is restored. Left side is never restored.
 
-3. **LTP null tooltip** — pulse-grid LTP cells already show `—` via `numFmt` when `value == null`. The missing piece is context: add `tooltipValueGetter: (p) => p.value == null ? 'No live price' : null` to `mkLtpCol` in `pulseColumns.js` so the dash is explained on hover.
+## Implementation
 
-4. **npm audit fix + Phase 2 comment removal** — run `npm audit fix` (no `--force`) in `frontend/` to patch HIGH/MODERATE js-yaml, browserslist, devalue, @vitest/mocker. Remove lines 16-17 (dead planning comment) in `MarketPulse.svelte`.
+**File**: `frontend/src/lib/MarketPulse.svelte` line 5034-5036
+
+Change:
+```css
+:global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
+  border-right: 1px solid var(--algo-amber-border-soft) !important;
+}
+```
+
+To:
+```css
+:global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
+  border-right: 1px solid var(--algo-amber-border-soft) !important;
+  border-left:  1px solid var(--algo-amber-border-soft) !important;
+}
+```
+
+Both sides use `var(--algo-amber-border-soft)` at `1px` — matching the existing right
+border. Applies identically to all 6 grids (Pinned, Watchlist, Winners, Losers,
+Positions, Holdings) since they all share `.mp-bucket-wrap .ag-theme-algo`.
+
+## Also applies to header
+
+The spark column header (`ag-header-cell-spark`) gets the same global strip. Add a
+matching rule to restore left+right borders on the header cell too so the column
+separator is visible in the header row:
+
+```css
+:global(.mp-bucket-wrap .ag-theme-algo .ag-header-cell.ag-header-cell-spark) {
+  border-right: 1px solid var(--algo-amber-border-soft) !important;
+  border-left:  1px solid var(--algo-amber-border-soft) !important;
+}
+```
+
+## Tests
+- svelte-check must exit 0 errors
+- vitest run must pass (no logic change, CSS only)
 
 ## Agents
+- frontend: apply the two CSS rule changes above to MarketPulse.svelte lines 5034-5036 and add the header rule after it
 - backend: skip
-- frontend: (1) In `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, extend `_underlyingQuoteKeys` at line 874 to also push `{ root: selectedUnderlying, quoteKey: r.quoteKey }` when `selectedUnderlying` is non-empty and not already covered by the `_byUnderlyingTotals` loop (use a `seen` Set). Keep `void instrumentsReady` guard. (2) At line 4003, change the sig to `.map(p => p.root + ':' + p.quoteKey).sort().join('|')` and update the comment at lines 3997-4000 to drop the incorrect "quoteKey change catches the same poll cycle" sentence. (3) In `frontend/src/lib/data/pulseColumns.js`, add `tooltipValueGetter: (p) => p.value == null ? 'No live price' : null` to the return value of `mkLtpCol` (after `valueFormatter`). (4) In `frontend/src/lib/MarketPulse.svelte`, delete lines 16-17 (the "Phase 2 additions (not wired yet)" comment). (5) Run `cd /Users/ramanambore/projects/ramboq/frontend && npm audit fix` (no --force). For every changed file write or update a test: pulseColumns change → update `frontend/src/lib/__tests__/data/pulseColumns.test.js` to assert `mkLtpCol` returns a `tooltipValueGetter` that returns "No live price" when `p.value == null` and `null` otherwise. The `_underlyingQuoteKeys` and `_lastQuoteSig` changes are component-internal state; confirm via `svelte-check` that no type errors are introduced.
-- broker: skip
-- doc: skip
 - backend-test: skip
 - playwright: skip
 
-## Tests
-- pytest: no
-- svelte-check: yes
-- playwright: no
-
 ## Commit message
-fix(derivatives): subscribe selectedUnderlying to KiteTicker when not in portfolio; fix rollover sig; add LTP null tooltip
+fix(pulse): symmetric left+right amber borders on sparkline column in all pulse grids
 
 ## Done when
-- Selecting GOLDM (or any MCX virtual root with no portfolio positions) in the derivatives page causes the resolved front-month futures contract to appear in `_underlyingQuoteKeys` → triggers `loadUnderlyingQuotes` → KiteTicker subscribes it → liveSpot populates within one SSE tick cycle
-- Changing `selectedUnderlying` on rollover day (when quoteKey changes but root stays the same) correctly fires `loadUnderlyingQuotes` again
-- Hovering over a `—` LTP cell in any pulse grid shows "No live price" tooltip
-- `svelte-check` exits 0 errors
-- `npx vitest run` passes with the new `tooltipValueGetter` assertion in `pulseColumns.test.js`
+- Sparkline column has matching amber separators on both left and right edges
+- Consistent across Pinned, Watchlist, Winners, Losers, Positions, Holdings grids
+- Header row also shows the left+right separator on the sparkline column
+- svelte-check passes

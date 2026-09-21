@@ -5029,10 +5029,16 @@
     border-right: 0 !important;
     border-left: 0 !important;
   }
-  /* Sparkline cell exception — restore right border as visual separator
-     between the 5d chart column and LTP. */
+  /* Sparkline cell exception — restore left+right borders as symmetric
+     visual separators between sym→sparkline and sparkline→LTP. */
   :global(.mp-bucket-wrap .ag-theme-algo .ag-cell.spark-cell) {
     border-right: 1px solid var(--algo-amber-border-soft) !important;
+    border-left:  1px solid var(--algo-amber-border-soft) !important;
+  }
+  /* Match borders on the sparkline header cell. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-header-cell.ag-header-cell-spark) {
+    border-right: 1px solid var(--algo-amber-border-soft) !important;
+    border-left:  1px solid var(--algo-amber-border-soft) !important;
   }
   /* Vertically center cell content in all pulse bucket cells.
      Target .ag-cell-value (inner wrapper), NOT .ag-cell — see ag-Grid issue #3828. */
