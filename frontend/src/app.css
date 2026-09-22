@@ -684,7 +684,9 @@
 .mp-bucket-losers .ltp-vs-prev-down,
 .mp-bucket-losers .ltp-vs-prev-flat {
   background-color: transparent !important;
-  box-shadow: none !important;
+  /* Neutral slate separator — removes directional color coding while matching
+     the visual weight of the pinned grid's LTP border. */
+  box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40) !important;
 }
 
 /* P&L cell colors — theme-aware, applied via cellClass in PerformancePage */
@@ -761,12 +763,23 @@
    left vertical border." Left stripe = eligibility; badge = sized-
    position viability. */
 .ag-theme-algo .ag-row.row-hold-fno .ag-col-sym {
-  /* Green-400 left accent — stock has options listed. Thin 2 px
-     stripe matches the right-edge direction bar so both edges of
-     the cell read as the same visual weight. Operator: "the left
-     vertical border for underlying in holding reduce its thickness.
-     apply it everywhere." */
-  box-shadow: inset 2px 0 0 0 #4ade80;
+  /* Amber right-edge bar — stock has options listed (F&O eligibility
+     indicator). Uses ::after so it is consistent with the direction-bar
+     technique on pos-long/pos-short/row-hold-up/row-hold-down.
+     Placed before those rules in document order so when a row is BOTH
+     F&O and has a P&L direction (hold-up/hold-down), the direction bar
+     (green/red, declared later) takes precedence over amber. */
+  position: relative;
+}
+.ag-theme-algo .ag-row.row-hold-fno .ag-col-sym::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+  background: rgba(251, 191, 36, 0.85);
 }
 .ag-theme-algo .ag-row.row-watch .ag-col-sym {
   background-color: rgba(251,191,36,0.10) !important;
@@ -845,8 +858,11 @@
 
 /* Left-grid (Watchlist / Movers) direction bar — driven by change_pct sign
    via cellClassRules on ag-col-sym-left. Uses the same 2px right-border
-   pattern as the right-grid pos-long/pos-short rules above. */
-.ag-theme-algo .ag-col-sym-left {
+   pattern as the right-grid pos-long/pos-short rules above.
+   Also covers ag-col-sym (right-grid, dashboard W/L) so direction bars
+   render on all symbol cells that carry chg-up / chg-down. */
+.ag-theme-algo .ag-col-sym-left,
+.ag-theme-algo .ag-col-sym {
   position: relative;
 }
 .ag-theme-algo .ag-col-sym-left::after {
@@ -862,6 +878,24 @@
   background: rgba(74, 222, 128, 0.85);
 }
 .ag-theme-algo .ag-col-sym-left.chg-down::after {
+  background: rgba(248, 113, 113, 0.85);
+}
+
+/* Plain ag-col-sym direction bar (right-grid gainers/losers, dashboard W/L)
+   — same 2px right-edge pattern driven by cellClassRules chg-up / chg-down. */
+.ag-theme-algo .ag-col-sym::after {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  pointer-events: none;
+}
+.ag-theme-algo .ag-col-sym.chg-up::after {
+  background: rgba(74, 222, 128, 0.85);
+}
+.ag-theme-algo .ag-col-sym.chg-down::after {
   background: rgba(248, 113, 113, 0.85);
 }
 

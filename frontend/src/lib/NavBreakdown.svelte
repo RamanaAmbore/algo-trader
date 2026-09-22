@@ -38,6 +38,7 @@
    *   accountFilter?: string[],
    *   activeSlot?: 'P'|'M'|'C'|'H',
    *   expiryByAcct?: Map<string, number>,
+   *   onClose?: () => void,
    * }} */
   let {
     // Empty = all accounts (no filter). When set, the table only
@@ -49,6 +50,8 @@
     // Per-account expiry P&L map — passed from PositionStrip (which has
     // access to symbolStore spots). NavBreakdown cannot compute this itself.
     expiryByAcct = /** @type {Map<string,number>} */ (new Map()),
+    // Close callback — called when the operator clicks the ✕ button in the header.
+    onClose = /** @type {() => void} */ (() => {}),
   } = $props();
 
   /**
@@ -336,6 +339,45 @@
     return aggCompact(v);
   }
 
+  // ── Account palette + colour helper ─────────────────────────────────
+  // Mirrors PerformancePage ACCT_PALETTE so each account hashes to the
+  // same colour in every table that shows it.
+  const _ACCT_PALETTE = [
+    '#a78bfa', // violet
+    '#5eead4', // teal
+    '#fda4af', // rose
+    'var(--algo-sky)', // sky
+    '#bef264', // lime
+    '#fcd34d', // amber
+    '#a5b4fc', // indigo
+    '#f0abfc', // fuchsia
+  ];
+
+  function _acctColor(/** @type {string|null|undefined} */ account) {
+    if (!account || account === 'TOTAL') return null;
+    let h = 5381;
+    for (let i = 0; i < account.length; i++) {
+      h = ((h << 5) + h) ^ account.charCodeAt(i);
+      h = h >>> 0;
+    }
+    return _ACCT_PALETTE[h % _ACCT_PALETTE.length];
+  }
+
+  /** cellStyle injecting --acct-stripe for the account column. */
+  function _acctCellStyle(p) {
+    const c = _acctColor(p.data?.account);
+    return c ? { '--acct-stripe': c } : { '--acct-stripe': 'transparent' };
+  }
+
+  /** Slot → human-readable title for the canonical modal header. */
+  const _slotTitle = $derived.by(() => {
+    if (activeSlot === 'P') return 'Positions P&L';
+    if (activeSlot === 'M') return 'Margin';
+    if (activeSlot === 'C') return 'Cash';
+    if (activeSlot === 'H') return 'Holdings';
+    return 'NAV Breakdown';
+  });
+
   // ── ag-Grid containers and instances ─────────────────────────────────
   /** @type {HTMLElement|null} */
   let _pEl = $state(null);
@@ -356,7 +398,7 @@
 
   const _pCols = [
     { field: 'account',  headerName: 'Account',   width: 76, minWidth: 60, maxWidth: 92,
-      cellClass: 'ag-col-fill ag-col-acct' },
+      cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
@@ -370,7 +412,7 @@
 
   const _mCols = [
     { field: 'account',     headerName: 'Account',    width: 76, minWidth: 60, maxWidth: 92,
-      cellClass: 'ag-col-fill ag-col-acct' },
+      cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'usedMargin',  headerName: 'Used',        minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
@@ -387,7 +429,7 @@
 
   const _cCols = [
     { field: 'account',    headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
-      cellClass: 'ag-col-fill ag-col-acct' },
+      cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
@@ -401,7 +443,7 @@
 
   const _hCols = [
     { field: 'account',   headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
-      cellClass: 'ag-col-fill ag-col-acct' },
+      cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 80, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
@@ -536,6 +578,10 @@
 
 {#if _hasData}
   <div class="nav-bd-wrap">
+    <div class="nav-bd-header canonical-modal-header">
+      <span class="nav-bd-title">{_slotTitle}</span>
+      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
+    </div>
     {#if activeSlot === 'P'}<div bind:this={_pEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
     {#if activeSlot === 'M'}<div bind:this={_mEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
     {#if activeSlot === 'C'}<div bind:this={_cEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
@@ -548,30 +594,54 @@
   </div>
 {:else if _anyError && !_inFlight}
   <!-- State 3: fetch error — at least one store returned an error. -->
-  <div class="nav-bd-empty nav-bd-error" role="alert" data-testid="nav-bd-error">
-    <span class="nav-bd-status-icon" aria-hidden="true">⚠</span>
-    <span class="nav-bd-status-text">NAV data unavailable — {_anyError}</span>
-    <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+  <div class="nav-bd-wrap">
+    <div class="nav-bd-header canonical-modal-header">
+      <span class="nav-bd-title">{_slotTitle}</span>
+      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
+    </div>
+    <div class="nav-bd-empty nav-bd-error" role="alert" data-testid="nav-bd-error">
+      <span class="nav-bd-status-icon" aria-hidden="true">⚠</span>
+      <span class="nav-bd-status-text">NAV data unavailable — {_anyError}</span>
+      <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+    </div>
   </div>
 {:else if _timedOut}
   <!-- State 1b: hard timeout (>10 s) while loading. -->
-  <div class="nav-bd-empty nav-bd-warn" role="alert" data-testid="nav-bd-timeout">
-    <span class="nav-bd-status-icon" aria-hidden="true">⏳</span>
-    <span class="nav-bd-status-text">Fetch timed out — click Retry</span>
-    <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+  <div class="nav-bd-wrap">
+    <div class="nav-bd-header canonical-modal-header">
+      <span class="nav-bd-title">{_slotTitle}</span>
+      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
+    </div>
+    <div class="nav-bd-empty nav-bd-warn" role="alert" data-testid="nav-bd-timeout">
+      <span class="nav-bd-status-icon" aria-hidden="true">⏳</span>
+      <span class="nav-bd-status-text">Fetch timed out — click Retry</span>
+      <button class="nav-bd-retry" onclick={_retry}>Retry</button>
+    </div>
   </div>
 {:else if _allLoaded}
   <!-- State 2: loaded successfully but no data (empty broker accounts?). -->
-  <div class="nav-bd-empty nav-bd-hint" data-testid="nav-bd-empty">
-    <span class="nav-bd-status-icon" aria-hidden="true">—</span>
-    <span class="nav-bd-status-text">No NAV data — check
-      <a class="nav-bd-link" href="/admin/brokers">broker connections</a>
-    </span>
+  <div class="nav-bd-wrap">
+    <div class="nav-bd-header canonical-modal-header">
+      <span class="nav-bd-title">{_slotTitle}</span>
+      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
+    </div>
+    <div class="nav-bd-empty nav-bd-hint" data-testid="nav-bd-empty">
+      <span class="nav-bd-status-icon" aria-hidden="true">—</span>
+      <span class="nav-bd-status-text">No NAV data — check
+        <a class="nav-bd-link" href="/admin/brokers">broker connections</a>
+      </span>
+    </div>
   </div>
 {:else}
   <!-- State 1a: loading (in-flight or stores not yet started). -->
-  <div class="nav-bd-empty" data-testid="nav-bd-loading">
-    Loading NAV breakdown…{_slowLoad ? ' (retrying — network slow)' : ''}
+  <div class="nav-bd-wrap">
+    <div class="nav-bd-header canonical-modal-header">
+      <span class="nav-bd-title">{_slotTitle}</span>
+      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
+    </div>
+    <div class="nav-bd-empty" data-testid="nav-bd-loading">
+      Loading NAV breakdown…{_slowLoad ? ' (retrying — network slow)' : ''}
+    </div>
   </div>
 {/if}
 
@@ -593,6 +663,38 @@
        (the same surface family as the inner table rows). */
     background: var(--card-bg-elevated);
   }
+
+  /* canonical-modal-header pattern — matches BrokerHealthBadge .bh-modal-header */
+  .nav-bd-header {
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .nav-bd-title {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--algo-cyan-text);
+    text-transform: uppercase;
+  }
+  .nav-bd-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+    background: transparent;
+    transition: background 0.1s;
+    flex-shrink: 0;
+  }
+  .nav-bd-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   .nav-bd-ag { width: 100%; }
 

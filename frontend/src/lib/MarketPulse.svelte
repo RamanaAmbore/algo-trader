@@ -3677,7 +3677,10 @@
         // outside this since they're rendered via pinnedBottomRowData
         // (not in the sortable body).
         postSortRows: postSortGroups,
-        rowHeight: 28,
+        // Mobile touch-target: 36px on narrow viewports so cells meet
+        // WCAG 2.5.8 minimum. Checked against window.innerWidth at
+        // grid-creation time (synchronous, no MediaQuery race).
+        rowHeight: (typeof window !== 'undefined' && window.innerWidth <= 720) ? 36 : 28,
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
           if (ev.data) openContextMenu(ev.event, ev.data);
@@ -4563,16 +4566,14 @@
 </ModalShell>
 
 <style>
-  /* Mobile touch-target — WCAG 2.5.8 minimum 24px; aim for 36px on
-     phones. !important is required to beat ag-Grid's inline row-height
-     style (set via rowHeight: 28 in the grid options). Applies
-     uniformly to BOTH grid columns (left + right; all use
-     .ag-theme-algo). Desktop (>720px) honors the rowHeight: 28
-     setting normally. Slice AS audit clarification — the override
-     is intentional, not a bug. */
-  @media (max-width: 720px) {
-    :global(.ag-theme-algo .ag-row) { min-height: 36px !important; }
-  }
+  /* Mobile touch-target — handled via rowHeight: _isMobile ? 36 : 28
+     passed to ag-Grid at grid-creation time (makeBucketGrid / makeGrid).
+     The former :global min-height override was removed because it created
+     a CSS–JS mismatch: ag-Grid positions rows at the JS rowHeight interval
+     while the CSS min-height expanded each row, causing adjacent
+     semi-transparent row backgrounds to compound visually into visible
+     horizontal strips. Setting rowHeight at the JS level keeps CSS and
+     JS in sync and eliminates the strip artifact. */
 
   /* Symbol cell — main + alias. */
   :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }

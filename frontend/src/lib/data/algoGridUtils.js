@@ -13,6 +13,10 @@
 
 import { priceFmt, pctFmt, aggCompact } from '$lib/format';
 
+/** True when the viewport is narrow (≤720px) at module evaluation time.
+ *  Used to set rowHeight so CSS and JS stay in sync on mobile. */
+const _isMobile = typeof window !== 'undefined' && window.innerWidth <= 720;
+
 /** Header class for right-aligned numeric columns. */
 export const NUMERIC_HDR = 'ag-right-aligned-header';
 
@@ -89,7 +93,7 @@ export function mkBaseGridOpts(overrides = {}) {
       suppressHeaderMenuButton: true,
     },
     sortingOrder: /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]),
-    rowHeight: 26,
+    rowHeight: _isMobile ? 36 : 26,
     getRowId: ({ data }) => {
       if (!data) return '';
       if (data.symbol)  return String(data.symbol);

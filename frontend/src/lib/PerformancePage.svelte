@@ -8,6 +8,9 @@
   /** @type {typeof import('ag-grid-community').createGrid | null} */
   let _createGrid = null;
   let _agGridReady = $state(false);
+
+  /** True when the viewport is narrow (≤720px) — used for rowHeight. */
+  const _isMobile = typeof window !== 'undefined' && window.innerWidth <= 720;
   import ChartModal from '$lib/ChartModal.svelte';
   import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
@@ -810,6 +813,7 @@
       // that our CSS picks up — no override needed.
       overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:var(--c-muted)">—</span>',
       domLayout: 'autoHeight',
+      rowHeight: _isMobile ? 36 : 28,
       getRowClass,
       pinnedBottomRowData: [],
       ...(onRowClick ? { onRowClicked: (e) => onRowClick(e.data) } : {}),

@@ -17,7 +17,10 @@
    * This component is modal-only — no local polling needed.
    */
   import { onDestroy } from 'svelte';
+  import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
+  import { mkBaseGridOpts } from '$lib/data/algoGridUtils.js';
   import { brokerHealthStore, openActivityModal } from '$lib/stores';
+  ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
@@ -48,7 +51,6 @@
     if (!iso) return '—';
     try {
       const d = new Date(iso);
-      // Show IST timestamp: HH:MM IST
       return d.toLocaleTimeString('en-IN', {
         timeZone: 'Asia/Kolkata',
         hour: '2-digit', minute: '2-digit', hour12: false,
@@ -57,6 +59,101 @@
       return iso;
     }
   }
+
+  // ── ag-Grid ────────────────────────────────────────────────────────────
+  let _gridEl = $state(null);
+  let _gridApi = null;
+
+  const _colDefs = [
+    {
+      field: 'state', headerName: '', colId: 'dot',
+      width: 30, minWidth: 30, maxWidth: 30,
+      cellRenderer: p => {
+        const el = document.createElement('span');
+        el.className = `bh-dot bh-dot-${p.value ?? 'inactive'}`;
+        return el;
+      },
+    },
+    {
+      field: 'account', headerName: 'Account', width: 115, minWidth: 80,
+      cellRenderer: p => {
+        const acct = p.data ?? {};
+        const state = acct.state ?? '';
+        const accCls = state === 'red'       ? 'bh-acct-red'
+                     : state === 'amber'     ? 'bh-acct-amber'
+                     : state === 'inactive'  ? 'bh-acct-inactive'
+                     : acct.is_active_ticker ? 'bh-acct-active'
+                     : 'bh-acct-spare';
+        const cbOptIn = !!acct.circuit_breaker_enabled;
+        const title = cbOptIn && acct.circuit_state === 'open'
+          ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)}`
+          : state === 'red' ? `${acct.account} — connection problem (${acct.reason})`
+          : state === 'amber' ? `${acct.account} — stale (${acct.reason})`
+          : acct.is_active_ticker ? `${acct.account} — active (KiteTicker)`
+          : `${acct.account} — warm spare`;
+        const wrap = document.createElement('span');
+        wrap.className = `bh-row-account ${accCls}`;
+        wrap.title = title;
+        wrap.textContent = p.value ?? '';
+        if (cbOptIn && acct.circuit_state === 'open') {
+          const chip = document.createElement('span');
+          chip.className = 'bh-circuit-chip';
+          chip.title = 'Circuit breaker open';
+          chip.textContent = 'OPEN';
+          wrap.appendChild(chip);
+        } else if (cbOptIn && acct.circuit_state === 'half-open') {
+          const chip = document.createElement('span');
+          chip.className = 'bh-circuit-chip bh-circuit-half';
+          chip.title = 'Circuit half-open — probing';
+          chip.textContent = 'PROBE';
+          wrap.appendChild(chip);
+        }
+        return wrap;
+      },
+    },
+    {
+      field: 'broker', headerName: 'Broker', width: 70,
+      valueFormatter: p => (p.value || 'kite').toUpperCase(),
+      cellClass: 'bh-col-broker',
+    },
+    {
+      field: 'state', headerName: 'Status', colId: 'stateBadge', width: 80,
+      cellRenderer: p => {
+        const el = document.createElement('span');
+        el.className = `bh-row-state bh-row-state-${p.value ?? 'inactive'}`;
+        el.textContent = (p.value ?? '').toUpperCase();
+        return el;
+      },
+    },
+    {
+      field: 'reason', headerName: 'Reason', flex: 1, minWidth: 80,
+      cellClass: 'bh-col-reason',
+    },
+    {
+      field: 'last_good_at', headerName: 'Last Good', width: 105,
+      valueFormatter: p => _fmtIso(p.value),
+      cellClass: 'bh-col-ts',
+    },
+  ];
+
+  $effect(() => {
+    if (!_gridEl) return;
+    _gridApi?.destroy();
+    _gridApi = createGrid(_gridEl, {
+      ...mkBaseGridOpts(),
+      columnDefs: _colDefs,
+      rowData: [],
+      domLayout: 'autoHeight',
+      suppressCellFocus: true,
+      onRowClicked: () => { open = false; openActivityModal('conn'); },
+    });
+  });
+
+  $effect(() => {
+    _gridApi?.setGridOption('rowData', accounts);
+  });
+
+  onDestroy(() => { _gridApi?.destroy(); _gridApi = null; });
 </script>
 
 <svelte:window onkeydown={open ? (e) => { if (e.key === 'Escape') { e.preventDefault(); open = false; } } : null} />
@@ -70,68 +167,7 @@
       <button class="bh-close" onclick={() => open = false} aria-label="Close">×</button>
     </div>
     <div class="bh-modal-body">
-      <div class="bh-grid">
-        {#if accounts.length > 0}
-          <div class="bh-headrow" aria-hidden="true">
-            <span></span>
-            <span>Account</span>
-            <span>Broker</span>
-            <span>Status</span>
-            <span>Reason</span>
-            <span>Last Good</span>
-          </div>
-        {/if}
-      {#each accounts as acct (acct.account)}
-        {@const _accCls = acct.state === 'red'      ? 'bh-row-account-red'
-                        : acct.state === 'amber'    ? 'bh-row-account-amber'
-                        : acct.state === 'inactive' ? 'bh-row-account-inactive'
-                        : acct.is_active_ticker     ? 'bh-row-account-active'
-                        : 'bh-row-account-spare'}
-        {@const _cbOptIn = !!acct.circuit_breaker_enabled}
-        {@const _circuitTitle = (_cbOptIn && acct.circuit_state === 'open')
-            ? `${acct.account} — circuit open until ${_fmtIso(acct.circuit_open_until)} — auto retry then`
-            : null}
-        {@const _redTitle = acct.state === 'red'
-            ? (_cbOptIn
-                ? `${acct.account} — connection problem (${acct.reason})`
-                : `${acct.account} — connection problem (${acct.reason}) — retrying every poll`)
-            : null}
-        <div class="bh-row" role="button" tabindex="0"
-             onclick={() => { open = false; openActivityModal('conn'); }}
-             onkeydown={(e) => {
-               if (e.key === 'Enter' || e.key === ' ') {
-                 e.preventDefault(); open = false; openActivityModal('conn');
-               }
-             }}
-             title="View connection log for {acct.account}">
-          <span class="bh-row-dot bh-row-dot-{acct.state}" aria-hidden="true"></span>
-          <span class="bh-row-account {_accCls}"
-                title={_circuitTitle
-                     ? _circuitTitle
-                     : _redTitle
-                     ? _redTitle
-                     : acct.state === 'amber' ? `${acct.account} — stale (${acct.reason})`
-                     : acct.is_active_ticker  ? `${acct.account} — active (running the KiteTicker WebSocket)`
-                     : `${acct.account} — warm spare (healthy, not currently active)`}>
-            {acct.account}
-            {#if _cbOptIn && acct.circuit_state === 'open'}
-              <span class="bh-circuit-chip" title="Circuit breaker open — SDK calls paused">OPEN</span>
-            {:else if _cbOptIn && acct.circuit_state === 'half-open'}
-              <span class="bh-circuit-chip bh-circuit-half" title="Circuit half-open — probing on next fetch">PROBE</span>
-            {/if}
-          </span>
-          <span class="bh-row-broker">{acct.broker || 'kite'}</span>
-          <span class="bh-row-state bh-row-state-{acct.state}">{acct.state.toUpperCase()}</span>
-          <span class="bh-row-reason">{acct.reason}</span>
-          <span class="bh-row-ts" title="Last good check">
-            {_fmtIso(acct.last_good_at)}
-          </span>
-        </div>
-      {/each}
-      {#if accounts.length === 0}
-        <p class="bh-empty">No fetch health data recorded yet.</p>
-      {/if}
-      </div>
+      <div bind:this={_gridEl} class="ag-theme-quartz ag-theme-algo bh-ag-grid"></div>
     </div>
     <div class="bh-modal-footer">
       <span class="bh-footer-note">Polls every 30 s · Auth state from broker API calls</span>
@@ -202,64 +238,27 @@
   .bh-modal-body {
     flex: 1;
     overflow-y: auto;
-    padding: 0.5rem 0.75rem;
+    padding: 0;
   }
 
-  /* ── Grid wrapper — gives the account rows a bordered container ── */
-  .bh-grid {
-    border: 1px solid rgba(255, 255, 255, 0.08);
-    border-radius: 4px;
-    overflow: hidden;
+  /* ag-Grid container — autoHeight, no fixed height needed */
+  .bh-ag-grid {
+    width: 100%;
   }
 
-  /* ── Grid header row (Level-2: column labels, muted) ── */
-  .bh-headrow {
-    display: grid;
-    grid-template-columns: 0.6rem 5.5rem 3.5rem 3.5rem 1fr 5rem;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.3rem 1rem;
-    background: rgba(15, 23, 42, 0.30);
-    border-bottom: 1px solid rgba(251, 191, 36, 0.20);
-    font-family: var(--font-numeric);
-    font-size: 0.6rem;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    color: var(--text-muted);
-  }
-  .bh-row {
-    display: grid;
-    grid-template-columns: 0.6rem 5.5rem 3.5rem 3.5rem 1fr 5rem;
-    align-items: center;
-    gap: 0.5rem;
-    padding: 0.45rem 1rem;
-    border-bottom: 1px solid rgba(126, 151, 184, 0.10);
-    font-size: var(--fs-md);
-    font-family: var(--font-numeric);
-    cursor: pointer;
-    transition: background-color 0.1s;
-  }
-  .bh-row:last-child { border-bottom: none; }
-  /* Alternating row background — matches .byund-row:nth-of-type(odd) */
-  .bh-row:nth-child(odd) { background-color: var(--row-tint-odd-bg); }
-  .bh-row:hover,
-  .bh-row:focus-visible {
-    background-color: rgba(34, 211, 238, 0.05) !important;
-    outline: none;
-  }
-
-  .bh-row-dot {
+  /* ── Cell-renderer classes — must be :global so ag-Grid's dynamic DOM picks them up ── */
+  :global(.bh-dot) {
+    display: inline-block;
     width: 0.45rem;
     height: 0.45rem;
     border-radius: 50%;
   }
-  .bh-row-dot-green    { background: var(--c-long); }
-  .bh-row-dot-amber    { background: var(--c-action); }
-  .bh-row-dot-red      { background: var(--c-short); }
-  .bh-row-dot-inactive { background: var(--text-faint); }
+  :global(.bh-dot-green)    { background: var(--c-long); }
+  :global(.bh-dot-amber)    { background: var(--c-action); }
+  :global(.bh-dot-red)      { background: var(--c-short); }
+  :global(.bh-dot-inactive) { background: var(--text-faint); }
 
-  .bh-row-account {
+  :global(.bh-row-account) {
     color: #c8d8f0;
     font-weight: 600;
     overflow: hidden;
@@ -269,20 +268,13 @@
     align-items: center;
     gap: 0.35rem;
   }
-  /* Account name is COLOR-CODED by state so the operator sees at a glance:
-     - red   → has a connection problem (state=red trumps everything)
-     - amber → stale (state=amber, no active failure but > 5 min old)
-     - cyan  → currently running the KiteTicker WebSocket
-     - slate → warm spare (healthy, not active)
-     No separate "active" chip needed. Operator: "color code the account
-     which is active or having problems in connection etc." */
-  .bh-row-account-red      { color: var(--c-short); font-weight: 700; }
-  .bh-row-account-amber    { color: var(--c-action); font-weight: 700; }
-  .bh-row-account-inactive { color: var(--text-faint); font-weight: 600; }
-  .bh-row-account-active   { color: var(--c-info); font-weight: 700; }
-  .bh-row-account-spare    { color: #c8d8f0; font-weight: 600; }
-  /* Circuit-breaker state chips inside the account cell */
-  .bh-circuit-chip {
+  :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
+  :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
+  :global(.bh-acct-inactive) { color: var(--text-faint) !important; }
+  :global(.bh-acct-active)   { color: var(--c-info) !important; font-weight: 700 !important; }
+  :global(.bh-acct-spare)    { color: #c8d8f0; }
+
+  :global(.bh-circuit-chip) {
     font-size: 0.6rem;
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -294,18 +286,19 @@
     vertical-align: middle;
     flex-shrink: 0;
   }
-  .bh-circuit-half {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.12);
-    border-color: rgba(251, 191, 36, 0.4);
+  :global(.bh-circuit-half) {
+    color: var(--c-action) !important;
+    background: rgba(251, 191, 36, 0.12) !important;
+    border-color: rgba(251, 191, 36, 0.4) !important;
   }
 
-  .bh-row-broker {
+  :global(.bh-col-broker) {
     color: var(--text-muted);
     text-transform: uppercase;
     font-size: var(--fs-sm);
   }
-  .bh-row-state {
+
+  :global(.bh-row-state) {
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -313,34 +306,23 @@
     padding: 0.05rem 0.4rem;
     text-align: center;
   }
-  .bh-row-state-green    { color: var(--c-long); background: var(--c-long-10); }
-  .bh-row-state-amber    { color: var(--c-action); background: rgba(251,191,36,0.10); }
-  .bh-row-state-red      { color: var(--c-short); background: var(--c-short-10); }
-  .bh-row-state-inactive { color: var(--text-faint); }
+  :global(.bh-row-state-green)    { color: var(--c-long); background: var(--c-long-10); }
+  :global(.bh-row-state-amber)    { color: var(--c-action); background: rgba(251,191,36,0.10); }
+  :global(.bh-row-state-red)      { color: var(--c-short); background: var(--c-short-10); }
+  :global(.bh-row-state-inactive) { color: var(--text-faint); }
 
-  .bh-row-reason {
-    /* Was #64748b (WCAG 3.01:1 on --card-bg-gradient — borderline/fail).
-       --text-lo (#8294a8) passes 4.60:1 on #1d2a44, 4.55:1 on #273552. */
+  :global(.bh-col-reason) {
     color: var(--text-lo);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
     font-size: var(--fs-sm);
   }
-  .bh-row-ts {
-    /* Was #475569 (WCAG 1.89:1 — fails). --text-lo passes on both bg layers. */
+  :global(.bh-col-ts) {
     color: var(--text-lo);
     font-size: var(--fs-sm);
     text-align: right;
     white-space: nowrap;
-  }
-
-  .bh-empty {
-    /* Was #64748b (fail). --text-lo passes. */
-    color: var(--text-lo);
-    font-size: var(--fs-md);
-    text-align: center;
-    padding: 1.5rem 1rem;
   }
 
   /* ── Panel footer ── */
@@ -363,14 +345,6 @@
       left: 0.25rem;
       width: auto;
       max-height: 70vh;
-    }
-    .bh-row,
-    .bh-headrow {
-      grid-template-columns: 0.6rem 4rem 2.5rem 3rem 1fr 4rem;
-      gap: 0.35rem;
-    }
-    .bh-row {
-      font-size: var(--fs-sm);
     }
   }
 </style>

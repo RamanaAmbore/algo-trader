@@ -1358,6 +1358,10 @@
         // font-size; flex:2 lets the column expand when there's room.
         { field: 'symbol', headerName: 'Symbol', minWidth: 65, flex: 2,
           pinned: 'left', cellClass: 'ag-col-fill ag-col-sym',
+          cellClassRules: {
+            'chg-up':   p => (p.data?.pct ?? 0) > 0,
+            'chg-down': p => (p.data?.pct ?? 0) < 0,
+          },
           sortable: true },
         { field: 'ltp', headerName: 'LTP', minWidth: 70, flex: 1,
           type: 'numericColumn', headerClass: _numericHdr,

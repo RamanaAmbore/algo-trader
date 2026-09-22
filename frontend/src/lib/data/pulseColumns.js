@@ -151,6 +151,10 @@ export function mkSymColRight({ symRenderer }) {
     field: 'tradingsymbol', headerName: 'Symbol', width: 168, pinned: 'left',
     cellRenderer: symRenderer, sortable: true,
     cellClass: 'ag-col-sym ag-col-fill mp-sym-acct',
+    cellClassRules: {
+      'chg-up':   p => (p.data?.change_pct ?? 0) > 0,
+      'chg-down': p => (p.data?.change_pct ?? 0) < 0,
+    },
     cellStyle: (p) => {
       if (p.data?._isTotal) return {};
       const color = p.data?._acctColor ?? null;
@@ -384,12 +388,11 @@ export function mkAcctColTrailing({ RA }) {
   return {
     field: '_acct_display', headerName: 'Account', colId: 'account',
     width: 86, minWidth: 70, maxWidth: 110,
-    cellClass: 'mp-acct-cell',
+    cellClass: 'mp-acct-cell ag-col-acct',
     cellStyle: (p) => {
       if (p.data?._isTotal) return {};
       const color = p.data?._acctColor ?? null;
-      if (!color) return {};
-      return { color };
+      return color ? { '--acct-stripe': color } : { '--acct-stripe': 'transparent' };
     },
     valueGetter: (p) => {
       if (p.data?._isTotal) return '';

@@ -886,10 +886,7 @@
            role="dialog" tabindex="-1"
            onclick={(e) => e.stopPropagation()}
            onkeydown={(e) => e.stopPropagation()}>
-        <button type="button" class="ps-breakdown-close"
-                onclick={() => (_breakdown.open = false)}
-                aria-label="Close breakdown">✕</button>
-        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} />
+        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} onClose={() => (_breakdown.open = false)} />
       </div>
     </div>
   {/if}
@@ -1070,17 +1067,7 @@
     border-radius: 4px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     z-index: var(--z-drawer);
-    padding: 0.5rem;
-  }
-  .ps-breakdown-close {
-    position: absolute;
-    top: 0.4rem;
-    right: 0.5rem;
-    background: none;
-    border: none;
-    color: var(--algo-cyan, #22d3ee);
-    cursor: pointer;
-    font-size: var(--fs-md);
-    line-height: 1;
+    /* No padding — NavBreakdown header provides its own internal spacing. */
+    padding: 0;
   }
 </style>
