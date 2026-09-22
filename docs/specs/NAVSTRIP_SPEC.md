@@ -4,9 +4,9 @@ Single source of truth for the NavStrip header band behavior across all market s
 and execution modes. The NavStrip is a fixed band pinned below the navbar showing live
 P&L, margin, cash, and holdings aggregates across all broker accounts.
 
-**Version**: 1.1 — 2026-07-19  
+**Version**: 1.9 — 2026-09-22  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/PositionStrip.svelte` · `frontend/src/lib/InfoHint.svelte` · `frontend/src/lib/data/nav.js` · `backend/api/routes/positions.py` · `backend/api/algo/pnl_math.py`
+**Linked files**: `frontend/src/lib/PositionStrip.svelte` · `frontend/src/lib/NavBreakdown.svelte` · `frontend/src/lib/BrokerHealthBadge.svelte` · `frontend/src/lib/InfoHint.svelte` · `frontend/src/lib/data/nav.js` · `backend/api/routes/positions.py` · `backend/api/algo/pnl_math.py`
 
 ---
 
@@ -36,6 +36,16 @@ fixed overlay below the NavStrip, anchored to the right edge, spanning `min(28re
 in width. Content scrolls vertically if needed. Dismiss via Escape key or clicking outside
 the panel. The panel coexists independently with any modal on the pill's **value slot**
 (e.g., the DayPnlBreakup modal on P:1 value).
+
+**NavBreakdown panel header** (commit 7ccb2e50): The breakdown panel now uses a 
+`canonical-modal-header` bar with a slot-mapped title. Each breakdown panel displays:
+- P → "Positions P&L"
+- M → "Margin"
+- C → "Cash"
+- H → "Holdings"
+
+The close button lives inside the header (no longer floating position:absolute). 
+Files: `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/NavBreakdown.svelte`.
 
 **NavBreakdown P-slot per-account day P&L source** (Sep 2026, commit 42b5573b):
 Each account row in the P-pill breakdown now reads `positionsDayPnlStore.byAccount[acct.toUpperCase()]`
@@ -534,6 +544,29 @@ overlay on `#1d2a44`) with amber top/bottom borders, matching the PerformancePag
 Derivatives legs grid TOTAL row visual treatment. This unified styling reinforces the 
 aggregate row across all breakdown grids.
 
+### Broker connection chip popup
+
+Clicking the **broker connection chip** (showing "5/5" when all accounts are healthy, or 
+a lower count / red state when degraded) opens the `BrokerHealthBadge` modal. The modal 
+body previously used hand-rolled CSS grid rows; as of commit 7ccb2e50, it now uses 
+ag-Grid with these columns:
+
+- **Status dot** — visual health indicator (green / amber / red circle)
+- **Account** — broker account identifier (masked format)
+- **Broker** — broker name (Kite / Dhan / Groww)
+- **Status badge** — text label (green/amber/red) matching dot color
+- **Reason** — explanation when degraded (e.g. "no quote in 5min", "auth stale")
+- **Last Good** — timestamp of last successful quote/order operation
+
+**Grid setup** (commit 7ccb2e50):
+- Uses `createGrid()` + `ag-theme-quartz ag-theme-algo` class
+- `mkBaseGridOpts()` + `domLayout: 'autoHeight'` for adaptive height
+- `onRowClicked` handler opens activity modal (`openActivityModal('conn')`)
+- Account column injects `--acct-stripe` via `cellStyle` — DJB2 hash 
+  (same palette as PerformancePage) renders as 3px colored left-border stripe per row
+
+File changed: `frontend/src/lib/BrokerHealthBadge.svelte`
+
 ### Per-slot hover hints
 
 Each slot value (except the clickable Day P&L) has an **ⓘ** icon immediately to its
@@ -732,8 +765,11 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
   option position updates its LTP tick, both surfaces see the same intrinsic-value 
   computation via `getUnderlyingSpot(root)`; verify no divergence between strip and 
   grid even during high-frequency tick bursts
+- **NavBreakdown header**: Click P/M/C/H label → panel opens with canonical-modal-header bar showing correct title ("Positions P&L" / "Margin" / "Cash" / "Holdings"); close button inside header; no floating close button
 - **Panel popups (Round 6)**: Click P/M/C/H label → panel opens with accent-colored title, left-border stripe, and gradient background; accent color matches pill identity
 - **Per-slot hover hints (Round 6)**: Hover any slot value → ⓘ icon visible; hover icon → panel opens with correct title and slot description; leaves on mouse-out
+- **BrokerHealthBadge ag-Grid**: Click broker connection chip (5/5 or degraded count) → modal opens with ag-Grid showing account rows; grid columns render: status dot | Account (with 3px colored left stripe via --acct-stripe) | Broker | Status badge | Reason | Last Good; verify stripe color matches PerformancePage palette for same account; row click opens activity modal
+- **Account stripe styling**: NavBreakdown and BrokerHealthBadge grids both apply `--acct-stripe` via `cellStyle` (DJB2 hash, same palette as PerformancePage); verify 3px left-border stripe renders for each account row with consistent color across all grids
 
 ### Backend (Python)
 
@@ -767,3 +803,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-09-14 | v1.6 positionsDerivedStore unification: (1) New module-level store `positionsDerivedStore.svelte.js` unifies day P&L and expiry P&L computation across all surfaces (NavStrip, Pulse, Derivatives). Store exports `{ total, byKey }` with metrics `{ day_pnl, exp_pnl }` computed on 5s book-poll cadence + immediate postback fill. (2) §1 Pill Layout P:1 and P:3 slots updated — P:1 now reads `positionsDerivedStore.total.day_pnl` (5s cadence, no 4Hz Pulse-driven override); P:3 now reads `positionsDerivedStore.total.exp_pnl` (5s cadence). (3) §1.2 EXP Slot specification refactored: formula unchanged (open: intrinsic + realised, closed: realised || pnl), but **SSOT updated** to store reads instead of backend computation. Cadence changed from "4Hz throttled" to "5s book-poll + immediate postback". Spot resolution via `underlyingSpotStore.getUnderlyingSpot(root)` unchanged. (4) §2 Data Sources SSOT table refactored: P:1 entry now documents store-driven workflow (no `setFromPulse` override); P:3 entry details exp P&L computation and spot sourcing from `underlyingSpotStore`. (5) §1.4 new subsection "Positions Derived Store" comprehensive documentation — purpose, module path, data structure, cadence, data flow, consumers (PositionStrip P:1/P:3, Pulse grids, Derivatives page). All surfaces now converge on single `positionsDerivedStore` SSOT; 5s refresh cycle + immediate fills eliminate cross-page divergence. |
 | 2026-09-18 | v1.7 Day change percentage (`chg_pct`) architecture (commit d8633d4e): (1) New helper `dayChangePct(dayPnl, prevMv)` exported from `frontend/src/lib/data/nav.js` — pure function returning `(dayPnl / prevMv) × 100` or `null` when `prevMv ≤ 0`. Lives only in nav.js. (2) `positionsDerivedStore.byKey[sym]` shape expanded — each symbol entry now includes `{ day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct }`. `prev_mv` = reference market value (prev_close × \|qty\|, or avg if prev_close=0); `chg_pct` = `dayChangePct(day_pnl, prev_mv)` computed once per symbol at 4Hz. (3) §1.4 "Positions Derived Store" subsection expanded — data structure documentation updated to include `extrinsic`, `prev_mv`, `chg_pct` fields; per-symbol `prev_mv` SSOT description; per-symbol `chg_pct` computation detail; new paragraph on `dayChangePct()` helper (formula, guard, usage). (4) All surfaces (derivatives legs, MarketPulse positions, pulseColumns) read `byKey[sym].chg_pct` directly — no surface re-computes percentage; single computation source prevents divergence. |
 | 2026-09-20 | v1.8 NavBreakdown P-slot per-account day P&L + TOTAL row styling (commits 42b5573b, 27a8e442): (1) **Per-account data source change** (commit 42b5573b): Each NavBreakdown P account row now reads `positionsDayPnlStore.byAccount[acct.toUpperCase()]` (live-LTP-aware via `portfolioStore._posAgg`) instead of computing `baseDayPnlForPosition(p)` on raw broker rows. `portfolioStore.positions.byAccount` accumulates `p._day_pnl` per account in the same pass as `byKey`, keyed uppercase with a `'TOTAL'` entry for grand total. P-slot per-account values now match Pulse positions values exactly, eliminating stale `day_change_val` gaps. (2) **TOTAL row styling** (commit 27a8e442): All four NavBreakdown grids (P, M, C, H) now use `getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : ''` to apply `totals-row` CSS class (amber 22% opacity bg overlay on `#1d2a44` + amber top/bottom borders) to TOTAL rows, matching PerformancePage and Derivatives legs grid styling for visual consistency. Updated §1.2 "Pill label click-to-breakdown" and §6 "Pill label panel popups" subsections with per-account data flow and new TOTAL row styling subsection. |
+| 2026-09-22 | v1.9 NavBreakdown header + BrokerHealthBadge ag-Grid (commit 7ccb2e50): (1) **NavBreakdown modal header** (commit 7ccb2e50): The breakdown panel now uses `canonical-modal-header` bar with slot-mapped title (P → "Positions P&L", M → "Margin", C → "Cash", H → "Holdings"). Close button moved inside header (no longer floating position:absolute). Updated §1.1 "Pill label click-to-breakdown" with header spec. Files: `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/NavBreakdown.svelte`. (2) **BrokerHealthBadge modal ag-Grid** (commit 7ccb2e50): Broker connection chip popup now uses ag-Grid instead of hand-rolled CSS grid. Grid includes columns: status dot, Account, Broker, Status badge, Reason, Last Good. Uses `createGrid()` + `ag-theme-quartz ag-theme-algo` + `mkBaseGridOpts()` + `domLayout: 'autoHeight'`. Account column injects `--acct-stripe` via `cellStyle` (DJB2 hash, same PerformancePage palette) → 3px colored left-border stripe per row. `onRowClicked` opens activity modal. New §6 subsection "Broker connection chip popup" documents grid setup and styling. File: `frontend/src/lib/BrokerHealthBadge.svelte`. |

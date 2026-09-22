@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.19 — 2026-09-21  
+**Version**: 1.20 — 2026-09-22  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -729,6 +729,12 @@ Positions grid:
 - Qty (56px) — net qty; aggregated across accounts; null hidden
 - Account (86px) — lead account + "+N" for multi-account rows; STALE@HH:MM badge on circuit-breaker rows
 
+**Account column (trailing) styling in MarketPulse** (Sep 2026, commit 7ccb2e50):
+The account column in the positions/holdings grids now renders with a 3px left-border 
+stripe (CSS class `ag-col-acct` + injected `--acct-stripe` CSS property) instead of 
+text color. This canonical treatment matches the PerformancePage styling and provides 
+visual distinction between account grouping and data values.
+
 Holdings grid (St column filtered out):
 - Symbol (168px, pinned) — account-tinted background
 - 5d sparkline (44px)
@@ -1046,10 +1052,12 @@ ALL Pulse grids to signal position direction (long/bullish vs short/bearish):
   - Selector: `ag-col-sym::after` pseudo-element
   - Indicates position type: long, short, or direction inferred from average price sign
 
-- **Pinned, Watchlist, Winners, Losers** (new, commit 307a8c5a):
-  - Cell class: `chg-up` (green border) or `chg-down` (red border) on symbol cell
-  - Selector: `ag-col-sym-left::after` pseudo-element
+- **Pinned, Watchlist, Winners, Losers** (Sep 2026, commit 7ccb2e50):
+  - Cell class: `chg-up` (green border) or `chg-down` (red border) on symbol cell via 
+    `cellClassRules: { chg-up, chg-down }` driven by `change_pct`
+  - Selector: `ag-col-sym-left::after` pseudo-element with 2px right-edge direction bar
   - Indicates intraday direction: price change up (green) or down (red) since previous close
+  - Plain `ag-col-sym-left` now has `position: relative` in app.css to enable pseudo-element positioning
 
 - **Derivatives Legs** (existing behavior, unchanged):
   - Row class: `cand-sym-acct` on the symbol cell
@@ -1102,6 +1110,35 @@ Helps operators quickly scan grids by visual region.
   accessibility and tab order
 
 **Numeric header style** — `numericHdr` CSS class for right-aligned headers matching data cells
+
+---
+
+## 14.5 Mobile Row Height Configuration
+
+Pulse grids use responsive row heights configured at the ag-Grid JS level to eliminate 
+CSS–JS mismatches on mobile (<720px viewport).
+
+**Row height settings** (Sep 2026, commit 7ccb2e50):
+
+| Grid | Desktop | Mobile (<720px) | Config location |
+|---|---|---|---|
+| MarketPulse (all six) | 28px | 36px | `pulseColumns.mkLeftColDefs()` + `mkRightColDefs()` → `rowHeight: _isMobile ? 36 : 28` |
+| Dashboard mini-grids | 26px | 36px | `miniGrids.js` → per-grid rowHeight setting |
+| NavBreakdown | 26px | 36px | `NavBreakdown.svelte` → grid config |
+
+**Fix applied** (commit 7ccb2e50):
+- Removed former CSS override: `:global(.ag-theme-algo .ag-row) { min-height: 36px }`
+- Rationale: CSS min-height conflicted with JS rowHeight calculation, causing visible 
+  horizontal strips (gaps) between rows on mobile
+- Solution: Set rowHeight in ag-Grid JS config using `_isMobile` reactive computed 
+  value (true when `window.innerWidth < 720`)
+- Result: Row height synchronized between CSS rendering and ag-Grid's internal grid 
+  calculation; no visual gaps on mobile
+
+**Mobile viewport detection**:
+- `_isMobile` derived from `$signals.window.innerWidth < 720` (reactive, updates on resize)
+- Applied to all Pulse pulse grids instantiation
+- NavBreakdown and Dashboard grids follow same pattern independently
 
 ---
 
@@ -1573,6 +1610,12 @@ Missing data falls back to flat line or blank.
 - Missing data: blank cell (no visual feedback)
 - Single point: flat line (LTP-only during warm-up or broker-empty case)
 - Real curve: ≥2 points with variation
+
+**Sparkline border parity in gainers/losers buckets** (Sep 2026, commit 7ccb2e50):
+- LTP cells in the gainers/losers right-grid now render with `box-shadow: inset 1px 0 0 0 
+  rgba(126,151,184,0.40)` (neutral slate) instead of `none`. This restores visual weight 
+  parity with the pinned/watchlist left-grid sparkline right-borders, ensuring consistent 
+  column separation across all six grids regardless of symbol category (pinned vs winning/losing).
 
 **Fetch schedule**:
 - Startup + 00:30 IST + segment opens → `_task_sparkline_warm` backend task
@@ -2318,3 +2361,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-18 | v1.17 Column width reductions + direction borders + derivatives tick flash (commit 307a8c5a): (1) **§13.9 Column Width Reductions** — new subsection documents numeric column width optimizations across all Pulse grids (Positions, Holdings, Pinned, Watchlist, Winners, Losers, Derivatives): Day P&L 78→58px, P&L 78→58px, Exp P&L 90→68px, Extrinsic 90→68px, derivatives St 38→28px. Rationale: compact `aggCompact` notation + mobile/narrow-screen scrolling reduction. (2) **§14 Direction border indicator** — extension documents right-edge colored border (signal long/short direction) now uniform across ALL Pulse grids: Positions/Holdings (existing `pos-long`/`pos-short` row classes → `ag-col-sym::after`), Pinned/Watchlist/Winners/Losers (new `chg-up`/`chg-down` cell classes → `ag-col-sym-left::after`), Derivatives Legs (existing `cand-sym-acct::after`), Derivatives Snapshot (new `byund-dir-long`/`byund-dir-short` → `byund-und::after`). All use canonical `--algo-green` / `--algo-red` tokens. (3) **§17.8 Derivatives Tick Flash** — new subsection (renumbered 17.9 for liveSnap) documents tick-flash extension to derivatives surfaces: Derivatives Legs LTP now carries dual flash classes (`:ltp` background + `:chg` text-color on tick), Derivatives Snapshot Day P&L cell flashes on `${underlying}:day_w` SSE ticks, Payoff Overlay Spot + Day P&L both animate (background + text-color). Impact: unified directional flash feedback across MarketPulse + derivatives pages; operators see consistent real-time visual language for price/P&L movement. |
 | 2026-09-18 | v1.18 Chg% right-border separator + derivatives legs chg% column + payoff legend update (commit 6310d70f): (1) **§14 Chg% right-border separator** — new subsection documents inset right-border CSS class `chg-right-sep` on chg% column across all grids (left: Pinned/Watchlist/Winners/Losers; right: Holdings). Holdings Lots column `lots-left-sep` retained when `qty_hold` defined. Derivatives Snapshot grid chg% span receives `byund-chg-sep` class. Separator marks semantic boundary between "market movement" (LTP/Chg%/day%) and "portfolio P&L" columns. (2) **§17.4a Derivatives Legs dedicated Chg% column** — new subsection documents new column after LTP displaying intraday change% = `(ltp − prev_close) / prev_close × 100`, falls back to `c.change_pct`. Width 56px, right-aligned, directional text color. CSS class `cand-chg-sep` marks right-border separator. Flash class `leg:${k}:chg` subscribed in `tickBus`; fires text-color flash (`.ltp-tc-flash-up/down`) on every 4Hz SSE tick. (3) **§17.4b Legs totals row styling** — new subsection documents removal of per-cell green/red backgrounds (`cand-pnl.cell-pos/neg`) from TOTAL row; amber container background now sole visual marker. Directional text colors retained for numeric columns. Rationale: simplifies visual hierarchy, eliminates color noise. (4) **§17.3 Payoff chart legend labels** — updated from "P&L" / "Exp P&L" to "Day P&L" / "Exp Val", clarifying curve semantics: solid amber curve = today's market-to-market P&L, dashed blue curve = expiry P&L if spot freezes at current level. Impact: operators see consistent terminology across derivatives page, MarketPulse legend tooltips, and payoff overlay. |
 | 2026-09-21 | v1.19 MarketPulse ▲/▼ group ordering + Case 3 day P&L fix (commit 951c7b2e): (1) **§15 Row Grouping (postSortGroups)** — new subsection "Manual group order override" documents `groupOrder` rank map populated when operator clicks ▲/▼ on movers. Groups with assigned ranks sort by rank value (lower=higher), no-rank groups follow alphabetically. Affects positions/holdings/watchlist grid row order. Movers grid unaffected (|change_pct| sort priority). Operator-curated ranking persists across reloads. (2) **§4.4 Flat row hygiene + §17.0 new subsection** — updated to document three canonical Day P&L cases. Case 3 (closed intraday, oq=0 qty=0 pnl≠0) now shows realised P&L instead of 0. Hygiene (commit ed63b9fe) only zeroes `day_change_val` when `abs(pnl) < 0.005` (break-even). When realised gain/loss exists (pnl ≥ 0.005), `day_change_val` preserved. Fixes same-day close positions showing ₹0 instead of actual P&L. Impact: Pulse positions grid, Derivatives Legs grid (CandidateLegRow), NavStrip P pill, Dashboard show correct realised P&L for round-trip closes. |
+| 2026-09-22 | v1.20 Visual polish fixes — sparkline borders + mobile row height + account stripe + symbol direction bars (commit 7ccb2e50): (1) **§18 Sparkline border parity** — LTP cells in gainers/losers right-grid now render `box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40)` (neutral slate) instead of `none`, matching pinned/watchlist left-grid visual weight and ensuring consistent column separation across all six grids. (2) **§14.5 Mobile row height configuration** — new subsection documents rowHeight set at ag-Grid JS level (`rowHeight: _isMobile ? 36 : 28`) for all Pulse grids, Dashboard mini-grids, NavBreakdown. Removed former CSS override (`:global(.ag-theme-algo .ag-row) { min-height: 36px }`), eliminating CSS–JS mismatch that caused visible horizontal gaps between rows on mobile (<720px). (3) **§14 Account column (trailing) styling** — account column now uses CSS class `ag-col-acct` + injected `--acct-stripe` property (3px left-border stripe) instead of text color, matching PerformancePage canonical treatment. (4) **§14 Symbol column direction bars** — left grids (Pinned, Watchlist, Winners, Losers) now have `cellClassRules: { chg-up, chg-down }` driven by `change_pct`, enabling 2px right-edge direction bar on all symbol cells via `ag-col-sym-left::after` pseudo-element. Plain `ag-col-sym-left` now has `position: relative` in app.css for proper pseudo-element positioning. Impact: unified visual polish across MarketPulse; mobile users see gap-free grids; column styling consistent across all surfaces. |
