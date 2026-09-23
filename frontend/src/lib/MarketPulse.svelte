@@ -4938,6 +4938,12 @@
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
     background: var(--card-bg-elevated);
     overflow: hidden;
+    /* Inner breathing room — header gets padding via --ch-padding so it
+       matches the opt-section-h/opt-block inset on the Legs card. Bottom
+       padding gives the ag-Grid a gap before the card chrome border,
+       matching the cand-scroll margin-bottom on the Legs section. */
+    --ch-padding: 0.2rem 0.35rem 0;
+    padding-bottom: 0.35rem;
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
@@ -5155,23 +5161,22 @@
          edge-to-edge on mobile — operator: "Pulse cards should take
          full width mobile." The bucket-label has its own 0.35rem
          horizontal padding so text never touches the screen edge. */
-      padding: 0 0 0.3rem;
+      padding: 0 0 0.5rem;
     }
     .mp-layout {
       /* On mobile the layout is a normal column stack — no height
          constraint so all buckets render at fixed heights and the
          page scrolls. Reset the flex-fill set for desktop.
-         Reduce gap from 0.6rem to 0.3rem so the between-column
-         spacing matches the tighter cadence other algo pages use
-         on mobile (operator: "I see gaps in pulse which is not
-         there in other pages on mobile"). */
+         Gap 0.5rem matches .opt-side gap on Legs/Derivatives page
+         and gives sufficient space before and after each grid card. */
       flex: none;
-      gap: 0.3rem;
+      gap: 0.5rem;
     }
     .mp-col {
       /* Mirror the reduced gap inside each column so all inter-bucket
-         spacing is uniform at 0.3rem on mobile. */
-      gap: 0.3rem;
+         spacing is uniform at 0.5rem on mobile — matches opt-side gap
+         on the Legs / Derivatives page for visual consistency. */
+      gap: 0.5rem;
     }
     .bucket-grid {
       height: 220px;
