@@ -225,6 +225,11 @@
   .nav-tab-wrap {
     position: relative;
     width: 100%;
+    background: var(--card-bg-gradient);
+    border: 1px solid rgba(251, 191, 36, 0.18);
+    border-radius: 4px;
+    padding: 6px 8px 8px;
+    box-sizing: border-box;
   }
   .nav-tab-meta {
     font-size: var(--fs-xs);
