@@ -787,6 +787,9 @@
 .ag-theme-algo .ag-row.row-und .ag-col-sym {
   background-color: rgba(192,132,252,0.10) !important;
 }
+.ag-theme-algo .ag-row.row-und .ag-col-sym::after {
+  background: rgba(192, 132, 252, 0.80);
+}
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
   background-color: rgba(148,163,184,0.08) !important;
 }
@@ -864,6 +867,10 @@
 .ag-theme-algo .ag-col-sym-left,
 .ag-theme-algo .ag-col-sym {
   position: relative;
+}
+.ag-theme-algo .ag-col-sym-left,
+.ag-theme-algo .ag-col-sym {
+  border-right: 0 !important;
 }
 .ag-theme-algo .ag-col-sym-left::after {
   content: '';
@@ -1317,7 +1324,7 @@
    falls back to transparent so the stripe is invisible for TOTAL rows and
    any row that doesn't carry a hue mapping. Works across both themes. */
 .ag-col-acct {
-  border-left: 3px solid var(--acct-stripe, transparent) !important;
+  border-left: 0 !important;
 }
 
 /* ── Dual-zone log timestamp ──────────────────────────────────────────────

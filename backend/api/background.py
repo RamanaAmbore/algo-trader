@@ -2237,6 +2237,44 @@ async def _session_guard() -> None:
     logger.info("SessionGuard: trading day confirmed — future timed events handled by main loop")
 
 
+async def _preload_snapshot_sentinels() -> None:
+    """Restore _snapshot_fired_today from daily_book on startup.
+
+    If today's EOD snapshots already exist (written by a prior process run),
+    seed the sentinels so SessionGuard skips re-firing them and overwriting
+    correct EOD data with stale BHAV values (close_price=0 before 08:00 IST).
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+    from datetime import timedelta
+
+    now = timestamp_indian()
+    today = now.date()
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_midnight = today_midnight + timedelta(days=1)
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql("""
+                SELECT
+                  bool_or(exchange != 'MCX') AS has_non_mcx,
+                  bool_or(exchange  = 'MCX') AS has_mcx
+                FROM daily_book
+                WHERE kind = 'positions'
+                  AND captured_at >= :today_start
+                  AND captured_at <  :tomorrow
+            """).bindparams(today_start=today_midnight, tomorrow=tomorrow_midnight))
+            row = result.one_or_none()
+        if row:
+            if row.has_non_mcx:
+                _snapshot_fired_today["NON-MCX"] = today
+            if row.has_mcx:
+                _snapshot_fired_today["MCX"] = today
+            logger.info("[STARTUP] snapshot sentinels restored from daily_book: %s", _snapshot_fired_today)
+    except Exception as exc:
+        logger.warning("[STARTUP] sentinel restore failed (non-fatal): %s", exc)
+
+
 async def _ds_startup_snapshot(now_ist: datetime) -> None:
     """Fire startup EOD snapshot when markets are closed; skip if open or weekend/holiday.
 
@@ -2272,6 +2310,18 @@ async def _ds_startup_snapshot(now_ist: datetime) -> None:
         logger.info(
             "Background: skipping startup daily snapshot — markets open "
             "(NSE=%s, MCX=%s). Settlement passes still fire.", nse_open, mcx_open
+        )
+        return
+    # Skip if both EOD snapshots were already written today.
+    # _preload_snapshot_sentinels() runs before _session_guard() in on_startup
+    # and seeds _snapshot_fired_today from daily_book, so this check is
+    # DB-backed even after a process restart. Overwriting correct EOD data
+    # with a midnight broker fetch would displace it in MAX(captured_at) —
+    # Kite's BHAV close_price=0 before 08:00 makes day_pnl = ltp - 0 = ltp (wrong).
+    if _snapshot_fired_today.get("NON-MCX") == today_d and _snapshot_fired_today.get("MCX") == today_d:
+        logger.info(
+            "Background: skipping startup snapshot — EOD snapshots already written today "
+            "(existing EOD data serves closed-hours positions correctly)"
         )
         return
     # market_open=False: holiday or off-hours restart — force EOD mode so
@@ -6322,6 +6372,12 @@ async def on_startup(app) -> None:
     from backend.api.routes.algo import start_persist_flush
     logger.info("Background: calling start_persist_flush")
     start_persist_flush()
+    # Restore _snapshot_fired_today from DB so SessionGuard doesn't re-fire
+    # EOD snapshots that already exist from a prior process run.
+    try:
+        await _preload_snapshot_sentinels()
+    except Exception as _pre_exc:
+        logger.warning("Background: sentinel preload failed (non-fatal) — %s", _pre_exc)
     logger.info("Background: running session guard (startup recovery)")
     try:
         await _session_guard()

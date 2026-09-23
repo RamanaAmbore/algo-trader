@@ -38,7 +38,6 @@
    *   accountFilter?: string[],
    *   activeSlot?: 'P'|'M'|'C'|'H',
    *   expiryByAcct?: Map<string, number>,
-   *   onClose?: () => void,
    * }} */
   let {
     // Empty = all accounts (no filter). When set, the table only
@@ -50,8 +49,6 @@
     // Per-account expiry P&L map — passed from PositionStrip (which has
     // access to symbolStore spots). NavBreakdown cannot compute this itself.
     expiryByAcct = /** @type {Map<string,number>} */ (new Map()),
-    // Close callback — called when the operator clicks the ✕ button in the header.
-    onClose = /** @type {() => void} */ (() => {}),
   } = $props();
 
   /**
@@ -369,14 +366,6 @@
     return c ? { '--acct-stripe': c } : { '--acct-stripe': 'transparent' };
   }
 
-  /** Slot → human-readable title for the canonical modal header. */
-  const _slotTitle = $derived.by(() => {
-    if (activeSlot === 'P') return 'Positions P&L';
-    if (activeSlot === 'M') return 'Margin';
-    if (activeSlot === 'C') return 'Cash';
-    if (activeSlot === 'H') return 'Holdings';
-    return 'NAV Breakdown';
-  });
 
   // ── ag-Grid containers and instances ─────────────────────────────────
   /** @type {HTMLElement|null} */
@@ -397,60 +386,60 @@
   let _hGrid = null;
 
   const _pCols = [
-    { field: 'account',  headerName: 'Account',   width: 76, minWidth: 60, maxWidth: 92,
+    { field: 'account',  headerName: 'Account',   width: 60, minWidth: 48, maxWidth: 74,
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
-    { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 80, flex: 1,
+    { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'lifetime', headerName: 'P&L',         minWidth: 80, flex: 1,
+    { field: 'lifetime', headerName: 'P&L',         minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 80, flex: 1,
+    { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   const _mCols = [
-    { field: 'account',     headerName: 'Account',    width: 76, minWidth: 60, maxWidth: 92,
+    { field: 'account',     headerName: 'Account',    width: 60, minWidth: 48, maxWidth: 74,
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
-    { field: 'usedMargin',  headerName: 'Used',        minWidth: 80, flex: 1,
+    { field: 'usedMargin',  headerName: 'Used',        minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'availMargin', headerName: 'Avail',       minWidth: 80, flex: 1,
+    { field: 'availMargin', headerName: 'Avail',       minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'totalMargin', headerName: 'Total',       minWidth: 80, flex: 1,
+    { field: 'totalMargin', headerName: 'Total',       minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'utilPct',     headerName: 'Util %',      minWidth: 64, flex: 0.8,
+    { field: 'utilPct',     headerName: 'Util %',      minWidth: 52, flex: 0.8,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agPctFmt },
   ];
 
   const _cCols = [
-    { field: 'account',    headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
+    { field: 'account',    headerName: 'Account',     width: 60, minWidth: 48, maxWidth: 74,
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
-    { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 80, flex: 1,
+    { field: 'liveCash',   headerName: 'Live Cash',   minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'collateral', headerName: 'Collateral',  minWidth: 80, flex: 1,
+    { field: 'collateral', headerName: 'Collateral',  minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'totalCash',  headerName: 'Total Cash',  minWidth: 80, flex: 1,
+    { field: 'totalCash',  headerName: 'Total Cash',  minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
 
   const _hCols = [
-    { field: 'account',   headerName: 'Account',     width: 76, minWidth: 60, maxWidth: 92,
+    { field: 'account',   headerName: 'Account',     width: 60, minWidth: 48, maxWidth: 74,
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
-    { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 80, flex: 1,
+    { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'value',     headerName: 'Value',        minWidth: 80, flex: 1,
+    { field: 'value',     headerName: 'Value',        minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
-    { field: 'lifetime',  headerName: 'P&L',          minWidth: 80, flex: 1,
+    { field: 'lifetime',  headerName: 'P&L',          minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
   ];
@@ -578,10 +567,6 @@
 
 {#if _hasData}
   <div class="nav-bd-wrap">
-    <div class="nav-bd-header canonical-modal-header">
-      <span class="nav-bd-title">{_slotTitle}</span>
-      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
-    </div>
     {#if activeSlot === 'P'}<div bind:this={_pEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
     {#if activeSlot === 'M'}<div bind:this={_mEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
     {#if activeSlot === 'C'}<div bind:this={_cEl} class="ag-theme-quartz ag-theme-algo nav-bd-ag"></div>{/if}
@@ -595,10 +580,6 @@
 {:else if _anyError && !_inFlight}
   <!-- State 3: fetch error — at least one store returned an error. -->
   <div class="nav-bd-wrap">
-    <div class="nav-bd-header canonical-modal-header">
-      <span class="nav-bd-title">{_slotTitle}</span>
-      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
-    </div>
     <div class="nav-bd-empty nav-bd-error" role="alert" data-testid="nav-bd-error">
       <span class="nav-bd-status-icon" aria-hidden="true">⚠</span>
       <span class="nav-bd-status-text">NAV data unavailable — {_anyError}</span>
@@ -608,10 +589,6 @@
 {:else if _timedOut}
   <!-- State 1b: hard timeout (>10 s) while loading. -->
   <div class="nav-bd-wrap">
-    <div class="nav-bd-header canonical-modal-header">
-      <span class="nav-bd-title">{_slotTitle}</span>
-      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
-    </div>
     <div class="nav-bd-empty nav-bd-warn" role="alert" data-testid="nav-bd-timeout">
       <span class="nav-bd-status-icon" aria-hidden="true">⏳</span>
       <span class="nav-bd-status-text">Fetch timed out — click Retry</span>
@@ -621,10 +598,6 @@
 {:else if _allLoaded}
   <!-- State 2: loaded successfully but no data (empty broker accounts?). -->
   <div class="nav-bd-wrap">
-    <div class="nav-bd-header canonical-modal-header">
-      <span class="nav-bd-title">{_slotTitle}</span>
-      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
-    </div>
     <div class="nav-bd-empty nav-bd-hint" data-testid="nav-bd-empty">
       <span class="nav-bd-status-icon" aria-hidden="true">—</span>
       <span class="nav-bd-status-text">No NAV data — check
@@ -635,10 +608,6 @@
 {:else}
   <!-- State 1a: loading (in-flight or stores not yet started). -->
   <div class="nav-bd-wrap">
-    <div class="nav-bd-header canonical-modal-header">
-      <span class="nav-bd-title">{_slotTitle}</span>
-      <button class="nav-bd-close" onclick={onClose} aria-label="Close breakdown">✕</button>
-    </div>
     <div class="nav-bd-empty" data-testid="nav-bd-loading">
       Loading NAV breakdown…{_slowLoad ? ' (retrying — network slow)' : ''}
     </div>
@@ -663,38 +632,6 @@
        (the same surface family as the inner table rows). */
     background: var(--card-bg-elevated);
   }
-
-  /* canonical-modal-header pattern — matches BrokerHealthBadge .bh-modal-header */
-  .nav-bd-header {
-    justify-content: space-between;
-    flex-shrink: 0;
-  }
-  .nav-bd-title {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-md);
-    font-weight: 700;
-    letter-spacing: 0.08em;
-    color: var(--algo-cyan-text);
-    text-transform: uppercase;
-  }
-  .nav-bd-close {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 1.4rem;
-    height: 1.4rem;
-    border: 1px solid rgba(248, 113, 113, 0.35);
-    border-radius: 3px;
-    color: var(--c-short);
-    font-size: var(--fs-xl);
-    line-height: 1;
-    cursor: pointer;
-    outline: none;
-    background: transparent;
-    transition: background 0.1s;
-    flex-shrink: 0;
-  }
-  .nav-bd-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   .nav-bd-ag { width: 100%; }
 

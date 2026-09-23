@@ -886,7 +886,16 @@
            role="dialog" tabindex="-1"
            onclick={(e) => e.stopPropagation()}
            onkeydown={(e) => e.stopPropagation()}>
-        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} onClose={() => (_breakdown.open = false)} />
+        <div class="ps-bd-header canonical-modal-header">
+          <span class="ps-bd-title">
+            {_breakdown.slot === 'P' ? 'Positions P&L'
+              : _breakdown.slot === 'M' ? 'Margin'
+              : _breakdown.slot === 'C' ? 'Cash'
+              : 'Holdings'}
+          </span>
+          <button class="ps-bd-close" onclick={() => (_breakdown.open = false)} aria-label="Close">×</button>
+        </div>
+        <NavBreakdown activeSlot={_breakdown.slot} expiryByAcct={positionsDerivedStore.expiryByAcct} />
       </div>
     </div>
   {/if}
@@ -1050,6 +1059,40 @@
     .ps-agg-k   { font-size: var(--fs-xs); }
     .ps-agg-v   { font-size: var(--fs-xs); }
   }
+
+  /* Canonical header for the NavBreakdown popup — title + close button.
+     Title uses cyan-text (same as BrokerHealthBadge / former nav-bd-title).
+     Close button mirrors .bh-close in BrokerHealthBadge. */
+  .ps-bd-header {
+    justify-content: space-between;
+    flex-shrink: 0;
+  }
+  .ps-bd-title {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--algo-cyan-text);
+    text-transform: uppercase;
+  }
+  .ps-bd-close {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 1.4rem;
+    height: 1.4rem;
+    border: 1px solid rgba(248, 113, 113, 0.35);
+    border-radius: 3px;
+    color: var(--c-short);
+    font-size: var(--fs-xl);
+    line-height: 1;
+    cursor: pointer;
+    outline: none;
+    background: transparent;
+    transition: background 0.1s;
+    flex-shrink: 0;
+  }
+  .ps-bd-close:hover { background: rgba(248, 113, 113, 0.15); }
 
   .ps-breakdown-overlay {
     position: fixed;

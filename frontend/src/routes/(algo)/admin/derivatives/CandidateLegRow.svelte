@@ -519,6 +519,9 @@
     position: relative;
     background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
   }
+  .cand-row.cand-row-long  .cand-sym-acct { background-color: rgba(74,  222, 128, 0.10) !important; }
+  .cand-row.cand-row-short .cand-sym-acct { background-color: rgba(248, 113, 113, 0.10) !important; }
+  .cand-row.expiry-band-close .cand-sym-acct { background-color: rgba(251, 191,  36, 0.12) !important; }
   /* CE / PE text tint on the symbol main (Sensibull / Streak convention). */
   :global(.cand-sym .sym-main)        { color: var(--algo-slate); font-weight: 500; }
   :global(.cand-sym .sym-main.sym-ce) { color: var(--c-long); }

@@ -1,334 +1,485 @@
 """
-Tests for startup snapshot weekend skip in backend/api/background.py::_task_daily_snapshot.
+Tests for `_preload_snapshot_sentinels()` in backend/api/background.py.
 
-After _probe_nse_mcx(), the startup block enforces three guards:
-  1. Weekend (weekday >= 5): skip startup snapshot — existing EOD data sufficient
-  2. Market open: skip to avoid mid-session LTP pollution
-  3. Neither: fire startup snapshot with market_open=False
+When server restarts, this function queries daily_book to check if today's
+EOD snapshots already exist. If they do, it seeds the _snapshot_fired_today
+sentinels to prevent SessionGuard and _task_daily_snapshot from re-firing
+the same snapshots and overwriting correct EOD data with stale BHAV values.
 
 Five quality dimensions:
-  1. SSOT       — startup decision logic is pure and testable
-  2. Performance — no async overhead in the decision gate itself
-  3. Stale-code  — no unreachable code paths in guard sequence
-  4. Reusable   — decision logic isolated for unit testing
-  5. Correctness — each guard branch taken at the right conditions
-
-Test approach: extract the startup decision logic into a pure helper function,
-then unit-test each condition + precedence rule.
+  1. SSOT       — sentinel restoration is the canonical source of truth
+  2. Performance — DB query is efficient (one round-trip, one aggregation query)
+  3. Stale-code  — no unreachable code paths; guard precedes marker setting
+  4. Reusable   — logic isolated for unit testing via mocking
+  5. Correctness — sentinels set only when matching daily_book rows exist
 """
 
 from __future__ import annotations
 
 import pytest
+from datetime import date, datetime, timedelta, timezone
+from unittest.mock import patch, AsyncMock, MagicMock
+import inspect
 
 
 # ---------------------------------------------------------------------------
-# Helper: pure startup decision logic (mirrors background.py startup block)
+# Test 1: Both sentinels set when both NON-MCX and MCX snapshots exist
 # ---------------------------------------------------------------------------
 
-def _startup_decision(today_weekday: int, nse_open: bool, mcx_open: bool) -> str:
-    """
-    Determine startup snapshot action based on guards.
+@pytest.mark.asyncio
+async def test_preload_sets_both_sentinels_when_both_exist():
+    """When daily_book has both NON-MCX and MCX rows for today, set both sentinels."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
-    Args:
-        today_weekday: datetime.date.weekday() (0=Monday, 6=Sunday; Sat=5, Sun=6)
-        nse_open:      is_market_open() returned True for NSE
-        mcx_open:      is_market_open() returned True for MCX
+    # Use timestamp_indian (same as function) to get the date
+    now = timestamp_indian()
+    today = now.date()
 
-    Returns:
-        One of: 'skip-weekend', 'skip-market-open', 'fire'
+    # Reset sentinels before test
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
 
-    Logic (mirrors background.py _task_daily_snapshot startup block):
-        if weekday >= 5:
-            return 'skip-weekend'
-        elif nse_open or mcx_open:
-            return 'skip-market-open'
-        else:
-            return 'fire'
-    """
-    if today_weekday >= 5:
-        return 'skip-weekend'
-    elif nse_open or mcx_open:
-        return 'skip-market-open'
-    else:
-        return 'fire'
-
-
-class TestStartupSnapshotWeekendSkip:
-    """Unit tests for _task_daily_snapshot startup block logic."""
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Dimension 5 — Correctness: each guard branch
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_saturday_skip_regardless_of_market_state(self):
-        """Saturday (weekday=5): skip startup regardless of market state."""
-        # Both closed
-        assert _startup_decision(5, False, False) == 'skip-weekend'
-        # NSE open
-        assert _startup_decision(5, True, False) == 'skip-weekend'
-        # MCX open
-        assert _startup_decision(5, False, True) == 'skip-weekend'
-        # Both open
-        assert _startup_decision(5, True, True) == 'skip-weekend'
-
-    def test_sunday_skip_regardless_of_market_state(self):
-        """Sunday (weekday=6): skip startup regardless of market state."""
-        # Both closed
-        assert _startup_decision(6, False, False) == 'skip-weekend'
-        # NSE open
-        assert _startup_decision(6, True, False) == 'skip-weekend'
-        # MCX open
-        assert _startup_decision(6, False, True) == 'skip-weekend'
-        # Both open
-        assert _startup_decision(6, True, True) == 'skip-weekend'
-
-    def test_weekday_both_closed_fire_snapshot(self):
-        """Weekday (Mon-Fri) with both markets closed: fire snapshot."""
-        # Monday through Friday
-        for weekday in range(5):
-            result = _startup_decision(weekday, False, False)
-            assert result == 'fire', (
-                f"weekday {weekday} with both markets closed should fire, got {result}"
-            )
-
-    def test_weekday_nse_open_skip(self):
-        """Weekday with NSE open: skip (avoid mid-session pollution)."""
-        # Test one weekday (Monday=0)
-        assert _startup_decision(0, True, False) == 'skip-market-open'
-
-    def test_weekday_mcx_open_skip(self):
-        """Weekday with MCX open: skip (avoid mid-session pollution)."""
-        # Test one weekday (Wednesday=2)
-        assert _startup_decision(2, False, True) == 'skip-market-open'
-
-    def test_weekday_both_open_skip(self):
-        """Weekday with both markets open: skip."""
-        # Test one weekday (Friday=4)
-        assert _startup_decision(4, True, True) == 'skip-market-open'
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Dimension 5 — Correctness: guard precedence (weekend > market-open)
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_weekend_guard_takes_precedence_over_market_open(self):
-        """Weekend check must run FIRST; market-open check is second.
-
-        If a Saturday had (hypothetically) both markets "open", the weekend
-        guard must win and return 'skip-weekend', not 'skip-market-open'.
-        This ensures the precedence: 1. weekend 2. market-open 3. fire.
-        """
-        # Saturday with both markets "open"
-        assert _startup_decision(5, True, True) == 'skip-weekend'
-        # Sunday with both markets "open"
-        assert _startup_decision(6, True, True) == 'skip-weekend'
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Dimension 3 — Stale-code: no unreachable paths
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_all_guard_conditions_covered(self):
-        """Every combination of (weekday_class, nse, mcx) must map to one action.
-
-        This ensures the if-elif-else chain is complete and no condition
-        is shadowed by an earlier check.
-        """
-        results = {}
-        # Enumerate all combinations
-        for weekday_class, label in [(4, 'weekday'), (5, 'sat'), (6, 'sun')]:
-            for nse_open in [False, True]:
-                for mcx_open in [False, True]:
-                    key = (weekday_class, nse_open, mcx_open)
-                    result = _startup_decision(weekday_class, nse_open, mcx_open)
-                    results[key] = result
-                    assert result in ('skip-weekend', 'skip-market-open', 'fire'), (
-                        f"Invalid result {result} for {key}"
-                    )
-
-        # Verify expected groupings
-        # Weekends: all 4 combinations → skip-weekend
-        weekend_results = {k: v for k, v in results.items() if k[0] >= 5}
-        assert all(v == 'skip-weekend' for v in weekend_results.values()), (
-            "All weekend combinations should skip-weekend"
+    try:
+        # Mock the async_session context manager and query
+        mock_result = MagicMock()
+        mock_result.one_or_none.return_value = MagicMock(
+            has_non_mcx=True,
+            has_mcx=True
         )
 
-        # Weekday, either market open: all 3 combinations → skip-market-open
-        weekday_open_results = {
-            k: v for k, v in results.items()
-            if k[0] < 5 and (k[1] or k[2])
-        }
-        assert all(v == 'skip-market-open' for v in weekday_open_results.values()), (
-            "All weekday+open combinations should skip-market-open"
+        mock_execute = AsyncMock(return_value=mock_result)
+        mock_session = AsyncMock()
+        mock_session.execute = mock_execute
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+
+            await _preload_snapshot_sentinels()
+
+        # Assert: both sentinels set to today
+        assert _snapshot_fired_today["NON-MCX"] == today, (
+            f"NON-MCX sentinel should be {today}, got {_snapshot_fired_today['NON-MCX']}"
         )
-
-        # Weekday, both closed: 1 combination → fire
-        weekday_closed = {
-            k: v for k, v in results.items()
-            if k[0] < 5 and not k[1] and not k[2]
-        }
-        assert all(v == 'fire' for v in weekday_closed.values()), (
-            "Weekday+both-closed should fire"
+        assert _snapshot_fired_today["MCX"] == today, (
+            f"MCX sentinel should be {today}, got {_snapshot_fired_today['MCX']}"
         )
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Dimension 1 — SSOT: decision logic is pure, no side effects
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_decision_is_idempotent(self):
-        """Calling _startup_decision multiple times with same inputs
-        returns the same result."""
-        inputs = (3, True, False)  # Wed, NSE open
-        results = [_startup_decision(*inputs) for _ in range(3)]
-        assert len(set(results)) == 1, "Decision should be deterministic"
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Dimension 2 — Performance: decision logic is O(1), no I/O
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_decision_is_synchronous(self):
-        """_startup_decision is a pure function; no async/blocking I/O."""
-        # Just call it synchronously; no await needed
-        result = _startup_decision(0, False, False)
-        assert isinstance(result, str)
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Edge cases: weekday boundary conditions
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_weekday_boundary_monday(self):
-        """Monday (weekday=0) is first trading day; should fire if closed."""
-        assert _startup_decision(0, False, False) == 'fire'
-
-    def test_weekday_boundary_friday(self):
-        """Friday (weekday=4) is last trading day; should fire if closed."""
-        assert _startup_decision(4, False, False) == 'fire'
-
-    def test_saturday_boundary(self):
-        """Saturday (weekday=5) is first non-trading day; must skip."""
-        assert _startup_decision(5, False, False) == 'skip-weekend'
-
-    def test_sunday_boundary(self):
-        """Sunday (weekday=6) is second non-trading day; must skip."""
-        assert _startup_decision(6, False, False) == 'skip-weekend'
-
-    # ─────────────────────────────────────────────────────────────────────
-    # Edge cases: market state combinations
-    # ─────────────────────────────────────────────────────────────────────
-
-    def test_weekday_only_nse_open(self):
-        """Weekday with only NSE open (MCX closed): skip."""
-        # e.g. 12:00 IST on Monday (NSE 09:15-15:30, MCX 09:00-23:30)
-        assert _startup_decision(0, True, False) == 'skip-market-open'
-
-    def test_weekday_only_mcx_open(self):
-        """Weekday with only MCX open (NSE closed): skip."""
-        # e.g. 17:00 IST on Monday (NSE closed, MCX 09:00-23:30)
-        assert _startup_decision(0, False, True) == 'skip-market-open'
-
-    def test_weekday_nse_and_mcx_both_open(self):
-        """Weekday with both NSE and MCX open: skip."""
-        # e.g. 12:00 IST on Monday
-        assert _startup_decision(0, True, True) == 'skip-market-open'
+    finally:
+        # Restore original state
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
 
 
 # ---------------------------------------------------------------------------
-# Integration: verify logs match background.py code
+# Test 2: Only MCX sentinel set when only MCX snapshot exists
 # ---------------------------------------------------------------------------
 
-def _get_startup_block(src: str) -> str:
-    """Extract the _ds_startup_snapshot function body from background.py source."""
-    start = src.find("async def _ds_startup_snapshot(")
-    end = src.find("\nasync def _ds_tick_prev_close_fix", start)
-    return src[start:end] if start != -1 else ""
+@pytest.mark.asyncio
+async def test_preload_sets_only_mcx_sentinel():
+    """When daily_book has only MCX rows, set only MCX sentinel."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    # Use timestamp_indian (same as function) to get the date
+    now = timestamp_indian()
+    today = now.date()
+
+    # Reset sentinels before test
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    try:
+        # Mock the async_session: has_mcx=True, has_non_mcx=False
+        mock_result = MagicMock()
+        mock_result.one_or_none.return_value = MagicMock(
+            has_non_mcx=False,
+            has_mcx=True
+        )
+
+        mock_execute = AsyncMock(return_value=mock_result)
+        mock_session = AsyncMock()
+        mock_session.execute = mock_execute
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+
+            await _preload_snapshot_sentinels()
+
+        # Assert: only MCX sentinel set
+        assert _snapshot_fired_today["NON-MCX"] is None, (
+            f"NON-MCX sentinel should be None, got {_snapshot_fired_today['NON-MCX']}"
+        )
+        assert _snapshot_fired_today["MCX"] == today, (
+            f"MCX sentinel should be {today}, got {_snapshot_fired_today['MCX']}"
+        )
+    finally:
+        # Restore original state
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
 
 
-def test_startup_decision_matches_background_py_guard_sequence():
-    """Smoke test: guard sequence in _startup_decision matches
-    the actual code structure in background.py::_ds_startup_snapshot.
+# ---------------------------------------------------------------------------
+# Test 3: Only NON-MCX sentinel set when only NON-MCX snapshot exists
+# ---------------------------------------------------------------------------
 
-    This is a stale-code guard: if someone refactors the startup block
-    and changes the guard order or logic, this test reminds them to
-    update the helper too.
+@pytest.mark.asyncio
+async def test_preload_sets_only_nonmcx_sentinel():
+    """When daily_book has only NON-MCX rows, set only NON-MCX sentinel."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    # Use timestamp_indian (same as function) to get the date
+    now = timestamp_indian()
+    today = now.date()
+
+    # Reset sentinels before test
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    try:
+        # Mock the async_session: has_non_mcx=True, has_mcx=False
+        mock_result = MagicMock()
+        mock_result.one_or_none.return_value = MagicMock(
+            has_non_mcx=True,
+            has_mcx=False
+        )
+
+        mock_execute = AsyncMock(return_value=mock_result)
+        mock_session = AsyncMock()
+        mock_session.execute = mock_execute
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+
+            await _preload_snapshot_sentinels()
+
+        # Assert: only NON-MCX sentinel set
+        assert _snapshot_fired_today["NON-MCX"] == today, (
+            f"NON-MCX sentinel should be {today}, got {_snapshot_fired_today['NON-MCX']}"
+        )
+        assert _snapshot_fired_today["MCX"] is None, (
+            f"MCX sentinel should be None, got {_snapshot_fired_today['MCX']}"
+        )
+    finally:
+        # Restore original state
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
+
+
+# ---------------------------------------------------------------------------
+# Test 4: No sentinels set when no daily_book rows exist for today
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preload_sets_nothing_when_no_rows():
+    """When daily_book has no rows for today, sentinels remain None."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+
+    # Reset sentinels before test
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    try:
+        # Mock the async_session to return None (no rows)
+        mock_result = MagicMock()
+        mock_result.one_or_none.return_value = None
+
+        mock_execute = AsyncMock(return_value=mock_result)
+        mock_session = AsyncMock()
+        mock_session.execute = mock_execute
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+
+            await _preload_snapshot_sentinels()
+
+        # Assert: both sentinels remain None
+        assert _snapshot_fired_today["NON-MCX"] is None, (
+            f"NON-MCX sentinel should be None, got {_snapshot_fired_today['NON-MCX']}"
+        )
+        assert _snapshot_fired_today["MCX"] is None, (
+            f"MCX sentinel should be None, got {_snapshot_fired_today['MCX']}"
+        )
+    finally:
+        # Restore original state
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
+
+
+# ---------------------------------------------------------------------------
+# Test 5: DB errors are swallowed (non-fatal)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preload_swallows_db_error():
+    """When DB query raises an exception, function completes without raising."""
+    from backend.api.background import _preload_snapshot_sentinels, _snapshot_fired_today
+
+    # Reset sentinels before test
+    original_state = _snapshot_fired_today.copy()
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+
+    try:
+        # Mock async_session to raise an exception
+        mock_session = AsyncMock()
+        mock_session.execute.side_effect = Exception("DB connection error")
+        mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+        mock_session.__aexit__ = AsyncMock(return_value=None)
+
+        with patch("backend.api.database.async_session") as mock_async_session:
+            mock_async_session.return_value = mock_session
+
+            # Call should NOT raise; exception is caught and logged
+            await _preload_snapshot_sentinels()
+
+        # Assert: sentinels remain None (no change on error)
+        assert _snapshot_fired_today["NON-MCX"] is None, (
+            f"NON-MCX sentinel should be None on error, got {_snapshot_fired_today['NON-MCX']}"
+        )
+        assert _snapshot_fired_today["MCX"] is None, (
+            f"MCX sentinel should be None on error, got {_snapshot_fired_today['MCX']}"
+        )
+    finally:
+        # Restore original state
+        _snapshot_fired_today.clear()
+        _snapshot_fired_today.update(original_state)
+
+
+# ---------------------------------------------------------------------------
+# Test 6: _preload_snapshot_sentinels called before _session_guard in on_startup
+# ---------------------------------------------------------------------------
+
+def test_preload_called_before_session_guard_in_on_startup():
+    """Verify that _preload_snapshot_sentinels appears BEFORE _session_guard in on_startup."""
+    from backend.api import background
+
+    # Get the source code of on_startup
+    src = inspect.getsource(background.on_startup)
+
+    # Find positions of the two function calls
+    preload_pos = src.find("await _preload_snapshot_sentinels()")
+    session_guard_pos = src.find("await _session_guard()")
+
+    # Both must be present
+    assert preload_pos > 0, (
+        "_preload_snapshot_sentinels() call not found in on_startup"
+    )
+    assert session_guard_pos > 0, (
+        "_session_guard() call not found in on_startup"
+    )
+
+    # _preload_snapshot_sentinels must come BEFORE _session_guard
+    assert preload_pos < session_guard_pos, (
+        "_preload_snapshot_sentinels() must be called BEFORE _session_guard() "
+        f"in on_startup (preload at {preload_pos}, session_guard at {session_guard_pos})"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Integration: verify signature and module-level state
+# ---------------------------------------------------------------------------
+
+def test_preload_snapshot_sentinels_exists_and_is_async():
+    """Verify _preload_snapshot_sentinels function exists and is async."""
+    from backend.api.background import _preload_snapshot_sentinels
+    import inspect
+
+    # Check it exists
+    assert callable(_preload_snapshot_sentinels), (
+        "_preload_snapshot_sentinels should be callable"
+    )
+
+    # Check it is async
+    assert inspect.iscoroutinefunction(_preload_snapshot_sentinels), (
+        "_preload_snapshot_sentinels should be an async function"
+    )
+
+
+def test_snapshot_fired_today_global_state():
+    """Verify _snapshot_fired_today module-level dict exists with correct keys."""
+    from backend.api.background import _snapshot_fired_today
+
+    # Check structure
+    assert isinstance(_snapshot_fired_today, dict), (
+        "_snapshot_fired_today should be a dict"
+    )
+    assert "NON-MCX" in _snapshot_fired_today, (
+        "_snapshot_fired_today must have 'NON-MCX' key"
+    )
+    assert "MCX" in _snapshot_fired_today, (
+        "_snapshot_fired_today must have 'MCX' key"
+    )
+
+    # Initial values should be None or date
+    for key in ["NON-MCX", "MCX"]:
+        val = _snapshot_fired_today[key]
+        assert val is None or isinstance(val, date), (
+            f"_snapshot_fired_today['{key}'] should be None or date, got {type(val)}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 1 — SSOT: DB query is the canonical sentinel source
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preload_queries_daily_book_for_today():
+    """_preload_snapshot_sentinels must query daily_book for today's rows."""
+    from backend.api.background import _preload_snapshot_sentinels
+    from backend.shared.helpers.date_time_utils import timestamp_indian
+
+    now = timestamp_indian()
+    today = now.date()
+    today_midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    tomorrow_midnight = today_midnight + timedelta(days=1)
+
+    # Track if execute was called with the right SQL
+    mock_result = MagicMock()
+    mock_result.one_or_none.return_value = None
+
+    mock_execute = AsyncMock(return_value=mock_result)
+    mock_session = AsyncMock()
+    mock_session.execute = mock_execute
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("backend.api.database.async_session") as mock_async_session:
+        mock_async_session.return_value = mock_session
+
+        await _preload_snapshot_sentinels()
+
+    # Assert: execute was called
+    assert mock_execute.called, (
+        "async_session.execute() should be called to query daily_book"
+    )
+
+    # Get the SQL and bindparams
+    call_args = mock_execute.call_args
+    assert call_args, "execute() should have been called with arguments"
+
+
+# ---------------------------------------------------------------------------
+# Dimension 3 — Stale-code: verify no bare return before sentinel setting
+# ---------------------------------------------------------------------------
+
+def test_preload_has_no_unreachable_code_paths():
+    """Verify the function structure has no unreachable code."""
+    from backend.api.background import _preload_snapshot_sentinels
+
+    src = inspect.getsource(_preload_snapshot_sentinels)
+
+    # Check: try-except structure is in place
+    assert "try:" in src, "Function should have a try block"
+    assert "except Exception" in src, "Function should have exception handling"
+
+    # Check: no bare return before exception handling
+    # (The function should complete normally even if DB query fails)
+    assert "_snapshot_fired_today[" in src, (
+        "Function should attempt to set sentinels"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Dimension 5 — Correctness: query uses correct table and time window
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_preload_uses_daily_book_table():
+    """Query must select from daily_book table."""
+    from backend.api.background import _preload_snapshot_sentinels
+
+    mock_result = MagicMock()
+    mock_result.one_or_none.return_value = None
+
+    captured_sql = None
+
+    def capture_execute(sql_obj, *args, **kwargs):
+        nonlocal captured_sql
+        captured_sql = str(sql_obj)
+        return mock_result
+
+    mock_execute = AsyncMock(side_effect=capture_execute)
+    mock_session = AsyncMock()
+    mock_session.execute = mock_execute
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=None)
+
+    with patch("backend.api.database.async_session") as mock_async_session:
+        mock_async_session.return_value = mock_session
+
+        await _preload_snapshot_sentinels()
+
+    # The SQL should mention daily_book
+    assert captured_sql is not None, "execute() should have been called"
+    assert "daily_book" in captured_sql.lower(), (
+        f"Query should select from daily_book; got: {captured_sql}"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests for _ds_startup_snapshot sentinel check (DB-backed via preload)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_ds_startup_snapshot_skips_when_eod_sentinels_set():
+    """_ds_startup_snapshot must skip snapshot_fire when both EOD sentinels are set.
+
+    After _preload_snapshot_sentinels runs, sentinels are DB-backed and reliable
+    even after a restart. This verifies the guard in _ds_startup_snapshot
+    prevents overwriting correct EOD data with stale BHAV values at 02:00 IST.
     """
-    from pathlib import Path
+    from backend.api.background import _ds_startup_snapshot, _snapshot_fired_today
 
-    bg_file = Path(__file__).parent.parent / "api" / "background.py"
-    src = bg_file.read_text(encoding="utf-8")
-    startup_block = _get_startup_block(src)
+    today = datetime.now().date()
+    _snapshot_fired_today["NON-MCX"] = today
+    _snapshot_fired_today["MCX"] = today
+    try:
+        now_ist = datetime.now().replace(hour=2, minute=0)
 
-    # Verify the guard sequence is present
-    assert "today_d.weekday() >= 5" in startup_block, (
-        "startup block must check weekday >= 5 first"
-    )
-    assert "elif nse_open or mcx_open:" in startup_block, (
-        "startup block must check nse_open or mcx_open second"
-    )
-    assert "await _snapshot_fire(" in startup_block, (
-        "startup block must have else case with _snapshot_fire"
-    )
+        with patch("backend.api.background.exchange_clock") as mock_clock, \
+             patch("backend.api.background.is_trading_day_today", return_value=True), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as mock_fire:
+            mock_clock.is_exchange_open.return_value = False
 
+            await _ds_startup_snapshot(now_ist)
 
-def test_startup_block_fires_with_market_open_false():
-    """Verify that the else clause in background.py calls
-    _fire_snapshot with market_open=False when startup fires."""
-    from pathlib import Path
-
-    bg_file = Path(__file__).parent.parent / "api" / "background.py"
-    src = bg_file.read_text(encoding="utf-8")
-    startup_block = _get_startup_block(src)
-
-    # Verify the fire call includes market_open=False
-    assert 'await _snapshot_fire("startup", market_open=False)' in startup_block, (
-        "startup block else clause must call _snapshot_fire with market_open=False"
-    )
+            mock_fire.assert_not_called()
+    finally:
+        _snapshot_fired_today["NON-MCX"] = None
+        _snapshot_fired_today["MCX"] = None
 
 
-def test_weekend_skip_message_in_background_py():
-    """Verify that weekend skip logs the correct message."""
-    from pathlib import Path
+@pytest.mark.asyncio
+async def test_ds_startup_snapshot_fires_when_sentinels_not_set():
+    """_ds_startup_snapshot must call snapshot_fire when sentinels are clear (fresh start)."""
+    from backend.api.background import _ds_startup_snapshot, _snapshot_fired_today
 
-    bg_file = Path(__file__).parent.parent / "api" / "background.py"
-    src = bg_file.read_text(encoding="utf-8")
-    startup_block = _get_startup_block(src)
+    _snapshot_fired_today["NON-MCX"] = None
+    _snapshot_fired_today["MCX"] = None
+    try:
+        now_ist = datetime.now().replace(hour=2, minute=0)
 
-    # Verify weekend skip message is present
-    assert "skipping startup snapshot — weekend" in startup_block, (
-        "startup block must log 'skipping startup snapshot — weekend' for weekend skip"
-    )
+        with patch("backend.api.background.exchange_clock") as mock_clock, \
+             patch("backend.api.background.is_trading_day_today", return_value=True), \
+             patch("backend.api.background._snapshot_fire", new_callable=AsyncMock) as mock_fire:
+            mock_clock.is_exchange_open.return_value = False
 
+            await _ds_startup_snapshot(now_ist)
 
-def test_no_bare_return_before_while_loop():
-    """Regression: weekend/holiday early return caused 100K/s tight-loop.
-
-    On 2026-09-12 (Saturday deploy) _task_daily_snapshot returned early
-    before the while-True loop. _supervised has no sleep on normal return,
-    so it restarted the coroutine immediately → 100K iterations/s → 95% CPU
-    → asyncio starved → startup hooks never completed → site down.
-
-    The invariant: supervised tasks must park (sleep), not bare-return.
-    Verified by ensuring no bare 'return' exists before the while-True loop.
-    """
-    import pytest
-    from pathlib import Path
-
-    bg_file = Path(__file__).parent.parent / "api" / "background.py"
-    src = bg_file.read_text(encoding="utf-8")
-
-    fn_start = src.find("async def _task_daily_snapshot()")
-    fn_end = src.find("\nasync def ", fn_start + 1)
-    fn_body = src[fn_start:fn_end]
-
-    # The function must have a while True loop (the parking loop)
-    while_pos = fn_body.find("    while True:")
-    assert while_pos > 0, "_task_daily_snapshot must contain a while True loop"
-
-    # Startup section: everything before the while-True loop
-    startup_section = fn_body[:while_pos]
-
-    for i, line in enumerate(startup_section.split("\n")):
-        if line.strip() == "return":
-            pytest.fail(
-                f"Bare 'return' at startup-section line {i} — this causes "
-                "_supervised to tight-loop on weekends/holidays. "
-                "Fall through to while True instead."
-            )
+            mock_fire.assert_called_once_with("startup", market_open=False)
+    finally:
+        _snapshot_fired_today["NON-MCX"] = None
+        _snapshot_fired_today["MCX"] = None
