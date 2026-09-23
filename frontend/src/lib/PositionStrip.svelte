@@ -97,7 +97,7 @@
   /** @param {MouseEvent|KeyboardEvent} e @param {'P'|'M'|'C'|'H'} slot */
   function _openBreakdown(e, slot) {
     const rect = /** @type {HTMLElement} */ (e.currentTarget).getBoundingClientRect();
-    const PW = Math.min(28 * 16, window.innerWidth); // 28rem popup width
+    const PW = Math.min(25.2 * 16, window.innerWidth); // 25.2rem popup width (−10%)
     let left = rect.left + rect.width / 2 - PW / 2;
     left = Math.max(8, Math.min(left, window.innerWidth - PW - 8));
     const maxH = window.innerHeight * 0.7;
@@ -1102,7 +1102,7 @@
   }
   .ps-breakdown-panel {
     position: fixed;
-    width: min(28rem, 100vw);
+    width: min(25.2rem, 100vw);
     max-height: 70vh;
     overflow-y: auto;
     background: var(--card-bg, #0f1a2e);
