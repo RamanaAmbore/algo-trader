@@ -130,9 +130,6 @@
     if (_ac) { _ac.abort(); _ac = null; }
   });
 
-  // Kept local: aggCompact intentionally omits '₹' prefix and uses K/L/C.
-  // This surface uses Intl currency style (e.g. "₹1,234") for the
-  // NAV curve axis tick labels where the ₹ glyph is load-bearing.
   function _fmtInr(/** @type {number} */ n) {
     if (n == null || !isFinite(n)) return '—';
     return new Intl.NumberFormat('en-IN', {
@@ -192,7 +189,7 @@
         <line class="chart-grid-line" x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y} />
         <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
               fill="var(--algo-muted)" font-size="10"
-              style="font-family: var(--font-numeric)">{_fmtInr(v)}</text>
+              style="font-family: var(--font-numeric)">{_fmtChipInr(v)}</text>
       {/each}
       <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" class="data-path"/>
       <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
