@@ -198,7 +198,7 @@
     z-index: 9991;
     border-radius: 0.6rem;
     width: min(96vw, 680px);
-    max-height: min(90vh, 480px);
+    height: min(90vh, 480px);
   }
 
   /* ── Modal header — canonical-modal-header gradient applied via class.
@@ -345,7 +345,7 @@
       right: 0.25rem;
       left: 0.25rem;
       width: auto;
-      max-height: 70vh;
+      height: 70vh;
     }
   }
 </style>
