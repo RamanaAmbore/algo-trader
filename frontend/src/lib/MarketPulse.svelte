@@ -5150,16 +5150,11 @@
       flex: none;
       min-height: 0;
       overflow: visible;
-      /* padding-top zeroed (was 0.3rem all-sides) so the Pinned tab
-         strip sits flush below the page-header on mobile, matching
-         the desktop rule above. Operator: "the gap between rows
-         with pulse and pinned text needs to be reduced a little
-         bit in pulse page".
-         Side padding zeroed so cards fill the full viewport width
-         edge-to-edge on mobile — operator: "Pulse cards should take
-         full width mobile." The bucket-label has its own 0.35rem
-         horizontal padding so text never touches the screen edge. */
-      padding: 0 0 0.5rem;
+      /* padding-top zeroed so the Pinned tab strip sits flush below
+         the page-header. Side padding matches .algo-card mobile
+         override (0.35rem) so grids have the same side gap as other
+         pages instead of bleeding to the viewport edge. */
+      padding: 0 0.35rem 0.5rem;
     }
     .mp-layout {
       /* On mobile the layout is a normal column stack — no height
