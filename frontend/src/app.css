@@ -61,6 +61,7 @@
   --algo-amber-bg-soft:    rgba(251, 191, 36, 0.08);
   --algo-amber-bg:         rgba(251, 191, 36, 0.14);
   --algo-amber-bg-strong:  rgba(251, 191, 36, 0.22);
+  --algo-amber-bg-hover:   rgba(251, 191, 36, 0.18);
   --algo-amber-border-soft:rgba(251, 191, 36, 0.30);
   --algo-amber-border:     rgba(251, 191, 36, 0.55);
 
@@ -315,6 +316,10 @@
   /* Action (amber) alpha aliases */
   --c-action-14: var(--algo-amber-bg);       /* rgba(251, 191, 36, 0.14) */
   --c-action-22: var(--algo-amber-bg-strong); /* rgba(251, 191, 36, 0.22) */
+
+  /* Underlying (purple/violet) alpha aliases */
+  --c-underlying-bg:  rgba(192, 132, 252, 0.10);
+  --c-underlying-bar: rgba(192, 132, 252, 0.80);
 
   /* Alternating row tint — standard α 0.30 used by .row-tint-odd, LogPanel,
      BrokerHealthBadge, and the derivatives legs grid. Single SSOT so any
@@ -724,14 +729,14 @@
    extra edges. Account info lives in the trailing Account column;
    day P&L sign lives in the right-side mini-bar pseudo-element. */
 .ag-theme-algo .ag-row.pos-long .ag-col-sym {
-  background-color: rgba(74,222,128,0.10) !important;
+  background-color: var(--c-long-10) !important;
 }
 .ag-theme-algo .ag-row.pos-short .ag-col-sym {
-  background-color: rgba(248,113,113,0.10) !important;
+  background-color: var(--c-short-10) !important;
 }
 .ag-theme-algo .ag-row.pos-long.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.pos-short.ag-row-hover .ag-col-sym {
-  background-color: rgba(251,191,36,0.18) !important;
+  background-color: var(--algo-amber-bg-hover) !important;
 }
 
 /* Watchlist / holdings / underlying tints — mirror the pos-long /
@@ -743,13 +748,13 @@
    pos-long (cyan, long) vs pos-short (warm, short). MarketPulse's
    getRowClass pushes exactly one of these per holdings row. */
 .ag-theme-algo .ag-row.row-hold-up .ag-col-sym {
-  background-color: rgba(74,222,128,0.10) !important;
+  background-color: var(--c-long-10) !important;
 }
 .ag-theme-algo .ag-row.row-hold-down .ag-col-sym {
-  background-color: rgba(248,113,113,0.10) !important;
+  background-color: var(--c-short-10) !important;
 }
 .ag-theme-algo .ag-row.row-hold-flat .ag-col-sym {
-  background-color: rgba(148,163,184,0.08) !important;
+  background-color: var(--algo-dim-bg) !important;
 }
 /* F&O-eligibility tagging — option-underlying holding rows get a GREEN
    left-edge stripe (replaces the earlier violet stripe + green-dot
@@ -785,13 +790,23 @@
   background-color: rgba(251,191,36,0.10) !important;
 }
 .ag-theme-algo .ag-row.row-und .ag-col-sym {
-  background-color: rgba(192,132,252,0.10) !important;
+  background-color: var(--c-underlying-bg) !important;
 }
 .ag-theme-algo .ag-row.row-und .ag-col-sym::after {
-  background: rgba(192, 132, 252, 0.80);
+  background: var(--c-underlying-bar);
 }
 .ag-theme-algo .ag-row.row-pos .ag-col-sym {
-  background-color: rgba(148,163,184,0.08) !important;
+  background-color: var(--algo-dim-bg) !important;
+}
+
+/* Snapshot / closed-exchange rows — muted symbol cell signals frozen price */
+.ag-theme-algo .ag-row.row-snapshot .ag-col-sym,
+.ag-theme-algo .ag-row.row-snapshot .ag-col-sym-left {
+  opacity: 0.65;
+}
+.ag-theme-algo .ag-row.row-snapshot .ag-col-sym::after,
+.ag-theme-algo .ag-row.row-snapshot .ag-col-sym-left::after {
+  opacity: 0.40;
 }
 
 /* Account-level stale row (Jul 2026) — a row substituted from
@@ -923,7 +938,7 @@
 .ag-theme-algo .ag-row.row-watch.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-und.ag-row-hover .ag-col-sym,
 .ag-theme-algo .ag-row.row-pos.ag-row-hover .ag-col-sym {
-  background-color: rgba(251,191,36,0.18) !important;
+  background-color: var(--algo-amber-bg-hover) !important;
 }
 
 /* Orphan position — no template / GTT / manual pair */

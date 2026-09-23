@@ -280,7 +280,7 @@ Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` /
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
 
-**Market daily window** — 08:00–00:30 IST. KiteConnect starts + prev_close set at 08:00 from `daily_book.ltp` (prior settlement). Non-MCX symbols unsubscribed at 16:15. MCX settlement at 00:15 IST; disconnect at 00:30. Book polling: 15–30 min (qty/composition); prices from WebSocket only. Full schedule: memory `project_market_daily_window`.
+**Market daily window** — 08:00–23:31 IST. At 08:00: `fix_daily_book_prev_close()` sets BOTH `daily_book.ltp = prev_close = settlement close_price` — the only moment prev_close changes. NON-MCX snapshot at 15:45 (close+15 min) writes `ltp` only, no prev_close change. MCX snapshot at 23:45 (close+15 min) same. Ticker stops at 23:31. Closed window: 23:31→08:00 IST — routes serve `daily_book` snapshot only. Full schedule: memory `project_market_daily_window`.
 
 **WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). New instrument from order fill: Kite postback extracts `instrument_token` directly from payload, calls `get_ticker().subscribe([token])` on `COMPLETE`. Dhan/Groww postbacks resolve the token from (tradingsymbol, exchange) via instruments lookup, then subscribe. `subscribe()` is idempotent. Full design: memory `project_websocket_design`.
 

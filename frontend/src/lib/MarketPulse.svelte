@@ -3372,6 +3372,9 @@
     }
     if (s.w && !s.p && !s.h) out.push('row-watch');
     else if (s.u) out.push('row-und');
+    if ((s.p || s.h) && (r.price_source === 'snapshot_settled' || r.price_source === 'snapshot')) {
+      out.push('row-snapshot');
+    }
     return out;
   }
 

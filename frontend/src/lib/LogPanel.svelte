@@ -1867,29 +1867,6 @@
   }
   .lp-close-btn:hover { background: rgba(248, 113, 113, 0.15); }
 
-  /* Close button rendered in modal context (legacy path) */
-  .alm-close-btn {
-    margin-left: 0;
-    flex-shrink: 0;
-    width: 1.4rem;
-    height: 1.4rem;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    background: none;
-    border: 1px solid rgba(248, 113, 113, 0.35);
-    border-radius: 3px;
-    color: var(--c-short);
-    font-size: var(--fs-xl);
-    line-height: 1;
-    padding: 0;
-    cursor: pointer;
-    font-family: monospace;
-    transition: background 0.1s;
-  }
-  .alm-close-btn:hover { background: rgba(248, 113, 113, 0.15); }
-
-
   /* Account multi-select (legacy inline filter — retained for existing
      mounts that pass hideInlineAccountFilter=false). Width clamped so it
      doesn't dominate the tab row. */

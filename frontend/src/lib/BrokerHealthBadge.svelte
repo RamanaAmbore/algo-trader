@@ -92,7 +92,7 @@
           : acct.is_active_ticker ? `${acct.account} — active (KiteTicker)`
           : `${acct.account} — warm spare`;
         const wrap = document.createElement('span');
-        wrap.className = `bh-row-account ${accCls}`;
+        wrap.className = `bh-row-account bh-row-acct-fill ${accCls}`;
         wrap.title = title;
         wrap.textContent = p.value ?? '';
         if (cbOptIn && acct.circuit_state === 'open') {
@@ -268,11 +268,14 @@
     display: inline-flex;
     align-items: center;
     gap: 0.35rem;
+    width: 100%;
+    padding: 0 0.2rem;
+    border-radius: 3px;
   }
-  :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
-  :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
+  :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; background: var(--c-short-10); }
+  :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; background: rgba(251, 191, 36, 0.10); }
   :global(.bh-acct-inactive) { color: var(--text-faint) !important; }
-  :global(.bh-acct-active)   { color: var(--c-info) !important; font-weight: 700 !important; }
+  :global(.bh-acct-active)   { color: var(--c-info) !important; font-weight: 700 !important; background: rgba(34, 211, 238, 0.08); }
   :global(.bh-acct-spare)    { color: #c8d8f0; }
 
   :global(.bh-circuit-chip) {

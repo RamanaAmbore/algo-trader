@@ -635,6 +635,10 @@
 
   .nav-bd-ag { width: 100%; }
 
+  :global(.nav-bd-ag .ag-col-acct) {
+    border-left: 3px solid var(--acct-stripe, transparent) !important;
+  }
+
   .nav-bd-caption {
     display: flex;
     align-items: center;
@@ -644,7 +648,7 @@
     color: var(--algo-muted);
     letter-spacing: 0.04em;
     padding: 0.25rem 0.5rem;
-    background: #1d2a44;
+    background: var(--card-bg, #1d2a44);
     border-top: 1px solid rgba(126,151,184,0.10);
   }
   .nav-bd-caption span {
@@ -657,7 +661,7 @@
     color: rgba(155, 176, 208, 0.55);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.72rem;
-    background: #1d2a44;
+    background: var(--card-bg, #1d2a44);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
