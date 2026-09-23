@@ -142,7 +142,7 @@
     _gridApi = createGrid(_gridEl, {
       ...mkBaseGridOpts(),
       columnDefs: _colDefs,
-      rowData: [],
+      rowData: accounts,
       domLayout: 'autoHeight',
       suppressCellFocus: true,
       onRowClicked: () => { open = false; openActivityModal('conn'); },
@@ -198,7 +198,7 @@
     z-index: 9991;
     border-radius: 0.6rem;
     width: min(96vw, 680px);
-    height: min(90vh, 480px);
+    max-height: min(90vh, 480px);
   }
 
   /* ── Modal header — canonical-modal-header gradient applied via class.
@@ -234,11 +234,11 @@
   }
   .bh-close:hover { background: rgba(248, 113, 113, 0.15); }
 
-  /* ── Modal body ── */
+  /* ── Modal body — grid drives height via domLayout:autoHeight;
+     max-height caps the body so the modal doesn't exceed the viewport ── */
   .bh-modal-body {
-    flex: 1;
-    min-height: 0;
     overflow-y: auto;
+    max-height: calc(min(90vh, 480px) - 5rem);
     padding: 0;
   }
 
@@ -345,7 +345,10 @@
       right: 0.25rem;
       left: 0.25rem;
       width: auto;
-      height: 70vh;
+      max-height: 70vh;
+    }
+    .bh-modal-body {
+      max-height: calc(70vh - 5rem);
     }
   }
 </style>
