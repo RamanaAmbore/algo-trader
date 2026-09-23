@@ -1781,6 +1781,14 @@
       }
     }
 
+    // Tier 3: underlyingSpotStore SSE-patched value — tickBus Path 3 maps subscribed
+    // front-month futures ticks to the root key at WebSocket speed; fills when the
+    // strategy anchor contract or resolved tradingsymbol isn't in KiteTicker subscription.
+    if (_activeQuoteLtp > 0) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-activeQuoteLtp', value: _activeQuoteLtp }));
+      return _activeQuoteLtp;
+    }
+
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));
     return undefined;
   });
