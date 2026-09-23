@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.20 — 2026-09-22  
+**Version**: 1.21 — 2026-09-22  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -1139,6 +1139,56 @@ CSS–JS mismatches on mobile (<720px viewport).
 - `_isMobile` derived from `$signals.window.innerWidth < 720` (reactive, updates on resize)
 - Applied to all Pulse pulse grids instantiation
 - NavBreakdown and Dashboard grids follow same pattern independently
+
+---
+
+## 14.6 Visual Border & Background Refinements (Sep 2026)
+
+Four CSS-layer visual fixes shipped in commit 516937c5 refine column borders and 
+row backgrounds across Pulse grids and derivatives admin page.
+
+**Symbol column right border (neutral state)**:
+- `.ag-col-sym` and `.ag-col-sym-left` now have `border-right: 0 !important` 
+  (added to `app.css`)
+- In neutral state (no directional move), symbol cell has no right edge stripe
+- In directional state (`chg-up` / `chg-down`), only the 2px `::after` bar shows 
+  via the pseudo-element, providing clean visual separation
+- Sparkline column's amber left-boundary now serves as the column separator between 
+  symbol and sparkline cells
+
+**Account column left border removed**:
+- `.ag-col-acct` now has `border-left: 0 !important`
+- All Pulse grids (MarketPulse, PerformancePage, NavBreakdown) have no left stripe 
+  on the account column trailing edge
+- The `--acct-stripe` CSS variable injection is preserved in column defs for future 
+  reuse but has no visual effect in current rendering
+- Simplifies account cell styling; text-alignment remains right-aligned
+
+**Underlying root symbol bar (row-und rows)**:
+- `row-und` rows (e.g. NIFTY, BANKNIFTY header rows in the Snapshot/Positions grid 
+  for derivatives page) now display a purple `::after` right-edge bar 
+  (`rgba(192,132,252,0.80)`) on their `.ag-col-sym` cell
+- Matches visual pattern of `row-pos-orphan` (amber) and `row-pos-paired` (cyan) 
+  leg rows in derivatives grids
+- Provides visual distinction for underlying root rows; operators quickly identify 
+  grouping headers
+
+**Legs and expiry-close directional backgrounds** (CandidateLegRow.svelte):
+- `.cand-sym-acct` now shows directional background tints on candidate leg rows:
+  - `cand-row-long` → `rgba(74,222,128,0.10)` (green, 10% opacity) for long positions
+  - `cand-row-short` → `rgba(248,113,113,0.10)` (red, 10% opacity) for short positions
+  - `expiry-band-close` → `rgba(251,191,36,0.12)` (amber, 12% opacity) for expiry-close 
+    positions
+- Previously only a per-account 14% color-mix tint was applied (faded, no directional 
+  semantic)
+- Now directional cell backgrounds provide clear visual signal for position polarity; 
+  operators see at a glance which legs are long (green) vs short (red) vs approaching 
+  expiry (amber)
+
+**Impact**: Refined visual hierarchy across MarketPulse and derivatives admin pages. 
+Column borders now cleaner; direction bars and backgrounds carry clearer semantic 
+meaning. No functional changes; pure CSS refinement improving readability and 
+operator navigation speed.
 
 ---
 
@@ -2362,3 +2412,4 @@ See `PULSE_SPEC.md §9 Known Defects` section (BD1–BD4 fixed in `b1d7654c`, D1
 | 2026-09-18 | v1.18 Chg% right-border separator + derivatives legs chg% column + payoff legend update (commit 6310d70f): (1) **§14 Chg% right-border separator** — new subsection documents inset right-border CSS class `chg-right-sep` on chg% column across all grids (left: Pinned/Watchlist/Winners/Losers; right: Holdings). Holdings Lots column `lots-left-sep` retained when `qty_hold` defined. Derivatives Snapshot grid chg% span receives `byund-chg-sep` class. Separator marks semantic boundary between "market movement" (LTP/Chg%/day%) and "portfolio P&L" columns. (2) **§17.4a Derivatives Legs dedicated Chg% column** — new subsection documents new column after LTP displaying intraday change% = `(ltp − prev_close) / prev_close × 100`, falls back to `c.change_pct`. Width 56px, right-aligned, directional text color. CSS class `cand-chg-sep` marks right-border separator. Flash class `leg:${k}:chg` subscribed in `tickBus`; fires text-color flash (`.ltp-tc-flash-up/down`) on every 4Hz SSE tick. (3) **§17.4b Legs totals row styling** — new subsection documents removal of per-cell green/red backgrounds (`cand-pnl.cell-pos/neg`) from TOTAL row; amber container background now sole visual marker. Directional text colors retained for numeric columns. Rationale: simplifies visual hierarchy, eliminates color noise. (4) **§17.3 Payoff chart legend labels** — updated from "P&L" / "Exp P&L" to "Day P&L" / "Exp Val", clarifying curve semantics: solid amber curve = today's market-to-market P&L, dashed blue curve = expiry P&L if spot freezes at current level. Impact: operators see consistent terminology across derivatives page, MarketPulse legend tooltips, and payoff overlay. |
 | 2026-09-21 | v1.19 MarketPulse ▲/▼ group ordering + Case 3 day P&L fix (commit 951c7b2e): (1) **§15 Row Grouping (postSortGroups)** — new subsection "Manual group order override" documents `groupOrder` rank map populated when operator clicks ▲/▼ on movers. Groups with assigned ranks sort by rank value (lower=higher), no-rank groups follow alphabetically. Affects positions/holdings/watchlist grid row order. Movers grid unaffected (|change_pct| sort priority). Operator-curated ranking persists across reloads. (2) **§4.4 Flat row hygiene + §17.0 new subsection** — updated to document three canonical Day P&L cases. Case 3 (closed intraday, oq=0 qty=0 pnl≠0) now shows realised P&L instead of 0. Hygiene (commit ed63b9fe) only zeroes `day_change_val` when `abs(pnl) < 0.005` (break-even). When realised gain/loss exists (pnl ≥ 0.005), `day_change_val` preserved. Fixes same-day close positions showing ₹0 instead of actual P&L. Impact: Pulse positions grid, Derivatives Legs grid (CandidateLegRow), NavStrip P pill, Dashboard show correct realised P&L for round-trip closes. |
 | 2026-09-22 | v1.20 Visual polish fixes — sparkline borders + mobile row height + account stripe + symbol direction bars (commit 7ccb2e50): (1) **§18 Sparkline border parity** — LTP cells in gainers/losers right-grid now render `box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40)` (neutral slate) instead of `none`, matching pinned/watchlist left-grid visual weight and ensuring consistent column separation across all six grids. (2) **§14.5 Mobile row height configuration** — new subsection documents rowHeight set at ag-Grid JS level (`rowHeight: _isMobile ? 36 : 28`) for all Pulse grids, Dashboard mini-grids, NavBreakdown. Removed former CSS override (`:global(.ag-theme-algo .ag-row) { min-height: 36px }`), eliminating CSS–JS mismatch that caused visible horizontal gaps between rows on mobile (<720px). (3) **§14 Account column (trailing) styling** — account column now uses CSS class `ag-col-acct` + injected `--acct-stripe` property (3px left-border stripe) instead of text color, matching PerformancePage canonical treatment. (4) **§14 Symbol column direction bars** — left grids (Pinned, Watchlist, Winners, Losers) now have `cellClassRules: { chg-up, chg-down }` driven by `change_pct`, enabling 2px right-edge direction bar on all symbol cells via `ag-col-sym-left::after` pseudo-element. Plain `ag-col-sym-left` now has `position: relative` in app.css for proper pseudo-element positioning. Impact: unified visual polish across MarketPulse; mobile users see gap-free grids; column styling consistent across all surfaces. |
+| 2026-09-22 | v1.21 Column border refinements + directional cell backgrounds (commit 516937c5): §14.6 new subsection documents four CSS-layer visual fixes. (1) **Symbol column right border (neutral state)** — `.ag-col-sym` and `.ag-col-sym-left` now have `border-right: 0 !important`; in neutral state no right edge displays, in directional state (chg-up/chg-down) only the 2px `::after` bar shows; sparkline column's amber left-boundary serves as separator. (2) **Account column left border removed** — `.ag-col-acct` now has `border-left: 0 !important`; all Pulse grids (MarketPulse, PerformancePage, NavBreakdown) have no left stripe; `--acct-stripe` variable preserved for future reuse. (3) **Underlying root symbol bar** — `row-und` rows (NIFTY, BANKNIFTY header rows in Snapshot/Positions grid) now display purple `::after` right-edge bar (`rgba(192,132,252,0.80)`) on `.ag-col-sym` cell, matching visual pattern of `row-pos-orphan` (amber) and `row-pos-paired` (cyan) leg rows. (4) **Legs and expiry-close directional backgrounds** — CandidateLegRow `.cand-sym-acct` now shows directional tints: `cand-row-long` → `rgba(74,222,128,0.10)` green for long, `cand-row-short` → `rgba(248,113,113,0.10)` red for short, `expiry-band-close` → `rgba(251,191,36,0.12)` amber for expiry-close (previously only 14% per-account color-mix). Impact: refined visual hierarchy across MarketPulse + derivatives admin pages; cleaner column borders, directional bars + backgrounds carry clearer semantic meaning; no functional changes, pure CSS refinement. |
