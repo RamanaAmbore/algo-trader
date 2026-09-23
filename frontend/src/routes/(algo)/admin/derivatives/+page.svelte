@@ -4746,12 +4746,9 @@
         {/if}
         {#each _byUnderlyingTotals as g (g.underlying)}
           {@const _q = _underlyingQuotes[g.underlying]}
-          {@const _useAnchor = g.underlying === selectedUnderlying && liveSpot != null && liveSpot > 0}
           {@const _snapLtp = getSnapshot(g.underlying)?.ltp}
-          {@const _ltp   = _useAnchor ? liveSpot : (_undLiveLtp[g.underlying] ?? (_snapLtp ?? null))}
-          {@const _close = _useAnchor && (strategy?.spot_prev_close ?? 0) > 0
-              ? Number(strategy.spot_prev_close)
-              : (_q ? Number(_q.prev_close) : null)}
+          {@const _ltp   = _undLiveLtp[g.underlying] ?? (_snapLtp ?? null)}
+          {@const _close = _q ? Number(_q.prev_close) : null}
           {@const _pct   = _ltp != null && _close != null && _close > 0
               ? ((_ltp - _close) / _close) * 100
               : (_q?.day_pct ?? null)}
