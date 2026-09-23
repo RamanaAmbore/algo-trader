@@ -152,8 +152,12 @@
     display: flex;
     align-items: center;
     gap: var(--ch-gap, 0.4rem);
-    flex-shrink: 0;
+    flex: 0 1 auto;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
   }
+  .ch-left::-webkit-scrollbar { display: none; }
   .ch-title {
     font-family: var(--ch-title-font-family, inherit);
     font-size: var(--ch-title-size, var(--fs-sm, 0.6rem));

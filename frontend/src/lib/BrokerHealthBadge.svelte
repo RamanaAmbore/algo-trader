@@ -195,8 +195,7 @@
     position: fixed;
     top: 3.2rem;
     right: 0.5rem;
-    z-index: 9991;
-    border-radius: 0.6rem;
+    z-index: var(--z-drawer);
     width: min(96vw, 680px);
     max-height: min(90vh, 480px);
   }
@@ -225,11 +224,9 @@
     border-radius: 3px;
     color: var(--c-short);
     font-size: var(--fs-xl);
-    line-height: 1;
     cursor: pointer;
-    outline: none;
     background: transparent;
-    transition: background 0.1s;
+    transition: background 120ms;
     flex-shrink: 0;
   }
   .bh-close:hover { background: rgba(248, 113, 113, 0.15); }
@@ -269,13 +266,11 @@
     align-items: center;
     gap: 0.35rem;
     width: 100%;
-    padding: 0 0.2rem;
-    border-radius: 3px;
   }
-  :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; background: var(--c-short-10); }
-  :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; background: rgba(251, 191, 36, 0.10); }
+  :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
+  :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
   :global(.bh-acct-inactive) { color: var(--text-faint) !important; }
-  :global(.bh-acct-active)   { color: var(--c-info) !important; font-weight: 700 !important; background: rgba(34, 211, 238, 0.08); }
+  :global(.bh-acct-active)   { color: var(--c-long) !important; font-weight: 700 !important; }
   :global(.bh-acct-spare)    { color: #c8d8f0; }
 
   :global(.bh-circuit-chip) {

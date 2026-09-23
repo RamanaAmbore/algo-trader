@@ -4788,6 +4788,15 @@
   :global(.summary-grid .ag-root-wrapper),
   :global(.funds-grid .ag-root-wrapper) {
     border: none !important;
+    border-radius: 0 !important;
+  }
+  :global(.bucket-grid .ag-header),
+  :global(.bucket-grid .ag-header-viewport),
+  :global(.summary-grid .ag-header),
+  :global(.summary-grid .ag-header-viewport),
+  :global(.funds-grid .ag-header),
+  :global(.funds-grid .ag-header-viewport) {
+    border-radius: 0 !important;
   }
   /* Collapsed card hides the grid body but keeps the header — the
      grid div stays in the DOM (so bind:this lands at mount time and
