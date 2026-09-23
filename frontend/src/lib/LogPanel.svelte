@@ -1795,12 +1795,11 @@
   /* Tab row — legacy path only (no-label mounts). */
   .log-tab-row { gap: 0; align-items: center; }
 
-  /* Modal context: amber gradient header — applied to lp-header-wrap in
-     label-branch, or to log-tab-row in legacy-branch via .ctx-modal. */
+  /* Modal context: cyan gradient header matching canonical-modal-header. */
   .ctx-modal {
     background: linear-gradient(180deg,
-      rgba(251, 191, 36, 0.18) 0%,
-      rgba(251, 191, 36, 0.06) 100%);
+      rgba(34, 211, 238, 0.18) 0%,
+      rgba(34, 211, 238, 0.06) 100%);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
     border-bottom: 1px solid rgba(255, 255, 255, 0.06) !important;
   }

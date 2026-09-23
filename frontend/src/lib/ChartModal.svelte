@@ -77,7 +77,7 @@
      use:portal
      onclick={(e) => { if (e.target === e.currentTarget) { closeChartModal(); onClose?.(); } }}>
   <div class="canonical-modal-panel cm-modal" class:cm-busy={_loading} bind:this={_modalEl}>
-    <div class="cm-header">
+    <div class="cm-header canonical-modal-header">
       <!-- Modal-name only — the symbol picker lives inside ChartWorkspace,
            and showing the symbol up here too would duplicate it.
            Plural matches the /charts page route name. The leading icon
@@ -152,19 +152,8 @@
   }
 
   .cm-header {
-    /* Operator: "The line below modal headers is too prominent.
-       Reduce its prominence. Instead, change background color of
-       the header for modals." Stronger cyan-tinted gradient bg
-       acts as the visual separator from the body; bottom border
-       is a hairline (1px low-alpha). */
-    display: flex;
-    align-items: center;
-    padding: 0.35rem 0.85rem;
-    background: linear-gradient(180deg,
-                  rgba(34, 211, 238, 0.18) 0%,
-                  rgba(34, 211, 238, 0.06) 100%);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
-    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    /* canonical-modal-header supplies gradient/padding/border/box-shadow.
+       Local overrides: gap between icon+title+actions, and no shrink. */
     gap: 0.5rem;
     flex-shrink: 0;
   }
