@@ -2930,11 +2930,8 @@
   // After 125+ symbols the old `_prefetchTimers.length * 80` delay would
   // exceed 10s; this counter resets toward zero as each request completes.
   let _prefetchPending = $state(0);
-  // Paisa-level change gate for holdingsDayPnlStore.setFromPulse — prevents
-  // no-op $state writes (and consequent NavStrip H re-renders) at full
-  // SSE rate (~10 Hz). Only fires when the total changed by at least 1 paisa.
-  /** @type {number | null} */
-  let _lastHoldTotal = null;
+  // _lastHoldTotal removed — the setFromPulse pulse-override path was removed
+  // (Fix 3d). Holdings totals are now derived exclusively from portfolioStore.
   function _stagedPrefetch(sym, exch) {
     if (!sym || _prefetchedChartSyms.has(sym)) return;
     _prefetchedChartSyms.add(sym);
@@ -2991,26 +2988,10 @@
   // reactive compute from positionsStore + symbolTickCount). The Pulse
   // setFromPulse() override is removed — NavStrip P reads the store directly.
 
-  // Holdings day P&L — mirror positions pattern. Pulse is authoritative;
-  // setFromPulse writes to holdingsDayPnlStore so NavStrip H reads the
-  // same value as the main grid displays, and is filter-aware like NavStrip P.
-  $effect(() => {
-    const holdRows = unifiedRows.filter(r => r._majorGroup === 'holdings');
-    /** @type {Record<string, number>} */
-    const holdByKey = {};
-    let holdTotal = 0;
-    for (const r of holdRows) {
-      const sym = String(r?.tradingsymbol || r?.symbol || '').toUpperCase();
-      if (!sym) continue;
-      const v = Number(r.day_pnl) || 0;
-      holdByKey[sym] = (holdByKey[sym] ?? 0) + v;
-      holdTotal += v;
-    }
-    if (Math.round(holdTotal * 100) !== Math.round((_lastHoldTotal ?? NaN) * 100)) {
-      _lastHoldTotal = holdTotal;
-      holdingsDayPnlStore.setFromPulse(holdByKey, holdTotal);
-    }
-  });
+  // Holdings day P&L pulse-override removed (Fix 3d): holdings totals are now
+  // derived exclusively from portfolioStore._holdAgg (4 Hz via _tick gate).
+  // MarketPulse still reads holdingsDayPnlStore.byAccount for per-account rows
+  // (line ~2442) which delegaes to portfolioStore.holdings.byAccount.
 
   // parseSymbol / parseSymbolFallback have moved to pulseUnified.js.
   // No direct callers remain in this file.

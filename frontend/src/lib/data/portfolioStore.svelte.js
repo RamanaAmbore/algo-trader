@@ -26,6 +26,7 @@ import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
+import { getInstrument } from '$lib/data/instruments';
 
 const FO_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 
@@ -412,4 +413,152 @@ export const portfolioStore = {
     _pulseHoldingsByKey  = byKey;
     _pulseHoldingsTotal  = total;
   },
+};
+
+// ── Cross-page portfolio aggregates (moved from PositionStrip) ────────────────
+// Pre-computed totals that PositionStrip reads as $derived reflectors instead
+// of re-deriving inline. All gate on _tick (4Hz) and use untrack() for any
+// getSnapshot call, consistent with the SSOT pattern throughout this file.
+
+// Sum of lifetime pnl across all position rows (P pill slot 2 in NavStrip).
+// Reads raw broker pnl — no live-LTP delta — matching the MarketPulse TOTAL row
+// which uses _broker_pnl (= Σ r.pnl) without an SSE delta.
+const _livePositionsPnl = $derived.by(() => {
+  void _tick;
+  const posRows = untrack(() => positionsStore.value);
+  if (!posRows) return 0;
+  let s = 0;
+  for (const p of posRows) s += Number(p?.pnl || 0);
+  return s;
+});
+
+// Live holdings total P&L: (liveHold − avg) × qty using symbolStore LTP.
+// Matches MarketPulse mergeHoldingRows which uses live-LTP when available.
+// Falls back to broker h.pnl when no live LTP is present.
+const _liveHoldingsTotal = $derived.by(() => {
+  void _tick;
+  const holdRows = untrack(() => pulseHoldingsStore.value);
+  if (!holdRows) return 0;
+  let s = 0;
+  for (const h of holdRows) {
+    const sym      = String(h?.tradingsymbol || '').toUpperCase();
+    const liveHold = untrack(() => getSnapshot(sym)?.ltp);
+    const avgCost  = Number(h?.average_price || 0);
+    const qty      = Number(h?.quantity || 0);
+    if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
+      s += (liveHold - avgCost) * qty;
+    } else {
+      s += Number(h?.pnl || 0);
+    }
+  }
+  return s;
+});
+
+// Live holdings market value: ltp × qty (with fallback tiers matching PositionStrip).
+// Tier 1: symbolStore ltp × qty. Tier 2: h.last_price × qty (avoids cur_val=inv_val trap).
+// Tier 3: h.cur_val (broker computed, may equal inv_val when last_price=0).
+const _liveHoldingsValue = $derived.by(() => {
+  void _tick;
+  const holdRows = untrack(() => pulseHoldingsStore.value);
+  if (!holdRows) return 0;
+  let s = 0;
+  for (const h of holdRows) {
+    const sym    = String(h?.tradingsymbol || '').toUpperCase();
+    const ltp    = untrack(() => getSnapshot(sym)?.ltp);
+    const qty    = Number(h?.quantity || 0);
+    const lastPx = Number(h?.last_price || 0);
+    if (ltp != null && ltp > 0 && qty !== 0) {
+      s += ltp * qty;
+    } else if (lastPx > 0 && qty !== 0) {
+      s += lastPx * qty;
+    } else {
+      s += Number(h?.cur_val || 0);
+    }
+  }
+  return s;
+});
+
+// Live cash: Kite avail.cash (= live_balance) summed across all accounts.
+// Falls back to f.cash if live_cash is not yet surfaced by the backend.
+const _liveCashTotal = $derived.by(() => {
+  void _tick;
+  const fundRows = untrack(() => fundsStore.value);
+  if (!fundRows) return 0;
+  let s = 0;
+  for (const f of fundRows) {
+    const lc = Number(f?.live_cash ?? 0);
+    s += lc !== 0 ? lc : Number(f?.cash || 0);
+  }
+  return s;
+});
+
+// Cash debited on currently-held long options.
+// For each long CE/PE row: avg × lot_size × (qty / lot_size) = avg × qty.
+// Using num_lots path for clarity; falls back to avg × qty if lot_size unavailable.
+const _longOptionsCashPaid = $derived.by(() => {
+  void _tick;
+  const posRows = untrack(() => positionsStore.value);
+  if (!posRows) return 0;
+  let s = 0;
+  for (const p of posRows) {
+    const sym = String(p?.tradingsymbol || '').toUpperCase();
+    const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
+    const qty   = Math.abs(Number(p?.quantity) || 0);
+    const avg   = Number(p?.average_price) || 0;
+    if (!isOpt || Number(p?.quantity) <= 0) continue;
+    const inst    = getInstrument(sym);
+    const lotSize = Number(inst?.ls) || 0;
+    if (lotSize > 0) {
+      const numLots = qty / lotSize;
+      s += avg * lotSize * numLots;
+    } else {
+      s += avg * qty;
+    }
+  }
+  return s;
+});
+
+// Margin available (deployable) across all accounts.
+const _marginAvail = $derived.by(() => {
+  void _tick;
+  const fundRows = untrack(() => fundsStore.value);
+  if (!fundRows) return 0;
+  let s = 0;
+  for (const f of fundRows) s += Number(f?.avail_margin || 0);
+  return s;
+});
+
+// Margin total (used + available = full capacity) across all accounts.
+const _marginTotal = $derived.by(() => {
+  void _tick;
+  const fundRows = untrack(() => fundsStore.value);
+  if (!fundRows) return 0;
+  let s = 0;
+  for (const f of fundRows) {
+    s += Number(f?.used_margin  || 0);
+    s += Number(f?.avail_margin || 0);
+  }
+  return s;
+});
+
+/**
+ * Pre-computed cross-page portfolio aggregates.
+ * PositionStrip reads these as $derived reflectors instead of re-deriving inline.
+ * All values gate on _tick (4Hz) — same reactive cadence as portfolioStore.
+ */
+export const portfolioAggregates = {
+  /** Σ position.pnl — lifetime P&L total (NO live-LTP delta), matching MarketPulse TOTAL. */
+  get livePositionsPnl()   { return _livePositionsPnl;    },
+  /** Live holdings P&L: (ltp − avg) × qty per holding; falls back to broker h.pnl. */
+  get liveHoldingsTotal()  { return _liveHoldingsTotal;   },
+  /** Live holdings market value: ltp × qty (three-tier fallback). */
+  get liveHoldingsValue()  { return _liveHoldingsValue;   },
+  /** Available cash across all accounts (Kite live_balance, fallback to cash). */
+  get liveCashTotal()      { return _liveCashTotal;       },
+  /** Cash paid for currently-held long options (avg × qty via lot_size path). */
+  get longOptionsCashPaid(){ return _longOptionsCashPaid; },
+  /** Available margin across all accounts. */
+  get marginAvail()        { return _marginAvail;         },
+  /** Total margin capacity (used + available) across all accounts. */
+  get marginTotal()        { return _marginTotal;         },
 };

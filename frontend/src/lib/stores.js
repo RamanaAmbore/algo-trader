@@ -239,7 +239,7 @@ let _hibernationIdleMs = (() => {
   if (typeof window !== 'undefined' && typeof (/** @type {any} */ (window).__rbq_hibMs) === 'number') {
     return /** @type {any} */ (window).__rbq_hibMs;
   }
-  return 5 * 60 * 1000;
+  return 90 * 1000;
 })();
 
 /**

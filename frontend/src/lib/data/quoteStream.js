@@ -55,6 +55,12 @@ let _visHandlerInstalled = false;
 
 let _serverHash = null;  // persists across reconnects; cleared only on hard page load
 
+// Tracks the last time any live signal (heartbeat, tick, or snapshot) arrived.
+// Used by the silence watchdog to detect proxy-killed connections.
+let _lastHbAt = 0;
+/** @type {(() => void) | null} */
+let _watchdogTeardown = null;
+
 /**
  * Open the SSE connection (idempotent — safe to call multiple times).
  * Must only be called in a browser context (onMount or behind `if (browser)`).
@@ -77,7 +83,12 @@ export function startQuoteStream() {
     _visHandlerInstalled = true;
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'visible') {
-        restartQuoteStream();
+        // Only restart if the EventSource is closed or the heartbeat is stale (>45s
+        // silent). Avoids tearing down a healthy connection on every brief tab switch.
+        const stale = _lastHbAt === 0 || Date.now() - _lastHbAt > 45_000;
+        if (stale || _es?.readyState === EventSource.CLOSED) {
+          restartQuoteStream();
+        }
       }
     });
   }
@@ -114,6 +125,7 @@ function _onSnapshot(e) {
     // ltp_ts arbitration means a tick already newer-by-ms can't be
     // clobbered by a re-snapshot landing later.
     if (symbolUpdates.length) mergeSymbolBatch(symbolUpdates);
+    _lastHbAt = Date.now();
     debugLog('sse', 'snapshot', { count: symbolUpdates.length, sample: symbolUpdates.slice(0, 3).map(u => `${u.sym}=${u.fields.ltp}`) });
     if (!get(streamOpen)) streamOpen.set(true);
     _backoffMs = _BACKOFF_MIN;
@@ -139,6 +151,7 @@ function _onTick(e) {
     // receive time arbitrates correctly against any poll that
     // lands afterward carrying older broker-side LTP.
     mergeSymbolUpdate(t.sym, { ltp: t_ltp }, { ltp_ts: Date.now() });
+    _lastHbAt = Date.now();
     if (!get(streamOpen)) streamOpen.set(true);
     _backoffMs = _BACKOFF_MIN;
   } catch (_) { /* malformed JSON — ignore */ }
@@ -208,7 +221,7 @@ function _open() {
   _es.addEventListener('tick', _onTick);
   // Heartbeat keeps the connection alive through proxies/firewalls that
   // close idle TCP connections. No state update needed.
-  _es.addEventListener('heartbeat', () => { /* noop */ });
+  _es.addEventListener('heartbeat', () => { _lastHbAt = Date.now(); });
   _es.addEventListener('version', _onVersion);
   _es.onerror = _onStreamError;
 }
@@ -242,6 +255,19 @@ export function startMarketGatedQuoteStream() {
   if (isNseOpen() || isMcxOpen()) {
     startQuoteStream();
   }
+  // Silence watchdog: if no heartbeat/tick/snapshot in 45s, the connection is
+  // silently dead (proxy-killed TCP). Force-restart to recover. The watchdog
+  // is visibility-aware (pauses in hidden tabs) and cleaned up on stop.
+  // 45s = 1.5× the 30s server heartbeat cadence — one missed beat as margin.
+  if (!_watchdogTeardown) {
+    _watchdogTeardown = visibleInterval(() => {
+      if (_stopped || _lastHbAt === 0) return;
+      if (Date.now() - _lastHbAt > 45_000) {
+        restartQuoteStream();
+        _lastHbAt = Date.now(); // reset so we don't re-trigger on next tick
+      }
+    }, 5_000);
+  }
   // Watcher — 30s cadence, visibility-aware (pauses in hidden tabs).
   // Re-checks on every tick whether we should be streaming or paused.
   let _prevAny = isNseOpen() || isMcxOpen();
@@ -270,6 +296,10 @@ export function stopMarketGatedQuoteStream() {
   if (_gateInterval != null) {
     _gateInterval();
     _gateInterval = null;
+  }
+  if (_watchdogTeardown != null) {
+    _watchdogTeardown();
+    _watchdogTeardown = null;
   }
   _gateActive = false;
   stopQuoteStream();

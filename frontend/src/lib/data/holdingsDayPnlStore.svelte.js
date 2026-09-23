@@ -38,12 +38,13 @@ export const holdingsDayPnlStore = {
   },
 
   /**
-   * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
-   * and aggregate values. Delegates to portfolioStore.setHoldingsFromPulse.
-   * @param {Record<string,number>} byKey
-   * @param {number} total
+   * No-op — the MarketPulse pulse-override write has been removed (Fix 3d).
+   * Holdings totals are now derived exclusively from portfolioStore.holdings.*
+   * (the _holdAgg tier chain). Kept as a no-op so any remaining callers
+   * (e.g. tests mocking the store shape) compile without changes.
+   * @param {Record<string,number>} _byKey
+   * @param {number} _total
    */
-  setFromPulse(byKey, total) {
-    portfolioStore.setHoldingsFromPulse(byKey, total);
-  },
+  // eslint-disable-next-line no-unused-vars
+  setFromPulse(_byKey, _total) {},
 };

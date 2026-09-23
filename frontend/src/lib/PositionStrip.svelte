@@ -18,6 +18,7 @@
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
+  import { portfolioAggregates } from '$lib/data/portfolioStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { expiryPnl } from '$lib/data/expiryPnl';
@@ -483,11 +484,8 @@
   // the TOTAL row whenever SSE ticks arrive between polls, which is the root
   // cause of the operator-reported slot-2 inconsistency. Slot 1 (day P&L)
   // carries the live signal via dispPositionsToday which IS delta-corrected.
-  const _livePositionsPnl = $derived.by(() => {
-    let pnlTotal = 0;
-    for (const p of positions) pnlTotal += Number(p?.pnl || 0);
-    return pnlTotal;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const _livePositionsPnl = $derived(portfolioAggregates.livePositionsPnl);
   // Holdings day P&L SSOT: holdingsDayPnlStore is the module-level singleton
   // that aggregates at 4 Hz via symbolTickCount throttle, mirroring the
   // positionsDayPnlStore pattern. Replaces the former inline _liveHoldingsToday
@@ -500,22 +498,8 @@
   // available (cold-cache or missing symbol). H:3 throttle: `void _throttledTick`
   // registers _throttledTick as a reactive dependency so this derived re-runs
   // at 4Hz maximum, matching P:1, H:1, and P:3 cadence.
-  const _liveHoldingsTotal = $derived.by(() => {
-    void _throttledTick;
-    let s = 0;
-    for (const h of holdings) {
-      const sym      = String(h?.tradingsymbol || '').toUpperCase();
-      const liveHold = untrack(() => getSnapshot(sym)?.ltp);
-      const avgCost  = Number(h?.average_price || 0);
-      const qty      = Number(h?.quantity || 0);
-      if (liveHold != null && liveHold > 0 && avgCost > 0 && qty !== 0) {
-        s += (liveHold - avgCost) * qty;
-      } else {
-        s += Number(h?.pnl || 0);
-      }
-    }
-    return s;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const _liveHoldingsTotal = $derived(portfolioAggregates.liveHoldingsTotal);
   // Live LTP × qty from symbolStore, matching finalizeRows in pulseUnified.js:697.
   // Three-tier fallback:
   //   1. symbolStore ltp × qty  (live tick, most accurate)
@@ -524,26 +508,8 @@
   // Tier 2 exists because when backend's last_price = 0 (Dhan/Groww zero-LTP case),
   // the backend sets cur_val = inv_val = average_price × qty (investment cost, not market
   // value). Using last_price × qty gives 0 (clearly missing) rather than an invented value.
-  const _liveHoldingsValue = $derived.by(() => {
-    void _throttledTick;
-    let s = 0;
-    for (const h of holdings) {
-      const sym    = String(h?.tradingsymbol || '').toUpperCase();
-      const ltp    = untrack(() => getSnapshot(sym)?.ltp);
-      const qty    = Number(h?.quantity || 0);
-      const lastPx = Number(h?.last_price || 0);
-      if (ltp != null && ltp > 0 && qty !== 0) {
-        s += ltp * qty;
-      } else if (lastPx > 0 && qty !== 0) {
-        // Prefer last_price × qty over h.cur_val: cur_val may equal inv_val
-        // (avg_price × qty) when backend's last_price was 0 (Dhan/Groww zero LTP).
-        s += lastPx * qty;
-      } else {
-        s += Number(h?.cur_val || 0);
-      }
-    }
-    return s;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const _liveHoldingsValue = $derived(portfolioAggregates.liveHoldingsValue);
 
   // Freeze-at-close / reset-at-open for the TWO day-delta metrics.
   // Lifetime P/Hld/H mirror their live derived directly at render
@@ -616,14 +582,8 @@
   // Live cash — Kite's `avail.cash` (= live_balance) summed across
   // accounts. Falls back to `cash` if the backend hasn't surfaced
   // `live_cash` yet (older deploys).
-  const liveCashTotal = $derived.by(() => {
-    let s = 0;
-    for (const f of funds) {
-      const lc = Number(f?.live_cash ?? 0);
-      s += lc !== 0 ? lc : Number(f?.cash || 0);
-    }
-    return s;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const liveCashTotal = $derived(portfolioAggregates.liveCashTotal);
   // Cash debited on currently-held long options — derived from the
   // positions list rather than Kite's `util.option_premium` (which
   // mixes in adjustments + day's net debit, not just current open
@@ -640,28 +600,8 @@
   // model ("4 lots of NIFTY 22000 PE at ₹180 = 4 × 50 × 180 = ₹36k")
   // and gracefully handles any future broker adapter that surfaces
   // qty in lots instead of contracts.
-  const longOptionsCashPaid = $derived.by(() => {
-    let s = 0;
-    for (const p of positions) {
-      const sym = String(p?.tradingsymbol || '').toUpperCase();
-      const isOpt = sym.endsWith('CE') || sym.endsWith('PE');
-      const qty   = Math.abs(Number(p?.quantity) || 0);
-      const avg   = Number(p?.average_price) || 0;
-      if (!isOpt || Number(p?.quantity) <= 0) continue;
-      const inst = getInstrument(sym);
-      const lotSize = Number(inst?.ls) || 0;
-      if (lotSize > 0) {
-        const numLots = qty / lotSize;
-        s += avg * lotSize * numLots;
-      } else {
-        // Instruments cache not loaded yet (or no lot_size for this
-        // symbol). qty is in contracts after broker_apis' multiplier,
-        // so avg × qty still gives the right total cash paid.
-        s += avg * qty;
-      }
-    }
-    return s;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const longOptionsCashPaid = $derived(portfolioAggregates.longOptionsCashPaid);
   const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
 
   // Expiry profit and per-account map now come from positionsDerivedStore
@@ -671,19 +611,9 @@
   // model "what room do I have, out of what I'd have if everything
   // unlocked". Util % is no longer surfaced — total clarifies the same
   // signal without needing a percentage.
-  const marginAvail = $derived.by(() => {
-    let s = 0;
-    for (const f of funds) s += Number(f?.avail_margin || 0);
-    return s;
-  });
-  const marginTotal = $derived.by(() => {
-    let s = 0;
-    for (const f of funds) {
-      s += Number(f?.used_margin  || 0);
-      s += Number(f?.avail_margin || 0);
-    }
-    return s;
-  });
+  // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
+  const marginAvail = $derived(portfolioAggregates.marginAvail);
+  const marginTotal = $derived(portfolioAggregates.marginTotal);
 
   function fmtMoney(/** @type {number} */ v) {
     if (!isFinite(v)) return '0';
