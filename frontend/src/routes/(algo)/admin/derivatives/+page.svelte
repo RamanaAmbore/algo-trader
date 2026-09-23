@@ -1745,48 +1745,41 @@
   // like "GOLDM" never matches a tick key in symbolStore). If no SSE tick
   // is available yet, show blank rather than masking with a stale value.
   //
-  // Tiers:
-  //   1a — anchor contract SSE tick   (strategy.spot_anchor_contract)
-  //   1b — strategy underlying SSE tick (strategy.underlying)
-  //   2  — resolved front-month contract SSE tick (covers MCX virtual roots)
+  // Tiers (SSOT: same sources as snapshot rows so overlay and table stay in sync):
+  //   1  — _undLiveLtp[selectedUnderlying]  (liveSnap of resolved tradingsymbol, per-root map)
+  //   2  — _activeQuoteLtp                  (underlyingSpotStore: batchQuote + tickBus patches)
+  //   3a — strategy anchor contract SSE tick (cold-start fallback when store not yet populated)
+  //   3b — strategy underlying SSE tick
   const liveSpot = $derived.by(() => {
-    const stratUnd = String(strategy?.underlying || '').toUpperCase();
-    const stratMatchesSel = stratUnd && stratUnd === selectedUnderlying;
+    // Tier 1: per-root map — exact same derivation as snapshot rows (_undLiveLtp[g.underlying])
+    const _selLtp = _undLiveLtp[selectedUnderlying];
+    if (_selLtp > 0) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1-undLiveLtp', value: _selLtp }));
+      return _selLtp;
+    }
 
-    if (stratMatchesSel) {
-      // Tier 1a: anchor contract SSE tick
+    // Tier 2: underlyingSpotStore (batchQuote + tickBus Path 3 patches at WebSocket speed)
+    if (_activeQuoteLtp > 0) {
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-activeQuoteLtp', value: _activeQuoteLtp }));
+      return _activeQuoteLtp;
+    }
+
+    // Tier 3: strategy anchor / underlying SSE ticks — cold-start only, before store is warm
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (stratUnd && stratUnd === selectedUnderlying) {
       const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       if (anchor) {
         const v = liveSnap(anchor)?.ltp;
         if (v > 0) {
-          untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1a-anchor', anchor, value: v }));
+          untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3a-anchor', anchor, value: v }));
           return v;
         }
       }
-      // Tier 1b: strategy underlying SSE tick
       const v = liveSnap(stratUnd)?.ltp;
       if (v > 0) {
-        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1b-stratUnd', sym: stratUnd, value: v }));
+        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3b-stratUnd', sym: stratUnd, value: v }));
         return v;
       }
-    }
-
-    // Tier 2: resolved front-month contract SSE tick (covers MCX virtual roots)
-    const _resolvedTs = resolveUnderlying(selectedUnderlying, findNearestFuture)?.tradingsymbol;
-    if (_resolvedTs) {
-      const v = liveSnap(_resolvedTs)?.ltp;
-      if (v > 0) {
-        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-resolvedTs', sym: _resolvedTs, value: v }));
-        return v;
-      }
-    }
-
-    // Tier 3: underlyingSpotStore SSE-patched value — tickBus Path 3 maps subscribed
-    // front-month futures ticks to the root key at WebSocket speed; fills when the
-    // strategy anchor contract or resolved tradingsymbol isn't in KiteTicker subscription.
-    if (_activeQuoteLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3-activeQuoteLtp', value: _activeQuoteLtp }));
-      return _activeQuoteLtp;
     }
 
     untrack(() => debugLog('payoff:spot', 'unresolved', { selectedUnderlying }));

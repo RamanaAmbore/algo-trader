@@ -1237,6 +1237,29 @@ async def _spot_last_resort(
                         detail=f"spot for {underlying} unavailable from any source")
 
 
+async def _subscribe_anchor_nowait(anchor_sym: str, exchange: str) -> None:
+    """Subscribe the resolved spot anchor contract to KiteTicker.
+
+    Fire-and-forget via asyncio.create_task — does not delay the strategy response.
+    When _resolve_spot returns a non-null anchor (e.g., MCX futures contract used
+    as the spot proxy for an underlying), fire an async task to subscribe to that
+    anchor's LTP via the KiteTicker WebSocket to ensure real-time updates flow
+    through to the UI.
+
+    Args:
+        anchor_sym: The anchor contract trading symbol (e.g., "GOLD26OCTFUT")
+        exchange: The exchange code ("MCX" for commodities, "NFO" for equity derivatives)
+    """
+    try:
+        from backend.api.routes.quote import _resolve_token_for_sym
+        from backend.brokers.kite_ticker import get_ticker
+        tok = await _resolve_token_for_sym(anchor_sym, exchange)
+        if tok:
+            get_ticker().subscribe_with_sym([(tok, anchor_sym)])
+    except Exception:
+        pass  # non-critical — background task covers within 5 min
+
+
 async def _resolve_spot(underlying: str, override: Optional[float],
                         *, fallback: Optional[float] = None,
                         expiry_hint: Optional[date] = None,
@@ -3048,6 +3071,10 @@ class OptionsController(Controller):
         S, _spot_src, spot_prev_close, _spot_anchor = await _strategy_resolve_spot_impl(
             data, parsed_by_sym, underlying,
         )
+        if _spot_anchor:
+            asyncio.create_task(_subscribe_anchor_nowait(
+                _spot_anchor, "MCX" if is_mcx_underlying(underlying) else "NFO"
+            ))
 
         # ── 3. Build resolved-leg list with σ calibrated per leg ──────
         _is_commodity = is_mcx_underlying(underlying)
