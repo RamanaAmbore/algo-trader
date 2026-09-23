@@ -1857,20 +1857,16 @@
     width: 1.4rem;
     height: 1.4rem;
     padding: 0;
-    background: var(--algo-cyan-bg);
-    border: 1px solid var(--algo-cyan-border);
+    background: transparent;
+    border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
-    color: var(--c-info);
+    color: var(--c-short);
     font-size: 1rem;
     cursor: pointer;
     flex-shrink: 0;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
+    transition: background 0.1s;
   }
-  .lp-close-btn:hover {
-    background: rgba(34, 211, 238, 0.26);
-    border-color: rgba(34, 211, 238, 0.85);
-    color: #67e8f9;
-  }
+  .lp-close-btn:hover { background: rgba(248, 113, 113, 0.15); }
 
   /* Close button rendered in modal context (legacy path) */
   .alm-close-btn {

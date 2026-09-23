@@ -83,7 +83,10 @@
 {#if open}
   <div class="opm-overlay" role="dialog" aria-modal="true">
     <div class="opm-card">
-      <div class="opm-title">Pair Orders</div>
+      <div class="opm-title-row">
+        <span class="opm-title">Pair Orders</span>
+        <button type="button" class="opm-close" onclick={() => open = false} aria-label="Close">×</button>
+      </div>
       {#if error}<div class="opm-error">{error}</div>{/if}
       {#if success}<div class="opm-success">{success}</div>{/if}
 
@@ -154,7 +157,16 @@
     min-width: 320px; max-width: 480px; width: 100%;
     display: flex; flex-direction: column; gap: 0.75rem;
   }
+  .opm-title-row { display: flex; align-items: center; justify-content: space-between; }
   .opm-title { font-size: 0.9rem; font-weight: 600; color: rgba(210,225,255,0.9); }
+  .opm-close {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 1.4rem; height: 1.4rem;
+    background: transparent; border: 1px solid rgba(248,113,113,0.35);
+    border-radius: 3px; color: var(--c-short); font-size: var(--fs-xl);
+    line-height: 1; cursor: pointer; flex-shrink: 0; transition: background 0.1s;
+  }
+  .opm-close:hover { background: rgba(248,113,113,0.15); }
   .opm-label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: rgba(160,185,220,0.7); }
   .opm-select {
     background: rgba(160,185,220,0.07); border: 1px solid rgba(160,185,220,0.2);
