@@ -4766,7 +4766,7 @@
           {@const _expVal  = _snRow.exp_pnl   ?? 0}
           {@const _extVal  = _snRow.extrinsic ?? 0}
           <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
-            <span class="byund-und" style="color: {acctColor(g.underlying) ?? 'inherit'}">{g.underlying}</span>
+            <span class="byund-und" style="background: {acctColor(g.underlying) ? acctColor(g.underlying) + '1a' : 'transparent'}">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num byund-chg-sep {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
