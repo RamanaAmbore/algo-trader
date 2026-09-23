@@ -4938,12 +4938,10 @@
                 inset 0 1px 0 rgba(255, 255, 255, 0.08);
     background: var(--card-bg-elevated);
     overflow: hidden;
-    /* Inner breathing room — header gets padding via --ch-padding so it
-       matches the opt-section-h/opt-block inset on the Legs card. Bottom
-       padding gives the ag-Grid a gap before the card chrome border,
-       matching the cand-scroll margin-bottom on the Legs section. */
+    /* Header gets padding via --ch-padding; grid fills flush to the card
+       bottom so no gap appears between the last row border and the card
+       border (double-border artifact). */
     --ch-padding: 0.2rem 0.35rem 0;
-    padding-bottom: 0.35rem;
   }
   /* Bucket label — small mono caps above each grid, tinted to match
      the per-major palette already used elsewhere on the page so the
