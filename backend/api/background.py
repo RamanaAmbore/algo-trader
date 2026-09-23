@@ -226,14 +226,42 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
     positions row DataFrame.  Used by _perf_fetch_all_broker_data after the
     async stale-close override patches close_price and day_change_val in-place."""
     if raw.empty or 'account' not in raw.columns:
-        return pd.DataFrame(columns=['account', 'pnl', 'day_change_val'])
+        return pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
     sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index() if sum_cols \
         else pd.DataFrame(columns=['account'] + list(sum_cols))
+    # Compute per-account denominator: Σ|prev_close × quantity|
+    # Prefer prev_close (post-override canonical column); fall back to close_price
+    # (raw broker column) so test fixtures that supply close_price still work.
+    _close_col = 'prev_close' if 'prev_close' in raw.columns else (
+        'close_price' if 'close_price' in raw.columns else None
+    )
+    if _close_col and 'quantity' in raw.columns:
+        _prev_val_series = (
+            pd.to_numeric(raw[_close_col], errors='coerce').fillna(0)
+            * pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        ).abs()
+        _raw_w = raw.copy()
+        _raw_w['_prev_val'] = _prev_val_series
+        denom = _raw_w.groupby('account')['_prev_val'].sum().reset_index()
+        grouped = grouped.merge(denom, on='account', how='left').fillna({'_prev_val': 0.0})
+    else:
+        grouped['_prev_val'] = 0.0
     total_row: dict = {'account': 'TOTAL'}
     for _c in sum_cols:
         total_row[_c] = float(grouped[_c].sum()) if _c in grouped.columns else 0.0
-    return pd.concat([grouped, pd.DataFrame([total_row])], ignore_index=True)
+    total_row['_prev_val'] = float(grouped['_prev_val'].sum())
+    summary = pd.concat([grouped, pd.DataFrame([total_row])], ignore_index=True)
+    open_val = summary['_prev_val']
+    if 'day_change_val' in summary.columns:
+        dcv = summary['day_change_val']
+        summary['day_change_percentage'] = dcv.where(
+            open_val == 0,
+            dcv / open_val.where(open_val != 0, 1) * 100
+        ).where(open_val != 0, 0)
+    else:
+        summary['day_change_percentage'] = 0.0
+    return summary.drop(columns=['_prev_val'])
 
 
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -242,7 +270,7 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.api.routes.positions import _override_stale_ltp_from_ticker
     raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
     if raw.empty or 'account' not in raw.columns:
-        empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val'])
+        empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
         return raw, empty
     # Mirror the ordering of _patch_raw_positions in positions.py:
     #   1. _override_stale_ltp_from_ticker — patch last_price + day_change_val
@@ -268,11 +296,39 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
         grouped = raw.groupby('account')[sum_cols].sum().reset_index()
     else:
         grouped = pd.DataFrame(columns=['account'] + sum_cols)
+    # Compute per-account denominator: Σ|prev_close × quantity|
+    # Prefer prev_close (post-override canonical column); fall back to close_price
+    # (raw broker column) so test fixtures that supply close_price still work.
+    _close_col = 'prev_close' if 'prev_close' in raw.columns else (
+        'close_price' if 'close_price' in raw.columns else None
+    )
+    if _close_col and 'quantity' in raw.columns:
+        _prev_val_series = (
+            pd.to_numeric(raw[_close_col], errors='coerce').fillna(0)
+            * pd.to_numeric(raw['quantity'], errors='coerce').fillna(0)
+        ).abs()
+        _raw_copy = raw.copy()
+        _raw_copy['_prev_val'] = _prev_val_series
+        denom = _raw_copy.groupby('account')['_prev_val'].sum().reset_index()
+        grouped = grouped.merge(denom, on='account', how='left').fillna({'_prev_val': 0.0})
+    else:
+        grouped['_prev_val'] = 0.0
     total_row = {'account': 'TOTAL'}
     for _c in sum_cols:
         total_row[_c] = grouped[_c].sum() if _c in grouped.columns else 0.0
+    total_row['_prev_val'] = float(grouped['_prev_val'].sum())
     total   = pd.DataFrame([total_row])
     summary = pd.concat([grouped, total], ignore_index=True)
+    open_val = summary['_prev_val']
+    if 'day_change_val' in summary.columns:
+        dcv = summary['day_change_val']
+        summary['day_change_percentage'] = dcv.where(
+            open_val == 0,
+            dcv / open_val.where(open_val != 0, 1) * 100
+        ).where(open_val != 0, 0)
+    else:
+        summary['day_change_percentage'] = 0.0
+    summary = summary.drop(columns=['_prev_val'])
     return raw, summary
 
 

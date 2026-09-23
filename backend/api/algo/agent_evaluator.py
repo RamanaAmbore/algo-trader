@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
+from statistics import median
 from typing import Any, Optional
 
 import pandas as pd
@@ -121,10 +122,33 @@ class Context:
         """
         Generic rate-per-minute over the window. field_idx: 1=pnl_val, 2=pct.
         Returns None when fewer than 2 samples or zero span.
+
+        When the window has >= 5 samples, uses quintile-median smoothing:
+        old_val/old_ts = median of first quintile; new_val/new_ts = median of
+        last quintile.  This reduces spike sensitivity at window boundaries.
+        Falls back to the endpoint method for < 5 samples.
         """
         window = self._rate_window_samples(key)
         if len(window) < 2:
             return None
+
+        if len(window) >= 5:
+            q_size = len(window) // 5
+            first_q = window[:q_size]
+            last_q  = window[-q_size:]
+            # Timestamps to epoch seconds for median, then back to minutes span.
+            old_ts_epoch = median(s[0].timestamp() for s in first_q)
+            new_ts_epoch = median(s[0].timestamp() for s in last_q)
+            mins = (new_ts_epoch - old_ts_epoch) / 60.0
+            if mins <= 0:
+                return None
+            old_vals = [s[field_idx] for s in first_q if s[field_idx] is not None]
+            new_vals = [s[field_idx] for s in last_q  if s[field_idx] is not None]
+            if not old_vals or not new_vals:
+                return None
+            return (median(new_vals) - median(old_vals)) / mins
+
+        # Fallback: endpoint method for < 5 samples.
         oldest = window[0]
         latest = window[-1]
         mins = (latest[0] - oldest[0]).total_seconds() / 60.0
