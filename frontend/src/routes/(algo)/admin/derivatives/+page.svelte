@@ -44,7 +44,7 @@
     listFutures, getInstrument, getOptionUnderlyingLot,
     findNearestFuture,
   } from '$lib/data/instruments';
-  import { resolveUnderlying } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
@@ -1671,23 +1671,38 @@
         }
       }
 
-      // Anchor contract tick → flash the underlying's spot cell in the snapshot card.
-      // When spot_anchor_contract is a far-month future its tradingsymbol ≠ root key,
-      // so the block above never fires. This bridges the gap so the LTP cell flashes.
+      // Anchor contract tick — no longer flashes the Snapshot card's LTP
+      // cell (removed, secondary-defect fix): that cell displays the
+      // FRONT-MONTH price (Option B), so feeding it anchor-contract flash
+      // events under the same `${root}:ltp` key corrupted
+      // createTickFlash's per-key baseline whenever anchor ≠ front-month
+      // (alternating anchor/front-month values registered as large
+      // spurious deltas, flipping the flash direction every tick). The
+      // Payoff overlay's own marker flash (`OptionsPayoff.svelte`'s
+      // internal `_spotFlash`) already reacts independently to its own
+      // `spot` prop (`payoffSpot`, anchor-aware) — no bridging needed
+      // here. debugLog kept for diagnostics.
       const _anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       const _stratUnd = String(strategy?.underlying || '').toUpperCase();
       if (_anchor && root === _anchor && _stratUnd && _stratUnd in _underlyingQuotes) {
         const _as = getSnapshot(root);
         if (_as?.ltp != null) {
-          flash.update(`${_stratUnd}:ltp`, Number(_as.ltp));
-          patchUnderlyingSpot(_stratUnd, _as.ltp);
           debugLog('payoff:anchor', 'tick', { root, stratUnd: _stratUnd, ltp: Number(_as.ltp) });
         }
       }
 
       // Path 3: resolved quoteKey tradingsymbol — covers MCX when spot_anchor_contract is null.
-      // Fires only when Path 1 (direct root key) and Path 2 (anchor) both missed this sym.
-      if (!(root in _underlyingQuotes) && root !== _anchor) {
+      // Fires whenever Path 1 (direct root key) missed this sym. NOTE: no longer
+      // excludes root === _anchor — in the common case the strategy's anchor
+      // contract IS the front-month contract (same tradingsymbol), and with
+      // Path 2's store-patch removed above, this is now the ONLY path that
+      // patches the store for that tick. Excluding it here would silently
+      // drop the store patch back to poll-rate (~30s) for every root whose
+      // anchor happens to equal its front-month contract — the common case.
+      // When anchor is a genuine far-month contract (≠ front-month), this
+      // loop simply finds no matching _underlyingQuoteKeys entry for it, so
+      // no double-patch / race is reintroduced.
+      if (!(root in _underlyingQuotes)) {
         for (const { root: und, quoteKey } of _underlyingQuoteKeys) {
           const _ts = quoteKey.includes(':') ? quoteKey.split(':')[1].toUpperCase() : '';
           if (_ts === root && und in _underlyingQuotes) {
@@ -1744,15 +1759,15 @@
   // is available yet, show blank rather than masking with a stale value.
   //
   // Tiers (SSOT: same sources as snapshot rows so overlay and table stay in sync):
-  //   1  — _undLiveLtp[selectedUnderlying]  (liveSnap of resolved tradingsymbol, per-root map)
+  //   1  — _undLive[selectedUnderlying]?.ltp  (liveSnap of resolved tradingsymbol, per-root map)
   //   2  — _activeQuoteLtp                  (underlyingSpotStore: batchQuote + tickBus patches)
   //   3a — strategy anchor contract SSE tick (cold-start fallback when store not yet populated)
   //   3b — strategy underlying SSE tick
   const liveSpot = $derived.by(() => {
-    // Tier 1: per-root map — exact same derivation as snapshot rows (_undLiveLtp[g.underlying])
-    const _selLtp = _undLiveLtp[selectedUnderlying];
+    // Tier 1: per-root map — exact same derivation as snapshot rows (_undLive[g.underlying])
+    const _selLtp = _undLive[selectedUnderlying]?.ltp;
     if (_selLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1-undLiveLtp', value: _selLtp }));
+      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '1-undLive', value: _selLtp }));
       return _selLtp;
     }
 
@@ -1784,16 +1799,64 @@
     return undefined;
   });
 
-  // Per-underlying live LTP map for the by-underlying totals table.
-  // Each entry resolves via liveSnap (SSE tick, same SSOT as liveSpot)
-  // so the table rows update at tick rate without coupling to liveSpot's
-  // single-underlying focus.
-  const _undLiveLtp = $derived.by(() => {
-    const m = /** @type {Record<string, number>} */ ({});
-    for (const g of _byUnderlyingTotals) {
-      const ts = resolveUnderlying(g.underlying, findNearestFuture)?.tradingsymbol ?? g.underlying;
-      const v = liveSnap(ts)?.ltp;
-      if (v > 0) m[g.underlying] = v;
+  // payoffSpot — spot price specifically for the Payoff overlay's marker.
+  // Operator decision: the payoff curve prices against the strategy's
+  // actual ANCHOR contract, not front-month — chartTheoreticalAtSpot,
+  // _mergedEv, _mergedPop and chainSpot all already read `strategy.spot`
+  // (the backend's anchor-contract resolution, reliable since the
+  // cold-start override fix above), so the marker must track the same
+  // contract or it won't sit where the curve says it should. A contango
+  // MCX far-month strategy would otherwise show the marker at the
+  // front-month price while the curve is priced on the anchor.
+  const payoffSpot = $derived.by(() => {
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (stratUnd && stratUnd === selectedUnderlying) {
+      // Tier 1: live tick on the exact anchor contract.
+      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      if (anchor) {
+        const v = liveSnap(anchor)?.ltp;
+        if (v > 0) return v;
+      }
+      // Tier 2: backend's own resolved value for this strategy — already
+      // anchor-priced (backend/api/routes/options.py:_resolve_spot).
+      const s = Number(strategy?.spot || 0);
+      if (s > 0) return s;
+    }
+    // Tier 3: no strategy loaded yet for this underlying (cold start) —
+    // fall back to front-month so the marker isn't blank.
+    return liveSpot;
+  });
+
+  // Per-underlying live {ltp, close} map for the by-underlying Snapshot
+  // table AND the Payoff overlay's spot resolver (liveSpot Tier 1) — one
+  // shared source so Snapshot's LTP / Chg% / P.Close trio and the Payoff
+  // overlay's spot marker never diverge (secondary-defect fix: Snapshot's
+  // own row used to read LTP from one source and Chg%/P.Close from
+  // another).
+  //
+  // Iterates _underlyingQuoteKeys (NOT _byUnderlyingTotals) so a
+  // freshly-selected root with zero open F&O positions/holdings (e.g.
+  // GOLDM) still populates — _byUnderlyingTotals only contains roots with
+  // book activity, but _underlyingQuoteKeys always includes
+  // selectedUnderlying too (see its own comment).
+  //
+  // Each entry resolves via liveSnap (SSE tick, same SSOT as before) on
+  // the front-month tradingsymbol — resolveUnderlyingTradingsymbol() is
+  // the same shared resolution boundary underlyingSpotStore's
+  // getUnderlyingSpot() (NavStrip) now uses, so all three surfaces
+  // (Snapshot / Payoff / NavStrip) always track the same contract
+  // (operator-confirmed: always front-month, never the strategy's
+  // pricing anchor when they differ).
+  const _undLive = $derived.by(() => {
+    const m = /** @type {Record<string, {ltp: number, close: number|null}>} */ ({});
+    for (const { root } of _underlyingQuoteKeys) {
+      const ts = resolveUnderlyingTradingsymbol(root, findNearestFuture);
+      const snap = liveSnap(ts);
+      const v = snap?.ltp;
+      if (v > 0) {
+        const c = snap?.close;
+        m[root] = { ltp: v, close: c > 0 ? c : null };
+      }
     }
     return m;
   });
@@ -1808,17 +1871,61 @@
     String(strategy.underlying || '').toUpperCase() !== selectedUnderlying.toUpperCase()
   );
 
-  // prevClose for the payoff chart — throttle-gated and untracked to prevent
-  // OptionsPayoff from re-rendering on every _underlyingQuotes wholesale
-  // replacement (which happens on every loadUnderlyingQuotes() call, including
-  // on tab return via exitHibernation). Mirrors the same pattern as liveSpot.
-  // Raw template read of _underlyingQuotes[selectedUnderlying]?.prev_close
-  // would fire on every SSE tick that replaces the quotes object, causing
-  // spotDir / spotPct flicker in the chart SPOT chip.
+  // prevClose for the payoff chart — throttle-gated to prevent OptionsPayoff
+  // from re-rendering on every _underlyingQuotes wholesale replacement
+  // (which happens on every loadUnderlyingQuotes() call, including on tab
+  // return via exitHibernation). Mirrors the same pattern as liveSpot.
+  //
+  // Should-fix: `selectedUnderlying` is now read OUTSIDE untrack (a real
+  // reactive dependency) — previously it was read only inside the untrack
+  // callback, so after a root switch this derived kept resolving the OLD
+  // root's close for a few seconds until _throttledTick's next tick forced
+  // a re-run.
+  //
+  // Tier order changed from strategy-first to front-month-first
+  // (operator-confirmed Option B: always front-month, everywhere) — now
+  // that loadStrategy() no longer sends a `spot` override (cold-start
+  // spot-anchor fix above), `strategy.spot_prev_close` reliably carries
+  // the BACKEND's resolved anchor contract's close, which on a contango
+  // MCX root can differ from the front-month close the Snapshot row and
+  // liveSpot use. Front-month tiers win first so the SPOT chip's Chg%
+  // stays consistent with liveSpot/Snapshot; strategy.spot_prev_close is
+  // now only a last-resort fallback, gated to the current underlying so
+  // a still-loading strategy for a different root can't leak its close in.
   const _prevClose = $derived.by(() => {
     void _throttledTick;
-    if ((strategy?.spot_prev_close ?? 0) > 0) return strategy.spot_prev_close;
-    return untrack(() => _underlyingQuotes[selectedUnderlying]?.prev_close) ?? null;
+    const sel = selectedUnderlying; // tracked — real reactive dependency
+    // Tier 1: front-month live close (same source as Snapshot's P.Close column).
+    const _liveClose = _undLive[sel]?.close;
+    if (_liveClose != null && _liveClose > 0) return _liveClose;
+    // Tier 2: front-month batchQuote-cached close.
+    const _qClose = untrack(() => _underlyingQuotes[sel]?.prev_close);
+    if (_qClose != null && _qClose > 0) return _qClose;
+    // Tier 3: backend-resolved anchor close — only when strategy is current
+    // for this underlying (avoids leaking a stale root's close during a
+    // root-switch window).
+    const _stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (_stratUnd === String(sel).toUpperCase() && (strategy?.spot_prev_close ?? 0) > 0) {
+      return strategy.spot_prev_close;
+    }
+    return null;
+  });
+
+  // payoffPrevClose — matches payoffSpot's contract basis (the strategy's
+  // anchor contract) so the Payoff overlay's own SPOT chip Chg% isn't
+  // computed by mixing an anchor-contract LTP against a front-month close.
+  const payoffPrevClose = $derived.by(() => {
+    const sel = selectedUnderlying;
+    const stratUnd = String(strategy?.underlying || '').toUpperCase();
+    if (stratUnd === String(sel).toUpperCase()) {
+      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+      if (anchor) {
+        const c = liveSnap(anchor)?.close;
+        if (c != null && c > 0) return c;
+      }
+      if ((strategy?.spot_prev_close ?? 0) > 0) return strategy.spot_prev_close;
+    }
+    return _prevClose;
   });
 
   // Live-adjusted: incorporate SSE-tick price moves on top of the broker
@@ -3619,6 +3726,19 @@
 
   /** @param {{ force?: boolean, clear?: boolean }} [opts] */
   async function loadStrategy(opts = {}) {
+    // `clear: true` (passed by the selectedUnderlying-change $effect) force-
+    // resets the legs-signature memo key. Placed FIRST, before the
+    // equity-only-synth early return below, so it also covers the gap where
+    // didUnderlyingChange() misses an underlying switch: the synth path
+    // (no non-eq legs) returns early without ever touching _stratLastKey,
+    // and didUnderlyingChange short-circuits to `false` when the CURRENT
+    // strategy is a synth shell (its `legs` array is always []). Without
+    // this reset, switching from an equity-only synth strategy to a real
+    // option/futures strategy on the same poll cycle can hit the legsKey
+    // memo and skip the fetch, leaving the stale synth payoff on screen
+    // under the new underlying's label.
+    if (opts?.clear) _stratLastKey = '';
+
     // Build clean legs (exclude eq kind, inline ltp for sim/draft, look up expiry).
     const cleanLegs = buildCleanLegs(legs, getInstrument);
 
@@ -3679,7 +3799,19 @@
     const _thisGen = ++_stratGen;
     if (!strategy) loading = true;
     try {
-      const resp    = await fetchStrategyAnalytics(cleanLegs, { spot: liveSpot ?? null });
+      // No `spot` override (cold-start spot-anchor fix): sending a nonzero
+      // override made the backend's _resolve_spot short-circuit to
+      // `(override, "override", None, None)` — prev_close AND anchor_contract
+      // came back null on every refetch after the first. That's a one-way
+      // ratchet: the frontend permanently lost the signal it needs to
+      // identify the anchor contract on the NEXT refetch, and the payoff
+      // curve/Greeks/EV got priced against the override (front-month) instead
+      // of the contract matching the legs' modal expiry for the rest of the
+      // session. Backend's own resolution (_resolve_spot, unchanged) is
+      // correct as-is — this is purely "stop calling it with the corrupting
+      // argument." The Payoff overlay's spot marker is unaffected — it's
+      // driven independently by `liveSpot` via props, not by this value.
+      const resp    = await fetchStrategyAnalytics(cleanLegs, {});
       if (_thisGen !== _stratGen) return;
       strategy      = resp;
       _stratLastKey = legsKey;
@@ -4323,8 +4455,8 @@
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
         payoff={strategy && !_strategyStale ? _mergedPayoff : (_clientPayoffStub ?? [])}
-        spot={liveSpot}
-        prevClose={_prevClose}
+        spot={payoffSpot}
+        prevClose={payoffPrevClose}
         breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
         intermediateCurves={!_strategyStale ? (strategy?.intermediate_curves || []) : []}
         spanSigmas={strategy?.span_sigmas}
@@ -4741,11 +4873,17 @@
         {/if}
         {#each _byUnderlyingTotals as g (g.underlying)}
           {@const _q = _underlyingQuotes[g.underlying]}
-          {@const _snapLtp = getSnapshot(g.underlying)?.ltp}
-          {@const _ltp   = _undLiveLtp[g.underlying] ?? (_snapLtp ?? null)}
-          {@const _close = _q ? Number(_q.prev_close) : null}
-          {@const _pct   = _ltp != null && _close != null && _close > 0
-              ? ((_ltp - _close) / _close) * 100
+          {@const _live  = _undLive[g.underlying]}
+          <!-- _live is treated as one atomic unit (ltp+close together) —
+               falls back to the _underlyingQuotes trio (ltp+prev_close+
+               day_pct) wholesale only when _live has nothing yet for
+               this root. Never mixes a _live ltp with a _q-sourced
+               close/day_pct — that reintroduces the exact
+               internally-inconsistent-row bug this fix closes. -->
+          {@const _ltp   = _live ? _live.ltp   : (_q ? Number(_q.ltp) : null)}
+          {@const _close = _live ? _live.close : (_q ? Number(_q.prev_close) : null)}
+          {@const _pct   = _live
+              ? (_close != null && _close > 0 ? ((_ltp - _close) / _close) * 100 : null)
               : (_q?.day_pct ?? null)}
           <!-- SSOT: all three trios read from per-root maps that share
                _perRootReduce (same iteration, same _isLegEnabled gate,

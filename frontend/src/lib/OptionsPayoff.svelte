@@ -743,7 +743,7 @@
       {#if spot != null}
         <div class="ps-row"
              title={spotAnchor?.source === 'futures'
-               ? `Spot anchor: ${spotAnchor.contract} (front-month MCX future). True MCX spot isn't published. Cost-of-carry may differ from spot by ₹50-200.`
+               ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">LTP</span>
           <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>

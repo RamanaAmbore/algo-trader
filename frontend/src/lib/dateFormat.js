@@ -9,6 +9,17 @@ export function todayIST() {
   }).format(new Date());
 }
 
+/**
+ * Epoch-ms of today's session boundary — 00:00 IST (Asia/Kolkata has no DST,
+ * so this is a fixed UTC+05:30 offset). Reuses `todayIST()` as the SSOT for
+ * "what date is it right now in IST".
+ *
+ * @returns {number} epoch-ms of 00:00 IST today
+ */
+export function startOfTodayIST() {
+  return Date.parse(`${todayIST()}T00:00:00+05:30`);
+}
+
 /** @param {Date|string|number} d @returns {string} e.g. "21 Jul" */
 export function formatDateShort(d) {
   return new Intl.DateTimeFormat('en-IN', {

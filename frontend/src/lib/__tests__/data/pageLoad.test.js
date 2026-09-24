@@ -19,9 +19,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { splitClosedReopened, buildPositionRowFromBroker } from '$lib/derivatives/pageLoad.js';
+import {
+  splitClosedReopened, buildPositionRowFromBroker,
+  didUnderlyingChange, synthEquityOnlyStrategy,
+} from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
+import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 
 function sumDayPnl(rows) {
   return rows.reduce((s, r) => s + baseDayPnlForPosition(r), 0);
@@ -221,5 +225,59 @@ describe('expiryPnlWithRealised — unaffected by the split (Exp P&L reconciles 
     // closed leg locks in its realised (100); open leg carries intrinsic value at spot.
     expect(closedExp).toBe(100);
     expect(openExp).not.toBeNull();
+  });
+});
+
+describe('didUnderlyingChange — root-switch detection + the equity-synth gap', () => {
+  it('returns false when there is no current strategy (nothing to compare against)', () => {
+    const cleanLegs = [{ symbol: 'NIFTY25SEP24000CE' }];
+    expect(didUnderlyingChange(cleanLegs, null, decomposeSymbol)).toBe(false);
+  });
+
+  it('returns false when cleanLegs is empty (nothing to compare)', () => {
+    const currentStrategy = { legs: [{ symbol: 'NIFTY25SEP24000CE' }] };
+    expect(didUnderlyingChange([], currentStrategy, decomposeSymbol)).toBe(false);
+  });
+
+  it('returns true on a genuine underlying switch between two real (option) strategies', () => {
+    const cleanLegs = [{ symbol: 'BANKNIFTY25SEP52000CE' }];
+    const currentStrategy = { legs: [{ symbol: 'NIFTY25SEP24000CE' }] };
+    expect(didUnderlyingChange(cleanLegs, currentStrategy, decomposeSymbol)).toBe(true);
+  });
+
+  it('returns false when the underlying is unchanged between two real strategies', () => {
+    const cleanLegs = [{ symbol: 'NIFTY25SEP24500CE' }];
+    const currentStrategy = { legs: [{ symbol: 'NIFTY25SEP24000CE' }] };
+    expect(didUnderlyingChange(cleanLegs, currentStrategy, decomposeSymbol)).toBe(false);
+  });
+
+  // ── The gap `loadStrategy({ clear: true })` closes ──────────────────────
+  //
+  // synthEquityOnlyStrategy() (the shell strategy rendered when the leg set
+  // is equity-only) always carries `legs: []` (see pageLoad.js). When the
+  // CURRENTLY-DISPLAYED strategy is this synth shell and the operator then
+  // switches to a real option/futures underlying, didUnderlyingChange's own
+  // early-return (`if (!prevLegs?.length) return false`) means it NEVER
+  // detects the switch — it can't compare roots against a strategy with no
+  // legs to decompose. Without an external reset, loadStrategy()'s legsKey
+  // memo (`_stratLastKey`) is untouched by the equity-synth branch (which
+  // returns before ever setting it) and may still hold a stale key from
+  // BEFORE the synth phase — if that stale key happens to match the new
+  // real legs' key, the fetch is skipped entirely and the synth shell's
+  // payoff stays on screen mislabeled under the new underlying.
+  //
+  // `loadStrategy({ clear: true })` (wired to the selectedUnderlying-change
+  // $effect in +page.svelte) closes this by unconditionally resetting
+  // `_stratLastKey = ''` BEFORE this early-return path is ever reached —
+  // it doesn't depend on didUnderlyingChange detecting anything.
+  it('documents the gap: synth-shell strategy (legs: []) is never detected as an underlying change by didUnderlyingChange alone', () => {
+    const eqLeg = { symbol: 'RELIANCE', qty: 10, avg_cost: 2500, ltp: 2600, prev_close: 2580 };
+    const synthStrategy = synthEquityOnlyStrategy([eqLeg], 'RELIANCE');
+    expect(synthStrategy.legs).toEqual([]); // precondition for the gap
+
+    // Operator switches to a real option strategy on a DIFFERENT underlying.
+    const cleanLegs = [{ symbol: 'NIFTY25SEP24000CE' }];
+    // didUnderlyingChange cannot see the switch — this is the gap.
+    expect(didUnderlyingChange(cleanLegs, synthStrategy, decomposeSymbol)).toBe(false);
   });
 });

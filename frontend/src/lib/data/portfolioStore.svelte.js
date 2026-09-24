@@ -300,7 +300,11 @@ const _byRootHoldings = $derived.by(() => {
       if (targets.length && h._ltp > 0) {
         const proxyRow   = getProxyRow(h._sym, target);
         const beta       = proxyRow?.beta ?? 1;
-        const targetSpot = getUnderlyingSpot(target);
+        // untrack: getUnderlyingSpot() now reads symbolStore via getSnapshot()
+        // internally (front-month resolution) — CLAUDE.md's reactive-safety
+        // rule requires wrapping any getSnapshot()-backed read inside a
+        // $derived, same as the sibling read at line ~67 already does.
+        const targetSpot = untrack(() => getUnderlyingSpot(target));
         if (targetSpot > 0) {
           const effQty = (beta * h._ltp * h._held_qty) / targetSpot;
           exp_pnl = (targetSpot - h._ltp / (beta || 1)) * effQty;

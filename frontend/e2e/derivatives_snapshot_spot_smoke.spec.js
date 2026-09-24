@@ -177,4 +177,99 @@ test.describe('/admin/derivatives — Snapshot card spot price smoke', () => {
       `Expected to find at least one element with an ltp-day-* class in snapshot rows`
     ).toBe(true);
   });
+
+  test('Snapshot Chg% is internally consistent with LTP and P.Close per row', async ({ page }) => {
+    /**
+     * Regression guard: Snapshot row displays LTP and Chg% from inconsistent
+     * sources. Specifically, LTP comes from one source (liveSpot) and Chg%
+     * comes from another (a stale pulse snapshot). This test verifies that
+     * each visible Snapshot row's displayed Chg% is internally consistent
+     * with its own displayed LTP and P.Close.
+     *
+     * Formula: Chg% = (LTP - P.Close) / P.Close × 100
+     * Tolerance: display rounding (0.5% relative error per 2-decimal places).
+     */
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    // Wait for snapshot card to load
+    await page.locator('.opt-byund-card').waitFor({ state: 'attached', timeout: 25_000 });
+
+    // Get all data rows (exclude total row)
+    const snapshotRows = page.locator('.byund-row:not(.byund-row-total)');
+    const rowCount = await snapshotRows.count();
+
+    if (rowCount === 0) {
+      test.skip();
+      return;
+    }
+
+    // Read LTP, P.Close, and Chg% from each row atomically.
+    // We rely on the DOM structure: each .byund-row contains .num cells in order.
+    const checkCount = Math.min(rowCount, 5);  // Check first 5 rows
+    const inconsistencies = [];
+
+    for (let i = 0; i < checkCount; i++) {
+      const row = snapshotRows.nth(i);
+      const numCells = row.locator('.num');
+      const cellCount = await numCells.count();
+
+      if (cellCount < 3) {
+        // Not enough cells in this row to check; skip
+        continue;
+      }
+
+      // Snapshot row structure (from +page.svelte markup):
+      // 1st .num = LTP (spot price)
+      // 2nd .num = Chg % (day change percentage)
+      // 3rd .num = P.Close (previous close)
+      const ltpText = (await numCells.nth(0).textContent()).trim();
+      const chgText = (await numCells.nth(1).textContent()).trim();
+      const closeText = (await numCells.nth(2).textContent()).trim();
+
+      // Parse numeric values (strip ₹, commas, % sign)
+      const ltpNum = parseFloat(ltpText.replace(/[₹,%\s]/g, ''));
+      const chgNum = parseFloat(chgText.replace(/[₹,%\s]/g, ''));
+      const closeNum = parseFloat(closeText.replace(/[₹,%\s]/g, ''));
+
+      // Skip cells showing "—" (no data yet)
+      if (!Number.isFinite(ltpNum) || !Number.isFinite(chgNum) || !Number.isFinite(closeNum)) {
+        continue;
+      }
+
+      // Compute expected Chg% from LTP and P.Close
+      if (closeNum <= 0) {
+        // Stale close guard: can't compute ratio with invalid close
+        inconsistencies.push({
+          row: i,
+          reason: `P.Close is ${closeNum} (≤ 0); cannot compute day change ratio`,
+        });
+        continue;
+      }
+
+      const expectedChg = ((ltpNum - closeNum) / closeNum) * 100;
+
+      // Tolerance: display rounding ± 0.5% + 0.01 (for edge case rounding)
+      const tolerance = Math.abs(closeNum) * 0.005 + 0.01;
+      const delta = Math.abs(expectedChg - chgNum);
+
+      if (delta > tolerance) {
+        inconsistencies.push({
+          row: i,
+          ltp: ltpNum,
+          close: closeNum,
+          expected: expectedChg,
+          actual: chgNum,
+          delta,
+          tolerance,
+          reason: `Chg% inconsistent: expected ${expectedChg.toFixed(2)}%, got ${chgNum.toFixed(2)}% (delta ${delta.toFixed(4)})`,
+        });
+      }
+    }
+
+    // Report inconsistencies if found
+    expect(
+      inconsistencies,
+      `Snapshot Chg% should be consistent with LTP and P.Close:\n${inconsistencies.map(i => i.reason).join('\n')}`,
+    ).toHaveLength(0);
+  });
 });

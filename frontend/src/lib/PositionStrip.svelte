@@ -13,6 +13,7 @@
   import { createTickFlash, createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
   import { cachedDelete } from '$lib/data/persistentCache';
   import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
+  import { sessionBoundaryMs } from '$lib/data/symbolStoreArbitration.js';
   import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
@@ -394,10 +395,16 @@
     for (const row of rows) {
       if (!appliesToRow(row)) continue;
       const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      // Only use SSE ticks (ltp_ts > 0). REST publishers set ltp_ts=0
-      // to prevent phantom deltas when batchQuote races the SSE stream.
+      // Only use SSE ticks (ltp_ts > 0, AND from the current trading
+      // session). REST publishers set ltp_ts=0 to prevent phantom deltas
+      // when batchQuote races the SSE stream. The session-boundary check
+      // closes a narrow cold-start gap: a symbolStore entry hydrated from
+      // yesterday's localStorage still has ltp_ts > 0, and without this
+      // gate would be treated as "live" here until the first poll write
+      // resets it (symbolStore's own session-boundary fix handles that
+      // reset, but only takes effect after that first poll completes).
       const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0)) continue;
+      if (!snap || !(snap.ltp_ts > 0) || snap.ltp_ts < sessionBoundaryMs()) continue;
       const live = snap.ltp;
       // LTP flicker fix: treat any non-positive live as "no tick yet".
       if (typeof live !== 'number' || !(live > 0)) continue;

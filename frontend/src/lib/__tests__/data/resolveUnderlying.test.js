@@ -22,6 +22,7 @@ import {
   INDEX_LTP_KEY,
   resolveUnderlying,
   resolveAnchorToTradeable,
+  resolveUnderlyingTradingsymbol,
 } from '$lib/data/resolveUnderlying.js';
 
 // ── Fix #14: MCX_COMMODITIES must match backend MCX_VIRTUAL_ROOTS ─────────────
@@ -288,5 +289,58 @@ describe('resolveAnchorToTradeable — _NEXT virtual roots', () => {
     const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOILM26SEPFUT', e: 'MCX' } : null);
     const result = resolveAnchorToTradeable('CRUDEOIL_NEXT', findFut);
     expect(result).toBe('CRUDEOILM26SEPFUT');
+  });
+});
+
+// ── resolveUnderlyingTradingsymbol — shared front-month resolution boundary ──
+// Used by underlyingSpotStore.svelte.js's getUnderlyingSpot() (NavStrip) and
+// the derivatives page's Snapshot/_undLive + liveSpot resolution — the fix
+// that unifies all three surfaces onto the same front-month contract
+// (operator-confirmed Option B: always front-month, everywhere).
+
+describe('resolveUnderlyingTradingsymbol — front-month resolution', () => {
+  it('NIFTY resolves to its NSE spot tradingsymbol', () => {
+    expect(resolveUnderlyingTradingsymbol('NIFTY', null)).toBe('NIFTY 50');
+  });
+
+  it('CRUDEOIL resolves to the front-month future when the resolver is warm', () => {
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    expect(resolveUnderlyingTradingsymbol('CRUDEOIL', findFut)).toBe('CRUDEOIL26JUNFUT');
+  });
+
+  it('CRUDEOIL_NEXT strips the _NEXT suffix and calls findNearestFut with the bare root, returning front-month', () => {
+    let calledWith = null;
+    const findFut = (root) => {
+      calledWith = root;
+      return root === 'CRUDEOIL' ? { s: 'CRUDEOILM26SEPFUT', e: 'MCX' } : null;
+    };
+    const result = resolveUnderlyingTradingsymbol('CRUDEOIL_NEXT', findFut);
+    expect(calledWith).toBe('CRUDEOIL');
+    expect(result).toBe('CRUDEOILM26SEPFUT'); // front-month, not a far-month/anchor contract
+  });
+
+  it('cold instruments cache: MCX root with no resolvable future falls back to the bare root (never null/undefined)', () => {
+    const result = resolveUnderlyingTradingsymbol('GOLDM', () => null);
+    expect(result).toBe('GOLDM');
+  });
+
+  it('cold instruments cache: CDS root with no resolvable future falls back to the bare root (never null/undefined)', () => {
+    // resolveUnderlying() returns null for CDS with no future — the wrapper
+    // must still hand back a usable string, not null, so callers (e.g.
+    // liveSnap(ts)) never get a broken lookup key.
+    const result = resolveUnderlyingTradingsymbol('USDINR', () => null);
+    expect(result).toBe('USDINR');
+  });
+
+  it('unknown equity passes through unchanged (already tradeable)', () => {
+    expect(resolveUnderlyingTradingsymbol('RELIANCE', null)).toBe('RELIANCE');
+  });
+
+  it('lowercase input is normalised to uppercase', () => {
+    expect(resolveUnderlyingTradingsymbol('reliance', null)).toBe('RELIANCE');
+  });
+
+  it('empty string falls back to empty string, not null/undefined', () => {
+    expect(resolveUnderlyingTradingsymbol('', null)).toBe('');
   });
 });

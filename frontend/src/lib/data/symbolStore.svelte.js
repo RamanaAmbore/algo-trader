@@ -34,6 +34,12 @@
  * kills the SSE-tick-then-late-poll-clobber race the multi-source layout
  * used to have.
  *
+ * `stored.ltp_ts` above is gated through `effectiveStoredLtpTs()`
+ * (symbolStoreArbitration.js) before comparison: a hydrated `ltp_ts` from
+ * before today's session boundary is treated as 0 (unstamped), so a
+ * restored yesterday's timestamp can never permanently block today's
+ * poll/tick writes. See symbolStoreArbitration.js for the full rationale.
+ *
  * Persistence
  * ───────────
  * SvelteMap is in-memory. We mirror to localStorage as `{sym: snapshot}`
@@ -51,6 +57,7 @@ import { writable } from 'svelte/store';
 import { untrack } from 'svelte';
 import { cachedRead, cachedWrite, TTL } from './persistentCache.js';
 import { createTickBus } from './tickFlash.svelte.js';
+import { sessionBoundaryMs, effectiveStoredLtpTs } from './symbolStoreArbitration.js';
 
 const _STORE_KEY = 'md.symbolStore';
 // 7 days so closing values for actively-traded symbols survive Friday
@@ -213,6 +220,17 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
   const key = String(sym).toUpperCase();
   const ltp_ts      = Number(ts.ltp_ts      ?? Date.now());
   const snapshot_ts = Number(ts.snapshot_ts ?? Date.now());
+  // Session-boundary gate (primary defect fix) — a stored ltp_ts from
+  // before today's session start is treated as 0 (unstamped) for both
+  // the staleness comparison AND the stamp-bump max below. Using it at
+  // only one of the two sites would let a gated-to-0 comparison get
+  // compared against its real pre-session value when computing the new
+  // max, re-introducing the bug (a restored yesterday's ltp_ts would
+  // "win" the max() and get written back as the new ltp_ts, re-arming
+  // the stale guard for the next write). snapshot_ts is untouched —
+  // polls always stamp it with a real Date.now(), so it's never
+  // affected by a stale hydrated value the way ltp_ts is.
+  const _boundaryMs = sessionBoundaryMs();
 
   const prev = symbolStore.get(key);
   /** @type {MarketSnapshot} */
@@ -242,7 +260,7 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
 
     const isLtp = _LTP_FIELDS.has(k);
     const incomingTs = isLtp ? ltp_ts : snapshot_ts;
-    const storedTs   = isLtp ? next.ltp_ts : next.snapshot_ts;
+    const storedTs   = isLtp ? effectiveStoredLtpTs(next.ltp_ts, _boundaryMs) : next.snapshot_ts;
 
     if (incomingTs < storedTs) continue;  // stale write — reject
     if (/** @type {any} */ (next)[k] === v) continue;  // no-op
@@ -282,7 +300,7 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
   // Bump stamps to reflect what was written. Use max() so a partial
   // update (e.g. SSE tick = ltp only) doesn't backslide the snapshot_ts.
   if (fields.ltp != null && Number.isFinite(Number(fields.ltp))) {
-    next.ltp_ts = Math.max(next.ltp_ts, ltp_ts);
+    next.ltp_ts = Math.max(effectiveStoredLtpTs(next.ltp_ts, _boundaryMs), ltp_ts);
   }
   const wroteAnySnapshot = Object.keys(fields).some(
     k => (k === 'exchange' || (_NUMERIC_FIELDS.has(k) && !_LTP_FIELDS.has(k)))

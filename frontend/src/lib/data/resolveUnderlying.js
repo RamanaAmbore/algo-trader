@@ -85,6 +85,28 @@ export function resolveUnderlying(name, findNearestFut) {
   };
 }
 
+/**
+ * Resolve an underlying root to the tradeable tradingsymbol used for its
+ * front-month live-quote key — the single shared resolution boundary used
+ * by Snapshot (derivatives page), Payoff overlay, and NavStrip's
+ * getUnderlyingSpot(), so all three surfaces always show the same
+ * front-month contract for a given root (operator-confirmed: always
+ * front-month, uniformly, never the strategy's pricing anchor contract
+ * when they differ).
+ *
+ * Thin wrapper over resolveUnderlying() that always returns a usable
+ * tradingsymbol string — falls back to the bare uppercased root when
+ * resolveUnderlying() can't resolve (e.g. cold instruments cache, or a
+ * CDS currency with no nearest future yet).
+ *
+ * @param {string} root
+ * @param {((u:string) => any) | null | undefined} findNearestFut
+ * @returns {string}
+ */
+export function resolveUnderlyingTradingsymbol(root, findNearestFut) {
+  return resolveUnderlying(root, findNearestFut)?.tradingsymbol ?? String(root || '').toUpperCase();
+}
+
 // Mirrors the backend `derivatives.underlying_ltp_key` index map.
 export const INDEX_LTP_KEY = {
   NIFTY:      { tradingsymbol: 'NIFTY 50',         exchange: 'NSE' },

@@ -15,8 +15,20 @@
 
 import { batchQuote } from '$lib/api.js';
 import { publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
-import { applyUnderlyingTickLtp } from '$lib/data/underlyingQuoteUtils.js';
+import { applyUnderlyingTickLtp, buildUnderlyingQuoteUpdate } from '$lib/data/underlyingQuoteUtils.js';
 import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+import { resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
+import { findNearestFuture } from '$lib/data/instruments.js';
+
+/**
+ * Per-root epoch-ms of the last live-tick apply (patchUnderlyingSpot).
+ * Used by buildUnderlyingQuoteUpdate to discard a batchQuote response's
+ * `ltp` when a newer tick has already landed for that root while the
+ * request was in flight — an ordering guard the plain object-spread merge
+ * didn't have.
+ * @type {Record<string, number>}
+ */
+let _lastTickAt = {};
 
 /**
  * Module-local reactive map: { ROOT: { ltp, day_pct, prev_close } }
@@ -29,11 +41,22 @@ let _quotes = $state({});
  * Returns the underlying spot LTP for the given root.
  * Falls back to 0 when root is not yet loaded.
  *
+ * Resolves to the same front-month tradingsymbol Snapshot/Payoff use (via
+ * resolveUnderlyingTradingsymbol) before checking symbolStore — this is
+ * the fix for NavStrip's Exp P&L divergence from the derivatives page
+ * (NavStrip was previously the only consumer reading the bare root
+ * directly, missing the MCX-nearest-future / index-spot-key translation).
+ * Falls through to the bare root (symbolStore, then the batchQuote cache)
+ * when the resolver can't produce a live tick yet — e.g. a cold
+ * instruments cache resolving an MCX/CDS root to its bare-root stub,
+ * which never ticks under its own name.
+ *
  * @param {string} root - e.g. "CRUDEOIL", "NIFTY", "GOLD"
  * @returns {number}
  */
 export function getUnderlyingSpot(root) {
-  return getSnapshot(root)?.ltp || _quotes[root]?.ltp || 0;
+  const ts = resolveUnderlyingTradingsymbol(root, findNearestFuture);
+  return getSnapshot(ts)?.ltp || getSnapshot(root)?.ltp || _quotes[root]?.ltp || 0;
 }
 
 /**
@@ -55,6 +78,10 @@ export const underlyingSpotStore = {
 export async function loadUnderlyingSpots(pairs) {
   if (!pairs || pairs.length === 0) return;
 
+  // Captured before the await so buildUnderlyingQuoteUpdate can detect a
+  // live tick that landed for this root WHILE the request was in flight
+  // (race guard — see underlyingQuoteUtils.js).
+  const reqStartedAt = Date.now();
   const keys = pairs.map(p => p.quoteKey);
   const res = await batchQuote(keys);
   const items = res?.items ?? [];
@@ -63,28 +90,7 @@ export async function loadUnderlyingSpots(pairs) {
   // latest anchors without a separate batchQuote call.
   publishPulseQuotes(items);
 
-  // Build exchange:symbol → item map.
-  /** @type {Record<string, any>} */
-  const byKey = {};
-  for (const it of items) {
-    if (!it?.exchange || !it?.tradingsymbol) continue;
-    byKey[`${it.exchange}:${it.tradingsymbol}`] = it;
-  }
-
-  /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
-  const next = {};
-  for (const { root, quoteKey } of pairs) {
-    const q = byKey[quoteKey];
-    if (!q) continue;
-    const ltp   = Number(q.ltp   ?? q.last_price ?? 0);
-    const close = Number(q.close ?? q.ohlc?.close ?? 0);
-    let pct = null;
-    if (q.change_pct != null)          pct = Number(q.change_pct);
-    else if (q.change_percent != null) pct = Number(q.change_percent);
-    else if (close > 0 && ltp > 0)    pct = ((ltp - close) / close) * 100;
-    next[root] = { ltp, day_pct: pct, prev_close: close };
-  }
-  _quotes = { ..._quotes, ...next };
+  _quotes = buildUnderlyingQuoteUpdate(pairs, items, _quotes, _lastTickAt, reqStartedAt);
 }
 
 /**
@@ -95,10 +101,19 @@ export async function loadUnderlyingSpots(pairs) {
  *
  * No-op when root is not yet loaded (prevents phantom entries before first load).
  *
+ * Records `lastTickAt[root]` whenever the incoming ltp is a valid live
+ * observation (finite, > 0) — NOT gated on the store value actually
+ * changing. An identical-value tick is still a fresher observation than
+ * whatever in-flight batchQuote request may resolve after it, and
+ * buildUnderlyingQuoteUpdate's ordering guard needs that timestamp to
+ * detect a stale response even when the tick didn't move the price.
+ *
  * @param {string} root - e.g. "CRUDEOIL", "NIFTY"
  * @param {number | null | undefined} ltp
  */
 export function patchUnderlyingSpot(root, ltp) {
+  const v = Number(ltp);
+  if (Number.isFinite(v) && v > 0) _lastTickAt[root] = Date.now();
   const next = applyUnderlyingTickLtp(_quotes, root, ltp);
   if (next !== _quotes) _quotes = next;
 }
