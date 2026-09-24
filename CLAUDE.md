@@ -87,7 +87,7 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 | `frontend` | Layer 3 | `frontend/` — SvelteKit, Svelte 5, ag-Grid | claude-sonnet-5 |
 | `backend-test` | Layer 1+2 | pytest + pytest-asyncio — broker + API tests | haiku |
 | `playwright` | Layer 3 | Playwright e2e — browser flows, mobile viewport | haiku |
-| `audit` | All | Read-only defect review — no writes | claude-sonnet-5 |
+| `audit` | All | Read-only defect review — no writes | claude-opus-5-5 |
 | `doc` | All | CLAUDE.md / docs/guides/ / docs/specs/ | haiku |
 
 **Parallel by default** — independent sub-tasks fire together. Sequence only when 
