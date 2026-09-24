@@ -46,9 +46,10 @@ function makeOvernightPositionRow(overrides = {}) {
     previous_close:      125,   // close > 0 → live path is (live - 125) * 50
     close_price:         125,
     pnl:                 500,
-    day_change_val:      300,   // brokerDcv — what closed-hours path should return
+    day_change_val:      300,   // vestigial — no longer read by the formula
     overnight_quantity:  50,
     realised:            0,
+    prev_settlement_pnl: 200,   // pnl(500) - day_change_val(300) → base=300 (brokerDcv-equivalent)
     ...overrides,
   };
 }
@@ -75,15 +76,15 @@ function makeCtx(marketOpen, snapMap = {}) {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('mergePositionRows — marketOpen gate (Fix B)', () => {
-  it('marketOpen=false: day_pnl uses price formula (pollLtp - closePx) * qty, not live SSE LTP', () => {
+  it('marketOpen=false: day_pnl returns the stable base, not live SSE LTP', () => {
     const byKey = {};
     const row = makeOvernightPositionRow();
-    // Confirm brokerDcv = 300 so we can assert it is NOT used.
-    const expectedBrokerDcv = baseDayPnlForPosition(row);
-    expect(expectedBrokerDcv).toBe(300);
+    // Confirm base (baseDayPnlForPosition) = 300 so we can assert it IS used.
+    const expectedBase = baseDayPnlForPosition(row);
+    expect(expectedBase).toBe(300);
 
-    // Provide a live SSE LTP in the snap so the live-LTP path WOULD fire if
-    // marketOpen were true. liveLtp=140 → live path = (140−125)×50 = 750.
+    // Provide a live SSE LTP in the snap so the live-LTP delta WOULD fire if
+    // marketOpen were true. liveLtp=140, pollLtp=130 → delta = (140-130)*50 = 500.
     const snap = { ltp: 140 };
     const ctx = makeCtx(false, { NIFTY25AUG24000CE: snap });
 
@@ -91,10 +92,10 @@ describe('mergePositionRows — marketOpen gate (Fix B)', () => {
 
     const result = byKey['NIFTY25AUG24000CE__pos'];
     expect(result).toBeDefined();
-    // Closed hours uses price formula: (pollLtp=130 - closePx=125) * qty=50 = 250.
-    // Must NOT use live SSE LTP (750) nor raw brokerDcv (300).
-    expect(result.day_pnl).toBe(250);
-    expect(result.day_pnl).not.toBe(750);
+    // Closed hours → live delta gated off entirely → returns base=300.
+    // Must NOT apply the live delta (which would give 300+500=800).
+    expect(result.day_pnl).toBe(300);
+    expect(result.day_pnl).not.toBe(800);
   });
 
   it('marketOpen=true: day_pnl uses live LTP when snap has ltp > 0', () => {
@@ -132,10 +133,10 @@ describe('mergePositionRows — marketOpen gate (Fix B)', () => {
     const first  = run(6200);
     const second = run(6350);  // different SSE LTP — simulates next tick
 
-    // Both runs use price formula (pollLtp=130 − closePx=125) × qty=50 = 250.
-    // SSE LTP (6200 / 6350) does not affect the result — only pollLtp matters.
-    expect(first).toBe(250);
-    expect(second).toBe(250);
+    // Both runs return the stable base=300 — closed hours gates the live
+    // delta off entirely, so different SSE LTPs never shift the result.
+    expect(first).toBe(300);
+    expect(second).toBe(300);
     expect(first).toBe(second);
   });
 

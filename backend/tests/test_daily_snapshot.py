@@ -417,6 +417,9 @@ class TestRowBuilders:
             "tradingsymbol": "CRUDEOIL26JUL6900PE", "exchange": "MCX",
             "last_price": 264.5, "close_price": 220.0, "quantity": 1,
             "average_price": 245.0, "pnl": 19.5,
+            # SSOT total_pnl = realised + unrealised (current_total_profit,
+            # pnl_math.py) — a real Kite positions() row carries both fields.
+            "unrealised": 19.5, "realised": 0.0,
         }]
         now_1535 = datetime(2026, 5, 8, 15, 35)
         # First call: mid-session (MCX open at 15:35)

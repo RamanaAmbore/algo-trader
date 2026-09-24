@@ -96,9 +96,13 @@ class TestPositionsSqlNoCOALESCE:
         }])
 
         mock_time = datetime(2026, 8, 23, 9, 0, 0, tzinfo=IST)
+        # _fetch_snapshot_close_map issues a SINGLE combined query (a FULL
+        # OUTER JOIN of the snapshot_close CTE and the batch-anchored
+        # pnl_final/pnl_ranked CTE — see _BASELINE_PNL_CTE_SQL) — 6-column
+        # result: (account, symbol, ref_close, total_pnl, kind, qty). kind
+        # is 'positions' here (a plain, unconditional-use baseline).
         mock_result = MagicMock()
-        # DB returns ltp=100 (actual settlement)
-        mock_result.all.return_value = [("TEST001", "RELIANCE", 100.0, 200.0)]
+        mock_result.all.return_value = [("TEST001", "RELIANCE", 100.0, 200.0, "positions", 10.0)]
 
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -109,6 +113,11 @@ class TestPositionsSqlNoCOALESCE:
             patch("backend.api.database.async_session", return_value=mock_session),
             patch("backend.shared.helpers.date_time_utils.timestamp_indian",
                   return_value=mock_time),
+            # settlement_cutoff_for() does its own internal DB refresh() call —
+            # patch it directly so it doesn't consume a side_effect slot meant
+            # for the snapshot_map / baseline_pnl_map queries below.
+            patch("backend.api.helpers.exchange_clock.settlement_cutoff_for",
+                  new=AsyncMock(return_value=mock_time)),
         ):
             asyncio.run(_override_stale_close_from_snapshot(df))
 

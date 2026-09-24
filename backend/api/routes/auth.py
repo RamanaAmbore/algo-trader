@@ -378,6 +378,117 @@ def _auth_nav_pos_pnl(total_p: "pd.DataFrame") -> float:
     return 0.0
 
 
+async def _auth_nav_live_session_fallback(
+    df_h: "pd.DataFrame", df_p: "pd.DataFrame",
+    total_h: "pd.DataFrame", total_p: "pd.DataFrame", pos_pnl: float,
+) -> "tuple[float, float, str]":
+    """Day/cum P&L when `_intraday_equity` hasn't filled yet but a market
+    segment is genuinely open (the narrow window right after a restart
+    during market hours). Applies the baseline-diff stale-close override
+    to `df_h`/`df_p` then rebuilds the summary — the SAME convergence
+    `_perf_fetch_all_broker_data` / `_run_close_once` (background.py)
+    already apply — before falling through to `_auth_nav_pnl_fallback`.
+    Safe to call a live broker-anchored baseline here specifically
+    because `today_08` (`_fetch_snapshot_close_map`'s fixed cutoff)
+    correctly anchors to THIS live session's own 08:00 IST start while a
+    session is actually in progress. On any DB error, falls back to the
+    pre-override (legacy) sums rather than raising (2026-09 Day P&L audit
+    round 3, item #3)."""
+    from backend.api.background import _rebuild_holdings_summary, _rebuild_positions_summary
+    try:
+        from backend.api.routes.holdings import _override_stale_close_for_holdings
+        from backend.api.routes.positions import _override_stale_close_from_snapshot
+        await _override_stale_close_for_holdings(df_h)
+        await _override_stale_close_from_snapshot(df_p)
+        sum_h = _rebuild_holdings_summary(df_h)
+        sum_p = _rebuild_positions_summary(df_p)
+        total_h = _auth_nav_total_row(sum_h)
+        total_p = _auth_nav_total_row(sum_p)
+        pos_pnl = _auth_nav_pos_pnl(total_p)
+    except Exception as _oe:
+        logger.warning(
+            f"_compute_firm_nav: live-session baseline-diff override "
+            f"failed (falling back to legacy day_change_val sums): {_oe}"
+        )
+    return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+
+
+async def _auth_nav_closed_hours_fallback(
+    total_h: "pd.DataFrame", total_p: "pd.DataFrame", pos_pnl: float,
+) -> "tuple[float, float, str]":
+    """Day/cum P&L when the market is FULLY CLOSED — CANONICAL
+    closed-hours gate (CLAUDE.md "Closed-hours route gate"): never
+    DERIVE Day P&L from a live-fetch-anchored baseline here (the raw
+    broker fetch for `total_h`/`total_p`/`pos_pnl` — the arguments this
+    function receives — already happened unconditionally at the top of
+    `_compute_firm_nav`, before the open/closed branch; that pre-existing
+    fetch is NOT re-run or newly triggered by this function — this
+    function only decides which FORMULA to apply to already-fetched
+    data, and never calls `_override_stale_close_from_snapshot` /
+    `_fetch_snapshot_close_map`). `_fetch_snapshot_close_map`'s fixed
+    `today_08` cutoff self-collides with the most recent close-reset row
+    whenever "today" (wall clock) isn't a live trading session — the
+    SAME collision class as item #1, just on the live-fetch baseline path
+    instead of `_positions_snapshot`'s own CTE (verified empirically:
+    baseline resolved to the SAME row as "current" for a Saturday-morning
+    `today_08` cutoff against the item #1 fixture, giving day_pnl≈0
+    instead of the frozen Friday session change).
+
+    Reuses the already-anchored closed-hours snapshot readers
+    (`_positions_snapshot` / `_holdings_snapshot` — item #1's fixed
+    captured_at-derived baseline anchor) instead, so this NAV path shows
+    the SAME frozen last-session figure `/api/positions` and
+    `/api/holdings` already serve when closed. Falls back to the legacy
+    (pre-override) sums when BOTH snapshot readers come back empty (they
+    catch their own DB errors internally and return `None` rather than
+    raising — see each function's docstring — so a bare `except Exception`
+    here would never actually observe a DB failure; the explicit
+    `is None` check below is what makes the fallback reachable) or on any
+    unexpected exception (2026-09 Day P&L audit round 3, item #3
+    follow-up)."""
+    try:
+        from backend.api.routes.positions import _positions_snapshot
+        from backend.api.routes.holdings import _holdings_snapshot
+        pos_snap, hold_snap = await asyncio.gather(
+            _positions_snapshot(), _holdings_snapshot()
+        )
+        if pos_snap is None and hold_snap is None:
+            logger.warning(
+                "_compute_firm_nav: closed-hours snapshot path returned no "
+                "data (positions and holdings snapshots both unavailable) "
+                "— falling back to legacy live-fetch sums"
+            )
+            return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+        _p_total = next(
+            (r for r in (pos_snap.summary if pos_snap else []) if r.account == 'TOTAL'),
+            None,
+        )
+        _h_total = next(
+            (r for r in (hold_snap.summary if hold_snap else []) if r.account == 'TOTAL'),
+            None,
+        )
+        firm_day_pnl = (
+            (_p_total.day_change_val if _p_total else 0.0)
+            + (_h_total.day_change_val if _h_total else 0.0)
+        )
+        firm_cum_pnl = (
+            (_p_total.pnl if _p_total else 0.0)
+            + (_h_total.pnl if _h_total else 0.0)
+        )
+        as_of_iso = (
+            (pos_snap.as_of if pos_snap else None)
+            or (hold_snap.as_of if hold_snap else None)
+            or datetime.now(timezone.utc).isoformat()
+        )
+        return firm_day_pnl, firm_cum_pnl, as_of_iso
+    except Exception as _se:
+        logger.warning(
+            f"_compute_firm_nav: closed-hours snapshot path failed "
+            f"(falling back to legacy live-fetch sums): {_se}"
+        )
+        return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
+
+
 async def _compute_firm_nav() -> tuple[float, float, float, str]:
     """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
 
@@ -408,6 +519,7 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
         _fetch_holdings_direct,
         _fetch_positions_direct,
     )
+    from backend.api.helpers.snapshot_gate import _any_segment_open
     import asyncio as _asyncio
     from concurrent.futures import ThreadPoolExecutor as _TPE
 
@@ -431,28 +543,33 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
         with _TPE(max_workers=2) as ex:
             df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
             df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
-            _, sum_h = await df_h_fut
-            _, sum_p = await df_p_fut
+            df_h, sum_h = await df_h_fut
+            df_p, sum_p = await df_p_fut
 
         total_h = _auth_nav_total_row(sum_h)
         total_p = _auth_nav_total_row(sum_p)
         pos_pnl = _auth_nav_pos_pnl(total_p)
 
         # Prefer the deque for P&L (already running totals) when alive.
-        # Buffer carries (ts, day, cum, ...) per tick.
+        # Buffer carries (ts, day, cum, ...) per tick. When empty, branch
+        # on whether a market segment is genuinely open: a live session
+        # can still safely use a live-fetch-anchored baseline
+        # (`_auth_nav_live_session_fallback`); a fully closed market must
+        # never call the live broker for Day P&L — it reuses the already-
+        # anchored closed-hours snapshot readers instead
+        # (`_auth_nav_closed_hours_fallback`). See each helper's docstring
+        # for the full rationale (2026-09 Day P&L audit round 3, item #3
+        # + its closed-hours follow-up).
         if _intraday_equity:
             firm_day_pnl, firm_cum_pnl, as_of_iso = _auth_nav_pnl_from_intraday(
                 _intraday_equity
             )
+        elif await _asyncio.to_thread(_any_segment_open):
+            firm_day_pnl, firm_cum_pnl, as_of_iso = await _auth_nav_live_session_fallback(
+                df_h, df_p, total_h, total_p, pos_pnl
+            )
         else:
-            # Off-hours fallback — synthesize from holdings + positions.
-            # day_pnl must include BOTH legs: the prior `firm_day_pnl =
-            # total_h['day_change_val']` line missed positions' day_change_val
-            # entirely, so the NavCard headline + firm_day_pnl JSON field
-            # under-reported by the positions contribution on every off-hours
-            # render. SSOT alignment: PerformancePage NAV TOTAL row and the
-            # intraday-equity tick both already sum (H + P) day_change_val.
-            firm_day_pnl, firm_cum_pnl, as_of_iso = _auth_nav_pnl_fallback(
+            firm_day_pnl, firm_cum_pnl, as_of_iso = await _auth_nav_closed_hours_fallback(
                 total_h, total_p, pos_pnl
             )
     except Exception as e:

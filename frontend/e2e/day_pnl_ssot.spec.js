@@ -58,15 +58,21 @@ const NAV_SRC = path.resolve(
 test('SSOT: MarketPulse imports baseDayPnlForPosition from $lib/data/nav', () => {
   const src = fs.readFileSync(MP_SRC, 'utf8');
 
+  // Match any named-import list containing baseDayPnlForPosition from
+  // $lib/data/nav — not just a single-name import. MarketPulse legitimately
+  // imports multiple names in one statement (e.g.
+  // `import { baseDayPnlForPosition, livePositionDayPnl, dayChangePct } from '$lib/data/nav';`).
   expect(
-    src.includes("import { baseDayPnlForPosition }") && src.includes("'$lib/data/nav'"),
+    /import\s*\{[^}]*\bbaseDayPnlForPosition\b[^}]*\}\s*from\s*'\$lib\/data\/nav'/.test(src),
     'MarketPulse.svelte must import baseDayPnlForPosition from $lib/data/nav'
   ).toBe(true);
 });
 
-test('SSOT: pulseUnified brokerDcv uses baseDayPnlForPosition, not raw day_change_val', () => {
-  // After f378ce53 the Day P&L accumulation logic lives in pulseUnified.js,
-  // not MarketPulse.svelte. Check the helper module.
+test('SSOT: pulseUnified positions row.day_pnl uses livePositionDayPnl (baseline-diff SSOT), not raw day_change_val', () => {
+  // Day P&L / Exp P&L redesign (2026-09): the Case-branch `brokerDcv` local
+  // variable was eliminated — mergePositionRows now calls livePositionDayPnl
+  // directly (which itself delegates to baseDayPnlForPosition for the base
+  // and applies a live-tick delta on top). Check the helper module.
   const src = fs.readFileSync(PULSE_UNIFIED_SRC, 'utf8');
 
   // The old raw read pattern must not appear in the positions section
@@ -75,10 +81,10 @@ test('SSOT: pulseUnified brokerDcv uses baseDayPnlForPosition, not raw day_chang
     'Old "const brokerDcv = Number(r.day_change_val) || 0" must not be in pulseUnified'
   ).toBe(false);
 
-  // The new SSOT pattern
+  // The new SSOT pattern — row.day_pnl accumulates via livePositionDayPnl
   expect(
-    src.includes('const brokerDcv = baseDayPnlForPosition(r)'),
-    'pulseUnified must use "const brokerDcv = baseDayPnlForPosition(r)"'
+    src.includes('row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl('),
+    'pulseUnified must accumulate row.day_pnl via livePositionDayPnl(...)'
   ).toBe(true);
 });
 
@@ -105,7 +111,10 @@ test('SSOT: pulseUnified _broker_day_pnl positions-loop mirror uses baseDayPnlFo
   ).toBe(false);
 });
 
-test('SSOT: nav.js defines baseDayPnlForPosition with new-position override', () => {
+test('SSOT: nav.js defines baseDayPnlForPosition as the atomic baseline-diff formula', () => {
+  // Day P&L / Exp P&L redesign (2026-09): the branchy Case 1-4 logic
+  // (oq/dcv/close-based overrides) was replaced by one atomic formula,
+  // proven correct for any position state: current_total_profit − base_pnl.
   const src = fs.readFileSync(NAV_SRC, 'utf8');
 
   expect(
@@ -113,19 +122,22 @@ test('SSOT: nav.js defines baseDayPnlForPosition with new-position override', ()
     'nav.js must export baseDayPnlForPosition'
   ).toBe(true);
 
-  // The override: oq=0 && dcv=0 && pnl!=0 -> return pnl
-  // (dcv === 0 guard was added in 59b8fbc1 to defend against the overnight-snapshot
-  // path where overnight_quantity=0 but day_change_val is non-zero and correct)
   expect(
-    src.includes('if (oq === 0 && dcv === 0 && pnl !== 0) return pnl'),
-    'baseDayPnlForPosition must contain: if (oq === 0 && dcv === 0 && pnl !== 0) return pnl'
+    src.includes('export function currentTotalProfit('),
+    'nav.js must export currentTotalProfit (realised+unrealised, pnl-fallback) — the SSOT baseDayPnlForPosition builds on'
   ).toBe(true);
 
-  // Falls back to day_change_val
+  // The atomic formula: total profit minus the frozen baseline.
   expect(
-    src.includes('return dcv'),
-    'baseDayPnlForPosition must fall back to dcv (day_change_val)'
+    src.includes('return total - base'),
+    'baseDayPnlForPosition must reduce to: return total - base (baseline-diff)'
   ).toBe(true);
+
+  // The old Case-branch override must be gone — no more day_change_val reads.
+  expect(
+    src.includes('day_change_val'),
+    'baseDayPnlForPosition must NOT read day_change_val — the old Case-branch logic was removed'
+  ).toBe(false);
 });
 
 test('STALE: pulseUnified holdings loop still uses raw day_change_val (correct — no overnight_quantity)', () => {

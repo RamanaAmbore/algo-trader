@@ -443,6 +443,9 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
     const avg = Number(r.average_price) || 0;
     row.qty_pos  += q;
     row._avg_num += avg * q;
+    // Overnight qty summed across accounts for the unified row — "O/N Qty"
+    // column. Multi-account rows show the combined overnight carry.
+    row.overnight_qty = (row.overnight_qty ?? 0) + (Number(r.overnight_quantity) || 0);
     if (r.account) row.accounts.add(String(r.account));
     // Market fields — symbolStore first, then contracts quote bag fallback.
     const snap  = snapOf(sym);
@@ -452,21 +455,18 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
       // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
       row.ltp = r.last_price ?? null;
     }
-    // Day P&L — livePositionDayPnl correctly handles mixed overnight +
-    // intraday adds. The naive (ltp−close)×qty formula applied prev_close
-    // as baseline for ALL qty including new lots sold today, understating
-    // realised fill P&L by new_qty×(fill−prev_close). No market-open gate
-    // — last tick persists after close, same as holdings EOD behaviour.
+    // Day P&L — livePositionDayPnl reduces to baseDayPnlForPosition(r) (the
+    // baseline-diff formula: current_total_profit − prev_settlement_pnl)
+    // plus a live-tick delta on top. The live delta is gated on marketOpen
+    // (see livePositionDayPnl's marketOpen check) — after close the base
+    // value alone persists, same as holdings EOD behaviour.
     const _snapLtp   = snap?.ltp;
     const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                      : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
-    const posCls     = Number(r.previous_close) || Number(r.close_price) || 0;
     row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
       {
-        closePx: posCls,
         pollLtp: Number(r.last_price) || 0,
         qty:     q,
-        avg:     avg,
         dcvRow:  r,
       },
       posLiveLtp,

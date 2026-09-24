@@ -32,6 +32,202 @@ from __future__ import annotations
 import pandas as pd
 
 
+# ---------------------------------------------------------------------------
+# Day P&L / Exp P&L redesign (2026-09) — baseline-diff SSOT
+# ---------------------------------------------------------------------------
+#
+# Day P&L for any position, regardless of state (new entry, full exit,
+# partial exit, re-entry, flip, or any combination), reduces to one
+# formula:
+#
+#     day_pnl = current_total_profit(realised, unrealised) - base_pnl
+#
+# where `base_pnl` is that position's total profit frozen at the most
+# recent trading day's close-reset snapshot (0 when no prior snapshot
+# exists — e.g. a brand-new position). This is proven algebraically
+# correct and needs no branching by position-state, unlike the legacy
+# `decomposed_intraday_pnl` / `apply_day_change_backstop` machinery
+# above, which is kept for diagnostic purposes only and must not feed
+# new rollups or displays.
+#
+# Per-broker sourcing of `realised` / `unrealised` is owned by the
+# broker layer (`backend/brokers/broker_apis.py`) — by the time a
+# DataFrame reaches this module, `realised` + `unrealised` are assumed
+# to sum to the correct combined total-profit for every broker (Kite,
+# Dhan, Groww). Callers here never re-derive per-broker logic.
+
+
+def current_total_profit(realised: float, unrealised: float) -> float:
+    """Canonical current total profit for one position: realised + unrealised.
+
+    Never use a broker's raw combined `pnl` field directly here — the
+    broker layer is responsible for making `realised`/`unrealised` sum to
+    the correct total for every broker before the DataFrame reaches this
+    module (see module docstring).
+    """
+    return float(realised or 0.0) + float(unrealised or 0.0)
+
+
+def baseline_diff_day_pnl(realised: float, unrealised: float, base_pnl: float) -> float:
+    """Canonical Day P&L for one position: current total profit − base_pnl.
+
+    `base_pnl` is the position's `current_total_profit` frozen at the most
+    recent trading day's close-reset snapshot (0 when no prior snapshot
+    exists, e.g. a position opened today). Correct for every position
+    state — new entry, full exit, partial exit, re-entry, and flip —
+    without branching, because it is a pure difference of two point-in-time
+    totals.
+    """
+    return current_total_profit(realised, unrealised) - float(base_pnl or 0.0)
+
+
+def current_total_profit_series(realised: "pd.Series", unrealised: "pd.Series") -> "pd.Series":
+    """Vectorised pandas wrapper over `current_total_profit`."""
+    _r = pd.to_numeric(realised, errors="coerce").fillna(0.0)
+    _u = pd.to_numeric(unrealised, errors="coerce").fillna(0.0)
+    return _r + _u
+
+
+def baseline_diff_day_pnl_series(
+    realised: "pd.Series", unrealised: "pd.Series", base_pnl: "pd.Series | float"
+) -> "pd.Series":
+    """Vectorised pandas wrapper over `baseline_diff_day_pnl`.
+
+    `base_pnl` may be a scalar (broadcast) or a per-row Series (e.g. the
+    `prev_settlement_pnl` column backfilled from `daily_book.total_pnl`).
+    """
+    _total = current_total_profit_series(realised, unrealised)
+    if isinstance(base_pnl, pd.Series):
+        _base = pd.to_numeric(base_pnl, errors="coerce").fillna(0.0)
+    else:
+        _base = float(base_pnl or 0.0)
+    return _total - _base
+
+
+def current_total_profit_expr(
+    realised_col: str = "realised", unrealised_col: str = "unrealised"
+):
+    """Polars expression wrapper over `current_total_profit`.
+
+    Lazy-imports polars so this module stays importable in pandas-only
+    test contexts. Returns a `pl.Expr` summing the two (null-safe) columns.
+    """
+    import polars as pl
+    return (
+        pl.col(realised_col).cast(pl.Float64, strict=False).fill_null(0.0)
+        + pl.col(unrealised_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    )
+
+
+def baseline_diff_day_pnl_expr(
+    realised_col: str = "realised",
+    unrealised_col: str = "unrealised",
+    base_pnl_col: str = "prev_settlement_pnl",
+):
+    """Polars expression wrapper over `baseline_diff_day_pnl`."""
+    import polars as pl
+    return current_total_profit_expr(realised_col, unrealised_col) - (
+        pl.col(base_pnl_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    )
+
+
+# ---------------------------------------------------------------------------
+# realised/unrealised "not populated" fallback — SSOT
+# ---------------------------------------------------------------------------
+#
+# Some producers (closed-hours snapshot rows built before this redesign,
+# paper-trade synthetic rows, any pre-deploy window) only carry the
+# broker-combined `pnl` field and leave `realised`/`unrealised` at their
+# struct default of 0.0 each. A naive `realised + unrealised` on such a row
+# silently evaluates to 0 instead of falling back to `pnl` — this is exactly
+# the class of bug the 2026-09 Day P&L redesign audit caught (frontend and
+# backend disagreeing on the same row because they used different fallback
+# triggers). The rule below is the SINGLE fallback trigger: both `realised`
+# and `unrealised` being exactly 0 together means "not populated, use pnl
+# as the realised leg" — every summary builder (row-level, polars-vectorised,
+# frontend `currentTotalProfit`) must use this exact trigger.
+
+def resolve_realised_unrealised(
+    realised: float, unrealised: float, pnl: float
+) -> tuple[float, float]:
+    """Return the (realised, unrealised) pair to feed `current_total_profit`.
+
+    When `realised` and `unrealised` are BOTH exactly 0 (the "not split /
+    not populated" case), fall back to `(pnl, 0.0)` — Kite's `pnl` is
+    confirmed to equal `realised + unrealised`, so this is algebraically
+    equivalent to a fully-populated row with all its profit on the
+    realised leg. Otherwise returns `(realised, unrealised)` unchanged,
+    even when one of the two is legitimately 0 (e.g. a fresh open
+    position has realised=0, unrealised>0 — must NOT trigger the
+    pnl fallback).
+    """
+    r = float(realised or 0.0)
+    u = float(unrealised or 0.0)
+    if r or u:
+        return r, u
+    return float(pnl or 0.0), 0.0
+
+
+def baseline_diff_day_pnl_with_fallback(
+    realised: float, unrealised: float, pnl: float, base_pnl: float
+) -> float:
+    """`baseline_diff_day_pnl`, applying `resolve_realised_unrealised`'s
+    pnl-fallback first. SSOT for any per-row Day P&L computation that may
+    see an unpopulated realised/unrealised pair (snapshot rows, paper
+    rows, pre-deploy rows)."""
+    r, u = resolve_realised_unrealised(realised, unrealised, pnl)
+    return baseline_diff_day_pnl(r, u, base_pnl)
+
+
+def baseline_diff_day_pnl_series_with_fallback(
+    realised: "pd.Series", unrealised: "pd.Series", pnl: "pd.Series", base_pnl: "pd.Series | float"
+) -> "pd.Series":
+    """Vectorised pandas wrapper over `baseline_diff_day_pnl_with_fallback` —
+    the pnl-fallback-aware SSOT variant of `baseline_diff_day_pnl_series`.
+
+    Falls back to `pnl` as the realised leg (unrealised=0) on rows where
+    `realised` AND `unrealised` are both exactly 0 (the "not populated"
+    case — same trigger as `resolve_realised_unrealised` /
+    `baseline_diff_day_pnl_expr_with_fallback`, used by positions.py's
+    polars route-summary path `_with_baseline_diff_day_change`). Use this
+    (not the plain `baseline_diff_day_pnl_series`) for ANY pandas-path
+    summary rebuild that consumes broker rows where realised/unrealised
+    may be unpopulated (e.g. Groww rows missing native realised_pnl /
+    unrealised_pnl) — otherwise that rebuild disagrees with the polars
+    route-summary path on the exact same underlying row (2026-09 Day P&L
+    audit round 3, item #4)."""
+    _r = pd.to_numeric(realised, errors="coerce").fillna(0.0)
+    _u = pd.to_numeric(unrealised, errors="coerce").fillna(0.0)
+    _p = pd.to_numeric(pnl, errors="coerce").fillna(0.0)
+    _populated = (_r != 0.0) | (_u != 0.0)
+    _total = (_r + _u).where(_populated, _p)
+    if isinstance(base_pnl, pd.Series):
+        _base = pd.to_numeric(base_pnl, errors="coerce").fillna(0.0)
+    else:
+        _base = float(base_pnl or 0.0)
+    return _total - _base
+
+
+def baseline_diff_day_pnl_expr_with_fallback(
+    realised_col: str = "realised",
+    unrealised_col: str = "unrealised",
+    pnl_col: str = "pnl",
+    base_pnl_col: str = "prev_settlement_pnl",
+):
+    """Polars expression wrapper over `baseline_diff_day_pnl_with_fallback`.
+
+    Falls back to `pnl_col` as the realised leg (unrealised=0) only on
+    rows where `realised_col` AND `unrealised_col` are both exactly 0 —
+    same trigger as the scalar helper, vectorised via `pl.when`."""
+    import polars as pl
+    _r = pl.col(realised_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    _u = pl.col(unrealised_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    _p = pl.col(pnl_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    _base = pl.col(base_pnl_col).cast(pl.Float64, strict=False).fill_null(0.0)
+    _total = pl.when((_r != 0.0) | (_u != 0.0)).then(_r + _u).otherwise(_p)
+    return _total - _base
+
+
 def _recompute_day_change_pct(
     df: pd.DataFrame, sel_mask: "pd.Index", qty: "pd.Series"
 ) -> None:

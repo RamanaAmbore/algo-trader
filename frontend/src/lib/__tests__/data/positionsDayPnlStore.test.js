@@ -45,10 +45,8 @@ function computePositionsDayPnl(positions = [], snapshots = {}, marketOpen = tru
     // Compute day P&L using livePositionDayPnl
     const dayPnl = livePositionDayPnl(
       {
-        closePx: Number(pos.previous_close) || Number(pos.close_price) || 0,
         pollLtp: pos.last_price || 0,
         qty: pos.quantity || 0,
-        avg: pos.average_price || 0,
         dcvRow: pos, // raw row for baseDayPnlForPosition
       },
       liveLtp,
@@ -93,13 +91,14 @@ describe('positionsDayPnlStore computation — single position', () => {
         overnight_quantity: 10,
         day_change_val: 50,
         pnl: 200,
+        prev_settlement_pnl: 150, // pnl(200) - day_change_val(50) → base=50
       }),
     ];
     const snapshots = { RELIANCE: { ltp: 1010, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Live path fires: realisedToday = 50 - (1005-1000)*10 = 50-50 = 0
-    // result = 0 + (1010-1000)*10 = 100
+    // base = pnl(200) - prev_settlement_pnl(150) = 50
+    // delta = (1010-1005)*10 = 50 → result = 100
     expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
     expect(result.total).toBeCloseTo(100, 4);
   });
@@ -126,13 +125,14 @@ describe('positionsDayPnlStore computation — single position', () => {
         last_price: 24100,
         overnight_quantity: 1,
         day_change_val: 100,
+        prev_settlement_pnl: 50, // pnl(150, default) - day_change_val(100) → base=100
       }),
     ];
     const snapshots = { NIFTY25AUGFUT: { ltp: 24200, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Snapshot LTP (24200) takes precedence: (24200-24000)*1 = 200
-    // (not (24100-24000)*1 = 100 from last_price)
+    // base = 100; delta = (24200-24100)*1 = 100 → result = 200
+    // Snapshot LTP (24200) takes precedence over last_price (24100) for pollLtp comparison.
     expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(200, 4);
   });
 });
@@ -147,13 +147,14 @@ describe('positionsDayPnlStore — fallback to baseDayPnlForPosition', () => {
         exchange: 'NFO',
         overnight_quantity: 10,
         day_change_val: 50,
+        prev_settlement_pnl: 100, // pnl(150, default) - day_change_val(50) → base=50
       }),
     ];
     // No snapshots provided — liveLtp will be null or use last_price fallback
     const result = computePositionsDayPnl(positions, {}, true);
 
-    // livePositionDayPnl falls through to baseDayPnlForPosition
-    // oq=10, dcv=50 → returns 50
+    // No snapshot → liveLtp falls back to pos.last_price === pollLtp → delta=0
+    // → result = base = 50
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(50, 4);
     expect(result.total).toBeCloseTo(50, 4);
   });
@@ -167,12 +168,13 @@ describe('positionsDayPnlStore — fallback to baseDayPnlForPosition', () => {
       makePositionRow({
         overnight_quantity: 10,
         day_change_val: 50,
+        prev_settlement_pnl: 100, // pnl(150, default) - day_change_val(50) → base=50
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 1050, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, false);
 
-    // marketOpen=false → live path gated off → baseDayPnlForPosition returns dcv=50
+    // marketOpen=false → live delta gated off entirely → returns base=50
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(50, 4);
   });
 });
@@ -190,6 +192,7 @@ describe('positionsDayPnlStore — multiple positions', () => {
         last_price: 1005,
         overnight_quantity: 5,
         day_change_val: 25,
+        prev_settlement_pnl: 125, // pnl(150, default) - day_change_val(25) → base=25
       }),
       makePositionRow({
         tradingsymbol: 'INFY25AUGFUT',
@@ -199,6 +202,7 @@ describe('positionsDayPnlStore — multiple positions', () => {
         last_price: 1005,
         overnight_quantity: 10,
         day_change_val: 50,
+        prev_settlement_pnl: 100, // pnl(150, default) - day_change_val(50) → base=50
       }),
     ];
     const snapshots = {
@@ -207,8 +211,8 @@ describe('positionsDayPnlStore — multiple positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Pos 1: (1010-1000)*5 = 50
-    // Pos 2: (1010-1000)*10 = 100
+    // Pos 1: base=25, delta=(1010-1005)*5=25 → 50
+    // Pos 2: base=50, delta=(1010-1005)*10=50 → 100
     // Total: 150
     expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(50, 4);
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(100, 4);
@@ -225,6 +229,7 @@ describe('positionsDayPnlStore — multiple positions', () => {
         last_price: 505,
         overnight_quantity: 2,
         day_change_val: 10,
+        prev_settlement_pnl: 140, // pnl(150, default) - day_change_val(10) → base=10
       }),
       makePositionRow({
         tradingsymbol: 'EURINR25AUGFUT',
@@ -234,6 +239,7 @@ describe('positionsDayPnlStore — multiple positions', () => {
         last_price: 89,
         overnight_quantity: 1,
         day_change_val: 1,
+        prev_settlement_pnl: 149, // pnl(150, default) - day_change_val(1) → base=1
       }),
       makePositionRow({
         tradingsymbol: 'NIFTY25AUGFUT',
@@ -243,6 +249,7 @@ describe('positionsDayPnlStore — multiple positions', () => {
         last_price: 24100,
         overnight_quantity: 1,
         day_change_val: 100,
+        prev_settlement_pnl: 50, // pnl(150, default) - day_change_val(100) → base=100
       }),
     ];
     const snapshots = {
@@ -252,9 +259,9 @@ describe('positionsDayPnlStore — multiple positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // MCX: (510-500)*2 = 20
-    // CDS: (90-88)*1 = 2
-    // NFO: (24200-24000)*1 = 200
+    // MCX: base=10, delta=(510-505)*2=10 → 20
+    // CDS: base=1, delta=(90-89)*1=1 → 2
+    // NFO: base=100, delta=(24200-24100)*1=100 → 200
     // Total: 222
     expect(result.byKey['MCX:CRUDEOIL25AUGFUT']).toBeCloseTo(20, 4);
     expect(result.byKey['CDS:EURINR25AUGFUT']).toBeCloseTo(2, 4);
@@ -275,13 +282,13 @@ describe('positionsDayPnlStore — short positions', () => {
         overnight_quantity: -5,
         day_change_val: 50, // -5 * (490-500) = 50
         average_price: 510,
+        prev_settlement_pnl: 100, // pnl(150, default) - day_change_val(50) → base=50
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 480, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Live path: realisedToday = 50 - (490-500)*(-5) = 50-50 = 0
-    // result = 0 + (480-500)*(-5) = 0 + 100 = 100
+    // base=50; delta = (480-490)*(-5) = 50 → result = 100
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(100, 4);
   });
 
@@ -294,13 +301,13 @@ describe('positionsDayPnlStore — short positions', () => {
         overnight_quantity: -10,
         day_change_val: -100, // -10 * (510-500) = -100
         average_price: 495,
+        prev_settlement_pnl: 250, // pnl(150, default) - day_change_val(-100) → base=-100
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 520, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Live path: realisedToday = -100 - (510-500)*(-10) = -100+100 = 0
-    // result = 0 + (520-500)*(-10) = -200
+    // base=-100; delta = (520-510)*(-10) = -100 → result = -200
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-200, 4);
   });
 
@@ -313,6 +320,7 @@ describe('positionsDayPnlStore — short positions', () => {
         last_price: 55,
         overnight_quantity: -1,
         day_change_val: -5, // -1 * (55-50) = -5
+        prev_settlement_pnl: 155, // pnl(150, default) - day_change_val(-5) → base=-5
       }),
       makePositionRow({
         tradingsymbol: 'NIFTY25AUG100CE',
@@ -321,6 +329,7 @@ describe('positionsDayPnlStore — short positions', () => {
         last_price: 55,
         overnight_quantity: 1,
         day_change_val: 5,
+        prev_settlement_pnl: 145, // pnl(150, default) - day_change_val(5) → base=5
       }),
     ];
     const snapshots = {
@@ -329,8 +338,8 @@ describe('positionsDayPnlStore — short positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // PE short: (60-50)*(-1) = -10
-    // CE long: (60-50)*(1) = 10
+    // PE short: base=-5, delta=(60-55)*(-1)=-5 → -10
+    // CE long: base=5, delta=(60-55)*1=5 → 10
     // Total: 0 (hedge neutral)
     expect(result.byKey['NFO:NIFTY25AUG100PE']).toBeCloseTo(-10, 4);
     expect(result.byKey['NFO:NIFTY25AUG100CE']).toBeCloseTo(10, 4);
@@ -361,13 +370,13 @@ describe('positionsDayPnlStore — edge cases', () => {
       makePositionRow({
         overnight_quantity: 5,
         day_change_val: 25,
+        prev_settlement_pnl: 125, // pnl(150, default) - day_change_val(25) → base=25
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 0, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // ltp=0 fails > 0 guard → falls back to baseDayPnlForPosition
-    // oq=5, dcv=25 → returns 25
+    // ltp=0 fails the >0 guard → live delta skipped → returns base=25
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(25, 4);
   });
 });
@@ -383,13 +392,15 @@ describe('positionsDayPnlStore — new positions opened today', () => {
         quantity: 5,
         overnight_quantity: 0,
         day_change_val: 0,
-        pnl: 50, // (110-100)*5
+        pnl: 50, // (110-100)*5 — broker's last poll was already at ltp=110
+        last_price: 110, // pollLtp matches the poll pnl was computed at
+        prev_settlement_pnl: null, // no prior close-reset snapshot — new position
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 110, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // New-position branch: (110-100)*5 = 50
+    // base = pnl = 50; delta = (110-110)*5 = 0 (no move since last poll) → 50
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(50, 4);
   });
 
@@ -401,13 +412,15 @@ describe('positionsDayPnlStore — new positions opened today', () => {
         quantity: -3,
         overnight_quantity: 0,
         day_change_val: 0,
-        pnl: 15, // (195-200)*(-3)
+        pnl: 15, // (195-200)*(-3) — broker's last poll was already at ltp=195
+        last_price: 195, // pollLtp matches the poll pnl was computed at
+        prev_settlement_pnl: null, // no prior close-reset snapshot — new position
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 195, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // New-position branch for short: (195-200)*(-3) = 15
+    // base = pnl = 15; delta = (195-195)*(-3) = 0 (no move since last poll) → 15
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(15, 4);
   });
 
@@ -446,13 +459,13 @@ describe('positionsDayPnlStore — mixed overnight + intraday positions', () => 
         overnight_quantity: -10,
         day_change_val: -25, // decomposed
         pnl: -125,
+        prev_settlement_pnl: -100, // pnl(-125) - day_change_val(-25) → base=-25
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 220, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Live path: realisedToday = -25 - (215-210)*(-15) = -25+75 = 50
-    // result = 50 + (220-210)*(-15) = 50-150 = -100
+    // base=-25; delta=(220-215)*(-15)=-75 → result=-100
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-100, 4);
   });
 
@@ -468,13 +481,13 @@ describe('positionsDayPnlStore — mixed overnight + intraday positions', () => 
         overnight_quantity: 5,
         day_change_val: 75, // 5*(1015-1000) + 5*(1015-1010) = 75
         pnl: 100, // (1015-1005)*10
+        prev_settlement_pnl: 25, // pnl(100) - day_change_val(75) → base=75
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 1020, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Live path: realisedToday = 75 - (1015-1000)*10 = 75-150 = -75
-    // result = -75 + (1020-1000)*10 = -75+200 = 125
+    // base=75; delta=(1020-1015)*10=50 → result=125
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(125, 4);
   });
 });
@@ -492,6 +505,7 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
         last_price: 24100,
         overnight_quantity: 1,
         day_change_val: 100,
+        prev_settlement_pnl: 50, // pnl(150, default) - day_change_val(100) → base=100
       }),
       makePositionRow({
         tradingsymbol: 'BANKNIFTY25AUGFUT',
@@ -501,6 +515,7 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
         last_price: 51900,
         overnight_quantity: 1,
         day_change_val: -100,
+        prev_settlement_pnl: 250, // pnl(150, default) - day_change_val(-100) → base=-100
       }),
     ];
     const snapshots = {
@@ -509,8 +524,8 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // NIFTY: (24200-24000)*1 = 200
-    // BANKNIFTY: (51800-52000)*1 = -200
+    // NIFTY: base=100, delta=(24200-24100)*1=100 → 200
+    // BANKNIFTY: base=-100, delta=(51800-51900)*1=-100 → -200
     // Total: 0
     expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(200, 4);
     expect(result.byKey['NFO:BANKNIFTY25AUGFUT']).toBeCloseTo(-200, 4);
@@ -526,6 +541,7 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
         last_price: 105,
         overnight_quantity: 1,
         day_change_val: 5,
+        prev_settlement_pnl: 145, // pnl(150, default) - day_change_val(5) → base=5
       }),
       makePositionRow({
         tradingsymbol: 'P2',
@@ -534,6 +550,7 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
         last_price: 190,
         overnight_quantity: 1,
         day_change_val: -10,
+        prev_settlement_pnl: 160, // pnl(150, default) - day_change_val(-10) → base=-10
       }),
       makePositionRow({
         tradingsymbol: 'P3',
@@ -542,6 +559,7 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
         last_price: 52,
         overnight_quantity: 2,
         day_change_val: 4,
+        prev_settlement_pnl: 146, // pnl(150, default) - day_change_val(4) → base=4
       }),
     ];
     const snapshots = {
@@ -551,9 +569,9 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // P1: (110-100)*1 = 10
-    // P2: (185-200)*1 = -15
-    // P3: (55-50)*2 = 10
+    // P1: base=5, delta=(110-105)*1=5 → 10
+    // P2: base=-10, delta=(185-190)*1=-5 → -15
+    // P3: base=4, delta=(55-52)*2=6 → 10
     // Total: 5
     expect(result.byKey['NFO:P1']).toBeCloseTo(10, 4);
     expect(result.byKey['NFO:P2']).toBeCloseTo(-15, 4);
@@ -574,12 +592,13 @@ describe('positionsDayPnlStore — fractional values', () => {
         overnight_quantity: 2.5,
         day_change_val: 0.8075, // 2.5 * 0.323
         average_price: 1200.0,
+        prev_settlement_pnl: 149.1925, // pnl(150, default) - day_change_val(0.8075) → base=0.8075
       }),
     ];
     const snapshots = { INFY25AUGFUT: { ltp: 1235.1, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // (1235.1 - 1234.567) * 2.5 ≈ 1.3325
+    // base=0.8075; delta=(1235.1-1234.890)*2.5=0.525 → 1.3325
     expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(1.3325, 3);
   });
 });
@@ -598,132 +617,67 @@ describe('positionsDayPnlStore — large positions', () => {
         overnight_quantity: 100,
         day_change_val: 1000, // 100 * (6510-6500)
         average_price: 6400,
+        prev_settlement_pnl: -850, // pnl(150, default) - day_change_val(1000) → base=1000
       }),
     ];
     const snapshots = { CRUDEOIL25SEPTFUT: { ltp: 6520, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // (6520-6500)*100 = 2000
+    // base=1000; delta=(6520-6510)*100=1000 → 2000
     expect(result.byKey['MCX:CRUDEOIL25SEPTFUT']).toBeCloseTo(2000, 4);
   });
 });
 
-// ── Test 11: previous_close preference (Change 1 / Change 2 / Change 3) ──────
+// ── Test 11: previous_close / close_price are no longer read by the formula ─
 //
-// These three tests validate the `previous_close` preference introduced when
-// PositionRow gained the `previous_close` field (frozen prior-session settlement
-// LTP from daily_book). Holdings already used this pattern (75a335f7); positions
-// now applies the same "previous_close || close_price" cascade.
+// Historical note: these three tests originally validated a `previous_close ||
+// close_price` cascade inside the old Case-branch Day P&L formula. The
+// baseline-diff redesign (`current_total_profit − prev_settlement_pnl`)
+// eliminated that cascade entirely — `close_price`/`previous_close` no
+// longer feed the positions Day P&L formula at all (holdings keeps its own,
+// separate close-price mechanism unchanged — see holdingsDayPnlStore).
+// Rewritten to assert that invariant directly: the formula's result is
+// unaffected by close_price/previous_close, and depends only on
+// pnl/prev_settlement_pnl (base) and pollLtp/liveLtp/qty (live delta).
 
-describe('positionsDayPnlStore — previous_close preference over close_price', () => {
-  it('Test 11a: previous_close wins over close_price when both are non-zero', () => {
-    // Scenario: settlement drift — Kite's close_price drifted to 499 but
-    // previous_close (frozen from daily_book) is the correct 500.
-    // The store should use 500, not 499.
-    const positions = [
-      makePositionRow({
-        tradingsymbol: 'RELIANCE',
-        exchange: 'NSE',
-        quantity: 10,
-        overnight_quantity: 10,
-        average_price: 490,
-        previous_close: 500,
-        close_price: 499,       // stale / drifted value — must NOT be used
-        last_price: 510,
-        day_change_val: 100,    // 10*(510-500), consistent with closePx=500
-        pnl: 200,
-      }),
-    ];
-    // Live tick confirms 510
-    const snapshots = { RELIANCE: { ltp: 510, ltp_ts: 1 } };
-    const result = computePositionsDayPnl(positions, snapshots, true);
+describe('positionsDayPnlStore — close_price/previous_close no longer affect the formula', () => {
+  it('result is identical regardless of close_price / previous_close values', () => {
+    const base = {
+      tradingsymbol: 'RELIANCE', exchange: 'NSE', quantity: 10,
+      average_price: 490, last_price: 510, pnl: 200, prev_settlement_pnl: 100,
+    };
+    const withDrift  = makePositionRow({ ...base, previous_close: 500, close_price: 499 });
+    const withoutRef = makePositionRow({ ...base, previous_close: 0,   close_price: 0 });
 
-    // closePx must be 500 (previous_close), NOT 499 (close_price)
-    // realisedToday = 100 - (510-500)*10 = 100-100 = 0
-    // result = 0 + (510-500)*10 = 100   [using closePx=500]
-    // If closePx were 499: realisedToday = 100-(510-499)*10 = 100-110=-10
-    //                      result = -10 + (510-499)*10 = -10+110 = 100 (coincidence)
-    // Use dcv-path to make the distinction clear (no live tick):
-    const resultNoPulse = computePositionsDayPnl(positions, {}, true);
-    // No live tick → falls through to baseDayPnlForPosition → dcv=100 (oq≠0, dcv≠0)
-    expect(resultNoPulse.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
+    const rDrift  = computePositionsDayPnl([withDrift],  { RELIANCE: { ltp: 510, ltp_ts: 1 } }, true);
+    const rNoRef  = computePositionsDayPnl([withoutRef], { RELIANCE: { ltp: 510, ltp_ts: 1 } }, true);
 
-    // With live tick: formula uses closePx=500
-    // (510-500)*10 = 100
-    expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
+    // base = pnl(200) - prev_settlement_pnl(100) = 100; delta = (510-510)*10 = 0 → 100
+    expect(rDrift.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
+    expect(rNoRef.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
+    expect(rDrift.byKey['NSE:RELIANCE']).toBe(rNoRef.byKey['NSE:RELIANCE']);
   });
 
-  it('Test 11b: fallback to close_price when previous_close is 0 (absent / cold boot)', () => {
-    // Scenario: position from a cold-boot snapshot where previous_close has
-    // not yet been populated (defaults to 0). close_price=499 is the only
-    // available reference — should be used.
-    const positions = [
-      makePositionRow({
-        tradingsymbol: 'INFOSYS',
-        exchange: 'NSE',
-        quantity: 5,
-        overnight_quantity: 5,
-        average_price: 490,
-        previous_close: 0,      // absent — should be skipped (falsy)
-        close_price: 499,
-        last_price: 505,
-        day_change_val: 30,     // 5*(505-499)
-        pnl: 75,
-      }),
-    ];
-    const snapshots = { INFOSYS: { ltp: 505, ltp_ts: 1 } };
-    const result = computePositionsDayPnl(positions, snapshots, true);
-
-    // closePx must be 499 (close_price) because previous_close=0 is falsy
-    // realisedToday = 30 - (505-499)*5 = 30-30 = 0
-    // result = 0 + (505-499)*5 = 30
-    expect(result.byKey['NSE:INFOSYS']).toBeCloseTo(30, 4);
-  });
-
-  it('Test 11c: no epsilon guard on positions — formula fires even when ltp ≈ previous_close', () => {
-    // Unlike holdingsDayPnlStore (which skips the formula when |ltp−close| ≤ 0.005
-    // as a post-settlement guard), livePositionDayPnl has NO epsilon guard.
-    // When ltp is within 0.005 of closePx, the formula still fires.
-    // This test documents the intentional difference and guards against someone
-    // accidentally porting the holdings epsilon guard to positions.
+  it('no epsilon guard on positions — live delta fires even for a sub-paisa move', () => {
+    // Unlike holdingsDayPnlStore (which skips its formula when |ltp−close| ≤
+    // 0.005 as a post-settlement guard), livePositionDayPnl has no epsilon
+    // guard — the delta applies at any non-zero (liveLtp − pollLtp).
     const positions = [
       makePositionRow({
         tradingsymbol: 'TATASTEEL',
         exchange: 'NSE',
         quantity: 100,
-        overnight_quantity: 100,
         average_price: 498,
-        previous_close: 500,
-        close_price: 499,
-        last_price: 500.001,
-        day_change_val: 50,     // arbitrary dcv — formula should NOT use this
+        last_price: 500,
         pnl: 200,
+        prev_settlement_pnl: 150, // base=50
       }),
     ];
     const snapshots = { TATASTEEL: { ltp: 500.001, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // ltp=500.001, closePx=500 (previous_close wins), qty=100
-    // delta = 0.001, within 0.005 — but NO epsilon guard on positions
-    // realisedToday = 50 - (500.001-500)*100 = 50 - 0.1 = 49.9
-    // result = 49.9 + (500.001-500)*100 = 49.9 + 0.1 = 50.0
-    // (formula fires; result ≈ dcv by arithmetic coincidence when last_price ≈ ltp)
-    // The key assertion: result is NOT exactly dcv=50 from the fallback path;
-    // it is computed by the live formula. Since last_price == ltp here the
-    // value equals dcv — assert the formula path executed by confirming the
-    // result is approximately (ltp - closePx) * qty = 0.001 * 100 = 0.1 ABOVE
-    // what a stale previous_close would have given if closePx were 499:
-    //   (500.001-499)*100 = 100.1 (wrong — proves previous_close=500 was used)
-    // Distinguish: with closePx=500 formula result ≈ 50.0
-    //              with closePx=499 formula result = 49.9 + (500.001-499)*100 = 149.9
-    expect(result.byKey['NSE:TATASTEEL']).toBeCloseTo(50.0, 1);
-    // Confirm formula fires (NOT dcv fallback at 50 exactly — but numerically close here;
-    // distinguish by verifying it is NOT the holdings-style dcv-forced value at 50.0
-    // exactly while ltp > 0 and closePx > 0 and qty !== 0)
-    // The reliable signal: no epsilon guard means this code path reaches the formula.
-    // Since last_price=500.001=ltp, realisedToday cancels perfectly → result=dcv=50.
-    // We assert closeness to 50 AND that an incorrect closePx=499 would have given ~149:
-    expect(result.byKey['NSE:TATASTEEL']).not.toBeCloseTo(149.9, 0);
+    // base=50; delta=(500.001-500)*100=0.1 → 50.1
+    expect(result.byKey['NSE:TATASTEEL']).toBeCloseTo(50.1, 3);
   });
 });
 

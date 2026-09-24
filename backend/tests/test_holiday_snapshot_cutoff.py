@@ -229,7 +229,7 @@ class TestFetchSnapshotCloseMapPositions:
         """Saturday pre-08:00: single query returns latest row before today_08 (ltp=490)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1000.0)]
+        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1000.0, "positions", None)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
 
@@ -246,7 +246,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 490.0
         assert prev_pnl_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 1000.0
@@ -256,7 +256,7 @@ class TestFetchSnapshotCloseMapPositions:
         """Diwali holiday gap: single query returns the most-recent row before today_08."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        mock_rows = [("ACC1", "NIFTY25OCTFUT", 480.0, 2000.0)]
+        mock_rows = [("ACC1", "NIFTY25OCTFUT", 480.0, 2000.0, "positions", None)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
 
@@ -273,7 +273,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "NIFTY25OCTFUT")) == 480.0
 
@@ -282,7 +282,7 @@ class TestFetchSnapshotCloseMapPositions:
         """Non-trading day: single query returns latest daily_book row (ltp=980)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        mock_rows = [("ACC1", "RELIANCE", 980.0, 5000.0)]
+        mock_rows = [("ACC1", "RELIANCE", 980.0, 5000.0, "positions", None)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
 
@@ -299,7 +299,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "RELIANCE")) == 980.0
 
@@ -324,7 +324,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map == {}
         assert prev_pnl_map == {}
@@ -334,7 +334,7 @@ class TestFetchSnapshotCloseMapPositions:
         """Live Tue 14:00: single query returns Mon settlement (490)."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0)]
+        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0, "positions", None)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
 
@@ -351,7 +351,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 2, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 490.0
 
@@ -360,7 +360,7 @@ class TestFetchSnapshotCloseMapPositions:
         """Tue 23:35 IST (post-close, in snapshot window): single query path."""
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
-        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0)]
+        mock_rows = [("ACC1", "CRUDEOIL25SEPFUT", 490.0, 1500.0, "positions", None)]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
 
@@ -377,7 +377,7 @@ class TestFetchSnapshotCloseMapPositions:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 2, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map.get(("ACC1", "CRUDEOIL25SEPFUT")) == 490.0
 
@@ -551,7 +551,7 @@ class TestEdgeCases:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map == {}
         assert prev_pnl_map == {}
@@ -570,8 +570,8 @@ class TestEdgeCases:
         from backend.api.routes.positions import _fetch_snapshot_close_map
 
         mock_rows = [
-            ("ACC1", "RELIANCE", 980.0, 1000.0),
-            ("ACC2", "RELIANCE", 975.0, 500.0),
+            ("ACC1", "RELIANCE", 980.0, 1000.0, "positions", None),
+            ("ACC2", "RELIANCE", 975.0, 500.0, "positions", None),
         ]
         mock_result = MagicMock()
         mock_result.all.return_value = mock_rows
@@ -589,7 +589,7 @@ class TestEdgeCases:
             mock_get_session.return_value.__aexit__ = AsyncMock(return_value=None)
 
             cutoff = datetime(2026, 9, 7, 8, 0, tzinfo=ZoneInfo("Asia/Kolkata"))
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, cutoff)
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(raw, cutoff)
 
         assert snapshot_map[("ACC1", "RELIANCE")] == 980.0
         assert snapshot_map[("ACC2", "RELIANCE")] == 975.0

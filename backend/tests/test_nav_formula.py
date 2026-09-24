@@ -554,6 +554,53 @@ class TestNavMultiAccount:
         )
         assert set(accts) == {"ZG0790", "DH6847"}
 
+    def test_nav_includes_realised_pnl_for_closed_today_position(self):
+        """Day P&L / Exp P&L redesign: a same-day FULL EXIT (quantity=0) has
+        unrealised=0 but a non-zero realised leg — that realised P&L must
+        still reach NAV. Before the fix, `_positions_from_df` summed only
+        `unrealised` gated to `quantity != 0`, so this row contributed 0 to
+        positions_mtm and the realized gain silently vanished from NAV."""
+        positions_df = pd.DataFrame([
+            {
+                "account": "ZG0790",
+                "symbol": "NIFTY50",
+                "quantity": 0.0,        # fully closed intraday
+                "unrealised": 0.0,      # flat — legitimately zero
+                "realised": 3200.0,     # today's realized gain from the exit
+            },
+            {
+                "account": "ZG0790",
+                "symbol": "BANKNIFTY",
+                "quantity": 10.0,       # still open
+                "unrealised": 1500.0,
+                "realised": 0.0,
+            },
+        ])
+
+        positions_mtm, accts = _positions_from_df(positions_df)
+        # 3200 (ungated realised) + 1500 (qty!=0-gated unrealised) = 4700
+        assert math.isclose(positions_mtm, 4700.0, abs_tol=0.01), (
+            f"positions_mtm={positions_mtm:.2f}, expected 4700.00 — realised "
+            "must be summed UNGATED so a closed-today position's realized "
+            "P&L reaches NAV (current_total_profit SSOT, pnl_math.py)"
+        )
+        assert set(accts) == {"ZG0790"}
+
+    def test_nav_realised_multi_account_sum(self):
+        """Realised P&L from closed-today positions sums correctly across
+        multiple accounts, alongside open positions' unrealised M2M."""
+        positions_df = pd.DataFrame([
+            {"account": "ZG0790", "symbol": "NIFTY50", "quantity": 0.0,
+             "unrealised": 0.0, "realised": 2000.0},
+            {"account": "DH6847", "symbol": "GOLD", "quantity": 5.0,
+             "unrealised": 800.0, "realised": 500.0},
+        ])
+        positions_mtm, accts = _positions_from_df(positions_df)
+        # ZG0790: 2000 (realised, ungated) + 0 (unrealised, qty=0 gated out)
+        # DH6847: 500 (realised, ungated) + 800 (unrealised, qty!=0)
+        assert math.isclose(positions_mtm, 3300.0, abs_tol=0.01)
+        assert set(accts) == {"ZG0790", "DH6847"}
+
 
 # ---------------------------------------------------------------------------
 # Tests: Null/NaN handling

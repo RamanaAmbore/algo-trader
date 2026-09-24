@@ -71,6 +71,16 @@ def _run_override_stale_close_from_snapshot(
     # Use a fixed midnight (2026-07-08 00:00 IST) for deterministic tests
     midnight = datetime(2026, 7, 8, 0, 0, 0, tzinfo=ist)
 
+    # _fetch_snapshot_close_map's query now returns 6 columns (audit item #4
+    # — added kind/qty so the caller can gate a holdings-sourced baseline).
+    # Pad legacy 4-tuple fixtures with (kind='positions', qty=None) — a
+    # plain positions-kind baseline with no pro-ration context, matching
+    # the pre-fix unconditional-use behaviour these tests assert on.
+    snapshot_rows = [
+        (acct, sym, ltp, total_pnl, "positions", None)
+        for (acct, sym, ltp, total_pnl) in snapshot_rows
+    ]
+
     # Mock the DB session to return snapshot rows
     mock_result = MagicMock()
     mock_result.all.return_value = snapshot_rows

@@ -148,6 +148,81 @@ async def test_close_once_proceeds_when_cap_on_no_segments_triggered():
 
 
 # ---------------------------------------------------------------------------
+# Guard 2b — _run_close_once converges positions onto the baseline-diff
+# Day P&L SSOT (2026-09 Day P&L audit item #7), mirroring the treatment
+# `_perf_fetch_all_broker_data` already gives `df_positions`/`sum_positions`.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_close_once_applies_close_override_and_rebuilds_positions_summary():
+    """When a segment's close trigger fires, `_run_close_once` must:
+      1. call `_override_stale_close_from_snapshot(df_p)` (async close/
+         baseline-pnl patch — same one `_perf_fetch_all_broker_data` uses)
+      2. rebuild `sum_p` via `_rebuild_positions_summary(df_p)` (baseline-
+         diff Day P&L SSOT) instead of leaving the legacy
+         `apply_day_change_backstop` summary from the sync
+         `_fetch_positions_direct` worker in place.
+    """
+    from datetime import date, datetime, time as dtime
+    from zoneinfo import ZoneInfo
+    from backend.api.background import _run_close_once, _default_seg_state
+
+    IST = ZoneInfo("Asia/Kolkata")
+    # Friday, well past a 15:30 close + 15 min offset.
+    now = datetime(2026, 8, 21, 16, 0, 0, tzinfo=IST)
+    assert now.weekday() == 4
+
+    seg = {"name": "NON-MCX", "exchange": "NSE", "hours_end": dtime(15, 30)}
+    state = {"close_seg_state": _default_seg_state()}
+
+    df_h = pd.DataFrame()
+    df_p = pd.DataFrame([{
+        "account": "ZG0790", "tradingsymbol": "RELIANCE", "exchange": "NSE",
+        "quantity": 10, "average_price": 100.0, "last_price": 110.0,
+        "prev_close": 0.0, "pnl": 100.0, "day_change_val": 0.0,
+        "realised": 0.0, "unrealised": 100.0,
+    }])
+    legacy_sum_p = pd.DataFrame([{"account": "TOTAL", "pnl": 100.0, "day_change_val": 0.0}])
+    rebuilt_sum_p = pd.DataFrame([{"account": "TOTAL", "pnl": 100.0, "day_change_val": 999.0}])
+
+    async def _mock_run(fn, *a):
+        return fn(*a)
+
+    mock_override = AsyncMock()
+    mock_rebuild = MagicMock(return_value=rebuilt_sum_p)
+    mock_send = MagicMock()
+
+    with (
+        patch("backend.shared.helpers.utils.is_enabled", return_value=True),
+        patch("backend.api.background._get_segments", return_value=[seg]),
+        patch("backend.api.background.timestamp_indian", return_value=now),
+        patch("backend.api.background._run", side_effect=_mock_run),
+        patch("backend.api.background._fetch_holdings_direct",
+              return_value=(df_h, pd.DataFrame())),
+        patch("backend.api.background._fetch_positions_direct",
+              return_value=(df_p, legacy_sum_p)),
+        patch("backend.api.background._fetch_margins_direct",
+              return_value=pd.DataFrame()),
+        patch("backend.api.routes.positions._override_stale_close_from_snapshot",
+              mock_override),
+        patch("backend.api.background._rebuild_positions_summary", mock_rebuild),
+        patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
+    ):
+        await _run_close_once(state)
+
+    mock_override.assert_awaited_once()
+    assert mock_override.await_args.args[0] is df_p, (
+        "_override_stale_close_from_snapshot must be called with the raw "
+        "positions DataFrame from _fetch_positions_direct"
+    )
+    mock_rebuild.assert_called_once_with(df_p)
+    assert state["close_seg_state"]["NON-MCX"]["last_close"] == now.date(), (
+        "close summary must complete (last_close updated) even with the "
+        "override/rebuild step inserted"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Guard 3 — _run_once inside _task_visitor_log_daily exits when cap off
 # ---------------------------------------------------------------------------
 

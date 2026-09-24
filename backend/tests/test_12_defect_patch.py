@@ -107,26 +107,37 @@ def test_derivatives_page_positions_load_uses_args_not_opts():
 
 
 def test_navstrip_pslot_formula_guard_stale_snapshot():
-    """baseDayPnlForPosition Case 4 must only guard against close <= 0 (missing prev_close).
+    """baseDayPnlForPosition must use the baseline-diff formula with no
+    close/avg-based guard at all — making the 8474a17e regression class
+    (a `close !== ltp` equality guard zeroing realized P&L whenever broker's
+    close_price hadn't refreshed) structurally impossible.
 
-    The former close !== ltp guard was a regression (8474a17e) that zeroed realized
-    intraday P&L whenever broker's close_price hadn't refreshed. The correct guard
-    is close <= 0 only — the formula pnl - oq*(close-avg) is valid even when close === ltp.
+    As of the Day P&L redesign, the formula is
+    `currentTotalProfit(p) - base_pnl` (realised + unrealised, minus the
+    close-reset baseline) — it no longer references `close`/`avg` at all,
+    so there is nothing for a stale-close equality guard to gate on.
     """
     src_path = Path("/Users/ramanambore/projects/ramboq/frontend/src/lib/data/nav.js")
     src = src_path.read_text()
 
-    # Correct guard: only bail when close is zero/missing
-    assert "close <= 0" in src, (
-        "baseDayPnlForPosition Case 4 must guard only against close <= 0. "
-        "The close !== ltp guard was removed as a regression (8474a17e)."
+    assert "export function baseDayPnlForPosition" in src, (
+        "baseDayPnlForPosition must still be exported from nav.js"
+    )
+    assert "currentTotalProfit(p)" in src, (
+        "baseDayPnlForPosition must be built on currentTotalProfit "
+        "(realised + unrealised, pnl-fallback) per the Day P&L redesign."
     )
 
-    # Regression guard: close !== ltp must NOT be present in baseDayPnlForPosition
+    # Regression guard: neither the removed stale-close equality guard nor
+    # the older oq*(close-avg) formula it protected may reappear.
     assert "close !== ltp" not in src, (
         "Regression detected: close !== ltp guard found in nav.js. "
-        "This guard incorrectly zeroes realized P&L when broker close_price hasn't refreshed. "
-        "Only close <= 0 is a valid guard."
+        "This guard incorrectly zeroed realized P&L when broker close_price hadn't "
+        "refreshed. The new baseline-diff formula has no close/avg guard at all."
+    )
+    assert "oq*(close-avg)" not in src and "oq * (close - avg)" not in src, (
+        "Regression detected: the retired oq*(close-avg) formula reappeared in nav.js. "
+        "Day P&L must be computed via currentTotalProfit(p) - base_pnl."
     )
 
 

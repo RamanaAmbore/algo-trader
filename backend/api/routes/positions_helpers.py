@@ -21,7 +21,9 @@ from backend.api.rbac import (
     resolve_role_from_connection,
     user_scope_for_connection,
 )
-from backend.api.schemas import PositionRow, PositionsResponse, PositionsSummaryRow
+from backend.api.schemas import (
+    PositionRow, PositionsResponse, PositionsSummaryRow, PositionsSymbolSummaryRow,
+)
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.utils import mask_account
 
@@ -51,6 +53,59 @@ def _resolve_previous_close(
     return pc_f
 
 
+def _resolve_prev_settlement_pnl(
+    raw_value: "float | None",
+    kind: "str | None",
+    hold_qty: "float | None",
+    *,
+    product: "str | None",
+    day_sell_qty: "float | None",
+) -> "float | None":
+    """Gate/pro-rate a batch-anchored baseline before it's used as
+    `prev_settlement_pnl` (audit item #4 — "holdings phantom baseline").
+
+    `_BASELINE_PNL_CTE_SQL`'s `pnl_final` picks a 'positions'-kind row over
+    a 'holdings'-kind row for the same (account, symbol) when both exist —
+    but when ONLY a holdings row exists (no positions-kind row in
+    yesterday's batch), that holding's `total_pnl` is the LIFETIME
+    unrealised gain on the WHOLE holding, not a valid baseline for an
+    unrelated same-symbol positions row today (a fresh MIS trade, or a CNC
+    top-up) — using it verbatim can be off by lakhs.
+
+    A holdings-kind baseline is legitimate ONLY for the documented
+    "holding sold into a CNC position" case (CLAUDE.md "Holdings sold →
+    P&L splits"): today's row must be a CNC sale that actually drew down
+    (some of) that holding. In that case the baseline is pro-rated by the
+    fraction of the holding actually sold — `hold_total_pnl × min(sold,
+    hold_qty) / hold_qty` — which reduces to
+    `(prev_close − avg) × sold_qty`, matching the documented "sold portion
+    day P&L" formula, rather than subtracting the FULL holding's lifetime
+    gain from today's (much smaller) sold-quantity P&L.
+
+    A 'positions'-kind baseline (or no kind info at all — older callers
+    that haven't threaded kind/qty through) passes through unchanged.
+
+    Returns None (no baseline — base_pnl defaults to 0 downstream) when a
+    holdings-kind baseline doesn't meet the CNC-sale gate.
+    """
+    if raw_value is None:
+        return None
+    if kind != "holdings":
+        return float(raw_value)
+    try:
+        _hold_qty = float(hold_qty) if hold_qty is not None else 0.0
+    except (TypeError, ValueError):
+        _hold_qty = 0.0
+    try:
+        _sold = float(day_sell_qty) if day_sell_qty is not None else 0.0
+    except (TypeError, ValueError):
+        _sold = 0.0
+    if str(product or "").upper() != "CNC" or _hold_qty <= 0 or _sold <= 0:
+        return None
+    _ratio = min(_sold, _hold_qty) / _hold_qty
+    return float(raw_value) * _ratio
+
+
 def _parse_overnight_qty(payload_json, fallback_qty: float) -> float:
     """Return overnight_quantity from payload_json, falling back to fallback_qty."""
     try:
@@ -60,6 +115,26 @@ def _parse_overnight_qty(payload_json, fallback_qty: float) -> float:
         pj = {}
     oq_raw = pj.get("overnight_quantity")
     return float(oq_raw) if oq_raw is not None else float(fallback_qty)
+
+
+def _parse_payload_num(payload_json, key: str) -> "float | None":
+    """Return a top-level numeric field from payload_json, or None when
+    absent/unparseable. `payload_json` embeds the broker's raw row dict
+    verbatim at the top level (see daily_snapshot.py's
+    `_row_payload_with_extras`), so day_sell_quantity / etc. are readable
+    directly without going through the `snapshot_extras` sub-dict."""
+    try:
+        pj = _json.loads(payload_json) if isinstance(payload_json, str) else payload_json
+        pj = pj if isinstance(pj, dict) else {}
+    except (_json.JSONDecodeError, ValueError, TypeError):
+        return None
+    raw = pj.get(key)
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _compute_snapshot_day_pnl(
@@ -88,10 +163,33 @@ def _compute_snapshot_day_pnl(
 #    _build_paper_positions_response, and the mode=both merge in get_positions)
 # ---------------------------------------------------------------------------
 
+def _row_baseline_diff_day_pnl(row: PositionRow) -> float:
+    """SSOT Day P&L for one PositionRow via
+    pnl_math.baseline_diff_day_pnl_with_fallback.
+
+    Prefers the `realised`/`unrealised` decomposition when populated (the
+    live-fetch path, `_fetch()` in positions.py). Falls back to `row.pnl`
+    as the "realised" leg with unrealised=0 when both are zero together —
+    same trigger `pnl_math.resolve_realised_unrealised` uses everywhere
+    else (polars summary builders, frontend `currentTotalProfit`), so this
+    row-level path can never disagree with the vectorised ones on the same
+    data.
+    """
+    from backend.api.algo.pnl_math import baseline_diff_day_pnl_with_fallback
+    _base = row.prev_settlement_pnl or 0.0
+    return baseline_diff_day_pnl_with_fallback(row.realised, row.unrealised, row.pnl, _base)
+
+
 def build_summary_from_rows(
     rows: list[PositionRow],
 ) -> list[PositionsSummaryRow]:
     """Aggregate per-account sums + TOTAL row from a list of PositionRow structs.
+
+    `day_change_val` here is the baseline-diff Day P&L SSOT
+    (`pnl_math.baseline_diff_day_pnl`) — current total profit minus
+    base_pnl (yesterday's daily_book.total_pnl) — summed per account, NOT
+    a sum of the legacy per-row `day_change_val` field (which is kept on
+    PositionRow for diagnostics only, per the Day P&L / Exp P&L redesign).
 
     `day_prev_val` = Σ |close_price × quantity| per account (denominator for
     day_change_percentage).  This matches the polars expression used by _fetch()
@@ -104,7 +202,7 @@ def build_summary_from_rows(
     for row in rows:
         acct = row.account
         pnl_by_account[acct]  = pnl_by_account.get(acct, 0.0) + row.pnl
-        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + row.day_change_val
+        dcv_by_account[acct]  = dcv_by_account.get(acct, 0.0) + _row_baseline_diff_day_pnl(row)
         prev_by_account[acct] = (
             prev_by_account.get(acct, 0.0)
             + abs(row.prev_close * row.quantity)
@@ -130,6 +228,56 @@ def build_summary_from_rows(
     total_prev = sum(prev_by_account.values())
     summary.append(PositionsSummaryRow(
         account="TOTAL",
+        pnl=total_pnl_sum,
+        day_change_val=total_dcv_sum,
+        day_change_percentage=(
+            total_dcv_sum / total_prev * 100.0 if total_prev else 0.0
+        ),
+        day_prev_val=total_prev,
+    ))
+    return summary
+
+
+def build_symbol_summary_from_rows(
+    rows: list[PositionRow],
+) -> list[PositionsSymbolSummaryRow]:
+    """Aggregate per-symbol (across accounts) sums + TOTAL row from a list of
+    PositionRow structs. Parallel rollup to `build_summary_from_rows`, grouped
+    by `tradingsymbol` instead of `account`. Same baseline-diff Day P&L SSOT.
+    """
+    pnl_by_symbol: dict[str, float] = {}
+    dcv_by_symbol: dict[str, float] = {}
+    prev_by_symbol: dict[str, float] = {}
+
+    for row in rows:
+        sym = row.tradingsymbol
+        pnl_by_symbol[sym]  = pnl_by_symbol.get(sym, 0.0) + row.pnl
+        dcv_by_symbol[sym]  = dcv_by_symbol.get(sym, 0.0) + _row_baseline_diff_day_pnl(row)
+        prev_by_symbol[sym] = (
+            prev_by_symbol.get(sym, 0.0)
+            + abs(row.prev_close * row.quantity)
+        )
+
+    summary: list[PositionsSymbolSummaryRow] = []
+    total_pnl_sum = 0.0
+    total_dcv_sum = 0.0
+    for sym, pnl_sum in pnl_by_symbol.items():
+        dcv_sum  = dcv_by_symbol.get(sym, 0.0)
+        prev_sum = prev_by_symbol.get(sym, 0.0)
+        pct = dcv_sum / prev_sum * 100.0 if prev_sum else 0.0
+        summary.append(PositionsSymbolSummaryRow(
+            tradingsymbol=sym,
+            pnl=pnl_sum,
+            day_change_val=dcv_sum,
+            day_change_percentage=pct,
+            day_prev_val=prev_sum,
+        ))
+        total_pnl_sum += pnl_sum
+        total_dcv_sum += dcv_sum
+
+    total_prev = sum(prev_by_symbol.values())
+    summary.append(PositionsSymbolSummaryRow(
+        tradingsymbol="TOTAL",
         pnl=total_pnl_sum,
         day_change_val=total_dcv_sum,
         day_change_percentage=(
@@ -291,6 +439,26 @@ def build_snapshot_position_row(
     # call sites that don't pass overnight_quantity are unaffected.
     oq_i = int(overnight_quantity) if overnight_quantity is not None else qty_i
 
+    # realised/unrealised split — snapshot rows only persist the combined
+    # `total_pnl` (daily_book has no separate columns for the two legs), so
+    # reconstruct a real split rather than leaving both at the PositionRow
+    # struct default of 0.0. A naive "unrealised=0, realised=total_pnl" would
+    # double-count on any downstream consumer that separately re-adds an
+    # open-leg EV term (e.g. Exp P&L's `ev + realised`) — so derive
+    # unrealised from mark-to-market on the currently-held qty and let
+    # realised absorb the remainder. For a flat (qty=0) row unrealised is
+    # correctly 0 and the full total_pnl lands on realised, matching a
+    # fully-closed position. Sum always equals total_pnl by construction,
+    # so `resolve_realised_unrealised`'s "both zero -> fall back to pnl"
+    # trigger only fires when total_pnl itself is exactly 0 (harmless: pnl
+    # is also 0 in that case).
+    unrealised_f = (
+        (ltp_f - avg_cost_f) * qty_i
+        if (ltp_f > 0 and avg_cost_f > 0)
+        else 0.0
+    )
+    realised_f = total_pnl_f - unrealised_f
+
     return PositionRow(
         account=str(account),
         tradingsymbol=str(symbol),
@@ -301,6 +469,8 @@ def build_snapshot_position_row(
         pnl=total_pnl_f,
         last_price=ltp_f,
         pnl_percentage=pnl_pct,
+        realised=realised_f,
+        unrealised=unrealised_f,
         day_change_val=day_pnl_f,
         day_change_percentage=day_pct,
         overnight_quantity=oq_i,
@@ -327,12 +497,18 @@ def extract_snapshot_product(payload_json: object) -> str:
 
 
 def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
-    """Build a PositionRow from a 14-column daily_book raw snapshot tuple.
+    """Build a PositionRow from a 14+-column daily_book raw snapshot tuple.
 
     Column order: account, symbol, exchange, qty, avg_cost, ltp,
     day_pnl, total_pnl, payload_json, captured_at, prev_close (aliased
     as 'previous_close' in the SQL), prev_ltp, prev_settlement_pnl,
-    prev_close_backup.
+    prev_close_backup, [prev_settlement_kind, prev_settlement_qty].
+
+    The last two columns (indices 14/15) are optional — behind `len`
+    guards so older 13/14-column fixtures (pre-audit-item-#4) still parse,
+    just without the holdings-baseline gate/pro-ration applied (falls
+    through to the old unconditional behaviour, since `kind=None` isn't
+    `'holdings'`).
 
     Extracted from ``_positions_snapshot`` to reduce that function's CC.
     """
@@ -340,6 +516,8 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
      day_pnl, total_pnl, payload_json, _captured_at, previous_close,
      prev_ltp, prev_settlement_pnl) = raw_row[:13]
     previous_close_backup = raw_row[13] if len(raw_row) > 13 else None
+    prev_settlement_kind = raw_row[14] if len(raw_row) > 14 else None
+    prev_settlement_qty = raw_row[15] if len(raw_row) > 15 else None
 
     extras = extract_snapshot_extras(payload_json)
     # daily_book.qty is already in CONTRACTS — _positions_qty_fields converted
@@ -354,7 +532,14 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
     # movement has occurred yet.
     _pc_raw = float(previous_close) if previous_close and float(previous_close) > 0 else 0.0
     actual_previous_close = float(_pc_raw) if _pc_raw and float(_pc_raw) > 0 else None
-    prev_pnl_val = float(prev_settlement_pnl) if prev_settlement_pnl is not None else None
+    _product = extract_snapshot_product(payload_json)
+    prev_pnl_val = _resolve_prev_settlement_pnl(
+        float(prev_settlement_pnl) if prev_settlement_pnl is not None else None,
+        prev_settlement_kind,
+        prev_settlement_qty,
+        product=_product,
+        day_sell_qty=_parse_payload_num(payload_json, "day_sell_quantity"),
+    )
     # Universal day_pnl formula using overnight_quantity from payload_json.
     # Handles all position states (overnight open, new today, partial close,
     # fully closed intraday, fully closed overnight) when prev_close is known.
@@ -377,7 +562,7 @@ def build_row_from_snapshot_raw(raw_row: tuple) -> PositionRow:
         computed_day_pnl, total_pnl, extras,
         previous_close=actual_previous_close,
         prev_settlement_pnl=prev_pnl_val,
-        product=extract_snapshot_product(payload_json),
+        product=_product,
         overnight_quantity=int(_oq),
     )
 
@@ -393,13 +578,18 @@ async def _apply_trader_scope(
     """Narrow `resp` to only the accounts the trader role is allowed to see."""
     allowed, _ = await user_scope_for_connection(request)
     allowed_set = {str(a).upper() for a in (allowed or [])}
+    scoped_rows = [r for r in resp.rows
+                   if str(getattr(r, "account", "")).upper() in allowed_set]
+    # symbol_summary aggregates ACROSS accounts (no `account` field to filter
+    # on) — must be rebuilt from the scoped rows, not filtered, or a trader
+    # would see other accounts' contributions baked into the symbol totals.
     return msgspec.structs.replace(
         resp,
-        rows=[r for r in resp.rows
-              if str(getattr(r, "account", "")).upper() in allowed_set],
+        rows=scoped_rows,
         summary=[s for s in resp.summary
                  if str(getattr(s, "account", "")).upper() in allowed_set
                  or str(getattr(s, "account", "")).upper() == "TOTAL"],
+        symbol_summary=build_symbol_summary_from_rows(scoped_rows),  # type: ignore[arg-type]
     )
 
 
@@ -473,8 +663,10 @@ def merge_paper_into_live(
     ]
     merged_rows = live_rows_tagged + list(paper_resp.rows)
     merged_summary = build_summary_from_rows(merged_rows)  # type: ignore[arg-type]
+    merged_symbol_summary = build_symbol_summary_from_rows(merged_rows)  # type: ignore[arg-type]
     return msgspec.structs.replace(
         live_resp,
         rows=merged_rows,
         summary=merged_summary,
+        symbol_summary=merged_symbol_summary,
     )

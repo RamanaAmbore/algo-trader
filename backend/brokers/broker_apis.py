@@ -2081,7 +2081,7 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_positions.columns]
         return df_positions[cols]
 
-    df_positions = _enrich_positions(df_positions)
+    df_positions = _enrich_positions(df_positions, broker_kind=_broker_kind(broker))
     # Stash a shallow copy for the stale-substitute path when this
     # account's breaker opens on a future cycle. Empty frames are also
     # stored so a "no positions" state overwrites a prior LKG and prevents
@@ -2091,7 +2091,88 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     return df_positions
 
 
-def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
+def _broker_kind(broker) -> str:
+    """Resolve a broker adapter instance to its P&L-sourcing category:
+    'kite' (default — also covers the legacy `kite=` path where
+    `broker is None`), 'dhan', or 'groww'.
+
+    Reads `broker.broker_id` rather than `type(broker).__name__`. The
+    latter always reads "RemoteBroker" when running under
+    RAMBOQ_USE_CONN_SERVICE=1 (main API process), which would silently
+    misclassify every Dhan/Groww account as Kite. `broker_id` is
+    overridden correctly by every adapter (KiteBroker → "zerodha_kite",
+    DhanBroker → "dhan", GrowwBroker → "groww") AND by RemoteBroker
+    (forwards the real vendor id from conn_service), so this works
+    identically in both process topologies.
+    """
+    if broker is None:
+        return "kite"
+    try:
+        bid = str(getattr(broker, "broker_id", "") or "").lower()
+    except Exception:
+        return "kite"
+    if "dhan" in bid:
+        return "dhan"
+    if "groww" in bid:
+        return "groww"
+    return "kite"
+
+
+def _positions_total_pnl_expr(
+    broker_kind: str,
+    broker_pnl: "pl.Expr",
+    broker_realised: "pl.Expr",
+    broker_unrealised: "pl.Expr",
+    pnl_calc: "pl.Expr",
+    pnl_calc_valid: "pl.Expr",
+) -> "pl.Expr":
+    """Per-broker `current_total_profit = realised + unrealised` sourcing.
+
+    Pure function — polars Exprs in, polars Expr out — so it can be
+    unit-tested independently of the enrichment pipeline it feeds.
+
+      • Kite:  native `pnl` already equals `realised + unrealised`
+        (confirmed via Zerodha's own forum statement). Use it directly
+        when non-null. Adding `realised` on top double-counts — that
+        was the historical bug this function fixes.
+      • Groww: mirrors Kite when its native `pnl` is non-null. Falls
+        back to `realised + unrealised` only when `pnl` is null/absent
+        (the adapter must emit a genuine null for "absent" — see
+        `backend/brokers/adapters/groww.py`'s row-builder note).
+      • Dhan:  no trustworthy native combined field. Always
+        `realised (native) + (ltp − avg) × qty` (locally derived,
+        `pnl_calc` — both inputs broker-authoritative for Dhan). The
+        adapter's own `pnl` field is itself just `pnl_calc` under a
+        different name, so it is never read here. `pnl_calc_valid`
+        (`(ltp>0)&(avg>0)`) gates the derived term to 0 on cold/pre-open
+        rows — matches the Dhan adapter's own `_normalise_position_
+        prices_and_pnl` guard, so a pre-open ltp=0 row contributes
+        `realised` only rather than a phantom `−avg×qty` loss.
+
+    Callers must pass `broker_realised` / `broker_unrealised` already
+    `.fill_null(0.0)`'d (NaN/absent realised must be a no-op, not a
+    null-poisoned sum) — see the two call-site invocations for the
+    exact construction.
+    """
+    _bn = (broker_kind or "kite").lower()
+    if _bn == "dhan":
+        _guarded_calc = pl.when(pnl_calc_valid).then(pnl_calc).otherwise(pl.lit(0.0))
+        return broker_realised + _guarded_calc
+    if _bn == "groww":
+        return (
+            pl.when(broker_pnl.is_not_null())
+            .then(broker_pnl)
+            .otherwise(broker_realised + broker_unrealised)
+        )
+    # Kite (default).
+    return (
+        pl.when(broker_pnl.is_not_null())
+        .then(broker_pnl)
+        .otherwise(pnl_calc)
+    )
+
+
+def _enrich_positions(df: pd.DataFrame, broker_kind: str = "kite") -> pd.DataFrame:
     """Polars-vectorized computed-column enrichment for positions DataFrames.
 
     Converts to Polars once, evaluates all P&L and day-change expressions in a
@@ -2099,7 +2180,14 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
     pd.to_numeric().fillna() + Series-arithmetic chains. All semantics preserved:
 
       • day_change   = LTP − close (cosmetic per-share delta)
-      • pnl          = broker value when not-null, else (LTP−avg)×qty
+      • pnl          = current_total_profit (realised + unrealised),
+                        sourced per-broker via `_positions_total_pnl_expr`
+                        (`broker_kind` param — "kite"/"dhan"/"groww";
+                        default "kite"). Kite/Groww trust native `pnl`
+                        directly when present (already the combined
+                        total — do NOT add `realised` on top, that
+                        double-counts); Dhan/Groww-fallback compute
+                        `realised + (LTP−avg)×qty` from primitives.
       • day_change_val:
           1. Decomposed intraday formula (full field set) — freezes closed positions
           2. broker.m2m when intraday fields absent
@@ -2161,17 +2249,24 @@ def _enrich_positions(df: pd.DataFrame) -> pd.DataFrame:
         else:
             _dcv_expr = pl.when((_ltp > 0) & (_cls > 0)).then(_dcv_calc_expr).otherwise(pl.lit(0.0))
 
-    # ── pnl ──────────────────────────────────────────────────────────
+    # ── pnl (current_total_profit = realised + unrealised) ─────────────
+    # Per-broker sourcing — see `_positions_total_pnl_expr` docstring.
+    # Historical bug: `_broker_pnl + _broker_realised` unconditionally
+    # double-counted for Kite, since Kite's native `pnl` already equals
+    # realised + unrealised (confirmed via Zerodha's own forum statement).
     if 'pnl' in cols:
         _broker_pnl = _col_f64_nullable('pnl')
         _broker_realised = (
             _col_f64_nullable('realised').fill_null(0.0)
             if 'realised' in cols else pl.lit(0.0)
         )
-        _pnl_expr = (
-            pl.when(_broker_pnl.is_not_null())
-            .then(_broker_pnl + _broker_realised)
-            .otherwise(_pnl_calc)
+        _broker_unrealised = (
+            _col_f64_nullable('unrealised').fill_null(0.0)
+            if 'unrealised' in cols else pl.lit(0.0)
+        )
+        _pnl_expr = _positions_total_pnl_expr(
+            broker_kind, _broker_pnl, _broker_realised, _broker_unrealised, _pnl_calc,
+            (_ltp > 0) & (_avg > 0),
         )
     else:
         _pnl_expr = (
@@ -2595,7 +2690,8 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
     # the account-specific fact only that broker knows.
     if 'average_price' in df.columns and 'pnl' in df.columns:
         _avg_p = pd.to_numeric(df.loc[_idx_array, 'average_price'], errors='coerce').fillna(0)
-        _pnl_calc = (_ltp_p - _avg_p) * _qty_p
+        _mtm_p = (_ltp_p - _avg_p) * _qty_p
+        _pnl_calc = _mtm_p
         # Include realised when present (positions carry it; holdings
         # typically don't because holdings are open-only).
         if 'realised' in df.columns:
@@ -2605,6 +2701,18 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
         df.loc[_idx_array, 'pnl'] = _pnl_calc.where(
             _valid_pnl, df.loc[_idx_array, 'pnl']
         )
+        # Mirror the mark-to-market leg onto `unrealised` — Day P&L now
+        # sources from `realised + unrealised` (baseline-diff SSOT), not
+        # `pnl`. Without this, `unrealised` stays whatever the source
+        # broker shipped before the LTP was backfilled (Dhan in
+        # particular sets `unrealised = pnl_calc = 0` when it omits LTP
+        # — see `_normalise_position_prices_and_pnl` — so a fresh LTP
+        # here silently never reaches Day P&L, showing a phantom loss of
+        # the full pre-existing MTM). Never touches `realised`.
+        if 'unrealised' in df.columns:
+            df.loc[_idx_array, 'unrealised'] = _mtm_p.where(
+                _valid_pnl, df.loc[_idx_array, 'unrealised']
+            )
         # cur_val + pnl_percentage chain off pnl — keep them
         # consistent when present.
         if 'inv_val' in df.columns and 'cur_val' in df.columns:

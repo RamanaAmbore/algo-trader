@@ -709,7 +709,7 @@
       onclick={(e) => _openBreakdown(e, 'P')}
       onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'P')}><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
-      text="<b>Day P&L:</b> Live ticks − prev-close × net qty, all accounts. For new intraday (overnight_qty=0), uses pnl directly.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry via lognormal model." /></span>
+      text="<b>Day P&L:</b> (realised + unrealised) − prior settlement snapshot, all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry — intrinsic value (option payoff at spot, or spot itself for futures) minus cost basis, plus any realised P&L on the position." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
       style="cursor:pointer"
       role="button"

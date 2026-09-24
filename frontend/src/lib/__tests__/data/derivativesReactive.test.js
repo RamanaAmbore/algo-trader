@@ -25,45 +25,32 @@ import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
 
 describe('Fix 5 — livePositionDayPnl vs baseDayPnlForPosition diverges on live tick', () => {
   /**
-   * Overnight position: close=100, broker poll ltp=102, dcv=10.
-   * Live tick: 108 (moved since last poll).
-   * Expected: livePositionDayPnl gives (108-100)*5=40; base gives 10.
+   * Overnight position: base = pnl - prev_settlement_pnl = 10. Broker poll
+   * ltp=102, live tick 108 (moved since last poll) → live delta layers on top.
    */
-  it('market open: live tick overrides stale broker dcv', () => {
-    const dcvRow = {
-      pnl: 50,
-      overnight_quantity: 5,
-      day_change_val: 10,
-      close_price: 100,
-      average_price: 95,
-    };
+  it('market open: live tick adds a delta on top of the settlement-diff base', () => {
+    const dcvRow = { pnl: 60, prev_settlement_pnl: 50 };
     const fields = { closePx: 100, pollLtp: 102, qty: 5, avg: 95, dcvRow };
     const liveLtp = 108;
 
     const base = baseDayPnlForPosition(dcvRow);
     const live = livePositionDayPnl(fields, liveLtp, { marketOpen: true });
 
-    // base returns broker dcv (10); live recomputes with tick (40)
+    // base = 60 - 50 = 10; live = 10 + (108-102)*5 = 40
     expect(base).toBe(10);
     expect(live).not.toBe(base);
-    // realisedToday = 10 - (102 - 100)*5 = 0; live = 0 + (108-100)*5 = 40
     expect(live).toBeCloseTo(40, 4);
   });
 
   /**
-   * Off-market: market closed. livePositionDayPnl uses the price formula
-   * (pollLtp - closePx) * qty, not the broker dcv.
-   * Regression: before Fix 5, _snapshotTotalDay called baseDayPnlForPosition
-   * which returned dcv=0 when flat-settlement prev_settlement_pnl matched pnl.
+   * Off-market: market closed → live delta gate ('marketOpen') is false, so
+   * livePositionDayPnl returns the same value as baseDayPnlForPosition —
+   * including the flat-settlement zero case (pnl === prev_settlement_pnl).
    */
-  it('market closed: price formula rescues flat-settlement zero', () => {
+  it('market closed: returns base honestly, including flat-settlement zero', () => {
     const dcvRow = {
       pnl: -5000,
-      prev_settlement_pnl: -5000,  // identical → baseDayPnlForPosition returns 0
-      overnight_quantity: 100,
-      day_change_val: 0,
-      close_price: 930,
-      average_price: 1000,
+      prev_settlement_pnl: -5000,  // identical → base = 0
     };
     const fields = { closePx: 930, pollLtp: 850, qty: 100, avg: 1000, dcvRow };
 
@@ -71,9 +58,8 @@ describe('Fix 5 — livePositionDayPnl vs baseDayPnlForPosition diverges on live
     const live = livePositionDayPnl(fields, null, { marketOpen: false });
 
     expect(base).toBe(0);
-    // Price formula: (850 - 930) * 100 = -8000
-    expect(live).toBe(-8000);
-    expect(live).not.toBe(base);
+    expect(live).toBe(0);
+    expect(live).toBe(base);
   });
 
   /**
@@ -82,46 +68,31 @@ describe('Fix 5 — livePositionDayPnl vs baseDayPnlForPosition diverges on live
    * agree when no live data is available.
    */
   it('liveLtp=null (no tick yet) → matches baseDayPnlForPosition exactly', () => {
-    const dcvRow = {
-      pnl: 800,
-      overnight_quantity: 4,
-      day_change_val: 320,
-      close_price: 200,
-      average_price: 190,
-    };
+    const dcvRow = { pnl: 800, prev_settlement_pnl: 480 };
     const fields = { closePx: 200, pollLtp: 280, qty: 4, avg: 190, dcvRow };
 
     const base = baseDayPnlForPosition(dcvRow);
     const live = livePositionDayPnl(fields, null, { marketOpen: true });
 
-    // dcvRow: oq=4 (non-zero), dcv=320 (non-zero) → base = 320
     expect(base).toBe(320);
     expect(live).toBe(base);
   });
 
   /**
-   * Short position fix (oq < 0): livePositionDayPnl must handle negative qty
-   * correctly. This covers the _snapshotTotalDay path for short F&O positions
-   * after the Fix 5 migration from baseDayPnlForPosition.
+   * Short position (negative qty): livePositionDayPnl must handle the sign
+   * correctly when combining the settlement-diff base with the live delta.
    */
   it('short overnight position: live tick computes gain on price fall', () => {
-    // Short 10 lots at close 200; ltp fell to 190 (profit for short).
-    const dcvRow = {
-      pnl: 1000,
-      overnight_quantity: -10,
-      day_change_val: 1000,
-      close_price: 200,
-      average_price: 210,
-    };
+    // Short 10 lots; base = pnl(1000) - prev_settlement_pnl(700) = 300.
+    // Price fell from pollLtp=195 to liveLtp=190 (profit for short).
+    const dcvRow = { pnl: 1000, prev_settlement_pnl: 700 };
     const fields = { closePx: 200, pollLtp: 195, qty: -10, avg: 210, dcvRow };
     const liveLtp = 190;
 
     const live = livePositionDayPnl(fields, liveLtp, { marketOpen: true });
 
-    // brokerDcv = 1000 (oq=-10, dcv=1000 non-zero → 1000)
-    // realisedToday = 1000 - (195 - 200)*(-10) = 1000 - 50 = 950
-    // result = 950 + (190 - 200)*(-10) = 950 + 100 = 1050
-    expect(live).toBeCloseTo(1050, 4);
+    // base = 300; delta = (190-195)*(-10) = 50 → result = 350
+    expect(live).toBeCloseTo(350, 4);
   });
 });
 

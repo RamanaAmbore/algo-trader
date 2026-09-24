@@ -33,7 +33,7 @@
   import { acctColor }              from '$lib/account';
   import { lotsForRow, fmtLots }    from '$lib/data/lotsForRow';
   import { getProxyRow }            from '$lib/data/hedgeProxies';
-  import { priceFmt, pctFmt, aggCompact, ltpDayClass } from '$lib/format';
+  import { priceFmt, pctFmt, aggCompact, ltpDayClass, qtyFmt } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
@@ -128,10 +128,14 @@
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
-  // Chg % — SSOT from positionsDerivedStore (day_pnl / prev_mv × 100).
-  // Store uses avg_cost as denominator for intraday positions (oq=0, prev_close=0)
-  // so this value is non-null even for new F&O legs opened today.
-  const _chgPct = $derived(positionsDerivedStore.get(c.symbol).chg_pct);
+  // Chg % — pure price-% (ltp vs prev_close), decoupled from the Day P&L
+  // baseline. Distinct metric from the Day P&L cell — a symbol can move
+  // price-wise even on a flat/new position where Day P&L reads ~0.
+  const _chgPct = $derived.by(() => {
+    const px = Number(c?.prev_close);
+    if (!(px > 0) || ltp == null) return null;
+    return ((ltp - px) / px) * 100;
+  });
 
   // Cumulative day % for flash tier — uses the SSOT _chgPct, falls back to 1 (middle tier).
   const _legDayPct = $derived(_chgPct != null ? Math.abs(_chgPct) : 1);
@@ -346,13 +350,21 @@
   {#if isClosed}
     <span class="num cell-flat">0</span>
   {:else if pendingQty > 0}
-    <span class="num kv-pos">{pendingQty}</span>
-    {#if Math.abs(displayQty) - pendingQty > 0}
-      <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{Math.abs(displayQty) - pendingQty}</span>
-    {/if}
+    <!-- Single subgrid cell — both chips are flex children of ONE span so
+         the row never emits two direct children for one column track
+         (would silently shift every later cell in the subgrid). -->
+    <span class="num cand-qty-split">
+      <span class="kv-pos">{pendingQty}</span>
+      {#if Math.abs(displayQty) - pendingQty > 0}
+        <span class={displayQty < 0 ? 'kv-neg' : 'kv-pos'}>{Math.abs(displayQty) - pendingQty}</span>
+      {/if}
+    </span>
   {:else}
     <span class="num {displayQty < 0 ? 'kv-neg' : 'kv-pos'}">{displayQty}</span>
   {/if}
+  <span class="num cell-muted" title="Quantity carried overnight from yesterday's session close.">
+    {c.overnight_quantity ? qtyFmt(c.overnight_quantity) : (c.opening_qty ? qtyFmt(c.opening_qty) : '—')}
+  </span>
   <span class="num {displayQty > 0 ? 'cell-pos' : displayQty < 0 ? 'cell-neg' : 'cell-flat'}">{cost != null ? priceFmt(cost) : '—'}</span>
   <span class="num">{c.prev_close != null ? priceFmt(c.prev_close) : '—'}</span>
   <span class="num tf-cell cand-pnl {_dayPnl == null ? 'cell-flat' : _dayPnl > 0 ? 'cell-pos' : _dayPnl < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -437,6 +449,14 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  /* Qty cell with a pending-fill split (e.g. "3 + 2") — both chips are
+     inline-flex children of the ONE .num span so the row never emits a
+     second direct child for the Qty subgrid track. */
+  .cand-qty-split {
+    display: inline-flex;
+    gap: 3px;
   }
 
   /* ── Closed positions ──────────────────────────────────────────────── */

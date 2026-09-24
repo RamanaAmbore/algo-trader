@@ -2368,26 +2368,24 @@
 
   // Positions Summary — Day P&L + Day % + P&L per account.
   //
-  // Pass-through: backend `/api/positions` already returns one row per
-  // account + a TOTAL row, with `day_change_percentage` correctly
-  // computed as Σ day_change_val / Σ |close × qty| × 100. The frontend
-  // used to re-derive `day_change_percentage` from a phantom `inv_val`
-  // field that doesn't exist on `PositionsSummaryRow` — silent null.
-  // TOTAL is dropped when an account filter is active because it
-  // reflects every account, not the filtered subset.
+  // P&L (`pnl`) passes through from backend `/api/positions`'s per-account +
+  // TOTAL summary rows unchanged. TOTAL is dropped when an account filter is
+  // active because it reflects every account, not the filtered subset.
   //
-  // WHY `r.day_change_val` is read directly here (not via baseDayPnlForPosition):
-  // `r` is a PositionsSummaryRow — an aggregate with no `overnight_quantity`
-  // field. baseDayPnlForPosition() requires per-position fields to apply its
-  // new-position override (oq=0, dcv=0, pnl≠0) and MUST NOT be called on an
-  // aggregate row. The aggregate is safe because:
-  //   • Live path: apply_day_change_backstop() runs BEFORE build_summary_from_rows()
-  //     in backend/api/routes/positions.py:393, so Σ day_change_val is already
-  //     corrected for every per-position edge case.
-  //   • Snapshot path (_positions_snapshot in positions.py:40): summary rows are
-  //     built from build_snapshot_position_row() which sets overnight_quantity=qty
-  //     (never 0) and resolves day_pnl via resolve_snapshot_day_pnl() before
-  //     aggregation — the override condition cannot fire on snapshot rows.
+  // Day P&L is re-sourced from portfolioStore (via positionsDayPnlStore, the
+  // shim that delegates to portfolioStore.positions.byAccount/.total) so the
+  // pinned per-account rows always reconcile with the pinned TOTAL row — both
+  // draw from the exact same live-tick-adjusted aggregate, the same pattern
+  // already used for the holdings summary below. `byAccount` keys are
+  // UPPERCASE (portfolioStore normalises `String(p.account).toUpperCase()`)
+  // — match that here rather than trusting the backend row's raw casing.
+  // No backend day_change_val fallback: mixing sources here would
+  // reintroduce the exact per-account/TOTAL mismatch this fix eliminates —
+  // an account with no live position row simply has 0 Day P&L.
+  // day_change_percentage is recomputed from the re-sourced day_pnl (not
+  // passed through from the backend row) so it stays consistent with the
+  // new Day P&L value in the same row rather than reflecting the backend's
+  // now-superseded figure.
   const positionsSummaryData = $derived.by(() => {
     if (!showSummary || !selectedSources.includes('positions')) return [];
     const filterActive = positionsAccounts && positionsAccounts.length > 0;
@@ -2397,16 +2395,20 @@
         if (r.account === 'TOTAL') return !filterActive;
         return _includesPosAcct(r.account);
       })
-      .map(r => ({
-        account: r.account,
-        day_pnl: Number(r.day_change_val) || 0,
-        pnl:     Number(r.pnl)            || 0,
-        day_change_percentage: r.day_change_percentage ?? null,
+      .map(r => {
+        const day_pnl = positionsDayPnlStore.byAccount[String(r.account).toUpperCase()] ?? 0;
         // Carry the per-account |close × qty| sum through so the
         // filtered-subset synthesised TOTAL can derive a proper
         // Day % (Σday_pnl / Σday_prev_val × 100).
-        day_prev_val: Number(r.day_prev_val) || 0,
-      }));
+        const day_prev_val = Number(r.day_prev_val) || 0;
+        return {
+          account: r.account,
+          day_pnl,
+          pnl: Number(r.pnl) || 0,
+          day_change_percentage: dayChangePct(day_pnl, day_prev_val),
+          day_prev_val,
+        };
+      });
   });
 
   // Holdings Summary — Day P&L + Day % + P&L + P&L % + Cur Val + Inv Val per account.

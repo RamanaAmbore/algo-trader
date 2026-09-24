@@ -65,3 +65,55 @@ def test_raw_cache_also_invalidated():
         "_raw_cache_invalidate (broker layer) must be called alongside "
         "API-layer invalidate() in the terminal path"
     )
+
+
+# ---------------------------------------------------------------------------
+# `broker=` threading (2026-09 Day P&L audit item #6 — Groww MCX postback
+# quantity double-conversion fix). `_postback_broadcast_fanout` requires a
+# `broker` kwarg (no default) so `_mcx_postback_qty_to_contracts` can skip
+# the lots->contracts multiply for Groww, which ships CONTRACTS for every
+# exchange including MCX (unlike Kite/Dhan, which ship lots for MCX).
+# ---------------------------------------------------------------------------
+
+def test_postback_fanout_requires_broker_kwarg():
+    """_postback_broadcast_fanout's `broker` parameter has no default —
+    every caller must explicitly state which broker's postback this is."""
+    import inspect
+    from backend.api.routes import orders as _ord
+
+    sig = inspect.signature(_ord._postback_broadcast_fanout)
+    assert "broker" in sig.parameters, (
+        "_postback_broadcast_fanout must accept a `broker` kwarg"
+    )
+    assert sig.parameters["broker"].default is inspect.Parameter.empty, (
+        "`broker` must have NO default — a future caller must not silently "
+        "inherit Kite's lots-conversion behaviour for a broker that ships "
+        "contracts (e.g. Groww)"
+    )
+
+
+def test_process_broker_postback_forwards_broker_id_to_fanout():
+    """_process_broker_postback (Dhan/Groww shared path) must forward its
+    own `broker_id` param through to `_postback_broadcast_fanout(broker=...)`
+    — not hardcode 'kite' or omit it."""
+    import inspect
+    from backend.api.routes import orders_postback as _pb
+
+    src = inspect.getsource(_pb._process_broker_postback)
+    assert "broker=broker_id" in src, (
+        "_process_broker_postback must call _postback_broadcast_fanout("
+        "..., broker=broker_id, ...) so a Dhan/Groww postback carries its "
+        "real broker identity through to the MCX qty conversion gate"
+    )
+
+
+def test_kite_postback_handler_passes_broker_kite():
+    """kite_postback_handler's inline call must pass broker='kite'."""
+    import inspect
+    from backend.api.routes import orders_postback as _pb
+
+    src = inspect.getsource(_pb.kite_postback_handler)
+    assert 'broker="kite"' in src, (
+        "kite_postback_handler must call _postback_broadcast_fanout("
+        "..., broker=\"kite\", ...)"
+    )

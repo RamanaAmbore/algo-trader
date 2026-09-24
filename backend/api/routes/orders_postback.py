@@ -333,7 +333,7 @@ async def _process_broker_postback(
     from backend.api.routes.orders import _postback_broadcast_fanout  # noqa: PLC0415
     _postback_broadcast_fanout(
         status=status, order_id=order_id, account=account, masked=masked,
-        symbol=symbol, txn=txn, qty=qty, price=price,
+        symbol=symbol, txn=txn, qty=qty, price=price, broker=broker_id,
         exchange=exchange, status_message=status_message,
     )
 
@@ -855,7 +855,7 @@ async def kite_postback_handler(request) -> dict:
         _postback_broadcast_fanout(
             status=status, order_id=order_id, account=account,
             masked=masked, symbol=tradingsymbol, txn=txn,
-            qty=qty, price=price,
+            qty=qty, price=price, broker="kite",
             exchange=body.get("exchange", ""),
             status_message=status_msg,
         )

@@ -373,3 +373,34 @@ def test_live_postback_also_uses_fanout():
         f"Expected ≥2 call sites of '_postback_broadcast_fanout(' in "
         f"orders_postback.py (Kite + Dhan/Groww paths), found {postback_count}"
     )
+
+
+def test_paper_fanout_call_sites_pass_broker_kwarg():
+    """Both paper.py call sites of _postback_broadcast_fanout must pass
+    broker="paper" — _postback_broadcast_fanout's `broker` param has no
+    default (2026-09 Day P&L audit item #6), so paper's two fanout call
+    sites (cancel + terminal-fill) would raise TypeError without it.
+
+    Fixed 2026-09 (audit round 3, item #2): paper's two call sites
+    previously hardcoded broker="kite", which — since paper AlgoOrder
+    quantities are ALREADY in contracts (never in lots) —
+    incorrectly triggered `_mcx_postback_qty_to_contracts`'s
+    lots→contracts multiply and doubled MCX quantities in paper mode
+    (e.g. 1 lot CRUDEOIL = 100 contracts became 10,000). broker="paper"
+    is not in `_MCX_LOTS_CONVENTION_BROKERS` (kite, dhan only), so the
+    conversion is correctly skipped."""
+    import inspect
+    import backend.api.algo.paper as paper_mod
+
+    source = inspect.getsource(paper_mod)
+    occurrences = source.count('broker="paper"')
+    assert occurrences >= 2, (
+        f"Expected >=2 occurrences of broker=\"paper\" in paper.py "
+        f"(_paper_cancel_fanout + _paper_fanout_terminal), found {occurrences}"
+    )
+    assert source.count('broker="kite"') == 0, (
+        "paper.py must no longer hardcode broker=\"kite\" for its "
+        "_postback_broadcast_fanout call sites — that incorrectly "
+        "triggers the MCX lots→contracts conversion on quantities "
+        "that are already in contracts (paper double-conversion bug)"
+    )

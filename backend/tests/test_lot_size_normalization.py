@@ -417,6 +417,9 @@ class TestPositionsRowsMCXContracts:
             'close_price': 6490.0,
             'ltp': 6510.0,
             'pnl': 100.0,
+            # SSOT total_pnl = realised + unrealised (current_total_profit,
+            # pnl_math.py) — a real Kite positions() row carries both fields.
+            'unrealised': 100.0, 'realised': 0.0,
             'multiplier': 10,
         }]
 
@@ -456,6 +459,7 @@ class TestPositionsRowsMCXContracts:
             'close_price': 3010.0,
             'ltp': 3020.0,
             'pnl': 2000.0,
+            'unrealised': 2000.0, 'realised': 0.0,
             'multiplier': 1,
         }]
 

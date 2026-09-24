@@ -151,6 +151,68 @@ def test_override_stale_ltp_from_ticker_pnl_patch_no_name_error():
 
 
 # ---------------------------------------------------------------------------
+# Bug fix (2026-09 Day P&L audit item #2): the ticker LTP patch must mirror
+# its additive delta onto `unrealised`, not just `pnl` — Day P&L now sources
+# from `realised + unrealised` (baseline-diff SSOT). Leaving `unrealised`
+# stale silently drops the LTP correction from Day P&L even though `pnl`
+# is fixed.
+# ---------------------------------------------------------------------------
+
+def test_override_stale_ltp_from_ticker_patches_unrealised_alongside_pnl():
+    """Auditor repro: Kite long qty=50, avg=100, REST ltp=102
+    (unrealised=100, pnl=100), ticker delivers a fresher ltp=110.
+    pnl and unrealised must BOTH be patched by the same additive delta
+    (110-102)*50=+400, landing on 500 — not just pnl."""
+    from backend.api.routes.positions import _override_stale_ltp_from_ticker
+    from backend.api.algo.pnl_math import baseline_diff_day_pnl
+
+    df = pd.DataFrame([{
+        'tradingsymbol': 'RELIANCE',
+        'exchange': 'NSE',
+        'last_price': 102.0,     # stale REST LTP
+        'prev_close': 100.0,
+        'quantity': 50,
+        'overnight_quantity': 50,
+        'day_buy_quantity': 0,
+        'day_sell_quantity': 0,
+        'day_buy_value': 0.0,
+        'day_sell_value': 0.0,
+        'average_price': 100.0,
+        'realised': 0.0,
+        'unrealised': 100.0,     # (102-100)*50 — mirrors the pre-patch pnl
+        'pnl': 100.0,
+        'day_change_val': 0.0,
+        'day_change': 0.0,
+    }])
+
+    mock_ticker = MagicMock()
+    mock_ticker.get_ltp_by_sym.return_value = 110.0
+
+    with patch('backend.brokers.kite_ticker.get_ticker', return_value=mock_ticker):
+        _override_stale_ltp_from_ticker(df)
+
+    expected = 100.0 + (110.0 - 102.0) * 50  # 500.0
+    assert df.at[0, 'pnl'] == pytest.approx(expected), (
+        f"pnl not patched to {expected}, got {df.at[0, 'pnl']}"
+    )
+    assert df.at[0, 'unrealised'] == pytest.approx(expected), (
+        f"unrealised must be patched alongside pnl to {expected} — "
+        f"got {df.at[0, 'unrealised']} (stale unrealised silently drops "
+        f"the LTP correction from Day P&L, which sources from "
+        f"realised+unrealised, not pnl)"
+    )
+    assert df.at[0, 'realised'] == 0.0, "realised must be untouched by an LTP-only patch"
+
+    # End-to-end: baseline_diff_day_pnl using the corrected split must equal
+    # (new_ltp - prev_close) * qty = (110-100)*50 = 500 when base_pnl=0 (no
+    # prior-session baseline) — the value a stale unrealised would have
+    # understated to 50 (100 base value minus the wrongly-still-100
+    # unrealised, per the auditor's repro).
+    day_pnl = baseline_diff_day_pnl(df.at[0, 'realised'], df.at[0, 'unrealised'], 0.0)
+    assert day_pnl == pytest.approx(500.0)
+
+
+# ---------------------------------------------------------------------------
 # _override_stale_close_from_snapshot — MCX overnight stale prev_close fix
 #
 # Five quality dimensions:
@@ -203,6 +265,16 @@ def _run_close_override(df: pd.DataFrame, snapshot_rows: list) -> pd.DataFrame:
 
     ist = ZoneInfo("Asia/Kolkata")
     midnight = datetime(2026, 7, 8, 0, 0, 0, tzinfo=ist)
+
+    # _fetch_snapshot_close_map's query now returns 6 columns (audit item #4
+    # — added kind/qty so the caller can gate a holdings-sourced baseline).
+    # Pad legacy 4-tuple fixtures with (kind='positions', qty=None) — a
+    # plain positions-kind baseline with no pro-ration context, matching
+    # the pre-fix unconditional-use behaviour these tests assert on.
+    snapshot_rows = [
+        (acct, sym, ltp, total_pnl, "positions", None)
+        for (acct, sym, ltp, total_pnl) in snapshot_rows
+    ]
 
     mock_result = MagicMock()
     mock_result.all.return_value = snapshot_rows
@@ -464,7 +536,9 @@ class TestOverrideStaleCloseFromSnapshot:
 
         # First pass: returns ltp for the symbol → prev_close set to 220.0
         mock_result1 = MagicMock()
-        mock_result1.all.return_value = [("ZG0790", "CRUDEOIL26SEP7900PE", FIRST_PASS_LTP, None)]
+        mock_result1.all.return_value = [
+            ("ZG0790", "CRUDEOIL26SEP7900PE", FIRST_PASS_LTP, None, "positions", None)
+        ]
         # Second pass should NOT be called; stub with sentinel to detect accidental calls
         mock_result2 = MagicMock()
         mock_result2.all.return_value = []
@@ -603,7 +677,9 @@ class TestFetchOrderingAndCoexistence:
         midnight = datetime(2026, 7, 8, 0, 0, 0, tzinfo=ist)
 
         mock_result = MagicMock()
-        mock_result.all.return_value = [("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP, 500.0)]
+        mock_result.all.return_value = [
+            ("ZG0790", "CRUDEOIL26JUL6900PE", SNAPSHOT_LTP, 500.0, "positions", None)
+        ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)

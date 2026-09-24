@@ -230,6 +230,21 @@ class PositionsSummaryRow(msgspec.Struct):
     day_prev_val: float = 0.0
 
 
+class PositionsSymbolSummaryRow(msgspec.Struct):
+    """Symbol-level (across accounts) rollup — parallel to PositionsSummaryRow,
+    grouped by tradingsymbol instead of account. Per the Day P&L / Exp P&L
+    redesign, per-position Day P&L is no longer displayed anywhere; only
+    account-level (`summary`) and symbol-level (`symbol_summary`) rollups,
+    plus grand totals, are shown."""
+    tradingsymbol: str
+    pnl: float
+    day_change_val: float = 0.0
+    day_change_percentage: float = 0.0
+    # Σ|close × qty| across accounts for this symbol — denominator for
+    # day_change_percentage, same convention as PositionsSummaryRow.day_prev_val.
+    day_prev_val: float = 0.0
+
+
 class PositionsResponse(msgspec.Struct):
     rows: list[PositionRow]
     summary: list[PositionsSummaryRow]
@@ -244,6 +259,9 @@ class PositionsResponse(msgspec.Struct):
     # time. Frontend NavStrip / TOTAL rollups tag aggregates as "stale @
     # HH:MM" when any account in this list contributes to the sum.
     stale_accounts: list[str] = []
+    # Symbol-level (across accounts) rollup — parallel to `summary`.
+    # See PositionsSymbolSummaryRow docstring.
+    symbol_summary: list[PositionsSymbolSummaryRow] = []
 
 
 # ---------------------------------------------------------------------------

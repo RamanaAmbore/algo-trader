@@ -83,8 +83,18 @@ def _run_fetch_snapshot_close_map(
     if mock_time is None:
         mock_time = datetime(2026, 9, 17, 9, 30, 0, tzinfo=IST)
 
+    # _fetch_snapshot_close_map's query now returns 6 columns (audit item #4
+    # — added kind/qty so the caller can gate a holdings-sourced baseline).
+    # Pad legacy 4-tuple fixtures with (kind='positions', qty=None) — a
+    # plain positions-kind baseline with no pro-ration context, matching
+    # the pre-fix unconditional-use behaviour these tests assert on.
+    padded_rows = [
+        (acct, sym, ref_close, total_pnl, "positions", None)
+        for (acct, sym, ref_close, total_pnl) in snapshot_rows
+    ]
+
     mock_result = MagicMock()
-    mock_result.all.return_value = snapshot_rows
+    mock_result.all.return_value = padded_rows
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=mock_result)
@@ -92,9 +102,11 @@ def _run_fetch_snapshot_close_map(
     mock_session.__aexit__ = AsyncMock(return_value=False)
 
     with patch("backend.api.database.async_session", return_value=mock_session):
-        result = asyncio.run(_fetch_snapshot_close_map(raw, mock_time.replace(hour=8, minute=0, second=0)))
+        snapshot_map, prev_pnl_map, _kind_map, _qty_map = asyncio.run(
+            _fetch_snapshot_close_map(raw, mock_time.replace(hour=8, minute=0, second=0))
+        )
 
-    return result
+    return snapshot_map, prev_pnl_map
 
 
 def _run_apply_second_pass_fallback(raw: pd.DataFrame, fallback_rows: list) -> list:

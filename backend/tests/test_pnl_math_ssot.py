@@ -29,9 +29,18 @@ import pytest
 
 from backend.api.algo.pnl_math import (
     apply_day_change_backstop,
+    baseline_diff_day_pnl,
+    baseline_diff_day_pnl_expr,
+    baseline_diff_day_pnl_expr_with_fallback,
+    baseline_diff_day_pnl_series,
+    baseline_diff_day_pnl_with_fallback,
+    current_total_profit,
+    current_total_profit_expr,
+    current_total_profit_series,
     decomposed_intraday_pnl,
     naive_day_pnl,
     recompute_row_percentages,
+    resolve_realised_unrealised,
 )
 
 
@@ -619,3 +628,212 @@ class TestApplyDayChangeBackstop:
         assert math.isclose(out.at[0, 'day_change_val'], -250.0, abs_tol=1e-6), (
             "dcv must not be overwritten when already non-zero"
         )
+
+
+# ---------------------------------------------------------------------------
+# Day P&L / Exp P&L redesign (2026-09) — baseline-diff SSOT
+# ---------------------------------------------------------------------------
+# current_total_profit(realised, unrealised) and
+# baseline_diff_day_pnl(realised, unrealised, base_pnl) replace the legacy
+# decomposed/backstop machinery for all account/symbol rollups. One formula,
+# no branching by position state — covers new/full-exit/partial-exit/
+# re-entry/flip/holdings-to-CNC-split uniformly.
+
+class TestCurrentTotalProfit:
+    def test_sums_realised_and_unrealised(self):
+        assert current_total_profit(2000.0, 5000.0) == 7000.0
+
+    def test_none_realised_treated_as_zero(self):
+        assert current_total_profit(None, 5000.0) == 5000.0
+
+    def test_none_unrealised_treated_as_zero(self):
+        assert current_total_profit(2000.0, None) == 2000.0
+
+    def test_both_none_is_zero(self):
+        assert current_total_profit(None, None) == 0.0
+
+    def test_negative_realised_and_unrealised(self):
+        assert current_total_profit(-500.0, -1200.0) == -1700.0
+
+
+class TestBaselineDiffDayPnl:
+    """day_pnl = current_total_profit(realised, unrealised) − base_pnl, for
+    every position-state shape."""
+
+    def test_new_position_no_baseline(self):
+        """New entry today: no daily_book row from yesterday → base_pnl=0.
+        Day P&L == full lifetime gain since entry."""
+        assert baseline_diff_day_pnl(0.0, 1500.0, base_pnl=0.0) == 1500.0
+
+    def test_full_exit_today(self):
+        """Fully closed intraday round-trip: unrealised=0, realised=today's
+        gain, no baseline (opened+closed same day)."""
+        assert baseline_diff_day_pnl(800.0, 0.0, base_pnl=0.0) == 800.0
+
+    def test_overnight_open_position(self):
+        """Carried position: yesterday's total_pnl (base_pnl) is subtracted
+        so only today's incremental move counts."""
+        # total_pnl yesterday = 5000 (base). Today ltp moved further: unrealised=6200.
+        assert baseline_diff_day_pnl(0.0, 6200.0, base_pnl=5000.0) == 1200.0
+
+    def test_partial_exit_today(self):
+        """Partial close: realised leg from the sold portion + unrealised on
+        the remainder, minus yesterday's base on the full original position."""
+        assert baseline_diff_day_pnl(300.0, 900.0, base_pnl=1000.0) == 200.0
+
+    def test_re_entry_after_full_exit(self):
+        """Position closed yesterday (base_pnl frozen at exit), fresh
+        re-entry today: new position's own realised+unrealised is
+        independent of yesterday's closed-out total."""
+        assert baseline_diff_day_pnl(0.0, 250.0, base_pnl=3000.0) == -2750.0
+
+    def test_flip_long_to_short(self):
+        """Flip (close long + open short same day): realised captures the
+        long's exit, unrealised captures the new short's mark."""
+        assert baseline_diff_day_pnl(1200.0, -400.0, base_pnl=0.0) == 800.0
+
+    def test_none_base_pnl_treated_as_zero(self):
+        assert baseline_diff_day_pnl(100.0, 200.0, base_pnl=None) == 300.0
+
+    def test_holdings_to_cnc_split_base_from_holdings_row(self):
+        """Holding sold into a CNC position: base_pnl must be sourced from
+        the PRIOR-DAY HOLDING's total_pnl (the position row didn't exist
+        yesterday) — see _fetch_baseline_pnl_map's kind IN
+        ('positions','holdings') precedence. Once base_pnl is correctly
+        resolved, the formula itself is unchanged."""
+        # Holding was worth total_pnl=4000 at yesterday's close-reset.
+        # Today it's sold: realised=4500 (incl. yesterday's gain), unrealised=0.
+        # Only the INCREMENTAL 500 should show as today's Day P&L.
+        assert baseline_diff_day_pnl(4500.0, 0.0, base_pnl=4000.0) == 500.0
+
+
+class TestVectorisedWrappers:
+    """pandas Series + polars Expr wrappers must agree with the scalar SSOT."""
+
+    def test_current_total_profit_series_matches_scalar(self):
+        realised = pd.Series([2000.0, None, -500.0])
+        unrealised = pd.Series([5000.0, 100.0, -1200.0])
+        out = current_total_profit_series(realised, unrealised)
+        assert out.tolist() == [
+            current_total_profit(2000.0, 5000.0),
+            current_total_profit(None, 100.0),
+            current_total_profit(-500.0, -1200.0),
+        ]
+
+    def test_baseline_diff_day_pnl_series_scalar_base(self):
+        realised = pd.Series([0.0, 800.0])
+        unrealised = pd.Series([1500.0, 0.0])
+        out = baseline_diff_day_pnl_series(realised, unrealised, base_pnl=0.0)
+        assert out.tolist() == [1500.0, 800.0]
+
+    def test_baseline_diff_day_pnl_series_per_row_base(self):
+        realised = pd.Series([0.0, 300.0])
+        unrealised = pd.Series([6200.0, 900.0])
+        base = pd.Series([5000.0, 1000.0])
+        out = baseline_diff_day_pnl_series(realised, unrealised, base)
+        assert out.tolist() == [1200.0, 200.0]
+
+    def test_baseline_diff_day_pnl_series_null_base_treated_as_zero(self):
+        realised = pd.Series([100.0])
+        unrealised = pd.Series([200.0])
+        base = pd.Series([None])
+        out = baseline_diff_day_pnl_series(realised, unrealised, base)
+        assert out.tolist() == [300.0]
+
+    def test_current_total_profit_expr_matches_series(self):
+        df = pl.DataFrame({
+            'realised': [2000.0, None, -500.0],
+            'unrealised': [5000.0, 100.0, -1200.0],
+        })
+        out = df.select(current_total_profit_expr().alias('total')).to_series().to_list()
+        assert out == [7000.0, 100.0, -1700.0]
+
+    def test_baseline_diff_day_pnl_expr_matches_series(self):
+        df = pl.DataFrame({
+            'realised': [0.0, 300.0],
+            'unrealised': [6200.0, 900.0],
+            'prev_settlement_pnl': [5000.0, 1000.0],
+        })
+        out = df.select(
+            baseline_diff_day_pnl_expr().alias('day_pnl')
+        ).to_series().to_list()
+        assert out == [1200.0, 200.0]
+
+
+# ---------------------------------------------------------------------------
+# resolve_realised_unrealised / baseline_diff_day_pnl_with_fallback
+# (2026-09 Day P&L audit item #1 — "both zero -> use pnl" SSOT trigger)
+# ---------------------------------------------------------------------------
+
+class TestResolveRealisedUnrealisedFallback:
+    def test_both_nonzero_pass_through_unchanged(self):
+        assert resolve_realised_unrealised(300.0, 900.0, 1200.0) == (300.0, 900.0)
+
+    def test_realised_zero_unrealised_nonzero_not_treated_as_unpopulated(self):
+        """A fresh open position legitimately has realised=0, unrealised>0 —
+        must NOT trigger the pnl fallback (only BOTH-zero triggers it)."""
+        assert resolve_realised_unrealised(0.0, 500.0, 999.0) == (0.0, 500.0)
+
+    def test_unrealised_zero_realised_nonzero_not_treated_as_unpopulated(self):
+        assert resolve_realised_unrealised(800.0, 0.0, 999.0) == (800.0, 0.0)
+
+    def test_both_zero_falls_back_to_pnl(self):
+        """Auditor repro: realised=0, unrealised=0, pnl=500 — the exact
+        shape a closed-hours snapshot row had before the item #1 fix.
+        Must fall back to (pnl, 0.0), NOT (0.0, 0.0)."""
+        assert resolve_realised_unrealised(0.0, 0.0, 500.0) == (500.0, 0.0)
+
+    def test_both_none_falls_back_to_pnl(self):
+        assert resolve_realised_unrealised(None, None, 500.0) == (500.0, 0.0)
+
+    def test_all_zero_is_harmless(self):
+        assert resolve_realised_unrealised(0.0, 0.0, 0.0) == (0.0, 0.0)
+
+
+class TestBaselineDiffDayPnlWithFallback:
+    def test_populated_row_uses_split_directly(self):
+        # current_total_profit = 300+900=1200; day_pnl = 1200-1000=200
+        result = baseline_diff_day_pnl_with_fallback(300.0, 900.0, 1200.0, 1000.0)
+        assert result == pytest.approx(200.0)
+
+    def test_auditor_repro_unpopulated_row_uses_pnl(self):
+        """realised=0, unrealised=0, pnl=500, prev_settlement_pnl=400 must
+        give Day P&L=100 (500-400), not -400 (the pre-fix bug: naive
+        realised+unrealised=0, then 0-400=-400)."""
+        result = baseline_diff_day_pnl_with_fallback(0.0, 0.0, 500.0, 400.0)
+        assert result == pytest.approx(100.0), (
+            f"expected 100.0 (pnl-based fallback), got {result}"
+        )
+
+    def test_matches_plain_baseline_diff_when_populated(self):
+        """When realised/unrealised are genuinely populated, the fallback
+        wrapper must agree exactly with the plain (no-fallback) helper."""
+        r, u, base = 300.0, 900.0, 1000.0
+        assert baseline_diff_day_pnl_with_fallback(r, u, 9999.0, base) == pytest.approx(
+            baseline_diff_day_pnl(r, u, base)
+        )
+
+
+class TestBaselineDiffDayPnlExprWithFallback:
+    def test_vector_matches_scalar_fallback_for_unpopulated_rows(self):
+        """Polars expr version must match the scalar helper row-for-row,
+        including the auditor's exact unpopulated-row repro."""
+        df = pl.DataFrame({
+            'realised':            [300.0, 0.0,   800.0],
+            'unrealised':          [900.0, 0.0,   0.0],
+            'pnl':                 [9999.0, 500.0, 800.0],
+            'prev_settlement_pnl': [1000.0, 400.0, 0.0],
+        })
+        out = df.select(
+            baseline_diff_day_pnl_expr_with_fallback().alias('day_pnl')
+        ).to_series().to_list()
+
+        expected = [
+            baseline_diff_day_pnl_with_fallback(300.0, 900.0, 9999.0, 1000.0),
+            baseline_diff_day_pnl_with_fallback(0.0, 0.0, 500.0, 400.0),
+            baseline_diff_day_pnl_with_fallback(800.0, 0.0, 800.0, 0.0),
+        ]
+        for got, want in zip(out, expected):
+            assert got == pytest.approx(want)
+        # Explicit auditor-number check on row 2.
+        assert out[1] == pytest.approx(100.0)

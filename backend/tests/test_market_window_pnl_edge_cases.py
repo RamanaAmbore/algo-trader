@@ -520,8 +520,10 @@ class TestSourceIntegrity:
         assert helper_match, "_fetch_snapshot_close_map not found in positions.py"
         helper_text = helper_match.group(1)
 
-        # Find the SQL literal inside _sql_text("""...""").
-        sql_match = re.search(r'_sql_text\("""(.*?)"""', helper_text, re.DOTALL)
+        # Find the SQL literal inside _sql_text("""...""") or _sql_text(f"""...""")
+        # — the batch-anchored base_pnl fix embeds a shared f-string CTE
+        # fragment (_BASELINE_PNL_CTE_SQL), so the query is now an f-string.
+        sql_match = re.search(r'_sql_text\(f?"""(.*?)"""', helper_text, re.DOTALL)
         assert sql_match, "_fetch_snapshot_close_map must contain a _sql_text(\"\"\"...\"\"\") block"
         sql_literal = sql_match.group(1)
 
@@ -870,8 +872,18 @@ def _run_pos_override(
     if mock_time is None:
         mock_time = datetime(2026, 8, 20, 9, 0, 0, tzinfo=_IST)
 
+    # _fetch_snapshot_close_map's query now returns 6 columns (audit item #4
+    # — added kind/qty so the caller can gate a holdings-sourced baseline).
+    # Pad legacy 4-tuple fixtures with (kind='positions', qty=None) — a
+    # plain positions-kind baseline with no pro-ration context, matching
+    # the pre-fix unconditional-use behaviour these tests assert on.
+    padded_rows = [
+        (acct, sym, ref_close, total_pnl, "positions", None)
+        for (acct, sym, ref_close, total_pnl) in snapshot_rows
+    ]
+
     mock_result = MagicMock()
-    mock_result.all.return_value = snapshot_rows
+    mock_result.all.return_value = padded_rows
 
     mock_session = AsyncMock()
     mock_session.execute = AsyncMock(return_value=mock_result)

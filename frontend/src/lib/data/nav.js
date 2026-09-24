@@ -67,66 +67,60 @@ export function navByAccount(accounts, funds, positions, holdings) {
 export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 
 /**
+ * Current total profit for a position row — `realised + unrealised` when
+ * both are present and finite; falls back to the broker-combined `pnl`
+ * field otherwise (Kite's native `pnl` is confirmed = realised+unrealised
+ * per Zerodha's own forum statement, and this fallback also covers rows
+ * from the persistent cache layer, closed-hours snapshots, and any
+ * pre-deploy window where the split fields aren't yet populated).
+ *
+ * @param {{ realised?: number|null, unrealised?: number|null, pnl?: number|null }} p
+ * @returns {number}
+ */
+export function currentTotalProfit(p) {
+  const realised   = Number(p?.realised) || 0;
+  const unrealised = Number(p?.unrealised) || 0;
+  // Mirrors backend's resolve_realised_unrealised (pnl_math.py) EXACTLY:
+  // only fall back to `pnl` when BOTH legs are exactly 0 (not split /
+  // not populated). A legitimately-zero single leg (e.g. a fresh open
+  // position with realised=0, unrealised>0) must NOT trigger the
+  // fallback — must stay in lockstep with the backend rule or live and
+  // closed-hours-served rows can silently disagree.
+  if (realised || unrealised) {
+    return realised + unrealised;
+  }
+  return Number(p?.pnl) || 0;
+}
+
+/**
  * Canonical base Day P&L for a single position row.
  *
- * Authoritative path (overnight positions already in daily_book):
- *   When `prev_settlement_pnl` is present and finite, Day P&L =
- *   `pnl − prev_settlement_pnl`. This is the delta since yesterday's
- *   settlement snapshot and is independent of `day_change_val` or
- *   `close_price` instability.
- *
- * Fallback path (new position opened today, not yet in daily_book):
- *   `prev_settlement_pnl` is null/absent. Compute cost-basis delta:
- *   `pnl − overnight_quantity × (close_price − average_price)`.
- *   This isolates the intraday component from the overnight unrealised carry.
- *
- * Mirrors the same guard used in:
- *   - derivatives/+page.svelte `_dayPnlForLeg` (non-expired branch)
- *   - derivatives/+page.svelte `_byUnderlyingTotals` loop
+ * Atomic formula (proven correct for any position state — new entry, full
+ * exit, partial exit, re-entry, flip): `current_total_profit − base_pnl`,
+ * where `base_pnl` is that position's total profit frozen at the most
+ * recent trading day's close-reset snapshot (0 when none exists, e.g. a
+ * position opened today). See `currentTotalProfit` for the realised+
+ * unrealised (Kite-pnl-fallback) sourcing.
  *
  * Every frontend surface that renders a per-position Day P&L MUST call this
- * function (or a wrapper that calls it) instead of reading `p.day_change_val`
- * directly.
+ * function (or a wrapper that calls it) instead of reading a raw broker
+ * day-change field directly.
  *
- * @param {{ prev_settlement_pnl?: number|null, pnl?: number|null, overnight_quantity?: number|null, day_change_val?: number|null, prev_close?: number|null, average_price?: number|null, avg_cost?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
+ * @param {{ realised?: number|null, unrealised?: number|null, pnl?: number|null, prev_settlement_pnl?: number|null, tradingsymbol?: string|null, symbol?: string|null }} p
  * @returns {number}
  */
 export function baseDayPnlForPosition(p) {
-  const pnl     = Number(p?.pnl ?? 0);
-  const prevPnl = p?.prev_settlement_pnl;
-  if (prevPnl != null && isFinite(prevPnl)) {
-    // Authoritative: current P&L − yesterday's settlement P&L (from daily_book)
-    return pnl - prevPnl;
-  }
-  // Fallback for positions opened today (not yet in daily_book)
-  const oq  = Number(p?.overnight_quantity ?? 0);
-  // Overnight hold with no prevPnl: use frozen day_change_val directly.
-  // Avoids the close_price=0 trap post-MCX session when Kite returns stale zero.
-  const dcv   = Number(p?.day_change_val ?? 0);
-  const close = Number(p?.prev_close) || 0;
-  const avg   = Number(p?.average_price ?? p?.avg_cost ?? 0);
-  if (oq !== 0 && dcv !== 0) return dcv;
-  if (oq !== 0 && dcv === 0) {
-    // Case 4: close_price is 0 (broker hasn't populated prev_close yet for this
-    // symbol). Backend _positions_snapshot() sets close_price from prev_ltp
-    // (yesterday's settlement via daily_book) when available, falling back to
-    // previous_close. close <= 0 only during a narrow timing window when the
-    // position is brand-new (no prior snapshot row) AND the broker poll hasn't
-    // yet delivered a prev_close. In that window pnl - oq*(0 - avg) = pnl + oq*avg
-    // would be wildly wrong, so return 0 as the safe fallback.
-    // If you see this hit for overnight positions, investigate whether
-    // _positions_snapshot prev_ltp SQL CTE is working correctly.
-    if (close <= 0) {
-      // eslint-disable-next-line no-console
-      if (typeof console !== 'undefined') console.warn('[baseDayPnlForPosition] Case 4: close_price=0 for overnight position', { symbol: p?.tradingsymbol ?? p?.symbol, oq, pnl });
-      return 0;
-    }
-    return pnl - oq * (close - avg);
-  }
-  return pnl - oq * (close - avg);
+  const total    = currentTotalProfit(p);
+  const basePnl  = p?.prev_settlement_pnl;
+  const base     = (basePnl != null && isFinite(Number(basePnl))) ? Number(basePnl) : 0;
+  return total - base;
 }
 
-/** Aggregate Day P&L for a positions array, applying the new-position override. SSOT for all TOTAL row day_pnl calculations. */
+/**
+ * Aggregate Day P&L for a positions array — sums `baseDayPnlForPosition(r)`
+ * (the atomic baseline-diff formula) across every row. SSOT for all TOTAL
+ * row day_pnl calculations.
+ */
 export function aggregateDayPnlForPositions(rows) {
   return rows.reduce((sum, r) => sum + baseDayPnlForPosition(r), 0);
 }
@@ -134,92 +128,53 @@ export function aggregateDayPnlForPositions(rows) {
 /**
  * Live-LTP-aware Day P&L for a single position.
  *
- * Extends `baseDayPnlForPosition` with a live-tick rescue path for the
- * MCX stale-ticker fingerprint: when the broker REST endpoint ships
- * `last_price === close_price` (KiteTicker lag observed for CRUDEOIL
- * options around session open), `day_change_val` collapses to 0. Pulse
- * rescues this by recomputing via `(liveLtp − closePx) × qty` when a
- * live SSE tick is available; Derivatives was not applying the same
- * rescue — causing 0 instead of the correct Day P&L. This helper is
- * the canonical implementation shared by both surfaces so they cannot
- * drift.
+ * Extends `baseDayPnlForPosition` with a live-tick delta for ticks arriving
+ * faster than the backend poll: the base Day P&L already reflects the last
+ * polled LTP (baked into `unrealised`/`pnl`), so the live delta is applied
+ * directly as `(liveLtp − pollLtp) × qty` — no separate branch logic needed.
  *
- * Recompute path (applied only when ALL of these hold):
- *   - `marketOpen` is true
- *   - `liveLtp` is a positive finite number (from SSE / symbolStore)
- *   - `closePx` > 0 and `qty` ≠ 0
+ *   result = baseDayPnlForPosition(dcvRow) + (liveLtp − pollLtp) × qty
  *
- * When the recompute applies:
- *   realisedToday = brokerDcv − (pollLtp − closePx) × qty
- *   result        = realisedToday + (liveLtp − closePx) × qty
+ * The delta only applies when ALL of these hold: `marketOpen`, `liveLtp` is
+ * a positive finite number, `pollLtp` is positive (a missing/zero pollLtp
+ * would otherwise blow the delta up to `liveLtp × qty`), and `qty !== 0`.
+ * Otherwise returns `baseDayPnlForPosition(dcvRow)` unchanged.
  *
- * Fallback: contracts opened TODAY (closePx = 0, avg > 0, oq === 0):
- *   result = (liveLtp − avg) × qty
- *
- *   Guard: `oq === 0` (overnight_quantity) ensures this path fires only for
- *   intraday-new positions where avg is the actual entry cost. Overnight
- *   positions with closePx = 0 (stale/missing close from broker) must NOT use
- *   avg as the reference — doing so would show lifetime P&L instead of day P&L.
- *   Those fall through to `baseDayPnlForPosition(dcvRow)` which returns 0 via
- *   Case 4 (honest "unknown" when no prior close is available).
- *
- * Otherwise: `baseDayPnlForPosition(dcvRow)`.
- *
- * IMPORTANT — the two callers use different field names:
- *   - Pulse (raw broker row): close_price, last_price, quantity, average_price
- *   - Derivatives (normalised candidate): prev_close, ltp, qty, avg_cost
- * Both callers normalise to explicit params before calling this helper.
+ * IMPORTANT — callers source `pollLtp`/`qty` from different raw field names:
+ *   - Pulse (raw broker row): last_price, quantity
+ *   - Derivatives (normalised candidate): ltp, qty
+ * Each caller normalises to `pollLtp`/`qty` before calling this helper.
  *
  * @param {{
- *   closePx:  number,  // prev session close  (r.close_price / c.prev_close)
  *   pollLtp:  number,  // LTP at last broker poll (r.last_price / c.ltp)
  *   qty:      number,  // signed net qty
- *   avg:      number,  // average cost per unit
- *   dcvRow:   object,  // raw row for baseDayPnlForPosition (needs day_change_val / overnight_quantity / pnl)
+ *   dcvRow:   object,  // raw row for baseDayPnlForPosition (needs realised / unrealised / pnl / prev_settlement_pnl)
  * }} fields
  * @param {number|null|undefined} liveLtp  - live SSE tick LTP for this leg's own symbol
  * @param {{ marketOpen: boolean }} opts
  * @returns {number}
  */
-export function livePositionDayPnl({ closePx, pollLtp, qty, avg, dcvRow }, liveLtp, { marketOpen }) {
-  const brokerDcv = baseDayPnlForPosition(dcvRow);
-  const live = (marketOpen && Number(liveLtp) > 0) ? Number(liveLtp) : null;
-  const oq = Number(dcvRow?.overnight_quantity ?? 0);
-  if (live != null && closePx > 0 && qty !== 0) {
-    // Realised-today component: broker's dcv minus the overnight mark-to-close
-    // residual, so adding the live residual gives the full intraday P&L.
-    const realisedToday = (pollLtp > 0 && closePx > 0)
-      ? brokerDcv - (pollLtp - closePx) * qty
-      : brokerDcv;
-    return realisedToday + (live - closePx) * qty;
+export function livePositionDayPnl({ pollLtp, qty, dcvRow }, liveLtp, { marketOpen }) {
+  const base = baseDayPnlForPosition(dcvRow);
+  const live   = Number(liveLtp);
+  const poll   = Number(pollLtp);
+  const q      = Number(qty);
+  if (marketOpen && live > 0 && poll > 0 && q !== 0) {
+    return base + (live - poll) * q;
   }
-  if (marketOpen && live != null && closePx === 0 && avg > 0 && qty !== 0 && oq === 0) {
-    // Position opened TODAY — no prior close, track from avg_cost.
-    // Guard: oq === 0 ensures this only fires for intraday positions (overnight
-    // positions with closePx=0 should return 0, not lifetime P&L from avg).
-    return (live - avg) * qty;
-  }
-  // Market closed with price data — use (pollLtp − closePx) × qty directly.
-  // baseDayPnlForPosition returns 0 when prev_settlement_pnl === pnl (flat/settled
-  // options whose Thursday and Friday book values are identical). The close_price
-  // field on snapshot rows carries the corrected prior-session settlement (from
-  // previous_close_backup), so (last_price − close_price) × qty gives the real
-  // Friday vs Thursday move without depending on the settlement-PNL delta.
-  if (!marketOpen && pollLtp > 0 && closePx > 0 && qty !== 0) {
-    return (pollLtp - closePx) * qty;
-  }
-  return brokerDcv;
+  return base;
 }
 
 /**
  * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.
  * Excludes equity (NSE/BSE) positions to avoid double-counting with the H pill.
  *
- * Applies `baseDayPnlForPosition` so the new-position override (`oq=0 → pnl`)
- * is consistent with the derivatives Snapshot / Legs / Exp Close / Payoff
- * overlay surfaces that all call `_dayPnlForLeg`.
+ * Applies `baseDayPnlForPosition` (the atomic baseline-diff formula:
+ * `current_total_profit − base_pnl`) per row, so this total is consistent
+ * with the derivatives Snapshot / Legs / Exp Close / Payoff overlay surfaces,
+ * which compute their own per-leg Day P&L via the same helper.
  *
- * @param {Array<{exchange?: string, pnl?: number, day_change_val?: number, overnight_quantity?: number}>} positions
+ * @param {Array<{exchange?: string, pnl?: number, realised?: number|null, unrealised?: number|null, prev_settlement_pnl?: number|null}>} positions
  * @returns {{ pnlTotal: number, dayTotal: number }}
  */
 export function positionsPnlFiltered(positions) {

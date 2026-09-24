@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
+  currentTotalProfit,
   baseDayPnlForPosition,
   aggregateDayPnlForPositions,
   livePositionDayPnl,
@@ -9,95 +10,96 @@ import {
   dayChangePct,
 } from '$lib/data/nav.js';
 
+// ── currentTotalProfit ───────────────────────────────────────────────────────
+
+describe('currentTotalProfit', () => {
+  it('realised + unrealised when both present and finite', () => {
+    expect(currentTotalProfit({ realised: 200, unrealised: 300, pnl: 999 })).toBe(500);
+  });
+
+  // Mirrors backend's resolve_realised_unrealised (pnl_math.py) EXACTLY:
+  // only fall back to `pnl` when BOTH legs are exactly 0/missing — a
+  // legitimately-zero SINGLE leg (fresh open position, realised=0,
+  // unrealised>0, or vice versa) must NOT trigger the fallback.
+
+  it('does not fall back to pnl when only unrealised is present (realised missing→0)', () => {
+    expect(currentTotalProfit({ unrealised: 300, pnl: 150 })).toBe(300);
+  });
+
+  it('does not fall back to pnl when only realised is present (unrealised missing→0)', () => {
+    expect(currentTotalProfit({ realised: 200, pnl: 150 })).toBe(200);
+  });
+
+  it('falls back to pnl when both are absent (cached/closed-hours row)', () => {
+    expect(currentTotalProfit({ pnl: 750 })).toBe(750);
+  });
+
+  it('falls back to pnl when realised=0 and unrealised=0 (not split / not populated)', () => {
+    expect(currentTotalProfit({ realised: 0, unrealised: 0, pnl: 999 })).toBe(999);
+  });
+
+  it('no fields at all → 0', () => {
+    expect(currentTotalProfit({})).toBe(0);
+    expect(currentTotalProfit(null)).toBe(0);
+  });
+});
+
 // ── baseDayPnlForPosition ────────────────────────────────────────────────────
+// Atomic formula: current_total_profit − base_pnl (base_pnl = prev_settlement_pnl,
+// defaulting to 0 when absent/non-finite — e.g. a position opened today with no
+// prior close-reset snapshot).
 
 describe('baseDayPnlForPosition', () => {
-  it('authoritative path: prev_settlement_pnl finite → pnl - prev_settlement_pnl', () => {
-    const p = { pnl: 5000, prev_settlement_pnl: 3000, overnight_quantity: 2, day_change_val: 0, prev_close: 50, average_price: 45 };
+  it('realised+unrealised present, prev_settlement_pnl finite → total − base', () => {
+    const p = { realised: 3000, unrealised: 2000, prev_settlement_pnl: 3000 };
     expect(baseDayPnlForPosition(p)).toBe(2000);
   });
 
-  it('authoritative path: prev_settlement_pnl = 0 (falsy but finite)', () => {
+  it('pnl fallback, prev_settlement_pnl finite → pnl − base', () => {
+    const p = { pnl: 5000, prev_settlement_pnl: 3000 };
+    expect(baseDayPnlForPosition(p)).toBe(2000);
+  });
+
+  it('prev_settlement_pnl = 0 (falsy but finite) → total − 0', () => {
     const p = { pnl: 1500, prev_settlement_pnl: 0 };
     expect(baseDayPnlForPosition(p)).toBe(1500);
   });
 
-  it('fallback: prev_settlement_pnl null, oq > 0, dcv !== 0 → returns dcv', () => {
-    const p = { pnl: 1000, prev_settlement_pnl: null, overnight_quantity: 5, day_change_val: 800 };
-    expect(baseDayPnlForPosition(p)).toBe(800);
+  it('prev_settlement_pnl null → base defaults to 0 (new position, no prior snapshot)', () => {
+    const p = { pnl: 1000, prev_settlement_pnl: null };
+    expect(baseDayPnlForPosition(p)).toBe(1000);
   });
 
-  it('fallback: prev_settlement_pnl absent, oq > 0, dcv !== 0 → returns dcv', () => {
-    const p = { pnl: 2000, overnight_quantity: 3, day_change_val: 1200, prev_close: 100, average_price: 90 };
-    expect(baseDayPnlForPosition(p)).toBe(1200);
-  });
-
-  it('Case 3: oq > 0, dcv === 0, close > 0 → pnl - oq*(close - avg)', () => {
-    // e.g. oq=2, close=100, avg=80 → overnight_carry = 2*(100-80)=40; day P&L = 200 - 40 = 160
-    const p = { pnl: 200, overnight_quantity: 2, day_change_val: 0, prev_close: 100, average_price: 80 };
-    expect(baseDayPnlForPosition(p)).toBe(160);
-  });
-
-  it('Case 4: oq > 0, dcv === 0, close <= 0 → returns 0 (MCX zero-close guard)', () => {
-    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, prev_close: 0, average_price: 80 };
-    expect(baseDayPnlForPosition(p)).toBe(0);
-  });
-
-  it('Case 4: close negative → returns 0', () => {
-    const p = { pnl: 500, overnight_quantity: 2, day_change_val: 0, prev_close: -1, average_price: 80 };
-    expect(baseDayPnlForPosition(p)).toBe(0);
-  });
-
-  it('new intraday position: oq === 0, pnl !== 0 → returns pnl', () => {
-    // oq=0, dcv=0, close=0 → pnl - 0*(0-avg) = pnl
-    const p = { pnl: 750, overnight_quantity: 0, day_change_val: 0, prev_close: 0, average_price: 100 };
-    expect(baseDayPnlForPosition(p)).toBe(750);
+  it('prev_settlement_pnl absent → base defaults to 0', () => {
+    const p = { pnl: 2000 };
+    expect(baseDayPnlForPosition(p)).toBe(2000);
   });
 
   it('all zeros → returns 0', () => {
-    const p = { pnl: 0, overnight_quantity: 0, day_change_val: 0, prev_close: 0, average_price: 0 };
+    const p = { pnl: 0, prev_settlement_pnl: 0 };
     expect(baseDayPnlForPosition(p)).toBe(0);
   });
 
-  it('uses prev_close fallback when close_price absent', () => {
-    // oq > 0, dcv = 0, prev_close > 0
-    const p = { pnl: 300, overnight_quantity: 1, day_change_val: 0, prev_close: 200, average_price: 190 };
-    expect(baseDayPnlForPosition(p)).toBe(300 - 1 * (200 - 190));  // 290
+  it('NaN prev_settlement_pnl → base defaults to 0 (not finite)', () => {
+    const p = { pnl: 1000, prev_settlement_pnl: NaN };
+    expect(baseDayPnlForPosition(p)).toBe(1000);
   });
 
-  it('uses avg_cost fallback when average_price absent', () => {
-    const p = { pnl: 300, overnight_quantity: 1, day_change_val: 0, prev_close: 200, avg_cost: 190 };
-    expect(baseDayPnlForPosition(p)).toBe(300 - 1 * (200 - 190));  // 290
+  it('short position (negative qty is irrelevant to the formula — pnl already signed)', () => {
+    const p = { pnl: -2000, prev_settlement_pnl: -500 };
+    expect(baseDayPnlForPosition(p)).toBe(-1500);
   });
 
-  it('NaN prev_settlement_pnl falls through to fallback path', () => {
-    // NaN is not finite, so fallback applies; oq > 0, dcv = 500
-    const p = { pnl: 1000, prev_settlement_pnl: NaN, overnight_quantity: 2, day_change_val: 500 };
+  it('closed-today position (qty=0): realised carries the full day move', () => {
+    const p = { realised: 750, unrealised: 0, prev_settlement_pnl: 0 };
+    expect(baseDayPnlForPosition(p)).toBe(750);
+  });
+
+  it('holdings-sold-into-positions: base_pnl from prior kind carries through prev_settlement_pnl', () => {
+    // Backend resolves prev_settlement_pnl across kind='positions'/'holdings' —
+    // frontend just consumes whatever baseline the backend supplies.
+    const p = { pnl: 9000, prev_settlement_pnl: 8500 };
     expect(baseDayPnlForPosition(p)).toBe(500);
-  });
-
-  // ── Short position correctness (oq < 0) ────────────────────────────────────
-
-  it('short overnight, valid dcv → fast-path returns dcv directly', () => {
-    // oq = -5 (short), dcv = -2000 (valid non-zero), close > 0
-    // Expected: -2000 (dcv returned directly, guard now oq !== 0)
-    const p = { pnl: -2000, overnight_quantity: -5, day_change_val: -2000, prev_close: 100, average_price: 110 };
-    expect(baseDayPnlForPosition(p)).toBe(-2000);
-  });
-
-  it('short overnight, stale close (close = 0) → Case 4 guard returns 0', () => {
-    // oq = -100, close = 0, pnl = 50000, avg = 5000
-    // Without fix: 50000 - (-100)*(0 - 5000) = 50000 + 500000 = 550000
-    // With fix: Case 4 fires (oq !== 0 && dcv === 0 && close <= 0) → 0
-    const p = { pnl: 50000, overnight_quantity: -100, day_change_val: 0, prev_close: 0, average_price: 5000 };
-    expect(baseDayPnlForPosition(p)).toBe(0);
-  });
-
-  it('short overnight, dcv = 0 and close > 0 → falls through to formula', () => {
-    // oq = -5, dcv = 0, pnl = -1000, close = 150, avg = 160
-    // Expected: pnl - oq*(close - avg) = -1000 - (-5)*(150 - 160) = -1000 - 50 = -1050
-    const p = { pnl: -1000, overnight_quantity: -5, day_change_val: 0, prev_close: 150, average_price: 160 };
-    expect(baseDayPnlForPosition(p)).toBe(-1050);
   });
 });
 
@@ -107,7 +109,7 @@ describe('aggregateDayPnlForPositions', () => {
   it('sums baseDayPnlForPosition across rows', () => {
     const rows = [
       { pnl: 5000, prev_settlement_pnl: 3000 },  // → 2000
-      { pnl: 1000, overnight_quantity: 0, day_change_val: 0, prev_close: 0 }, // new pos → 1000
+      { pnl: 1000, prev_settlement_pnl: null },  // new pos, no baseline → 1000
     ];
     expect(aggregateDayPnlForPositions(rows)).toBe(3000);
   });
@@ -124,73 +126,43 @@ describe('aggregateDayPnlForPositions', () => {
 
 // ── livePositionDayPnl ───────────────────────────────────────────────────────
 
+// livePositionDayPnl = baseDayPnlForPosition(dcvRow) + (liveLtp − pollLtp) × qty,
+// applied only when marketOpen && liveLtp>0 && pollLtp>0 && qty!==0.
 describe('livePositionDayPnl', () => {
   const makeFields = (overrides = {}) => ({
-    closePx: 100,
     pollLtp: 102,
     qty: 5,
-    avg: 98,
-    dcvRow: { pnl: 10, overnight_quantity: 5, day_change_val: 10, prev_close: 100 },
+    dcvRow: { pnl: 110, prev_settlement_pnl: 100 },  // base = 10
     ...overrides,
   });
 
-  it('market closed with closePx > 0 → price formula (pollLtp - closePx) * qty', () => {
-    // makeFields: closePx=100, pollLtp=102, qty=5 → (102-100)*5=10
+  it('market closed → live delta not applied, returns base only', () => {
     const fields = makeFields();
     const result = livePositionDayPnl(fields, 105, { marketOpen: false });
     expect(result).toBe(10);
   });
 
-  it('market closed, flat settlement (pnl = prev_settlement_pnl) → price formula rescues 0', () => {
-    // MCX option: Thursday close=930, Friday settlement=850, qty=100 contracts
-    // baseDayPnlForPosition would return pnl - prev_settlement_pnl = 0
-    // Price formula: (850 - 930) * 100 = -8000
-    const dcvRow = {
-      pnl: -5000,
-      prev_settlement_pnl: -5000,  // same → baseDayPnlForPosition = 0
-      overnight_quantity: 100,
-      day_change_val: 0,
-      prev_close: 930,
-    };
-    const result = livePositionDayPnl(
-      { closePx: 930, pollLtp: 850, qty: 100, avg: 1000, dcvRow },
-      null,
-      { marketOpen: false },
-    );
-    expect(result).toBe(-8000);
-  });
-
-  it('market closed, closePx = 0 → falls back to baseDayPnlForPosition', () => {
-    // No prior-session close available — cannot apply price formula; use brokerDcv.
-    const dcvRow = { pnl: 500, prev_settlement_pnl: null, overnight_quantity: 5, day_change_val: 500, prev_close: 0 };
-    const result = livePositionDayPnl(
-      { closePx: 0, pollLtp: 102, qty: 5, avg: 98, dcvRow },
-      null,
-      { marketOpen: false },
-    );
-    expect(result).toBe(500);  // brokerDcv via baseDayPnlForPosition
-  });
-
-  it('market open + liveLtp > 0 + closePx > 0 → live recompute', () => {
-    // brokerDcv = 10 (dcv=10, oq=5, dcv!=0 → 10)
-    // realisedToday = 10 - (102 - 100)*5 = 10 - 10 = 0
-    // result = 0 + (105 - 100)*5 = 25
+  it('market open + liveLtp > 0 + pollLtp > 0 + qty != 0 → base + (liveLtp - pollLtp) * qty', () => {
+    // base = 10, (105-102)*5 = 15 → 25
     const fields = makeFields();
     const result = livePositionDayPnl(fields, 105, { marketOpen: true });
     expect(result).toBe(25);
   });
 
-  it('new position: closePx=0, avg>0 → (liveLtp - avg) * qty', () => {
-    const fields = makeFields({ closePx: 0, pollLtp: 0, qty: 3, avg: 50,
-      dcvRow: { pnl: 0, overnight_quantity: 0, day_change_val: 0, prev_close: 0 } });
-    // closePx=0, avg>0, qty≠0 → (60 - 50)*3 = 30
-    const result = livePositionDayPnl(fields, 60, { marketOpen: true });
-    expect(result).toBe(30);
+  it('pollLtp = 0 → delta not applied (would otherwise blow up to liveLtp × qty), returns base', () => {
+    const fields = makeFields({ pollLtp: 0 });
+    const result = livePositionDayPnl(fields, 105, { marketOpen: true });
+    expect(result).toBe(10);
+  });
+
+  it('qty = 0 → delta not applied, returns base', () => {
+    const fields = makeFields({ qty: 0 });
+    const result = livePositionDayPnl(fields, 105, { marketOpen: true });
+    expect(result).toBe(10);
   });
 
   it('liveLtp absent (null) → falls back to base', () => {
     const fields = makeFields();
-    // dcvRow: dcv=10, oq=5, dcv!=0 → 10
     const result = livePositionDayPnl(fields, null, { marketOpen: true });
     expect(result).toBe(10);
   });
@@ -201,109 +173,25 @@ describe('livePositionDayPnl', () => {
     expect(result).toBe(10);
   });
 
-  it('pollLtp=0 (snapshot row): realisedToday falls back to brokerDcv, not 0', () => {
-    // Change A regression test: pollLtp=0 must not drop brokerDcv.
-    // Before fix: realisedToday = 0   → result = 0 + (6450-6400)*1 = 50 (wrong)
-    // After fix:  realisedToday = 200 → result = 200 + (6450-6400)*1 = 250 (correct)
-    const dcvRow = { pnl: 800, overnight_quantity: 1, day_change_val: 200, prev_close: 6400 };
-    // baseDayPnlForPosition: oq=1, dcv=200 (non-zero) → 200
-    const fields = { closePx: 6400, pollLtp: 0, qty: 1, avg: 6200, dcvRow };
-    const result = livePositionDayPnl(fields, 6450, { marketOpen: true });
-    // realisedToday = 200 (brokerDcv fallback because pollLtp=0)
-    // result = 200 + (6450-6400)*1 = 250
-    expect(result).toBeCloseTo(250, 4);
-  });
-
-  it('short overnight (qty < 0) + live tick → ticker-rescue computes correctly', () => {
-    // Short 5 contracts: oq = -5, closePx = 100, pollLtp = 98, liveLtp = 97
-    // dcvRow: oq = -5, dcv = 10 (non-zero) → baseDayPnlForPosition returns 10
-    // brokerDcv = 10
-    // realisedToday = 10 - (98 - 100)*(-5) = 10 - 10 = 0
-    // result = 0 + (97 - 100)*(-5) = 0 + 15 = 15
-    const fields = {
-      closePx: 100,
-      pollLtp: 98,
-      qty: -5,
-      avg: 105,
-      dcvRow: { pnl: -10, overnight_quantity: -5, day_change_val: 10, prev_close: 100 },
-    };
+  it('short position (negative qty) — live delta applies with correct sign', () => {
+    // base = pnl(-10) - prev_settlement_pnl(-20) = 10
+    // delta = (97 - 100) * (-5) = 15 → result = 25
+    const fields = { pollLtp: 100, qty: -5, dcvRow: { pnl: -10, prev_settlement_pnl: -20 } };
     const result = livePositionDayPnl(fields, 97, { marketOpen: true });
-    expect(result).toBe(15);
+    expect(result).toBe(25);
   });
 
-  it('overnight position with closePx=0 and live tick returns 0 (not lifetime P&L)', () => {
-    // Bug: before the oq === 0 guard, this fired (live - avg) * qty = (310 - 250) * 5 = 300
-    // which is lifetime P&L masquerading as day P&L.
-    // After fix: oq > 0 fails the guard → falls through to baseDayPnlForPosition
-    // which returns 0 via Case 4 (close_price <= 0).
-    const dcvRow = {
-      overnight_quantity: 5,
-      quantity: 5,
-      pnl: 1500,          // (300 - avg) × 5 = lifetime pnl
-      day_change_val: 0,
-      prev_close: 0,
-      average_price: 250,  // entry cost from prior sessions
-    };
-    const result = livePositionDayPnl(
-      { closePx: 0, pollLtp: 0, qty: 5, avg: 250, dcvRow },
-      310,  // live SSE tick well above avg
-      { marketOpen: true }
-    );
-    // Before fix: (310 - 250) × 5 = 300 (lifetime P&L masquerade)
-    // After fix: 0 (honest "unknown" — no prior close available)
+  it('new position (no prev_settlement_pnl): base = pnl, live delta still applies', () => {
+    const fields = { pollLtp: 50, qty: 3, dcvRow: { pnl: 0, prev_settlement_pnl: null } };
+    // base = 0; delta = (60-50)*3 = 30 → result = 30
+    const result = livePositionDayPnl(fields, 60, { marketOpen: true });
+    expect(result).toBe(30);
+  });
+
+  it('flat settlement (pnl = prev_settlement_pnl) with market closed → base is honestly 0', () => {
+    const dcvRow = { pnl: -5000, prev_settlement_pnl: -5000 };
+    const result = livePositionDayPnl({ pollLtp: 850, qty: 100, dcvRow }, null, { marketOpen: false });
     expect(result).toBe(0);
-  });
-
-  it('intraday position with closePx=0 and live tick returns (live - avg) * qty', () => {
-    // oq === 0 → new position today; avg is the actual entry cost so the formula is correct.
-    const dcvRow = {
-      overnight_quantity: 0,
-      quantity: 5,
-      pnl: 300,           // (310 - 250) × 5
-      day_change_val: 0,
-      prev_close: 0,
-      average_price: 250,
-    };
-    const result = livePositionDayPnl(
-      { closePx: 0, pollLtp: 0, qty: 5, avg: 250, dcvRow },
-      310,
-      { marketOpen: true }
-    );
-    expect(result).toBe((310 - 250) * 5);  // 300 — correct for intraday
-  });
-
-  it('Case 2: dcv=0 overnight position uses pnl-based rescue', () => {
-    // Overnight position where broker shipped dcv=0 but pnl is valid.
-    // baseDayPnlForPosition applies Case 3 formula: pnl - oq*(close - avg)
-    // Example: close=5800, avg=5700, oq=1, pnl=150
-    // baseDayPnl = 150 - 1*(5800-5700) = 150 - 100 = 50
-    // pollLtp=5850 → realisedToday = 50 - (5850-5800)*1 = 50 - 50 = 0
-    // liveLtp=5860 → result = 0 + (5860-5800)*1 = 60
-    const result = livePositionDayPnl(
-      { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
-        dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 0, pnl: 150,
-                  prev_close: 5800, average_price: 5700 } },
-      5860,
-      { marketOpen: true }
-    );
-    expect(result).toBeCloseTo(60, 1);
-  });
-
-  it('Case 2 variant: simple overnight dcv present, live price update', () => {
-    // When broker has valid dcv (day_change_val=50), realisedToday calculation
-    // subtracts the poll-to-close residual correctly.
-    // brokerDcv = 50 (dcv present and non-zero)
-    // pollLtp=5850, closePx=5800 → residual = (5850-5800)*1 = 50
-    // realisedToday = 50 - 50 = 0
-    // liveLtp=5860 → result = 0 + (5860-5800)*1 = 60
-    const result = livePositionDayPnl(
-      { closePx: 5800, pollLtp: 5850, qty: 1, avg: 5700,
-        dcvRow: { qty: 1, overnight_quantity: 1, day_change_val: 50, pnl: 150,
-                  prev_close: 5800, average_price: 5700 } },
-      5860,
-      { marketOpen: true }
-    );
-    expect(result).toBeCloseTo(60, 1);
   });
 });
 

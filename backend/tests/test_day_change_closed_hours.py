@@ -125,15 +125,37 @@ class TestSourceChecks:
             "mergePositionRows must not gate LTP on _mktOpen — "
             "positions day P&L uses direct formula without market-open gate"
         )
-        assert "close_price" in merge_body, (
-            "mergePositionRows must reference close_price for the day P&L formula"
+        # As of the Day P&L redesign, mergePositionRows no longer needs
+        # close_price/previous_close at all — the baseline-diff formula
+        # (currentTotalProfit(p) - base_pnl) is delegated entirely to
+        # livePositionDayPnl, which computes off realised/unrealised/
+        # prev_settlement_pnl, not close/avg. Assert the delegation instead.
+        assert "livePositionDayPnl(" in merge_body, (
+            "mergePositionRows must compute day_pnl via livePositionDayPnl "
+            "(the baseline-diff formula), not a locally re-derived formula"
         )
 
-        # livePositionDayPnl in nav.js still has Contract A branch (used by derivatives)
-        contract_a_guard = nav_src.find("marketOpen && live != null && closePx === 0")
-        assert contract_a_guard != -1, (
-            "Contract A branch (`marketOpen && live != null && closePx === 0`) "
-            "not found in nav.js livePositionDayPnl — guard removed"
+        # livePositionDayPnl no longer needs a separate "Contract A" (new-position,
+        # no prior close) branch — as of the Day P&L redesign, that case is handled
+        # by baseDayPnlForPosition itself (currentTotalProfit(p) - base_pnl, where
+        # base_pnl defaults to 0 when there's no close-reset baseline), so
+        # livePositionDayPnl's live-delta guard no longer references closePx at all.
+        live_start = nav_src.find("export function livePositionDayPnl")
+        live_end   = nav_src.find("\nexport function", live_start + 1)
+        live_body  = nav_src[live_start:live_end] if live_end != -1 else nav_src[live_start:live_start + 1500]
+        assert "baseDayPnlForPosition(dcvRow)" in live_body, (
+            "livePositionDayPnl must delegate the base (non-live-delta) figure to "
+            "baseDayPnlForPosition, which already covers the new-position (no prior "
+            "close) case via its prev_settlement_pnl fallback."
+        )
+        assert "marketOpen && live" in live_body and "poll > 0" in live_body, (
+            "livePositionDayPnl must still gate its live-tick delta on marketOpen, "
+            "a positive live price, and a positive poll price."
+        )
+        assert "closePx" not in live_body, (
+            "Regression: closePx reappeared in livePositionDayPnl — the new formula "
+            "no longer needs a separate closePx===0 branch, that case is handled by "
+            "baseDayPnlForPosition's prev_settlement_pnl fallback."
         )
 
     def test_marketpulse_holdings_recompute_gated_on_market_open(self):
@@ -583,7 +605,13 @@ class TestClosedHoursRouteReturnsSnapshot:
             fake_captured,                  # captured_at
             None,                           # previous_close (index 10)
             None,                           # prev_ltp (index 11)
-            None,                           # prev_settlement_pnl (index 12)
+            # prev_settlement_pnl (index 12) — yesterday's total_pnl, batch-
+            # anchored base_pnl for the SSOT rollup formula
+            # (pnl_math.baseline_diff_day_pnl). Set so
+            # current_total_profit(pnl) − base_pnl reproduces the extras-
+            # fallback day_change_val (-0.20) at the summary level too:
+            # 14670.00 − 14670.20 = -0.20.
+            Decimal("14670.20"),
         )]
 
         mock_result = _MM()

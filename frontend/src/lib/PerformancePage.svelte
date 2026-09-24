@@ -27,7 +27,7 @@
   import { formatSymbol, decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
-  import { navByAccount, navTotalRow, aggregateDayPnlForPositions, dayChangePct } from '$lib/data/nav';
+  import { navByAccount, navTotalRow, aggregateDayPnlForPositions, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
@@ -712,7 +712,15 @@
     { field: 'quantity',             headerName: 'Qty',       width: 52, type: 'numericColumn', headerClass: numericHdr, cellClass: qtyCls },
     { field: 'average_price',        headerName: 'Avg', width: 68, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr, cellClass: avgClsWithDir },
     { field: 'close_price',          headerName: 'P.Close', width: 78, valueFormatter: numFmt, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
+    // baseDayPnlForPosition (baseline-diff formula) — must match the TOTAL
+    // row below (makePositionsTotals → aggregateDayPnlForPositions) so
+    // individual rows sum to the pinned TOTAL directly above/below them.
+    // The pinned TOTAL row already carries its own precomputed day_change_val
+    // (sum of per-row baseline diffs, not a lone-row diff) — pass it through.
+    { colId: 'day_change_val',       headerName: 'Day P&L',   width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr,
+      valueGetter: (p) => (p.data?._isTotal || p.data?.tradingsymbol === 'TOTAL')
+        ? p.data.day_change_val
+        : baseDayPnlForPosition(p.data) },
     { field: 'pnl',                  headerName: 'P&L',       width: 88, valueFormatter: aggFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     { field: 'pnl_percentage',       headerName: 'P&L %',     width: 60, valueFormatter: pctFmtGrid, cellClass: pnlCls, type: 'numericColumn', headerClass: numericHdr },
     // Per-row Greeks for option positions (delta × qty, theta × qty).

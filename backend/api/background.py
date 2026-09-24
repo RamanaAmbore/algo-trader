@@ -224,9 +224,43 @@ def _rebuild_holdings_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
 def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
     """Recompute the per-account + TOTAL summary from a (possibly mutated)
     positions row DataFrame.  Used by _perf_fetch_all_broker_data after the
-    async stale-close override patches close_price and day_change_val in-place."""
+    async stale-close override patches close_price and day_change_val in-place.
+
+    Day P&L SSOT: when `realised`/`unrealised` (broker-sourced) and
+    `prev_settlement_pnl` (backfilled by `_override_stale_close_from_snapshot`,
+    which always runs immediately before this function) are present, the
+    `day_change_val` column used for the per-account sum is overridden with
+    the baseline-diff formula so this SSE/polling rollup agrees with
+    `_build_polars_summary` in positions.py. Uses the pnl-fallback-aware
+    variant (`pnl_math.baseline_diff_day_pnl_series_with_fallback`) when a
+    `pnl` column is present — SAME trigger positions.py's
+    `_with_baseline_diff_day_change` uses, so a row where `realised` AND
+    `unrealised` are both exactly 0 but `pnl` is nonzero (e.g. Groww rows
+    missing native realised_pnl/unrealised_pnl) resolves identically on
+    both paths instead of silently disagreeing (2026-09 Day P&L audit
+    round 3, item #4). Falls back to the plain (no-pnl-fallback) series
+    when `pnl` is absent, and to the legacy `day_change_val` column
+    (apply_day_change_backstop-derived) when realised/unrealised are
+    absent entirely — this keeps the sync `_fetch_positions_direct`
+    worker (which runs before the baseline is available) unaffected;
+    only this post-override rebuild is upgraded.
+    """
     if raw.empty or 'account' not in raw.columns:
         return pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
+    if {'realised', 'unrealised'}.issubset(raw.columns):
+        from backend.api.algo.pnl_math import (
+            baseline_diff_day_pnl_series, baseline_diff_day_pnl_series_with_fallback,
+        )
+        raw = raw.copy()
+        _base = raw['prev_settlement_pnl'] if 'prev_settlement_pnl' in raw.columns else 0.0
+        if 'pnl' in raw.columns:
+            raw['day_change_val'] = baseline_diff_day_pnl_series_with_fallback(
+                raw['realised'], raw['unrealised'], raw['pnl'], _base
+            )
+        else:
+            raw['day_change_val'] = baseline_diff_day_pnl_series(
+                raw['realised'], raw['unrealised'], _base
+            )
     sum_cols = [c for c in ('pnl', 'day_change_val') if c in raw.columns]
     grouped = raw.groupby('account')[sum_cols].sum().reset_index() if sum_cols \
         else pd.DataFrame(columns=['account'] + list(sum_cols))
@@ -6105,6 +6139,26 @@ async def _run_close_once(state: dict) -> None:
                         _run(lambda: (_fetch_holdings_direct(), _fetch_positions_direct())),
                         timeout=45,
                     )
+                    # Converge onto the same baseline-diff Day P&L SSOT
+                    # `_perf_fetch_all_broker_data` uses (positions.py:628-637)
+                    # — `_fetch_positions_direct` itself only has the legacy
+                    # `apply_day_change_backstop` summary available (it runs
+                    # sync, in a thread executor, with no event loop for the
+                    # async baseline-pnl DB lookup). Patch prev_close /
+                    # prev_settlement_pnl here (async, on the main loop) then
+                    # rebuild the summary via `_rebuild_positions_summary` so
+                    # this close-summary alert path never disagrees with the
+                    # live /api/positions route or the performance-refresh
+                    # NavStrip rollup on the same underlying data.
+                    try:
+                        from backend.api.routes.positions import _override_stale_close_from_snapshot
+                        await _override_stale_close_from_snapshot(df_p)
+                        sum_p = _rebuild_positions_summary(df_p)
+                    except Exception as _poe:
+                        logger.warning(
+                            f"[BROKER-DAILY] close-summary positions close-override "
+                            f"failed (summary unchanged): {_poe}"
+                        )
                 except asyncio.TimeoutError:
                     logger.warning("[BROKER-TIMEOUT] account=all op=holdings+positions timeout=45s")
                     df_h, sum_h, df_p, sum_p = pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()

@@ -146,6 +146,87 @@ class TestBmdRecomputeDerived:
 
 
 # ---------------------------------------------------------------------------
+# Fix — _bmd_recompute_derived must mirror its pnl patch onto `unrealised`
+# ---------------------------------------------------------------------------
+#
+# Day P&L sources from `realised + unrealised` (baseline-diff SSOT), not
+# `pnl`. Before this fix, `_bmd_recompute_derived` patched `pnl` when a
+# fresher LTP arrived via market-data backfill but left `unrealised`
+# untouched — silently dropping the LTP correction from Day P&L. This
+# specifically regressed the 2026-06-22 illiquid-MCX-options fix and
+# produces a phantom loss for Dhan, whose adapter sets
+# `unrealised = pnl_calc = 0` whenever it ships `lastTradedPrice = 0`
+# (see `backend/brokers/adapters/dhan.py:_normalise_position_prices_and_pnl`).
+
+class TestBmdRecomputeDerivedUnrealised:
+    def test_unrealised_recomputed_alongside_pnl(self):
+        """Auditor repro: qty=50, avg=100, backfilled ltp=110 (was 0/missing).
+        pnl and unrealised must BOTH land on (110-100)*50 = 500."""
+        df = _make_positions_df(
+            last_price=110.0,       # already patched by _bmd_patch_rows
+            average_price=100.0,
+            opening_quantity=50,
+            quantity=50,
+            pnl=0.0,                # stale broker value (computed vs ltp=0)
+            realised=0.0,
+            unrealised=0.0,         # Dhan's phantom-zero when ltp was missing
+        )
+        _bmd_recompute_derived(df, patched_indices={0})
+        assert df.loc[0, 'pnl'] == pytest.approx(500.0)
+        assert df.loc[0, 'unrealised'] == pytest.approx(500.0), (
+            "unrealised must be recomputed to (ltp-avg)*qty=500 alongside pnl — "
+            "leaving it stale silently drops the LTP correction from Day P&L "
+            "(realised+unrealised), even though pnl was fixed."
+        )
+
+    def test_unrealised_includes_realised_only_in_pnl_not_in_unrealised(self):
+        """When `realised` is present, pnl = mtm + realised, but `unrealised`
+        must stay as the pure mark-to-market leg (mtm only), not
+        double-count realised."""
+        df = _make_positions_df(
+            last_price=110.0,
+            average_price=100.0,
+            opening_quantity=50,
+            quantity=50,
+            pnl=0.0,
+            realised=200.0,   # already-booked realised P&L from an earlier exit
+            unrealised=0.0,
+        )
+        _bmd_recompute_derived(df, patched_indices={0})
+        # pnl = mtm(500) + realised(200) = 700
+        assert df.loc[0, 'pnl'] == pytest.approx(700.0)
+        # unrealised = mtm only = 500 (realised stays untouched at 200,
+        # so realised + unrealised = 700 == pnl, no double-count)
+        assert df.loc[0, 'unrealised'] == pytest.approx(500.0)
+        assert df.loc[0, 'realised'] == pytest.approx(200.0)
+
+    def test_unrealised_not_overwritten_when_invalid(self):
+        """When ltp or avg is still 0/invalid after backfill, unrealised
+        must be left untouched (same guard as pnl)."""
+        df = _make_positions_df(
+            last_price=0.0,   # backfill failed to find a quote
+            average_price=100.0,
+            opening_quantity=50,
+            quantity=50,
+            pnl=123.0,
+            unrealised=456.0,
+        )
+        _bmd_recompute_derived(df, patched_indices={0})
+        assert df.loc[0, 'unrealised'] == 456.0, (
+            "unrealised must not change when ltp is still invalid post-backfill"
+        )
+
+    def test_no_unrealised_column_is_noop(self):
+        """DataFrames without an `unrealised` column (e.g. holdings) must
+        not raise or gain a spurious column."""
+        df = _make_positions_df(last_price=110.0, average_price=100.0,
+                                 opening_quantity=50, quantity=50, pnl=0.0)
+        assert 'unrealised' not in df.columns
+        _bmd_recompute_derived(df, patched_indices={0})
+        assert 'unrealised' not in df.columns
+
+
+# ---------------------------------------------------------------------------
 # Fix (b) — LKG cache accepts and returns empty frames
 # ---------------------------------------------------------------------------
 

@@ -188,14 +188,17 @@ class TestPositionsReaderSqlHasLtpFilter:
 
 
 class TestSnapPositionEodValsUnifiedPnlKite:
-    """_snap_position_eod_vals must compute total_pnl correctly from pnl + realised."""
+    """_snap_position_eod_vals must compute total_pnl via the baseline-diff
+    SSOT — current_total_profit(realised, unrealised) — NOT pnl + realised
+    (which double-counts for Kite, whose native `pnl` already equals
+    realised + unrealised)."""
 
-    def test_snap_position_eod_vals_with_pnl_and_realised(self):
-        """Total P&L = pnl + realised (when both present)."""
+    def test_snap_position_eod_vals_with_realised_and_unrealised(self):
+        """Total P&L = realised + unrealised (when both present)."""
         from backend.api.algo.daily_snapshot import _snap_position_eod_vals
 
         r = {
-            "pnl": 5000.0,  # Unrealised
+            "unrealised": 5000.0,
             "realised": 2000.0,  # From day-trade close
             "last_price": 100.0,
             "close_price": 90.0,
@@ -210,9 +213,9 @@ class TestSnapPositionEodValsUnifiedPnlKite:
             r, mid_session=False, qty=10
         )
 
-        # For the unified formula: total_pnl_v = pnl + realised = 5000 + 2000 = 7000
+        # total_pnl_v = realised + unrealised = 2000 + 5000 = 7000
         assert total_pnl_v == 7000.0, (
-            "total_pnl_v must be pnl + realised when both present"
+            "total_pnl_v must be realised + unrealised when both present"
         )
         assert skip is False, "Should not skip with valid pnl"
 
@@ -221,11 +224,11 @@ class TestSnapPositionEodValsNoneRealised:
     """_snap_position_eod_vals must handle None realised gracefully."""
 
     def test_snap_position_eod_vals_none_realised(self):
-        """When realised=None, total_pnl_v = pnl."""
+        """When realised=None, total_pnl_v = unrealised."""
         from backend.api.algo.daily_snapshot import _snap_position_eod_vals
 
         r = {
-            "pnl": 5000.0,
+            "unrealised": 5000.0,
             "realised": None,  # Not provided by broker
             "last_price": 100.0,
             "close_price": 90.0,
@@ -241,19 +244,19 @@ class TestSnapPositionEodValsNoneRealised:
         )
 
         assert total_pnl_v == 5000.0, (
-            "total_pnl_v must be pnl when realised is None"
+            "total_pnl_v must be unrealised when realised is None"
         )
 
 
 class TestSnapPositionEodValsBothNone:
-    """_snap_position_eod_vals must handle both pnl and realised as None."""
+    """_snap_position_eod_vals must handle both unrealised and realised as None."""
 
     def test_snap_position_eod_vals_none_pnl_and_realised(self):
-        """When both pnl and realised are None, total_pnl_v must be None."""
+        """When both unrealised and realised are None, total_pnl_v must be None."""
         from backend.api.algo.daily_snapshot import _snap_position_eod_vals
 
         r = {
-            "pnl": None,
+            "unrealised": None,
             "realised": None,
             "last_price": 100.0,
             "close_price": 90.0,
@@ -269,7 +272,7 @@ class TestSnapPositionEodValsBothNone:
         )
 
         assert total_pnl_v is None, (
-            "total_pnl_v must be None when both pnl and realised are None"
+            "total_pnl_v must be None when both unrealised and realised are None"
         )
 
 

@@ -22,8 +22,28 @@ def _make_row(
     day_change_val=200.0,
     prev_close=500.0,
     quantity=10,
+    unrealised=None,
+    realised=0.0,
+    prev_settlement_pnl=None,
 ):
+    """Build a synthetic PositionRow.
+
+    `day_change_val` (the legacy per-row field) is kept as a cosmetic
+    diagnostic — NOT what drives the account/symbol rollups any more
+    (see pnl_math.baseline_diff_day_pnl / positions_helpers.build_summary
+    _from_rows). Rollups derive Day P&L from
+    `realised + unrealised − prev_settlement_pnl` (falling back to `pnl`
+    as the "realised" leg when both realised/unrealised are 0, matching
+    the closed-hours snapshot row shape). Defaults: `unrealised=pnl` and
+    `prev_settlement_pnl=pnl - day_change_val` so a caller who only sets
+    `pnl`/`day_change_val` (the pre-redesign call convention) still drives
+    the new formula to the SAME `day_change_val` result — i.e. existing
+    callers of this fixture keep their intended Day P&L unless they
+    explicitly override the new baseline params.
+    """
     from backend.api.schemas import PositionRow
+    _unrealised = pnl if unrealised is None else unrealised
+    _base = (pnl - day_change_val) if prev_settlement_pnl is None else prev_settlement_pnl
     return PositionRow(
         account=account,
         tradingsymbol="NIFTY25JUNFUT",
@@ -35,8 +55,11 @@ def _make_row(
         last_price=prev_close + day_change_val / quantity,
         pnl=pnl,
         pnl_percentage=0.0,
+        unrealised=_unrealised,
+        realised=realised,
         day_change_val=day_change_val,
         day_change_percentage=0.0,
+        prev_settlement_pnl=_base,
     )
 
 
@@ -768,3 +791,254 @@ class TestComputeHoldingDayChange:
         import inspect
         assert callable(_compute_holding_day_change)
         assert not inspect.iscoroutinefunction(_compute_holding_day_change)
+
+
+# ---------------------------------------------------------------------------
+# 10. _resolve_prev_settlement_pnl — holdings-phantom-baseline gate/pro-ration
+#     (2026-09 Day P&L audit items #4 and #5)
+# ---------------------------------------------------------------------------
+
+class TestResolvePrevSettlementPnl:
+    """Unit tests for _resolve_prev_settlement_pnl.
+
+    Bug #4 repro: a symbol exists in holdings (100 shares, lifetime
+    unrealised = ₹50,000) with no positions-kind row in yesterday's batch.
+    A fresh, UNRELATED same-day MIS trade on that symbol today must NOT
+    inherit the holding's full lifetime gain as its baseline — it should
+    get no baseline at all (base_pnl=0 downstream).
+
+    Bug #5 repro: a position was fully closed yesterday (qty=0,
+    total_pnl=realised) and the row survives in the latest batch. A fresh
+    re-entry today must not inherit yesterday's flat/closed total_pnl as
+    its baseline — the SQL layer excludes qty=0 rows entirely (tested via
+    `_BASELINE_PNL_CTE_SQL`'s `qty != 0` filter in test_baseline_pnl_map.py);
+    this class covers the Python-side kind/qty gating that complements it.
+    """
+
+    def test_positions_kind_baseline_passes_through_unchanged(self):
+        """A 'positions'-kind baseline (genuine continuing position) is
+        used verbatim — no gating applies."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            4500.0, "positions", 10.0,
+            product="MIS", day_sell_qty=0.0,
+        )
+        assert result == 4500.0
+
+    def test_none_kind_passes_through_unchanged(self):
+        """Older callers that haven't threaded kind/qty through (kind=None)
+        keep the pre-fix unconditional-use behaviour — backward compatible
+        with 13/14-column daily_book snapshot tuples."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            4500.0, None, None, product=None, day_sell_qty=None,
+        )
+        assert result == 4500.0
+
+    def test_holdings_baseline_rejected_for_unrelated_mis_trade(self):
+        """Bug #4 core repro: holdings total_pnl=50000 (lifetime gain on
+        100 shares held) must NOT become the baseline for a fresh,
+        unrelated same-day MIS trade on the same symbol (product='MIS',
+        day_sell_qty=0 — no holding was sold). Returns None (no baseline,
+        base_pnl=0 downstream) instead of the phantom ₹50,000."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0,
+            product="MIS", day_sell_qty=0.0,
+        )
+        assert result is None, (
+            f"MIS trade must not inherit the holding's lifetime gain as a "
+            f"baseline; got {result} instead of None"
+        )
+
+    def test_holdings_baseline_rejected_for_cnc_topup_no_sale(self):
+        """A same-day CNC top-up (buying MORE of a held stock, not selling)
+        is also NOT a valid holdings-baseline case — day_sell_qty=0 means
+        nothing was actually drawn down from the holding."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0,
+            product="CNC", day_sell_qty=0.0,
+        )
+        assert result is None
+
+    def test_holdings_baseline_prorated_for_genuine_cnc_sale(self):
+        """Bug #4 legitimate case: holding sold_qty=10 out of hold_qty=100,
+        holding total_pnl=50000 (lifetime gain on the WHOLE 100-share
+        holding). Baseline must be pro-rated to the SOLD fraction:
+        50000 * min(10,100)/100 = 5000 — not the full 50000."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0,
+            product="CNC", day_sell_qty=10.0,
+        )
+        assert result == pytest.approx(5000.0), (
+            f"Expected pro-rated baseline 50000*10/100=5000.0, got {result}"
+        )
+
+    def test_holdings_baseline_full_when_entire_holding_sold(self):
+        """Selling the ENTIRE holding (sold_qty == hold_qty) uses the full
+        lifetime total_pnl as the baseline — the pro-ration ratio is 1.0."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0,
+            product="CNC", day_sell_qty=100.0,
+        )
+        assert result == pytest.approx(50000.0)
+
+    def test_holdings_baseline_clamped_when_sold_exceeds_hold_qty(self):
+        """Defensive clamp: if day_sell_qty somehow exceeds hold_qty (stale
+        data edge case), the ratio is capped at 1.0 (min(sold, hold_qty)),
+        never inflating the baseline beyond the holding's own total_pnl."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0,
+            product="CNC", day_sell_qty=150.0,
+        )
+        assert result == pytest.approx(50000.0)
+
+    def test_holdings_baseline_rejected_when_hold_qty_missing(self):
+        """No hold_qty (None) → can't pro-rate → reject rather than guess."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        result = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", None,
+            product="CNC", day_sell_qty=10.0,
+        )
+        assert result is None
+
+    def test_none_raw_value_returns_none(self):
+        """No baseline row at all → None passes through regardless of kind."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+
+        assert _resolve_prev_settlement_pnl(
+            None, "holdings", 100.0, product="CNC", day_sell_qty=10.0,
+        ) is None
+        assert _resolve_prev_settlement_pnl(
+            None, "positions", 10.0, product="MIS", day_sell_qty=0.0,
+        ) is None
+
+    def test_end_to_end_day_pnl_with_corrected_baseline(self):
+        """Full pipeline: today_pnl=1200 (fresh MIS trade), old (buggy)
+        baseline=50000 (holding's lifetime gain) would give Day P&L =
+        1200-50000 = -48800 (nonsensical). Corrected: baseline=None ->
+        baseline_diff_day_pnl treats it as 0 -> Day P&L = 1200 (correct,
+        matches a brand-new position with no prior-day continuity)."""
+        from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+        from backend.api.algo.pnl_math import baseline_diff_day_pnl
+
+        resolved = _resolve_prev_settlement_pnl(
+            50000.0, "holdings", 100.0, product="MIS", day_sell_qty=0.0,
+        )
+        assert resolved is None
+        day_pnl = baseline_diff_day_pnl(1200.0, 0.0, resolved or 0.0)
+        assert day_pnl == pytest.approx(1200.0), (
+            f"Day P&L must be 1200.0 (today's fresh trade only), got {day_pnl} "
+            f"— the pre-fix bug would have produced -48800.0"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 11. build_snapshot_position_row — realised/unrealised split
+#     (2026-09 Day P&L audit item #1)
+# ---------------------------------------------------------------------------
+
+class TestSnapshotRowRealisedUnrealisedSplit:
+    """build_snapshot_position_row must populate real realised/unrealised
+    values (derived from mark-to-market on qty/avg/ltp) rather than leaving
+    them at the PositionRow struct default of 0.0 — otherwise
+    `_row_baseline_diff_day_pnl`'s "both zero -> fall back to pnl" trigger
+    and any consumer using `realised+unrealised` directly (frontend
+    `currentTotalProfit`) silently compute 0 instead of the real total.
+
+    Auditor repro: `baseDayPnlForPosition({realised:0, unrealised:0,
+    pnl:500, prev_settlement_pnl:400})` returned -400 (wrong) instead of
+    100 — because both fields were left at the struct default. These tests
+    prove the backend now populates real values so that repro can't recur.
+    """
+
+    def test_open_row_splits_realised_and_unrealised(self):
+        """Open row (qty>0): unrealised = (ltp-avg)*qty; realised absorbs
+        the remainder of total_pnl.
+
+        qty=10, avg=100, ltp=150 -> unrealised=(150-100)*10=500.
+        total_pnl=500 -> realised=500-500=0.
+        """
+        from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+        row = build_snapshot_position_row(
+            account="ZG0790", symbol="RELIANCE", exchange="NSE",
+            qty=10, avg_cost=100.0, ltp=150.0,
+            day_pnl=0.0, total_pnl=500.0, extras={},
+        )
+        assert row.unrealised == pytest.approx(500.0)
+        assert row.realised == pytest.approx(0.0)
+        assert row.realised + row.unrealised == pytest.approx(row.pnl)
+
+    def test_closed_row_all_realised_no_phantom_zero(self):
+        """Auditor repro: closed/flat snapshot row (qty=0) must NOT leave
+        realised=unrealised=0 while pnl=500 — that combination is exactly
+        what caused `baseDayPnlForPosition` to fall through to the wrong
+        branch. unrealised must be 0 (no open qty) and realised must
+        absorb the FULL total_pnl (500), so realised+unrealised=pnl=500
+        (never both-zero-with-nonzero-pnl)."""
+        from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+        row = build_snapshot_position_row(
+            account="ZG0790", symbol="RELIANCE", exchange="NSE",
+            qty=0, avg_cost=100.0, ltp=150.0,
+            day_pnl=0.0, total_pnl=500.0, extras={},
+        )
+        assert row.unrealised == 0.0
+        assert row.realised == pytest.approx(500.0)
+        assert not (row.realised == 0.0 and row.unrealised == 0.0), (
+            "closed row must not leave realised=unrealised=0 while pnl=500 "
+            "(the exact combination that broke the frontend's != null "
+            "fallback in the audited bug)"
+        )
+
+    def test_end_to_end_day_pnl_matches_auditor_expectation(self):
+        """Full pipeline proof of the auditor's repro, using the SSOT
+        baseline_diff_day_pnl formula the backend and frontend both use:
+        prev_settlement_pnl=400, total_pnl=500 (closed row) -> Day P&L
+        must be 100 (500-400), NOT -400 (the pre-fix bug)."""
+        from backend.api.routes.positions_helpers import (
+            build_snapshot_position_row, _row_baseline_diff_day_pnl,
+        )
+
+        row = build_snapshot_position_row(
+            account="ZG0790", symbol="RELIANCE", exchange="NSE",
+            qty=0, avg_cost=100.0, ltp=150.0,
+            day_pnl=0.0, total_pnl=500.0, extras={},
+            prev_settlement_pnl=400.0,
+        )
+        day_pnl = _row_baseline_diff_day_pnl(row)
+        assert day_pnl == pytest.approx(100.0), (
+            f"Day P&L must be 100.0 (500-400); the pre-fix bug produced "
+            f"-400.0 because realised=unrealised=0 with pnl=500 fell "
+            f"through to the frontend's own-pnl fallback incorrectly. Got {day_pnl}"
+        )
+
+    def test_zero_qty_zero_avg_falls_back_to_pnl_via_ssot_rule(self):
+        """Degenerate case: avg_cost=0 (no cost basis info at all) ->
+        unrealised=0, realised=total_pnl -- still satisfies the SSOT
+        "both zero -> use pnl" rule harmlessly when total_pnl is itself 0,
+        and correctly attributes all P&L to realised otherwise."""
+        from backend.api.routes.positions_helpers import build_snapshot_position_row
+
+        row = build_snapshot_position_row(
+            account="ZG0790", symbol="NEW_SYM", exchange="NSE",
+            qty=5, avg_cost=0.0, ltp=0.0,
+            day_pnl=0.0, total_pnl=0.0, extras={},
+        )
+        assert row.unrealised == 0.0
+        assert row.realised == 0.0
+        # pnl is also 0 here, so the SSOT fallback is a harmless no-op.
+        assert row.pnl == 0.0

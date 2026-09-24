@@ -45,7 +45,9 @@
   } from '$lib/data/indexConstituents';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { baseDayPnlForPosition } from '$lib/data/nav';
+  import { livePositionDayPnl } from '$lib/data/nav';
+  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
+  import { isMarketOpen } from '$lib/marketHours';
   import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, mkBaseGridOpts } from '$lib/data/algoGridUtils.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
@@ -115,10 +117,19 @@
   // for its summaries, so picking an account filter desynced the
   // overlay from the TOTAL row. Reactive derivation closes the gap.
   const _todayPnl = $derived.by(() => {
+    // Explicit tick dependency — _livePosDayPnl's getSnapshot read is
+    // wrapped in untrack() (per project convention: never read a live
+    // symbol snapshot untracked-AND-undeclared inside a $derived), so
+    // without this the block only reran on the 5s poll (when _positions
+    // changes), not on every live tick. positionsDerivedStore.total
+    // delegates to portfolioStore's _posAgg, which itself depends on the
+    // same 4Hz-throttled tick counter portfolioStore.svelte.js uses —
+    // reading it here mirrors that cadence so the hero P&L stays live.
+    void positionsDerivedStore.total;
     let dayPnl = 0;
     let any = false;
     for (const p of _accountFilter(_positions, _eqAccounts)) {
-      const v = baseDayPnlForPosition(p);
+      const v = _livePosDayPnl(p);
       if (Number.isFinite(v)) { dayPnl += v; any = true; }
     }
     for (const h of _accountFilter(_holdings, _eqAccounts)) {
@@ -289,6 +300,25 @@
     return rows.filter(r => allow.has(String(r.account || '')));
   }
 
+  // Live-LTP-aware Day P&L for a single position row, mirroring
+  // portfolioStore's Tier-2 computation (livePositionDayPnl on top of
+  // baseDayPnlForPosition). This page can't delegate straight to
+  // portfolioStore.positions.byKey/.byAccount because its rows are
+  // additionally scoped by the strategy filter (_matchStrategySym) and
+  // per-card account filters (_eqAccounts) that portfolioStore has no
+  // knowledge of — so the live-tick delta is applied locally instead of
+  // reading the bare base formula, keeping this page's numbers from
+  // diverging from the store's during market hours.
+  function _livePosDayPnl(p) {
+    const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    const snap = untrack(() => getSnapshot(sym));
+    return livePositionDayPnl(
+      { pollLtp: Number(p?.last_price ?? 0), qty: Number(p?.quantity ?? 0), dcvRow: p },
+      snap?.ltp ?? null,
+      { marketOpen: isMarketOpen() },
+    );
+  }
+
   // Winners / Losers cards each tab through the 5 buckets
   // (underlying / midcap / smallcap / holdings / positions) instead
   // of stacking them. Default tab: 'underlying' — the broadest view
@@ -457,6 +487,11 @@
   }
 
   const _positionsSummary = $derived.by(() => {
+    // Explicit tick dependency — see _todayPnl above for why this is
+    // required (positions-only loop has no other reactive tie to the
+    // live-tick cadence, unlike _todayPnl which incidentally rides along
+    // on the holdings loop's holdingsDayPnlStore.byKey read).
+    void positionsDerivedStore.total;
     const byAcct = _seedSummaryByAcct(_eqAccounts);
     // Equity card uses its own _eqAccounts state — independent of
     // the W/L cards' filters.
@@ -464,7 +499,7 @@
       const a = String(r.account || '');
       if (!a) continue;
       if (!byAcct[a]) byAcct[a] = { account: a, day_pnl: 0, pnl: 0, inv_val: 0, cur_val: 0 };
-      byAcct[a].day_pnl += baseDayPnlForPosition(r);
+      byAcct[a].day_pnl += _livePosDayPnl(r);
       byAcct[a].pnl     += Number(r.pnl) || 0;
     }
     const rows = Object.values(byAcct);

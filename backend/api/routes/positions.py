@@ -25,9 +25,12 @@ from backend.api.routes.positions_helpers import (
     apply_scope_and_mask,
     build_row_from_snapshot_raw,
     build_summary_from_rows,
+    build_symbol_summary_from_rows,
     merge_paper_into_live,
 )
-from backend.api.schemas import PositionsResponse, PositionRow, PositionsSummaryRow
+from backend.api.schemas import (
+    PositionsResponse, PositionRow, PositionsSummaryRow, PositionsSymbolSummaryRow,
+)
 from backend.brokers import broker_apis
 from backend.shared.helpers.date_time_utils import timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -196,6 +199,25 @@ def _annotate_gtt(rows: "list[PositionRow]", gtt_set: "set[tuple[str, str]]") ->
 # Closed-hours snapshot helpers
 # ---------------------------------------------------------------------------
 
+# The 08:00 IST boundary of the trading SESSION that a `captured_at` value
+# falls into — derived PURELY from `captured_at`, never from the `date`
+# column (2026-09 Day P&L audit round 3, item #1). Lifted to a module
+# constant (not inlined per call site) so `_positions_snapshot`'s
+# `latest_batch` CTE and the regression test that proves its behavior
+# against a real Postgres instance both execute the EXACT same SQL text —
+# a hand-copied test mirror can silently drift from the real query.
+#
+# `date_trunc('day', (captured_at AT TIME ZONE 'Asia/Kolkata') -
+# INTERVAL '8 hours') + INTERVAL '8 hours'` shifts captured_at back 8h,
+# truncates to the calendar day, then shifts forward 8h again — landing on
+# the 08:00 IST start of the `[08:00, next 08:00)` trading-day window
+# `captured_at` itself falls into, regardless of whichever calendar day
+# the `date` column happens to carry.
+_SESSION_ANCHOR_CUTOFF_TS_SQL = (
+    "(date_trunc('day', (captured_at AT TIME ZONE 'Asia/Kolkata') - INTERVAL '8 hours')"
+    " + INTERVAL '8 hours') AT TIME ZONE 'Asia/Kolkata'"
+)
+
 async def _positions_snapshot() -> Optional[PositionsResponse]:
     """Read the most-recent pre-today daily_book[kind='positions'] snapshot
     and reconstruct a PositionsResponse from it.
@@ -248,44 +270,90 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             # in the derivatives legs grid.  On the next trading day (before
             # market opens), yesterday's closed legs are excluded (date !=
             # today) leaving only the carried-overnight open positions.
-            result = await session.execute(_sql_text("""
+            result = await session.execute(_sql_text(f"""
                 WITH latest_batch AS (
-                    SELECT account, MAX(captured_at) AS max_at
+                    -- cutoff_ts: the 08:00 IST boundary of the trading
+                    -- SESSION that THIS batch's own `captured_at` falls
+                    -- into — derived purely from `captured_at`, never from
+                    -- the `date` column.
+                    --
+                    -- Round-2 fix (superseded) anchored cutoff_ts to the
+                    -- `date` column (`date + 08:00 IST`). That still broke:
+                    -- the *writer* (daily_snapshot.py) stamps `date` from
+                    -- the wall-clock calendar day at write time, not the
+                    -- trading session captured. A close_settled write that
+                    -- fires just after midnight IST (e.g. MCX close 23:30 +
+                    -- a 30 min settled-offset = 00:00 next calendar day)
+                    -- gets `date` = the NEXT day, so `date`-based cutoff_ts
+                    -- (next day's 08:00) sits WELL AFTER this same batch's
+                    -- own earlier same-session writes (e.g. an NSE
+                    -- close_settled write at 16:00 the PRIOR calendar day)
+                    -- — those earlier-same-session rows then satisfy
+                    -- `captured_at < cutoff_ts` and get picked as "baseline"
+                    -- even though they're the SAME trading session as
+                    -- "current", collapsing Day P&L to ~0 (2026-09 Day P&L
+                    -- audit round 3, item #1).
+                    --
+                    -- Fix: compute cutoff_ts as the 08:00 IST boundary of
+                    -- the 24h trading-day window [08:00, next 08:00) that
+                    -- `captured_at` itself falls into. This is immune to
+                    -- whichever calendar day the `date` column happens to
+                    -- carry — a post-midnight write's captured_at still
+                    -- resolves to ITS trading session's own 08:00 start,
+                    -- correctly excluding every row from that same
+                    -- session (however late it was written) and landing
+                    -- on the strictly prior trading day's close-reset row.
+                    SELECT DISTINCT ON (account) account, captured_at AS max_at,
+                           {_SESSION_ANCHOR_CUTOFF_TS_SQL} AS cutoff_ts
                     FROM daily_book
                     WHERE kind = 'positions' AND ltp IS NOT NULL AND ltp > 0
                       AND captured_at < :snapshot_cutoff
-                    GROUP BY account
+                    ORDER BY account, captured_at DESC
                 ),
                 prev_batch AS (
+                    -- prev_ltp ONLY (prev_close / prev_ltp sourcing is governed
+                    -- by the "close_price / ltp invariant — DO NOT CHANGE" rule
+                    -- in CLAUDE.md; kept exactly as-is, 7-day lookback window).
+                    -- prev_settlement_pnl (base_pnl) is sourced from the
+                    -- batch-anchored pnl_ranked CTE below (_BASELINE_PNL_CTE_SQL —
+                    -- same fragment used by _fetch_baseline_pnl_map /
+                    -- _fetch_snapshot_close_map), which fixes the same staleness
+                    -- risk this loose 7-day window has, plus the
+                    -- kind IN ('positions','holdings') CNC-split precedence.
                     SELECT DISTINCT ON (db.account, db.symbol)
                         db.account,
                         db.symbol,
-                        db.ltp       AS prev_ltp,
-                        db.total_pnl AS prev_settlement_pnl
+                        db.ltp       AS prev_ltp
                     FROM daily_book db
                     JOIN latest_batch lb ON db.account = lb.account
                     WHERE db.kind = 'positions'
-                      AND db.total_pnl IS NOT NULL
                       AND db.captured_at < lb.max_at
                       AND db.captured_at >= lb.max_at - INTERVAL '7 days'
                       AND db.ltp IS NOT NULL AND db.ltp > 0
                       AND db.captured_at < :prev_batch_cutoff
                     ORDER BY db.account, db.symbol, db.captured_at DESC
-                )
+                ),
+                {_BASELINE_PNL_CTE_SQL}
                 SELECT db.account, db.symbol, db.exchange, db.qty, db.avg_cost,
                        db.ltp, db.day_pnl, db.total_pnl, db.payload_json,
                        db.captured_at, db.prev_close AS previous_close,
-                       pb.prev_ltp, pb.prev_settlement_pnl, db.prev_close_backup
+                       pb.prev_ltp, pf.total_pnl AS prev_settlement_pnl, db.prev_close_backup,
+                       pf.kind AS prev_settlement_kind, pf.qty AS prev_settlement_qty
                 FROM daily_book db
                 JOIN latest_batch lb
                   ON db.account = lb.account AND db.captured_at = lb.max_at
                 LEFT JOIN prev_batch pb
                   ON pb.account = db.account AND pb.symbol = db.symbol
+                LEFT JOIN pnl_final pf
+                  ON pf.account = db.account AND pf.symbol = db.symbol
                 WHERE db.kind = 'positions'
                   AND (db.qty != 0 OR db.date = :today_ist)
                   AND (db.ltp IS NULL OR db.ltp > 0)
                 ORDER BY db.account, db.symbol
-            """).bindparams(today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff, snapshot_cutoff=_snapshot_cutoff))
+            """).bindparams(
+                today_ist=_today_ist, prev_batch_cutoff=_prev_batch_cutoff,
+                snapshot_cutoff=_snapshot_cutoff,
+            ))
             raw_rows = result.all()
     except Exception as exc:
         logger.warning(f"positions snapshot query failed: {exc}")
@@ -305,6 +373,9 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
             f"from {snap_captured_at_dt.date()}"
         )
 
+    # base_pnl (prev_settlement_pnl) is already the batch-anchored value
+    # (pnl_final / pnl_ranked CTE in the query above, positions-over-holdings
+    # precedence) — no separate Python-side patch needed.
     rows: list[PositionRow] = [build_row_from_snapshot_raw(r) for r in raw_rows]
     rows = _auto_pair_positions(rows)
     try:
@@ -315,12 +386,14 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         logger.warning(f"positions snapshot: gtt_set fetch failed: {_gtt_exc}")
 
     summary = build_summary_from_rows(rows)
+    symbol_summary = build_symbol_summary_from_rows(rows)
 
     return PositionsResponse(
         rows=rows,
         summary=summary,
         refreshed_at=timestamp_display(),
         as_of=snap_captured_at,
+        symbol_summary=symbol_summary,
     )
 
 _ROW_COLS = [
@@ -572,14 +645,54 @@ def _build_stale_since_map(per_acct: list) -> dict[str, str]:
     return result
 
 
+def _with_baseline_diff_day_change(df: "pl.DataFrame") -> "pl.DataFrame":
+    """Return `df` with `day_change_val` overridden to the baseline-diff Day
+    P&L SSOT when `realised` + `unrealised` + `prev_settlement_pnl` are
+    present. No-op (returns `df` unchanged) when those columns are absent —
+    preserves the legacy per-row `day_change_val` for callers/tests that
+    don't carry the full baseline columns (e.g. paper-trading synthetic
+    rows).
+
+    Uses `pnl_math.baseline_diff_day_pnl_expr_with_fallback` when a `pnl`
+    column is also present, so rows where `realised`/`unrealised` are both
+    exactly 0 (not populated) fall back to `pnl` as the realised leg —
+    the SAME trigger `_row_baseline_diff_day_pnl` (positions_helpers.py)
+    uses row-by-row, so the live-fetch summary and the mode='both' merge
+    path (which rebuilds via `build_summary_from_rows`) can never disagree
+    on the same underlying data. Falls back to the plain (no-pnl-fallback)
+    expression when `pnl` is absent.
+    """
+    if not {'realised', 'unrealised'}.issubset(df.columns):
+        return df
+    from backend.api.algo.pnl_math import (
+        baseline_diff_day_pnl_expr, baseline_diff_day_pnl_expr_with_fallback,
+    )
+    _base_col = 'prev_settlement_pnl' if 'prev_settlement_pnl' in df.columns else None
+    if _base_col is None:
+        df = df.with_columns(pl.lit(0.0).alias('prev_settlement_pnl'))
+        _base_col = 'prev_settlement_pnl'
+    if 'pnl' in df.columns:
+        _expr = baseline_diff_day_pnl_expr_with_fallback(
+            'realised', 'unrealised', 'pnl', _base_col
+        )
+    else:
+        _expr = baseline_diff_day_pnl_expr('realised', 'unrealised', _base_col)
+    return df.with_columns(_expr.alias('day_change_val'))
+
+
 def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
     """Build a per-account + TOTAL summary DataFrame from the live-positions polars frame.
+
+    `day_change_val` is the baseline-diff Day P&L SSOT, summed per account
+    (see `_with_baseline_diff_day_change`) — NOT the legacy per-row
+    apply_day_change_backstop value.
 
     The day_change_percentage denominator is Σ|close × qty| per account —
     the same formula the snapshot path uses via `build_summary_from_rows`.
     Returns a polars DataFrame with columns:
       account, pnl, day_change_val, day_change_percentage, day_prev_val
     """
+    df = _with_baseline_diff_day_change(df)
     df = df.with_columns(
         (pl.col('prev_close') * pl.col('quantity')).abs().alias('_prev_val')
     )
@@ -593,6 +706,53 @@ def _build_polars_summary(df: "pl.DataFrame") -> "pl.DataFrame":
             grouped = grouped.with_columns(pl.lit(0.0).alias(col))
     totals = pl.DataFrame([{
         'account': 'TOTAL',
+        'pnl': grouped['pnl'].sum(),
+        'day_change_val': grouped['day_change_val'].sum(),
+        '_prev_val': grouped['_prev_val'].sum(),
+    }])
+    summary_df = pl.concat([grouped, totals], how='diagonal').fill_nan(0).fill_null(0)
+    return summary_df.with_columns(
+        (pl.col('day_change_val') / pl.col('_prev_val').replace(0, None) * 100)
+        .fill_nan(0).fill_null(0)
+        .alias('day_change_percentage')
+    ).rename({'_prev_val': 'day_prev_val'})
+
+
+def _polars_df_to_structs(struct_cls, df: "pl.DataFrame") -> list:
+    """Convert a polars summary DataFrame's rows into a list of msgspec
+    Structs, coercing null → 0 (Polars fill_null upstream already handles
+    most cases; this is a final defensive pass). Shared by the account-level
+    (`PositionsSummaryRow`) and symbol-level (`PositionsSymbolSummaryRow`)
+    rollup conversions in `_fetch()` — extracted to keep `_fetch()`'s own
+    cyclomatic complexity under the project's D-grade gate.
+    """
+    return [
+        struct_cls(**{k: (v if v is not None else 0) for k, v in r.items()})
+        for r in df.to_dicts()
+    ]
+
+
+def _build_polars_symbol_summary(df: "pl.DataFrame") -> "pl.DataFrame":
+    """Build a per-symbol (across accounts) + TOTAL summary DataFrame from the
+    live-positions polars frame. Parallel rollup to `_build_polars_summary`,
+    grouped by `tradingsymbol` instead of `account`. Returns a polars
+    DataFrame with columns: tradingsymbol, pnl, day_change_val,
+    day_change_percentage, day_prev_val.
+    """
+    df = _with_baseline_diff_day_change(df)
+    df = df.with_columns(
+        (pl.col('prev_close') * pl.col('quantity')).abs().alias('_prev_val')
+    )
+    sum_cols = [c for c in ('pnl', 'day_change_val', '_prev_val') if c in df.columns]
+    if sum_cols and 'tradingsymbol' in df.columns:
+        grouped = df.group_by('tradingsymbol').agg([pl.col(c).sum() for c in sum_cols])
+    else:
+        grouped = pl.DataFrame({'tradingsymbol': []})
+    for col in ('pnl', 'day_change_val', '_prev_val'):
+        if col not in grouped.columns:
+            grouped = grouped.with_columns(pl.lit(0.0).alias(col))
+    totals = pl.DataFrame([{
+        'tradingsymbol': 'TOTAL',
         'pnl': grouped['pnl'].sum(),
         'day_change_val': grouped['day_change_val'].sum(),
         '_prev_val': grouped['_prev_val'].sum(),
@@ -740,6 +900,7 @@ async def _fetch() -> PositionsResponse:
     row_cols = [c for c in _ROW_COLS if c in df.columns]
     df_rows = df.select(row_cols)
     summary_df = _build_polars_summary(df)
+    symbol_summary_df = _build_polars_symbol_summary(df)
 
     rows = [_dict_to_position_row(r) for r in df_rows.to_dicts()]
 
@@ -770,16 +931,15 @@ async def _fetch() -> PositionsResponse:
     await _asyncio.to_thread(_enrich_position_greeks, rows)
     # Per-exchange close-snapshot overlay (Jul 2026 unified animation model).
     rows = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
-    summary = [
-        PositionsSummaryRow(**{k: (v if v is not None else 0) for k, v in r.items()})
-        for r in summary_df.to_dicts()
-    ]
+    summary = _polars_df_to_structs(PositionsSummaryRow, summary_df)
+    symbol_summary = _polars_df_to_structs(PositionsSymbolSummaryRow, symbol_summary_df)
     stale_accts = sorted({r.account for r in rows if r.account_stale})
     return PositionsResponse(
         rows=rows,
         summary=summary,
         refreshed_at=timestamp_display(),
         stale_accounts=stale_accts,
+        symbol_summary=symbol_summary,
     )
 
 
@@ -877,6 +1037,20 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
         raw.loc[_sel, 'pnl'] = (_pnl_current + _pnl_delta).where(
             _ltp > 0, raw.loc[_sel, 'pnl']
         )
+        # Mirror the same additive delta onto `unrealised` — since Day P&L
+        # now sources from `realised + unrealised` (baseline-diff SSOT),
+        # not `pnl`, leaving `unrealised` stale here silently drops this
+        # LTP correction from Day P&L even though `pnl` was fixed (regresses
+        # the 2026-06-22 illiquid-MCX-options fix — see module history).
+        # `realised` is untouched: the ticker only corrects LTP/mark-to-
+        # market, never a realised trade.
+        if 'unrealised' in raw.columns:
+            _unrealised_current = pd.to_numeric(
+                raw.loc[_sel, 'unrealised'], errors='coerce'
+            ).fillna(0)
+            raw.loc[_sel, 'unrealised'] = (_unrealised_current + _pnl_delta).where(
+                _ltp > 0, raw.loc[_sel, 'unrealised']
+            )
     # Recompute day_change_percentage + pnl_percentage on patched rows.
     # day_change_val and pnl were updated above; without this step the
     # percentage columns still carry the pre-override broker values and
@@ -893,21 +1067,45 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
 def _backfill_prev_settlement_pnl(
     raw: pd.DataFrame,
     prev_pnl_map: dict[tuple[str, str], float],
+    prev_pnl_kind_map: "dict[tuple[str, str], str] | None" = None,
+    prev_pnl_qty_map: "dict[tuple[str, str], float] | None" = None,
 ) -> None:
     """Set `prev_settlement_pnl` on each row from yesterday's daily_book total_pnl.
 
     No-ops when `prev_pnl_map` is empty or `raw` is empty.
     Rows with no matching key in `prev_pnl_map` (positions opened today)
     keep None — the PositionRow default for that optional field.
+
+    When `prev_pnl_kind_map` / `prev_pnl_qty_map` are supplied, routes the
+    raw baseline through `pnl_math`-adjacent
+    `positions_helpers._resolve_prev_settlement_pnl` — a holdings-kind
+    baseline (the "holding sold into a CNC position" case) is only used
+    when today's row is a genuine CNC sale from that holding, pro-rated by
+    the actual sold quantity rather than the holding's full lifetime P&L
+    (audit item #4). Omitting the two maps preserves the old unconditional
+    behaviour (used by callers that haven't threaded the new maps through).
     """
     if not prev_pnl_map or raw.empty:
         return
     if 'prev_settlement_pnl' not in raw.columns:
         raw['prev_settlement_pnl'] = None
+    from backend.api.routes.positions_helpers import _resolve_prev_settlement_pnl
+    _kind_map = prev_pnl_kind_map or {}
+    _qty_map = prev_pnl_qty_map or {}
+    _has_product = 'product' in raw.columns
+    _has_dsq = 'day_sell_quantity' in raw.columns
     for idx in raw.index:
         key = (str(raw.at[idx, 'account']), str(raw.at[idx, 'tradingsymbol']))
-        if key in prev_pnl_map:
-            raw.at[idx, 'prev_settlement_pnl'] = prev_pnl_map[key]
+        if key not in prev_pnl_map:
+            continue
+        resolved = _resolve_prev_settlement_pnl(
+            prev_pnl_map[key],
+            _kind_map.get(key),
+            _qty_map.get(key),
+            product=raw.at[idx, 'product'] if _has_product else None,
+            day_sell_qty=raw.at[idx, 'day_sell_quantity'] if _has_dsq else None,
+        )
+        raw.at[idx, 'prev_settlement_pnl'] = resolved
 
 
 def _dict_to_position_row(r: dict) -> "PositionRow":
@@ -919,10 +1117,168 @@ def _dict_to_position_row(r: dict) -> "PositionRow":
     return PositionRow(**{k: (v if v is not None or k in _NULLABLE_COLS else 0) for k, v in r.items()})
 
 
+# Shared CTE fragment — the batch-anchored base_pnl (yesterday's total_pnl)
+# lookup. Embedded (via string formatting, no f-string interpolation of
+# untrusted data) into the two hot-path combined queries below
+# (`_fetch_snapshot_close_map`, `_positions_snapshot`) so each stays a
+# SINGLE round trip, and reused verbatim by the standalone
+# `_fetch_baseline_pnl_map` helper. See that helper's docstring for the
+# full staleness-fix + kind-precedence rationale.
+#
+# CONTRACT: every caller must define a `latest_batch(account, cutoff_ts,
+# max_at)` CTE before including this fragment.
+#
+#   `cutoff_ts` — the per-account upper bound (exclusive) the baseline
+#     batch must be strictly older than.
+#   `max_at`    — the "display" batch's own `captured_at` (exclusive upper
+#     bound too). Needed IN ADDITION to `cutoff_ts`, not instead of it —
+#     belt-and-suspenders against any future caller whose `cutoff_ts` isn't
+#     strictly derived from `max_at`'s own session boundary.
+#
+#   - `_fetch_baseline_pnl_map` / `_fetch_snapshot_close_map` (live-fetch
+#     callers): "current" isn't sourced from daily_book at all (it's a
+#     live broker fetch), so every account shares one fixed `cutoff_ts`
+#     (today's 08:00 IST boundary) with `max_at` set equal to it (a no-op
+#     bound). This is NOT immune to self-collision in general — it is
+#     safe ONLY while a market segment is genuinely live (a live-fetch
+#     "current" during a real session is never equal to the most recent
+#     daily_book close-reset row, so no collision). Calling these off a
+#     fixed `today_08` cutoff while the market is FULLY CLOSED (weekend/
+#     holiday/overnight) DOES self-collide — "today" isn't a live trading
+#     session, so the most recent close-reset row's `captured_at` is
+#     always < `today_08`, making it both the live-fetch "current" state
+#     (broker returns the same frozen prior-session data) AND the
+#     resolved "baseline" — verified empirically against real prod
+#     `daily_book` data (2026-09 Day P&L audit round 3, item #3
+#     follow-up). Callers off market hours must gate on
+#     `_any_segment_open()` and use a closed-hours snapshot reader
+#     instead — see `backend/api/routes/auth.py:_auth_nav_closed_hours_fallback`.
+#   - `_positions_snapshot` (closed-hours reader): BOTH "current" (the
+#     displayed batch) and "baseline" are daily_book batches, so
+#     `cutoff_ts` must be anchored to the DISPLAYED batch's own trading
+#     SESSION — derived purely from `latest_batch.max_at` (its own
+#     `captured_at`), NEVER from the `date` column. `date` is stamped by
+#     the writer from the wall-clock calendar day at write time, not the
+#     trading session captured — a close_settled write that fires just
+#     after midnight IST (e.g. MCX close 23:30 + a settled-offset that
+#     crosses midnight) gets `date` = the NEXT calendar day, so a
+#     `date`-based cutoff_ts sits a full day later than it should and lets
+#     an EARLIER SAME-SESSION row (e.g. that day's own 16:00 IST NSE
+#     close_settled write) slip through the `captured_at < cutoff_ts`
+#     test and get picked as "baseline" — base_pnl ≈ current total_pnl,
+#     collapsing Day P&L to ~0 (2026-09 Day P&L audit round 3, item #1;
+#     reproduced on real prod data with a fake +307,200 on GOLD and an
+#     exact 0 on a real weekend). The captured_at-derived boundary
+#     (`date_trunc('day', (captured_at AT TIME ZONE 'Asia/Kolkata') -
+#     INTERVAL '8 hours') + INTERVAL '8 hours'`) is immune to whatever the
+#     `date` column says — it always resolves to the 08:00 IST start of
+#     the [08:00, next 08:00) trading-day window `captured_at` itself
+#     falls into, correctly excluding every row from that same window
+#     (however late it was written) and landing on the strictly prior
+#     trading day's close-reset row instead.
+#
+# `pnl_ranked` additionally excludes flat (`qty = 0`) rows — a fully
+# closed historical row is not a "genuine continuation" of a position and
+# must not serve as tomorrow's baseline for an unrelated fresh re-entry
+# (audit item #5). `pnl_final` carries `kind` + `qty` alongside `total_pnl`
+# so callers can detect a holdings-sourced baseline (see
+# `positions_helpers._resolve_prev_settlement_pnl`) and gate/pro-rate it
+# by the actual sold quantity instead of blindly promoting a holding's
+# full lifetime P&L onto an unrelated same-symbol positions row (audit
+# item #4).
+_BASELINE_PNL_CTE_SQL = """
+    latest_pnl_batch AS (
+        SELECT daily_book.account, daily_book.kind,
+               MAX(daily_book.captured_at) AS max_at
+        FROM daily_book
+        JOIN latest_batch ON latest_batch.account = daily_book.account
+        WHERE daily_book.kind IN ('positions', 'holdings')
+          AND daily_book.ltp IS NOT NULL AND daily_book.ltp > 0
+          AND daily_book.captured_at < latest_batch.cutoff_ts
+          AND daily_book.captured_at < latest_batch.max_at
+        GROUP BY daily_book.account, daily_book.kind
+    ),
+    pnl_ranked AS (
+        SELECT daily_book.account, daily_book.symbol, daily_book.kind,
+               daily_book.total_pnl, daily_book.qty,
+               ROW_NUMBER() OVER (
+                   PARTITION BY daily_book.account, daily_book.symbol
+                   ORDER BY CASE daily_book.kind WHEN 'positions' THEN 0 ELSE 1 END
+               ) AS rn
+        FROM daily_book
+        JOIN latest_pnl_batch lpb
+          ON daily_book.account = lpb.account AND daily_book.kind = lpb.kind
+          AND daily_book.captured_at = lpb.max_at
+        WHERE daily_book.kind IN ('positions', 'holdings')
+          AND daily_book.total_pnl IS NOT NULL
+          AND daily_book.qty IS NOT NULL AND daily_book.qty != 0
+    ),
+    pnl_final AS (
+        SELECT account, symbol, total_pnl, kind, qty
+        FROM pnl_ranked
+        WHERE rn = 1
+    )
+"""
+
+
+async def _fetch_baseline_pnl_map(cutoff) -> dict[tuple[str, str], float]:
+    """Return base_pnl (yesterday's total_pnl) per (account, tradingsymbol),
+    bound to the exact most-recent trading-day batch PER ACCOUNT PER KIND
+    before `cutoff` — never an arbitrarily old stale row.
+
+    Replaces the old unbounded `captured_at < today_08 ORDER BY DESC LIMIT 1`
+    per-symbol lookup (which could walk back through days/weeks of history
+    for a symbol that dropped out of recent batches) and the old 7-day
+    `prev_batch` window in `_positions_snapshot` — both shared this same
+    staleness risk. Symbols absent from the most-recent batch correctly
+    default to base_pnl = 0 (no baseline row → new position) rather than
+    reaching back further.
+
+    kind IN ('positions', 'holdings') with a PER-KIND latest-batch anchor
+    (not a single cross-kind MAX(captured_at)) — verified against
+    production data that positions/holdings snapshots for the same account
+    land milliseconds apart within one daily_snapshot run but are never
+    exactly equal, so a single shared anchor would silently drop one kind's
+    rows. When both kinds have a matching (account, symbol) row (the
+    "holding sold into a CNC position" case — see CLAUDE.md "Holdings sold
+    → P&L splits"), the 'positions' row wins: today's CNC row already
+    contains the correct incremental base, whereas the stale 'holdings' row
+    reflects yesterday's full holding.
+
+    Returns {} on any DB error (safe to call unconditionally).
+    """
+    from backend.api.database import async_session
+    from sqlalchemy import text as _sql_text
+
+    out: dict[tuple[str, str], float] = {}
+    try:
+        async with async_session() as session:
+            result = await session.execute(_sql_text(f"""
+                WITH latest_batch AS (
+                    SELECT DISTINCT account,
+                           CAST(:baseline_cutoff AS timestamptz) AS cutoff_ts,
+                           CAST(:baseline_cutoff AS timestamptz) AS max_at
+                    FROM daily_book
+                    WHERE kind IN ('positions', 'holdings')
+                ),
+                {_BASELINE_PNL_CTE_SQL}
+                SELECT account, symbol, total_pnl
+                FROM pnl_ranked
+                WHERE rn = 1
+            """).bindparams(baseline_cutoff=cutoff))
+            for account, symbol, total_pnl in result.all():
+                key = (str(account), str(symbol))
+                out[key] = float(total_pnl)
+    except Exception as exc:
+        logger.warning(f"_fetch_baseline_pnl_map failed: {exc}")
+        return {}
+    return out
+
+
 async def _fetch_snapshot_close_map(
     raw: pd.DataFrame,
     cutoff,
-) -> tuple[dict, dict]:
+) -> tuple[dict, dict, dict, dict]:
     """Query daily_book for the most-recent settlement LTP per (account, symbol).
 
     Returns the latest entry before today 08:00 IST — the prior-session
@@ -931,9 +1287,31 @@ async def _fetch_snapshot_close_map(
     capture the correct MCX settlement LTP from the frozen tick buffer, so
     the single-query path is always correct.
 
-    Returns ``(snapshot_map, prev_pnl_map)`` where both are
-    ``dict[tuple[str, str], float]`` keyed by ``(account, tradingsymbol)``.
-    On any DB error logs a warning and returns ``({}, {})``.
+    Returns ``(snapshot_map, prev_pnl_map, prev_pnl_kind_map, prev_pnl_qty_map)``.
+    ``snapshot_map`` / ``prev_pnl_map`` are ``dict[tuple[str, str], float]``;
+    ``prev_pnl_kind_map`` is ``dict[tuple[str, str], str]`` ('positions' /
+    'holdings' — which kind the baseline came from); ``prev_pnl_qty_map`` is
+    ``dict[tuple[str, str], float]`` (that winning row's `qty`). All keyed by
+    ``(account, tradingsymbol)``. On any DB error logs a warning and returns
+    four empty dicts.
+
+    ``snapshot_map`` (ref_close) sourcing is UNCHANGED — governed by the
+    documented "close_price / ltp invariant — DO NOT CHANGE" rule in
+    CLAUDE.md (unbounded per-symbol DISTINCT ON ... ORDER BY captured_at
+    DESC). ``prev_pnl_map`` (base_pnl) is sourced from the batch-anchored
+    ``_BASELINE_PNL_CTE_SQL`` fragment (same logic as the standalone
+    ``_fetch_baseline_pnl_map`` helper — see its docstring for the full
+    staleness-fix + kind='positions'/'holdings' precedence rationale) so a
+    symbol absent from the most-recent per-account trading-day batch
+    correctly defaults to base_pnl = 0 instead of reaching back to an
+    arbitrarily old row. ``prev_pnl_kind_map`` / ``prev_pnl_qty_map`` let
+    the caller (`_backfill_prev_settlement_pnl`) detect a holdings-sourced
+    baseline and gate/pro-rate it via
+    `positions_helpers._resolve_prev_settlement_pnl` (audit item #4) rather
+    than blindly promoting a holding's full lifetime P&L onto an unrelated
+    same-symbol positions row. Both halves are combined into ONE query (a
+    FULL OUTER JOIN of the two independently-keyed result sets) so this
+    remains a single round trip, same as before this fix.
     """
     from datetime import datetime as _dt
     from sqlalchemy import text as _sql_text
@@ -944,30 +1322,55 @@ async def _fetch_snapshot_close_map(
 
     snapshot_map: dict[tuple[str, str], float] = {}
     prev_pnl_map: dict[tuple[str, str], float] = {}
+    prev_pnl_kind_map: dict[tuple[str, str], str] = {}
+    prev_pnl_qty_map: dict[tuple[str, str], float] = {}
     try:
         from backend.api.database import async_session
         async with async_session() as session:
-            result = await session.execute(_sql_text("""
-                    SELECT DISTINCT ON (account, symbol)
-                           account, symbol,
-                           ltp AS ref_close,
-                           total_pnl
-                    FROM daily_book
-                    WHERE kind = 'positions'
-                      AND ltp IS NOT NULL AND ltp > 0
-                      AND captured_at < :today_08
-                    ORDER BY account, symbol, captured_at DESC
-                """), {"today_08": today_08})
-            for account, symbol, ref_close, total_pnl in result.all():
+            result = await session.execute(_sql_text(f"""
+                    WITH latest_batch AS (
+                        SELECT DISTINCT account,
+                               CAST(:today_08 AS timestamptz) AS cutoff_ts,
+                               CAST(:today_08 AS timestamptz) AS max_at
+                        FROM daily_book
+                        WHERE kind IN ('positions', 'holdings')
+                    ),
+                    {_BASELINE_PNL_CTE_SQL},
+                    snapshot_close AS (
+                        SELECT DISTINCT ON (account, symbol)
+                               account, symbol, ltp AS ref_close
+                        FROM daily_book
+                        WHERE kind = 'positions'
+                          AND ltp IS NOT NULL AND ltp > 0
+                          AND captured_at < :today_08
+                        ORDER BY account, symbol, captured_at DESC
+                    )
+                    SELECT
+                        COALESCE(sc.account, pf.account) AS account,
+                        COALESCE(sc.symbol, pf.symbol)   AS symbol,
+                        sc.ref_close,
+                        pf.total_pnl,
+                        pf.kind,
+                        pf.qty
+                    FROM snapshot_close sc
+                    FULL OUTER JOIN pnl_final pf
+                      ON pf.account = sc.account AND pf.symbol = sc.symbol
+                """).bindparams(today_08=today_08))
+            for account, symbol, ref_close, total_pnl, pnl_kind, pnl_qty in result.all():
                 key = (str(account), str(symbol))
                 if ref_close is not None:
                     snapshot_map[key] = float(ref_close)
                 if total_pnl is not None:
                     prev_pnl_map[key] = float(total_pnl)
+                if pnl_kind is not None:
+                    prev_pnl_kind_map[key] = str(pnl_kind)
+                if pnl_qty is not None:
+                    prev_pnl_qty_map[key] = float(pnl_qty)
     except Exception as e:
         logger.warning(f"daily_book close-override query failed: {e}")
-        return {}, {}
-    return snapshot_map, prev_pnl_map
+        return {}, {}, {}, {}
+
+    return snapshot_map, prev_pnl_map, prev_pnl_kind_map, prev_pnl_qty_map
 
 
 def _patch_close_from_snapshot_map(
@@ -1083,14 +1486,16 @@ async def _override_stale_close_from_snapshot(raw: pd.DataFrame) -> None:
     from backend.api.helpers.exchange_clock import settlement_cutoff_for
     today_ist_cutoff = await settlement_cutoff_for("NON-MCX")
 
-    snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(raw, today_ist_cutoff)
+    (snapshot_map, prev_pnl_map, prev_pnl_kind_map,
+     prev_pnl_qty_map) = await _fetch_snapshot_close_map(raw, today_ist_cutoff)
     patched_idx = _patch_close_from_snapshot_map(raw, snapshot_map)
     patched_idx2 = await _apply_second_pass_fallback(raw)
 
     # Backfill prev_settlement_pnl — yesterday's total_pnl for each position
     # that exists in the daily_book snapshot.  Rows opened today have no entry
-    # and remain None (the PositionRow default).
-    _backfill_prev_settlement_pnl(raw, prev_pnl_map)
+    # and remain None (the PositionRow default). Holdings-sourced baselines
+    # are gated/pro-rated by kind+qty — see _backfill_prev_settlement_pnl.
+    _backfill_prev_settlement_pnl(raw, prev_pnl_map, prev_pnl_kind_map, prev_pnl_qty_map)
 
     all_patched = patched_idx + patched_idx2
     if not all_patched:
@@ -1186,7 +1591,11 @@ async def _build_paper_positions_response() -> PositionsResponse:
         rows.append(PositionRow(**kwargs))
 
     summary = build_summary_from_rows(rows)
-    return PositionsResponse(rows=rows, summary=summary, refreshed_at=timestamp_display())
+    symbol_summary = build_symbol_summary_from_rows(rows)
+    return PositionsResponse(
+        rows=rows, summary=summary, refreshed_at=timestamp_display(),
+        symbol_summary=symbol_summary,
+    )
 
 
 def _batch_fetch_spots(underlying_keys: set[str]) -> dict[str, float]:

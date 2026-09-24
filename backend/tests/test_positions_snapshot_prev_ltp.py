@@ -67,7 +67,16 @@ def test_positions_snapshot_sql_prev_batch_uses_captured_at_anchor():
 
 
 def test_positions_snapshot_sql_returns_prev_ltp_and_prev_settlement_pnl():
-    """Main SELECT must include pb.prev_ltp and pb.prev_settlement_pnl columns."""
+    """Main SELECT must include pb.prev_ltp and a batch-anchored
+    prev_settlement_pnl column.
+
+    prev_settlement_pnl is no longer sourced from the loose 7-day
+    `prev_batch` CTE (same staleness risk `_fetch_baseline_pnl_map` fixes
+    elsewhere) — it now comes from the batch-anchored `pnl_final`/
+    `pnl_ranked` CTE (`_BASELINE_PNL_CTE_SQL`, shared with
+    `_fetch_snapshot_close_map` / `_fetch_baseline_pnl_map`), aliased
+    `pf.total_pnl AS prev_settlement_pnl`.
+    """
     import inspect
     from backend.api.routes import positions as _pos_module
 
@@ -75,8 +84,13 @@ def test_positions_snapshot_sql_returns_prev_ltp_and_prev_settlement_pnl():
     assert "pb.prev_ltp" in src, (
         "SELECT clause must include pb.prev_ltp (aliased from prev_batch.ltp)"
     )
-    assert "pb.prev_settlement_pnl" in src, (
-        "SELECT clause must include pb.prev_settlement_pnl (aliased from prev_batch.total_pnl)"
+    assert "pf.total_pnl AS prev_settlement_pnl" in src, (
+        "SELECT clause must include pf.total_pnl AS prev_settlement_pnl "
+        "(batch-anchored pnl_final CTE, not the loose prev_batch window)"
+    )
+    assert "pnl_ranked" in src and "LEFT JOIN pnl_final pf" in src, (
+        "_positions_snapshot must embed the shared _BASELINE_PNL_CTE_SQL "
+        "fragment and LEFT JOIN its pnl_final projection"
     )
 
 

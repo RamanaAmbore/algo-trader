@@ -493,6 +493,16 @@ function _qtyNetValueGetter(p) {
   return q === 0 ? null : q;
 }
 
+// Overnight qty carried into today's session (positions only — holdings have
+// no overnight_quantity concept). Summed across accounts by mergePositionRows
+// (pulseUnified.js) onto row.overnight_qty. Returns null when zero/absent so
+// the cell renders as "—" rather than "0".
+function _overnightQtyValueGetter(p) {
+  if (p.data?._isTotal) return null;
+  const oq = Number(p.data?.overnight_qty) || 0;
+  return oq === 0 ? null : oq;
+}
+
 // ─── Right column-def array ──────────────────────────────────────────
 
 /**
@@ -585,6 +595,13 @@ export function mkRightColDefs({
       cellClass: RA,
       valueGetter: _qtyNetValueGetter,
       valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value) },
+    { field: 'overnight_qty', headerName: 'O/N Qty', colId: 'overnight_qty',
+      width: 62, minWidth: 56, maxWidth: 78,
+      type: 'numericColumn', headerClass: numericHdr,
+      cellClass: `${RA} cell-muted`,
+      valueGetter: _overnightQtyValueGetter,
+      valueFormatter: ({ value }) => value == null ? '' : qtyFmt(value),
+      headerTooltip: 'Quantity carried overnight from yesterday\'s session close (positions only).' },
     { field: 'avg_combined', headerName: 'Avg', colId: 'avg_combined',
       width: 68, minWidth: 60, maxWidth: 90,
       type: 'numericColumn', headerClass: numericHdr,
@@ -743,7 +760,7 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
-    headerTooltip: 'Projected P&L at expiry — option intrinsic × qty (options) or (spot − avg) × qty (futures). Blank for equity rows.',
+    headerTooltip: 'Projected P&L at expiry — intrinsic value at spot minus cost basis, plus realised (options: option payoff at spot; futures: spot itself, both valued against underlying spot, not own LTP). Blank for equity rows.',
   };
 }
 
@@ -770,7 +787,7 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
-    headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus intrinsic (ltp−avg)×qty. Positive when you paid/received more than the current mark-to-market.',
+    headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus mark-to-market P&L (ltp−avg)×qty. Positive when time value remains in the premium.',
   };
 }
 

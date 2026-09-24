@@ -548,10 +548,27 @@ def _snap_position_eod_vals(
     ltp_val = float(ltp_val) if ltp_val is not None else None
     effective_close = close_ref if close_ref is not None else (r.get("close_price") or r.get("prev_close"))
     day_pnl = _snap_compute_day_pnl(r, ltp_val, effective_close, qty, multiplier)
-    _unrealised   = r.get("pnl")
-    _realised     = r.get("realised")
+    # SSOT: current_total_profit(realised, unrealised) — NOT pnl + realised
+    # (double-counts; Kite's raw `pnl` already equals realised + unrealised).
+    # See backend/api/algo/pnl_math.py module docstring for the full
+    # Day P&L / Exp P&L redesign rationale.
+    #
+    # This writes `daily_book.total_pnl` — TOMORROW's `base_pnl` for every
+    # reader (_BASELINE_PNL_CTE_SQL). Every reader now applies
+    # `resolve_realised_unrealised`'s pnl-fallback when `realised` AND
+    # `unrealised` are both exactly 0 (not populated); the writer must
+    # apply the SAME fallback at write time, or a row where both legs are
+    # genuinely 0 but `pnl != 0` (harmless for Kite today — Kite rows
+    # always have realised=0, unrealised=pnl — but real for Groww/future
+    # brokers without a native split) gets written with base=0, causing
+    # the entire `pnl` to show as the NEXT day's Day P&L (2026-09 Day P&L
+    # audit round 3, item #5).
+    from backend.api.algo.pnl_math import current_total_profit, resolve_realised_unrealised
+    _unrealised = r.get("unrealised")
+    _realised   = r.get("realised")
     if _unrealised is not None or _realised is not None:
-        total_pnl_v = float(_unrealised or 0) + float(_realised or 0)
+        _resolved_r, _resolved_u = resolve_realised_unrealised(_realised, _unrealised, r.get("pnl"))
+        total_pnl_v = current_total_profit(_resolved_r, _resolved_u)
     else:
         total_pnl_v = None
     skip = _is_zero_payload_row(r, ltp_val, day_pnl, total_pnl_v)
@@ -656,6 +673,23 @@ def _positions_qty_fields(
     return qty_contracts, lots_val, lot_size_val, r_for_pnl, pnl_mult
 
 
+def _positions_row_total_pnl(r: dict) -> Optional[float]:
+    """Return current_total_profit(realised, unrealised) for one raw broker
+    position row, or None when neither field is present.
+
+    SSOT: backend.api.algo.pnl_math.current_total_profit. This is the value
+    persisted to daily_book.total_pnl — the canonical "current total
+    profit" that tomorrow's baseline-diff Day P&L formula subtracts
+    base_pnl from. Must never be `pnl + realised` (double-counts).
+    """
+    from backend.api.algo.pnl_math import current_total_profit
+    _unrealised = r.get("unrealised")
+    _realised = r.get("realised")
+    if _unrealised is None and _realised is None:
+        return None
+    return current_total_profit(_realised, _unrealised)
+
+
 def _positions_build_row(
     r: dict, account: str, target_date: date, exchange: str, symbol: str,
     qty_contracts: int, lots_val: int, lot_size_val: int,
@@ -688,10 +722,12 @@ def _positions_build_row(
         "avg_cost":       float(r["average_price"]) if r.get("average_price") is not None else None,
         "ltp":            ltp_val,
         "day_pnl":        day_pnl,
-        "total_pnl":      (
-            (float(r.get("pnl") or 0) + float(r.get("realised") or 0))
-            if (r.get("pnl") is not None or r.get("realised") is not None) else None
-        ),
+        # SSOT: current_total_profit(realised, unrealised) — this value is
+        # persisted to daily_book.total_pnl and becomes TOMORROW's base_pnl
+        # for the baseline-diff Day P&L formula (pnl_math.py). Must NOT be
+        # `pnl + realised` (double-counts for Kite, whose native `pnl`
+        # field already equals realised + unrealised).
+        "total_pnl":      _positions_row_total_pnl(r),
         "previous_close": previous_close_val,
         "payload_json":   _row_payload_with_extras(r, ltp_val, settled),
     }

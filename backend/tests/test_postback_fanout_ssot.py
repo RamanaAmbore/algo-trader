@@ -49,7 +49,7 @@ class TestPostbackBroadcastFanout:
             _postback_broadcast_fanout(
                 status="COMPLETE", order_id="123", account="ZG0790",
                 masked="ZG####", symbol="NIFTY26JULFUT", txn="BUY",
-                qty=50, price=22000.0, exchange="NFO",
+                qty=50, price=22000.0, broker="kite", exchange="NFO",
             )
         # invalidate called for orders + positions + holdings (3x)
         calls = [c.args[0] for c in inv.call_args_list]
@@ -64,7 +64,7 @@ class TestPostbackBroadcastFanout:
             _postback_broadcast_fanout(
                 status="OPEN", order_id="123", account="ZG0790",
                 masked="ZG####", symbol="NIFTY26JULFUT", txn="BUY",
-                qty=50, price=22000.0,
+                qty=50, price=22000.0, broker="kite",
             )
         calls = [c.args[0] for c in inv.call_args_list]
         assert calls == ["orders"]
@@ -76,7 +76,7 @@ class TestPostbackBroadcastFanout:
             _postback_broadcast_fanout(
                 status="COMPLETE", order_id="123", account="ZG0790",
                 masked="ZG####", symbol="NIFTY26JULFUT", txn="BUY",
-                qty=50, price=22000.0, exchange="NFO",
+                qty=50, price=22000.0, broker="kite", exchange="NFO",
             )
         events = [b["event"] for b in captured]
         assert "order_update" in events
@@ -93,7 +93,7 @@ class TestPostbackBroadcastFanout:
             _postback_broadcast_fanout(
                 status="COMPLETE", order_id="123", account="ZG0790",
                 masked="ZG####", symbol="NIFTY26JULFUT", txn="SELL",
-                qty=50, price=22000.0,
+                qty=50, price=22000.0, broker="kite",
             )
         pf = next(b for b in captured if b["event"] == "position_filled")
         assert pf["qty"] == -50
@@ -105,7 +105,7 @@ class TestPostbackBroadcastFanout:
             _postback_broadcast_fanout(
                 status="CANCELLED", order_id="123", account="ZG0790",
                 masked="ZG####", symbol="NIFTY26JULFUT", txn="BUY",
-                qty=50, price=22000.0,
+                qty=50, price=22000.0, broker="kite",
             )
         events = [b["event"] for b in captured]
         assert "order_update" in events

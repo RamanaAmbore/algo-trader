@@ -393,6 +393,15 @@ class PaperTradeEngine:
                 txn=str(order.get("side") or ""),
                 qty=int(order.get("qty") or 0),
                 price=0.0,
+                # Paper AlgoOrder quantities are already in CONTRACTS (see
+                # orders_place.py:_ticket_validate_input) — never in lots
+                # the way live Kite/Dhan postbacks are. broker="paper" is
+                # not in `_MCX_LOTS_CONVENTION_BROKERS`, so
+                # `_mcx_postback_qty_to_contracts` passes qty through
+                # unconverted. Using "kite" here (pre-2026-09 fix) doubled
+                # MCX quantities in paper mode via an unwanted lots→
+                # contracts multiply.
+                broker="paper",
                 exchange=str(order.get("exchange") or ""),
                 status_message="operator cancel via MCP",
             )
@@ -971,6 +980,15 @@ def _paper_fanout_terminal(
             txn=str(_row_side or order.get("side") or ""),
             qty=_row_qty,
             price=float(order.get("fill_price") or 0),
+            # Paper AlgoOrder quantities are already in CONTRACTS (see
+            # orders_place.py:_ticket_validate_input) — never in lots the
+            # way live Kite/Dhan postbacks are. broker="paper" is not in
+            # `_MCX_LOTS_CONVENTION_BROKERS`, so
+            # `_mcx_postback_qty_to_contracts` passes qty through
+            # unconverted. Using "kite" here (pre-2026-09 fix) doubled MCX
+            # quantities in paper mode via an unwanted lots→contracts
+            # multiply (e.g. 1 lot CRUDEOIL = 100 contracts → 10,000).
+            broker="paper",
             exchange=str(_row_exchange or ""),
             status_message="",
         )

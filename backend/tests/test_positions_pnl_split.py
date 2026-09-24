@@ -187,11 +187,15 @@ class TestCase3_FullyClosedIntraday:
         assert len(result) == 1
 
     def test_fully_closed_row_realised_preserved(self):
-        """`pnl` = unrealised + realised for a flat row.
+        """`pnl` = realised + unrealised for a flat (Kite) row.
 
         For fully closed positions (qty=0), unrealised = 0 and realised = net P&L.
-        The broker adapter sets pnl=unrealised=0 and realised=200 (Kite's realised field).
-        After _enrich_positions: pnl = 0 + 200 = 200.
+        Kite's native `pnl` already equals realised + unrealised (confirmed
+        via Zerodha's own forum statement), so for this closed-flat row
+        Kite ships pnl=200 directly (NOT 0 — a native pnl=0 alongside
+        realised=200 would itself be an inconsistent Kite payload, since
+        pnl already folds realised in). `_enrich_positions` trusts that
+        native combined value as-is for Kite rows (default broker_kind).
         """
         from backend.brokers.broker_apis import _enrich_positions
         df = pd.DataFrame([{
@@ -207,11 +211,10 @@ class TestCase3_FullyClosedIntraday:
             'last_price': 120.0,
             'prev_close': 100.0,
             'average_price': 100.0,
-            'pnl': 0.0,         # unrealised = 0 for closed position
-            'realised': 200.0,  # realised gain from the day trade
+            'pnl': 200.0,       # Kite native pnl — already realised+unrealised
+            'realised': 200.0,  # informational split field, not added on top
         }])
         result = _enrich_positions(df)
-        # enriched pnl = unrealised(0) + realised(200) = 200
         assert math.isclose(result.iloc[0]['pnl'], 200.0, abs_tol=1e-6)
 
     def test_fully_closed_row_dcv_backstops_pnl_when_ltp_zero(self):
@@ -674,7 +677,16 @@ class TestSameSymbolAggregation:
 
     def test_partial_close_and_flat_rows_dcv_summed_once(self):
         """Mixed: partial-close row + fully-closed row on same symbol.
-        Day P&L aggregates without double-counting the realised leg."""
+
+        Day P&L SSOT (pnl_math.baseline_diff_day_pnl) is
+        `current_total_profit(realised, unrealised) − base_pnl` — a pure
+        difference of two point-in-time totals, so double-counting the
+        realised leg is structurally impossible (unlike the legacy
+        decomposed_intraday_pnl formula this replaces for rollups). Both
+        rows here have no prior-session baseline (prev_settlement_pnl
+        unset → base_pnl=0, fresh-today positions), so each row's Day
+        P&L equals its own current_total_profit.
+        """
         from backend.api.routes.positions_helpers import build_summary_from_rows
         from backend.api.schemas import PositionRow
 
@@ -692,7 +704,7 @@ class TestSameSymbolAggregation:
                 last_price=105.0,
                 unrealised=25.0,
                 realised=120.0,
-                day_change_val=150.0,   # 6×5 + 4×30 (partial-close intraday)
+                day_change_val=150.0,   # legacy decomposed value — no longer rollup input
             ),
             # Account 2: fully closed intraday (realised 200)
             PositionRow(
@@ -712,7 +724,8 @@ class TestSameSymbolAggregation:
         summary = build_summary_from_rows(rows)
         by_acct = {s.account: s for s in summary}
         assert math.isclose(by_acct['TOTAL'].pnl, 345.0, abs_tol=0.01)
-        assert math.isclose(by_acct['TOTAL'].day_change_val, 350.0, abs_tol=0.01)
+        # current_total_profit: row1 = 120+25=145, row2 = 200+0=200 → 345
+        assert math.isclose(by_acct['TOTAL'].day_change_val, 345.0, abs_tol=0.01)
 
 
 # ---------------------------------------------------------------------------

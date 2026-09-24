@@ -141,7 +141,7 @@ class TestDecoratorRetryOnAuthError:
 
         with patch("backend.brokers.broker_apis._extract_net_rows", side_effect=mock_extract_net_rows), \
              patch("backend.brokers.broker_apis._record_fetch"), \
-             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df: df), \
+             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df, **kwargs: df), \
              patch("backend.brokers.get_broker", return_value=MagicMock()):
             result = _fetch_positions_local(
                 connections=mock_connections_callable,
@@ -239,7 +239,7 @@ class TestDecoratorRetryOnAuthError:
 
         with patch("backend.brokers.broker_apis._extract_net_rows", side_effect=mock_extract_net_rows), \
              patch("backend.brokers.broker_apis._record_fetch") as mock_record, \
-             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df: df), \
+             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df, **kwargs: df), \
              patch("backend.brokers.get_broker", return_value=MagicMock()):
             result = _fetch_positions_local(
                 connections=mock_connections_callable,
@@ -301,7 +301,7 @@ class TestDecoratorRetryOnAuthError:
 
         with patch("backend.brokers.broker_apis._extract_net_rows", side_effect=mock_extract_net_rows), \
              patch("backend.brokers.broker_apis._record_fetch"), \
-             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df: df), \
+             patch("backend.brokers.broker_apis._enrich_positions", side_effect=lambda df, **kwargs: df), \
              patch("backend.brokers.get_broker", return_value=MagicMock()):
             result = _fetch_positions_local(
                 connections=mock_connections_callable,

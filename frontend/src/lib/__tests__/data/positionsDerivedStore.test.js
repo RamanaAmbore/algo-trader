@@ -35,10 +35,8 @@ function _computeDerived(posRows, holdRows, deps = {}) {
     getProxy   = (sym, tgt) => null,
     livePosDay = (p, ltp, opts) => livePositionDayPnl(
       {
-        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
-        pollLtp: Number(p?.last_price      ?? 0),
-        qty:     Number(p?.quantity        ?? 0),
-        avg:     Number(p?.average_price   ?? 0),
+        pollLtp: Number(p?.last_price ?? 0),
+        qty:     Number(p?.quantity   ?? 0),
         dcvRow:  p,
       },
       ltp,
@@ -82,21 +80,22 @@ function _computeDerived(posRows, holdRows, deps = {}) {
       } else {
         const isCE = sym.endsWith('CE');
         const isPE = sym.endsWith('PE');
+        const isOpt = isCE || isPE;
+
+        // Spot resolution mirrors portfolioStore.svelte.js: options ALWAYS
+        // value against underlying spot; futures value against spot too
+        // (matches the Exp P&L column tooltip), falling back to the
+        // contract's own LTP only when spot is unavailable (e.g. MCX
+        // futures with no underlying spot index).
+        const rootMatch = sym.match(/^([A-Z]+)/);
+        const root  = rootMatch?.[1] ?? sym;
+        const spot1 = Number(p?.underlying_ltp || 0);
+        const spot  = spot1 > 0 ? spot1 : getSpot(root);
+        const anchor = isOpt ? spot : (spot > 0 ? spot : (ltp || 0));
 
         let ev = null;
-        if (isCE || isPE) {
-          const rootMatch = sym.match(/^([A-Z]+)/);
-          const root = rootMatch?.[1] ?? sym;
-          const spot1 = Number(p?.underlying_ltp || 0);
-          const spot  = spot1 > 0 ? spot1 : getSpot(root);
-          if (spot > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-          }
-        } else {
-          const live = ltp || 0;
-          if (live > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-          }
+        if (anchor > 0) {
+          ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: isOpt ? 'opt' : 'fut' }, anchor);
         }
 
         if (ev != null) {
@@ -194,45 +193,43 @@ function makePos(overrides = {}) {
 
 describe('positionsDerivedStore — Day P&L (byKey and total.day_pnl)', () => {
   it('uses livePositionDayPnl with SSE ltp when available', () => {
-    const pos = makePos({ last_price: 23100, close_price: 22800, quantity: 25, overnight_quantity: 25 });
+    // base = pnl(2500) - prev_settlement_pnl(0) = 2500; pollLtp=last_price=23100
+    // delta = (23200-23100)*25 = 2500 → total = 5000
+    const pos = makePos({ last_price: 23100, close_price: 22800, quantity: 25, prev_settlement_pnl: 0 });
     const { total, byKey } = _computeDerived([pos], [], {
       getSnap: (sym) => sym === 'NIFTY26JUNFUT' ? { ltp: 23200 } : undefined,
     });
-    // With live ltp=23200, close=22800, qty=25: (23200-22800)*25 = 10000
-    expect(total.day_pnl).toBeCloseTo(10000, 1);
-    expect(byKey['NIFTY26JUNFUT'].day_pnl).toBeCloseTo(10000, 1);
+    expect(total.day_pnl).toBeCloseTo(5000, 1);
+    expect(byKey['NIFTY26JUNFUT'].day_pnl).toBeCloseTo(5000, 1);
   });
 
-  it('falls back to broker day_change_val when no live ltp', () => {
-    const pos = makePos({ day_change_val: 7500 });
+  it('falls back to pnl when prev_settlement_pnl is null (new/no baseline)', () => {
+    const pos = makePos({ pnl: 7500, prev_settlement_pnl: null });
     const { total } = _computeDerived([pos], []);
     expect(total.day_pnl).toBe(7500);
   });
 
   it('sums correctly across multiple positions', () => {
-    const pos1 = makePos({ tradingsymbol: 'NIFTY26JUNFUT', day_change_val: 5000, quantity: 25, overnight_quantity: 25 });
-    const pos2 = makePos({ tradingsymbol: 'GOLDFUT', exchange: 'MCX', day_change_val: 3000, quantity: 1, overnight_quantity: 1 });
+    const pos1 = makePos({ tradingsymbol: 'NIFTY26JUNFUT', pnl: 5000, prev_settlement_pnl: null, quantity: 25 });
+    const pos2 = makePos({ tradingsymbol: 'GOLDFUT', exchange: 'MCX', pnl: 3000, prev_settlement_pnl: null, quantity: 1 });
     const { total, byKey } = _computeDerived([pos1, pos2], []);
     expect(total.day_pnl).toBeCloseTo(8000, 1);
     expect(byKey['NIFTY26JUNFUT'].day_pnl).toBeCloseTo(5000, 1);
     expect(byKey['GOLDFUT'].day_pnl).toBeCloseTo(3000, 1);
   });
 
-  it('handles new intraday position (overnight_quantity = 0)', () => {
-    // oq=0, close=0, avg=23000, last_price=23100, pnl=1250
-    // livePositionDayPnl with live ltp available and close=0:
-    //   → (live − avg) × qty = (23100 − 23000) × 25 = 2500
-    // This is the correct result; baseDayPnlForPosition Case 1 (pnl=1250) is
-    // superseded when a live ltp exists and close=0 (new-position LTP path).
+  it('handles new intraday position (no prev_settlement_pnl): base = pnl', () => {
     const pos = makePos({
       quantity: 25,
-      overnight_quantity: 0,
       pnl: 1250,
-      day_change_val: 0,
+      prev_settlement_pnl: null,
       close_price: 0,
+      last_price: 23100, // matches pnl's implied mark so live delta is 0
     });
-    const { total } = _computeDerived([pos], []);
-    expect(total.day_pnl).toBeCloseTo(2500, 1);
+    const { total } = _computeDerived([pos], [], {
+      getSnap: (sym) => sym === 'NIFTY26JUNFUT' ? { ltp: 23100 } : undefined,
+    });
+    expect(total.day_pnl).toBeCloseTo(1250, 1);
   });
 
   it('byKey values are objects not numbers', () => {
@@ -285,18 +282,38 @@ describe('positionsDerivedStore — Exp P&L (total.exp_pnl and byKey.exp_pnl)', 
     expect(total.exp_pnl).toBeCloseTo(2000, 1);
   });
 
-  it('computes futures expiry as (ltp - avg) * qty', () => {
-    // ltp = 23200, avg = 23000, qty = 25 → (23200-23000)*25 = 5000
+  it('computes futures expiry as (spot - avg) * qty — SPOT, not the future\'s own LTP', () => {
+    // Deliberately diverging future LTP (23400, via getSnap) from underlying
+    // spot (23200, via underlying_ltp) to prove the valuation uses spot.
+    // (23200-23000)*25 = 5000 — NOT (23400-23000)*25 = 10000.
     const pos = makePos({
       tradingsymbol: 'NIFTY26JUNFUT',
-      last_price: 23200,
+      last_price: 23400,      // future's own last poll — must NOT drive the value
       average_price: 23000,
       quantity: 25,
+      underlying_ltp: 23200,  // underlying spot — must drive the value
     });
     const { total } = _computeDerived([pos], [], {
-      getSnap: (sym) => sym === 'NIFTY26JUNFUT' ? { ltp: 23200 } : undefined,
+      getSnap: (sym) => sym === 'NIFTY26JUNFUT' ? { ltp: 23400 } : undefined,
     });
     expect(total.exp_pnl).toBeCloseTo(5000, 1);
+    expect(total.exp_pnl).not.toBeCloseTo(10000, 1);
+  });
+
+  it('futures fall back to own LTP when spot is unavailable (e.g. MCX, no spot index)', () => {
+    const pos = makePos({
+      tradingsymbol: 'CRUDEOIL25OCTFUT',
+      exchange: 'MCX',
+      last_price: 5900,
+      average_price: 5800,
+      quantity: 10,
+      // no underlying_ltp, no getSpot match → falls back to own LTP
+    });
+    const { total } = _computeDerived([pos], [], {
+      getSnap: (sym) => sym === 'CRUDEOIL25OCTFUT' ? { ltp: 5900 } : undefined,
+      getSpot: () => 0,
+    });
+    expect(total.exp_pnl).toBeCloseTo((5900 - 5800) * 10, 1);
   });
 
   it('adds realised to open leg expiry', () => {

@@ -359,6 +359,15 @@ describe('mkRightColDefs — column order LTP→Chg%→Lots→Qty→Avg→P.Clos
     expect(prevIdx).toBeLessThan(dayPnlIdx);
   });
 
+  it('overnight_qty (O/N Qty) column exists adjacent to qty_net', () => {
+    const cols = getOrderedCols();
+    const qtyNetIdx = cols.findIndex(c => c.colId === 'qty_net');
+    const oqIdx     = cols.findIndex(c => c.colId === 'overnight_qty');
+    expect(qtyNetIdx, 'qty_net column not found').not.toBe(-1);
+    expect(oqIdx,     'overnight_qty column not found').not.toBe(-1);
+    expect(oqIdx).toBe(qtyNetIdx + 1);
+  });
+
   it('day_pnl_pct (Chg%) appears immediately after ltpCol', () => {
     const cols = getOrderedCols();
     const ltpIdx       = cols.findIndex(c => c.colId === 'ltp'  || c.field === 'ltp');

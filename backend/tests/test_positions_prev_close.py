@@ -110,7 +110,7 @@ class TestFetchSnapshotCloseMapBehavior:
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'CRUDEOIL26JUL6900PE', 2850.0, 500.0)  # ref_close, total_pnl
+            ('ZG0790', 'CRUDEOIL26JUL6900PE', 2850.0, 500.0, 'positions', None)  # ref_close, total_pnl
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -118,7 +118,7 @@ class TestFetchSnapshotCloseMapBehavior:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch('backend.api.database.async_session', return_value=mock_session):
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(
                 raw,
                 cutoff=None
             )
@@ -144,7 +144,7 @@ class TestFetchSnapshotCloseMapBehavior:
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'CRUDEOIL26JUL6900PE', 2800.0, 500.0)  # ref_close=ltp, total_pnl
+            ('ZG0790', 'CRUDEOIL26JUL6900PE', 2800.0, 500.0, 'positions', None)  # ref_close=ltp, total_pnl
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -152,7 +152,7 @@ class TestFetchSnapshotCloseMapBehavior:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch('backend.api.database.async_session', return_value=mock_session):
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(
                 raw,
                 cutoff=None
             )
@@ -183,7 +183,7 @@ class TestFetchSnapshotCloseMapBehavior:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch('backend.api.database.async_session', return_value=mock_session):
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(
                 raw,
                 cutoff=None
             )
@@ -205,7 +205,7 @@ class TestFetchSnapshotCloseMapBehavior:
 
         mock_result = MagicMock()
         mock_result.all.return_value = [
-            ('ZG0790', 'SYMBOL', 2850.0, 12500.0)  # ref_close, total_pnl
+            ('ZG0790', 'SYMBOL', 2850.0, 12500.0, 'positions', None)  # ref_close, total_pnl
         ]
         mock_session = AsyncMock()
         mock_session.execute = AsyncMock(return_value=mock_result)
@@ -213,7 +213,7 @@ class TestFetchSnapshotCloseMapBehavior:
         mock_session.__aexit__ = AsyncMock(return_value=False)
 
         with patch('backend.api.database.async_session', return_value=mock_session):
-            snapshot_map, prev_pnl_map = await _fetch_snapshot_close_map(
+            snapshot_map, prev_pnl_map, _prev_pnl_kind_map, _prev_pnl_qty_map = await _fetch_snapshot_close_map(
                 raw,
                 cutoff=None
             )

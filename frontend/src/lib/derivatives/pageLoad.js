@@ -11,7 +11,7 @@
  *   loadPositions (cc=76), loadStrategy (cc=50), candidatePositions (cc=43).
  */
 
-import { baseDayPnlForPosition } from '$lib/data/nav.js';
+import { baseDayPnlForPosition, currentTotalProfit } from '$lib/data/nav.js';
 import { todayIST } from '$lib/dateFormat.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -75,6 +75,12 @@ export function buildPositionRowFromBroker(p, source) {
     prev_close: Number(p?.prev_close) || null,
     pnl:      p?.pnl != null ? Number(p.pnl) : 0,
     realised: p?.realised != null ? Number(p.realised) : 0,
+    // unrealised is left undefined (not defaulted to 0) when the backend
+    // doesn't ship it — currentTotalProfit()/baseDayPnlForPosition() in
+    // nav.js require BOTH realised and unrealised to be present+finite
+    // before preferring realised+unrealised over the pnl fallback; a
+    // premature 0 default here would silently switch that formula on.
+    unrealised: p?.unrealised != null ? Number(p.unrealised) : undefined,
     day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
     day_pnl: p?.day_pnl != null ? Number(p.day_pnl) : null,
     chg_pct: p?.day_change_percentage != null ? Number(p.day_change_percentage) : null,
@@ -202,6 +208,51 @@ function _closedLifetimePnl(brokerQty, pnl, oq, exitPrice, avgCost, closedQty) {
     : (avgCost - exitPrice) * closedQty;
 }
 
+/**
+ * Force `row.prev_settlement_pnl` so that `baseDayPnlForPosition(row) ===
+ * targetDayPnl` exactly, regardless of whether `currentTotalProfit(row)`
+ * resolves via `realised+unrealised` or the `pnl` fallback. Used for the
+ * "open" half of a closed/reopened split, whose Day P&L is computed
+ * independently (`open_dcv` / `baseDayPnlForPosition(p) - closed_day_pnl`)
+ * and must not silently diverge depending on which total-profit field pair
+ * the backend has populated on the pre-split row.
+ * @param {any} row
+ * @param {number} targetDayPnl
+ * @returns {any} the same row, mutated
+ */
+function _forceBaseline(row, targetDayPnl) {
+  row.prev_settlement_pnl = currentTotalProfit(row) - targetDayPnl;
+  return row;
+}
+
+/**
+ * Entry/exit price + direction for an intraday round-trip (overnight_quantity
+ * === 0, both day_buy_quantity and day_sell_quantity > 0 — the position was
+ * opened AND partially/fully closed within today's session). Also the path
+ * for every Groww row, which hardcodes overnight_quantity=0 regardless of
+ * whether the position is actually overnight.
+ * @param {number} dbq
+ * @param {number} dsq
+ * @param {number} dbv
+ * @param {number} dsv
+ * @returns {{ entry: number, exit: number, closedQty: number, dir: 1|-1 }|null}
+ */
+function _intradayEntryExit(dbq, dsq, dbv, dsv) {
+  const closedQty = Math.min(dbq, dsq);
+  if (closedQty <= 0) return null;
+  const buyPrice  = dbq > 0 ? dbv / dbq : 0;
+  const sellPrice = dsq > 0 ? dsv / dsq : 0;
+  // dir=1: net addition was long (bought more than sold) — opened via buys,
+  // closed portion exited via sells. dir=-1: net addition was short.
+  const dir = /** @type {1|-1} */ (dbq >= dsq ? 1 : -1);
+  return {
+    entry: dir === 1 ? buyPrice  : sellPrice,
+    exit:  dir === 1 ? sellPrice : buyPrice,
+    closedQty,
+    dir,
+  };
+}
+
 export function splitClosedReopened(p) {
   const oq  = Number(p.overnight_quantity || 0);
   const dbq = Number(p.day_buy_quantity   || 0);
@@ -210,7 +261,84 @@ export function splitClosedReopened(p) {
   const dsv = Number(p.day_sell_value     || 0);
   const close = Number(p.prev_close ?? 0);
 
-  if (oq === 0 || (dbq === 0 && dsq === 0)) return [p];
+  if (dbq === 0 && dsq === 0) return [p];
+
+  if (oq === 0) {
+    // Intraday round-trip with no overnight carry — opened and (partially
+    // or fully) closed today. Covers intraday partial closes AND every
+    // Groww row (overnight_quantity hardcoded to 0 by that broker). No
+    // prior-session close exists, so the closed portion's day P&L IS its
+    // lifetime P&L (mirrors the "new position" Case-1 convention).
+    const trip = _intradayEntryExit(dbq, dsq, dbv, dsv);
+    if (!trip) return [p];
+    const { entry, exit, closedQty, dir } = trip;
+    const closed_lifetime_pnl = dir === 1
+      ? (exit - entry) * closedQty
+      : (entry - exit) * closedQty;
+
+    const brokerQty = Math.abs(Number(p.qty || 0));
+    if (brokerQty === 0) {
+      // Fully closed today. Do NOT size the closed row on closedQty
+      // (min(dbq,dsq)) alone — Groww hardcodes overnight_quantity=0 even
+      // when a position genuinely carried overnight, so a position that
+      // closed BOTH a hidden overnight portion AND an intraday round-trip
+      // would have the overnight portion's P&L silently dropped if we only
+      // counted the round-trip-sized closedQty (min(dbq,dsq) undersizes the
+      // true realized amount whenever dbq !== dsq). `currentTotalProfit(p)`
+      // (realised+unrealised when both present, else the pnl fallback — the
+      // same SSOT baseDayPnlForPosition itself builds on) is the
+      // authoritative total realized P&L for the whole (now-flat) position
+      // — safe to use directly regardless of Groww's oq mislabeling, and
+      // correct even when Groww ships realised+unrealised without a
+      // top-level `pnl` field. `baseDayPnlForPosition(p)` on the ORIGINAL
+      // unsplit row likewise already resolves Day P&L correctly against
+      // whatever prev_settlement_pnl the backend supplied for this
+      // (account,symbol) — the backend baseline join is keyed by
+      // account+symbol, not by Groww's (untrustworthy) overnight_quantity
+      // flag — so it correctly captures any real overnight carry that oq=0
+      // hides.
+      const wholeLifetimePnl = currentTotalProfit(p);
+      const wholeDayPnl = baseDayPnlForPosition(p);
+      return [_forceBaseline({
+        ...p,
+        qty: 0,
+        pnl: wholeLifetimePnl,
+        realised: wholeLifetimePnl,
+        unrealised: 0,
+        day_change_val: wholeDayPnl,
+        _splitTag: 'closed',
+      }, wholeDayPnl)];
+    }
+    const closedRow = {
+      ...p,
+      qty: 0,
+      pnl: closed_lifetime_pnl,
+      // realised/unrealised forced consistent with pnl on the closed row so
+      // currentTotalProfit()/baseDayPnlForPosition() agree regardless of
+      // which field pair the backend has populated (realised+unrealised vs
+      // pnl-only) — otherwise the whole-position realised/unrealised
+      // inherited via the spread above (attributable to the FULL position,
+      // not just today's closed portion) would double-count now that the
+      // backend reliably populates `unrealised` on every row.
+      realised: closed_lifetime_pnl,
+      unrealised: 0,
+      // No prior-session baseline for the closed portion — it was opened
+      // AND closed today, so Day P&L IS its lifetime P&L (base=0).
+      prev_settlement_pnl: 0,
+      day_change_val: closed_lifetime_pnl,
+      _splitTag: 'closed',
+    };
+
+    const open_dcv_intraday = baseDayPnlForPosition(p) - closed_lifetime_pnl;
+    const openRow = _forceBaseline({
+      ...p,
+      pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
+      realised: 0,
+      day_change_val: open_dcv_intraday,
+      _splitTag: 'open',
+    }, open_dcv_intraday);
+    return [closedRow, openRow];
+  }
 
   const closed_qty = oq > 0 ? Math.min(oq, dsq) : Math.min(-oq, dbq);
   if (closed_qty <= 0) return [p];
@@ -226,23 +354,29 @@ export function splitClosedReopened(p) {
 
   const open_dcv = baseDayPnlForPosition(p) - closed_day_pnl;
 
-  const closedRow = {
+  // Forcing realised/unrealised consistent with pnl (closed portion has no
+  // remaining unrealised — qty=0) and forcing prev_settlement_pnl via
+  // _forceBaseline means baseDayPnlForPosition(closedRow) = closed_day_pnl
+  // regardless of which total-profit field pair the backend has populated.
+  const closedRow = _forceBaseline({
     ...p,
     qty: 0,
     pnl: closed_lifetime_pnl,
+    realised: closed_lifetime_pnl,
+    unrealised: 0,
     day_change_val: closed_day_pnl,
     _splitTag: 'closed',
-  };
+  }, closed_day_pnl);
 
   if (brokerQty === 0) return [closedRow];
 
-  const openRow = {
+  const openRow = _forceBaseline({
     ...p,
     pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
     realised: 0,
     day_change_val: open_dcv,
     _splitTag: 'open',
-  };
+  }, open_dcv);
   return [closedRow, openRow];
 }
 

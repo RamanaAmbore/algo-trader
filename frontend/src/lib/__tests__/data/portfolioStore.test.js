@@ -41,10 +41,8 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     getProxy   = (sym, tgt) => null,
     livePosDay = (p, ltp, opts) => livePositionDayPnl(
       {
-        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
-        pollLtp: Number(p?.last_price      ?? 0),
-        qty:     Number(p?.quantity        ?? 0),
-        avg:     Number(p?.average_price   ?? 0),
+        pollLtp: Number(p?.last_price ?? 0),
+        qty:     Number(p?.quantity   ?? 0),
         dcvRow:  p,
       },
       ltp,
@@ -105,21 +103,21 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
       } else {
         const isCE = sym.endsWith('CE');
         const isPE = sym.endsWith('PE');
+        const isOpt = isCE || isPE;
+
+        // Spot resolution mirrors portfolioStore.svelte.js: options ALWAYS
+        // value against underlying spot; futures value against spot too,
+        // falling back to the contract's own LTP only when spot is
+        // unavailable (e.g. MCX futures with no underlying spot index).
+        const decomp  = decomposeSymbol(sym);
+        const root    = (decomp.root || sym).toUpperCase();
+        const spot1   = Number(p?.underlying_ltp || 0);
+        const spot    = spot1 > 0 ? spot1 : (rootSpotCache[root] || 0);
+        const anchor  = isOpt ? spot : (spot > 0 ? spot : (ltp || 0));
 
         let ev = null;
-        if (isCE || isPE) {
-          const decomp  = decomposeSymbol(sym);
-          const root    = (decomp.root || sym).toUpperCase();
-          const spot1   = Number(p?.underlying_ltp || 0);
-          const spot    = spot1 > 0 ? spot1 : (rootSpotCache[root] || 0);
-          if (spot > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'opt' }, spot);
-          }
-        } else {
-          const live = ltp || 0;
-          if (live > 0) {
-            ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: 'fut' }, live);
-          }
+        if (anchor > 0) {
+          ev = expiryPnl({ symbol: sym, qty, avg_cost: avg, kind: isOpt ? 'opt' : 'fut' }, anchor);
         }
 
         if (ev != null) {
@@ -1190,10 +1188,8 @@ function computePositionsByAccount(posRows, deps = {}) {
     getSpot    = root => 0,
     livePosDay = (p, ltp, opts) => livePositionDayPnl(
       {
-        closePx: Number(p?.previous_close) || Number(p?.close_price ?? 0),
-        pollLtp: Number(p?.last_price      ?? 0),
-        qty:     Number(p?.quantity        ?? 0),
-        avg:     Number(p?.average_price   ?? 0),
+        pollLtp: Number(p?.last_price ?? 0),
+        qty:     Number(p?.quantity   ?? 0),
         dcvRow:  p,
       },
       ltp,
@@ -1333,10 +1329,8 @@ describe('portfolioStore.positions.byAccount — multiple accounts', () => {
     const result = computePositionsByAccount(positions, {
       livePosDay: (p, ltp, opts) => livePositionDayPnl(
         {
-          closePx: Number(p?.previous_close) || 0,
           pollLtp: Number(p?.last_price ?? 0),
           qty: Number(p?.quantity ?? 0),
-          avg: Number(p?.average_price ?? 0),
           dcvRow: p,
         },
         ltp,
@@ -1498,16 +1492,16 @@ describe('portfolioStore.positions.byAccount — edge cases', () => {
         exchange: 'NFO',
         overnight_quantity: -1,
         day_change_val: -50,
+        pnl: -50,
+        prev_settlement_pnl: null,
       }),
     ];
 
     const result = computePositionsByAccount(positions, {
       livePosDay: (p, ltp, opts) => livePositionDayPnl(
         {
-          closePx: Number(p?.previous_close) || 0,
           pollLtp: Number(p?.last_price ?? 0),
           qty: Number(p?.quantity ?? 0),
-          avg: Number(p?.average_price ?? 0),
           dcvRow: p,
         },
         ltp,

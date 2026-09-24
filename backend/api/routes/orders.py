@@ -453,10 +453,69 @@ def _rco_invalidate_terminal_caches(status: str) -> None:
         pass
 
 
+_MCX_LOTS_CONVENTION_BROKERS = frozenset({"kite", "dhan"})
+
+
+def _mcx_postback_qty_to_contracts(exchange: str, symbol: str, qty, broker: str) -> int:
+    """Convert a provisional MCX/NCO postback fill quantity from LOTS to
+    CONTRACTS before it's used downstream (position_filled broadcast,
+    post-fill refresh poll). Mirrors the lots→contracts pattern already
+    used for the enriched positions DataFrame in
+    `backend/brokers/broker_apis.py:_annotate_lot_size` — Kite/Dhan ship
+    MCX order/postback quantity in lots, same as their intraday position
+    fields (CLAUDE.md "Option qty vs lot_size"); NFO/CDS/BFO/equity qty is
+    already in contracts and passes through unchanged.
+
+    `broker` gates the conversion — INVERTED allow-list design (fixed
+    2026-09, was a Groww-only deny-list): only convert for brokers
+    CONFIRMED to ship MCX quantity in lots (`_MCX_LOTS_CONVENTION_BROKERS`
+    = kite, dhan). Every other broker identifier — Groww (confirmed
+    CONTRACTS for all exchanges), paper/simulated fanout (`broker="paper"`,
+    AlgoOrder quantities are already in contracts — see
+    `orders_place.py:_ticket_validate_input`), or any future/unknown
+    broker string — passes through unconverted by default. This is the
+    safer general shape: a new caller that forgets to pass a real broker
+    id gets correct (unconverted) behaviour instead of a silent double
+    conversion. Previously the deny-list ("skip only for groww") meant
+    paper-mode's hardcoded `broker="kite"` (used to reuse Kite's postback
+    fanout wiring) incorrectly triggered a lots→contracts multiply on
+    quantities that were never in lots to begin with, doubling MCX
+    quantities in paper mode.
+
+    Returns `qty` unchanged (best-effort) when the lot-size cache is cold,
+    the broker isn't in the lots-convention allow-list, or the exchange
+    isn't MCX/NCO — never raises.
+    """
+    try:
+        _qty_int = int(qty or 0)
+    except (TypeError, ValueError):
+        return 0
+    if exchange not in ("MCX", "NCO"):
+        return _qty_int
+    if str(broker or "").lower() not in _MCX_LOTS_CONVENTION_BROKERS:
+        return _qty_int
+    try:
+        from backend.brokers.adapters.kite import _LOT_INDEX
+        lot_size = _LOT_INDEX.get((exchange, symbol), 0)
+        if lot_size > 1:
+            return _qty_int * lot_size
+        logger.warning(
+            f"[MCX-POSTBACK-QTY] cold/missing lot_size for {exchange}/{symbol} — "
+            f"passing provisional qty={_qty_int} through unconverted"
+        )
+    except Exception as _lex:
+        logger.warning(f"[MCX-POSTBACK-QTY] lot_size lookup failed for {exchange}/{symbol}: {_lex}")
+    return _qty_int
+
+
 def _rco_broadcast_position_filled(
     masked: str, exchange: str, symbol: str, txn: str, qty, price, order_id
 ) -> None:
-    """Broadcast position_filled WS event on COMPLETE. No-op when qty is zero."""
+    """Broadcast position_filled WS event on COMPLETE. No-op when qty is zero.
+
+    `qty` must already be in CONTRACTS — see `_mcx_postback_qty_to_contracts`,
+    applied by the caller (`_postback_broadcast_fanout`) before this runs.
+    """
     try:
         _qty_int = int(qty or 0)
         if _qty_int > 0:
@@ -553,11 +612,22 @@ def _postback_broadcast_fanout(
     txn: str,
     qty,
     price,
+    broker: str,
     exchange: str = "",
     status_message: str = "",
 ) -> None:
     """Cache invalidation + WS broadcast trio shared by every broker
     postback handler (Kite inline, Dhan/Groww via _process_broker_postback).
+
+    `broker` — required, no default. Identifies which broker's postback
+    this is ("kite" / "dhan" / "groww" / paper's own "paper") so
+    `_mcx_postback_qty_to_contracts` applies the right lots↔contracts
+    convention — only "kite"/"dhan" trigger the lots→contracts multiply
+    (`_MCX_LOTS_CONVENTION_BROKERS`); every other identifier, including
+    "paper" (AlgoOrder quantities are already in contracts), passes
+    through unconverted. Deliberately has no default so a new caller
+    can't silently inherit Kite's lots-conversion behaviour for a broker
+    that doesn't use it.
 
     Steps:
       1. `invalidate("orders")` always
@@ -592,12 +662,17 @@ def _postback_broadcast_fanout(
         }))
 
         if str(status).upper() == "COMPLETE":
-            _rco_broadcast_position_filled(masked, exchange, symbol, txn, qty, price, order_id)
+            # Provisional fill qty from the postback is in LOTS for MCX/NCO
+            # (same convention as Kite's positions intraday fields) — convert
+            # to CONTRACTS once, before both downstream consumers, so neither
+            # the WS position_filled event nor the post-fill refresh poll
+            # under/over-count by lot_size. See _mcx_postback_qty_to_contracts.
+            _qty_contracts = _mcx_postback_qty_to_contracts(exchange, symbol, qty, broker)
+            _rco_broadcast_position_filled(masked, exchange, symbol, txn, _qty_contracts, price, order_id)
             try:
-                _qty_int = int(qty or 0)
                 _side_sign = 1 if (txn or "").upper() == "BUY" else -1
                 asyncio.create_task(
-                    _positions_refresh_after_fill(account, symbol, _qty_int * _side_sign)
+                    _positions_refresh_after_fill(account, symbol, _qty_contracts * _side_sign)
                 )
             except Exception:
                 pass

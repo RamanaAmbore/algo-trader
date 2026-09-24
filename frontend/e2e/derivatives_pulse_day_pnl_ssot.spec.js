@@ -6,7 +6,7 @@
  *
  * Original root cause: Pulse applied a live-LTP recompute (livePositionDayPnl) rescuing
  * the MCX stale-ticker fingerprint (last_price === close_price → day_change_val=0).
- * Derivatives' _dayPnlForLeg called only baseDayPnlForPosition with no live rescue.
+ * Derivatives' per-leg logic called only baseDayPnlForPosition with no live rescue.
  *
  * Fix (2026-07-04): livePositionDayPnl extracted to nav.js SSOT; both surfaces now
  * call it, normalising field names from raw broker (Pulse) and candidate rows (Derivatives).
@@ -17,21 +17,25 @@
  * overlay DAY P&L and NavStrip P1 diverged for the same enabled legs.
  *
  * Fix (2026-09-08): candidatesDayPnl reverted from positionsDayPnlStore/holdingsDayPnlStore
- * lookups back to _dayPnlForLeg per-row, with a _lastCandidatesDayPnl stale-cache guard.
+ * lookups back to per-row helper (_candDayPnl), with a _lastCandidatesDayPnl stale-cache guard.
  * Root cause of regression: positionsDayPnlStore.byKey returns _pulseByKey ?? _store.byKey;
  * if _pulseByKey was set from a prior MarketPulse visit but didn't include CRUDEOIL/GOLDM
- * (closed/filtered positions), lookups returned undefined → 0. _dayPnlForLeg operates on
+ * (closed/filtered positions), lookups returned undefined → 0. _candDayPnl operates on
  * the raw candidate row's own qty + LTP fields and is unaffected by filter state.
  * OptionsPayoff guard `dayPnl != null` stays — flat-day (0) renders correctly.
  *
+ * Fix (2026-09-24): Day P&L formula redesign — atomic `current_total_profit − base_pnl`
+ * replaces branchy Case-override logic. _lastCandidatesDayPnl changed from $state() to plain
+ * JSDoc type (Svelte 5 rule: don't write $state inside $derived).
+ *
  * Quality dimensions checked:
- *   SSOT   — candidatesDayPnl uses _dayPnlForLeg per row (not store lookups that can
- *            return undefined for filtered-out symbols); _dayPnlForLeg delegates to
- *            baseDayPnlForPosition; pulseUnified.js still calls livePositionDayPnl
+ *   SSOT   — candidatesDayPnl uses _candDayPnl per row (not store lookups that can
+ *            return undefined for filtered-out symbols); _candDayPnl delegates to
+ *            livePositionDayPnl; pulseUnified.js calls livePositionDayPnl
  *   Perf   — no XHR budget regression on Pulse cold-load
  *   Stale  — _lastCandidatesDayPnl caches last non-empty value to bridge 5s poll gaps;
- *            no "realisedToday" inline computation remaining in consumers
- *   Reuse  — _dayPnlForLeg is the existing per-leg SSOT function
+ *            no inline Day P&L computation remaining in consumers
+ *   Reuse  — baseDayPnlForPosition + livePositionDayPnl are the SSOT functions
  *   UX     — DAY P&L row in payoff overlay renders for flat days (dayPnl=0 no longer hidden)
  */
 
@@ -76,13 +80,23 @@ test('SSOT: livePositionDayPnl is defined and exported from nav.js', () => {
 
 test('SSOT: _lastCandidatesDayPnl stale-cache variable is present in derivatives page source', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
+
+  // Declaration must be a plain let with JSDoc type (not $state, which would cause
+  // state_unsafe_mutation inside $derived). Pattern: let _lastCandidatesDayPnl = /** @type ... */ (null);
+  const hasPlainDecl = /let\s+_lastCandidatesDayPnl\s*=\s*\/\*\*\s*@type/.test(src);
+  expect(
+    hasPlainDecl,
+    'derivatives page must declare _lastCandidatesDayPnl as a plain JSDoc-typed variable (not $state)'
+  ).toBe(true);
+
+  // Verify it is NOT $state (which would break the Svelte compiler rules)
   expect(
     src.includes('let _lastCandidatesDayPnl = $state('),
-    'derivatives page must declare _lastCandidatesDayPnl as a $state stale-cache variable'
-  ).toBe(true);
+    'derivatives page must NOT declare _lastCandidatesDayPnl as $state inside $derived'
+  ).toBe(false);
 });
 
-test('SSOT: candidatesDayPnl uses _dayPnlForLeg for per-row computation (not store lookups)', () => {
+test('SSOT: candidatesDayPnl uses _candDayPnl for per-row computation (not store lookups)', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
 
   const blockStart = src.indexOf('const candidatesDayPnl = $derived.by(');
@@ -90,10 +104,11 @@ test('SSOT: candidatesDayPnl uses _dayPnlForLeg for per-row computation (not sto
   const blockEnd = src.indexOf('\n  });', blockStart) + 6;
   const blockBody = src.slice(blockStart, blockEnd);
 
-  // Must call _dayPnlForLeg — the per-row SSOT that reads each candidate's own qty+LTP
+  // Must call _candDayPnl — the per-row SSOT that reads each candidate's own qty+LTP
+  // (renamed from _dayPnlForLeg in this refactor)
   expect(
-    blockBody.includes('_dayPnlForLeg('),
-    'candidatesDayPnl must use _dayPnlForLeg per row — store lookups can return undefined for filtered symbols'
+    blockBody.includes('_candDayPnl('),
+    'candidatesDayPnl must use _candDayPnl per row — store lookups can return undefined for filtered symbols'
   ).toBe(true);
 
   // Must NOT use store byKey lookups — these can miss symbols not present in _pulseByKey
@@ -146,13 +161,15 @@ test('SSOT: pulseUnified.js calls livePositionDayPnl (not inline recompute)', ()
   ).toBe(true);
 });
 
-test('Stale: no inline realisedToday computation left in consumers', () => {
+test('Stale: no inline Day P&L formula computation left in consumers', () => {
   const derivSrc = fs.readFileSync(DERIV_SRC, 'utf8');
   const pulseSrc = fs.readFileSync(PULSE_SRC, 'utf8');
 
-  // "realisedToday" is the variable name used in the old inline math.
-  // It should now only live inside nav.js (inside livePositionDayPnl), not
-  // in the consumer files.
+  // OLD pattern: inline computation of day P&L per row (e.g. "realisedToday" variable).
+  // NEW pattern: both surfaces delegate to helpers (livePositionDayPnl, baseDayPnlForPosition)
+  // instead of reimplementing the atomic baseline-diff formula.
+
+  // Consumers must NOT inline the formula — they should call the nav.js helpers.
   expect(
     derivSrc.includes('realisedToday'),
     'derivatives page must not inline realisedToday — delegate to livePositionDayPnl'
@@ -162,22 +179,30 @@ test('Stale: no inline realisedToday computation left in consumers', () => {
     'pulseUnified.js must not inline realisedToday — delegate to livePositionDayPnl'
   ).toBe(false);
 
-  // nav.js MUST still contain it (inside the helper)
+  // nav.js MUST export the SSOT helpers (baseDayPnlForPosition and livePositionDayPnl)
   const navSrc = fs.readFileSync(NAV_SRC, 'utf8');
   expect(
-    navSrc.includes('realisedToday'),
-    'nav.js must contain realisedToday inside livePositionDayPnl (the SSOT location)'
+    navSrc.includes('export function baseDayPnlForPosition('),
+    'nav.js must export baseDayPnlForPosition (the atomic baseline-diff SSOT)'
+  ).toBe(true);
+  expect(
+    navSrc.includes('export function currentTotalProfit('),
+    'nav.js must export currentTotalProfit (the realised+unrealised aggregate SSOT)'
   ).toBe(true);
 });
 
-test('Stale: derivatives _dayPnlForLeg uses untrack() on getSnapshot to respect throttle', () => {
+test('Stale: derivatives _candDayPnl uses untrack() on getSnapshot to respect throttle', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
-  const fnStart = src.indexOf('function _dayPnlForLeg(');
-  const fnEnd = src.indexOf('\n  }', fnStart) + 4;
+
+  // _candDayPnl is now a const arrow function (not a named function declaration)
+  const fnStart = src.indexOf('const _candDayPnl = (');
+  expect(fnStart, '_candDayPnl const declaration must exist').toBeGreaterThan(-1);
+
+  const fnEnd = src.indexOf('\n  };', fnStart) + 5;
   const fnBody = src.slice(fnStart, fnEnd);
   expect(
     fnBody.includes('untrack('),
-    '_dayPnlForLeg must wrap getSnapshot in untrack() to prevent throttle bypass'
+    '_candDayPnl must wrap getSnapshot in untrack() to prevent throttle bypass'
   ).toBe(true);
 });
 

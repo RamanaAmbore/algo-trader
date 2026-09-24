@@ -49,9 +49,10 @@ function makePositionRow(overrides = {}) {
     close_price:        1000,
     last_price:         1005,
     pnl:                150,   // (1005−990)*10
-    day_change_val:     50,    // oq*(last_price−close) = 10*(1005−1000)
+    day_change_val:     50,    // vestigial — no longer read by the formula
     overnight_quantity: 10,
     realised:           0,
+    prev_settlement_pnl: 100,  // pnl(150) - day_change_val(50) → base=50 by default
     ...overrides,
   };
 }
@@ -136,13 +137,13 @@ describe('mergePositionRows — fallback to baseDayPnlForPosition', () => {
     const byKey   = {};
     mergePositionRows(
       byKey,
-      [makePositionRow({ close_price: 0, overnight_quantity: 0, day_change_val: 0, pnl: 150 })],
+      [makePositionRow({ close_price: 0, overnight_quantity: 0, day_change_val: 0, pnl: 150, prev_settlement_pnl: null })],
       true,
       {},
       makePositionCtx(snapMap),
     );
     const row = Object.values(byKey)[0];
-    // livePositionDayPnl new-position branch: (1005−990)×10 = 150
+    // No prior close-reset snapshot (new position) → base = pnl = 150.
     expect(row.day_pnl).toBeCloseTo(150, 4);
   });
 });
@@ -167,7 +168,8 @@ describe('Formula symmetry — pure overnight position = holdings for same input
     mergePositionRows(
       posByKey,
       [makePositionRow({ close_price: close, quantity: qty, last_price: ltp,
-                         overnight_quantity: qty, day_change_val: dcv })],
+                         overnight_quantity: qty, day_change_val: dcv,
+                         prev_settlement_pnl: 150 - dcv })],  // pnl(150, default) - dcv → base=dcv
       true,
       {},
       makePositionCtx(posSnap),
@@ -201,7 +203,8 @@ describe('Formula symmetry — pure overnight position = holdings for same input
     mergePositionRows(
       posByKey,
       [makePositionRow({ close_price: close, quantity: qty, last_price: ltp,
-                         overnight_quantity: qty, day_change_val: dcv })],
+                         overnight_quantity: qty, day_change_val: dcv,
+                         prev_settlement_pnl: 150 - dcv })],
       true,
       {},
       makePositionCtx(posSnap),
@@ -225,7 +228,8 @@ describe('Formula symmetry — pure overnight position = holdings for same input
     mergePositionRows(
       posByKey,
       [makePositionRow({ close_price: close, quantity: qty, last_price: ltp,
-                         overnight_quantity: qty, day_change_val: dcv })],
+                         overnight_quantity: qty, day_change_val: dcv,
+                         prev_settlement_pnl: 150 - dcv })],
       true,
       {},
       makePositionCtx(posSnap),

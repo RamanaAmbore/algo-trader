@@ -1401,6 +1401,28 @@ def _gf(row: dict, *keys: str, default: float = 0.0) -> float:
     return default
 
 
+def _gf_native_or_none(row: dict, key: str) -> float | None:
+    """Like `_gf` but with NO fallback key and NO default-on-absent —
+    returns None when `key` is genuinely absent/null on the raw broker
+    row, instead of collapsing to a default float.
+
+    Used for fields where "present vs absent" is itself the signal a
+    downstream consumer needs (e.g. `backend/brokers/broker_apis.py`'s
+    `_positions_total_pnl_expr` trusts Groww's native `pnl` only when
+    non-null, else falls back to `realised_pnl + unrealised_pnl`).
+    `_gf(row, "pnl", "unrealised_pnl")` would silently fold the "absent"
+    case into a float value, making that distinction unrecoverable by
+    the time the row reaches broker_apis's `is_not_null()` check.
+    """
+    v = row.get(key)
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
 def _unwrap(resp: Any, key: str = "data") -> Any:
     """Most Groww responses look like {"status": "SUCCESS", "data": ...}.
     Unwrap the inner payload; return [] if it's not a list/dict we can
@@ -1561,7 +1583,16 @@ def _normalise_positions(resp: Any) -> dict:
             "sell_price":      _gf(p, "sell_price", "sell_avg_price"),
             "buy_quantity":    _gi(p, "buy_quantity"),
             "sell_quantity":   _gi(p, "sell_quantity"),
-            "pnl":             _gf(p, "pnl", "unrealised_pnl"),
+            # `pnl` is deliberately left as a genuine None (not a
+            # default 0.0) when Groww's raw payload has no native "pnl"
+            # key — broker_apis._positions_total_pnl_expr reads that
+            # nullness to decide whether to trust native pnl or fall
+            # back to realised_pnl + unrealised_pnl. Do NOT reintroduce
+            # a `_gf(p, "pnl", "unrealised_pnl")`-style fallback here;
+            # it collapses "absent" into a value and makes the
+            # broker_apis fallback branch permanently unreachable for
+            # live Groww data (self-audit finding, see broker_apis.py).
+            "pnl":             _gf_native_or_none(p, "pnl"),
             "realised":        _gf(p, "realised_pnl"),
             "unrealised":      _gf(p, "unrealised_pnl"),
             # Mirrors Dhan adapter (dhan.py:1876). Groww uses multiplier=1 so

@@ -45,7 +45,7 @@
     findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
-  import { expiryPnl } from '$lib/data/expiryPnl';
+  import { expiryPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
@@ -73,7 +73,7 @@
   import {
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
-    rollupByUnderlying, perRootReduce, rawPosExpPnl,
+    rollupByUnderlying, perRootReduce,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -1069,10 +1069,8 @@
     const snap = untrack(() => getSnapshot(sym));
     return livePositionDayPnl(
       {
-        closePx: c.prev_close ?? 0,
-        pollLtp: c.ltp        ?? 0,
-        qty:     c.qty        ?? 0,
-        avg:     c.avg_cost   ?? 0,
+        pollLtp: c.ltp ?? 0,
+        qty:     c.qty ?? 0,
         dcvRow:  c,
       },
       snap?.ltp ?? null,
@@ -1895,16 +1893,6 @@
     }
   }
 
-  /** @param {any} c - candidate row
-   *  @param {number|null} spot - current underlying spot (LTP)
-   *  @returns {number|null} P&L if every contract expired now at `spot`
-   */
-  // Delegate to the shared SSOT so NavStrip P.expiry, Snapshot Exp P&L
-  // and payoff overlay legs TOTAL compute from ONE implementation.
-  function _expiryPnl(c, spot) {
-    return expiryPnl(c, spot, legAnalyticsBySymbol);
-  }
-
   /**
    * EXP P&L for one leg — canonical per-candidate formula used by both
    * the legs grid and _legsExpPnlTotal so sum(rows) == TOTAL by construction.
@@ -1917,11 +1905,14 @@
    * @returns {number|null}
    */
   function _legExpPnlDisplay(c, spot) {
-    const v = _expiryPnl(c, spot);
-    if (v != null) return v + Number(c.realised || 0);
-    if (Number(c.qty || 0) === 0 && c.kind !== 'eq') return Number(c.realised || c.pnl || 0);
     if (c.kind === 'eq') return _eqExpPnlByKey[enKey(c)] ?? null;
-    return null;
+    // Unified with portfolioStore's Pulse/NavStrip path via the shared
+    // expiryPnlWithRealised helper (expiryPnl.js). c already carries both
+    // realised and pnl (buildPositionRowFromBroker) — the pnl-fallback is
+    // applied INSIDE expiryPnlWithRealised, and only on its qty===0 branch,
+    // so it must not be pre-merged into realised here (would double-count
+    // against unrealised on still-open legs).
+    return expiryPnlWithRealised(c, spot, legAnalyticsBySymbol);
   }
 
   /** Day P&L TOTAL for the currently selected underlying across all enabled
@@ -4490,6 +4481,8 @@
             <span class="num"
                   title="Qty in F&O lot units. Option / futures positions use the contract's own lot; other rows show 0.">Lots</span>
             <span class="num">Qty</span>
+            <span class="num"
+                  title="Quantity carried overnight from yesterday's session close.">O/N Qty</span>
             <span class="num">Avg</span>
             <span class="num">P.Close</span>
             <span class="num"
@@ -4602,7 +4595,8 @@
               <span class="num"></span>
               <span class="num"></span><!-- chg % -->
               <span class="num"></span>
-              <span class="num"></span>
+              <span class="num"></span><!-- qty -->
+              <span class="num"></span><!-- O/N qty -->
               <span class="num"></span>
               <span class="num"></span><!-- P.Close — was missing, caused 1-column offset -->
               <span class="num tf-cell cand-pnl {_legsDayPnlTotal > 0 ? 'cell-pos' : _legsDayPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
@@ -5958,6 +5952,7 @@
       minmax(48px, max-content)            /* chg % */
       minmax(44px, max-content)            /* lots */
       minmax(48px, max-content)            /* qty */
+      minmax(52px, max-content)            /* O/N qty - overnight carry */
       minmax(62px, max-content)            /* avg (cost basis) */
       minmax(72px, max-content)            /* prev close */
       minmax(46px, max-content)            /* day pnl - today */

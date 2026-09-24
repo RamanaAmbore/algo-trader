@@ -643,6 +643,7 @@ describe('mergePositionRows — day_pnl with mixed overnight + intraday sell add
       overnight_quantity: -10,
       day_change_val: -25,
       pnl: -125,
+      prev_settlement_pnl: -100, // pnl(-125) - day_change_val(-25) -> base=-25
     };
     const byKey = {};
     const ctx = makePositionCtx({ CRUDEOIL25AUGCE7800: { ltp: 220, ltp_ts: 1 } });
@@ -663,6 +664,7 @@ describe('mergePositionRows — day_pnl with mixed overnight + intraday sell add
       overnight_quantity: -10,
       day_change_val: -25,
       pnl: -125,
+      prev_settlement_pnl: -100, // pnl(-125) - day_change_val(-25) -> base=-25
     };
     const byKey = {};
     const ctx = makePositionCtx({});  // no live tick

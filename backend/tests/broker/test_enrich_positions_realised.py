@@ -1,16 +1,30 @@
-"""Tests for _enrich_positions realised-P&L inclusion fix in broker_apis.py.
+"""Tests for `_enrich_positions`'s per-broker `pnl` sourcing in broker_apis.py.
 
-The `_enrich_positions` function previously used only `pnl` (unrealised) from
-the broker adapter, silently dropping `realised` for partially-closed and
-fully-closed intraday positions. After the fix, the enriched `pnl` column equals
-`broker_pnl + realised` so that Kite, Dhan, and Groww rows all surface total P&L.
+History: `_enrich_positions` used to compute `pnl = broker_pnl + realised`
+unconditionally for every broker. That double-counted for Kite, whose
+native `pnl` field is confirmed (Zerodha's own forum) to already equal
+`realised + unrealised` — adding `realised` again inflated every Kite
+row's total P&L by the realised amount.
 
-Five test classes — one per requirement:
-  1. TestEnrichPositionsAddsRealised           — pnl=5000, realised=2000 → 7000
-  2. TestEnrichPositionsNoRealisedColumn       — no realised col → no crash, pnl unchanged
-  3. TestEnrichPositionsRealisedNull           — realised=NaN → fill_null(0) → pnl=5000
-  4. TestEnrichPositionsDhanRow                — pnl=500, realised=3000 → 3500
-  5. TestEnrichPositionsGrowwRow               — pnl=4000, realised=1500 → 5500
+Fix: `pnl` (== `current_total_profit = realised + unrealised`) is now
+sourced per-broker via `_positions_total_pnl_expr`, selected through the
+new `broker_kind` param on `_enrich_positions` ("kite" / "dhan" / "groww",
+default "kite" — covers the legacy `kite=` call path where `broker is
+None`):
+
+  • Kite:  native `pnl` directly when non-null (never `+ realised`).
+  • Groww: native `pnl` when non-null; else `realised + unrealised`.
+  • Dhan:  no trustworthy native combined field — always
+           `realised (native) + (ltp − avg) × qty` (locally derived,
+           gated to 0 when ltp/avg are not valid, e.g. pre-open).
+
+Six test classes:
+  1. TestEnrichPositionsKiteNativePnl      — Kite: native pnl used as-is, no double-count
+  2. TestEnrichPositionsGrowwNativePresent — Groww: native pnl used as-is, no double-count
+  3. TestEnrichPositionsGrowwNativeAbsent  — Groww: pnl null → realised + unrealised fallback
+  4. TestEnrichPositionsDhanDerived        — Dhan: realised + (ltp-avg)*qty, native pnl ignored
+  5. TestEnrichPositionsDhanPreOpenGuard   — Dhan: ltp=0 → derived term gated to 0
+  6. TestEnrichPositionsBackwardCompat     — no realised/unrealised cols, default broker_kind
 """
 
 from __future__ import annotations
@@ -39,145 +53,225 @@ def _pos_row(**kwargs) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
-# 1. Realised added to broker pnl
+# 1. Kite — native pnl trusted directly, realised NOT added on top
 # ---------------------------------------------------------------------------
 
-class TestEnrichPositionsAddsRealised:
-    """pnl=5000, realised=2000 → enriched pnl == 7000."""
+class TestEnrichPositionsKiteNativePnl:
+    """Kite's native `pnl` already equals realised + unrealised. Numeric
+    proof: pnl=7000 (already combined), realised=2000 (must be ignored).
+    Old buggy formula would give 9000 — assert we do NOT get that."""
 
-    def test_pnl_plus_realised_equals_total(self):
-        df = _pos_row(pnl=5000.0, realised=2000.0)
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(7000.0), (
-            f"Expected 7000 but got {result['pnl'].iloc[0]}"
+    def test_native_pnl_used_as_is(self):
+        df = _pos_row(pnl=7000.0, realised=2000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="kite")
+        assert result["pnl"].iloc[0] == pytest.approx(7000.0)
+        assert result["pnl"].iloc[0] != pytest.approx(9000.0), (
+            "Double-count regression: realised must not be added on top "
+            "of Kite's already-combined native pnl"
         )
 
-    def test_zero_realised_leaves_pnl_unchanged(self):
-        """realised=0 is a no-op — pnl stays at broker value."""
-        df = _pos_row(pnl=5000.0, realised=0.0)
+    def test_default_broker_kind_is_kite(self):
+        """`_enrich_positions(df)` with no broker_kind arg behaves like Kite
+        (covers the legacy `kite=` call path where `broker is None`)."""
+        df = _pos_row(pnl=7000.0, realised=2000.0)
         result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(5000.0)
+        assert result["pnl"].iloc[0] == pytest.approx(7000.0)
 
-    def test_negative_realised_reduces_pnl(self):
-        """Loss on the closed portion reduces total pnl correctly."""
-        df = _pos_row(pnl=5000.0, realised=-1500.0)
-        result = broker_apis._enrich_positions(df)
+    def test_negative_realised_does_not_affect_kite_pnl(self):
+        df = _pos_row(pnl=3500.0, realised=-1500.0)
+        result = broker_apis._enrich_positions(df, broker_kind="kite")
         assert result["pnl"].iloc[0] == pytest.approx(3500.0)
 
+    def test_null_pnl_falls_back_to_local_formula(self):
+        """When Kite's native pnl is null, fall back to (ltp-avg)*qty."""
+        df = _pos_row(pnl=float("nan"), realised=float("nan"),
+                       last_price=200.0, average_price=190.0, quantity=10)
+        result = broker_apis._enrich_positions(df, broker_kind="kite")
+        # (200-190)*10 = 100
+        assert result["pnl"].iloc[0] == pytest.approx(100.0)
+
 
 # ---------------------------------------------------------------------------
-# 2. No realised column — backward-compat, no crash
+# 2. Groww — native pnl present → trusted directly (mirrors Kite)
 # ---------------------------------------------------------------------------
 
-class TestEnrichPositionsNoRealisedColumn:
-    """When adapter does not emit a `realised` column, enrichment must not crash
-    and pnl must equal the broker-supplied pnl unchanged."""
+class TestEnrichPositionsGrowwNativePresent:
+    """Numeric proof: raw pnl=5500 (native combined), realised=1500,
+    unrealised=4000 both present but must be IGNORED since native pnl
+    is non-null. Naive realised+unrealised sum would give 5500 too by
+    coincidence here — use mismatched numbers to prove native wins."""
 
-    def test_no_realised_col_uses_broker_pnl(self):
-        df = _pos_row(pnl=8000.0)
+    def test_native_pnl_used_when_present(self):
+        df = _pos_row(pnl=5500.0, realised=1500.0, unrealised=4000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="groww")
+        assert result["pnl"].iloc[0] == pytest.approx(5500.0)
+
+    def test_native_pnl_wins_over_mismatched_split_fields(self):
+        """realised+unrealised sums to something OTHER than native pnl —
+        proves native is used, not the fallback sum."""
+        df = _pos_row(pnl=5500.0, realised=1500.0, unrealised=9999.0)
+        result = broker_apis._enrich_positions(df, broker_kind="groww")
+        assert result["pnl"].iloc[0] == pytest.approx(5500.0)
+        assert result["pnl"].iloc[0] != pytest.approx(1500.0 + 9999.0)
+
+
+# ---------------------------------------------------------------------------
+# 3. Groww — native pnl absent (null) → realised + unrealised fallback
+# ---------------------------------------------------------------------------
+
+class TestEnrichPositionsGrowwNativeAbsent:
+    """Numeric proof: pnl=None (absent), realised=1500, unrealised=4000
+    → fallback sum = 5500."""
+
+    def test_null_pnl_falls_back_to_realised_plus_unrealised(self):
+        df = _pos_row(pnl=None, realised=1500.0, unrealised=4000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="groww")
+        assert result["pnl"].iloc[0] == pytest.approx(5500.0)
+
+    def test_nan_pnl_treated_same_as_none(self):
+        df = _pos_row(pnl=float("nan"), realised=1500.0, unrealised=4000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="groww")
+        assert result["pnl"].iloc[0] == pytest.approx(5500.0)
+
+    def test_missing_unrealised_col_treated_as_zero(self):
+        df = _pos_row(pnl=None, realised=1500.0)
+        assert "unrealised" not in df.columns
+        result = broker_apis._enrich_positions(df, broker_kind="groww")
+        assert result["pnl"].iloc[0] == pytest.approx(1500.0)
+
+
+# ---------------------------------------------------------------------------
+# 4. Dhan — realised (native) + (ltp-avg)*qty (locally derived)
+# ---------------------------------------------------------------------------
+
+class TestEnrichPositionsDhanDerived:
+    """Dhan has no trustworthy native combined field — native `pnl` is
+    ALWAYS ignored, even when it looks plausible. Numeric proof: native
+    pnl=999999 (garbage), ltp=105, avg=100, qty=100 → derived
+    unrealised=(105-100)*100=500, realised=3000 → total=3500."""
+
+    def test_derived_formula_ignores_native_pnl(self):
+        df = _pos_row(
+            last_price=105.0, average_price=100.0, prev_close=102.0,
+            quantity=100, pnl=999999.0, realised=3000.0,
+        )
+        result = broker_apis._enrich_positions(df, broker_kind="dhan")
+        assert result["pnl"].iloc[0] == pytest.approx(3500.0)
+        assert result["pnl"].iloc[0] != pytest.approx(999999.0 + 3000.0)
+
+    def test_fully_closed_dhan_row(self):
+        """qty=0 → derived term is 0 regardless of ltp/avg → pnl == realised."""
+        df = _pos_row(
+            last_price=120.0, average_price=100.0, prev_close=100.0,
+            quantity=0, pnl=0.0, realised=-800.0,
+        )
+        result = broker_apis._enrich_positions(df, broker_kind="dhan")
+        assert result["pnl"].iloc[0] == pytest.approx(-800.0)
+
+    def test_no_realised_column_treated_as_zero(self):
+        df = _pos_row(
+            last_price=105.0, average_price=100.0, quantity=100, pnl=42.0,
+        )
         assert "realised" not in df.columns
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(8000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="dhan")
+        # derived = (105-100)*100 = 500, realised absent → 0 → total 500
+        assert result["pnl"].iloc[0] == pytest.approx(500.0)
 
-    def test_no_realised_col_no_crash_minimal_df(self):
+
+# ---------------------------------------------------------------------------
+# 5. Dhan — pre-open guard: ltp<=0 must not produce a phantom loss
+# ---------------------------------------------------------------------------
+
+class TestEnrichPositionsDhanPreOpenGuard:
+    """Mirrors the Dhan adapter's own `_normalise_position_prices_and_pnl`
+    guard (`pnl_calc = 0.0` when ltp<=0 or avg<=0). Without this guard,
+    (0 - avg) * qty produces a large phantom loss during the pre-open
+    window when ltp has not ticked yet."""
+
+    def test_zero_ltp_gates_derived_term_to_zero(self):
+        df = _pos_row(
+            last_price=0.0, average_price=100.0, prev_close=102.0,
+            quantity=100, pnl=999999.0, realised=3000.0,
+        )
+        result = broker_apis._enrich_positions(df, broker_kind="dhan")
+        # Without the guard: (0-100)*100 + 3000 = -7000 (wrong).
+        assert result["pnl"].iloc[0] == pytest.approx(3000.0)
+        assert result["pnl"].iloc[0] != pytest.approx(-7000.0)
+
+    def test_zero_avg_gates_derived_term_to_zero(self):
+        df = _pos_row(
+            last_price=105.0, average_price=0.0, prev_close=102.0,
+            quantity=100, pnl=999999.0, realised=-500.0,
+        )
+        result = broker_apis._enrich_positions(df, broker_kind="dhan")
+        assert result["pnl"].iloc[0] == pytest.approx(-500.0)
+
+
+# ---------------------------------------------------------------------------
+# 6. Backward-compat — missing columns / default broker_kind don't crash
+# ---------------------------------------------------------------------------
+
+class TestEnrichPositionsBackwardCompat:
+    def test_no_pnl_col_no_crash_minimal_df(self):
         """Minimal DataFrame (no pnl, no realised) does not raise."""
         df = _pos_row()  # no pnl, no realised
         assert "realised" not in df.columns
         assert "pnl" not in df.columns
         result = broker_apis._enrich_positions(df)
-        # pnl should still be computed via fallback formula
         assert "pnl" in result.columns
-
-
-# ---------------------------------------------------------------------------
-# 3. realised=NaN — fill_null(0) so pnl stays at broker_pnl
-# ---------------------------------------------------------------------------
-
-class TestEnrichPositionsRealisedNull:
-    """realised=NaN must be treated as 0 so pnl == broker_pnl."""
-
-    def test_nan_realised_treated_as_zero(self):
-        df = _pos_row(pnl=5000.0, realised=float("nan"))
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(5000.0), (
-            f"NaN realised should be fill_null(0); got {result['pnl'].iloc[0]}"
-        )
-
-    def test_nan_realised_with_null_pnl_falls_back_to_formula(self):
-        """When broker_pnl is null AND realised is NaN, fallback formula runs."""
-        df = _pos_row(pnl=float("nan"), realised=float("nan"))
-        result = broker_apis._enrich_positions(df)
-        # fallback: (ltp - avg) * qty = (200 - 190) * 10 = 100
+        # fallback formula: (200-190)*10 = 100
         assert result["pnl"].iloc[0] == pytest.approx(100.0)
 
-
-# ---------------------------------------------------------------------------
-# 4. Dhan-style row: unrealised pnl + realisedProfit
-# ---------------------------------------------------------------------------
-
-class TestEnrichPositionsDhanRow:
-    """Dhan adapter normalises realisedProfit → realised column.
-
-    pnl=500 (unrealised on open qty) + realised=3000 → total pnl = 3500.
-    """
-
-    def test_dhan_row_total_pnl(self):
-        df = _pos_row(
-            last_price=105.0,
-            average_price=100.0,
-            prev_close=102.0,
-            quantity=100,
-            pnl=500.0,
-            realised=3000.0,
-        )
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(3500.0)
-
-    def test_dhan_fully_closed_row(self):
-        """Fully closed Dhan position: qty=0, pnl=0, realised=−800 → total −800."""
-        df = _pos_row(
-            last_price=0.0,
-            average_price=100.0,
-            prev_close=102.0,
-            quantity=0,
-            pnl=0.0,
-            realised=-800.0,
-        )
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(-800.0)
+    def test_unknown_broker_kind_falls_back_to_kite_semantics(self):
+        """An unrecognised broker_kind string defaults to Kite behaviour
+        (native pnl trusted, no realised addition) rather than raising."""
+        df = _pos_row(pnl=7000.0, realised=2000.0)
+        result = broker_apis._enrich_positions(df, broker_kind="unknown_vendor")
+        assert result["pnl"].iloc[0] == pytest.approx(7000.0)
 
 
 # ---------------------------------------------------------------------------
-# 5. Groww-style row: unrealised_pnl + realised_pnl
+# 7. _broker_kind — must work identically in-process AND via RemoteBroker
+#    (conn-service mode). type(broker).__name__ always reads "RemoteBroker"
+#    there, so the resolver must read `broker_id`, not the class name.
 # ---------------------------------------------------------------------------
 
-class TestEnrichPositionsGrowwRow:
-    """Groww adapter normalises realised_pnl → realised column.
+class _FakeBroker:
+    """Minimal stand-in exposing only `broker_id`, mirroring the real
+    `Broker` interface contract (and what `RemoteBroker` forwards from
+    conn_service, as opposed to its own class name)."""
 
-    pnl=4000, realised=1500 → total pnl = 5500.
-    """
+    def __init__(self, broker_id: str):
+        self.broker_id = broker_id
 
-    def test_groww_row_total_pnl(self):
-        df = _pos_row(
-            last_price=110.0,
-            average_price=100.0,
-            prev_close=105.0,
-            quantity=200,
-            pnl=4000.0,
-            realised=1500.0,
-        )
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(5500.0)
 
-    def test_groww_partial_close_row(self):
-        """Partial close: pnl from remaining qty + realised from closed portion."""
-        df = _pos_row(
-            last_price=108.0,
-            average_price=100.0,
-            prev_close=105.0,
-            quantity=50,
-            pnl=400.0,
-            realised=600.0,
-        )
-        result = broker_apis._enrich_positions(df)
-        assert result["pnl"].iloc[0] == pytest.approx(1000.0)
+class TestBrokerKindResolution:
+    def test_none_broker_defaults_to_kite(self):
+        """Legacy `kite=` call path — broker is None."""
+        assert broker_apis._broker_kind(None) == "kite"
+
+    def test_kite_broker_id(self):
+        assert broker_apis._broker_kind(_FakeBroker("zerodha_kite")) == "kite"
+
+    def test_dhan_broker_id(self):
+        assert broker_apis._broker_kind(_FakeBroker("dhan")) == "dhan"
+
+    def test_groww_broker_id(self):
+        assert broker_apis._broker_kind(_FakeBroker("groww")) == "groww"
+
+    def test_remote_broker_class_name_does_not_fool_resolution(self):
+        """A RemoteBroker-shaped stub (class name 'RemoteBroker', NOT
+        'DhanBroker') must still resolve via broker_id, not type name —
+        this is the conn-service (RAMBOQ_USE_CONN_SERVICE=1) code path."""
+        class RemoteBroker:
+            def __init__(self, broker_id):
+                self.broker_id = broker_id
+
+        stub = RemoteBroker("dhan")
+        assert type(stub).__name__ == "RemoteBroker"
+        assert broker_apis._broker_kind(stub) == "dhan"
+
+    def test_broker_missing_broker_id_attr_defaults_to_kite(self):
+        class Weird:
+            pass
+        assert broker_apis._broker_kind(Weird()) == "kite"

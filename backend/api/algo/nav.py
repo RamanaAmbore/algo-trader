@@ -121,8 +121,13 @@ def _funds_from_df(df) -> tuple[float, list[str]]:
 def _positions_from_df(df) -> tuple[float, list[str]]:
     """Vectorized extraction of (positions_mtm, accounts) from a positions DataFrame.
 
-    Sums unrealised only for rows where quantity != 0 (broker-computed
-    M2M — avoids the F&O notional-vs-value bug).
+    NAV wants `current_total_profit` (lifetime total, per pnl_math.py SSOT),
+    NOT the baseline-diff Day P&L — summed as two legs:
+      - unrealised: only for rows where quantity != 0 (broker-computed M2M —
+        avoids the F&O notional-vs-value bug; legitimately 0 on flat rows).
+      - realised: summed UNGATED (no qty filter). A same-day full exit has
+        quantity == 0 but its realised P&L is exactly the value that used to
+        go missing from NAV — gating it on qty != 0 silently dropped it.
     """
     if df is None or df.empty:
         return 0.0, []
@@ -139,11 +144,18 @@ def _positions_from_df(df) -> tuple[float, list[str]]:
         if "unrealised" in lf.columns
         else pl.lit(0.0)
     )
+    real_col = (
+        pl.col("realised").cast(pl.Float64, strict=False).fill_null(0.0)
+        if "realised" in lf.columns
+        else pl.lit(0.0)
+    )
 
-    # Only sum unrealised where qty != 0 (matches original per-row guard).
+    # Unrealised only where qty != 0 (matches original per-row guard);
+    # realised summed ungated — see docstring.
     mtm = float(
         lf.select(
             pl.when(qty_col != 0.0).then(unr_col).otherwise(pl.lit(0.0)).sum()
+            + real_col.sum()
         ).to_series()[0] or 0.0
     )
 

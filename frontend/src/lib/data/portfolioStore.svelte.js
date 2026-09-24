@@ -23,7 +23,7 @@ import { positionsStore, pulseHoldingsStore, fundsStore } from '$lib/data/market
 import { livePositionDayPnl, dayChangePct } from '$lib/data/nav.js';
 import { isMarketOpen } from '$lib/marketHours';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
-import { expiryPnl } from '$lib/data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
@@ -99,8 +99,7 @@ const _posTier2 = $derived.by(() => {
   return _posTier1.map(p => {
     const isFO = FO_EXCHS.has(p._exch);
     const day_pnl = livePositionDayPnl(
-      { closePx: p._prev_close ?? 0, pollLtp: Number(p?.last_price ?? 0),
-        qty: p._qty, avg: p._avg, dcvRow: p },
+      { pollLtp: Number(p?.last_price ?? 0), qty: p._qty, dcvRow: p },
       p._ltp, { marketOpen }
     );
     // prev_mv: prev_close × |qty| for overnight positions.
@@ -116,22 +115,34 @@ const _posTier2 = $derived.by(() => {
       console.warn('[portfolioStore] prev_mv null:', p._sym, 'prev_close=', p._prev_close, 'oq=', oq);
 
     let exp_pnl = null, extrinsic = null;
-    if (isFO && p._qty !== 0) {
+    if (isFO) {
       const decomp = decomposeSymbol(p._sym);
       const root   = (decomp.root || p._sym).toUpperCase();
       const spot   = Number(p?.underlying_ltp || 0) || _rootSpotCache[root] || 0;
       const isCE   = p._sym.endsWith('CE'), isPE = p._sym.endsWith('PE');
-      const realised = Number(p?.realised ?? 0);
-      let ev = null;
-      if ((isCE || isPE) && spot > 0) {
-        ev = expiryPnl({ symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: 'opt' }, spot);
-      } else if (!isCE && !isPE) {
-        const live = p._ltp || 0;
-        if (live > 0) ev = expiryPnl({ symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: 'fut' }, live);
+      const isOpt  = isCE || isPE;
+      // realised/pnl are passed through as-is — expiryPnlWithRealised applies
+      // the pnl-fallback ONLY on its qty===0 branch (fully closed today);
+      // pre-merging pnl into realised here would double-count against the
+      // unrealised component already inside expiryPnl's intrinsic-value calc
+      // for still-open legs.
+      if (p._qty !== 0) {
+        // Futures value at SPOT (matches the Exp P&L column tooltip), not
+        // the future's own LTP — falls back to own LTP only when spot is
+        // unavailable (e.g. MCX contracts with no underlying spot index).
+        const anchor = isOpt ? spot : (spot > 0 ? spot : (p._ltp || 0));
+        if (anchor > 0) {
+          const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl };
+          const ev = expiryPnl(cRow, anchor);
+          if (ev != null) {
+            exp_pnl   = expiryPnlWithRealised(cRow, anchor);
+            extrinsic = ev - (p._ltp - p._avg) * p._qty;
+          }
+        }
+      } else {
+        exp_pnl = expiryPnlWithRealised({ symbol: p._sym, qty: 0, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl }, null);
+        extrinsic = 0;
       }
-      if (ev != null) { exp_pnl = ev + realised; extrinsic = ev - (p._ltp - p._avg) * p._qty; }
-    } else if (isFO && p._qty === 0) {
-      exp_pnl = Number(p?.realised || p?._pnl || 0); extrinsic = 0;
     }
 
     return { ...p, _day_pnl: day_pnl, _prev_mv: prev_mv, _isFO: isFO, _exp_pnl: exp_pnl, _extrinsic: extrinsic };
