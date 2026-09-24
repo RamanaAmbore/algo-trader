@@ -1416,45 +1416,46 @@ For Snapshot EXP column (MarketPulse Derivatives view):
 - **Open leg** (qty ≠ 0): `expiryPnl(c, spot) + (c.realised || 0)`
 - **Closed leg** (qty = 0): `c.realised || c.pnl` (locked value, not null/empty)
 
-### 17.1 Payoff Chart Spot Price Resolution (liveSpot)
+### 17.1 Payoff Chart Spot Price Resolution — Front-Month vs Anchor Contract
 
-The payoff overlay derives a canonical spot price (`liveSpot`) in a five-tier ladder
-to ensure the chart displays immediately on page load, without waiting for SSE ticks
-or broker polls. All tiers now refresh on every SSE tick, not only on 5-second polls:
+The derivatives page (Snapshot grid, Payoff overlay, NavStrip) resolve underlying spot 
+prices through a **unified front-month path** and a **separate anchor-contract path for 
+the payoff marker** (Sep 2026, commit b1b946a8).
 
-**Resolution order** (first non-null value wins):
-1. **SSE tick from `symbolStore` snapshot** — live tick via `getSnapshot(root)?.ltp` from 
-   reactive symbol store (4Hz cadence, commit d8633d4e). Result: layover (OptionsPayoff) 
-   and snapshot grid spot prices refresh on every SSE tick instead of only on 5-second 
-   `batchQuote` poll.
-2. **SSE tick on spot-anchor contract** — fallback live tick from WebSocket subscription
-3. **SSE tick on underlying** — live tick if the underlying itself is subscribed (gated on 
-   `isMarketOpen()` post-close)
-4. **`candidatePositions[*].underlying_ltp`** (backend-stamped, positions.py Pass 3)
-   — available immediately on page load from broker settlement data; eliminates 
-   "Resolving spot…" placeholder during SSE warmup
-5. **`batchQuote _underlyingQuotes[underlying].ltp`** (30s poll fallback) — broker 
-   quote cycle refresh
-6. **`strategy.spot`** (stale server value) — last-resort static value from page load
+**Snapshot grid and NavStrip spot prices (always front-month)**:
+- `_undLive` derived in `+page.svelte` iterates `_underlyingQuoteKeys` and resolves each 
+  root via `resolveUnderlyingTradingsymbol()` to the front-month contract (e.g., MCX 
+  "CRUDEOIL" → "CRUDEOIL26OCTFUT"; index "NIFTY" → "NIFTY 50").
+- `getUnderlyingSpot(root)` in `underlyingSpotStore.svelte.js` applies the same 
+  resolution, ensuring NavStrip's Exp P&L uses front-month for all MCX/index underlyings.
+- Both sources read `liveSnap(tradingsymbol)?.ltp` (SSE, 4Hz), falling back to 
+  batchQuote cache, ensuring unified LTP source across all surfaces.
 
-**Post-close SSE gate (Sep 2026)**:
-Tier 3 (resolved contract from `symbolStore`) is now gated on `isMarketOpen()`. 
-Post-close, the resolver skips to Tier 4 (REST `batchQuote` endpoint) to prevent 
-stale intraday SSE-written `ltp_ts > 0` values from blocking updated REST quotes after 
-MCX settlement.
+**Payoff overlay marker (anchor-contract specific)**:
+- `payoffSpot` derived in `+page.svelte` Tier 1 reads `liveSnap(anchor)` where 
+  `anchor = strategy?.spot_anchor_contract` (the contract the backend priced the curve 
+  against).
+- Tier 2 falls back to `strategy?.spot` (backend's resolved anchor-contract price, 
+  guaranteed accurate after cold-start fix: no `spot` override sent, so backend always 
+  resolves correctly).
+- Tier 3 falls back to `liveSpot` (front-month) when strategy not yet loaded.
+- **Operator-confirmed design**: the marker sits on the anchor contract to match the 
+  payoff curve's pricing basis. On contango MCX roots, the marker and curve anchor may 
+  differ from Snapshot's front-month price — this is intentional, not a desync.
 
-**Spot price tick refresh (Sep 2026, commit d8633d4e)**:
-`getUnderlyingSpot(root)` in `underlyingSpotStore.svelte.js` reads Tier 1 
-(`getSnapshot(root)?.ltp` from `symbolStore`) first, falling back to 
-`_quotes[root]?.ltp`. Snapshot grid also uses `getSnapshot(g.underlying)?.ltp` as 
-LTP fallback. Result: all derivatives page spot-price displays now update live on 
-every SSE tick (4Hz), not only on 5s `batchQuote` poll cycles.
+**Spot price tick refresh (Sep 2026, commit d8633d4e, refined b1b946a8)**:
+- `Snapshot` grid LTP resolves front-month via `liveSnap(resolveUnderlyingTradingsymbol(root))`
+  and updates at 4Hz SSE rate.
+- `Payoff marker` price resolves anchor contract via `liveSnap(strategy.spot_anchor_contract)` 
+  and updates at 4Hz SSE rate.
+- Both refresh immediately on SSE tick arrival; poll-driven batchQuote completions 
+  trigger re-derive via `_quoteGeneration` counter.
 
-**Rationale**: Broker-stamped `underlying_ltp` appears instantly in candidatePositions 
-without waiting for SSE subscription to activate, allowing the payoff chart to render 
-with a real spot estimate on first paint instead of showing a loading state. SSE-sourced 
-spot prices provide real-time feedback during active trading without waiting for 
-poll cycles.
+**Rationale**: Front-month resolution ensures consistent LTP display across Snapshot, 
+NavStrip, and MarketPulse grids — all operators see the same "current market" price 
+regardless of where they look. Anchor-contract marker ensures the payoff curve and its 
+spot reference point sit on the same contract (the legs' modal expiry), eliminating 
+visual misalignment on multi-leg strategies spanning different expirations.
 
 ### 17.2 OptionsPayoff Overlay — SPOT and CHG% Flash on Tick
 
@@ -1661,40 +1662,48 @@ language for real-time price and P&L movement throughout the platform.
 
 ---
 
-### 17.9 Derivatives Spot Price SSOT — liveSnap Unified Source (Sep 2026)
+### 17.9 Derivatives Spot Price SSOT — Front-Month Unified Resolution (Sep 2026, refined Sep 2026)
 
-The derivatives page (`/admin/derivatives`) now uses the same live SSE tick source 
-(`liveSnap` from `symbolStore.svelte.js`) as the Pulse grids for spot price display 
-in legs grid and by-underlying summary table. Previously it used a separate 
-`batchQuote` / `_throttledTick` stack that was gated on `isMarketOpen()`, causing 
-MCX evening session spot prices to go stale after NSE closed at 15:30 IST (commit 
-3f909237).
+The derivatives page (`/admin/derivatives`) resolves underlying spot prices through 
+a unified front-month path shared with Pulse grids and NavStrip (see §17.1 for the 
+payoff marker's separate anchor-contract resolution). Previously it used a separate 
+`batchQuote` / `_throttledTick` stack gated on `isMarketOpen()`, causing MCX evening 
+session spot prices to go stale after NSE closed at 15:30 IST (commit 3f909237, 
+refined commit b1b946a8).
 
 **Problem fixed**:
-- Spot prices in the derivatives legs grid and by-underlying summary table froze at 
-  NSE close when `isMarketOpen()` returned false (NSE closed, MCX still trading during 
-  S2 state). Operators viewing MCX positions after 15:30 IST saw stale NSE spot prices 
-  instead of live MCX mid-session ticks.
-- Derivatives Greeks calculations and payoff chart positioning depended on these 
-  stale values, causing analytics to lag the live market.
+- Snapshot grid (by-underlying summary table) and NavStrip's Exp P&L both needed to 
+  resolve MCX synthetic roots (e.g., "CRUDEOIL") to actual tradeable contracts 
+  (e.g., "CRUDEOIL26OCTFUT") via `resolveUnderlyingTradingsymbol()` — previously 
+  they diverged, showing different contracts or going stale at NSE close.
+- Operators viewing MCX positions after 15:30 IST (during S2 state) saw stale NSE 
+  spot prices instead of live MCX mid-session ticks.
+- Derivatives Greeks and NavStrip Exp P&L calculations depended on these stale values, 
+  causing analytics to lag the live market.
 
-**Implementation** (commit 3f909237):
-- Legs grid LTP cells now read `liveSnap(sym)?.ltp` first (SSE-reactive at 4Hz), 
-  falling back to `legAnalytics.ltp` then broker API
-- By-underlying Spot price in summary table resolves via `liveSnap(underlying)` — 
-  same SSE source as legs grid
-- OptionsPayoff card Spot price (`liveSpot`) now uses `liveSnap(underlying)` 
-  directly, eliminating the `isMarketOpen()` gate that was suppressing MCX evening 
-  session updates
+**Implementation** (commit 3f909237, unified commit b1b946a8):
+- `_undLive` derived now resolves all roots via `resolveUnderlyingTradingsymbol()` to 
+  front-month contracts, iterating `_underlyingQuoteKeys` (ensures cold-start roots 
+  with zero positions still populate).
+- Legs grid LTP cells read `liveSnap(sym)?.ltp` first (SSE-reactive at 4Hz), 
+  falling back to `legAnalytics.ltp` then broker API.
+- By-underlying Spot price in Snapshot summary table resolves via 
+  `liveSnap(resolveUnderlyingTradingsymbol(underlying))` — same front-month contract 
+  as Legs grid and NavStrip.
+- OptionsPayoff card Spot **marker** (`payoffSpot`) now uses anchor-contract 
+  resolution (§17.1) to match the curve's pricing basis; **distinct from** Snapshot's 
+  front-month (`liveSpot`).
 
-**SSOT contract**: Derivatives page spot prices now resolve via the same `liveSnap()` 
-reactive bridge as Pulse positions/holdings LTP cells. This ensures spot-dependent 
-calculations (Greeks, EV, payoff chart) reflect live market ticks across all market 
-states (S1–S4) without session-based staling.
+**SSOT contract**: Derivatives Snapshot and NavStrip now share the same 
+`resolveUnderlyingTradingsymbol()` → `liveSnap()` reactive bridge, ensuring 
+spot-dependent calculations (Greeks, EV, day P&L) reflect live market ticks across 
+all market states (S1–S4) without session-based staling. Payoff marker independently 
+tracks anchor-contract spot (§17.1).
 
-**Impact**: MCX spot prices, Greeks calculations, EV, and payoff chart positioning 
-reflect real-time mid-session ticks throughout the MCX trading day (15:30–23:30 IST), 
-matching the live-market behavior of Pulse grids and NavStrip.
+**Impact**: MCX spot prices, Greeks, EV, and day P&L across Snapshot, NavStrip, and 
+Pulse grids reflect real-time mid-session ticks throughout the MCX trading day 
+(15:30–23:30 IST), with unified front-month resolution ensuring no divergence between 
+surfaces.
 
 ---
 

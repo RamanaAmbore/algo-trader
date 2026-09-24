@@ -523,6 +523,7 @@ No more COALESCE fallback — holdings day P&L now computed from prior-settlemen
 | Backfill CLI | `scripts/persistence_mode.py` + `scripts/backfill_ohlcv.py` |
 | Perf dashboard | `frontend/src/routes/(algo)/admin/perf/+page.svelte` |
 | Virtual root display | `backend/api/algo/symbol_resolver.py` + `frontend/src/lib/data/rootOf.js` |
+| Underlying spot resolution | `frontend/src/lib/data/resolveUnderlying.js:resolveUnderlyingTradingsymbol` + `frontend/src/lib/data/underlyingSpotStore.svelte.js:getUnderlyingSpot` (derivatives Snapshot, NavStrip, and Pulse Exp P&L) |
 | MCX lot-size overrides | `backend/api/routes/instruments.py` |
 | Chart state (symbol, range, OHLCV) | `frontend/src/lib/data/chartStore.svelte.js` |
 | Activity tab persistence | `frontend/src/lib/data/activityStore.svelte.js` |
