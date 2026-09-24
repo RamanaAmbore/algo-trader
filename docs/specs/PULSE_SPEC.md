@@ -3,7 +3,7 @@
 Single source of truth for the `/pulse` page behavior across all market states, user states,
 and data sources. Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.21 — 2026-09-22  
+**Version**: 1.22 — 2026-09-24  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
@@ -52,9 +52,17 @@ MarketPulse is a two-panel grid:
 - **Left panel**: Watchlists (Pinned + custom) + Movers (Winners / Losers tabs)
 - **Right panel**: Positions + Holdings
 
-Every row carries: Symbol · 5d sparkline · LTP · Avg · Chg% · Close · Qty · Day P&L · P&L% · P&L.
+Every row carries: Symbol · 5d sparkline · LTP · Avg · Chg% · Close · Qty · O/N Qty · P&L% · P&L · Day P&L.
 
-The page is **always populated** — no blank grids, no "—" placeholders. Closed hours show the last snapshot with a staleness hint. Empty is a defect.
+O/N Qty (overnight_quantity) is a 2026-09 addition. Aggregate rows (TOTAL, by-account summary)
+also show Day P&L and Day P&L% — these reconcile with the per-row values, both computed via the
+same `baseDayPnlForPosition` baseline-diff formula (see CLAUDE.md "Frontend Day P&L SSOT").
+An earlier mid-2026-09 plan to remove per-row Day P&L display was reverted by explicit operator
+instruction — only the underlying calculation changed in the 2026-09 redesign, not the per-row
+display.
+
+The page is **always populated** — no blank grids, no "—" placeholders. Closed hours show the 
+last snapshot with a staleness hint. Empty is a defect.
 
 ---
 
@@ -158,16 +166,44 @@ See Section 5 for DB-first policy and fallback ladder.
 - `is_orphan: bool` — True when no open AlgoOrder (status=OPEN) matches this position's (account, tradingsymbol). Positions without a parent order are considered orphaned; shown with coral "O" badge in MarketPulse grid
 - `pair_group_key: str | None` — shared root AlgoOrder ID for positions linked via parent-child relationship. When two orders are paired via `POST /api/orders/pair`, child rows share the same `pair_group_key` as the parent. Null when no AlgoOrder matches this position. Used by `postSortRows` callback to keep paired positions (parent + child) adjacent in sort order regardless of column sort direction
 
-**Day P&L computation in snapshot mode** (`_positions_snapshot()` and `_build_holding_row_from_snapshot()`):
-- Snapshot readers recompute `day_change_val` from prior-session EOD reference to ensure correct day P&L after market settlement
-- **Positions** (Aug 2026 `_override_stale_close_from_snapshot` fix): `_override_stale_close_from_snapshot()` now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` as the reference close price and writes `previous_close` to ALL matched position rows (matching holdings fix 75a335f7). Frontend `positionsDayPnlStore`, `pulseUnified`, and `nav.js` now prefer `p.previous_close` (frozen official settlement) over `p.close_price` (Kite's mutable field). For snapshot readers in closed-hours mode, `prev_batch` CTE filters `AND db.ltp IS NOT NULL AND db.ltp > 0 AND db.captured_at < :today_ist_midnight` within a 7-day lookback window to handle multi-day holiday gaps; `day_change_val` recompute uses `(ltp − previous_close) × qty` when `previous_close` > 0 (official settlement); falls back to `(ltp − prev_ltp) × qty` when unavailable
-- **Holdings** (Aug 2026): `_HOLDINGS_SNAPSHOT_SQL` now includes a `prev_batch` CTE (same pattern as positions) that finds the most-recent prior-day LTP per (account, symbol) within a 7-day lookback. `_build_holding_row_from_snapshot()` uses `(ltp - prev_ltp) × qty` when `prev_ltp > 0`, matching the positions closed-hours pattern. Holdings day P&L during closed hours is now computed from an actual price diff, not a stale stored value. Fallback to `(ltp - previous_close) × qty` when `prev_ltp` is unavailable/zero, consistent with live open-hours formula
-- Day P&L: always via `baseDayPnlForPosition(p)` — NEVER read `day_change_val` directly. Formula applies canonical fast-path (`day_change_val` guard) for ALL overnight positions (both longs and shorts). Short position guard corrected in commit 1769cffc: overnight quantity check is now `oq !== 0` (not `oq > 0`), ensuring short MCX positions receive the stale-close guard during the 23:30–09:00 IST window and avoiding catastrophic ₹5,00,000+ overstatement in day P&L.
-- **Flat row hygiene fix (commit ed63b9fe)**: `_apply_flat_row_hygiene` now zeros `day_change_val` ONLY when `abs(pnl) < 0.005` (break-even round-trips). When a realised gain/loss exists (pnl ≥ 0.005), `day_change_val` is preserved as the realised P&L. Addresses Case 3 (closed intraday, qty=0, oq=0): positions opened and closed on the same day now show realised P&L instead of 0. Previous mask `(quantity == 0)` was undoing backstop results from `apply_day_change_backstop` for all flat rows. Also: closed overnight futures (qty=0, oq>0) now retain their correct backstop `day_change_val = pnl` from the backstop (Case 2), fixing missing day P&L on closed overnight F&O positions.
+**Day P&L computation — Snapshot & Live Paths (STALE — snapshot-reading details, 2026-09 redesign)**
+
+**Flagged for review**: The detailed per-row snapshot computation details below describe the 
+edge-case rescue machinery (`apply_day_change_backstop`, Case 1-3 branching) which no longer 
+feeds Pulse display or account/symbol rollups after the 2026-09 redesign. Snapshot readers 
+still apply this logic for per-position correctness, but account-level Day P&L is now driven 
+entirely by baseline-diff rollups (see CLAUDE.md "Frontend Day P&L SSOT"). Do not update these 
+details without consulting the architect — the branching logic is retained for diagnostics 
+but is orthogonal to user-visible Day P&L rendering.
+
+- Snapshot readers recompute `day_change_val` from prior-session EOD reference to ensure 
+  correct per-position edge-case fixes after market settlement
+- **Positions** (Aug 2026 `_override_stale_close_from_snapshot` fix): `_override_stale_close_from_snapshot()` 
+  now queries `COALESCE(daily_book.previous_close, daily_book.ltp)` as the reference close 
+  price and writes `previous_close` to ALL matched position rows (matching holdings fix 75a335f7). 
+  Frontend `nav.js` prefers `p.previous_close` (frozen official settlement) over `p.close_price` 
+  (Kite's mutable field). For snapshot readers in closed-hours mode, `prev_batch` CTE filters 
+  and 7-day lookback handle holiday gaps; `day_change_val` recompute uses `(ltp − previous_close) × qty` 
+  when `previous_close` > 0; falls back to `(ltp − prev_ltp) × qty` when unavailable
+- **Holdings** (Aug 2026): `_HOLDINGS_SNAPSHOT_SQL` includes `prev_batch` CTE (same pattern as positions). 
+  `_build_holding_row_from_snapshot()` uses `(ltp - prev_ltp) × qty` when `prev_ltp > 0`. 
+  Holdings day P&L during closed hours computed from actual price diff. Fallback to 
+  `(ltp - previous_close) × qty` when `prev_ltp` unavailable/zero
+- **Per-position display**: Do NOT read `day_change_val` directly on a per-row basis — as of
+  the 2026-09 redesign, per-row Day P&L must go through `baseDayPnlForPosition`/
+  `livePositionDayPnl` (`nav.js`), NOT the legacy backstop-derived `day_change_val`. Per-row
+  Day P&L IS still displayed (a mid-redesign plan to remove it was reverted by explicit
+  operator instruction); account-level rollups are ALSO shown alongside it (see CLAUDE.md and
+  backend `PositionsResponse.summary`). A parallel `PositionsResponse.symbol_summary` field
+  exists on the backend but no frontend surface currently consumes it.
+- **Flat row hygiene fix (commit ed63b9fe)**: `_apply_flat_row_hygiene` zeros `day_change_val` 
+  ONLY when `abs(pnl) < 0.005` (break-even round-trips). When realised gain/loss exists 
+  (pnl ≥ 0.005), `day_change_val` is preserved. Closed overnight futures now retain their 
+  correct `day_change_val = pnl` from the backstop (Case 2), fixing missing day P&L on 
+  closed overnight F&O positions
 - Do NOT use `positions.close_price` (stale overnight); use `daily_book.ltp`
-- NavStrip P-slot is guarded against zero-flash during live→snapshot transitions
-  (when `close_price === ltp`, the guard returns 0 to prevent distortion)
-- Orphan cleanup: after-hours snapshots run `_delete_orphan_positions()` on same-day + `_delete_prior_orphan_positions()` on prior-day to remove settled/closed positions (7-day scope)
+- Orphan cleanup: after-hours snapshots run `_delete_orphan_positions()` on same-day + 
+  `_delete_prior_orphan_positions()` on prior-day to remove settled/closed positions (7-day scope)
 
 **Derivatives Legs Grid Candidate Building** (commit 9becba9f):
 - F&O positions: skipped if instrument not found in master (expired contract removed by Kite) — prevents stale expired legs in grid
@@ -1309,7 +1345,18 @@ A helper `_legExpPnlDisplay(leg, spot)` provides the per-cell EXP value:
 - **Closed leg** (qty = 0): `leg.realised || leg.pnl || 0` (not "—", fully realized)
 - Replaces direct `expiryPnl()` calls; ensures closed legs show locked-in values
 
-### 17.0 Day P&L Formula Reference — Three Cases
+**Unified Exp P&L path (2026-09 redesign)**:
+
+Both Pulse/NavStrip/Snapshot and Legs grids now share the same underlying `expiryPnlWithRealised()` 
+logic (frontend/src/lib/data/expiryPnl.js), ensuring consistent projections across all surfaces. 
+The shared formula handles partial-close splits (when `overnight_quantity` differs from current `qty`, 
+indicating intraday partial exits — applies the realised P&L correctly to both open and closed legs). 
+Fixes include: weekly-symbol strike parsing via reusable `decomposeSymbol.js`, futures valuation 
+at spot (not future's own LTP), and MCX lot→contract scaling. NOTE: partial-close unification 
+pending live-account empirical check on Kite `average_price` behavior (cost-basis vs. 
+breakeven-folded after partial close).
+
+### 17.0 Day P&L Formula Reference — Three Cases (HISTORICAL — Snapshot Edge-Case Rescue)
 
 The day P&L for any position depends on its lifecycle state. Three canonical cases 
 apply universally across all surfaces (Pulse grids, NavStrip, Dashboard, derivatives Legs):

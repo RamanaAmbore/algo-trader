@@ -356,14 +356,29 @@ before any broker call. Returns `AttachResult.errors` immediately on failure. Si
 of `broker.translate_qty` + adapter ceiling. `plan.parent_lot_size` always resolved (never 0) 
 by `apply_template_to_order` via `await get_lot_size()`.
 
+**Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
+Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 
+`date` column, not from the batch's own `captured_at` timestamp. When a close-reset write 
+fires just after IST midnight (e.g. MCX 23:30 + 30-min settled-offset = 00:00 next calendar day), 
+it gets written with `date` = next calendar day, so a naive `date`-based cutoff lands AFTER 
+that write, incorrectly including it as "yesterday's baseline" when it's actually the same 
+trading session. Result: Day P&L collapses toward ~0 for overnight positions. Fix: 
+`_SESSION_ANCHOR_CUTOFF_TS_SQL` in `backend/api/routes/positions.py` derives the 08:00 IST 
+session boundary from `captured_at` itself (shifting back 8h, truncating, shifting forward), 
+making the cutoff immune to whichever calendar day the `date` column happens to carry. 
+Invariant: session boundary is always derived from the batch's own `captured_at`, never 
+the wall-clock `date` column. Test: `backend/tests/test_positions_snapshot_session_anchor.py`.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
 **Canonical source**: `daily_book.ltp` from the most recent settlement snapshot (`captured_at < 08:00 IST`, DESC per account+symbol). **NOT** Kite's `positions.close_price` (BHAV copy, lags ~8AM next day). **NOT** `COALESCE(daily_book.previous_close, ltp)` — `previous_close` is populated from the same stale Kite API.
 
-Code paths: `_override_stale_close_from_snapshot` (positions.py) and `_override_stale_close_for_holdings` (holdings.py) — both must query `daily_book.ltp` directly. COALESCE→ltp fix is pending (see active plan). Do NOT revert to COALESCE. Full rationale: memory `project_prev_close_architecture`.
+Code paths: `_override_stale_close_from_snapshot` (positions.py) and `_override_stale_close_for_holdings` (holdings.py) — both must query `daily_book.ltp` directly (COALESCE→ltp fix completed 2026-09, commit 93689676). Do NOT revert to COALESCE. Full rationale: memory `project_prev_close_architecture`.
 
-**Day P&L reference price by row type** (do not deviate):
+**Day P&L reference price by row type** (SUPERSEDED 2026-09, commit 93689676)
+
+**Historical (do not reintroduce — documented here for incident prevention)**:
 
 | Row type | Reference | Code path |
 |---|---|---|
@@ -373,8 +388,11 @@ Code paths: `_override_stale_close_from_snapshot` (positions.py) and `_override_
 | Closed intraday (qty=0, oq=0) | entry_price → realised | Case 3 backstop: dcv = pnl |
 | Holdings | daily_book.ltp (prior settlement, NOT COALESCE) | same as open overnight |
 
-**Day P&L formulas by position type — DO NOT CHANGE without explicit operator instruction** —
-Three canonical formulas, no exceptions:
+Replaced by unified baseline-diff formula (see "Frontend Day P&L SSOT" below).
+
+**Day P&L formulas by position type — DO NOT CHANGE without explicit operator instruction — (SUPERSEDED 2026-09, commit 93689676)**
+
+**Historical** (three per-state branch formulas, now replaced by single atomic formula):
 
 | Position type | Day P&L formula | Notes |
 |---|---|---|
@@ -382,8 +400,7 @@ Three canonical formulas, no exceptions:
 | Closed overnight (oq>0, qty=0) | `(exit_price − close) × qty` | Case 2: `pnl − (close − avg) × oq`; requires `close > 0` |
 | New today (oq=0, qty>0) | `(ltp − entry_price) × qty` | Case 1: dcv = broker pnl; no prior session close exists |
 
-`close` is always the **previous session's settlement LTP** (frozen — see invariant above). Never
-today's settlement, never the current LTP, never a mid-session snapshot.
+All cases handled by single formula (see "Frontend Day P&L SSOT" below).
 
 **Holdings sold → P&L splits between holdings and positions — DO NOT CHANGE without explicit operator instruction** —
 When a holding is sold (fully or partially), the sold quantity moves to positions as a
@@ -398,30 +415,70 @@ shows only the **remaining quantity** (`quantity`, not `opening_quantity`).
 
 **Kite close_price stale overnight** — Zerodha updates `close_price` from BHAV copy at ~08:00 IST next trading day; weekends lag until Monday 08:00. Never use `positions.close_price`, `quote.ohlc.close`, or `daily_book.previous_close` as day P&L reference. Use `daily_book.ltp` (settlement snapshot, `captured_at < 08:00 IST`). See memory `project_prev_close_architecture`.
 
-**Day P&L formula + backstop** — Decomposed intraday (not naive `(LTP−close)×qty`). 
+**Day P&L formula + backstop** (SUPERSEDED 2026-09, commit 93689676)
+
+**Historical** — Decomposed intraday formula (not used for Day P&L display after redesign):
+
 Positions: `overnight_qty × (LTP − prev_close) + day_buy/sell legs`. Holdings: 
 `broker.pnl − (close − cost) × opening_qty`. MCX guard: apply lot_size to intraday qty too. 
-Backend SSOT: `backend/api/algo/pnl_math.py:apply_day_change_backstop(raw: pd.DataFrame)` 
-rescues three edge cases — Case 1 (new position, `overnight_quantity=0, day_change_val=0, pnl≠0`) 
-where Kite computes on their side; Case 2 (overnight position, `oq>0, dcv==0, pnl≠0, close>0, avg>0`) 
-where LTP gate zeroed dcv but broker pnl is valid, recovered via `pnl − (close − avg) × oq`; 
-and Case 3 (flat intraday, `quantity=0, day_change_val=0, pnl≠0`) for MCX round-trip quirks. 
-Applied in `routes/positions.py` + `background.py:_fetch_positions_direct` (now sums 
-both `day_change_val` AND `pnl` before applying the backstop).
 
-**Frontend Day P&L SSOT** — Module-level singleton 
-`positionsDayPnlStore.svelte.js` (4Hz throttled) is the canonical positions Day P&L 
-cache, exporting `{ total, byKey }`. PositionStrip P slot 1 reads `store.total`; 
-MarketPulse uses `store.byKey[symbol]` per-row override. Legacy `baseDayPnlForPosition(p)` 
-in `nav.js` handles new-position override (when `overnight_quantity=0 && pnl≠0`, 
-Kite returns `day_change_val=0` and real value is in `pnl`). **Case 4 (stale close guard)**: 
-when `close <= 0`, return 0. The `close === ltp` guard was removed (regression 8474a17e) — 
-formula `pnl − oq×(close−avg)` is correct even when close equals ltp. 
-**Short position fix (1769cffc)**: guard condition corrected from `oq > 0` to `oq !== 0` 
-so short overnight positions (oq < 0) receive the `day_change_val` fast-path and Case 4 
-stale-close guard. See `frontend/src/lib/data/nav.js:108`.
+Backend `apply_day_change_backstop()` in `pnl_math.py` rescues three edge cases for 
+**diagnostic/snapshot-reading purposes only** — Case 1 (new position), Case 2 (overnight 
+position), and Case 3 (flat intraday). Still called by snapshot reader 
+`positions.py:_apply_flat_row_hygiene()` for per-position edge-case fixes, but the day-change 
+values it produces no longer feed account/symbol rollups or Pulse display. Replaced by 
+baseline-diff formula (see "Frontend Day P&L SSOT" below).
 
-**Holdings day P&L — COALESCE bug (pending fix)** — `_override_stale_close_for_holdings` in `holdings.py` queries `COALESCE(daily_book.previous_close, ltp)` as ref_close. Since `previous_close` is populated from Kite's stale BHAV-copy API, the epsilon check (`|ref_close − close_price| ≤ 0.005`) always passes → no patching → wrong day P&L. Fix: change query to `daily_book.ltp` directly (same pattern as positions fix). Pending implementation in active plan.
+**Frontend Day P&L SSOT (2026-09 redesign)** — Atomic baseline-diff formula, no branching.
+
+Canonical formula for a single position's day P&L (valid for ALL position states — new entry, 
+full exit, partial exit, re-entry, flip):
+
+```
+day_pnl = current_total_profit(realised, unrealised) − base_pnl
+```
+
+Where:
+- `current_total_profit = realised + unrealised` (never a broker's raw `pnl` field directly, 
+  to avoid double-counting — except Kite, where native `pnl` is confirmed = realised+unrealised 
+  and is used directly)
+- `base_pnl` = that position's `current_total_profit` frozen at the most recent trading day's 
+  close-reset snapshot (0 if none exists, e.g. position opened today)
+- Fallback when realised/unrealised unpopulated: `resolve_realised_unrealised()` trigger 
+  (both legs exactly 0) falls back to `pnl` as realised leg — same rule in backend 
+  `pnl_math.py`, frontend `nav.js:currentTotalProfit()`, and Polars enrichment
+
+Implementation: `frontend/src/lib/data/nav.js:baseDayPnlForPosition(p)` and vectorised 
+variants (`currentTotalProfit()`, `livePositionDayPnl()`). **Per-position Day P&L IS still 
+displayed** on every position row (Pulse grid, derivatives Legs/Expiry grid, PerformancePage) —
+an earlier mid-redesign plan to remove per-row display was reverted by explicit operator
+instruction; only the underlying *calculation* changed, not the display. Account-level
+rollups (`portfolioStore.byAccount`, pinned MarketPulse summary rows, PositionStrip P slot,
+NavStrip) are also shown alongside the per-row values and reconcile with them (both derive
+from the same `baseDayPnlForPosition`).
+
+Account-level rollup:
+- Sum baseline-diff per account: `Σ baseDayPnlForPosition(row) for rows in account`
+- PositionStrip P slot 1 reads total from `portfolioStore.positions.total`; NavStrip same
+- Endpoint field: `PositionsResponse.summary` (account-level)
+- Backend also computes a symbol-level rollup (`PositionsResponse.symbol_summary`,
+  `_build_polars_symbol_summary` in `positions.py`) but no frontend surface currently
+  consumes it — the UI wiring for a symbol-rollup grid was built then reverted in the same
+  session per the per-row-display reversal above. The field is available for a future UI if
+  wanted.
+
+**Historical per-position formulas (pre-2026-09)**: See "Day P&L reference price by row type" 
+and "Day P&L formulas by position type" sections above (marked SUPERSEDED). The three-case 
+branchy logic is now replaced by single atomic formula. Incidents 8474a17e (close==ltp guard 
+removed — formula correct even at session open) and 1769cffc (short position oq check fixed 
+to `oq !== 0`) informed the current design's simplicity.
+
+**Holdings day P&L — COALESCE bug (FIXED 2026-09)** — Previously: `_override_stale_close_for_holdings` 
+in `holdings.py` queried `COALESCE(daily_book.previous_close, ltp)` as ref_close; since `previous_close` 
+is from Kite's stale BHAV-copy API, the epsilon check always passed → no patching → wrong day P&L. 
+Fix (commit 93689676): query now uses `daily_book.ltp` directly (same pattern as positions fix). 
+No more COALESCE fallback — holdings day P&L now computed from prior-settlement LTP per the 
+"close_price / ltp invariant — DO NOT CHANGE" rule.
 
 ---
 
@@ -448,9 +505,9 @@ stale-close guard. See `frontend/src/lib/data/nav.js:108`.
 | Add MCP tool | `backend/mcp/kite_server.py` @app.tool() |
 | Tune MCP audit | `/admin/settings` |
 | Update macro data | `backend/config/backend_config.yaml` |
-| Day P&L formula | `backend/api/algo/pnl_math.py` + `frontend/src/lib/data/nav.js` |
-| Day P&L store (positions) | `frontend/src/lib/data/positionsDayPnlStore.svelte.js` |
-| prev_close fix (holdings/positions) | `backend/api/routes/holdings.py:_override_stale_close_for_holdings` + `backend/api/routes/positions.py:_override_stale_close_from_snapshot` — change COALESCE→ltp |
+| Day P&L formula | `backend/api/algo/pnl_math.py` (`current_total_profit`, `baseline_diff_day_pnl`) + `frontend/src/lib/data/nav.js` (`baseDayPnlForPosition`, `currentTotalProfit`) |
+| Day P&L rollup stores (positions) | `frontend/src/lib/data/portfolioStore.svelte.js` (account/symbol/total rollups); per-row `prev_settlement_pnl` backfilled in route-level responses |
+| Baseline query (Day P&L snapshot path) | `backend/api/routes/positions.py:_SESSION_ANCHOR_CUTOFF_TS_SQL` + `_fetch_baseline_pnl_map` (derives 08:00 IST session boundary from `captured_at`, not `date` column; handles holdings-sold CNC split via `kind IN ('positions','holdings')`) |
 | Market daily window / WebSocket lifecycle | `backend/api/background.py` + `backend/brokers/kite_ticker.py` |
 | Postback subscribe new instrument | Kite: `orders_postback.py` — extract `instrument_token` + subscribe on COMPLETE. Dhan/Groww: `orders.py:order_postback_dhan/groww` — resolve token from (tradingsymbol, exchange) + subscribe + kick_performance() on fill |
 | F&O order qty convention | `backend/api/routes/orders_place.py:_ticket_validate_input` + `frontend/src/lib/order/orderTicketSubmit.js` |

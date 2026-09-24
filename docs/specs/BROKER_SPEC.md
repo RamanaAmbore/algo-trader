@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.29 — 2026-09-22  
+**Version**: 1.30 — 2026-09-24  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -1167,40 +1167,40 @@ displays.
 
 ---
 
-## 7.3.13 Positions P&L Unification — `pnl + realised` (Aug 2026)
+## 7.3.13 Positions P&L Unification — Per-Broker `realised`/`unrealised` Sourcing (2026-09)
 
-**File**: `backend/brokers/broker_apis.py` — `_enrich_positions()`
+**File**: `backend/brokers/broker_apis.py` — `_positions_total_pnl_expr()` and `_enrich_positions()`
 
-When computing `pnl` in positions rows, `_enrich_positions()` now unifies realised
-and unrealised P&L by summing them:
+SUPERSEDED (Aug 2026 approach was double-count premise). The correct design (audited 2026-09):
 
-```python
-_broker_realised = (
-    _col_f64_nullable(lf, 'realised').fill_null(0.0)
-    if 'realised' in cols else pl.lit(0.0)
-)
-_pnl_expr = (
-    pl.when(_broker_pnl.is_not_null())
-    .then(_broker_pnl + _broker_realised)
-    .otherwise(_pnl_calc)
-)
-```
+**Per-broker sourcing of `realised` and `unrealised` (SSOT for `current_total_profit`)**:
 
-**Broker-specific handling**:
+- **Kite**: Native `pnl` field already equals `realised + unrealised` (confirmed via Zerodha forum). 
+  Use `pnl` directly; the split `realised`/`unrealised` fields are flagged as possibly 
+  unreliable/deprecated per Zerodha.
+- **Groww**: Native `pnl` when present (mirrors Kite); fallback to 
+  `realised_pnl + unrealised_pnl` when `pnl` absent.
+- **Dhan**: No trustworthy native combined field. Sourced as `realised_pnl` (native, trustworthy) 
+  + `(ltp − average_price) × qty` (locally derived; both inputs confirmed broker-authoritative).
 
-- **Kite**: Separates `pnl` (unrealised) and `realised` for closed/partially-closed legs
-- **Dhan**: May split P&L across both fields
-- **Groww**: May split P&L across both fields
-- **Other brokers**: `realised = 0` by default
+**Result structure**:
 
-Adding `pnl + realised` ensures the snapshot's `daily_book.total_pnl` captures 
-the full economic P&L (realised gains/losses on closed legs + unrealised MTM on 
-open legs). This total is then used by `build_row_from_snapshot_raw()` during 
-closed-hours position reconstruction via the universal day P&L formula.
+The broker layer (`_enrich_positions`) ensures that by the time a DataFrame reaches 
+`backend/api/algo/pnl_math.py`, the `realised` and `unrealised` columns (or fallback `pnl` 
+when both legs are exactly 0) sum to the correct combined total-profit for every broker. 
+Callers of `pnl_math.py` helpers never re-derive per-broker logic — the broker layer owns 
+the split, the math layer owns the combination.
 
-**Impact**: The `total_pnl` stored in `daily_book` snapshots now accurately reflects
-the position's total P&L across all brokers, enabling consistent day P&L calculations
-in the snapshot path (section 7.3.12).
+**Impact on snapshot `daily_book.total_pnl`**: The snapshot writer 
+(`backend/api/algo/daily_snapshot.py:_snap_position_eod_vals`) calls the same 
+`current_total_profit()` logic, ensuring consistency between live 
+`backend/brokers/broker_apis.py:_enrich_positions()` and EOD snapshot writers. 
+Account-level Day P&L is then driven by baseline-diff rollups (section 7.3.12 and 
+CLAUDE.md "Frontend Day P&L SSOT"), not per-position `total_pnl` directly.
+
+**Legacy Aug 2026 note**: Earlier approach summed `pnl + realised` unconditionally, 
+which double-counted Kite (its `pnl` already includes `realised`). Audit disproved 
+this premise; fix confirmed via Zerodha forum statement.
 
 ---
 
