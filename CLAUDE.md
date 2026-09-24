@@ -73,7 +73,7 @@ Layer 2: see `~/.claude/agents/backend.md` · Layer 3: see `~/.claude/agents/fro
 
 ## Model Usage
 
-- **Default**: Sonnet for all agents (frontend, backend, broker, audit). Haiku only per the table below. Opus ONLY when operator explicitly says "use opus".
+- **Default**: `claude-sonnet-5` for all agents (frontend, backend, broker, audit). Haiku only per the table below. Opus ONLY when operator explicitly says "use opus".
 - Local Qwen proxy (`qwen on|off|status`) routes haiku model IDs to LM Studio when enabled — prefer it for cheap orchestration to save cost.
 
 ## Multi-agent coordination (read first)
@@ -82,12 +82,12 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 
 | Agent | Layer | Use | Model |
 |---|---|---|---|
-| `broker` | Layer 1 | `backend/brokers/` — connections, ticker, service, adapters, resilience | sonnet |
-| `backend` | Layer 2 | `backend/api/` — routes, models, background, persistence, algo engine | sonnet |
-| `frontend` | Layer 3 | `frontend/` — SvelteKit, Svelte 5, ag-Grid | sonnet |
+| `broker` | Layer 1 | `backend/brokers/` — connections, ticker, service, adapters, resilience | claude-sonnet-5 |
+| `backend` | Layer 2 | `backend/api/` — routes, models, background, persistence, algo engine | claude-sonnet-5 |
+| `frontend` | Layer 3 | `frontend/` — SvelteKit, Svelte 5, ag-Grid | claude-sonnet-5 |
 | `backend-test` | Layer 1+2 | pytest + pytest-asyncio — broker + API tests | haiku |
 | `playwright` | Layer 3 | Playwright e2e — browser flows, mobile viewport | haiku |
-| `audit` | All | Read-only defect review — no writes | sonnet |
+| `audit` | All | Read-only defect review — no writes | claude-sonnet-5 |
 | `doc` | All | CLAUDE.md / docs/guides/ / docs/specs/ | haiku |
 
 **Parallel by default** — independent sub-tasks fire together. Sequence only when 
