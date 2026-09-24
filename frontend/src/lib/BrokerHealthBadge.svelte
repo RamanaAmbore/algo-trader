@@ -22,6 +22,7 @@
   import { brokerHealthStore, openActivityModal } from '$lib/stores';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { acctColor } from '$lib/account';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
@@ -94,6 +95,8 @@
         const wrap = document.createElement('span');
         wrap.className = `bh-row-account bh-row-acct-fill ${accCls}`;
         wrap.title = title;
+        const _hc = acctColor(p.value);
+        if (_hc) wrap.style.setProperty('--bh-acct-color', _hc);
         wrap.textContent = p.value ?? '';
         if (cbOptIn && acct.circuit_state === 'open') {
           const chip = document.createElement('span');
@@ -266,6 +269,7 @@
     align-items: center;
     gap: 0.35rem;
     width: 100%;
+    background-color: color-mix(in srgb, var(--bh-acct-color, transparent) 14%, transparent);
   }
   :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
   :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
