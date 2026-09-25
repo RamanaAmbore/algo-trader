@@ -356,6 +356,35 @@ before any broker call. Returns `AttachResult.errors` immediately on failure. Si
 of `broker.translate_qty` + adapter ceiling. `plan.parent_lot_size` always resolved (never 0) 
 by `apply_template_to_order` via `await get_lot_size()`.
 
+**Lot/contract oversize guards (2026-09-24, commit f5db7765)** — Seven confirmed
+lot-vs-contract normalization bugs (C1–C7) across chase, template scale-out, trailing
+stop ratchet, and order modify paths; all patches deployed together. Key invariants:
+
+- **Chase cumulative_filled counter** — `chase_order()` tracks cumulative fills
+  across all cancel-and-replace attempts in a single counter (initialized from
+  `already_filled` parameter), not reconstructed as `quantity - remaining_qty`
+  per attempt. `_ch_capture_late_fill()` re-queries post-cancel to fold any fill
+  racing the cancel before sizing the replacement order (C2 fix).
+- **`_exchange_contracts_to_wire` raises on error** — Now raises `ValueError` on
+  sub-lot (qty < lot_size) or non-multiple (qty % lot_size != 0) MCX/NCO
+  quantities instead of silently passing through or flooring. Caller MUST
+  guarantee qty is already a clean lot multiple; broker will silently
+  reinterpret any wrong number as lots, not contracts (C7 fix).
+- **`Broker.modify_gtt` has qty ceiling** — Both Kite and Dhan adapters now call
+  `_check_kite_gtt_qty_ceiling` / `_check_dhan_gtt_qty_ceiling` as a last-line
+  defense before SDK call, mirroring `place_gtt`'s existing pattern. Any new
+  GTT-modify path must call `broker.translate_qty` before building payload (C6
+  fix).
+- **G1 lot-multiple preflight applies uniformly** — MCX/NCO skip removed from
+  `actions_preflight.py`. Positions ARE converted to contracts before reaching
+  this check (per `broker_apis.py:_annotate_lot_size`), so G1's `qty % lot_size`
+  guard is correct for all F&O exchanges uniformly (C7 fix).
+- **Service-restart chase recovery reverses both sides** — `_recover_chase_already_filled()`
+  reverse-translates BOTH `quantity` and `filled_quantity` from broker's native
+  unit via `_ch_reverse_translate_mcx_filled()` (gated by `_MCX_LOTS_CONVENTION_BROKERS`)
+  before subtracting to derive already-filled count. Translating only one side
+  would mix units and silently derive wrong fill (C4 fix).
+
 **Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
 Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 
 `date` column, not from the batch's own `captured_at` timestamp. When a close-reset write 
