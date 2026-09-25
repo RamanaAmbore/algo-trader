@@ -301,8 +301,34 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     from backend.api.algo.pnl_math import apply_day_change_backstop
-    from backend.api.routes.positions import _override_stale_ltp_from_ticker
-    raw = pd.concat(broker_apis.fetch_positions(), ignore_index=True)
+    from backend.api.routes.positions import (
+        _override_stale_ltp_from_ticker, _is_positions_outage,
+    )
+    per_acct = broker_apis.fetch_positions()
+    # Outage detection — reuses positions.py's `_is_positions_outage` (A2,
+    # 2026-09) rather than a parallel implementation. Covers the same two
+    # masked-failure shapes: (1) per_acct non-empty but every frame carries
+    # attrs['fetch_failed']=True (all accounts have zero rows AND no LKG to
+    # substitute — see `_stale_substitute_frame`'s docstring in
+    # broker_apis.py, which only sets fetch_failed on the no-LKG branch), or
+    # (2) per_acct == [] while accounts are configured. Pre-fix, shape (1)
+    # concatenated to an empty-but-well-formed frame and fell straight
+    # through the `raw.empty` guard below as a fake "no positions" result —
+    # this worker feeds `_perf_fetch_all_broker_data` (background poller:
+    # intraday-equity curve, open/close summaries, the loss-* agent engine's
+    # sum_positions) AND `_compute_firm_nav` (NavCard `/api/auth/firm-nav`,
+    # `/api/auth/me/nav`) directly, so a masked outage silently reported
+    # P&L=0 through every one of those surfaces instead of erroring loudly.
+    # Shape (2) previously raised an opaque `ValueError: No objects to
+    # concatenate` from `pd.concat([])` — same end result (exception
+    # propagates to the caller's broad except) but with a confusing message;
+    # now raises the same clear outage message as shape (1).
+    if _is_positions_outage(per_acct):
+        raise RuntimeError(
+            "Broker (Kite) returned no positions data — upstream Bad Gateway / "
+            "outage (background._fetch_positions_direct)"
+        )
+    raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     if raw.empty or 'account' not in raw.columns:
         empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
         return raw, empty

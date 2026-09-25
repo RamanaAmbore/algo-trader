@@ -539,12 +539,34 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
         # summary path for the fallback shape (the broker's per-row
         # day_change_val + pnl). Run holdings/positions only — funds
         # already consumed inside compute_firm_nav.
+        #
+        # Isolated in its own try/except (2026-09, companion to
+        # `_fetch_positions_direct`'s `_is_positions_outage` guard):
+        # a masked broker outage now raises instead of silently
+        # returning a fake-empty summary. Without this inner guard,
+        # that raise would propagate to the OUTER except below and
+        # abort the whole function BEFORE the `_intraday_equity` /
+        # live-session / closed-hours branches run — wiping a
+        # perfectly good deque-derived day/cum P&L back to the 0.0
+        # defaults just because the redundant direct-fetch (used only
+        # for the off-hours/cold-start fallback shape) failed. On
+        # failure here, fall through with empty frames so the deque
+        # branch (the common case) still answers correctly; only the
+        # live-session/closed-hours fallbacks lose their direct-fetch
+        # inputs, which they already tolerate (see their own docstrings).
         loop = _asyncio.get_running_loop()
-        with _TPE(max_workers=2) as ex:
-            df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
-            df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
-            df_h, sum_h = await df_h_fut
-            df_p, sum_p = await df_p_fut
+        try:
+            with _TPE(max_workers=2) as ex:
+                df_h_fut = loop.run_in_executor(ex, _fetch_holdings_direct)
+                df_p_fut = loop.run_in_executor(ex, _fetch_positions_direct)
+                df_h, sum_h = await df_h_fut
+                df_p, sum_p = await df_p_fut
+        except Exception as _fe:
+            logger.warning(f"_compute_firm_nav: holdings/positions fetch failed: {_fe}")
+            import pandas as _pd
+            df_h, sum_h, df_p, sum_p = (
+                _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame(), _pd.DataFrame()
+            )
 
         total_h = _auth_nav_total_row(sum_h)
         total_p = _auth_nav_total_row(sum_p)
