@@ -5,7 +5,7 @@
  * drop to 0 when /admin/derivatives is opened, when the user picks a
  * different underlying in the picker, or after navigating away.
  *
- * Root causes fixed:
+ * Root causes fixed (historical — see "Architecture superseded" below):
  *
  *   2026-07-04 (mount-time zero):
  *   derivatives/+page.svelte wrote to the shared `snapshotTotals` store
@@ -15,8 +15,8 @@
  *   store is non-null, so it displayed 0 instead of the real intraday
  *   P&L.  Additionally, `onDestroy` never cleared the store, so the
  *   filtered F&O-only value lingered on subsequent pages.
- *   Fix: gate the `$effect` publish on `_positionsLoaded`; clear the
- *   store to null in `onDestroy`.
+ *   Fix (at the time): gate the `$effect` publish on `_positionsLoaded`;
+ *   clear the store to null in `onDestroy`.
  *
  *   2026-07-04 (symbol-select zero — dead code SSOT violation):
  *   `_byUnderlyingDay` was a `$derived.by()` that read raw
@@ -24,26 +24,54 @@
  *   It was never wired to any consumer in the template but was a latent
  *   SSOT violation.  Removed in refactor(derivatives) commit.
  *
+ * Architecture superseded 2026-09 (commit cbe132a6 / 7562dd04, "NavStrip/
+ * Snapshot Exp P&L SSOT"): the writable `snapshotTotals` store — and every
+ * push from the derivatives page into it — was removed entirely. The whole
+ * class of "mount-time zero" / "stale push lingers after nav-away" bug this
+ * file originally guarded is now structurally impossible, not just patched:
+ *   - PositionStrip.svelte mounts ONCE at the `(algo)/+layout.svelte` level
+ *     (not per-page), so it never remounts/re-reads a per-page push when the
+ *     operator navigates between /pulse and /admin/derivatives.
+ *   - NavStrip's P slot 1 (`dispPositionsToday`) reads exclusively from
+ *     `positionsDayPnlStore.total` (a thin shim over
+ *     `portfolioStore.positions.total.day_pnl`), which sums ALL live
+ *     position rows via the pure `baseDayPnlForPosition` function — no
+ *     store write, no cross-page coupling, no `_positionsLoaded` gate to
+ *     get wrong.
+ *   - The derivatives page's OWN Snapshot TOTAL Day P&L (`_snapshotTotalDay`)
+ *     is a separate, F&O-only, account/strategy-filtered reduction over
+ *     `_byUnderlyingTotals` (`rollupByUnderlying` in derivativesMath.js).
+ *     It agrees with NavStrip's total only in the trivial case (no strategy
+ *     filter, F&O-only book) because BOTH ultimately call the SAME pure
+ *     `baseDayPnlForPosition(p)` per position row — SSOT via a shared pure
+ *     function, not a shared mutable store. This file does NOT assert the
+ *     two totals are numerically equal (see derivatives_day_pnl_health.spec.js
+ *     for that surface's own guard) — only that NavStrip's slot never
+ *     depends on the derivatives page being mounted at all.
+ *
  * Five quality dimensions:
- * 1. SSOT   — `snapshotTotals` has exactly one non-null write site
- *             (derivatives page $effect, guarded by _positionsLoaded);
+ * 1. SSOT   — `dispPositionsToday` (NavStrip P slot 1) is assigned only
+ *             from `positionsDayPnlStore.total` or a confirmed-empty `0` —
+ *             never from any derivatives-page-specific value; no
+ *             `snapshotTotals`-style shared store exists anywhere.
  *             `_byUnderlyingDay` dead-code with SSOT violation is absent.
  * 2. Perf   — no new long-task (>200 ms) introduced during route
  *             transitions that touch the derivatives page.
- * 3. Stale  — grep confirms no second non-null write site outside
- *             the derivatives page; `_byUnderlyingDay` fully removed.
- * 4. Reuse  — derivatives page imports `livePositionDayPnl` (which
- *             wraps `baseDayPnlForPosition`) rather than re-implementing
- *             the Day P&L formula inline.
+ * 3. Stale  — grep confirms `snapshotTotals` does not exist in
+ *             PositionStrip.svelte, stores.js, or the derivatives page;
+ *             `_byUnderlyingDay` fully removed.
+ * 4. Reuse  — derivatives page imports `baseDayPnlForPosition` (the sole
+ *             Day P&L SSOT) rather than re-implementing the formula inline;
+ *             portfolioStore.svelte.js (NavStrip's own source) calls the
+ *             same function.
  * 5. UX     — P slot 1 has a direction class (ps-pos/ps-neg/ps-flat),
- *             is never blank when visible, and does NOT drop to ₹0
+ *             is never blank when visible, and does NOT drop to zero
  *             when the operator changes the underlying picker selection.
  */
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import path from 'path';
 
@@ -51,62 +79,85 @@ const BASE = process.env.PLAYWRIGHT_BASE_URL || process.env.BASE_URL || 'http://
 
 // Resolve project root from this spec's location (e2e/ → frontend/ → project root).
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const FRONTEND_SRC = path.join(__dirname, '..', 'src');
 
-// ── Dimension 3 + 4: static file checks (no browser needed) ───────────────
+// ── Dimension 1 + 3 + 4: static file checks (no browser needed) ───────────
 
-test.describe('snapshotTotals static guards', () => {
-  test('snapshotTotals has exactly one non-null write site (derivatives page $effect)', () => {
-    // Count lines containing `snapshotTotals.set({` (the data-publishing call).
-    // The `set(null)` in onDestroy is intentional cleanup — it is NOT a
-    // competing write site, so we grep for set({ specifically.
-    const hits = execSync(
-      `grep -r "snapshotTotals\\.set({" "${FRONTEND_SRC}" --include="*.svelte" --include="*.js" -l`,
-      { encoding: 'utf8' },
-    ).trim().split('\n').filter(Boolean);
+const _STRIP_FILE = path.join(__dirname, '..', 'src', 'lib', 'PositionStrip.svelte');
+const _STORES_FILE = path.join(__dirname, '..', 'src', 'lib', 'stores.js');
+const _DERIV_FILE = path.join(
+  __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
+);
+const _LAYOUT_FILE = path.join(__dirname, '..', 'src', 'routes', '(algo)', '+layout.svelte');
 
-    // stores.js exports the writable but never writes to it.
-    const writers = hits.filter(f => !f.endsWith('stores.js'));
-    expect(writers).toHaveLength(1);
-    expect(writers[0]).toContain(path.join('admin', 'derivatives'));
+test.describe('NavStrip Day P&L SSOT static guards (2026-09 architecture)', () => {
+  test('snapshotTotals does not exist anywhere it could reintroduce cross-page coupling', () => {
+    // The dead store must not reappear in PositionStrip, stores.js, or the
+    // derivatives page — the exact three files the original push/pull
+    // coupling spanned.
+    for (const f of [_STRIP_FILE, _STORES_FILE, _DERIV_FILE]) {
+      const src = readFileSync(f, 'utf8');
+      expect(src, `${path.basename(f)} must not reference snapshotTotals`).not.toContain('snapshotTotals');
+    }
+  });
+
+  test('PositionStrip mounts once at the (algo) layout level, not per-page', () => {
+    // A single layout-level mount means dispPositionsToday's $state persists
+    // across route navigation instead of being torn down/rebuilt per page —
+    // the structural fix for "stale push lingers after nav-away".
+    const layoutSrc = readFileSync(_LAYOUT_FILE, 'utf8');
+    expect(layoutSrc).toContain('<PositionStrip');
+    const mountCount = (layoutSrc.match(/<PositionStrip\b/g) || []).length;
+    expect(mountCount).toBe(1);
+    // The derivatives page itself must not ALSO mount its own copy —
+    // that would create a second, page-scoped instance able to diverge.
+    const derivSrc = readFileSync(_DERIV_FILE, 'utf8');
+    expect(derivSrc).not.toContain('<PositionStrip');
+  });
+
+  test('dispPositionsToday (P slot 1) is assigned exclusively from positionsDayPnlStore.total or a confirmed-empty 0', () => {
+    const stripSrc = readFileSync(_STRIP_FILE, 'utf8');
+    // Every assignment site's right-hand side must be one of: the initial
+    // state read, the transition-reset literal 0, or the freeze/thaw
+    // effect's own `newPTotal` local (itself always
+    // `positionsDayPnlStore.total`) — never anything page-specific.
+    expect(stripSrc).toContain('let dispPositionsToday = $state(positionsDayPnlStore.total || 0);');
+    const assignments = [...stripSrc.matchAll(/(?<!let )dispPositionsToday\s*=\s*([^;]+);/g)].map(m => m[1].trim());
+    expect(assignments.length).toBeGreaterThan(0);
+    for (const rhs of assignments) {
+      expect(['0', 'newPTotal']).toContain(rhs);
+    }
+    expect(stripSrc).toContain('const newPTotal = positionsDayPnlStore.total;');
+  });
+
+  test('freeze/thaw effect does not blindly overwrite dispPositionsToday with a transient 0 (swallow-zero guard)', () => {
+    // This is the CURRENT equivalent of the 2026-07-04 "mount-time zero"
+    // defect class: a momentary 0/null read from the store must not
+    // immediately zero out the displayed value while positions are known
+    // to be non-empty (or the store is degraded/reloading).
+    const stripSrc = readFileSync(_STRIP_FILE, 'utf8');
+    expect(stripSrc).toContain('if (newPTotal !== 0) {');
+    expect(stripSrc).toContain('dispPositionsToday = newPTotal;');
+    expect(stripSrc).toContain('} else if (positions.length === 0 && !positionsStore.meta?.degraded) {');
+  });
+
+  test('portfolioStore.positions.total.day_pnl (NavStrip\'s ultimate source) is built from baseDayPnlForPosition per row', () => {
+    const storeSrc = readFileSync(
+      path.join(__dirname, '..', 'src', 'lib', 'data', 'portfolioStore.svelte.js'), 'utf8',
+    );
+    expect(storeSrc).toContain('const day_pnl = baseDayPnlForPosition(p);');
+    expect(storeSrc).toMatch(/posTotal\.day_pnl\s*\+=\s*p\._day_pnl;/);
+    // positionsDayPnlStore shim exposes this total unmodified.
+    const shimSrc = readFileSync(
+      path.join(__dirname, '..', 'src', 'lib', 'data', 'positionsDayPnlStore.svelte.js'), 'utf8',
+    );
+    expect(shimSrc).toContain('portfolioStore.positions.total.day_pnl');
   });
 
   test('derivatives page imports baseDayPnlForPosition (the sole Day P&L SSOT, §1 poll-only redesign)', () => {
-    const derivFile = path.join(
-      __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
-    );
-    const content = readFileSync(derivFile, 'utf8');
-    // livePositionDayPnl was removed entirely (§1) — baseDayPnlForPosition is now the
-    // only Day P&L formula, so it's the only string this check needs to require. The OR
-    // with livePositionDayPnl is kept only as a tolerant fallback in case some other
-    // still-valid caller reintroduces it under a different name; it is NOT expected to
-    // ever be the one that fires.
-    const hasImport = content.includes('baseDayPnlForPosition') || content.includes('livePositionDayPnl');
-    expect(hasImport).toBe(true);
-  });
-
-  test('derivatives onDestroy clears snapshotTotals to null', () => {
-    const derivFile = path.join(
-      __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
-    );
-    const content = readFileSync(derivFile, 'utf8');
-    // The onDestroy block must contain snapshotTotals.set(null) to release
-    // the strip so it falls back to its own computed value after nav-away.
-    expect(content).toContain('snapshotTotals.set(null)');
-  });
-
-  test('$effect that publishes snapshotTotals is guarded by _positionsLoaded', () => {
-    const derivFile = path.join(
-      __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
-    );
-    const content = readFileSync(derivFile, 'utf8');
-    // Check that the guard exists in the same effect block as the set({).
-    // Strategy: find the set({ call and verify _positionsLoaded appears
-    // within the surrounding 30 lines (the effect is short).
-    const setIdx = content.indexOf('snapshotTotals.set({');
-    expect(setIdx).toBeGreaterThan(0);
-    const surrounding = content.slice(Math.max(0, setIdx - 600), setIdx + 200);
-    expect(surrounding).toContain('_positionsLoaded');
+    const content = readFileSync(_DERIV_FILE, 'utf8');
+    // Import must come from $lib/data/nav (the canonical SSOT module),
+    // tolerant of other named imports on the same line (e.g. FO_EXCHANGES).
+    expect(content).toMatch(/import\s*\{[^}]*\bbaseDayPnlForPosition\b[^}]*\}\s*from\s*'\$lib\/data\/nav'/);
   });
 
   test('_byUnderlyingDay dead-code SSOT-violation is fully removed from derivatives page', () => {
@@ -173,6 +224,13 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
       .first();
   }
 
+  // fmtMoney() in PositionStrip.svelte is `aggCompact(v)` with NO currency
+  // prefix — it never renders '₹0'; a zero P&L renders as the plain string
+  // '0.00' (aggCompact → _decFmt → Intl 'en-IN' 2-decimal format for |v|<100).
+  // '₹0' would never appear so any '!== ₹0' check would be vacuously true;
+  // use this helper instead of comparing against a literal string.
+  const isZeroPDisplay = (t) => t === '' || t === '—' || /^-?0(\.0+)?$/.test(t);
+
   test('P slot 1 stays equal to baseline after /admin/derivatives opens', async ({ page }) => {
     test.skip(!_sharedJwt, 'Server unreachable — skipping browser test');
 
@@ -192,23 +250,26 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
     await expect(slot1).toBeVisible({ timeout: 5_000 });
 
-    // Wait for loadPositions to complete (the Snapshot section renders
-    // only after _positionsLoaded = true, which gates the $effect).
+    // Wait for the derivatives page's own positions load to settle (gates
+    // its LOCAL Snapshot section only — NavStrip's P slot 1 is unaffected
+    // either way since it reads portfolioStore directly, not anything the
+    // derivatives page computes).
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    // One extra tick to let Svelte flush the $effect.
+    // One extra tick to let Svelte flush any pending effects.
     await page.waitForTimeout(300);
 
     const derivText = (await slot1.textContent())?.trim() ?? '';
 
     // Core assertion: value must not drop to 0 unless baseline was also 0.
-    if (baselineText !== '₹0') {
-      expect(derivText).not.toBe('₹0');
+    if (!isZeroPDisplay(baselineText)) {
+      expect(isZeroPDisplay(derivText)).toBe(false);
     }
-    // And the values must match (same data source).
+    // And the values must match (same data source — dispPositionsToday
+    // never depends on which page is currently mounted).
     expect(derivText).toBe(baselineText);
   });
 
-  test('P slot 1 does NOT drop to ₹0 when underlying picker changes symbol', async ({ page }) => {
+  test('P slot 1 does NOT drop to zero when underlying picker changes symbol', async ({ page }) => {
     test.skip(!_sharedJwt, 'Server unreachable — skipping browser test');
 
     await seedToken(page);
@@ -216,14 +277,13 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     // ── 1. Open derivatives and wait for positions to load ─────────
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
-    // Extra tick so the gated $effect publishes snapshotTotals.
+    // Extra tick to let the page's own reactive graph settle.
     await page.waitForTimeout(500);
 
     const slot1 = getPSlot1(page);
     await expect(slot1).toBeVisible({ timeout: 5_000 });
 
-    // Capture BOTH text and direction class BEFORE picking.
-    // fmtMoney(0) returns '₹0.00' (not '₹0'), so we compare the
+    // Capture BOTH text and direction class BEFORE picking — compare the
     // actual rendered text string directly rather than guessing format.
     const beforePick = (await slot1.textContent())?.trim() ?? '';
     const beforeCls  = await slot1.getAttribute('class') ?? '';
@@ -254,8 +314,9 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     // auto-selected on load.
     await options.nth(1).click();
 
-    // Allow the Svelte reactive graph to flush: _dayPnlByRootMap re-derives
-    // → _snapshotTotalDay re-derives → $effect publishes snapshotTotals.
+    // Allow the Svelte reactive graph to flush the page's own picker-scoped
+    // derived values (the underlying picker only affects the derivatives
+    // page's local rendering — NavStrip's P slot 1 is not derived from it).
     await page.waitForTimeout(400);
 
     // ── 3. Core assertion: both text AND direction class must be stable ──
@@ -263,13 +324,13 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
     const afterCls  = await slot1.getAttribute('class') ?? '';
     const afterDir  = (afterCls.match(/\bps-(?:pos|neg|flat)\b/) || ['ps-flat'])[0];
 
-    // Text must not change (symbol-select is view-only; _dayPnlByRootMap
-    // sums ALL positions, not just the selected underlying).
+    // Text must not change (symbol-select is view-only; NavStrip's P slot 1
+    // sums ALL positions via portfolioStore, not just the selected underlying).
     expect(afterPick).toBe(beforePick);
 
     // Direction class must not change — this is the core regression check.
-    // Previously, picking a symbol could cause $snapshotTotals.day to
-    // briefly flip to 0, turning ps-pos/ps-neg into ps-flat.
+    // Previously, picking a symbol could cause the (now-removed) snapshotTotals
+    // push to briefly flip to 0, turning ps-pos/ps-neg into ps-flat.
     expect(afterDir).toBe(beforeDir);
 
     // Sanity: a direction class must always be present.
@@ -281,12 +342,14 @@ test.describe('NavStrip P slot 1 — derivatives page regression', () => {
 
     await seedToken(page);
 
-    // Start on derivatives so the $effect + onDestroy both run.
+    // Start on derivatives, then navigate away. PositionStrip is mounted at
+    // the (algo) layout level (never unmounted by this nav), so slot 1 keeps
+    // reflecting portfolioStore's live total the whole time — no per-page
+    // teardown/onDestroy to release a stale value.
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'networkidle' });
     await page.waitForLoadState('networkidle', { timeout: 15_000 }).catch(() => {});
     await page.waitForTimeout(300);
 
-    // Navigate away — onDestroy fires → snapshotTotals.set(null).
     await page.goto(`${BASE}/orders`, { waitUntil: 'networkidle' });
     const slot1 = getPSlot1(page);
     await expect(slot1).toBeVisible({ timeout: 5_000 });

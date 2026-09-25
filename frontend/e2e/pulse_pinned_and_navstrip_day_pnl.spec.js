@@ -7,21 +7,49 @@
  *   ran sequentially before pinned rows could paint, while positions/holdings/
  *   movers all hydrated from localStorage instantly at module init.
  *   Fix: activeListsStore now uses TTL.week + keepStaleOnEmpty: true — same
- *   pattern as moversStore.
+ *   pattern as moversStore. (Unaffected by the Bug 2 architecture change below
+ *   — still current, still checked as-is.)
  *
  * Bug 2 — NavStrip P first slot (Day P&L) shows 0 when derivatives visited first
- *   Root cause: snapshotTotals.day = 0 (stale from a prior derivatives page visit
- *   before any positions loaded). The template used ?? (nullish coalescing), which
- *   only falls back on null/undefined — so 0 ?? dispPositionsToday = 0 always.
- *   Fix: replaced ?? with explicit != null ternaries on all three P-pill slots.
+ *   Root cause (2026-07-02, historical): snapshotTotals.day = 0 (stale from a
+ *   prior derivatives page visit before any positions loaded). The template
+ *   used ?? (nullish coalescing), which only falls back on null/undefined —
+ *   so 0 ?? dispPositionsToday = 0 always.
+ *   Fix (at the time): replaced ?? with explicit != null ternaries on all
+ *   three P-pill slots, all reading from the `snapshotTotals` store.
+ *
+ * Architecture superseded 2026-09 (commit cbe132a6 / 7562dd04, "NavStrip/
+ * Snapshot Exp P&L SSOT"): the writable `snapshotTotals` store — and every
+ * push from the derivatives page into it — was removed entirely, so the
+ * specific "stale cross-page push" mechanism Bug 2 exploited no longer
+ * exists. The class of defect is now structurally impossible, not merely
+ * patched:
+ *   - PositionStrip.svelte (NavStrip) mounts ONCE at the `(algo)/+layout.svelte`
+ *     level, so it is never torn down/rebuilt when the operator navigates
+ *     between /admin/derivatives and /pulse — there is no "prior page's
+ *     value lingering" scenario because there is no per-page instance.
+ *   - P slot 1 (`dispPositionsToday`) reads exclusively from
+ *     `positionsDayPnlStore.total` (→ `portfolioStore.positions.total.day_pnl`,
+ *     built from `baseDayPnlForPosition` summed over ALL live position rows).
+ *     The derivatives page never writes to it, so there is nothing for it to
+ *     go stale FROM.
+ *   - The modern equivalent of the `?? 0` swallow-zero defect lives in
+ *     PositionStrip's own freeze/thaw `$effect`: `if (newPTotal !== 0) {...}
+ *     else if (positions.length === 0 && !positionsStore.meta?.degraded) {...}`
+ *     — a transient 0/null read does NOT blindly overwrite the displayed
+ *     value. This file's Bug 2 guards now check THAT pattern instead of the
+ *     dead `$snapshotTotals != null` ternary.
  *
  * Five quality dimensions (feedback_test_dimensions.md):
  *   SSOT  — activeListsStore uses TTL.week + keepStaleOnEmpty (code check);
- *            snapshotTotals != null guard present on all three slots (code check)
+ *            dispPositionsToday's swallow-zero guard present in the
+ *            freeze/thaw effect, with no snapshotTotals-style cross-page
+ *            store anywhere (code check)
  *   Perf  — pinned rows visible within 500ms of DOMContentLoaded on warm-cache
  *            /pulse load (browser test)
  *   Stale — ?? stale-freeze pattern eliminated (code check + browser test:
- *            P slot 1 must differ from 0 when positions have intraday movement)
+ *            P slot 1 must differ from 0 when positions have intraday movement);
+ *            snapshotTotals confirmed absent from the entire src/ tree
  *   Reuse — activeListsStore imported by MarketPulse (not duplicated); same
  *            createDataStore factory as moversStore (grep check)
  *   UX    — P pill slot 1 visible and non-blank on /pulse after nav from
@@ -75,41 +103,70 @@ test.describe('Code-level guards — Bug 1 (pinned card)', () => {
   });
 });
 
-test.describe('Code-level guards — Bug 2 (snapshotTotals null-guard)', () => {
+test.describe('Code-level guards — Bug 2 (Day P&L swallow-zero, post-snapshotTotals-removal architecture)', () => {
   const STRIP_SRC = path.resolve(
     import.meta.dirname,
     '../src/lib/PositionStrip.svelte',
   );
+  const STORES_SRC = path.resolve(
+    import.meta.dirname,
+    '../src/lib/stores.js',
+  );
+  const DERIV_SRC = path.resolve(
+    import.meta.dirname,
+    '../src/routes/(algo)/admin/derivatives/+page.svelte',
+  );
+  const LAYOUT_SRC = path.resolve(
+    import.meta.dirname,
+    '../src/routes/(algo)/+layout.svelte',
+  );
 
-  test('all three P-pill slots use != null ternary (not ?? which swallows 0)', () => {
-    const src = fs.readFileSync(STRIP_SRC, 'utf8');
-    // Positive assertions: explicit null check on each slot
-    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.day');
-    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.pnl');
-    expect(src).toContain('$snapshotTotals != null ? $snapshotTotals.exp');
+  test('snapshotTotals does not exist anywhere in src/ (regression guard — the whole store class is gone)', () => {
+    // The original bug depended on a shared mutable store that a page could
+    // write a stale value into. Confirming its complete absence across the
+    // tree — not just these three files — is the strongest guard against
+    // this exact defect class reappearing under a different surface.
+    const walk = (dir) => {
+      /** @type {string[]} */
+      const out = [];
+      for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) out.push(...walk(full));
+        else if (/\.(svelte|js)$/.test(entry.name)) out.push(full);
+      }
+      return out;
+    };
+    const srcRoot = path.resolve(import.meta.dirname, '../src');
+    const offenders = [];
+    for (const f of walk(srcRoot)) {
+      if (fs.readFileSync(f, 'utf8').includes('snapshotTotals')) offenders.push(f);
+    }
+    expect(offenders, `snapshotTotals reappeared in: ${offenders.join(', ')}`).toHaveLength(0);
   });
 
-  test('?? operator is NOT used on snapshotTotals slots (regression guard)', () => {
-    const src = fs.readFileSync(STRIP_SRC, 'utf8');
-    // These patterns were the bug — must never reappear
-    expect(src).not.toContain('$snapshotTotals?.day ??');
-    expect(src).not.toContain('$snapshotTotals?.pnl ??');
-    expect(src).not.toContain('$snapshotTotals?.exp ??');
+  test('PositionStrip mounts once at the (algo) layout level — no per-page instance to go stale across nav', () => {
+    const layoutSrc = fs.readFileSync(LAYOUT_SRC, 'utf8');
+    expect(layoutSrc).toContain('<PositionStrip');
+    expect((layoutSrc.match(/<PositionStrip\b/g) || []).length).toBe(1);
+    const derivSrc = fs.readFileSync(DERIV_SRC, 'utf8');
+    expect(derivSrc).not.toContain('<PositionStrip');
   });
 
-  test('snapshotTotals store initial value is null in stores.js', () => {
-    const storesSrc = fs.readFileSync(
-      path.resolve(import.meta.dirname, '../src/lib/stores.js'),
-      'utf8',
-    );
-    // The store must be initialised with null so the != null gate works correctly
-    // on first paint (before derivatives populates it).
-    // Pattern: export const snapshotTotals = writable( ... (null) )
-    expect(storesSrc).toContain('snapshotTotals = writable(');
-    // The argument passed to writable must eventually be null (comment before the null is acceptable)
-    const idx = storesSrc.indexOf('snapshotTotals = writable(');
-    const block = storesSrc.slice(idx, idx + 200);
-    expect(block).toMatch(/\(null\)/);
+  test('dispPositionsToday (P slot 1) freeze/thaw effect does not blindly overwrite with a transient 0 (swallow-zero guard)', () => {
+    // This is the CURRENT equivalent of the old `?? 0` bug: a momentary
+    // 0/null read from positionsDayPnlStore.total must not immediately zero
+    // out the displayed value while positions are known to be non-empty (or
+    // the store is degraded/mid-reload).
+    const src = fs.readFileSync(STRIP_SRC, 'utf8');
+    expect(src).toContain('const newPTotal = positionsDayPnlStore.total;');
+    expect(src).toContain('if (newPTotal !== 0) {');
+    expect(src).toContain('dispPositionsToday = newPTotal;');
+    expect(src).toContain('} else if (positions.length === 0 && !positionsStore.meta?.degraded) {');
+  });
+
+  test('stores.js does not export a snapshotTotals writable', () => {
+    const storesSrc = fs.readFileSync(STORES_SRC, 'utf8');
+    expect(storesSrc).not.toContain('snapshotTotals');
   });
 });
 
@@ -167,10 +224,15 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
     await loginAsAdmin(page);
   });
 
+  // fmtMoney() in PositionStrip.svelte is `aggCompact(v)` with NO currency
+  // prefix — a zero P&L renders as the plain string '0.00', never '0' or
+  // '₹0'. Use this helper instead of a literal string comparison.
+  const isZeroPDisplay = (t) => t === '' || t === '—' || /^-?0(\.0+)?$/.test(t);
+
   test('P slot 1 is non-blank on /pulse regardless of prior derivatives visit', async ({ page }) => {
-    // Visit derivatives first to populate snapshotTotals (may be 0 if no positions loaded yet)
+    // Visit derivatives first — the page mounts and runs its own local
+    // Snapshot computation, but has no write path to NavStrip's P slot 1.
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
-    // Wait enough for snapshotTotals to potentially get published as {day:0,...}
     await page.waitForTimeout(3_000);
 
     // Navigate to /pulse
@@ -187,11 +249,12 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
     expect(text, 'P slot 1 must render a non-blank value on /pulse').toBeTruthy();
   });
 
-  test('P slot 1 matches live F&O positions when snapshotTotals is stale', async ({ page }) => {
-    // Simulate the exact bug scenario:
-    // 1. Visit derivatives early (snapshotTotals publishes {day:0, pnl:x, exp:y})
+  test('P slot 1 matches live F&O positions after visiting derivatives first', async ({ page }) => {
+    // Simulate the historical bug scenario (now structurally impossible —
+    // see this file's header — but kept as a regression guard):
+    // 1. Visit derivatives early (no cross-page store to publish into)
     // 2. Navigate to pulse
-    // 3. Confirm slot 1 reflects actual positions, not the stale 0
+    // 3. Confirm slot 1 reflects actual positions, not a frozen/stale 0
     await page.goto(`${BASE}/admin/derivatives`, { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(2_000);
 
@@ -234,12 +297,13 @@ test.describe('Bug 2 — P slot 1 not frozen to 0 after cross-page nav', () => {
     const text = (await todayVal.textContent())?.trim() ?? '';
     expect(text, 'P slot 1 must not be blank').toBeTruthy();
 
-    // The stale-freeze bug renders "0" even with non-zero F&O movement.
-    // After the fix, the value must not be "0" when |expectedDayPnl| > 10.
+    // The historical stale-freeze bug rendered a zero value even with
+    // non-zero F&O movement. Confirm the ACTUAL zero display format (not a
+    // literal '0', which fmtMoney never produces) is not shown.
     expect(
-      text,
-      `P slot 1 shows "0" despite F&O day P&L of ${expectedDayPnl.toFixed(2)} — snapshotTotals null-guard may have regressed`
-    ).not.toBe('0');
+      isZeroPDisplay(text),
+      `P slot 1 shows "${text}" (zero) despite F&O day P&L of ${expectedDayPnl.toFixed(2)} — the swallow-zero guard in PositionStrip's freeze/thaw effect may have regressed`
+    ).toBe(false);
   });
 
   test('P pill has all 3 values after navigating derivatives → pulse → derivatives', async ({ page }) => {

@@ -4,35 +4,67 @@
  * Regression guard for the Day P&L = 0 defect (2026-07-03) and the
  * strategy-filter fail-closed regression (2026-07-03 retry).
  *
- * Root cause A (commit 35b7352c): _dayPnlForLeg returned Number(day_change_val ?? 0)
- * without the new-position override. When overnight_quantity = 0 (position opened
- * today) Kite returns day_change_val = 0 and pnl holds the real value.
- * _byUnderlyingTotals had the override; _dayPnlForLeg did not — causing
- * Snapshot Day P&L and per-leg Day P&L cells to show 0.
+ * Root cause A (commit 35b7352c, historical): the page-local _dayPnlForLeg
+ * function returned Number(day_change_val ?? 0) without the new-position
+ * override. When overnight_quantity = 0 (position opened today) Kite returns
+ * day_change_val = 0 and pnl holds the real value. _byUnderlyingTotals had
+ * the override; _dayPnlForLeg did not — causing Snapshot Day P&L and per-leg
+ * Day P&L cells to show 0.
  *
- * Root cause B (this fix): _makeStrategyMatcher() + inline strategy matchers
+ * Root cause B (historical): _makeStrategyMatcher() + inline strategy matchers
  * in _byUnderlyingTotals / _byUnderlyingExp / _byUnderlyingDay returned
  * `false` (fail-CLOSED) when `$strategyOpenSymbols.size === 0` but a strategy
  * ID was persisted in sessionStorage. During the async fetch window (or on
  * page cold-load), every symbol failed the filter → _snapshotTotalDay/Pnl/Exp = 0
- * → snapshotTotals store zeroed → NavStrip P pill showed wrong zeros.
- * Payoff overlay DAY Δ row hides when candidatesDayPnl === 0 (OptionsPayoff
- * guard: dayPnl !== 0), so it disappeared too.
+ * → the (now-removed) snapshotTotals store zeroed → NavStrip P pill showed
+ * wrong zeros. Payoff overlay DAY Δ row hides when candidatesDayPnl === 0
+ * (OptionsPayoff guard: dayPnl !== 0), so it disappeared too.
  * Fix: fail-OPEN (return true) when strategyOpenSymbols is empty — covers both
  * "still loading" and "no strategy selected" paths without filtering everything out.
  *
+ * Architecture superseded 2026-09 (commit cbe132a6 / 7562dd04, "NavStrip/
+ * Snapshot Exp P&L SSOT"). Two independent changes since this file's original
+ * fixes, both reflected below:
+ *   1. `_dayPnlForLeg` / `_dayPnlByRootMap` no longer exist. Day P&L is now
+ *      computed by `rollupByUnderlying()` (extracted to derivativesMath.js)
+ *      calling `baseDayPnlForPosition(p)` directly per leg and accumulating
+ *      into `g.day_without` / `g.day_with`; the page's `_byUnderlyingTotals`
+ *      `$derived.by()` delegates to it. Per-candidate cells use `_candDayPnl`,
+ *      a one-line wrapper around the same `baseDayPnlForPosition`. There is
+ *      exactly one implementation of the Day P&L formula (nav.js), consumed
+ *      from two call sites (rollup + per-candidate), not two formulas.
+ *   2. The writable `snapshotTotals` store — and every push from this page
+ *      into it — was removed entirely. `_snapshotTotalDay` (this page's
+ *      Snapshot TOTAL row Day P&L) is now a page-local `$derived.by()` that
+ *      reduces `_byUnderlyingTotals`, never written anywhere else.
+ *      NavStrip's P pill reads its OWN Day P&L independently from
+ *      `portfolioStore` (see navstrip_p_slot_derivatives.spec.js), which
+ *      also calls `baseDayPnlForPosition` per row. The two surfaces agree
+ *      by construction (same pure function, same underlying position rows)
+ *      — NOT because one page pushes a computed total into a store the
+ *      other reads. NavStrip's total is unfiltered/all-exchanges; this
+ *      page's Snapshot TOTAL is F&O-only and account/strategy-filtered, so
+ *      the two numbers coincide only in the common case (no strategy filter,
+ *      F&O-only book) — this file does not assert numeric equality across
+ *      pages, only that each surface's OWN computation is SSOT-correct.
+ *
  * Quality dimensions:
- *   SSOT     — single _dayPnlForLeg function drives both per-leg cell and
- *               _dayPnlByRootMap; override mirrored from _byUnderlyingTotals.
- *               snapshotTotals store is the single publisher for NavStrip P pill.
+ *   SSOT     — single baseDayPnlForPosition (nav.js) function drives both
+ *               rollupByUnderlying's per-root accumulation and the
+ *               per-candidate _candDayPnl cell; _snapshotTotalDay reduces
+ *               that same _byUnderlyingTotals array exactly once, with no
+ *               competing accumulator and no external store push.
  *   Perf     — no XHR budget regression
  *   Stale    — grep confirms the old bare-return pattern is gone;
- *               grep confirms no remaining fail-CLOSED strategy matchers
- *   Reusable — _perRootReduce reuses _dayPnlForLeg; no second accumulator
+ *               grep confirms no remaining fail-CLOSED strategy matchers;
+ *               grep confirms snapshotTotals does not exist in this page
+ *   Reusable — rollupByUnderlying + _candDayPnl both delegate to the same
+ *               baseDayPnlForPosition; no second Day P&L formula
  *   UX       — Day P&L cells render non-zero when overnight_qty=0 + pnl≠0;
  *               missing LTP renders '—' not '0';
  *               payoff overlay DAY Δ row visible when positions have day pnl;
- *               NavStrip P first slot matches Snapshot TOTAL Day P&L (SSOT)
+ *               NavStrip P first slot is non-zero whenever Snapshot TOTAL
+ *               Day P&L is non-zero (directional health check, not equality)
  */
 
 import { test, expect } from '@playwright/test';
@@ -55,72 +87,80 @@ const MATH_SRC = path.resolve(
 
 // ── Static source checks ─────────────────────────────────────────────────────
 
-test('SSOT: _dayPnlForLeg delegates to baseDayPnlForPosition from nav.js', () => {
+test('SSOT: rollupByUnderlying (derivativesMath.js) computes Day P&L via baseDayPnlForPosition, delegated from the page', () => {
   const src = fs.readFileSync(SRC, 'utf8');
+  const mathSrc = fs.readFileSync(MATH_SRC, 'utf8');
 
-  // baseDayPnlForPosition must be imported from $lib/data/nav
+  // baseDayPnlForPosition must be imported from $lib/data/nav in the page
+  // (tolerant of other named imports on the same line, e.g. FO_EXCHANGES).
   expect(
-    src.includes("import { baseDayPnlForPosition }") && src.includes("$lib/data/nav"),
+    /import\s*\{[^}]*\bbaseDayPnlForPosition\b[^}]*\}\s*from\s*'\$lib\/data\/nav'/.test(src),
     'baseDayPnlForPosition must be imported from $lib/data/nav in derivatives page'
   ).toBe(true);
 
-  // _dayPnlForLeg must exist and call baseDayPnlForPosition (the SSOT)
-  const fnStart = src.indexOf('function _dayPnlForLeg(');
-  expect(fnStart, '_dayPnlForLeg function must exist').toBeGreaterThan(0);
-  // Extract up to the closing brace
-  const fnEnd = src.indexOf('\n  }', fnStart) + 4;
-  const fnBody = src.slice(fnStart, fnEnd);
-
+  // The page's _byUnderlyingTotals $derived.by delegates to rollupByUnderlying,
+  // passing baseDayPnlForPosition in as a dependency (not recomputing inline).
+  const derivedStart = src.indexOf('const _byUnderlyingTotals = $derived.by');
+  expect(derivedStart, '_byUnderlyingTotals derived must exist').toBeGreaterThan(0);
+  const derivedBlock = src.slice(derivedStart, derivedStart + 900);
   expect(
-    fnBody.includes('baseDayPnlForPosition'),
-    '_dayPnlForLeg must delegate to baseDayPnlForPosition (SSOT for new-position override)'
+    derivedBlock.includes('rollupByUnderlying({'),
+    '_byUnderlyingTotals must delegate to rollupByUnderlying (single SSOT, not inline formula)'
+  ).toBe(true);
+  expect(
+    derivedBlock.includes('baseDayPnlForPosition,'),
+    '_byUnderlyingTotals must pass baseDayPnlForPosition into rollupByUnderlying'
   ).toBe(true);
 
-  // The old inline override block must be gone from _dayPnlForLeg
-  // (it is now in baseDayPnlForPosition in nav.js)
+  // rollupByUnderlying itself (derivativesMath.js) must actually CALL
+  // baseDayPnlForPosition per leg — the module is where the SSOT logic lives.
   expect(
-    fnBody.includes('let day = Number(c?.day_change_val'),
-    '_dayPnlForLeg must NOT have the old inline "let day = Number(c?.day_change_val" pattern — delegate to baseDayPnlForPosition instead'
+    mathSrc.includes('const day = baseDayPnlForPosition(p);'),
+    'rollupByUnderlying must call baseDayPnlForPosition(p) per position row'
+  ).toBe(true);
+
+  // Per-candidate Day P&L cell (_candDayPnl) is a thin wrapper over the SAME
+  // function — no second, independently-maintained formula for the
+  // Candidates/Legs panel.
+  expect(
+    src.includes('const _candDayPnl = (c) => baseDayPnlForPosition(c);'),
+    '_candDayPnl must delegate to baseDayPnlForPosition (same SSOT as the rollup)'
+  ).toBe(true);
+
+  // The old inline override pattern must never reappear anywhere in the page
+  // or the math module — it is superseded by baseDayPnlForPosition's own
+  // new-position override (nav.js).
+  const allSrc = src + '\n' + mathSrc;
+  expect(
+    allSrc.includes('let day = Number(c?.day_change_val'),
+    'No file may reintroduce the old inline "let day = Number(c?.day_change_val" pattern — delegate to baseDayPnlForPosition instead'
   ).toBe(false);
 });
 
-test('SSOT: _dayPnlByRootMap delegates to _dayPnlForLeg via _perRootReduce', () => {
+test('STALE: no duplicate Day P&L accumulator competes with rollupByUnderlying\'s g.day_without', () => {
   const src = fs.readFileSync(SRC, 'utf8');
+  const mathSrc = fs.readFileSync(MATH_SRC, 'utf8');
 
-  // _dayPnlByRootMap must exist and call _dayPnlForLeg inside it
-  const mapStart = src.indexOf('const _dayPnlByRootMap = $derived.by');
-  expect(mapStart, '_dayPnlByRootMap derived must exist').toBeGreaterThan(0);
+  // rollupByUnderlying (the exported helper _byUnderlyingTotals delegates to)
+  // must be defined exactly once in the math module.
+  const rollupDefCount = (mathSrc.match(/export function rollupByUnderlying\(/g) || []).length;
+  expect(rollupDefCount, 'rollupByUnderlying should be defined exactly once').toBe(1);
 
-  const mapEnd = src.indexOf('\n  });', mapStart) + 6;
-  const mapBlock = src.slice(mapStart, mapEnd);
-
-  expect(
-    mapBlock.includes('_dayPnlForLeg'),
-    '_dayPnlByRootMap must call _dayPnlForLeg (single SSOT, not inline formula)'
-  ).toBe(true);
-
-  // Must go via _perRootReduce (not a separate hand-rolled loop)
-  expect(
-    mapBlock.includes('_perRootReduce'),
-    '_dayPnlByRootMap must use _perRootReduce for the accumulation'
-  ).toBe(true);
-});
-
-test('STALE: no duplicate Day P&L accumulator loop beside _dayPnlByRootMap', () => {
-  const src = fs.readFileSync(SRC, 'utf8');
-
-  // Only one place should define a day-pnl-by-root map
-  const mapDefCount = (src.match(/const _dayPnlByRootMap\s*=/g) || []).length;
-  expect(
-    mapDefCount,
-    '_dayPnlByRootMap should be defined exactly once'
-  ).toBe(1);
+  // The page's displayed Snapshot TOTAL Day P&L (_snapshotTotalDay) must be
+  // defined exactly once, and must reduce over _byUnderlyingTotals'
+  // day_without field — the single per-row source — not a second,
+  // independently-summed accumulator.
+  const totalDefCount = (src.match(/const _snapshotTotalDay\s*=/g) || []).length;
+  expect(totalDefCount, '_snapshotTotalDay should be defined exactly once').toBe(1);
+  expect(src).toContain(
+    "const _snapshotTotalDay = $derived.by(() =>\n    _byUnderlyingTotals.reduce((s, g) => s + (g.day_without ?? 0), 0)\n  );"
+  );
 
   // No single line should call `.reduce(` while also referencing `day_change_val`
-  // outside of _perRootReduce — that would indicate a rogue second accumulator.
-  // Check line-by-line (not dotAll) to avoid false positives from
-  // multi-line proximity matches.
-  const rogueLines = src.split('\n').filter(
+  // directly — that would indicate a rogue accumulator bypassing
+  // baseDayPnlForPosition's new-position override entirely.
+  const allSrc = src + '\n' + mathSrc;
+  const rogueLines = allSrc.split('\n').filter(
     line => line.includes('.reduce(') && line.includes('day_change_val')
   );
   expect(
@@ -165,21 +205,38 @@ test('STALE: no fail-closed strategy matchers remain in derivatives page or math
   ).toBeGreaterThanOrEqual(1);
 });
 
-test('SSOT: snapshotTotals store is the single publisher for NavStrip P pill', () => {
+test('SSOT: Snapshot TOTAL Day P&L is page-local (no snapshotTotals push); NavStrip derives its own total independently', () => {
   const src = fs.readFileSync(SRC, 'utf8');
 
-  // The $effect that writes to snapshotTotals.set({...}) must exist in the page
+  // The dead cross-page store must never reappear in this page.
   expect(
-    src.includes('snapshotTotals.set('),
-    'derivatives page must write to snapshotTotals store so NavStrip P pill stays in SSOT sync'
-  ).toBe(true);
+    src.includes('snapshotTotals'),
+    'derivatives page must not reference snapshotTotals — the SSOT is the shared ' +
+    'baseDayPnlForPosition function, not a shared mutable store'
+  ).toBe(false);
 
-  // snapshotTotals.set must be called with day, pnl, exp slots
-  const setIdx = src.indexOf('snapshotTotals.set(');
-  const setBlock = src.slice(setIdx, setIdx + 200);
-  expect(setBlock.includes('day:'), 'snapshotTotals.set must include day: slot').toBe(true);
-  expect(setBlock.includes('pnl:'), 'snapshotTotals.set must include pnl: slot').toBe(true);
-  expect(setBlock.includes('exp:'), 'snapshotTotals.set must include exp: slot').toBe(true);
+  // _snapshotTotalDay/_snapshotTotalPnl/_snapshotTotalExp are page-local
+  // $derived.by() reductions — verify each one's own expression body
+  // contains no `.set(` call (which would indicate a reintroduced push
+  // into an external store instead of a pure local reduction).
+  for (const name of ['_snapshotTotalDay', '_snapshotTotalPnl', '_snapshotTotalExp']) {
+    const idx = src.indexOf(`const ${name} = $derived.by(`);
+    expect(idx, `${name} must exist as a local $derived.by()`).toBeGreaterThan(0);
+    const closeIdx = src.indexOf('\n  );', idx);
+    expect(closeIdx, `${name}'s $derived.by() must close with ");" nearby`).toBeGreaterThan(idx);
+    const body = src.slice(idx, closeIdx);
+    expect(body, `${name} must not push into an external store`).not.toContain('.set(');
+  }
+
+  // NavStrip (PositionStrip.svelte) must have zero coupling to this page —
+  // no import from the derivatives route, no reference to any of its
+  // page-local variable names.
+  const stripSrc = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/lib/PositionStrip.svelte'), 'utf8'
+  );
+  expect(stripSrc).not.toContain('admin/derivatives');
+  expect(stripSrc).not.toContain('_snapshotTotalDay');
+  expect(stripSrc).not.toContain('snapshotTotals');
 });
 
 // ── Live UI checks ────────────────────────────────────────────────────────────
@@ -504,8 +561,15 @@ for (const vp of VIEWPORTS) {
 
       await page.locator('.opt-byund-card').waitFor({ state: 'attached', timeout: 25_000 });
 
-      // Read Snapshot TOTAL row Day P&L
-      const snapshotTotal = page.locator('.byund-row-total .byund-day');
+      // Read Snapshot TOTAL row Day P&L. The TOTAL row's Day P&L cell is the
+      // FIRST `.num.tf-cell` span (three plain `.num` spans — LTP/chg%/Close —
+      // precede it with no data; `.tf-cell` marks the four amber-highlighted
+      // totals: Day, P&L, Exp, Extrinsic, in that order). There is no
+      // `.byund-day` class in the current markup (aggCompact-formatted cells
+      // are undecorated `.num` spans) — using that stale selector always
+      // matched zero elements and made this assertion vacuously skip.
+      const totalRow = page.locator('.byund-row-total');
+      const snapshotTotal = totalRow.locator('.num.tf-cell').first();
       const snapshotTotalDay = (await snapshotTotal.textContent().catch(() => '')).trim();
 
       // Read NavStrip P pill first value slot (ps-agg for P → first ps-agg-v child)
@@ -514,8 +578,12 @@ for (const vp of VIEWPORTS) {
       const navStripPDay = page.locator('.ps-agg:has(.ps-agg-k) .ps-agg-v').first();
       const navPDayText = (await navStripPDay.textContent().catch(() => '')).trim();
 
-      // Both should be non-dash and matching when Snapshot has non-zero data
-      const isZero = (t) => t === '' || t === '0' || t === '₹0' || t === '—';
+      // Both cells render via `aggCompact()` with NO currency prefix — a
+      // zero value renders as the plain string '0.00' (not '₹0'), and '—'
+      // is reserved for null/non-finite, never a genuine zero. Recognize
+      // the ACTUAL zero format on both sides instead of a stale/incorrect
+      // string set that never matched real output.
+      const isZero = (t) => t === '' || t === '—' || /^-?0(\.0+)?$/.test(t);
       if (isZero(snapshotTotalDay)) {
         // No positions with day delta — skip value comparison
         const realErrors = pageErrors.filter(
@@ -525,11 +593,14 @@ for (const vp of VIEWPORTS) {
         return;
       }
 
-      // When Snapshot TOTAL has a value, NavStrip P day slot must NOT be '0' or '—'
-      // (exact text match is hard due to formatting differences — just ensure non-zero)
+      // When Snapshot TOTAL has a value, NavStrip P day slot must NOT be zero.
+      // (Exact text match is not asserted — NavStrip's total is unfiltered/
+      // all-exchanges while Snapshot's is F&O-only + account/strategy-
+      // filtered; see this file's header for why the two totals are SSOT-
+      // consistent by construction without being numerically identical.)
       expect(
         isZero(navPDayText),
-        `NavStrip P day value is "${navPDayText}" but Snapshot TOTAL Day is "${snapshotTotalDay}" — snapshotTotals store not writing correctly (strategy filter fail-closed regression)`
+        `NavStrip P day value is "${navPDayText}" but Snapshot TOTAL Day is "${snapshotTotalDay}" — one of the two independent baseDayPnlForPosition-driven totals diverged from the underlying position book`
       ).toBe(false);
 
       // No JS errors
