@@ -39,7 +39,7 @@
   import ChartModal from '$lib/ChartModal.svelte';
   import ChartWorkspace from '$lib/ChartWorkspace.svelte';
   import { executionMode } from '$lib/stores';
-  import { priceFmt, aggFmt as aggFmtMargin } from '$lib/format';
+  import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
@@ -2225,7 +2225,7 @@
         }}
       />
       {#if _ltp != null && _ltp > 0}
-        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>₹{_ltp.toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</span>
+        <span class="oes-tab-ltp"><span class="oes-tab-ltp-label">LTP</span>{priceFmt(_ltp)}</span>
       {/if}
       {#if _chaseEnabled}
         <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
@@ -2534,7 +2534,7 @@
                       class:tp={g.label === 'TP'}
                       class:sl={g.label === 'SL'}
                       class:both={g.label === 'TP+SL'}>
-                  {g.label} {g.trigger_values?.map(v => '₹' + Number(v).toLocaleString('en-IN')).join(' / ')}
+                  {g.label} {g.trigger_values?.map(v => priceFmt(Number(v))).join(' / ')}
                 </span>
               {/each}
               {#if _activePreviewPlan.wing}
@@ -2542,7 +2542,7 @@
                       title={`Protective BUY leg auto-attached on fill. Reduces SPAN margin and caps tail risk. ${_activePreviewPlan.wing.order_type || 'MARKET'} order, qty matches parent.`}>
                   + Wing BUY {_activePreviewPlan.wing.quantity}× <LegLabel sym={_activePreviewPlan.wing.tradingsymbol} compact={true} />
                   {#if _activePreviewPlan.wing.estimated_price != null && _activePreviewPlan.wing.estimated_price > 0}
-                    <span class="oes-tpl-preview-chip-px">@ ~₹{priceFmt(Number(_activePreviewPlan.wing.estimated_price))}</span>
+                    <span class="oes-tpl-preview-chip-px">@ ~{priceFmt(Number(_activePreviewPlan.wing.estimated_price))}</span>
                   {/if}
                 </span>
               {/if}
@@ -2629,7 +2629,7 @@
                       disabled={basketSubmitting}
                       onclick={() => updateLegByKey(leg.key, b => ({ ...b, lots: (b.lots || 1) + 1 }))}>+</button>
               {#if leg.lotSize > 1}
-                <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
+                <span class="oes-basket-pill-qty">× {leg.lotSize} = {qtyFmt((leg.lots || 1) * leg.lotSize)}</span>
               {/if}
               <!-- Per-leg limit price — editable so operator can submit
                    outside market hours when bid/ask hasn't pre-filled. -->
@@ -2716,7 +2716,7 @@
                 <span class="oes-basket-pill-sym"><LegLabel sym={_wingSym || `${leg.sym.replace(/(CE|PE)$/i, m => m.toUpperCase() === 'CE' ? 'PE' : 'CE')}`} compact={true} /></span>
                 <span class="oes-basket-pill-lots">{leg.lots || 1}</span>
                 {#if leg.lotSize > 1}
-                  <span class="oes-basket-pill-qty">× {leg.lotSize} = {(leg.lots || 1) * leg.lotSize}</span>
+                  <span class="oes-basket-pill-qty">× {leg.lotSize} = {qtyFmt((leg.lots || 1) * leg.lotSize)}</span>
                 {/if}
                 <span class="oes-basket-pill-wing-note">auto on fill</span>
               </span>
@@ -2921,7 +2921,7 @@
               {:else}
                 <span class="oes-margin-pill-row">
                   <span class="oes-margin-pill-key">{_reqKey}</span>
-                  <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.required)}</span>
+                  <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.required)}</span>
                   {#if _marginInfo.pairedCount > 0}
                     <span class="oes-margin-pill-paired" title="Margin reflects parent + auto-attached wing (basket-net)">+wing</span>
                   {/if}
@@ -2929,7 +2929,7 @@
                 {#if _marginInfo.available != null}
                   <span class="oes-margin-pill-row">
                     <span class="oes-margin-pill-key">{_avlKey}</span>
-                    <span class="oes-margin-pill-val">₹{aggFmtMargin(_marginInfo.available)}</span>
+                    <span class="oes-margin-pill-val">{aggFmtMargin(_marginInfo.available)}</span>
                   </span>
                 {/if}
               {/if}
@@ -4381,6 +4381,18 @@
     flex-shrink: 0;
   }
   .oes-common-row {
+    /* Shared control-height / control-value-font tokens (order-ticket
+       visual-consistency pass) — mirrors the same declaration on
+       OrderTicket.svelte's .ot-modal. Scoped to THIS row, not the
+       whole .oes-modal — the row is the only place these tokens are
+       meant to apply (side selector / submit / basket icon / margin
+       chip below). Declaring it any higher (e.g. on .oes-modal itself)
+       would also resize every OTHER Select in the shell that has
+       nothing to do with this fix: the header account/exchange
+       pickers, the Chain-tab controls, and the per-leg account Select
+       inside basket pills — all out of this pass's scope. */
+    --ctl-h: 1.7rem;
+    --ctl-fs: var(--fs-md);
     display: flex;
     align-items: center;
     gap: 0.45rem;
@@ -4403,7 +4415,7 @@
   .oes-common-row > .oes-margin-pill {
     flex: 1 1 auto;
     min-width: 0;
-    min-height: 1.7rem;
+    min-height: var(--ctl-h, 1.7rem);
     box-sizing: border-box;
     display: inline-flex;
     align-items: center;
@@ -4417,7 +4429,7 @@
   .oes-cold-prompt {
     display: inline-flex;
     align-items: center;
-    height: 1.7rem;
+    height: var(--ctl-h, 1.7rem);
     padding: 0 0.7rem;
     border-radius: 3px;
     border: 1px solid rgba(180, 200, 230, 0.22);
@@ -4441,9 +4453,9 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    width: 1.7rem;
+    width: var(--ctl-h, 1.7rem);
     height: auto;
-    min-height: 1.7rem;
+    min-height: var(--ctl-h, 1.7rem);
     padding: 0.15rem 0;
     cursor: pointer;
     user-select: none;
@@ -4489,14 +4501,14 @@
      In a symbol-row context the verb (ADD/CLOSE) stacks above the
      derived broker side (BUY/SELL) inside the same 1.7rem button. */
   .oes-footer-side-btn-single {
-    height: 1.7rem;
+    height: var(--ctl-h, 1.7rem);
     min-width: 5.5rem;
     padding: 0 0.7rem;
     border-radius: 3px;
     border: 1px solid;
     cursor: pointer;
     font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
+    font-size: var(--ctl-fs, var(--fs-sm));
     font-weight: 800;
     letter-spacing: 0.04em;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
@@ -4598,8 +4610,8 @@
     display: inline-flex;
     align-items: center;
     padding: 0.3rem 0.6rem;
-    border-radius: 4px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 700;
     border: 1px solid transparent;
@@ -4620,8 +4632,8 @@
     display: inline-flex;
     align-items: center;
     padding: 0.3rem 0.6rem;
-    border-radius: 4px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 700;
     border: 1px solid transparent;
@@ -4687,8 +4699,8 @@
     align-items: baseline;
     gap: 0.35rem;
     padding: 0.3rem 0.6rem;
-    border-radius: 4px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 600;
     border: 1px solid transparent;
@@ -4697,14 +4709,23 @@
     white-space: nowrap;
   }
   /* Stacked variant — two rows (Req / Avail) one above the other.
-     Sized to match the action buttons' new 2-row height. */
+     Pinned to the shared --ctl-h (item 9) with tight padding/line-
+     height so it never resizes the footer row relative to its
+     siblings — was ~2.2rem (0.35rem padding × 2 + 2 lines at
+     line-height 1.15), against every sibling in the row fixed at
+     --ctl-h (1.7rem); the footer visibly grew/shrank as the info
+     slot swapped between this chip and the 1-line cold-prompt. */
   .oes-margin-pill-stack {
     display: inline-flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: 0.1rem;
-    padding: 0.35rem 0.6rem;
-    line-height: 1.15;
+    justify-content: center;
+    gap: 0;
+    padding: 0.15rem 0.6rem;
+    line-height: 1.05;
+    height: var(--ctl-h, 1.7rem);
+    min-height: var(--ctl-h, 1.7rem);
+    box-sizing: border-box;
   }
   .oes-margin-pill-row {
     display: inline-flex;
@@ -4743,7 +4764,10 @@
   .oes-margin-pill-ok {
     background: rgba(74, 222, 128, 0.14);
     border-color: rgba(74, 222, 128, 0.45);
-    color: #86efac;
+    /* Token consolidation (item 11) — was a hardcoded #86efac literal;
+       the established "long/ok" token elsewhere in the app is
+       var(--c-long) (#4ade80). */
+    color: var(--c-long);
   }
   .oes-margin-pill-warn {
     background: rgba(251, 191, 36, 0.16);
@@ -4764,11 +4788,11 @@
   .oes-common-side,
   .oes-common-submit {
     /* Operator: "all buttons should be of same height." Submit + side
-       single button + basket icon all 1.7rem tall. */
-    height: 1.7rem;
+       single button + basket icon all pinned to the shared --ctl-h. */
+    height: var(--ctl-h, 1.7rem);
     padding: 0 0.85rem;
-    border-radius: 4px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.04em;
@@ -4826,19 +4850,24 @@
   }
   .oes-common-submit-buy:hover  { background: rgba(74, 222, 128, 0.28); }
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
-  /* Basket submit — cyan to signal "multiple legs at once", distinct
-     from the directional buy/sell palette. */
+  /* Basket submit — sky to signal "multiple legs at once", distinct
+     from the directional buy/sell palette. Was cyan (var(--c-info),
+     #22d3ee) — a THIRD blue alongside this same footer's basket-toggle
+     icon (#7dd3fc sky on hover, see .oes-common-basket-toggle-icon
+     above) for what's the same "basket" concept in two adjacent
+     controls (item 11). --c-info itself is left untouched — it's the
+     app-wide "interactive affordance" token, out of this pass's scope. */
   .oes-common-submit-basket {
-    background: rgba(34, 211, 238, 0.18);
-    border-color: rgba(34, 211, 238, 0.65);
-    color: var(--c-info);
+    background: rgba(125, 211, 252, 0.18);
+    border-color: rgba(125, 211, 252, 0.65);
+    color: var(--algo-sky);
   }
-  .oes-common-submit-basket:hover { background: rgba(34, 211, 238, 0.28); }
+  .oes-common-submit-basket:hover { background: rgba(125, 211, 252, 0.28); }
   /* Clear-basket — neutral outline. */
   .oes-common-clear {
     padding: 0.35rem 0.75rem;
-    border-radius: 4px;
-    font-family: monospace;
+    border-radius: 3px;
+    font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.04em;

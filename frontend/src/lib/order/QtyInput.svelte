@@ -11,6 +11,8 @@
    * its own _lotsTouched flag.
    */
 
+  import { qtyFmt } from '$lib/format';
+
   /** @type {{ lots?: number, qty?: number, lotSize?: number, isEquity?: boolean, disabled?: boolean, onTouch?: (() => void) | null }} */
   let {
     lots     = $bindable(1),
@@ -50,7 +52,7 @@
             onclick={() => stepLots(1)}
             {disabled}
             aria-label="Increase lots">+</button>
-    <span class="ot-qty-chip" title="Lots × lot size = total units sent to broker">= {qty} units</span>
+    <span class="ot-qty-chip" title="Lots × lot size = total units sent to broker">= {qtyFmt(qty)} units</span>
   </div>
 {:else}
   <label class="ot-label" for="ot-qty">Qty</label>
@@ -89,27 +91,46 @@
 
   /* [−] [1 ▼] [+] (× 50 = 50) — lots-driven Qty UI. Sits inline on
      a single row; nowrap so the +/− and the input can never
-     break onto two lines on narrow viewports. Height pinned to
-     1.7rem to match the .ot-side-toggle so the [−] N [+] glyphs
-     and the BUY/SELL pill share the same y-baseline + y-centre. */
+     break onto two lines on narrow viewports. Height pinned to the
+     shared --ctl-h control height (declared in OrderTicket.svelte
+     .ot-modal / SymbolPanel.svelte .oes-modal) so the [−] N [+]
+     glyphs and the Side toggle / Select controls share the same
+     y-baseline + y-centre. Gap normalized to the ticket's standard
+     row gap (was 1rem, an outlier against every other ~0.5rem gap
+     in the form) — this also tightens the row's total width, which
+     helps the control fit inside its 65%-width cell on narrow
+     viewports. */
   .ot-lots-row {
     display: inline-flex;
     align-items: center;
-    gap: 1rem;
+    gap: 0.5rem;
     flex-wrap: nowrap;
-    height: 1.9rem;
+    height: var(--ctl-h, 1.9rem);
   }
 
   /* Editable [−][N][+] input — sits between the two stepper buttons.
      Narrow but readable; same height as the steppers so the trio
-     reads as one control. */
-  .ot-lots-input {
+     reads as one control.
+     Compound selector (.ot-input.ot-lots-input, not just
+     .ot-lots-input) is load-bearing, not stylistic — found live while
+     verifying the mobile SUSPECT items: this input carries BOTH
+     `.ot-input` (width: 100%) and `.ot-lots-input` (width: 3.2rem)
+     classes; as two separate one-class selectors they're equal
+     specificity, so the cascade tie is broken by source order, and
+     `.ot-input` (declared later, below) was silently winning —
+     stretching the [N] field to ~100% of an indefinite flex-basis
+     resolution (measured 160-340px depending on sibling content,
+     instead of the intended ~51px). A compound selector is strictly
+     more specific than either alone and wins regardless of source
+     order or which mode (Lots/Qty) renders. */
+  .ot-input.ot-lots-input {
     width: 3.2rem;
-    height: 1.9rem;
+    height: var(--ctl-h, 1.9rem);
     text-align: center;
     padding: 0 0.25rem;
     -moz-appearance: textfield;
     appearance: textfield;
+    box-sizing: border-box;
   }
   .ot-lots-input::-webkit-outer-spin-button,
   .ot-lots-input::-webkit-inner-spin-button {
@@ -120,18 +141,19 @@
 
   .ot-lots-step {
     width: 2rem;
-    height: 1.9rem;
+    height: var(--ctl-h, 1.9rem);
     padding: 0;
     border-radius: 3px;
     border: 1px solid rgba(251,191,36,0.45);
     background: rgba(251,191,36,0.10);
     color: var(--c-action);
-    font-family: monospace;
+    font-family: var(--font-numeric);
     font-size: var(--fs-xl);
     font-weight: 700;
     line-height: 1;
     cursor: pointer;
     flex: 0 0 auto;
+    box-sizing: border-box;
     display: inline-flex;
     align-items: center;
     justify-content: center;
@@ -152,7 +174,7 @@
     cursor: not-allowed;
   }
 
-  /* Shared input base — dark field with amber border, monospace. */
+  /* Shared input base — dark field with amber border. */
   .ot-input {
     width: 100%;
     background: #1d2a44;
@@ -160,8 +182,9 @@
     border-radius: 3px;
     padding: 0.3rem 0.45rem;
     color: var(--algo-slate);
-    font-size: var(--fs-lg);
-    font-family: monospace;
+    font-size: var(--ctl-fs, var(--fs-lg));
+    font-family: var(--font-numeric);
+    box-sizing: border-box;
   }
   .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }
@@ -174,8 +197,11 @@
     border: 1px solid rgba(200,216,240,0.12);
     border-radius: 3px;
     padding: 0.1rem 0.35rem;
-    font-family: monospace;
+    font-family: var(--font-numeric);
     white-space: nowrap;
-    flex-shrink: 0;
+    flex-shrink: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
   }
 </style>

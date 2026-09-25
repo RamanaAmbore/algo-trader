@@ -113,11 +113,23 @@
     opacity: 0.85;
   }
 
+  /* flex-grow: 0 (was `flex: 1 1 5rem` — grow enabled) — mobile SUSPECT
+     fix, verified live at 375px. flex-wrap distributes leftover space
+     independently PER WRAPPED LINE, so with grow enabled the same four
+     same-basis knobs (Type/Product/Variety/Validity) rendered at
+     genuinely different widths depending on how many landed on their
+     line (measured: 102px on a 2-up line vs 177px on a 2-up line with
+     more leftover space) — the "wrapped row's columns don't align with
+     the first row's" symptom the plan flagged. Fixed basis (no grow)
+     makes every knob the same width regardless of which line it wraps
+     to; the row simply leaves trailing whitespace on a shorter line
+     instead of stretching to fill it, which reads as intentional
+     (matches how Chip/pill rows elsewhere in the app wrap). */
   .ot-knob {
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
-    flex: 1 1 5rem;
+    flex: 0 1 5rem;
     min-width: 5rem;
   }
 

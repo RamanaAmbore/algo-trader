@@ -224,18 +224,25 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.5rem;
-    min-height: 1.55rem;
+    /* --ctl-h / --ctl-fs are unset (→ fallback = today's values) on
+       every page except inside the order-ticket modal, which declares
+       both to pull every control to a shared height + value font-size
+       (see OrderTicket.svelte .ot-modal / SymbolPanel.svelte .oes-modal).
+       This keeps every OTHER Select usage in the app byte-for-byte
+       unchanged. */
+    min-height: var(--ctl-h, 1.55rem);
     padding: 0.25rem 0.5rem 0.25rem 0.4rem;
     background-image: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     background-color: #1d2a44;
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
     color: var(--algo-slate);
-    font-size: var(--fs-sm);
+    font-size: var(--ctl-fs, var(--fs-sm));
     font-family: inherit;
     cursor: pointer;
     text-align: left;
     transition: border-color 0.08s;
+    box-sizing: border-box;
   }
   .rbq-select-trigger:hover:not(:disabled)  { border-color: rgba(251,191,36,0.6); }
   .rbq-select-trigger:focus                 { outline: none; border-color: var(--c-action); }

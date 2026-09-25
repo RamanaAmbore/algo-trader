@@ -10,7 +10,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { fetchQuote } from '$lib/api';
-  import { priceFmt, qtyFmt } from '$lib/format';
+  import { priceFmt, qtyFmt, aggCompact } from '$lib/format';
 
   /** @type {{
    *   symbol: string,
@@ -119,16 +119,18 @@
     return a - b;
   });
 
-  // B2/B3: OI + Volume display — format in Indian lakh notation.
-  // 1,00,000 → "1L", 1,23,456 → "1.23L", 12,34,567 → "12.35L"
+  // B2/B3: OI + Volume display — Indian-scale compact notation via the
+  // app's canonical `aggCompact` formatter ($lib/format), which every
+  // other ₹-aggregate surface in the app already uses. Was a local
+  // `fmtLakh` producing "12.3K"/"1.5Cr" against aggCompact's own
+  // "12K"/"1.50C" — two different compact-number conventions for the
+  // same magnitude of number. `aggCompact` returns '—' for non-finite/
+  // null the same way the old helper did.
   /** @param {number|null|undefined} n */
   function fmtLakh(n) {
     const v = Number(n);
     if (!Number.isFinite(v) || v <= 0) return '—';
-    if (v >= 1e7) return (v / 1e7).toFixed(2).replace(/\.?0+$/, '') + 'Cr';
-    if (v >= 1e5) return (v / 1e5).toFixed(2).replace(/\.?0+$/, '') + 'L';
-    if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.0$/, '') + 'K';
-    return String(Math.round(v));
+    return aggCompact(v);
   }
 </script>
 
@@ -140,7 +142,7 @@
   {#if (q && q.ltp && q.ohlc?.close && q.ohlc.close > 0) || err}
     <div class="ot-depth-h">
       {#if q && q.ltp && q.ohlc?.close && q.ohlc.close > 0}
-        <span class="ot-depth-prev">Prev ₹{priceFmt(q.ohlc.close)}</span>
+        <span class="ot-depth-prev">Prev {priceFmt(q.ohlc.close)}</span>
       {:else if err}
         <span class="ot-depth-meta">{err}</span>
       {/if}
@@ -168,7 +170,7 @@
       {#if _spread != null && _spread >= 0}
         <span class="ot-depth-stat">
           <span class="ot-depth-stat-lbl">Spd</span>
-          <span class="ot-depth-stat-val ot-depth-spread">₹{priceFmt(_spread)}</span>
+          <span class="ot-depth-stat-val ot-depth-spread">{priceFmt(_spread)}</span>
         </span>
       {/if}
     </div>
@@ -181,8 +183,8 @@
     {#each buyRows as b, i (i)}
       {@const a = sellRows[i]}
       <span class="ot-depth-cell ot-depth-bid-qty">{b ? qtyFmt(b.quantity) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-bid">{b ? '₹' + priceFmt(b.price) : '—'}</span>
-      <span class="ot-depth-cell ot-depth-ask">{a ? '₹' + priceFmt(a.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-bid">{b ? priceFmt(b.price) : '—'}</span>
+      <span class="ot-depth-cell ot-depth-ask">{a ? priceFmt(a.price) : '—'}</span>
       <span class="ot-depth-cell ot-depth-ask-qty">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
@@ -240,10 +242,11 @@
     display: grid;
     grid-template-columns: 1fr 1fr 1fr 1fr;
     gap: 0.15rem 0.4rem;
-    font-family: monospace;
-    /* Audit fix — explicit tabular-nums on the price/qty cells. Monospace
-       covers digit-width consistency in most faces, but `tabular-nums`
-       is the canonical spec per the CLAUDE.md number-formatting rule. */
+    font-family: var(--font-numeric);
+    /* Audit fix — explicit tabular-nums on the price/qty cells. The
+       shared --font-numeric stack covers digit-width consistency, but
+       `tabular-nums` is the canonical spec per the CLAUDE.md
+       number-formatting rule. */
     font-variant-numeric: tabular-nums;
     font-size: var(--fs-sm);
   }
@@ -294,7 +297,7 @@
   .ot-depth-stat-val {
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
-    font-family: monospace;
+    font-family: var(--font-numeric);
   }
   .ot-depth-spread {
     color: var(--algo-sky, #7dd3fc);

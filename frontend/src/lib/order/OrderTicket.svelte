@@ -2499,7 +2499,7 @@
             {/if}
           </div>
           <div class="ot-quick-block">
-            <span class="ot-label">CE/PE</span>
+            <span class="ot-label">CE / PE</span>
             <div class="ot-side-toggle ot-side-toggle-compact">
               <button type="button" class="ot-side-btn"
                 class:on={_pickedOptType === 'CE'}
@@ -2652,8 +2652,8 @@
       {#if showLimit}
         <div class="ot-label-block ot-price-cell">
           <label class="ot-label" for="ot-price">
-            L.PRICE
-            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
+            Price
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick {_tickSize.toFixed(_tickDecimals)}</span>
             {#if _priceTouched && _lastQuote}
               <button type="button" class="ot-price-reset"
                       title="Re-arm auto-fill — restore {_side === 'BUY' ? 'top ask' : 'top bid'}"
@@ -2672,7 +2672,7 @@
         <div class="ot-label-block ot-price-cell">
           <label class="ot-label" for="ot-trigger">
             Trigger
-            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick {_tickSize.toFixed(_tickDecimals)}</span>
           </label>
           <input id="ot-trigger" type="number" class="ot-input ot-num"
                  step={_tickSize}
@@ -2690,7 +2690,7 @@
         <div class="ot-label-block">
           <label class="ot-label" for="ot-trigger">
             Trigger
-            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick ₹{_tickSize.toFixed(_tickDecimals)}</span>
+            <span class="ot-tick-chip" title="Kite rejects prices not aligned to this tick. The field snaps on blur.">tick {_tickSize.toFixed(_tickDecimals)}</span>
           </label>
           <input id="ot-trigger" type="number" class="ot-input ot-num"
                  step={_tickSize}
@@ -2858,8 +2858,18 @@
       </div>
     {/if}
 
-    <!-- #15 — show TP/SL trigger prices from preview plan -->
-    {#if !_isUsingNone && !_previewLoading && _previewPlan?.gtts?.length}
+    <!-- #15 — show TP/SL trigger prices from preview plan.
+         Gated behind `standalone` (item 4, visual-consistency pass):
+         this chip duplicates SymbolPanel's shell-level `.oes-tpl-preview`
+         (rendered above the tab body, visible on both Ticket + Chain),
+         which shows the same TP/SL trigger values via a different
+         formatter (`'₹' + Number(v).toLocaleString('en-IN')` vs this
+         component's `priceFmt`). `standalone` is `false` at the ticket's
+         only current mount site (SymbolPanel.svelte), so this gate stops
+         the duplicate render there without deleting the code path — a
+         genuinely standalone future mount (no shell chip above it) still
+         gets its own preview. -->
+    {#if standalone && !_isUsingNone && !_previewLoading && _previewPlan?.gtts?.length}
       {@const _tpGtt = _previewPlan.gtts[0]}
       {@const _twoLeg = _tpGtt?.trigger_type === 'two-leg' && _tpGtt?.trigger_values?.length >= 2}
       {@const _tpTrig = _tpGtt?.trigger_values?.[0] ?? null}
@@ -2868,7 +2878,7 @@
         <div class="ot-preview-trigger-row">
           {#if _tpTrig != null}
             <span class="ot-preview-trigger-chip ot-preview-tp">
-              TP {_previewPlan.gtts[0]?.trigger_type === 'two-leg' ? '' : ''}&#8658; {priceFmt(_tpTrig)}
+              TP &#8658; {priceFmt(_tpTrig)}
             </span>
           {/if}
           {#if _slTrig != null}
@@ -3116,6 +3126,22 @@
     }
   }
   .ot-modal {
+    /* Shared control-height / control-value-font tokens — every
+       control in the ticket (Select, SideToggle, QtyInput steppers +
+       input, price/trigger input) reads its height/font-size off
+       these via `var(--ctl-h, <today's-value>)` so a single-column
+       stacked view reads as one horizontal control strip instead of
+       visibly uneven row heights / mismatched value text sizes.
+       Declared here (this component's own root) AND on SymbolPanel's
+       .oes-common-row (the shell's footer action row — side selector /
+       submit / basket icon / margin chip — lives outside this
+       component's DOM, as a sibling under the shell, not a descendant
+       of .ot-modal) so both trees resolve to the same values. Every
+       OTHER consumer of Select.svelte (pages outside the order
+       ticket) is unaffected — the var() fallback there preserves
+       today's value when --ctl-h/--ctl-fs are unset. */
+    --ctl-h: 1.7rem;
+    --ctl-fs: var(--fs-md);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1px solid rgba(251,191,36,0.35);
     border-radius: 8px;
@@ -3227,10 +3253,13 @@
     animation: ot-tmpl-flash 1.2s ease-out forwards;
   }
 
-  /* #25 — no default template warning (amber, non-blocking) */
+  /* #25 — no default template warning (amber, non-blocking). Token
+     consolidation (item 11) — was a hardcoded #fbbf24 literal where
+     every sibling amber/warning treatment in this file uses
+     var(--c-action) (same resolved value, single source of truth). */
   .ot-tmpl-no-default-warn {
     font-size: var(--fs-xs);
-    color: #fbbf24;
+    color: var(--c-action);
     background: rgba(251, 191, 36, 0.08);
     border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 3px;
@@ -3271,7 +3300,7 @@
     margin-top: 0.25rem;
   }
   .ot-preview-err-chip {
-    font-family: monospace;
+    font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     color: #f87171;
     background: rgba(248, 113, 113, 0.10);
@@ -3312,7 +3341,35 @@
        wraps to a taller stack (e.g. price + auto/reset chips). */
     align-items: flex-start;
   }
-  .ot-label-block { flex: 1 1 0; min-width: 0; }
+  /* Matches .ot-knob's flex-column-with-gap structure (item 5) — was
+     just `flex: 1 1 0; min-width: 0;`, relying solely on `.ot-label`'s
+     own margin-bottom (0.18rem) for label-to-control spacing. `.ot-knob`
+     rows (Type/Product/Variety/Validity/Side) get 0.18rem margin PLUS
+     an extra 0.18rem flex gap (≈0.36rem total), so adjacent rows built
+     from `.ot-label-block` (Lots/Price/Trigger) floated their labels
+     closer to their controls than the knob rows did. flex-basis /
+     min-width stay unset here — `.ot-lots-cell` / `.ot-price-cell`
+     (below) still own the 65%/35% split for their specific row. */
+  .ot-label-block {
+    display: flex;
+    flex-direction: column;
+    /* align-items: flex-start overrides flex's default `stretch` —
+       load-bearing, found live while verifying the mobile SUSPECT
+       items. Without it, becoming a flex-column container stretches
+       EVERY child to the container's full cross-axis (horizontal)
+       width by default. `.ot-price-cell`'s `<input class="ot-input">`
+       already declares width:100% so stretch is a no-op there, but
+       `.ot-lots-cell`'s QtyInput renders `.ot-lots-row` — an
+       inline-flex control cluster meant to shrink-to-fit its content
+       ([−] N [+] chip) and sit left-aligned with empty space after
+       it — stretch instead forced it edge-to-edge across the whole
+       65%-wide cell, ballooning the [N] input from ~51px to 150-340px
+       depending on sibling content width. */
+    align-items: flex-start;
+    gap: 0.18rem;
+    flex: 1 1 0;
+    min-width: 0;
+  }
 
   /* Quick-row top strip: Account · Symbol · Qty side-by-side. Each
      block stacks its label above the control like the rest of the
@@ -3472,13 +3529,15 @@
 
   .ot-input {
     width: 100%;
+    min-height: var(--ctl-h, 1.7rem);
+    box-sizing: border-box;
     background: #1d2a44;
     border: 1px solid rgba(251,191,36,0.25);
     border-radius: 3px;
     padding: 0.3rem 0.45rem;
     color: var(--algo-slate);
-    font-size: var(--fs-lg);
-    font-family: monospace;
+    font-size: var(--ctl-fs, var(--fs-lg));
+    font-family: var(--font-numeric);
   }
   .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }
@@ -3546,37 +3605,58 @@
     align-items: flex-end;
     margin-bottom: 0.45rem;
   }
+  /* flex-grow: 0 (was `flex: 1 1 5rem`) — this rule governs the
+     Strategy knob, a sibling of Side/Type/Product/Variety/Validity in
+     the SAME shared `.ot-row-knobs` flex container (those live in
+     SideToggle.svelte / OrderKnobsRow.svelte, each with their own
+     scoped copy of this same rule — Svelte CSS is per-component, but
+     the flex CONTAINER and its grow-distribution math is shared across
+     all of them). Kept in lockstep with the matching fix in those two
+     files (mobile SUSPECT 3 + the desktop over-grow regression it
+     caused) — if this one rule were left growing while its siblings
+     were fixed, Strategy would become the new sole space-absorber. */
   .ot-knob {
     display: flex;
     flex-direction: column;
     gap: 0.18rem;
-    flex: 1 1 5rem;
+    flex: 0 1 5rem;
     min-width: 5rem;
   }
-  .ot-knob-side { flex: 1.4 1 7rem; min-width: 7rem; }
-  /* C3: strategy reload link */
+  .ot-knob-side { flex: 0 1 7rem; min-width: 7rem; }
+  /* C3: strategy reload link — was `var(--c-info, #7dd3fc)`: a
+     misleading fallback that never fired, since --c-info (app.css)
+     always resolves to --algo-cyan (#22d3ee), not the documented
+     #7dd3fc sky "info" color. Uses the real --algo-sky token now, so
+     the intended sky tint actually renders (item 11 consolidation —
+     see .ot-tick-chip below for the same fix). --c-info itself is
+     left untouched: it's the app-wide "interactive affordance" token
+     (chart tooltips, .algo-ts-data, etc.), a different semantic from
+     this ticket's info-blue, out of this pass's scope. */
   .ot-strategies-reload {
     background: none;
     border: none;
-    color: var(--c-info, #7dd3fc);
+    color: var(--algo-sky);
     font-size: var(--fs-sm);
     cursor: pointer;
     padding: 0;
     text-align: left;
     text-decoration: underline;
   }
-  .ot-strategies-reload:hover { color: #bae6fd; }
+  .ot-strategies-reload:hover { color: var(--algo-sky-text); }
   /* Tick-size chip on the Limit / Trigger labels — informs the
      operator of the symbol's minimum price increment. Reading the
      chip at a glance is cheaper than learning by Kite rejection
-     after Submit. */
+     after Submit. Recolored from cyan (--c-info-14 / #67e8f9) to the
+     ticket's --algo-sky info family — matches .ot-depth-prev /
+     .ot-price-reset, which already use #7dd3fc for the same
+     "market-context info" semantic (item 11). */
   .ot-tick-chip {
     margin-left: 0.35rem;
     padding: 0.05rem 0.32rem;
     border-radius: 3px;
-    background: var(--c-info-14);
-    border: 1px solid rgba(34, 211, 238, 0.32);
-    color: #67e8f9;
+    background: var(--algo-sky-bg);
+    border: 1px solid var(--algo-sky-border-soft);
+    color: var(--algo-sky);
     font-family: var(--font-numeric);
     font-size: var(--fs-2xs);
     font-weight: 700;
@@ -3585,11 +3665,17 @@
     user-select: none;
   }
   /* .ot-exchange-locked moved to OrderKnobsRow.svelte — exclusive to that component */
+  /* CE/PE picker's own local copy of .ot-side-toggle-compact — Svelte
+     CSS is component-scoped, so this needs its own rule set distinct
+     from SideToggle.svelte's copy (which drives BUY/SELL). Sized off
+     the shared --ctl-h / --ctl-fs tokens (declared on .ot-modal above)
+     for height/font-size parity with Select, SideToggle, and the
+     footer side button. */
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;
-    height: 1.55rem;          /* match Select chip height */
-    min-height: 1.55rem;
+    height: var(--ctl-h, 1.55rem);
+    min-height: var(--ctl-h, 1.55rem);
     border-radius: 3px;
     overflow: hidden;
     background: rgba(255, 255, 255, 0.04);
@@ -3603,7 +3689,7 @@
     border: 0;
     color: #94a3b8;
     font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
+    font-size: var(--ctl-fs, var(--fs-sm));
     font-weight: 800;
     letter-spacing: 0.04em;
     line-height: 1;
@@ -3614,7 +3700,23 @@
     background: rgba(255, 255, 255, 0.06);
     color: #cbd5e1;
   }
-  /* .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on / .ot-side-sell.on moved to SideToggle.svelte */
+  /* .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on / .ot-side-sell.on
+     (the BUY/SELL variant) lives in SideToggle.svelte's own scope — that
+     component owns the green/red side semantics.
+     This file's own copy of .ot-side-toggle-compact only ever renders
+     the CE/PE picker (plain .ot-side-btn, no .ot-side-buy/.ot-side-sell
+     modifier — see the bare-underlying picker markup above), which had
+     NO selected-state rule at all: the sibling :hover:not(.on) rule
+     above made the selected CE/PE pill the only one that didn't respond
+     to hover, and the picked option was visually indistinguishable from
+     the unpicked one. Amber treatment (not green/red — CE/PE isn't a
+     buy/sell choice) matches the same "on" language already used for
+     .ot-chase-label.on / .ot-draft-label.on elsewhere in this file. */
+  .ot-side-toggle-compact .ot-side-btn.on {
+    background: rgba(251,191,36,0.18);
+    color: var(--c-action);
+    box-shadow: inset 0 0 0 1px rgba(251,191,36,0.55);
+  }
 
   /* Mode row */
   .ot-mode-row {
