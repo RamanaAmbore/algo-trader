@@ -5368,7 +5368,7 @@
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Chg %</span>
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
-          <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
+          <span class="num" title="Total P&L from F&O legs only. Sum of the rows shown below — matches NavStrip P slot 2 only when no account/strategy/search filter is active.">P&amp;L</span>
           <span class="num" title="F&O-only expiry P&L for this group. Sum of the rows shown below — matches NavStrip P slot 3 only when no account/strategy/search filter is active.">Exp P&amp;L</span>
           <span class="num" title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive when premium captured exceeds current mark-to-market.">Extrinsic</span>
           <span class="num">Legs</span>
