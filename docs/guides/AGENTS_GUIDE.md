@@ -128,7 +128,7 @@ Read the live catalog at `/admin/tokens`. The full canonical list is in [CLAUDE.
 ### Metrics (number-producing)
 
 **Point-in-time** — `pnl`, `pnl_pct`, `day_val`, `day_pct`, `inv_val`, `cur_val`,
-`cash`, `avail_margin`, `used_margin`, `collateral`.
+`cash`, `sod_cash`, `avail_margin`, `used_margin`, `collateral`.
 
 The `day_val` metric reads `day_change_val` from positions data — today's session
 P&L calculated from the previous session's settlement close price. This is the same
@@ -139,7 +139,12 @@ on entry but lost ground today will fire a loss alert on `day_val` alone, even i
 
 For `pnl_pct` metric: when `util_debits = 0` (intraday/MIS positions with no margin utilization), the metric falls back to using `net` (available) margin as the denominator. Returns `None` (leaf skipped) only when both denominator options are zero.
 
-**Rate of change** (over `alerts.rate_window_min`, default 10 min) — `pnl_rate_abs`, `pnl_rate_pct`, `day_rate_abs`, `day_rate_pct`. These metrics return `None` (and are silent — no alert fires) until at least 2 samples have accumulated in the rate window, typically ~5 minutes after session start.
+**Rate of change** (over `alerts.rate_window_min`, default 10 min) — `pnl_rate_abs`,
+`pnl_rate_pct`, `day_rate_abs`, `day_rate_pct`. These metrics return `None` (and are
+silent — no alert fires) until at least 3 samples span ≥80% of the effective rate
+window (widened from configured window when observed poll cadence is slower than
+2.2× the samples' median gap). This filters out single-tick noise and window-boundary
+spikes.
 
 **Rolling-window aggregates** (Phase 24) — `mean_pnl_30m / _1h`, `mean_day_30m / _1h`, `max_drawdown_pnl_30m / _1h / _4h`, `max_drawdown_pnl_pct_30m / _1h`, `max_drawdown_day_1h`, `stdev_pnl_30m / _1h`, `range_pnl_30m / _1h`.
 
@@ -280,7 +285,7 @@ Open `/automation` and look at these — all 9 are teaching examples you can clo
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
 | `loss-positions-acct` | per-account guardrail (30-min cooldown) | Uses an `any:` block to OR four threshold types; routes to ntfy at urgent priority |
-| `loss-rate-acct` | per-account rate alert (10-min cooldown, 10-min baseline) | Rate-of-loss metric + re-fire suppression; fires only when **both** absolute loss rate ≤ -₹10,000/min **AND** percentage rate ≤ -0.25%/min; silent for first 10 min after market open; routes to ntfy at urgent priority |
+| `loss-rate-acct` | per-account rate alert (10-min cooldown, 15-min baseline) | Rate-of-loss metric + re-fire suppression; fires only when **both** absolute loss rate ≤ -₹10,000/min **AND** percentage rate ≤ -0.25%/min; silent for first 15 min after segment opens; routes to ntfy at urgent priority |
 | `loss-positions-total` | book-wide guardrail (critical tier) | Same shape, scoped to TOTAL; suppresses `loss-positions-acct` on same fire; routes to ntfy at urgent priority |
 | `loss-margin-low` | available margin warning (DISABLED) | Disabled: cross-account false positive with Dhan/Groww zero margin; `loss-funds-negative` covers the critical case |
 | `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |

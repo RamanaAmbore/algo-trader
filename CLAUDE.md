@@ -282,6 +282,51 @@ Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` /
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
 
+**Alert evaluation and latching** (2026-09, fixes 11 confirmed loss/rate-of-change condition bugs) —
+Agent condition evaluation enforces three critical invariants via the alert engine 
+([`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py)):
+
+  **Missing-vs-zero convention (fix #3):** Broker adapters and grammar resolvers must return
+  `None` (not a coerced `0`) when a funds/margin field is genuinely absent or unmapped — only
+  a broker-confirmed real `0` should trigger a threshold. Applied to RAW broker columns only
+  (`cash`, `sod_cash`, `avail_margin`, `used_margin`, `collateral` via `_num_or_none()` in
+  [`grammar.py:76–86`](backend/api/algo/grammar.py#L76-L86)); does NOT apply to computed aggregates
+  (`pnl`, `day_val`, `day_pct`, etc.) which are `.fillna(0)` by the background summary builder.
+  Dhan/Groww adapters use `_dhan_num_or_none()` ([`dhan.py:1591–1601`](backend/brokers/adapters/dhan.py#L1591-L1601))
+  and `_gf_or_none()` ([`groww.py:1475–1490`](backend/brokers/adapters/groww.py#L1475-L1490))
+  respectively — these check `is not None` (not truthiness), so a real `0` on the first
+  present key passes through. Kite tolerates `None`-safe lookups from `.get()` natively.
+  
+  **Per-leaf latch model with hysteresis and escalation (fixes #8/#9):** `_V2_LATCH` (keyed by
+  `(agent_slug, metric, scope, account)`) tracks one independent latch per LEAF per ACCOUNT.
+  Recovery clears latches only when a value recovers past the re-arm band: re-arm threshold = 
+  `thr − worse_dir × 0.2 × |thr|` (fix #9, hysteresis via `_v2_recovered_past_band()` at
+  [`agent_engine.py:86–105`](backend/api/algo/agent_engine.py#L86-L105)). Escalation re-fires
+  at linear multiples: after cooldown elapsed, an ordered-op leaf re-fires when value moves
+  ≥|threshold| further in the worse direction (`_v2_leaf_should_fire()` at
+  [`agent_engine.py:108–151`](backend/api/algo/agent_engine.py#L108-L151)); zero-threshold
+  leaves (e.g. `cash < 0`) re-fire on cooldown alone. Recovery runs EVERY tick
+  (`_v2_apply_recovery()`) regardless of whether matches exist, and MUST run before escalation
+  gating. Never treat an absent key (fetch timeout/failure/empty frame) as recovered (fix #5).
+  
+  **Deploy-survival hydration (fixes #7/#8/#9):** Without persistence, every process restart
+  re-fires every standing breach. Fix: `_v2_hydrate_latch()` (async, called once per process
+  at [`agent_engine.py:2170`](backend/api/algo/agent_engine.py#L2170) inside `run_cycle()`)
+  seeds `_V2_LATCH` from today's `agent_events` rows (both `triggered` and `triggered_suppressed`
+  event types — fix #7 makes suppressed fires also record a latch). Helper `_hydrate_latch_from_rows()`
+  at [`agent_engine.py:206–230`](backend/api/algo/agent_engine.py#L206-L230) reuses the EXISTING
+  `agent_events` table schema (detail JSON already carries metric/scope/account/value), no
+  migration required. Hydration reads only today's IST-dated rows; `_V2_LATCH_HYDRATED` flag
+  guards against retry-on-failure; daily reset via `_maybe_reset_v2_state()` wipes the latch
+  at trading-day rollover.
+  
+  **Cash and start-of-day cash tokens (fix #4):** The `cash` metric now reads live available
+  cash from `'avail cash'` column (mapped to `live_cash` via [`routes/funds.py:31`](backend/api/routes/funds.py#L31)),
+  not start-of-day balance. A new `sod_cash` token (returns `'avail opening_balance'`) preserves
+  the old start-of-day reading for agents that specifically need the intraday-stable baseline.
+  The token name `cash` was kept unchanged so existing agents (e.g. prod's `loss-funds-negative`)
+  get the corrected live-cash semantics without requiring re-save.
+
 **Market daily window** — 08:00–23:31 IST. At 08:00: `fix_daily_book_prev_close()` sets BOTH `daily_book.ltp = prev_close = settlement close_price` — the only moment prev_close changes. NON-MCX snapshot at 15:45 (close+15 min) writes `ltp` only, no prev_close change. MCX snapshot at 23:45 (close+15 min) same. Ticker stops at 23:31. Closed window: 23:31→08:00 IST — routes serve `daily_book` snapshot only. Full schedule: memory `project_market_daily_window`.
 
 **WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). New instrument from order fill: Kite postback extracts `instrument_token` directly from payload, calls `get_ticker().subscribe([token])` on `COMPLETE`. Dhan/Groww postbacks resolve the token from (tradingsymbol, exchange) via instruments lookup, then subscribe. `subscribe()` is idempotent. Full design: memory `project_websocket_design`.
