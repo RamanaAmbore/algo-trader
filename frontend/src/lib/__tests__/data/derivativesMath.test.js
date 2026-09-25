@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -419,5 +419,62 @@ describe('perRootReduce — Extrinsic, multi-account same-symbol (item-2 fix)', 
     const matchStrategyExcluding = buildStrategyMatcher('strat-1', new Set(['CRUDEOIL6500PE']));
     const outExcluded = perRootReduce({ ...reduceParams(() => true), matchStrategy: matchStrategyExcluding });
     expect(outExcluded.CRUDEOIL).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// interpAt — payoff-curve linear interpolation (C4 fix)
+// ─────────────────────────────────────────────────────────────────────────────
+describe('interpAt', () => {
+  const grid = [
+    { spot: 100, today_value: -500, expiry_value: -1000 },
+    { spot: 110, today_value: 0,    expiry_value: 0 },
+    { spot: 120, today_value: 500,  expiry_value: 1000 },
+  ];
+
+  it('interpolates linearly between two bracketing grid points (not nearest-point snap)', () => {
+    // Nearest-point would snap 105 -> either 100 or 110 exactly; interpolation
+    // must land exactly halfway: (-500 + 0) / 2 = -250.
+    expect(interpAt(grid, 105, 'today_value')).toBe(-250);
+    expect(interpAt(grid, 105, 'expiry_value')).toBe(-500);
+  });
+
+  it('returns the exact grid value when x lands exactly on a grid point', () => {
+    expect(interpAt(grid, 110, 'today_value')).toBe(0);
+    expect(interpAt(grid, 120, 'expiry_value')).toBe(1000);
+  });
+
+  it('clamps to the nearest edge value rather than extrapolating out-of-range', () => {
+    expect(interpAt(grid, 50, 'today_value')).toBe(-500);
+    expect(interpAt(grid, 500, 'today_value')).toBe(500);
+  });
+
+  it('returns null when either bracketing point has a null value (client stub today_value before BS pricing lands)', () => {
+    const stubGrid = [
+      { spot: 100, today_value: null, expiry_value: -1000 },
+      { spot: 110, today_value: null, expiry_value: 0 },
+    ];
+    expect(interpAt(stubGrid, 105, 'today_value')).toBeNull();
+    expect(interpAt(stubGrid, 105, 'expiry_value')).toBe(-500);
+  });
+
+  it('returns null for an empty array or a non-finite x', () => {
+    expect(interpAt([], 100, 'today_value')).toBeNull();
+    expect(interpAt(grid, null, 'today_value')).toBeNull();
+    expect(interpAt(grid, NaN, 'today_value')).toBeNull();
+  });
+
+  it('handles a single-point array without dividing by zero', () => {
+    expect(interpAt([{ spot: 100, today_value: 42, expiry_value: 7 }], 100, 'today_value')).toBe(42);
+    expect(interpAt([{ spot: 100, today_value: 42, expiry_value: 7 }], 999, 'today_value')).toBe(42);
+  });
+
+  it('matches nearest-point behaviour exactly ON a grid point (regression guard vs the old snap logic)', () => {
+    // At x==grid[i].spot exactly, both interpolation and nearest-point agree —
+    // this is the case that masked C4's bug for NSE before the C2 live-tick fix
+    // (payoffSpot used to equal a grid point exactly).
+    for (const p of grid) {
+      expect(interpAt(grid, p.spot, 'today_value')).toBe(p.today_value);
+    }
   });
 });

@@ -1,236 +1,112 @@
-# Plan: Fix Order-Ticket / Chase / Close-Button Audit Findings (D1–D6, R1, R3, R6, R7)
+# Plan: Fix "0 Instead of Last-Known-Good" Data Bug (NavStrip + Payoff Chart) and Payoff Chart Flash/Desync
 
 ## Context
 
-Operator reported: "in orders, some times close buy and close sell buttons
-don't work. margins also I am not sure if it is correct. When order is placed,
-it fails chase behavior etc need to be audited. entire order ticket, order
-chain, price chart needs to be audited." A read-only audit (this session) found
-**6 confirmed defects (D1–D6)** in the order-ticket → chase pipeline, several of
-which compound into exactly the symptoms reported ("close didn't work", "order
-fails", margin-looks-right-then-fails). Two of the audit's flagged risks (R2 —
-chase restart-recovery, R3 — chase placing a stale-remainder order after a
-failed cancel) turned out to already be fixed as a side effect of the C1–C7
-order-safety commit (`f5db7765`) that just shipped — verified directly against
-the current code below, not assumed. This plan covers the still-open items:
-D1–D6 (must-fix), R1 (real waste, not just theoretical), R6 (quick), and R7
-(the specific "close button does nothing" symptom the operator described —
-confirmed as a UX defect, not a placement bug: the CLOSE/BUY buttons are side
-selectors, not submit buttons).
+Operator reported, across several messages, one connected bug cluster:
+1. Payoff chart flashes/redraws the whole chart on every refresh instead of showing a small progress indicator over just the LTP/CHG% values.
+2. The Payoff chart's overlay values (LTP, CHG%, Exp P&L) can disagree with the curve itself.
+3. When ticks/data can't refresh, the Payoff chart draws a flat **0** line and NavStrip positions show **0** — real money displayed as zero. Wanted behavior: **never show 0 as a stand-in for missing data** — freeze and keep showing the **last known good values**, with proper color-coding to signal staleness.
 
-**Operator decision on R7**: keep the existing two-step flow (select side, then
-Submit) — do not make CLOSE a one-click submit. Fix by making the labels
-unambiguous: the Submit button reflects the actual action about to fire, and
-the side-selector buttons get a visual/label cue that they only select side.
+Two read-only audits (this session) traced this precisely:
+- **NavStrip audit**: a genuine root cause. The broker conn-service turns a positions-fetch **failure** into an HTTP 200 with `accounts: []`. Every layer above that — the sync client, the route, the snapshot-gate cache, the frontend store, `portfolioStore`, `PositionStrip`, and `PerformancePage.loadAll` — treats that empty-but-"successful" response as genuine fresh data (a real empty book) rather than a degraded read, so it overwrites the last-known-good value (in memory AND in localStorage) with 0. **This is the same root data source the Payoff chart's book-poller reads from** — confirmed shared root cause for the "0 line" symptom.
+- **Payoff chart audit**: the flash and the desync are mostly separate mechanisms (not both caused by the 0-data bug): a chart-wide "pulse" animation firing on every routine 5s refetch, the x/y axis re-centering on every refetch, a 4Hz-rebuilding stub replacing the real curve during any brief `strategy`-null window, several overlay props (Exp P&L, DTE, σ, spot) reading stale or differently-clocked data than the curve itself, and — for NSE underlyings specifically — the overlay only updating once per 5s refetch instead of ticking live like the rest of the page.
 
-**Already fixed, no action needed (verified against current code, not the stale
-audit text)**:
-- **R2** (chase restart-recovery duplicating/overfilling) — this is exactly C4
-  from the just-shipped order-safety fix. `background.py:_recover_chase_already_filled`
-  now reconciles true fill state and cancels orphaned resting orders before
-  restarting.
-- **R3** (chase places a new order for a stale remainder when the previous
-  order's cancel "fails" because it already completed) — this is now resolved
-  as a side effect of C2's `_ch_capture_late_fill`: it re-queries the
-  just-cancelled order's FINAL status AFTER the cancel call (regardless of
-  whether the cancel itself succeeded, since a completed order's cancel is a
-  no-op/failure at the broker but the post-cancel status read still returns the
-  true COMPLETE state), folding any late fill into `cumulative_filled` before
-  the next order is sized. Will still add one regression test confirming this
-  (not previously covered), since it was fixed incidentally, not intentionally
-  tested for this exact scenario.
+This plan fixes both, in order: the shared 0-vs-last-known-good root cause first (affects real money display on the highest-traffic surface, NavStrip), then the Payoff-chart-specific flash/desync mechanisms.
 
-## The defects and fixes
+**Operator decision**: the Payoff chart's Exp P&L number (shown next to the expiry marker) will be priced at the **anchor-contract spot** (matching what the marker itself points at), not the front-month spot — so the number and the dart always visually agree. The separate Legs-grid Exp P&L total is unaffected (stays front-month).
 
-**D1 — Chased ticket orders always go out as NRML, regardless of the operator's
-selected product.** `orders_place.py:_ticket_place_or_chase_live` calls
-`_start_live_chase(...)` without `product`/`variety`/`validity`;
-`orders_helpers.py:_live_chase_config` never sets them either, so
-`ChaseConfig.product` keeps its dataclass default `"NRML"` (verified:
-`chase.py:362`). Chase is on by default for every LIMIT/SL ticket. Closing an
-MIS F&O position via chase sends NRML to the broker — opens a separate opposite
-NRML leg instead of flattening the MIS one (matches "close didn't work"), or
-gets rejected for margin ("order fails"). Closing/buying CNC equity with chase
-gets rejected outright. The non-chase direct-place branch three lines below
-already reads `data.variety` correctly (`orders_place.py:1559`) — only the
-chase path is missing this.
-**Fix**: thread `data.product`, `data.variety`, `data.validity` from the ticket
-request into `_start_live_chase` → `_live_chase_config` → `ChaseConfig`, mirroring
-how the direct-place branch already reads them.
+## Part A — Root cause: failed fetch → HTTP 200 empty → 0 overwrites last-known-good
 
-**D2 — Close tickets opened while the instrument cache is still loading send a
-many-times-oversized order.** `MarketPulse.svelte` and
-`admin/derivatives/+page.svelte` fall back to `lot = Number(inst?.ls || 1)` = 1
-when `getInstrument` hasn't resolved yet. `OrderTicket.svelte` only repairs a
-lot size that starts at 0 (never one that starts at 1 — a "1" looks like a
-valid equity lot size, not a placeholder), and the repair effect only re-runs
-when `_resolvedSymbol` changes, which never happens for a close ticket (same
-symbol throughout). With `_lotSize=1`, `buildPlacePayload` sends raw contracts
-as if non-F&O; the backend's `_resolve_fno_qty` always treats F&O quantity as
-lots and multiplies by the real lot size again (e.g. 1-lot NIFTY close →
-`quantity=75` sent → backend computes `75 × 75 = 5625` contracts). Close intent
-skips the 5-lot/MCX-20-lot/50-lot ceilings, so nothing catches this. The margin
-preview uses a different, correct code path, so it shows a small, correct
-number right up until submit. `PerformancePage.svelte` already awaits
-`_instrumentsReady` before reading lot size — the correct pattern the other two
-hosts should follow.
-**Fix**: `MarketPulse.svelte` and `admin/derivatives/+page.svelte` await
-instrument readiness (mirror `PerformancePage.svelte:183`'s pattern) before
-opening a close ticket, instead of falling back to `1`. As defense in depth,
-also make `OrderTicket.svelte`'s lot-size repair effect re-check when
-`getInstrument` transitions from unresolved→resolved even when
-`_resolvedSymbol` hasn't changed (a close ticket's symbol is static).
+**A1 (broker, CONFIRMED).** `backend/brokers/service/routes.py:269-281` — the `/internal/positions` handler (and the equivalent `/holdings`, `/margins` handlers) catches every exception and returns `InternalPerAccountResp(accounts=[], errors=[...])` with HTTP 200. `backend/brokers/client/sync.py:42-61` never reads `payload.errors` and treats `accounts=[]` as a real empty result, so no `fetch_failed` marker is ever set for this failure path.
+**Fix**: `sync.py`'s per-account fetch should surface the `fetch_failed` sentinel (the same one already used for direct-path broker exceptions) whenever `payload.errors` is non-empty or `accounts` comes back empty while accounts are actually configured for that call.
 
-**D3 — A 15s client timeout renders a failed/slow order as a false success.**
-`frontend/src/lib/api.js:_request` returns `null` instead of throwing when its
-internal 15s timeout fires. `placeTicketOrder` resolves `null` →
-`OrderTicket.svelte`'s `submitOk` renders "LIVE BUY 75 X @₹… · #?" and the
-modal closes — a fake success with an unknown order id. The ticket can
-legitimately exceed 15s because of preflight's full instruments download (R1)
-plus the chase's own internal 15s `wait_for`.
-**Fix**: distinguish a genuine timeout from a real response in `api.js` — throw
-(or return a distinct sentinel) on timeout instead of `null`, and have the
-ticket's error handler render an explicit "still processing, check the order
-book" state rather than a false success when it can't confirm one way or the
-other.
+**A2 (backend, CONFIRMED).** `backend/api/routes/positions.py:858` only treats the response as an outage when **all** per-account results carry `fetch_failed` — an empty list (`per_acct == []`, A1's failure mode) trivially satisfies neither "all failed" nor "not all failed" correctly and falls through to `PositionsResponse(rows=[])` at ~line 869-870, treated as a genuine empty book. Separately, `snapshot_gate.py`'s `_stash_live_response("positions", data)` and the TTL/SSOT caches will happily stash this empty payload as the new "last-good," poisoning the cache for the whole TTL window.
+**Fix**: treat `per_acct == []` (with accounts configured) as an outage, matching the existing all-failed path. Never stash or TTL-cache an empty `rows` payload as last-good — only stash genuine non-empty or genuinely-confirmed-empty (e.g. post-08:00-rollover with 0 real positions) results.
 
-**D4 — A second click while a submit is in flight queues and fires a duplicate
-order.** `OrderTicket.svelte:submit()`'s trigger-effect reruns when `submitting`
-flips back to `false` and sees the trigger counter still mismatched, calling
-`submit()` again. Nothing disables the submit button or shows a loading state
-during a slow submit (`SymbolPanel.svelte`'s footer submit is only disabled on
-`basketSubmitting`, a different flag), so a re-click during the D3 delay is a
-natural operator reaction. The derivatives page keeps its modal open after
-success, so the queued second order genuinely fires; for a close, that's a
-second, unwanted order.
-**Fix**: disable the submit button and show an explicit loading/pending state
-for the whole duration of `submitting`, and make the trigger-counter update
-atomic with the guard check so a rerun after `submitting` flips false can't
-re-fire a stale trigger.
+**A3 (frontend data layer, CONFIRMED — 4 sub-fixes, keep them together since they interact).**
+- `frontend/src/lib/data/marketDataStores.svelte.js:283-293` — `positionsStore`/`pulsePositionsStore` don't set `keepStaleOnEmpty` (movers/activeLists/sparklines already do — reuse that same mechanism, don't invent a new one). A **blanket** `keepStaleOnEmpty` would be wrong on its own, though — a genuinely empty book (operator closed everything, or the 08:00 daily rollover) is legitimate and must still be able to show 0. The real fix is for the frontend to keep last-good only when the **backend explicitly tags the response as degraded** (via A1/A2's fix exposing `source`/`stale_accounts` — these fields already exist on `PositionsResponse`, `backend/api/schemas.py:256-261`, but are currently dropped by the frontend's `parse` step, `marketDataStores.svelte.js:288-291`, which keeps only `r?.rows`). Fix `parse` to retain `{rows, source, as_of, stale_accounts}` together.
+- `frontend/src/lib/data/portfolioStore.svelte.js:399,490-501` — two of the three P slots (`_livePositionsPnl` at 490-501, and the `_portfolio` exp-pnl path at 399) have no stale-while-revalidate guard for an empty-but-non-null array; only a `null` `_posAgg` triggers the existing fallback-to-last path, but `[]` produces a non-null `_posAgg` with `exp_pnl: 0`, so the fallback never engages. Extend the fallback condition to also trigger when the response is tagged degraded (per the `source`/`stale_accounts` plumbing above), not only when it's literally `null`.
+- `frontend/src/lib/PositionStrip.svelte:35-38,475-480` — filters out only `null`, so `positions = []` passes through, then the existing "prevent 0-flash" guard at 475-480 (`else if (positions.length === 0) dispPositionsToday = 0`) ironically forces the exact 0-flash it was meant to prevent, for a degraded-not-really-empty response. Gate this branch on "confirmed empty" (no degradation tag) vs. "degraded" (keep last value).
+- `frontend/src/lib/PerformancePage.svelte:1146-1152` — `loadAll` does `_p_rows = p?.rows ?? []` then unconditionally `positionsStore.set(_p_rows)`, even when only the positions promise rejected (holdings/funds succeeded) — this bypasses every store guard and persists `[]` straight to localStorage, corrupting the shared singleton for every other route in the SPA until the next successful poll. Same bug applies to the holdings/funds `.set()` calls in the same function. **Fix**: only call `.set()` for slices whose promise actually fulfilled; leave a rejected slice's store untouched.
 
-**D5 — A ticket that reports "failed" can still have its chase place the order
-anyway.** `orders_helpers.py`'s ticket future resolves with an exception on
-certain pre-placement errors (e.g. a `ValueError` from a zero lot size), and
-the ticket returns 400 — but `chase_order` treats non-`BrokerInputError`
-exceptions as retryable and keeps going (sleep, retry, up to
-`_MAX_CHASE_ERRORS`). If market depth returns a non-positive price, the chase
-sleeps and continues silently with no event emitted, so the ticket's 15s
-`wait_for` times out (near-blank error) while the chase task keeps running
-unaffected — `wait_for` only cancels the *future*, not the chase task itself.
-Operator sees "failed", retries, and can end up with two live orders.
-**Fix**: when the ticket-side `wait_for` times out or the future resolves with
-an error that isn't a genuine terminal broker rejection, actually track and
-cancel the underlying `chase_order` asyncio task (not just its future) so a
-"failed" ticket response can't leave a live chase running unattended; at
-minimum, this requires the ticket handler to hold a reference to the chase task
-it spawned.
+**A4 (frontend, CONFIRMED, should-fix, same pass).**
+- **Stale indicator currently dead for this failure mode** — `PositionStrip.svelte:121-122`'s `_staleFailCount` only increments inside `_load()`, which (per an earlier fix, "Fix 4") now only runs on mount/`bookChanged`/mode-transition, not on a timer — so continuous failures seen by the background book-poller never increment it, and the counter only looks at `.error` anyway (an empty-200 "success" never trips it). Wire the staleness signal from the new `source`/`stale_accounts`/`as_of` tags (A3) instead of `_staleFailCount`.
+- **Partial-account failure (R1, CONFIRMED)** — an account without circuit-breaker opt-in never gets last-known-good substitution (`_is_circuit_open` false → `_stale_substitute_frame` never reached, `backend/brokers/broker_apis.py:842-844`); if a SECOND account succeeds (even with a real empty book), `positions.py:858`'s "not all failed" check passes and the failing account's rows silently vanish from an otherwise-`'live'` 200. Fix: substitute last-known-good on ANY per-account failure, not only when the breaker is open; at minimum put `fetch_failed` accounts into `stale_accounts` so A3's frontend fix can react to it.
+- **`softInvalidate()`/`invalidate()` set `.value = null`** (`dataStore.svelte.js:196-214`), and every `portfolioAggregates` getter returns 0 on null with no stale-while-revalidate guard (R3) — affects lifetime P&L, cash, margin, holdings value until the next poll. Apply the same stale-while-revalidate treatment here as A3's positions fix.
 
-**D6 — A lot-size cache-miss silently sends NFO/BFO/CDS orders in contracts
-instead of lots.** `kite.py:get_lot_size` returns `0` (safe "unknown" sentinel,
-correctly triggers a 503) for an MCX cache miss, but `1` for a non-MCX miss —
-verified still present. `_resolve_fno_qty` accepts `1` as valid (never triggers
-the 503 guard), so the frontend's own `lot_size_hint` is discarded and a 1-lot
-NIFTY order goes out as `quantity=1` (rejected by the broker as not a lot
-multiple) instead of `75`. The "1 is a safe no-op" premise predates the v2
-lots-in-requests convention change and is now false for F&O.
-**Constraint verified before fixing**: `_rebuild_lot_index` only stores entries
-with `lot_size > 1` (by design, to avoid a bad response overwriting a real F&O
-lot size with a stray `1`). This means a genuine equity/CDS/BCD instrument
-(real `lot_size == 1`) is currently indistinguishable from a true cache miss —
-naively changing the miss-fallback to `0` for all exchanges would make every
-CDS order 503.
-**Fix**: change `_rebuild_lot_index` to also store confirmed `lot_size == 1`
-entries (so the index can tell "confirmed 1" apart from "not in the index at
-all"), then change `get_lot_size`'s miss-fallback to `0` (unknown → 503) for
-ALL exchanges, not just MCX. Before landing, grep every other consumer of
-`_LOT_INDEX` to confirm none of them relies on the old "only `>1` entries are
-ever stored" contract.
+**A5 (visual — reuse existing conventions, no new pattern needed).** The audit confirmed this app already has a full staleness vocabulary: `.ps-strip.ps-stale` (amber strip tint, `PositionStrip.svelte:795-798`), `.ag-row.row-account-stale` (slate desaturation + diagonal hatch, `app.css:819-831`), the `STALE@HH:MM` badge (slate, `pulseColumns.js:408-420`), and `StaleBanner.svelte` (amber "showing last-good" vs. red "unavailable"). **Fix**: drive these from the new `source`/`stale_accounts`/`as_of` tags (A3/A4) instead of introducing anything new — apply the same desaturated/STALE@HH:MM treatment to the P values in NavStrip and (per A6 below) the Payoff chart overlay when showing frozen data.
 
-## Also fixing (real waste / quick / operator-reported UX)
+## Part B — Payoff chart: stop the full-chart flash
 
-**R1 — every preflight margin-check and live ticket downloads the FULL
-instruments dump (NFO ≈90k rows) with no caching**, on every debounced margin
-preview (350ms) and every live ticket (`actions_preflight.py:606-613,747-752`).
-Pushes tickets toward the D3 timeout and duplicates the OOM-incident concern
-("no T+0 broker downloads"). The dead `_preflight_check_qty_freeze` check
-(Kite's instrument dump has no `freeze_qty` field) never fires, so this cost
-buys nothing.
-**Fix**: cache the instruments dump behind a short TTL (module-level cache,
-matching the pattern already used for e.g. the holiday-calendar 4-tier read),
-reused across preview/ticket calls within the TTL window instead of a fresh
-fetch every call.
+**B1 (CONFIRMED).** `OptionsPayoff.svelte:419-421,860` — a `$effect` fires `_pulse.notify('payoff')` (a cyan background flash on the whole SVG stack, `.payoff-svg-stack`) whenever the `payoff` prop's array identity changes, which now happens on **every** routine 5s refetch (since a recent commit made the derivatives page refetch every ~5s even with unchanged legs) — not just on a genuine leg/strategy change.
+**Fix**: only notify the pulse when the leg *signature* changes, not on every routine refetch identity-change; move the "something is refreshing" cue to a small spinner in the LTP/CHG% rows of `.payoff-stats` instead (the `rbq-spin` keyframe already exists, `app.css:2887` — this doubles as the operator's originally-requested "progress wheel over LTP/CHG%" feature).
 
-**R6 — error messages are truncated to ~32 characters** (`api.js:102`), so a
-422 preflight block, a broker rejection, a 503 lot-size guard, and a chase
-timeout are all indistinguishable in the UI.
-**Fix**: raise the truncation limit (or show the full message in a tooltip/
-expandable detail) so the operator can actually tell which failure they hit —
-directly useful for diagnosing D3/D5 if they recur.
+**B2 (CONFIRMED).** The x/y axis re-centers on every refetch — `payoff`'s grid is recomputed centered on `strategy.spot` at fetch time (`backend/api/algo/derivatives.py`, several `np.linspace` call sites) and `yDomain` also rescales on a second, unsynchronized 5s clock (the positions-poll-driven `chartPnlOffset`, `+page.svelte:2336`) — so σ-tick labels and the visible plot range visibly jump independent of any real change.
+**Fix**: pin the x-domain across refetches while the leg signature is unchanged, re-centering only once spot drifts outside the middle ~60% of the current range; add hysteresis to `yDomain` (grow immediately, shrink only past a threshold) instead of rescaling every cycle.
 
-**R7 — the CLOSE/BUY buttons are side selectors, not submit buttons (the
-operator's reported symptom).** `SymbolPanel.svelte`'s footer side button and
-`SideToggle.svelte`'s pills only flip the ticket's side; clicking the
-already-active CLOSE option switches it to ADD and resets lots to 1. With
-chase on (default), the actual submit button just says "Submit" — nothing
-labeled CLOSE places an order, which reads as "I clicked close and nothing
-happened."
-**Fix (operator-approved, clarify-only)**: the submit button's label reflects
-the real pending action (e.g. "SUBMIT — CLOSE BUY 75", mirroring the existing
-`submitOk` success-string convention already used elsewhere in
-`OrderTicket.svelte`), and the side-selector buttons/pills get a visual or
-textual cue (e.g. a distinct style or a "select side" microcopy) that
-disambiguates them from a submit action. No change to when an order actually
-fires. Also fix the stale drift note flagged alongside this
-(`MarketPulse.svelte:3845-3846` claims the footer shows "CLOSE BUY"/"CLOSE
-SELL" — update to match the corrected label).
+**B3 (CONFIRMED).** Whenever `strategy` is null or `_strategyStale` is true, `payoff` falls back to `_clientPayoffStub` (`+page.svelte:2571-2634`), which rebuilds a new array on every 250ms tick — so the pulse fires continuously and the real (amber "today") curve disappears for the whole fetch duration, not "one render frame" as a stale comment claims.
+**Fix**: stale-while-revalidate — keep the last good merged payoff for the current root instead of swapping to the stub during a routine refetch; only show the stub/placeholder for a genuine cold start (no data ever rendered for this root yet).
 
-## Explicitly out of scope for this plan
+**B4 (CONFIRMED, must fix alongside B1-B3).** A superseded fetch's `finally` block clears `loading` even for a stale generation (`+page.svelte:4033,4055`) — any new "refreshing" flag added for B1's spinner must be generation-guarded, or it inherits this same early-clear bug.
 
-- **R4** (chase ignores the entered limit price) — by design (chase computes
-  its own price from live depth), not a bug.
-- **R5** (margin chip for close orders can blank the "available" figure /
-  cash-mode comparison) — ties into the already-approved-but-unimplemented
-  cash/margin fix plan from earlier this session; not duplicated here.
-- **Drift/cleanup items** (unused `_sideBtnLabel`/`_modalFlipSide`, stale
-  ADMIN_GUIDE ticker-health claim) — cosmetic, no behavior risk; left for a
-  future pass.
-- **Price chart audit findings** — separate audit, separate plan, not covered
-  here.
+## Part C — Payoff chart: overlay/curve desync
+
+**C1 (CONFIRMED — recurrence of commit b1b946a8's bug class, missed consumer).** The Exp P&L number is evaluated at `liveSpot` (front-month, `+page.svelte:2161-2162`) while the LTP row, spot line, CHG%, and the expiry marker/dart all use `payoffSpot` (anchor-contract basis, per b1b946a8's fix). **Fix (operator-approved)**: evaluate the Exp P&L value shown ON THE CHART at `payoffSpot` (anchor basis) instead of `liveSpot`, so it always agrees with where the dart is drawn. Leave the separate Legs-grid Exp P&L total on `liveSpot`/front-month — that's a different, correctly-scoped consumer.
+
+**C2 (CONFIRMED).** For NSE underlyings, `payoffSpot` has no anchor-contract tick available (`backend/api/routes/options_helpers.py:111` always returns a null anchor for NSE) and falls back to `strategy.spot`, which only changes once per 5s refetch — so the overlay LTP/CHG% visibly "steps" every 5s instead of ticking live like the rest of the page (this is very likely what the operator means by "overlay not in sync").
+**Fix**: in `payoffSpot`'s resolution (`+page.svelte:1881-1898`), when the anchor is null and the spot source is the NSE ticker path, use the live tick for that resolved NSE symbol (`liveSpot`'s own Tier-1 lookup already has this) before falling back to `strategy.spot`.
+
+**C3 (CONFIRMED — same stale-root-leak class b1b946a8 partially fixed).** Only `payoff` and `intermediateCurves` are gated on `_strategyStale`; `breakevens`, `spanSigmas`, `spanPct`, `dte`, `ivProxy`, `legCount`, `legSymbols`, and `spotAnchor` all keep reading the OLD `strategy` during the stale window after switching underlyings, while `spot`/`prevClose` have already switched to the new root — so briefly after a symbol switch, the overlay can show the new symbol's LTP next to the old symbol's DTE/σ/legs.
+**Fix**: one derived `payoffStrategy = _strategyStale ? null : strategy`, used for every strategy-derived prop (not just the two currently gated), so the whole overlay switches atomically — combine with B3's stale-while-revalidate approach (keep last-good PER ROOT, not a blanket null).
+
+**C4 (CONFIRMED, lower priority — visual only).** The P&L/Exp-P&L readout is read at the nearest payoff-grid point rather than linearly interpolated at the exact spot x-position, so it "steps" in increments and the marker dart can visibly float off the drawn curve line on steep sections (masked for NSE today since `payoffSpot` currently equals a grid point exactly, per C2 — will become visible once C2 lands).
+**Fix**: linearly interpolate between the two bracketing grid points (same interpolation the line-drawing already effectively does), applied consistently to both the chart's own readout and `chartTheoreticalAtSpot` (`+page.svelte:2298`).
+
+**C5 (CONFIRMED, lower priority — visual only).** The displayed P&L combines the book-poll's `candidatesActualPnl` (priced at whatever spot the poll landed on) with `curve(payoffSpot) − curve(strategy.spot)` (a second, unsynchronized clock) — when the two 5s timers don't align, the spot move gets double-counted for 0-5s then snaps back, a visible sawtooth (mainly affects MCX anchors with live ticks; NSE is naturally immune since `payoffSpot` already equals `strategy.spot` there).
+**Fix**: anchor the offset calculation to the spot the book poll was actually priced at (e.g. store `(pnl, spot_at_poll)` together from the poll response) so both terms share one clock instead of two.
+
+## Explicitly out of scope
+
+- Payoff chart's `_stickyXTicks` dead-code/stale-zoom hazard (audit "Risks/cleanup" section) — real but low-severity, not tied to either reported symptom; leave for a future pass.
+- R2 (SUSPECT — `snapshot-fallback` mid-session after 120s of failures could show yesterday's settlement as if live, with no staleness marker) — needs live verification the session can't perform; A5's staleness-tag plumbing should incidentally cover this once `as_of` is properly threaded through, but no dedicated fix is scoped here beyond that.
+- Format/alignment consistency work on the order ticket — separate, already-approved, already in-flight plan; no file overlap with this plan (confirmed: this plan never touches `OrderTicket.svelte`/`SymbolPanel.svelte`/`SideToggle.svelte`/`QtyInput.svelte`/`OrderKnobsRow.svelte`/`OrderDepth.svelte`/`Select.svelte`).
 
 ## Files
 
-- `backend/api/routes/orders_place.py`, `backend/api/routes/orders_helpers.py` — D1 (thread product/variety/validity), D5 (track+cancel chase task on ticket-side failure/timeout)
-- `backend/brokers/adapters/kite.py` — D6 (`_rebuild_lot_index` + `get_lot_size` miss-fallback)
-- `backend/api/algo/actions_preflight.py` — R1 (instruments-dump caching)
-- `frontend/src/lib/MarketPulse.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — D2 (await instrument readiness before close-ticket open), R7 (stale label drift)
-- `frontend/src/lib/order/OrderTicket.svelte` — D2 (lot-size repair on cache-resolve), D3 (false-success rendering), D4 (submit button loading/disabled state, atomic trigger guard), R7 (submit button label reflects action)
-- `frontend/src/lib/SymbolPanel.svelte`, `frontend/src/lib/order/SideToggle.svelte` — R7 (side-selector visual/label cue)
-- `frontend/src/lib/api.js` — D3 (timeout vs. false-success), R6 (error message truncation)
-- `backend/api/algo/chase.py` — new regression test only for the already-fixed R3 scenario, no source change expected
+- `backend/brokers/service/routes.py`, `backend/brokers/client/sync.py` — A1.
+- `backend/api/routes/positions.py`, `backend/api/helpers/snapshot_gate.py`, `backend/brokers/broker_apis.py` — A2, A4 (R1 substitution).
+- `frontend/src/lib/data/marketDataStores.svelte.js`, `frontend/src/lib/data/dataStore.svelte.js`, `frontend/src/lib/data/portfolioStore.svelte.js`, `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/PerformancePage.svelte` — A3, A4, A5 (NavStrip data-layer + staleness visuals). Does NOT touch `admin/derivatives/+page.svelte` or `OptionsPayoff.svelte`.
+- `frontend/src/lib/OptionsPayoff.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, `backend/api/algo/derivatives.py` — B1-B4, C1-C5, plus the book-poller propagation fallback fix (the Payoff-chart half of A3's shared root cause — `+page.svelte:3743-3778`'s effect needs the same last-good fallback `loadPositions()` already has at `:3811-3813`). Does NOT touch any NavStrip data-layer file.
 
 ## Agents
 
-- **backend**: D1, D5, D6, R1 (bundled — all backend/api + brokers, no file overlap risk since nothing else is in flight right now)
-- **frontend**: D2, D3, D4, R6, R7 (bundled — all frontend, one coherent order-ticket UX pass; write/update its own Playwright spec per the standing frontend-change-loop rule)
-- **backend-test**: pytest coverage for D1, D5, D6, R1, plus the R3 regression test confirming the already-shipped fix
-- **doc**: no CLAUDE.md entry needed unless the implementer's D6 fix changes a documented invariant beyond what's already there — check first, only add if something genuinely new needs recording
+- **broker**: A1 (`backend/brokers/service/routes.py`, `backend/brokers/client/sync.py`).
+- **backend**: A2, A4's R1 substitution (`backend/api/routes/positions.py`, `backend/api/helpers/snapshot_gate.py`, `backend/brokers/broker_apis.py`) — dispatched parallel to broker agent, no file overlap.
+- **frontend** (agent 1 — NavStrip data layer): A3, A4, A5 (`marketDataStores.svelte.js`, `dataStore.svelte.js`, `portfolioStore.svelte.js`, `PositionStrip.svelte`, `PerformancePage.svelte`).
+- **frontend** (agent 2 — Payoff chart): B1-B4, C1-C5, plus the derivatives-page book-poller fallback (`OptionsPayoff.svelte`, `admin/derivatives/+page.svelte`) — dispatched parallel to frontend agent 1, no file overlap (confirmed above).
+- **backend-test**: pytest coverage for A1/A2/A4, with the exact repro from the audit (conn-service positions fetch raises → client must NOT silently return `[]`; per-account failure with one healthy sibling account must NOT drop the failing account's rows from a `'live'`-tagged response).
+- **doc**: sync CLAUDE.md — this is exactly the kind of cross-cutting invariant CLAUDE.md already has a home for ("Market-close snapshot" is currently only in memory per the audit, not in CLAUDE.md itself — worth promoting it there now, generalized from "market-close" to "any degraded/failed fetch," since this plan is the second time this exact bug class has been found).
 
 ## Tests
 
-- pytest: yes.
+- pytest: yes — `venv/bin/pytest backend/tests/ -q --tb=line`.
 - svelte-check: yes.
-- playwright: yes — targeted specs for D2 (close ticket on cold cache doesn't oversize), D4 (double-click doesn't duplicate), R7 (submit button label matches pending action).
+- vitest: yes — store-level tests for the stale-while-revalidate guards (A3/A4).
+- playwright: yes — a spec that mocks a positions-fetch failure (empty-200 shape) and asserts NavStrip keeps showing the last non-zero value with a stale badge instead of 0; a spec for the Payoff chart confirming no full-chart pulse fires on a routine refetch and the overlay doesn't visibly step for an NSE underlying.
 
 ## Commit message
 
-fix(orders): order-ticket/chase pipeline — product/variety on chased orders,
-cold-cache close oversize, false-success timeout, double-submit, orphaned
-chase on ticket failure, NFO/BFO/CDS lot-size cache-miss, and close-button
-label clarity (D1-D6, R1, R6, R7)
+fix(data): never display 0 in place of missing/degraded data on NavStrip or
+the Payoff chart — freeze to last-known-good with staleness indicators;
+Payoff chart stops full-chart flash on routine refresh and fixes overlay/
+curve desync (shared root cause: conn-service swallows fetch failures into
+a fake-fresh empty 200)
 
 ## Done when
 
-D1–D6, R1, R6, R7 each have a passing regression test reproducing the original
-failure mode; `venv/bin/pytest backend/tests/ -q --tb=line`,
-`npx svelte-check`, and `npx vitest run` all green; self-audit confirms D6's
-`_LOT_INDEX` change doesn't break any other consumer of that cache.
+A1-A5 and B1-C5 each have a passing regression test reproducing the original
+failure mode; `venv/bin/pytest`, `npx svelte-check`, `npx vitest run` all
+green; self-audit confirms the "freeze to last-known-good + staleness tag"
+fix reaches every consumer of the shared `positionsStore` singleton (grep
+every `.set()`/`.value =` call site on it, not just the ones named above),
+matching this session's standing rule for any shared-data-surface fix.

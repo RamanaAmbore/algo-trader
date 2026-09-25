@@ -395,10 +395,28 @@ const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0
 // display on the slowest of three independent fetches. Only when NONE has
 // ever landed do we fall through to the previous full snapshot (or null on
 // first paint, handled by the exported getters' `?? _EMPTY_*` fallback).
+//
+// Real-money guard (2026-09): a slice is ALSO treated as "not landed" when
+// its source store is tagged degraded (positionsStore.meta.degraded /
+// pulseHoldingsStore.meta.degraded / fundsStore.meta.degraded — see
+// marketDataStores.svelte.js's _bookStaleMeta + dataStore.svelte.js's
+// extractStaleMeta). Without this, a partially-degraded response (some
+// accounts substituted, others empty) would still produce a non-null
+// _posAgg/_holdAgg/_fundsAgg computed off the DEGRADED rows — silently
+// under-counting the stale account's contribution instead of freezing at
+// the last known-good full snapshot. Each slice degrades independently:
+// a degraded positions fetch doesn't hold back a healthy holdings/funds
+// update.
 const _portfolio = $derived.by(() => {
-  if (!_posAgg && !_holdAgg && !_fundsAgg) return _last;
+  const posDegraded   = positionsStore.meta?.degraded === true;
+  const holdDegraded  = pulseHoldingsStore.meta?.degraded === true;
+  const fundsDegraded = fundsStore.meta?.degraded === true;
+  const posFresh   = _posAgg   && !posDegraded;
+  const holdFresh  = _holdAgg  && !holdDegraded;
+  const fundsFresh = _fundsAgg && !fundsDegraded;
+  if (!posFresh && !holdFresh && !fundsFresh) return _last;
   _last = {
-    positions: _posAgg ? {
+    positions: posFresh ? {
       total:           _posAgg.posTotal,
       byKey:           _posAgg.posByKey,
       byAccount:       _posAgg.posByAccount,
@@ -407,8 +425,8 @@ const _portfolio = $derived.by(() => {
       byRootHoldings:  _byRootHoldings,
       expiryByAcct:    _posAgg.expiryByAcct,
     } : (_last?.positions ?? _EMPTY_POSITIONS),
-    holdings: _holdAgg ?? (_last?.holdings ?? _EMPTY_HOLDINGS),
-    funds:    _fundsAgg ?? (_last?.funds ?? _EMPTY_FUNDS),
+    holdings: holdFresh  ? _holdAgg   : (_last?.holdings ?? _EMPTY_HOLDINGS),
+    funds:    fundsFresh ? _fundsAgg  : (_last?.funds    ?? _EMPTY_FUNDS),
   };
   return _last;
 });
@@ -484,6 +502,24 @@ export const portfolioStore = {
 // themselves) are wrapped in untrack(), per CLAUDE.md's reactive-safety
 // rule.
 
+// Real-money guard (2026-09) — last-good scalar snapshots for the
+// portfolioAggregates getters below. Mirrors the `_last` object pattern
+// already used by `_portfolio` above: a plain module-level variable
+// (not $state) mutated inside each $derived.by, so a null/degraded read
+// freezes at the last successfully-computed value instead of collapsing
+// to 0. Addresses A4/R3: dataStore's softInvalidate()/invalidate() (and
+// any transient null window between polls) used to null the underlying
+// store value, and every one of these getters returned a bare 0 with no
+// stale-while-revalidate guard — lifetime P&L, holdings value, cash,
+// margin would all flash to 0 until the next poll landed.
+let _lastLivePositionsPnl    = 0;
+let _lastLiveHoldingsTotal   = 0;
+let _lastLiveHoldingsValue   = 0;
+let _lastLiveCashTotal       = 0;
+let _lastLongOptionsCashPaid = 0;
+let _lastMarginAvail         = 0;
+let _lastMarginTotal         = 0;
+
 // Sum of lifetime pnl across all position rows (P pill slot 2 in NavStrip).
 // Reads raw broker pnl — no live-LTP delta — matching the MarketPulse TOTAL row
 // which uses _broker_pnl (= Σ r.pnl) without an SSE delta.
@@ -494,9 +530,13 @@ const _livePositionsPnl = $derived.by(() => {
   // comment above this block). Wrapping this in untrack() was the root
   // cause of stale-until-next-poll aggregates in an earlier iteration.
   const posRows = positionsStore.value;
-  if (!posRows) return 0;
+  // Degraded (backend-tagged substituted/stale accounts) or not-yet-
+  // populated (null, e.g. mid softInvalidate) — freeze at last-good
+  // rather than showing 0.
+  if (!posRows || positionsStore.meta?.degraded) return _lastLivePositionsPnl;
   let s = 0;
   for (const p of posRows) s += Number(p?.pnl || 0);
+  _lastLivePositionsPnl = s;
   return s;
 });
 
@@ -506,7 +546,7 @@ const _livePositionsPnl = $derived.by(() => {
 const _liveHoldingsTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const holdRows = pulseHoldingsStore.value;
-  if (!holdRows) return 0;
+  if (!holdRows || pulseHoldingsStore.meta?.degraded) return _lastLiveHoldingsTotal;
   let s = 0;
   for (const h of holdRows) {
     const sym      = String(h?.tradingsymbol || '').toUpperCase();
@@ -519,6 +559,7 @@ const _liveHoldingsTotal = $derived.by(() => {
       s += Number(h?.pnl || 0);
     }
   }
+  _lastLiveHoldingsTotal = s;
   return s;
 });
 
@@ -528,7 +569,7 @@ const _liveHoldingsTotal = $derived.by(() => {
 const _liveHoldingsValue = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const holdRows = pulseHoldingsStore.value;
-  if (!holdRows) return 0;
+  if (!holdRows || pulseHoldingsStore.meta?.degraded) return _lastLiveHoldingsValue;
   let s = 0;
   for (const h of holdRows) {
     const sym    = String(h?.tradingsymbol || '').toUpperCase();
@@ -543,6 +584,7 @@ const _liveHoldingsValue = $derived.by(() => {
       s += Number(h?.cur_val || 0);
     }
   }
+  _lastLiveHoldingsValue = s;
   return s;
 });
 
@@ -551,12 +593,13 @@ const _liveHoldingsValue = $derived.by(() => {
 const _liveCashTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows) return 0;
+  if (!fundRows || fundsStore.meta?.degraded) return _lastLiveCashTotal;
   let s = 0;
   for (const f of fundRows) {
     const lc = Number(f?.live_cash ?? 0);
     s += lc !== 0 ? lc : Number(f?.cash || 0);
   }
+  _lastLiveCashTotal = s;
   return s;
 });
 
@@ -566,7 +609,7 @@ const _liveCashTotal = $derived.by(() => {
 const _longOptionsCashPaid = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const posRows = positionsStore.value;
-  if (!posRows) return 0;
+  if (!posRows || positionsStore.meta?.degraded) return _lastLongOptionsCashPaid;
   let s = 0;
   for (const p of posRows) {
     const sym = String(p?.tradingsymbol || '').toUpperCase();
@@ -583,6 +626,7 @@ const _longOptionsCashPaid = $derived.by(() => {
       s += avg * qty;
     }
   }
+  _lastLongOptionsCashPaid = s;
   return s;
 });
 
@@ -590,9 +634,10 @@ const _longOptionsCashPaid = $derived.by(() => {
 const _marginAvail = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows) return 0;
+  if (!fundRows || fundsStore.meta?.degraded) return _lastMarginAvail;
   let s = 0;
   for (const f of fundRows) s += Number(f?.avail_margin || 0);
+  _lastMarginAvail = s;
   return s;
 });
 
@@ -600,12 +645,13 @@ const _marginAvail = $derived.by(() => {
 const _marginTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows) return 0;
+  if (!fundRows || fundsStore.meta?.degraded) return _lastMarginTotal;
   let s = 0;
   for (const f of fundRows) {
     s += Number(f?.used_margin  || 0);
     s += Number(f?.avail_margin || 0);
   }
+  _lastMarginTotal = s;
   return s;
 });
 

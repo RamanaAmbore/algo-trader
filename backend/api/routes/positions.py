@@ -622,6 +622,61 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     return out
 
 
+def _is_positions_outage(per_acct: list) -> bool:
+    """Return True when `per_acct` (the raw per-account DataFrame list from
+    `broker_apis.fetch_positions()`) represents a masked broker outage
+    rather than a genuine empty book.
+
+    Two shapes count as an outage:
+      1. `per_acct` is non-empty and EVERY frame carries
+         `attrs['fetch_failed'] = True` (the pre-existing "all failed"
+         check).
+      2. `per_acct` is the empty list `[]` while accounts are actually
+         configured (`backend.brokers.registry._loaded_accounts()` is
+         non-empty). This is the shape `for_all_accounts` / the
+         conn_service RPC boundary produce when nothing could be resolved
+         for ANY configured account — it vacuously satisfies neither
+         branch of the "all failed" check (`per_acct and ...` short-
+         circuits False on `[]`), so pre-fix it fell through to a fake-
+         live empty `PositionsResponse` (A2, 2026-09).
+
+    A genuinely account-less box (fresh install, zero broker accounts
+    configured anywhere) ALSO yields `per_acct == []`, but
+    `_loaded_accounts()` is empty too in that case — correctly NOT an
+    outage, so callers fall through to the legitimate empty-book path.
+    """
+    if per_acct:
+        return all(df.attrs.get('fetch_failed', False) for df in per_acct)
+    from backend.brokers.registry import _loaded_accounts
+    return bool(_loaded_accounts())
+
+
+def _accounts_flagged_stale(per_acct: list) -> set[str]:
+    """Return account codes for per-account frames marked `stale` or
+    `fetch_failed` — covers `_stale_substitute_frame`'s breaker-open path
+    AND R1's any-failure substitution path, INCLUDING the no-LKG-available
+    case where the frame carries zero rows (a rows-based `stale_accounts`
+    build alone would silently miss those). Must be called BEFORE
+    pd.concat — attrs are dropped after concat, same constraint as
+    `_build_stale_since_map`.
+
+    Reads `attrs['account']` first (set by `_stale_substitute_frame` on
+    every return path); falls back to the frame's own `account` column
+    for callers that populate rows without the attr.
+    """
+    out: set[str] = set()
+    for _df in (per_acct or []):
+        attrs = getattr(_df, "attrs", {}) or {}
+        if not (attrs.get("stale") or attrs.get("fetch_failed")):
+            continue
+        acct = attrs.get("account")
+        if not acct and not _df.empty and "account" in _df.columns:
+            acct = _df["account"].iloc[0]
+        if acct:
+            out.add(str(acct))
+    return out
+
+
 def _build_stale_since_map(per_acct: list) -> dict[str, str]:
     """Extract account → "HH:MM IST" map from stale-substituted DataFrames.
 
@@ -849,25 +904,35 @@ async def _fetch() -> PositionsResponse:
     # since it's already async — we do the off-loop hop here.
     import asyncio as _asyncio
     per_acct = await _asyncio.to_thread(broker_apis.fetch_positions)
-    # Outage detection: only raise when every per-account call failed
-    # (`fetch_failed` flag set in broker_apis.py). An empty result with
-    # the flag UNSET is a legitimate "no positions" state — e.g.
-    # operator placed a LIMIT order that hasn't filled yet, or simply
-    # has no open positions today. Surfacing that as a 503 produced a
-    # false "Positions feed unavailable" banner on /admin/derivatives.
-    if per_acct and all(df.attrs.get('fetch_failed', False) for df in per_acct):
+    # Outage detection: raise when every per-account call failed OR when
+    # per_acct itself is an empty list while accounts are configured. An
+    # empty result with neither shape is a legitimate "no positions"
+    # state — e.g. operator placed a LIMIT order that hasn't filled yet,
+    # simply has no open positions today, or the box has zero broker
+    # accounts configured. Surfacing either as a 503 produced a false
+    # "Positions feed unavailable" banner on /admin/derivatives — see
+    # `_is_positions_outage` for the exact shapes covered (A2, 2026-09).
+    if _is_positions_outage(per_acct):
         raise Exception("Broker (Kite) returned no positions data — upstream Bad Gateway / outage")
 
-    # Build stale-since map BEFORE concat (attrs dropped after concat).
+    # Build stale-since map + failed/stale account set BEFORE concat
+    # (attrs dropped after concat).
     _acct_stale_since = _build_stale_since_map(per_acct)
+    _stale_flagged_accounts = _accounts_flagged_stale(per_acct)
 
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     # Legitimate empty book — no positions on any account. Return a
     # well-formed empty response so /admin/derivatives renders zero
     # candidates instead of the false "Positions feed unavailable"
-    # banner (which only fires on actual outage 5xx now).
+    # banner (which only fires on actual outage 5xx now). Still carries
+    # stale_accounts when a partial failure contributed zero rows (R1) —
+    # e.g. one account failed with no LKG to substitute while a sibling
+    # succeeded with a genuinely empty book.
     if raw.empty:
-        return PositionsResponse(rows=[], summary=[], refreshed_at=timestamp_display())
+        return PositionsResponse(
+            rows=[], summary=[], refreshed_at=timestamp_display(),
+            stale_accounts=sorted(_stale_flagged_accounts),
+        )
 
     # Backfill missing market data (close_price + last_price) for
     # adapters that don't populate them (Dhan v2 positions endpoint
@@ -946,7 +1011,9 @@ async def _fetch() -> PositionsResponse:
     rows = await _overlay_snapshot_for_closed_exchanges(rows, kind="positions")
     summary = _polars_df_to_structs(PositionsSummaryRow, summary_df)
     symbol_summary = _polars_df_to_structs(PositionsSymbolSummaryRow, symbol_summary_df)
-    stale_accts = sorted({r.account for r in rows if r.account_stale})
+    stale_accts = sorted(
+        {r.account for r in rows if r.account_stale} | _stale_flagged_accounts
+    )
     return PositionsResponse(
         rows=rows,
         summary=summary,

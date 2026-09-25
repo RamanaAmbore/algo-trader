@@ -73,7 +73,23 @@ _STALE_LIVE_TTL_S: float = 120.0  # 2 minutes
 
 
 def _stash_live_response(route_key: str, data: Any) -> None:
-    """Record a successful live response for anti-flicker substitution."""
+    """Record a successful live response for anti-flicker substitution.
+
+    Invariant (A2, 2026-09): this is only ever called from the `try`
+    branch of `closed_hours_or_broker` below, i.e. only when `broker_fn()`
+    returned WITHOUT raising. Routes that can produce an empty-but-masked-
+    failure payload (e.g. positions.py's `_fetch()`, which now raises via
+    `_is_positions_outage()` whenever a fetch failure is disguised as an
+    empty per-account result) must raise BEFORE returning in that case —
+    the raise is the gate that keeps a degraded response out of this
+    cache. A response that reaches here with empty `rows` is therefore
+    always a confirmed genuine empty state (e.g. operator closed every
+    position), never a masked outage — do NOT add a blanket "skip empty"
+    filter here, that would also skip caching the legitimate empty-book
+    case and cause a subsequent transient broker failure within
+    `_STALE_LIVE_TTL_S` to incorrectly resurrect PRE-close stale-live data
+    instead of the correct (empty) state.
+    """
     if route_key:
         _last_response_by_route[route_key] = (_time.time(), data)
 

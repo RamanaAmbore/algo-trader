@@ -33,9 +33,12 @@ test.describe('NavStrip P-slot / HD∆ zero-flash guard', () => {
   test('1-SSOT: freeze $effect uses "keep last value" pattern for positions', () => {
     const source = readFileSync(STRIP_PATH, 'utf-8');
 
-    // The new guard: only write 0 when positions.length === 0 (list truly empty)
-    expect(source, 'freeze $effect must guard with positions.length === 0')
-      .toMatch(/else if \(positions\.length === 0\)\s*\{\s*dispPositionsToday = 0;/);
+    // The guard: only write 0 when positions.length === 0 (list truly empty)
+    // AND the store is not backend-tagged degraded (real-money guard,
+    // 2026-09 — a degraded-but-empty-looking response must NOT force the
+    // 0-flash this guard exists to prevent; see positionsStore.meta.degraded).
+    expect(source, 'freeze $effect must guard with positions.length === 0 && !degraded')
+      .toMatch(/else if \(positions\.length === 0 && !positionsStore\.meta\?\.degraded\)\s*\{\s*dispPositionsToday = 0;/);
 
     // Must NOT have the old "length > 0 OR total !== 0" pattern that wrote 0 on tab return
     expect(source, 'old OR-guard pattern must be removed')
@@ -48,8 +51,8 @@ test.describe('NavStrip P-slot / HD∆ zero-flash guard', () => {
   test('2-SSOT: freeze $effect uses "keep last value" pattern for holdings', () => {
     const source = readFileSync(STRIP_PATH, 'utf-8');
 
-    expect(source, 'freeze $effect must guard holdings with holdings.length === 0')
-      .toMatch(/else if \(holdings\.length === 0\)\s*\{\s*dispHoldingsToday = 0;/);
+    expect(source, 'freeze $effect must guard holdings with holdings.length === 0 && !degraded')
+      .toMatch(/else if \(holdings\.length === 0 && !pulseHoldingsStore\.meta\?\.degraded\)\s*\{\s*dispHoldingsToday = 0;/);
 
     expect(source, 'old OR-guard pattern for holdings must be removed')
       .not.toMatch(/holdings\.length > 0 \|\| holdingsDayPnlStore\.total !== 0/);

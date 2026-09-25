@@ -18,7 +18,6 @@
   import { authStore, ltpFlashPct } from '$lib/stores';
   import {
     positionsStore, holdingsStore, fundsStore,
-    publishPositionsRows, publishHoldingsRows,
   } from '$lib/data/marketDataStores.svelte.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -1130,33 +1129,38 @@
       const h = results[0].status === 'fulfilled' ? results[0].value : null;
       const p = results[1].status === 'fulfilled' ? results[1].value : null;
       const f = results[2].status === 'fulfilled' ? results[2].value : null;
+      const hFulfilled = results[0].status === 'fulfilled';
+      const pFulfilled = results[1].status === 'fulfilled';
+      const fFulfilled = results[2].status === 'fulfilled';
       // If ALL three failed, surface a single banner error so the
       // operator knows the page is dark; otherwise carry on with
       // whichever subset succeeded.
-      if (!h && !p && !f) {
+      if (!hFulfilled && !pFulfilled && !fFulfilled) {
         const firstErr = results.find(r => r.status === 'rejected');
         // @ts-ignore — guarded by find above
         throw firstErr?.reason ?? new Error('fetch failed');
       }
       // Feed the module-level singletons so PositionStrip / NavCard / dashboard
-      // benefit from this fetch without re-hitting the broker. The stores'
-      // `parse` strips to `.rows` (and filters TOTAL for funds); we pre-parse
-      // before calling set() so the stored value matches what other consumers
-      // expect when they read store.value.
-      const _h_rows = h?.rows ?? [];
-      const _p_rows = p?.rows ?? [];
-      holdingsStore.set(_h_rows);
-      positionsStore.set(_p_rows);
-      fundsStore.set((f?.rows ?? []).filter(
-        (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'
-      ));
-      // .set() bypasses the parse hook → publish to symbolStore
-      // explicitly so the central market-data sink stays current on
-      // a direct /performance landing (audit found this leak — the
-      // page was the ONLY surface that fed the section stores
-      // without publishing to symbolStore).
-      publishPositionsRows(_p_rows);
-      publishHoldingsRows(_h_rows);
+      // benefit from this fetch without re-hitting the broker.
+      //
+      // Real-money fix (2026-09, A3 fix #4): only ingest a slice whose
+      // promise actually FULFILLED. The prior code did `p?.rows ?? []`
+      // unconditionally and called positionsStore.set(_p_rows) even when
+      // the positions fetch REJECTED (holdings/funds still succeeded) —
+      // writing `[]` straight into the shared singleton (and its
+      // localStorage mirror) and corrupting NavStrip/the Payoff chart on
+      // every other route until the next successful poll. A rejected
+      // slice's store is now left completely untouched.
+      //
+      // ingest() (not set()) runs the SAME parse()+meta()+degraded-guard
+      // pipeline the book-poller's own load() uses — it re-derives `.rows`,
+      // publishes to symbolStore, filters funds' TOTAL row, and stamps
+      // holdingsStore's as_of snapshot marker, so this direct /performance
+      // landing path stays in lockstep with every other entry point
+      // instead of duplicating (and risking drifting from) that logic here.
+      if (hFulfilled) holdingsStore.ingest(h);
+      if (pFulfilled) positionsStore.ingest(p);
+      if (fFulfilled) fundsStore.ingest(f);
       applyData(h, p, f);
     } catch (e) {
       error = e.message || 'Failed to load data';

@@ -163,13 +163,28 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
     expect(src).not.toMatch(/if \(!_posAgg \|\| !_holdAgg \|\| !_fundsAgg\) return _last;/);
   });
 
-  it('the new guard only bails out to the previous snapshot when NONE of the three have landed', () => {
-    expect(src).toMatch(/if \(!_posAgg && !_holdAgg && !_fundsAgg\) return _last;/);
+  it('the new guard only bails out to the previous snapshot when NONE of the three have landed (fresh = not-null AND not-degraded)', () => {
+    // Real-money guard (2026-09): "landed" now means BOTH non-null AND
+    // not backend-tagged degraded (stale_accounts substitution) — see
+    // posFresh/holdFresh/fundsFresh below. A slice that is non-null but
+    // degraded must NOT count as landed, or a partially-substituted
+    // response would silently under-count instead of freezing at the
+    // last known-good full snapshot.
+    expect(src).toMatch(/const posFresh\s*=\s*_posAgg\s*&&\s*!posDegraded;/);
+    expect(src).toMatch(/const holdFresh\s*=\s*_holdAgg\s*&&\s*!holdDegraded;/);
+    expect(src).toMatch(/const fundsFresh\s*=\s*_fundsAgg\s*&&\s*!fundsDegraded;/);
+    expect(src).toMatch(/if \(!posFresh && !holdFresh && !fundsFresh\) return _last;/);
   });
 
-  it('positions/holdings/funds each independently fall back to their own last-known or empty slice', () => {
-    expect(src).toMatch(/_posAgg \? \{/);
-    expect(src).toMatch(/_holdAgg \?\? \(_last\?\.holdings \?\? _EMPTY_HOLDINGS\)/);
-    expect(src).toMatch(/_fundsAgg \?\? \(_last\?\.funds \?\? _EMPTY_FUNDS\)/);
+  it('each slice\'s degraded flag is sourced from its own store\'s reactive .meta.degraded', () => {
+    expect(src).toMatch(/const posDegraded\s*=\s*positionsStore\.meta\?\.degraded === true;/);
+    expect(src).toMatch(/const holdDegraded\s*=\s*pulseHoldingsStore\.meta\?\.degraded === true;/);
+    expect(src).toMatch(/const fundsDegraded\s*=\s*fundsStore\.meta\?\.degraded === true;/);
+  });
+
+  it('positions/holdings/funds each independently fall back to their own last-known or empty slice when not fresh', () => {
+    expect(src).toMatch(/positions: posFresh \? \{/);
+    expect(src).toMatch(/holdings: holdFresh\s*\? _holdAgg\s*: \(_last\?\.holdings \?\? _EMPTY_HOLDINGS\)/);
+    expect(src).toMatch(/funds:\s*fundsFresh \? _fundsAgg\s*: \(_last\?\.funds\s*\?\? _EMPTY_FUNDS\)/);
   });
 });

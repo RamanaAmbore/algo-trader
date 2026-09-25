@@ -6,20 +6,37 @@
  *
  * Background:
  *   When the operator switches the selected underlying on /admin/derivatives,
- *   the fetchStrategyAnalytics call is in flight. Previously, the chart
+ *   the fetchStrategyAnalytics call is in flight. Originally, the chart
  *   immediately cleared and showed a wrong intrinsic-only stub curve
  *   (_clientPayoffStub) while the new data loaded.
  *
- *   Fix: The old strategy is preserved during the fetch — the old curve stays
- *   visible under a loading overlay, and only replaces when the new backend
- *   data arrives. This preserves visual continuity and prevents jarring blanks.
+ *   Round-1 fix: keep the OLD strategy visible during the fetch instead of
+ *   blanking. Round-2 fix (B3+C3, this revision): that round-1 fix had its
+ *   own bug — it kept showing the PREVIOUS root's curve/DTE/σ/legs under the
+ *   NEW root's label for the whole fetch duration (a cross-root data leak,
+ *   not just a visual one). The corrected contract:
+ *     - A root visited before THIS session (cached) → its own last-good
+ *       snapshot shows immediately, frozen until the new fetch lands for
+ *       THAT root. Never the previous/different root's data.
+ *     - A root never rendered before this session (true cold start) → the
+ *       client-side intrinsic stub / "Resolving spot…" placeholder, NOT a
+ *       different root's curve.
+ *     - Every strategy-derived overlay value (payoff, breakevens, σ, DTE,
+ *       IV, leg count/symbols, spot anchor, Exp P&L, net cost) switches
+ *       atomically as ONE bundle (`payoffDisplay` in +page.svelte) — never
+ *       partially, prop-by-prop.
+ *   See +page.svelte's `payoffDisplay`/`_payoffSnapshotByRoot` for the
+ *   implementation and CLAUDE.md's Payoff-chart plan for the full audit.
  *
  * Scope:
  *   When underlying is switched (via #opt-und dropdown), the payoff chart
  *   should:
- *   1. Keep old strategy data visible while new fetch is in flight
- *   2. Display a loading indicator overlay on the chart
- *   3. After fetch completes, replace with new strategy data
+ *   1. Never go fully blank — either a cached snapshot or the cold-start
+ *      stub/placeholder is always shown, so the SVG stays mounted with
+ *      real path data (or the explicit "Resolving spot…" text state).
+ *   2. Display a loading indicator overlay on the chart when genuinely
+ *      cold-starting (no cached data exists yet for this root).
+ *   3. After fetch completes, replace with new strategy data.
  *
  * Test strategy:
  *   1. Navigate to /admin/derivatives
@@ -214,22 +231,24 @@ test.describe('Derivatives payoff — stale-while-revalidate on underlying switc
     // This fires fetchStrategyAnalytics in the background.
     await selectNextOption(trigger);
 
-    // ── Step 4: Immediately check for old curve + loading spinner ──────
-    // The old strategy is preserved during loading, so SVG should still
-    // have path elements. The loading spinner should be visible (or appear
-    // within the next 200ms during the fetch).
+    // ── Step 4: Immediately check the chart never goes blank ───────────
+    // Under the corrected B3+C3 contract this is EITHER the new root's own
+    // cached last-good snapshot (if visited before this session) OR the
+    // client-side intrinsic stub (cold start) — never the PREVIOUS root's
+    // curve relabeled as the new one. Either path produces real SVG path
+    // data (the stub always populates a real expiry_value curve even while
+    // today_value is null), so the mechanical assertion below (some path
+    // data exists) still holds — what changed is WHY it holds.
     console.log(
-      '[Immediately after switch] Checking if old curve persists...'
+      '[Immediately after switch] Checking the chart did not go blank...'
     );
 
-    // Assert: old curve is still rendered (SVG paths present) — this verifies
-    // the stale-while-revalidate preservation.
     let postSwitchPathCount = await getPayoffPathCount(page);
     console.log(`[Post-switch] SVG path count: ${postSwitchPathCount}`);
 
     expect(
       postSwitchPathCount,
-      'Expected SVG path elements to persist during fetch (stale-while-revalidate fix)'
+      'Expected SVG path elements to persist during fetch — a cached per-root snapshot or the cold-start stub, never a fully blank chart (B3+C3 fix)'
     ).toBeGreaterThan(0);
 
     // Try to catch the loading spinner — it may appear briefly or may be

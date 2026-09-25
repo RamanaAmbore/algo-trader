@@ -588,10 +588,27 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
       • df.attrs['db_lkg']        = True   (set only on tier-2 DB path)
       • df['account_stale']       = True   (per-row column; consumed by
                                             schema mapping in routes)
+      • df.attrs['account']       = account (diagnostic — lets a caller
+                                            identify WHICH account this
+                                            frame belongs to even when it
+                                            carries zero rows, e.g. the
+                                            no-LKG empty-fallback path
+                                            below. positions.py's
+                                            `_accounts_flagged_stale`
+                                            reads this to surface a
+                                            zero-row failure in
+                                            `stale_accounts`.)
 
-    Does NOT set attrs['fetch_failed']=True — that would trigger the
-    route's "all failed → 503" outage gate. A stale-substituted frame
-    counts as a SUCCESS (with old data), not a failure.
+    Does NOT set attrs['fetch_failed']=True on the substitution paths —
+    that would trigger the route's "all failed → 503" outage gate. A
+    stale-substituted frame counts as a SUCCESS (with old data), not a
+    failure. The no-LKG fallback below is the one exception: with
+    nothing to substitute there genuinely is no data to serve, so
+    `fetch_failed=True` is correct there.
+
+    Called both from the circuit-breaker-open short-circuit AND (R1,
+    2026-09) from any per-account fetch failure regardless of breaker
+    opt-in status — see `_fetch_positions_local`'s except/None branches.
     """
     result = _get_lkg_frame(kind, account)
     db_lkg = False
@@ -605,11 +622,13 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
         df_empty = pd.DataFrame()
         df_empty.attrs["circuit_open"] = True
         df_empty.attrs["fetch_failed"] = True
+        df_empty.attrs["account"] = account
         return df_empty
     stale_since, df = result
     df.attrs["stale"] = True
     df.attrs["stale_since"] = stale_since
     df.attrs["circuit_open"] = True
+    df.attrs["account"] = account
     if db_lkg:
         df.attrs["db_lkg"] = True
     # DO NOT set fetch_failed — see docstring. Substituted rows are "success
@@ -2054,9 +2073,17 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
     try:
         net_rows = _extract_net_rows(broker, kite)
         if net_rows is None:
-            df_positions.attrs['fetch_failed'] = True
             _record_fetch(account, ok=False, error="broker.positions() returned None")
-            return df_positions
+            # R1 (2026-09): substitute last-known-good on ANY per-account
+            # failure, not only when the circuit breaker is open. Without
+            # this, an account that hasn't opted into the breaker (or
+            # hasn't yet tripped it) got no substitution on a single
+            # failed fetch — a healthy sibling account's success then let
+            # the route's "not all failed" check pass while this
+            # account's rows silently vanished from an otherwise-'live'
+            # response. Falls back to `_stale_substitute_frame`'s own
+            # empty `fetch_failed=True` frame when no LKG exists yet.
+            return _stale_substitute_frame("positions", account) if account else df_positions
         df_positions = pd.DataFrame(net_rows)
         df_positions.rename(columns={'close_price': 'prev_close'}, inplace=True)
         _record_fetch(account, ok=True)
@@ -2070,22 +2097,25 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             df_positions["type"] = "P"
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch positions: {e}")
-        df_positions.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
-        return df_positions
-
-    if df_positions.empty:
-        return df_positions
+        # R1 substitution — see rationale in the `net_rows is None` branch
+        # above.
+        return _stale_substitute_frame("positions", account) if account else df_positions
 
     if raw_only:
         cols = [c for c in ["account", "tradingsymbol", "prev_close"] if c in df_positions.columns]
         return df_positions[cols]
 
-    df_positions = _enrich_positions(df_positions, broker_kind=_broker_kind(broker))
+    if not df_positions.empty:
+        df_positions = _enrich_positions(df_positions, broker_kind=_broker_kind(broker))
     # Stash a shallow copy for the stale-substitute path when this
-    # account's breaker opens on a future cycle. Empty frames are also
-    # stored so a "no positions" state overwrites a prior LKG and prevents
-    # phantom positions from being served by _stale_substitute_frame.
+    # account's breaker opens on a future cycle, OR when a later poll's
+    # fetch fails outright (R1). Empty frames are ALSO stored (moved
+    # above the old empty-frame early-return, which previously skipped
+    # this stash entirely for a genuinely flat account, contradicting
+    # this comment) so a "no positions" state overwrites a prior LKG and
+    # prevents phantom positions from being resurrected by a later
+    # failed-fetch substitution.
     if account:
         _record_lkg_frame("positions", account, df_positions)
     return df_positions

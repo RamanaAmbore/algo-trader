@@ -1607,3 +1607,165 @@ describe('positionsDayPnlStore.byAccount — getter delegation', () => {
     expect(byAccountGetter['TOTAL']).toBe(6000);
   });
 });
+
+// ── Real-money guard (2026-09) — degraded-aware SWR fallback ─────────────────
+//
+// portfolioStore.svelte.js's `_portfolio` collector and the seven
+// `portfolioAggregates` getters (_livePositionsPnl, _liveHoldingsTotal, etc.)
+// now treat a store tagged `.meta.degraded` (backend stale_accounts
+// substitution — see marketDataStores.svelte.js's _bookStaleMeta /
+// dataStore.svelte.js's extractStaleMeta) the SAME as a null/not-yet-landed
+// read: freeze at the last known-good value instead of recomputing off a
+// partially-substituted or empty-but-technically-non-null response.
+//
+// portfolioStore.svelte.js can't be imported directly (Svelte 5 runes, no
+// svelte-compiler plugin in this harness — see file header). These tests
+// mirror the exact "freeze at last-good" pattern each $derived.by now uses:
+// a plain closure variable holding the last computed value, only updated
+// when the read is fresh (non-null AND non-degraded).
+
+describe('portfolioAggregates — last-good scalar snapshot (real-money guard)', () => {
+  /**
+   * Pure mirror of the pattern used by _livePositionsPnl / _liveHoldingsTotal
+   * / _liveHoldingsValue / _liveCashTotal / _longOptionsCashPaid /
+   * _marginAvail / _marginTotal in portfolioStore.svelte.js:
+   *
+   *   let _lastX = 0;
+   *   const _x = $derived.by(() => {
+   *     const rows = someStore.value;
+   *     if (!rows || someStore.meta?.degraded) return _lastX;
+   *     const s = <compute from rows>;
+   *     _lastX = s;
+   *     return s;
+   *   });
+   *
+   * Modelled here as a small class so each test gets an isolated closure
+   * (mirrors a fresh module load).
+   */
+  class LastGoodScalar {
+    constructor(compute) {
+      this._last = 0;
+      this._compute = compute;
+    }
+    /** @param {any[] | null} rows @param {boolean} degraded */
+    read(rows, degraded) {
+      if (!rows || degraded) return this._last;
+      const s = this._compute(rows);
+      this._last = s;
+      return s;
+    }
+  }
+
+  const sumPnl = (rows) => rows.reduce((s, r) => s + Number(r?.pnl || 0), 0);
+
+  it('returns the freshly computed value on a non-degraded, non-null read', () => {
+    const agg = new LastGoodScalar(sumPnl);
+    const result = agg.read([{ pnl: 100 }, { pnl: 50 }], false);
+    expect(result).toBe(150);
+  });
+
+  it('freezes at the last-good value when the store is degraded, even with real rows present', () => {
+    const agg = new LastGoodScalar(sumPnl);
+    agg.read([{ pnl: 100 }, { pnl: 50 }], false); // seed last-good = 150
+    // Backend tags this poll degraded (stale_accounts substitution) — the
+    // rows array might be a partial/substituted set; freeze rather than
+    // recompute off it.
+    const result = agg.read([{ pnl: 100 }], true);
+    expect(result).toBe(150);
+  });
+
+  it('freezes at the last-good value when rows is null (mid softInvalidate / not-yet-landed)', () => {
+    const agg = new LastGoodScalar(sumPnl);
+    agg.read([{ pnl: 300 }], false); // seed last-good = 300
+    const result = agg.read(null, false);
+    expect(result).toBe(300);
+  });
+
+  it('returns 0 (the honest default) on a cold start with no prior read', () => {
+    const agg = new LastGoodScalar(sumPnl);
+    const result = agg.read(null, false);
+    expect(result).toBe(0);
+  });
+
+  it('resumes computing fresh values once degraded clears', () => {
+    const agg = new LastGoodScalar(sumPnl);
+    agg.read([{ pnl: 100 }], false);       // last-good = 100
+    agg.read([{ pnl: 999 }], true);        // frozen, still reads 100
+    const result = agg.read([{ pnl: 250 }], false); // fresh again
+    expect(result).toBe(250);
+  });
+});
+
+describe('_portfolio collector — per-slice fresh = non-null AND non-degraded', () => {
+  /**
+   * Pure mirror of portfolioStore.svelte.js's _portfolio $derived.by:
+   * each of positions/holdings/funds independently falls back to its own
+   * last-known (or empty) slice unless it is BOTH non-null and NOT tagged
+   * degraded ("fresh"). See the real source's posFresh/holdFresh/fundsFresh.
+   */
+  function computePortfolioSnapshot({ posAgg, holdAgg, fundsAgg, posDegraded, holdDegraded, fundsDegraded, last, EMPTY_POSITIONS, EMPTY_HOLDINGS, EMPTY_FUNDS }) {
+    const posFresh   = posAgg   && !posDegraded;
+    const holdFresh  = holdAgg  && !holdDegraded;
+    const fundsFresh = fundsAgg && !fundsDegraded;
+    if (!posFresh && !holdFresh && !fundsFresh) return last;
+    return {
+      positions: posFresh  ? posAgg   : (last?.positions ?? EMPTY_POSITIONS),
+      holdings:  holdFresh ? holdAgg  : (last?.holdings  ?? EMPTY_HOLDINGS),
+      funds:     fundsFresh? fundsAgg : (last?.funds     ?? EMPTY_FUNDS),
+    };
+  }
+
+  const EMPTY_POSITIONS = { total: { day_pnl: 0 } };
+  const EMPTY_HOLDINGS  = { total: 0 };
+  const EMPTY_FUNDS     = { total: {} };
+
+  it('all three slices fresh (non-null, non-degraded) → uses all three live', () => {
+    const result = computePortfolioSnapshot({
+      posAgg: { total: { day_pnl: 100 } }, holdAgg: { total: 50 }, fundsAgg: { total: { avail: 10 } },
+      posDegraded: false, holdDegraded: false, fundsDegraded: false,
+      last: null, EMPTY_POSITIONS, EMPTY_HOLDINGS, EMPTY_FUNDS,
+    });
+    expect(result.positions.total.day_pnl).toBe(100);
+    expect(result.holdings.total).toBe(50);
+    expect(result.funds.total.avail).toBe(10);
+  });
+
+  it('positions degraded (non-null but tagged stale) → falls back to last-known positions, holdings/funds stay fresh', () => {
+    const last = { positions: { total: { day_pnl: 999 } }, holdings: EMPTY_HOLDINGS, funds: EMPTY_FUNDS };
+    const result = computePortfolioSnapshot({
+      posAgg: { total: { day_pnl: 1 } }, // would silently under-count if used
+      holdAgg: { total: 75 },
+      fundsAgg: { total: { avail: 20 } },
+      posDegraded: true, holdDegraded: false, fundsDegraded: false,
+      last, EMPTY_POSITIONS, EMPTY_HOLDINGS, EMPTY_FUNDS,
+    });
+    // Positions frozen at the last known-good 999, NOT the degraded 1.
+    expect(result.positions.total.day_pnl).toBe(999);
+    // Holdings/funds independently stay fresh.
+    expect(result.holdings.total).toBe(75);
+    expect(result.funds.total.avail).toBe(20);
+  });
+
+  it('all three degraded and no prior snapshot → returns null (first-paint fallback handled by exported getters)', () => {
+    const result = computePortfolioSnapshot({
+      posAgg: { total: {} }, holdAgg: { total: 0 }, fundsAgg: { total: {} },
+      posDegraded: true, holdDegraded: true, fundsDegraded: true,
+      last: null, EMPTY_POSITIONS, EMPTY_HOLDINGS, EMPTY_FUNDS,
+    });
+    expect(result).toBeNull();
+  });
+
+  it('a degraded slice with NO prior snapshot falls back to the EMPTY shape (not the degraded data)', () => {
+    // holdings/funds are fresh (non-null, non-degraded) so the collector
+    // doesn't bail out entirely — isolates the positions-specific fallback.
+    const result = computePortfolioSnapshot({
+      posAgg: { total: { day_pnl: 42 } }, // degraded — must not surface
+      holdAgg: { total: 10 },
+      fundsAgg: { total: { avail: 5 } },
+      posDegraded: true, holdDegraded: false, fundsDegraded: false,
+      last: null, EMPTY_POSITIONS, EMPTY_HOLDINGS, EMPTY_FUNDS,
+    });
+    expect(result.positions).toBe(EMPTY_POSITIONS);
+    expect(result.holdings.total).toBe(10);
+  });
+});

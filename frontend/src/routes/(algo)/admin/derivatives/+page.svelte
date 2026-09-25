@@ -73,7 +73,7 @@
   import {
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
-    rollupByUnderlying, perRootReduce,
+    rollupByUnderlying, perRootReduce, interpAt,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -124,6 +124,16 @@
   let _brokerWorstState = $state(/** @type {'green'|'amber'|'red'} */ ('amber'));
   const _unsubBrokerHealth = brokerHealthStore.subscribe(v => { _brokerWorstState = v?.worstState || 'amber'; });
   let loading       = $state(false);
+  // Payoff-chart-specific "a routine strategy refetch is in flight" flag
+  // (B1 fix). Distinct from `loading` (which drives OptionsPayoff's
+  // "Resolving spot…" full-chart placeholder for a genuine cold start)
+  // and from `_refreshing` below (the RefreshButton "any of the three
+  // page-level loads is in flight" flag) — this one drives ONLY the
+  // small spinner in the payoff chart's LTP/CHG% stat rows, so a
+  // routine 5s refetch never re-triggers the full-chart cyan pulse.
+  // Generation-guarded (B4) the same way `loading` now is — see
+  // loadStrategy()'s `finally` block.
+  let _stratRefreshing = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
   // never animates when the operator clicks Refresh on an unchanged
@@ -1602,7 +1612,7 @@
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
   // Three sources appear in order: real → provisional (~) → draft store (D).
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     void instrumentsReady;  // re-derive when instruments cache warms (cold start drops MCX open positions)
@@ -1881,14 +1891,30 @@
   const payoffSpot = $derived.by(() => {
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     if (stratUnd && stratUnd === selectedUnderlying) {
-      // Tier 1: live tick on the exact anchor contract.
+      // Tier 1: live tick on the exact anchor contract (MCX/CDS — the
+      // strategy's own matching-expiry future).
       const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       if (anchor) {
         const v = liveSnap(anchor)?.ltp;
         if (v > 0) return v;
+      } else {
+        // Tier 1b (C2 fix): NSE underlyings have no anchor future — the
+        // backend prices strategy.spot off the cash/index ticker
+        // (underlying_ltp_key: NIFTY→"NIFTY 50", stock→"NSE:<sym>"), the
+        // exact same ticker `resolveUnderlyingTradingsymbol` resolves to
+        // for an index/stock root (verified: both map to the SAME cash
+        // ticker, not a future — the b1b946a8 basis-mismatch class does
+        // NOT apply here). Reuse liveSpot's own Tier-1 lookup (`_undLive`,
+        // same live-tick source, same resolved symbol) instead of
+        // falling straight to the 5s-refetch-stepped strategy.spot below
+        // — without this the overlay LTP/CHG% "stepped" once per 5s
+        // refetch instead of ticking live like the rest of the page.
+        const _selLtp = _undLive[selectedUnderlying]?.ltp;
+        if (_selLtp > 0) return _selLtp;
       }
       // Tier 2: backend's own resolved value for this strategy — already
       // anchor-priced (backend/api/routes/options.py:_resolve_spot).
+      // Reached only when Tier 1/1b have no live tick yet (cold store).
       const s = Number(strategy?.spot || 0);
       if (s > 0) return s;
     }
@@ -1931,11 +1957,19 @@
     return m;
   });
 
-  // True for the one render frame between selectedUnderlying changing and the
-  // post-render loadStrategy({clear:true}) effect firing. liveSpot recomputes
-  // immediately (reads _underlyingQuotes[selectedUnderlying]?.ltp) while
-  // strategy still holds the old symbol's data — this derived detects that
-  // stale window and gates the OptionsPayoff props.
+  // True for the WHOLE fetch duration between selectedUnderlying changing
+  // and the new strategy analytics response landing — NOT "one render
+  // frame" as an earlier version of this comment claimed (verified: the
+  // window lasts as long as fetchStrategyAnalytics() takes, easily
+  // multiple render frames on a slow connection; B3's audit traced the
+  // ACTUAL one-frame-per-tick symptom to `_clientPayoffStub` rebuilding
+  // on every 250ms tick while this stays true, not to this flag itself
+  // being short-lived). liveSpot/payoffSpot recompute immediately (read
+  // live ticks) while strategy still holds the old symbol's data — this
+  // derived detects that stale window. Every strategy-derived overlay
+  // prop routes through `payoffDisplay` (see below), which uses this
+  // flag plus a last-good-per-root cache so the overlay switches
+  // atomically instead of leaking the old root's data prop-by-prop.
   const _strategyStale = $derived(
     !!strategy &&
     String(strategy.underlying || '').toUpperCase() !== selectedUnderlying.toUpperCase()
@@ -2158,8 +2192,14 @@
    *  `_throttledTick` — that gate belongs to a different derived further
    *  down in this file), so using it as the sole spot source keeps this
    *  cascade bounded without a separate throttle here. */
-  const _legsExpPnlTotal = $derived.by(() => {
-    const spot = liveSpot ?? null;
+  /** Shared filter+sum used by both _legsExpPnlTotal (liveSpot / front-month
+   *  — the Legs-grid TOTAL row's SSOT) and _chartExpPnlAtSpot (payoffSpot
+   *  / anchor-contract basis — feeds ONLY the payoff chart's own on-chart
+   *  Exp P&L readout next to the expiry marker, C1 fix). Extracted so the
+   *  two spot bases can never drift apart in filter logic — only in which
+   *  `spot` value is passed. See each derived's own docstring for why the
+   *  two consumers intentionally use different bases. */
+  function _sumEnabledLegsExpPnl(/** @type {number|null} */ spot) {
     // Single pass: _legExpPnlDisplay is the canonical per-candidate formula
     // so sum(per-leg rows in the grid) == this TOTAL by construction.
     // Handles open F&O, closed F&O, equity/proxy legs, and null (no-spot) legs uniformly.
@@ -2178,7 +2218,18 @@
         const v = _legExpPnlDisplay(c, spot);
         return v == null ? s : s + v;
       }, 0);
-  });
+  }
+  const _legsExpPnlTotal = $derived.by(() => _sumEnabledLegsExpPnl(liveSpot ?? null));
+  /** Chart-only Exp P&L at spot (C1 fix) — evaluated at `payoffSpot`
+   *  (anchor-contract basis) instead of `liveSpot` (front-month), so the
+   *  number the chart displays next to the expiry marker/dart always
+   *  agrees with what the dart visually points at (both already use
+   *  payoffSpot — see the LTP row, spot line, CHG%, and marker position).
+   *  Feeds ONLY the OptionsPayoff `legsExpPnlAtSpot` prop — the separate
+   *  Legs-grid TOTAL row keeps reading `_legsExpPnlTotal` (liveSpot),
+   *  a deliberately different, correctly-scoped consumer per the
+   *  operator's decision (see plan C1). */
+  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(payoffSpot ?? null));
 
   /** Legs-tab TOTAL row Extrinsic — same enabled/draft gate as
    *  `_legsExpPnlTotal` above, so sum(visible leg rows' Extrinsic) equals
@@ -2292,9 +2343,36 @@
     enabledSymbols = next;
   }
 
-  // Backend's BS-theoretical TDAY at the current spot — the value
-  // the chart would render WITHOUT any offset. We pick the payoff
-  // point nearest strategy.spot from the unshifted curve.
+  // C5 fix — the spot `candidatesActualPnl` was actually priced at.
+  // `candidatesActualPnl` sums each enabled candidate's broker `pnl`,
+  // which was computed by the backend against that candidate's own
+  // poll-time `underlying_ltp` (stamped by positions.py's option-Greeks
+  // enrichment pass on the SAME expiry-matching anchor contract the
+  // payoff curve itself is priced on — see option_underlying_quote_key,
+  // "the matching-month future, which serves as the spot proxy for
+  // MCX"). Reading `c.underlying_ltp` here (frozen inside the `positions`
+  // $state until the NEXT book-poll write) — rather than the live-ticking
+  // `payoffSpot`/`strategy.spot` — keeps `chartTheoreticalAtSpot` and
+  // `candidatesActualPnl` anchored to ONE shared clock (the book poll),
+  // instead of two independent 5s timers that drift in and out of phase
+  // and double-count a spot move for 0-5s before snapping back (the
+  // sawtooth the plan describes). Falls back to strategy.spot for a
+  // futures/equity-only basket (no option legs ⇒ no underlying_ltp
+  // stamped on any row).
+  const _pollSpot = $derived.by(() => {
+    for (const c of candidatePositions) {
+      if (!_isLegEnabled(c)) continue;
+      if (!_includeHoldings && c.kind === 'eq') continue;
+      const v = Number(c.underlying_ltp) || 0;
+      if (v > 0) return v;
+    }
+    return Number(strategy?.spot || 0);
+  });
+
+  // Backend's BS-theoretical TDAY at the poll-clock spot (C5) — the
+  // value the chart would render WITHOUT any offset. Linearly
+  // interpolated (C4) rather than snapped to the nearest grid point, so
+  // the offset computed below doesn't inherit a grid-step rounding error.
   const chartTheoreticalAtSpot = $derived.by(() => {
     // Read from the MERGED payoff (option strategy + any layered
     // equity-holding contribution), not strategy.payoff. Without this,
@@ -2305,14 +2383,8 @@
     // quantities are equal and stacked.
     const arr = _mergedPayoff;
     if (!arr || arr.length === 0) return 0;
-    const targetSpot = Number(strategy?.spot || 0);
-    let best = arr[0];
-    let bestDiff = Math.abs(best.spot - targetSpot);
-    for (const p of arr) {
-      const d = Math.abs(p.spot - targetSpot);
-      if (d < bestDiff) { best = p; bestDiff = d; }
-    }
-    return Number(best?.today_value || 0);
+    const targetSpot = _pollSpot || Number(strategy?.spot || 0);
+    return interpAt(arr, targetSpot, 'today_value') ?? 0;
   });
 
   // Vertical offset applied to the chart curves so that TDAY at the
@@ -2496,6 +2568,35 @@
     }
     return out;
   });
+
+  /** Payoff chart's "leg composition" identity — the signal OptionsPayoff
+   *  uses to distinguish "same strategy, new data landed on the routine
+   *  5s refetch" from "the operator actually changed the basket" (B1 fix).
+   *  NOT `computeLegsKey(cleanLegs)` — that memo key embeds `ltp` for
+   *  sim/draft/provisional legs (buildCleanLegs inlines it so the backend
+   *  can price legs it can't fetch from a broker), so it would change on
+   *  every sim/draft price tick and pulse the chart continuously in sim
+   *  mode, the exact bug this fix is meant to remove.
+   *
+   *  Built from content (symbol:qty), not object identity, so a routine
+   *  refetch — which always reassigns `strategy` to a brand-new object
+   *  with the SAME leg composition — produces an IDENTICAL string and
+   *  therefore does not change this derived's value (Svelte 5 skips
+   *  downstream reactions when a primitive $derived's value is
+   *  unchanged). Only a genuine add/remove/qty-change leg, an
+   *  underlying switch, or a holdings/draft toggle flip changes it. */
+  const _legSignature = $derived.by(() => {
+    const optLegs = (strategy?.legs || [])
+      .map(/** @param {{symbol:string, qty:number}} l */ l => `${l.symbol}:${l.qty}`)
+      .sort()
+      .join(',');
+    const eqLegs = _equityLinearLegs
+      .map(l => `${l.key}:${l.qty.toFixed(2)}`)
+      .sort()
+      .join(',');
+    return `${selectedUnderlying}|${optLegs}|${eqLegs}|H${_includeHoldings ? 1 : 0}|D${showDraftInPayoff ? 1 : 0}`;
+  });
+
   const _eqExpPnlByKey = $derived.by(() => {
     const spot = liveSpot;
     if (spot == null) return /** @type {Record<string,number>} */ ({});
@@ -3527,12 +3628,14 @@
    *  error term — and it added mergedEv even when the selected
    *  underlying wasn't among the displayed rows.) */
   function _rowEvFor(/** @type {string} */ underlying) {
-    // _strategyStale gate (same pattern as the OptionsPayoff props above):
-    // during the one-render-frame window between selectedUnderlying
-    // changing and loadStrategy({clear:true}) landing, `strategy` (and
-    // therefore _mergedEv) still holds the PREVIOUS root's data. Without
-    // this gate that stale EV briefly displays on the NEW root's row (and
-    // sums into TOTAL) before the real fetch completes.
+    // _strategyStale gate (same pattern as the OptionsPayoff overlay's
+    // `payoffDisplay`): for the WHOLE fetch duration between
+    // selectedUnderlying changing and loadStrategy({clear:true}) landing
+    // (not "one render frame" — see _strategyStale's own comment),
+    // `strategy` (and therefore _mergedEv) still holds the PREVIOUS
+    // root's data. Without this gate that stale EV briefly displays on
+    // the NEW root's row (and sums into TOTAL) before the real fetch
+    // completes.
     if (underlying === selectedUnderlying && !_strategyStale && _mergedEv != null) return _mergedEv;
     // Exp P&L proxy — delegates to _rowExpPnlFor rather than indexing
     // _filteredExpPnlByRoot directly, so this fallback always matches
@@ -3744,6 +3847,34 @@
     const rawPos = positionsStore.value;
     if (!rawPos || !_positionsLoaded) return;
     untrack(() => {
+      // Shared-root fallback (0-vs-last-known-good fix, frontend half):
+      // the conn-service can mask a genuine fetch failure as an HTTP 200
+      // with `accounts: []`, which arrives here as `rawPos = []` —
+      // indistinguishable, at this layer, from "operator genuinely
+      // closed every F&O position." `loadPositions()` elsewhere in this
+      // file falls back to `_lastDervPulsePos` for exactly this reason,
+      // but that store is fed by a DIFFERENT poll (pulsePositionsStore)
+      // that can be degraded by the SAME masked-failure window at the
+      // same moment — an unconditional fallback to it wouldn't actually
+      // guarantee real data. Safer: when this cycle's read is empty AND
+      // we're currently showing live (non-sim) rows, treat it as a
+      // suspected degraded read and skip the write entirely — freeze
+      // `positions` at its last-known-good value rather than overwriting
+      // with a false empty. Deliberately does NOT stamp
+      // `_positionsRefreshedAt` on this path either — a suspected-
+      // degraded read must not count as "confirmed fresh" for the
+      // _positionsFresh gate that governs the equity-only-synth
+      // strategy-wipe branch (see the §5 comment above): wiping the
+      // payoff strategy on a masked failure would reproduce the exact
+      // flat-line-at-0 bug this fix removes. A genuinely empty book
+      // (operator closed everything) is NOT permanently stuck — the
+      // very next confirmed-non-empty OR the periodic `loadPositions()`
+      // full-load path (5s cadence) will resolve it; this is a narrow,
+      // known trade-off documented here rather than solved locally —
+      // the proper disambiguation (backend degraded/stale_accounts tag)
+      // is being threaded through by the parallel NavStrip-data-layer fix.
+      const _hasLiveRows = positions.some(r => r.source !== 'sim');
+      if (rawPos.length === 0 && _hasLiveRows) return;
       const merged = [];
       /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
       const excluded = {};
@@ -4006,6 +4137,10 @@
 
     const _thisGen = ++_stratGen;
     if (!strategy) loading = true;
+    // B1 fix: a routine refetch (strategy already loaded) sets ONLY
+    // `_stratRefreshing` — the small stat-row spinner — never `loading`,
+    // which would re-trigger OptionsPayoff's full-chart placeholder.
+    _stratRefreshing = true;
     // Stamp BEFORE the await (item-6 fix), not after. Stamping post-await
     // only counted (5000ms − request latency) as "elapsed" by the time the
     // next 5s interval tick checked _dueForRefresh, so the effective
@@ -4052,7 +4187,17 @@
         strategyErr = /** @type {any} */ (e).message || String(e);
       }
     } finally {
-      loading = false;
+      // B4 fix: a superseded (stale-generation) fetch's `finally` must NOT
+      // clear `loading`/`_stratRefreshing` when a NEWER fetch is still in
+      // flight — only the CURRENT generation's own finally may clear them.
+      // Previously `finally` ran unconditionally (even after the early
+      // `return` on a stale-gen catch/success above), so a slow superseded
+      // response could clear `loading` while the real in-flight request
+      // was still running, prematurely dropping the placeholder/spinner.
+      if (_thisGen === _stratGen) {
+        loading = false;
+        _stratRefreshing = false;
+      }
     }
   }
 
@@ -4428,6 +4573,78 @@
     return v.toFixed(dp);
   }
 
+  // ── Payoff overlay snapshot (B3 + C3 combined fix) ──────────────────
+  // Every strategy-derived value the OptionsPayoff overlay renders is
+  // bundled into ONE object here, so the whole overlay switches
+  // atomically — previously only `payoff`/`intermediateCurves` were
+  // gated on `_strategyStale`; breakevens/spanSigmas/spanPct/dte/
+  // ivProxy/legCount/legSymbols/spotAnchor/realizedPnl/expiryPnlOffset/
+  // legsExpPnlAtSpot/netCost/multiExpiry all kept reading the OLD
+  // `strategy` during the stale window right after an underlying
+  // switch, while `spot`/`prevClose` (payoffSpot/payoffPrevClose) had
+  // ALREADY switched to the new root — briefly showing the new
+  // symbol's LTP next to the old symbol's DTE/σ/legs.
+  //
+  // Combined with a last-good-PER-ROOT cache (B3): a routine 5s
+  // refetch (strategy reassigned to a new object, same underlying)
+  // never touches this — `_strategyStale` is false the whole time, so
+  // `payoffDisplay` below just returns the live, freshly-computed
+  // snapshot every cycle. Only a genuine underlying switch enters the
+  // stale window; while stale, the cache is keyed by `selectedUnderlying`
+  // (the NEW root, not the old one) — so the LAST snapshot successfully
+  // computed for THIS SAME (new) root, if one was ever cached earlier
+  // this session, is shown instead of blanking to the client stub. A root visited
+  // for the very first time this session (no cache entry yet) is the
+  // ONLY case that falls through to `_clientPayoffStub`/the "Resolving
+  // spot…" placeholder — a genuine cold start, not a routine refetch.
+  const _payoffSnapshot = $derived.by(() => ({
+    payoff:             _mergedPayoff,
+    breakevens:         _mergedRisk?.breakevens ?? strategy?.risk?.breakevens,
+    intermediateCurves: strategy?.intermediate_curves || [],
+    spanSigmas:         strategy?.span_sigmas,
+    spanPct:            strategy?.span_pct,
+    dte:                strategy?.days_to_expiry,
+    ivProxy:            strategy?.iv_proxy,
+    legCount:           (strategy?.legs?.length ?? 0) + _equityLegs.length,
+    multiExpiry:        strategy?.multi_expiry ?? false,
+    realizedPnl:        chartPnlOffset,
+    expiryPnlOffset:    _expiryPnlOffset,
+    legsExpPnlAtSpot:   _chartExpPnlAtSpot,
+    legSymbols:         (strategy?.legs ?? []).map(/** @param {{symbol:string}} l */ l => l.symbol),
+    spotAnchor:         strategy?.spot_anchor_contract
+      ? { contract: strategy.spot_anchor_contract,
+          source: strategy.spot_source || 'futures',
+          expiryISO: _spotAnchorExpiryISO }
+      : null,
+    netCost:            _netStrategyCost,
+  }));
+
+  /** @type {Record<string, any>} */
+  let _payoffSnapshotByRoot = $state({});
+  // Writes the cache ONLY while `strategy` is genuinely current for
+  // `selectedUnderlying` (not stale) — a write during the stale window
+  // would cache the OLD root's data under the NEW root's key.
+  $effect(() => {
+    const snap = _payoffSnapshot;
+    const root = selectedUnderlying;
+    const isCurrent = !!strategy && !_strategyStale;
+    untrack(() => {
+      if (isCurrent && root) {
+        _payoffSnapshotByRoot = { ..._payoffSnapshotByRoot, [root]: snap };
+      }
+    });
+  });
+
+  /** Atomic overlay data source. Live + current → the fresh snapshot.
+   *  Stale (mid underlying-switch) but this root has rendered before
+   *  this session → its last-good snapshot, frozen until the new fetch
+   *  lands. Never rendered before for this root → null, the ONLY case
+   *  that falls through to the client-side stub / cold-start placeholder. */
+  const payoffDisplay = $derived.by(() => {
+    if (strategy && !_strategyStale) return _payoffSnapshot;
+    return _payoffSnapshotByRoot[selectedUnderlying] ?? null;
+  });
+
 </script>
 
 <svelte:head><title>Derivatives | RamboQuant Analytics</title></svelte:head>
@@ -4689,33 +4906,31 @@
     -->
     <div class="card-body" hidden={_colPayoff}>
       <OptionsPayoff
-        payoff={strategy && !_strategyStale ? _mergedPayoff : (_clientPayoffStub ?? [])}
+        payoff={payoffDisplay ? payoffDisplay.payoff : (_clientPayoffStub ?? [])}
         spot={payoffSpot}
         prevClose={payoffPrevClose}
-        breakevens={_mergedRisk?.breakevens ?? strategy?.risk?.breakevens}
-        intermediateCurves={!_strategyStale ? (strategy?.intermediate_curves || []) : []}
-        spanSigmas={strategy?.span_sigmas}
-        spanPct={strategy?.span_pct}
-        dte={strategy?.days_to_expiry}
-        ivProxy={strategy?.iv_proxy}
-        legCount={(strategy?.legs?.length ?? 0) + _equityLegs.length}
-        multiExpiry={strategy?.multi_expiry ?? false}
-        realizedPnl={chartPnlOffset}
-        expiryPnlOffset={_expiryPnlOffset}
+        breakevens={payoffDisplay?.breakevens}
+        intermediateCurves={payoffDisplay?.intermediateCurves ?? []}
+        spanSigmas={payoffDisplay?.spanSigmas}
+        spanPct={payoffDisplay?.spanPct}
+        dte={payoffDisplay?.dte}
+        ivProxy={payoffDisplay?.ivProxy}
+        legCount={payoffDisplay ? payoffDisplay.legCount : _equityLegs.length}
+        multiExpiry={payoffDisplay?.multiExpiry ?? false}
+        realizedPnl={payoffDisplay?.realizedPnl ?? 0}
+        expiryPnlOffset={payoffDisplay?.expiryPnlOffset ?? 0}
         dayPnl={candidatesDayPnl}
-        legsExpPnlAtSpot={_legsExpPnlTotal}
-        legSymbols={(strategy?.legs ?? []).map(/** @param {{symbol:string}} l */ l => l.symbol)}
-        spotAnchor={strategy?.spot_anchor_contract
-          ? { contract: strategy.spot_anchor_contract,
-              source: strategy.spot_source || 'futures',
-              expiryISO: _spotAnchorExpiryISO }
-          : null}
+        legsExpPnlAtSpot={payoffDisplay?.legsExpPnlAtSpot}
+        legSymbols={payoffDisplay?.legSymbols ?? []}
+        spotAnchor={payoffDisplay?.spotAnchor ?? null}
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
         showDraftInPayoff={showDraftInPayoff}
         onToggleDraft={_flipDraft}
-        netCost={_netStrategyCost}
-        loading={loading || _strategyStale}
+        netCost={payoffDisplay?.netCost}
+        loading={!payoffDisplay && (loading || _strategyStale)}
+        refreshing={_stratRefreshing}
+        legSignature={_legSignature}
         height={320} />
     </div>
   </div>

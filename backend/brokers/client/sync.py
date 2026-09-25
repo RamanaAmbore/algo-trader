@@ -39,18 +39,47 @@ def _get_client() -> httpx.Client:
     return _client
 
 
+def _failed_sentinel() -> list[pd.DataFrame]:
+    """Single-frame `fetch_failed` sentinel — the same shape used on
+    transport/HTTP failure and on a conn_service-side degraded response.
+    Kept as one helper so the two failure paths below can't drift apart."""
+    sentinel = pd.DataFrame()
+    sentinel.attrs["fetch_failed"] = True
+    return [sentinel]
+
+
 def _fetch_per_account(path: str) -> list[pd.DataFrame]:
     """Sync version of the per-account fetch. Uses msgspec decoder on
-    resp.content for ~3× faster decode vs resp.json() + dict access."""
+    resp.content for ~3× faster decode vs resp.json() + dict access.
+
+    conn_service's /internal/holdings|positions|margins handlers catch
+    every exception raised during the per-account fetch loop (e.g. one
+    account's post-processing step raising, which aborts the WHOLE
+    @for_all_accounts batch — not just that account) and return HTTP 200
+    with `accounts: []` + `errors: [...]`. Without the check below that
+    200 looks identical to a genuine "zero rows" result, so callers'
+    outage/stale-substitute detectors never fire and a real fetch failure
+    silently renders as an empty-but-fresh book (NavStrip / Payoff chart
+    showing 0 instead of the last-known-good value).
+
+    A conn_service process with zero loaded broker accounts also returns
+    `accounts: []` with `errors: []` — that combination is NOT treated as
+    a failure (genuinely nothing to report), so a fresh box with no
+    broker accounts configured doesn't get stuck permanently "failed"."""
     try:
         resp = _get_client().get(path)
         resp.raise_for_status()
         payload = _per_account_decoder.decode(resp.content)
     except Exception as e:
         logger.warning("conn_client.sync: %s failed: %s", path, e)
-        sentinel = pd.DataFrame()
-        sentinel.attrs["fetch_failed"] = True
-        return [sentinel]
+        return _failed_sentinel()
+
+    if payload.errors:
+        logger.warning(
+            "conn_client.sync: %s returned degraded response: %s",
+            path, "; ".join(payload.errors)[:300],
+        )
+        return _failed_sentinel()
 
     out: list[pd.DataFrame] = []
     for entry in payload.accounts or []:

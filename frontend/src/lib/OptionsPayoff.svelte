@@ -39,6 +39,8 @@
    *   netCost?:     number|null,
    *   showDraftInPayoff?: boolean | null,
    *   onToggleDraft?: (() => void) | null,
+   *   legSignature?: string,
+   *   refreshing?:  boolean,
    * }} */
   let {
     payoff = [],
@@ -117,6 +119,22 @@
     // amber annotation line at the cost level so the operator can read the
     // breakeven profile without looking at the Greeks overlay. null/0 = hide.
     netCost = /** @type {number|null} */ (null),
+    // Leg-composition identity (B1 fix) — a stable string that changes
+    // ONLY when the operator genuinely changes the basket (add/remove/
+    // qty-change a leg, switch underlying, flip holdings/draft toggle),
+    // NOT when a routine refetch reassigns `payoff` to a new array with
+    // identical content. Drives the full-chart cyan pulse (only fires on
+    // a real signature change) instead of firing on every payoff-prop
+    // identity change. '' (default) → treated as "no signature supplied"
+    // — falls back to the old array-identity pulse behaviour so existing
+    // callers that don't wire this prop (SimulatorPanel) keep working.
+    legSignature = '',
+    // "A routine refetch is currently in flight" (B1 fix) — drives ONLY
+    // the small spinner in the LTP/CHG% stat rows, never the full-chart
+    // placeholder (that's still `loading`). Generation-guarded by the
+    // caller (B4) so it can't get stuck showing while a newer fetch has
+    // already landed.
+    refreshing = false,
   } = $props();
 
   // Days until the anchor contract expires — used to decide whether
@@ -199,20 +217,25 @@
     return bes;
   });
 
-  // Nearest curve point to current spot — drives the on-chart TDAY/EXP
-  // readouts so the operator sees position P&L right beside the chart.
-  // Reads from the offset-adjusted curve so the overlay value equals
-  // the dashboard's per-underlying P&L.
+  // Linearly interpolated curve value at the EXACT current spot (C4 fix)
+  // — drives the on-chart TDAY/EXP readouts AND the expiry-dart y-position
+  // so the operator sees position P&L right beside the chart. Reads from
+  // the offset-adjusted curve so the overlay value equals the dashboard's
+  // per-underlying P&L. Previously snapped to the nearest grid point,
+  // which "stepped" the readout in grid increments and could visibly
+  // float the dart off the drawn curve line on steep sections — masked
+  // for NSE before the C2 live-tick fix (payoffSpot happened to equal a
+  // grid point exactly). `spot` itself (not a grid point) is kept as
+  // the `.spot` field — nothing downstream reads it (the dart's x
+  // position already comes from the raw `spot` prop via `spotX`).
   const curveAtSpot = $derived.by(() => {
     const src = adjustedPayoff;
     if (!src.length) return null;
-    let best = src[0];
-    let bestDiff = Math.abs(best.spot - spot);
-    for (const p of src) {
-      const d = Math.abs(p.spot - spot);
-      if (d < bestDiff) { bestDiff = d; best = p; }
-    }
-    return best;
+    return {
+      spot,
+      today_value:  interpAt(src, spot, 'today_value'),
+      expiry_value: interpAt(src, spot, 'expiry_value'),
+    };
   });
 
   // Multi-leg charts pass `breakevens` array; single-leg charts pass
@@ -290,13 +313,85 @@
   /** @type {{startClientX: number, startMin: number, startMax: number} | null} */
   let pan = $state(null);
 
+  // B2 fix — a genuine leg-composition change (underlying switch, leg
+  // add/remove/qty-change) invalidates any manual zoom window from the
+  // PREVIOUS strategy — its spot range rarely even overlaps the new
+  // strategy's. Auto-reset so the operator doesn't land on a new
+  // underlying still zoomed into the old one's strike cluster.
+  let _lastZoomSig = /** @type {string|null} */ (null);
+  $effect(() => {
+    const sig = legSignature;
+    untrack(() => {
+      if (_lastZoomSig !== null && sig !== _lastZoomSig) { zoom = null; pan = null; }
+      _lastZoomSig = sig;
+    });
+  });
+
   // X domain — `zoom` overrides the auto-derived spot range.
   const dataMin = $derived(payoff.length ? payoff[0].spot : (spot - 1));
   const dataMax = $derived(payoff.length ? payoff[payoff.length - 1].spot : (spot + 1));
-  const sMin  = $derived(zoom ? zoom.xMin : dataMin);
-  const sMax  = $derived(zoom ? zoom.xMax : dataMax);
+
+  // B2 fix — pin the auto (unzoomed) x-domain across routine refetches.
+  // The backend rebuilds `payoff`'s grid centered on the CURRENT spot on
+  // every fetch (np.linspace(S*(1-span), S*(1+span), 51)), so `dataMin`/
+  // `dataMax` above silently shift every ~5s even with an unchanged
+  // strategy — the σ-tick labels and visible plot range visibly jumped
+  // on every refetch. `_pinnedX` is a plain closure variable (NOT
+  // $state) mutated synchronously inside this $derived.by — driving it
+  // from a separate $effect would lag one frame (Svelte flushes effects
+  // AFTER the render that reads the still-stale $state), during which a
+  // newly-refetched grid whose points fall outside the still-old pinned
+  // domain would overflow the plot area for that one frame. A $derived
+  // may freely read-and-write a plain local variable within its own
+  // synchronous body; only writing a *tracked* $state from inside a
+  // $derived is disallowed (state_unsafe_mutation).
+  //
+  // Reset triggers (any one forces a fresh pin to the raw grid):
+  //   1. `legSignature` changed — a genuine leg/underlying change, not a
+  //      routine refetch; the operator should see the new range immediately.
+  //   2. Coverage failure — the raw refetched grid no longer covers the
+  //      pinned range within a 3% tolerance (the backend's spot-centered
+  //      grid drifted far enough that clamping to the old pin would leave
+  //      a visible gap at one edge where no curve data exists).
+  // Otherwise: re-center only once `spot` drifts outside the middle 60%
+  // (±20% margin) of the CURRENTLY PINNED range — not the raw range,
+  // which would defeat the pin by re-centering on its own drift.
+  // Opt-in: callers that don't wire `legSignature` (e.g. SimulatorPanel,
+  // which intentionally wants a domain that tracks its scrub scenario
+  // tick-by-tick, not a pinned one) get the original always-fresh
+  // domain — pinning only engages when the caller supplies a real
+  // signature to pin against.
+  /** @type {{xMin: number, xMax: number, sig: string, refSpot: number} | null} */
+  let _pinnedX = null;
+  const _autoXDomain = $derived.by(() => {
+    const rawMin = dataMin, rawMax = dataMax;
+    const sig = legSignature;
+    if (!sig || !payoff.length) { _pinnedX = null; return { xMin: rawMin, xMax: rawMax }; }
+    const rawSpan = Math.max(1e-6, rawMax - rawMin);
+    const coverageFailed = !!_pinnedX && (
+      rawMin > _pinnedX.xMin + rawSpan * 0.03 ||
+      rawMax < _pinnedX.xMax - rawSpan * 0.03
+    );
+    if (!_pinnedX || _pinnedX.sig !== sig || coverageFailed) {
+      _pinnedX = { xMin: rawMin, xMax: rawMax, sig, refSpot: spot };
+      return { xMin: rawMin, xMax: rawMax };
+    }
+    const pinnedSpan = _pinnedX.xMax - _pinnedX.xMin;
+    const bandLo = _pinnedX.xMin + pinnedSpan * 0.20;
+    const bandHi = _pinnedX.xMax - pinnedSpan * 0.20;
+    if (spot < bandLo || spot > bandHi) {
+      _pinnedX = { xMin: rawMin, xMax: rawMax, sig, refSpot: spot };
+    }
+    return { xMin: _pinnedX.xMin, xMax: _pinnedX.xMax };
+  });
+  const sMin  = $derived(zoom ? zoom.xMin : _autoXDomain.xMin);
+  const sMax  = $derived(zoom ? zoom.xMax : _autoXDomain.xMax);
   const sSpan = $derived(Math.max(0.001, sMax - sMin));
   const isZoomed = $derived(zoom !== null);
+  // Unique per-instance clip id (two OptionsPayoff instances can be
+  // mounted at once — derivatives page + SimulatorPanel) so the plot-area
+  // clipPath below doesn't collide across instances.
+  const _clipId = 'payoff-plot-clip-' + Math.random().toString(36).slice(2, 9);
 
   // Y domain: union of both curves over the *visible* x-range. When
   // the operator zooms into a narrow spot range, the y-axis tightens
@@ -307,6 +402,20 @@
   const visiblePayoff = $derived(
     adjustedPayoff.filter(p => p.spot >= sMin && p.spot <= sMax)
   );
+  // B2 fix — hysteresis on the (unzoomed) y-domain so it doesn't rescale
+  // on every routine refetch. Grows immediately in either direction (a
+  // curve must never clip against a too-tight domain); shrinks only once
+  // the raw range has pulled in by more than 15% of the current pinned
+  // span, so a one-cycle wobble (BS drift, a live-tick nudge) doesn't
+  // visibly rescale the y-axis every 5s. Same plain-closure-variable
+  // technique as `_autoXDomain` above (grow/shrink decided synchronously
+  // within this $derived.by, not via a lagging $effect). Reset (snap to
+  // the raw range immediately) on a genuine leg-signature change, or
+  // while the operator has manually zoomed — zoom already narrows to
+  // "the P&L excursion actually on screen" and should track precisely,
+  // not lag behind a hysteresis band.
+  /** @type {{lo: number, hi: number, sig: string} | null} */
+  let _yHyst = null;
   const yDomain = $derived.by(() => {
     const src = visiblePayoff.length ? visiblePayoff : adjustedPayoff;
     let lo = 0, hi = 0;
@@ -317,7 +426,22 @@
       if (p.expiry_value > hi) hi = p.expiry_value;
     }
     const pad = Math.max((hi - lo) * 0.10, 100);
-    return { lo: lo - pad, hi: hi + pad, span: Math.max(1, (hi + pad) - (lo - pad)) };
+    const rawLo = lo - pad, rawHi = hi + pad;
+    const sig = legSignature;
+    // Opt-in, same as _autoXDomain above — no signature wired (e.g.
+    // SimulatorPanel) keeps the original always-fresh y-domain.
+    if (!sig || !payoff.length || isZoomed || !_yHyst || _yHyst.sig !== sig) {
+      _yHyst = { lo: rawLo, hi: rawHi, sig };
+      return { lo: rawLo, hi: rawHi, span: Math.max(1, rawHi - rawLo) };
+    }
+    const curSpan = Math.max(1, _yHyst.hi - _yHyst.lo);
+    let { lo: hLo, hi: hHi } = _yHyst;
+    if (rawLo < hLo) hLo = rawLo;                                  // grow immediately
+    else if (rawLo > hLo && (rawLo - hLo) > curSpan * 0.15) hLo = rawLo; // shrink past threshold
+    if (rawHi > hHi) hHi = rawHi;                                  // grow immediately
+    else if (rawHi < hHi && (hHi - rawHi) > curSpan * 0.15) hHi = rawHi; // shrink past threshold
+    _yHyst = { lo: hLo, hi: hHi, sig };
+    return { lo: hLo, hi: hHi, span: Math.max(1, hHi - hLo) };
   });
 
   function xOf(/** @type {number} */ s) {
@@ -407,17 +531,42 @@
 
   import { untrack } from 'svelte';
   import { priceFmt, aggFmt, aggCompact, ltpDayClass } from '$lib/format';
+  import { interpAt } from '$lib/data/derivativesMath.js';
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { _tcFlashClass } from '$lib/data/pulseColumns.js';
 
   const _pulse = createChartRefreshPulse();
-  // Fire when payoff data changes — but NOT on hover / zoom / pan (those
-  // don't change the payoff prop identity). `payoff` is the canonical
-  // data prop; spot changes are derived display, not new data.
+  // B1 fix — fire the full-chart cyan pulse ONLY when the leg
+  // composition genuinely changes (a real add/remove/qty-change leg, an
+  // underlying switch, or a holdings/draft toggle flip), not on every
+  // routine refetch. Previously this fired on every `payoff` array
+  // IDENTITY change, which the derivatives page now does every ~5s even
+  // with unchanged legs (each refetch reassigns `strategy` — and
+  // therefore `_mergedPayoff` — to a brand-new array with identical
+  // content) — the whole chart flashed on a routine background refresh
+  // that carried no visible change. `legSignature` (content-keyed, not
+  // identity-keyed) is the caller's SSOT for "same strategy vs. actually
+  // different legs" (see +page.svelte's `_legSignature` derived).
+  // '' (no signature wired, e.g. SimulatorPanel) falls back to the
+  // original array-identity behaviour so existing callers are unaffected.
+  let _lastPulseSig = /** @type {string|null} */ (null);
   $effect(() => {
-    if (payoff.length) untrack(() => _pulse.notify('payoff'));
+    const sig = legSignature;
+    const len = payoff.length;
+    untrack(() => {
+      if (!len) return;
+      if (sig) {
+        if (sig !== _lastPulseSig) {
+          _lastPulseSig = sig;
+          _pulse.notify('payoff');
+        }
+      } else {
+        // No signature supplied — preserve the prior identity-based pulse.
+        _pulse.notify('payoff');
+      }
+    });
   });
 
   const _spotFlash = createTickFlash({ threshold: 0, durationMs: 300 });
@@ -588,8 +737,14 @@
     const factor = e.deltaY > 0 ? 1.25 : 1 / 1.25;
     const newMin = xVal - (xVal - sMin) * factor;
     const newMax = xVal + (sMax - xVal) * factor;
-    if (newMin <= dataMin && newMax >= dataMax) { zoom = null; return; }
-    if (newMax - newMin < (dataMax - dataMin) * 0.02) return;   // floor at 2% of full range
+    // B2 fix — "zoomed all the way back out" must compare against the
+    // PINNED auto domain (_autoXDomain), not the raw per-refetch
+    // dataMin/dataMax — those shift every ~5s (backend re-centers the
+    // grid on spot), so comparing against them could leave `zoom` stuck
+    // non-null (never quite reaching the ever-moving raw bounds) or
+    // reset prematurely against a domain the chart isn't even showing.
+    if (newMin <= _autoXDomain.xMin && newMax >= _autoXDomain.xMax) { zoom = null; return; }
+    if (newMax - newMin < (_autoXDomain.xMax - _autoXDomain.xMin) * 0.02) return;   // floor at 2% of the pinned range
     zoom = { xMin: newMin, xMax: newMax };
   }
   function onPointerDown(/** @type {PointerEvent} */ e) {
@@ -645,13 +800,22 @@
   // when spanSigmas isn't provided (operator-overridden span_pct).
   const _xTicksRaw = $derived.by(() => {
     if (!payoff.length) return [];
-    if (spanSigmas > 0 && spanPct > 0 && spot > 0) {
+    // B2 fix — anchor σ-tick VALUES to the pinned domain's reference
+    // spot (captured once, at pin time), not the live-ticking `spot`
+    // prop. Post-C2, `spot` ticks continuously for NSE underlyings too;
+    // recomputing `spot * (1 + k*spanPct/spanSigmas)` on every tick would
+    // jitter every σ-tick's price label continuously. `xOf(s)` below
+    // still maps through the pinned `sMin`/`sMax`, so the tick's PIXEL
+    // position stays correct even though its dollar VALUE is now stable
+    // between pins.
+    const refSpot = _pinnedX?.refSpot || spot;
+    if (spanSigmas > 0 && spanPct > 0 && refSpot > 0) {
       const ticks = [];
       // -spanSigmas → +spanSigmas in 0.5 steps. Round to single
       // decimal so floating math doesn't push 0 to 0.0000001.
       for (let k = -spanSigmas; k <= spanSigmas + 1e-9; k += 0.5) {
         const kRounded = Math.round(k * 2) / 2;
-        const s = spot * (1 + (kRounded * spanPct) / spanSigmas);
+        const s = refSpot * (1 + (kRounded * spanPct) / spanSigmas);
         if (s < sMin - 1e-6 || s > sMax + 1e-6) continue;
         ticks.push({
           s,
@@ -746,7 +910,12 @@
                ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">LTP</span>
-          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
+          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}{#if refreshing}<svg class="payoff-loading-ring" viewBox="0 0 16 16" width="9" height="9" aria-hidden="true" role="status" aria-label="Refreshing">
+              <circle cx="8" cy="8" r="5.5"
+                fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round"
+                stroke-dasharray="9 30" />
+            </svg>{/if}</span>
         </div>
         {#if spotPct != null}
           <div class="ps-row" title="Spot % change from previous session close">
@@ -872,14 +1041,26 @@
          onpointermove={onPointerMove}
          onpointerleave={onPointerLeave}
          onclick={onClick}>
+      <!-- B2 fix — plot-area clip so curve/fill paths never draw into
+           the axis-label padding for the ~3% coverage-tolerance window
+           the pinned x-domain allows between a re-pin and the next
+           refetch (see _autoXDomain above). Referenced by id from BOTH
+           SVGs in this stack (clip-path url() references resolve by
+           document-wide id, not scoped to one <svg>), so a single <defs>
+           here suffices. -->
+      <defs>
+        <clipPath id={_clipId}>
+          <rect x={PAD_L} y={PAD_T} width={innerW} height={innerH}/>
+        </clipPath>
+      </defs>
       <!-- Plot-area background tint — first child so it sits behind
            profit/loss shading, grid lines, and payoff curves.
            --chart-bg-tint in app.css. -->
       <rect class="chart-bg" x={PAD_L} y={PAD_T} width={innerW} height={innerH}
             fill="var(--chart-bg-tint)" rx="0"/>
       <!-- Profit / loss shading (under the curves so the lines pop) -->
-      <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none" class="data-path"/>
-      <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none" class="data-path"/>
+      <path d={fillProfit} fill="rgba(74,222,128,0.10)" stroke="none" class="data-path" clip-path="url(#{_clipId})"/>
+      <path d={fillLoss}   fill="rgba(248,113,113,0.10)" stroke="none" class="data-path" clip-path="url(#{_clipId})"/>
 
       <!-- Y-axis grid lines only — left-edge tick marks and faint
            numeric labels are gone; the spot-vertical chip column is
@@ -1050,15 +1231,15 @@
       {#each intermediatePaths as ip (ip.elapsed)}
         <path d={ip.d} fill="none" stroke={ip.color}
               stroke-width="1" stroke-dasharray="2 2"
-              stroke-opacity="0.65" class="data-path"/>
+              stroke-opacity="0.65" class="data-path" clip-path="url(#{_clipId})"/>
       {/each}
       <!-- Expiry curve (dashed sky) -->
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"
-            class="data-path"/>
+            class="data-path" clip-path="url(#{_clipId})"/>
       <!-- Today curve (solid amber, primary) -->
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"
-            class="data-path"/>
+            class="data-path" clip-path="url(#{_clipId})"/>
 
       <!-- Spot × today-curve dart — operator: "The one intersection
            point between the spot price line and today's payoff line
@@ -1184,13 +1365,13 @@
       {#each intermediatePaths as ip (ip.elapsed)}
         <path d={ip.d} fill="none" stroke={ip.color}
               stroke-width="1" stroke-dasharray="2 2"
-              stroke-opacity="0.65" class="data-path"/>
+              stroke-opacity="0.65" class="data-path" clip-path="url(#{_clipId})"/>
       {/each}
       <path d={pathExpiry} fill="none" stroke="#7dd3fc"
             stroke-width="1.25" stroke-dasharray="4 3" stroke-opacity="0.85"
-            class="data-path"/>
+            class="data-path" clip-path="url(#{_clipId})"/>
       <path d={pathToday}  fill="none" stroke="#fbbf24" stroke-width="1.75"
-            class="data-path"/>
+            class="data-path" clip-path="url(#{_clipId})"/>
       <!-- Foreground spot × today-curve dart — amber (today curve hue).
            Re-painted on the fg layer so the marker sits cleanly on
            top of the curves regardless of paint order. -->
@@ -1612,6 +1793,22 @@
     font-size: 10px;
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
+  }
+  /* B1 fix — small "a routine refetch is in flight" spinner rendered
+     inline after the LTP value, inside the existing .ps-v grid cell
+     (NOT a sibling of .ps-row, which uses display:contents — a new
+     direct child there would become its own grid item and shift every
+     subsequent row's 2-column alignment). Reuses the rbq-spin keyframe
+     (app.css) — same pattern as CardHeader's .ch-spin loading ring. */
+  .payoff-loading-ring {
+    display: inline-block;
+    margin-left: 0.25rem;
+    vertical-align: -1px;
+    color: var(--c-action, #fbbf24);
+    animation: rbq-spin 0.9s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .payoff-loading-ring { animation: none; }
   }
   .ps-v.ps-spot { color: #7dd3fc; }
   /* Day-direction tint on the SPOT readout — green when above

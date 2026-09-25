@@ -273,6 +273,21 @@ export { TTL };
 
 /** @typedef {import('./dataStore.svelte.js').createDataStore} DS */
 
+// ── Degraded-fetch meta extractor (real-money guard, 2026-09) ──────────────
+//
+// positions/holdings/funds responses (PositionsResponse / HoldingsResponse /
+// FundsResponse — backend/api/schemas.py) all carry the same two fields:
+// `stale_accounts: string[]` (accounts substituted from broker_apis'
+// last-known-good frame cache because their circuit breaker was open at
+// fetch time) and `as_of` (non-null only for a persisted off-hours
+// snapshot). Shared extractor so all five book stores below stay
+// consistent — see dataStore.svelte.js's extractStaleMeta/createDataStore
+// `meta` option doc for how this is consumed.
+/** @param {any} r */
+function _bookStaleMeta(r) {
+  return { staleAccounts: r?.stale_accounts ?? [], asOf: r?.as_of ?? null };
+}
+
 // ── Positions ─────────────────────────────────────────────────────────────
 
 /**
@@ -284,6 +299,7 @@ export const positionsStore = createDataStore({
   key:     'md.positions',
   fetcher: fetchPositions,
   ttl:     TTL.minute,
+  meta:    _bookStaleMeta,
   /** @param {any} r */
   parse:   (r) => {
     const rows = r?.rows ?? [];
@@ -303,6 +319,7 @@ export const pulsePositionsStore = createDataStore({
   key:     'md.pulse.positions',
   fetcher: fetchPositions,
   ttl:     TTL.minute,
+  meta:    _bookStaleMeta,
   /** @param {any} r */
   parse:   (r) => {
     const rows = r?.rows ?? [];
@@ -319,6 +336,7 @@ export const pulseHoldingsStore = createDataStore({
   key:     'md.pulse.holdings',
   fetcher: fetchHoldings,
   ttl:     TTL.minute,
+  meta:    _bookStaleMeta,
   /** @param {any} r */
   parse:   (r) => {
     const rows = r?.rows ?? [];
@@ -339,6 +357,7 @@ export const holdingsStore = createDataStore({
   key:     'md.holdings',
   fetcher: fetchHoldings,
   ttl:     TTL.minute,
+  meta:    _bookStaleMeta,
   /** @param {any} r */
   parse:   (r) => {
     const rows = r?.rows ?? [];
@@ -360,6 +379,7 @@ export const fundsStore = createDataStore({
   key:     'md.funds',
   fetcher: fetchFunds,
   ttl:     TTL.minute,
+  meta:    _bookStaleMeta,
   /** @param {any} r */
   parse:   (r) => (r?.rows ?? []).filter(
     (/** @type {any} */ x) => x && x.account && x.account !== 'TOTAL'

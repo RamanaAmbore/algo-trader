@@ -519,3 +519,56 @@ export function perRootReduce({
   return out;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Payoff-curve interpolation (C4 fix — see derivatives Payoff-chart plan)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Linearly interpolate a curve field at an exact x-position, instead of
+ * snapping to the nearest grid point. Used by OptionsPayoff.svelte's
+ * on-chart P&L/Exp-P&L readout and the expiry-dart y-position (both
+ * previously "stepped" in grid increments and could visibly float the
+ * dart off the drawn curve line on steep sections), and by the
+ * derivatives page's `chartTheoreticalAtSpot` helper — both call sites
+ * must interpolate consistently or the chart's own overlay and the
+ * dashboard-alignment offset it feeds would disagree again.
+ *
+ * `arr` must be sorted ascending by `spot` (true of every payoff/merged
+ * curve produced in this codebase — the backend's np.linspace grid and
+ * the client-side stub both build ascending arrays).
+ *
+ * Clamps to the grid edges rather than extrapolating beyond them —
+ * matches the prior nearest-point behaviour for out-of-range spots
+ * (e.g. a zoomed-out view or a spot that has drifted past the ±span
+ * the grid was built for).
+ *
+ * @param {Array<Record<string, number|null|undefined>>} arr
+ * @param {number|null|undefined} x
+ * @param {string} key - field to interpolate, e.g. 'today_value' | 'expiry_value'
+ * @returns {number|null} null when the array is empty, x isn't finite, or
+ *   the bracketing points don't both carry a real value for `key` (e.g.
+ *   the client-side stub's today_value:null before real BS pricing lands).
+ */
+export function interpAt(arr, x, key) {
+  if (!arr || arr.length === 0 || x == null || !Number.isFinite(x)) return null;
+  if (arr.length === 1) {
+    const v = arr[0][key];
+    return v == null ? null : Number(v);
+  }
+  const first = arr[0], last = arr[arr.length - 1];
+  if (x <= first.spot) return first[key] == null ? null : Number(first[key]);
+  if (x >= last.spot)  return last[key]  == null ? null : Number(last[key]);
+  for (let i = 1; i < arr.length; i++) {
+    const a = arr[i - 1], b = arr[i];
+    if (x >= a.spot && x <= b.spot) {
+      const av = a[key], bv = b[key];
+      if (av == null || bv == null) return null;
+      const span = b.spot - a.spot;
+      if (span === 0) return Number(av);
+      const t = (x - a.spot) / span;
+      return Number(av) + t * (Number(bv) - Number(av));
+    }
+  }
+  return null;
+}
+

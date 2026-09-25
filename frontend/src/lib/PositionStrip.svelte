@@ -31,6 +31,11 @@
 
   // Reactive views into the three-tier stores. The stores pre-populate from
   // localStorage on module init so these are non-empty on first render.
+  // Real-money guard (2026-09): positionsStore itself now keeps the prior
+  // non-empty value in place whenever the backend tags a response degraded
+  // (stale_accounts non-empty) — see dataStore.svelte.js's extractStaleMeta
+  // / createDataStore `meta` option — so `v` only ever becomes `[]` here on
+  // a genuine confirmed-empty book or a true cold start with no prior data.
   let positions = $state(positionsStore.value ?? []);
   $effect(() => {
     const v = positionsStore.value;
@@ -66,11 +71,15 @@
   // not on the live-LTP-derived sums, so flash animations fire at
   // most once per poll cycle rather than on every SSE tick.
   let _pollCycleStamp = $state(0);
-  // Consecutive poll-error counter for stale-data visual indicator.
-  // Tracked inside _load() after the await, not via $effect, because
-  // dataStore sets _error=null at fetch-start — a $effect would reset
-  // the counter to 0 on every poll start, making the threshold unreachable.
-  let _staleFailCount = $state(0);
+  // Stale-data visual indicator (real-money guard, 2026-09). Previously a
+  // manually-tracked `_staleFailCount` incremented inside _load() — but
+  // _load() only runs on mount/bookChanged/mode-transition (not on a
+  // timer), so the background 5s book-poller's continuous failures never
+  // incremented it, and it only looked at `.error` so a degraded-but-200
+  // response never tripped it either (dead for both purposes). Replaced
+  // by two reactive $derived flags below (_anyDegraded / _anyStoreError)
+  // driven directly from the stores' own reactive state — always current,
+  // no manual bookkeeping needed.
   // Snapshot of _pollCycleStamp at the moment of the closed→open
   // session transition. positionsDayPnlStore / holdingsDayPnlStore read
   // from positions[].day_change_val which is whatever the LAST poll
@@ -90,6 +99,32 @@
   // 30s backend cache returns identical data.
   let _dataChangedTick = $state(0);
   let _prevFingerprint = '';
+
+  // Real-money guard (2026-09) — staleness signal for the .ps-stale strip
+  // tint, sourced from the stores' own reactive `.meta.degraded` (backend-
+  // tagged stale_accounts substitution) and `.error` (genuine fetch
+  // failure/exception). Both are $state getters on the store objects, so
+  // these derived values stay current with the background book-poller
+  // without any manual counter — see the comment above _pollCycleStamp.
+  const _anyDegraded = $derived(Boolean(
+    positionsStore.meta?.degraded
+    || pulseHoldingsStore.meta?.degraded
+    || holdingsStore.meta?.degraded
+    || fundsStore.meta?.degraded
+  ));
+  const _anyStoreError = $derived(Boolean(
+    positionsStore.error || pulseHoldingsStore.error || holdingsStore.error || fundsStore.error
+  ));
+  const _isStale = $derived(_anyDegraded || _anyStoreError);
+  // HH:MM (IST) of the last successfully-landed (non-degraded) positions
+  // fetch — used for the STALE@HH:MM tooltip on the P day-delta value.
+  const _staleSinceStr = $derived.by(() => {
+    const ts = positionsStore.lastFetch;
+    if (!ts) return '';
+    return new Date(ts).toLocaleTimeString('en-GB', {
+      hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
+    });
+  });
 
   // _load — fires the three-tier refresh via marketDataStores. All
   // caching (Tier 1 memory / Tier 2 localStorage / Tier 3 broker fetch)
@@ -113,13 +148,13 @@
       await Promise.allSettled([
         positionsStore.load(),
         // pulseHoldingsStore is the SSOT for the holdings array (H slot SSOT fix).
-        // holdingsStore is still loaded to preserve error tracking (_staleFailCount).
+        // holdingsStore is still loaded to preserve error tracking (_anyStoreError).
         pulseHoldingsStore.load(),
         holdingsStore.load(),
         fundsStore.load(),
       ]);
-      _staleFailCount = (positionsStore.error || holdingsStore.error)
-        ? _staleFailCount + 1 : 0;
+      // Staleness indicator (_anyDegraded / _anyStoreError) is now derived
+      // reactively from the stores' own state — no manual bookkeeping here.
       // After positions are fresh, refresh underlying spot quotes so
       // _expiryProfit can compute intrinsic values with current spots.
       // Runs fire-and-forget (a batchQuote failure should not delay
@@ -470,18 +505,23 @@
     // (post-hibernation SSE reconnect) or the brief live→snapshot gap at
     // market close when positions briefly clear before the snapshot arrives.
     // Rule: if total is non-zero → update; if total is zero AND the list is
-    // empty → reset to 0 (no positions); if total is zero BUT positions exist
-    // → keep previous value (prevents flash to 0 while stores are reloading).
+    // CONFIRMED empty (not just degraded) → reset to 0 (no positions); if
+    // total is zero BUT positions exist, OR the store is currently degraded
+    // (backend-tagged stale_accounts substitution — positionsStore.meta.
+    // degraded) → keep previous value (prevents flash to 0 while stores are
+    // reloading, and prevents the exact real-money "0 instead of last-known-
+    // good" bug this guard exists to prevent from firing on a masked/
+    // substituted failure that happens to parse to an empty array).
     const newPTotal = positionsDayPnlStore.total;
     if (newPTotal !== 0) {
       dispPositionsToday = newPTotal;
-    } else if (positions.length === 0) {
+    } else if (positions.length === 0 && !positionsStore.meta?.degraded) {
       dispPositionsToday = 0;
     }
     const newHTotal = holdingsDayPnlStore.total;
     if (newHTotal !== 0) {
       dispHoldingsToday = newHTotal;
-    } else if (holdings.length === 0) {
+    } else if (holdings.length === 0 && !pulseHoldingsStore.meta?.degraded) {
       dispHoldingsToday = 0;
     }
     if (!open) return;
@@ -610,7 +650,8 @@
   // instance, and .cell-freshness-pulse wiring were removed as dead code.
 </script>
 
-<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>
+<div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_isStale ? ' ps-stale' : '')}
+     title={_isStale ? `Showing last-known-good — STALE@${_staleSinceStr}` : undefined}>
   <span class="ps-agg">
     <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
       onclick={(e) => _openBreakdown(e, 'P')}
@@ -621,7 +662,7 @@
       style="cursor:pointer"
       role="button"
       tabindex="0"
-      title="Click for account breakdown"
+      title={positionsStore.meta?.degraded ? `Click for account breakdown — STALE@${_staleSinceStr}` : 'Click for account breakdown'}
       onclick={(e) => _openBreakdown(e, 'P')}
       onkeydown={(e) => (e.key === 'Enter' || e.key === ' ') && _openBreakdown(e, 'P')}
       >{fmtMoney(dispPositionsToday)}</span
@@ -789,9 +830,11 @@
   .ps-strip.ps-heartbeat {
     animation: ps-heartbeat-pulse 300ms ease-out forwards;
   }
-  /* Stale-data indicator — amber tint when positions or holdings have
-     returned 2+ consecutive errors. Color-codes the strip without an
-     intrusive banner message. */
+  /* Stale-data indicator — amber tint when any book store is degraded
+     (backend-tagged stale_accounts substitution, positionsStore.meta.
+     degraded et al.) or has a genuine fetch error (_isStale, computed
+     above from the stores' reactive .meta/.error). Color-codes the
+     strip without an intrusive banner message. */
   .ps-strip.ps-stale {
     background: linear-gradient(180deg, #1a1200 0%, #1a1500 100%);
     border-bottom-color: rgba(251, 146, 60, 0.6);
