@@ -909,13 +909,13 @@
              title={spotAnchor?.source === 'futures'
                ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
-          <span class="ps-k">LTP</span>
-          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}{#if refreshing}<svg class="payoff-loading-ring" viewBox="0 0 16 16" width="9" height="9" aria-hidden="true" role="status" aria-label="Refreshing">
+          <span class="ps-k">{#if refreshing}<svg class="payoff-loading-ring" viewBox="0 0 16 16" width="9" height="9" aria-hidden="true" role="status" aria-label="Refreshing">
               <circle cx="8" cy="8" r="5.5"
                 fill="none" stroke="currentColor" stroke-width="2"
                 stroke-linecap="round"
                 stroke-dasharray="9 30" />
-            </svg>{/if}</span>
+            </svg>{/if}LTP</span>
+          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
         </div>
         {#if spotPct != null}
           <div class="ps-row" title="Spot % change from previous session close">
@@ -1795,14 +1795,14 @@
     font-variant-numeric: tabular-nums;
   }
   /* B1 fix — small "a routine refetch is in flight" spinner rendered
-     inline after the LTP value, inside the existing .ps-v grid cell
+     inline BEFORE the LTP label, inside the existing .ps-k grid cell
      (NOT a sibling of .ps-row, which uses display:contents — a new
      direct child there would become its own grid item and shift every
      subsequent row's 2-column alignment). Reuses the rbq-spin keyframe
      (app.css) — same pattern as CardHeader's .ch-spin loading ring. */
   .payoff-loading-ring {
     display: inline-block;
-    margin-left: 0.25rem;
+    margin-right: 0.25rem;
     vertical-align: -1px;
     color: var(--c-action, #fbbf24);
     animation: rbq-spin 0.9s linear infinite;
