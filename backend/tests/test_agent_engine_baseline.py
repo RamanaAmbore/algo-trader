@@ -1,9 +1,12 @@
 """Tests for agent_engine baseline and rate-metric handling.
 
 Covers:
-  - _update_pnl_history: session start/reset, per-day baseline anchor
-  - _v2_all_rate_metric: detect pure-rate agents vs mixed-condition agents
-  - _cycle_baseline_not_ready: baseline gate logic for pure-rate agents
+  - _update_pnl_history: session start/reset, per-day baseline anchor,
+    fix #6b segment-anchored session_start + closed-market skip
+  - agent_evaluator.Context.baseline_live: fix #6a per-LEAF opening gate
+    (replaces the old whole-agent _v2_all_rate_metric/_cycle_baseline_not_ready
+    gate — a mixed agent's non-rate leaves must keep evaluating during the
+    opening window; only rate leaves self-gate)
 
 Five quality dimensions:
   SSOT        — direct invocation of functions under test
@@ -19,12 +22,11 @@ import pytest
 import pandas as pd
 from backend.api.algo.agent_engine import (
     _update_pnl_history,
-    _v2_all_rate_metric,
-    _cycle_baseline_not_ready,
     _ae_has_pnl_leaf,
     _ae_should_reset_conditions,
     _ae_sync_existing_builtin,
 )
+from backend.api.algo.agent_evaluator import Context
 
 
 def _now():
@@ -75,152 +77,132 @@ class TestUpdatePnlHistory:
         )
 
 
-class TestV2AllRateMetric:
-    """_v2_all_rate_metric detects pure-rate vs mixed condition trees."""
+class TestBaselineLivePerLeaf:
+    """Fix #6a — the opening-baseline gate is now on Context.baseline_live,
+    checked PER RATE LEAF (Context.rate_abs/rate_pct), not per-whole-agent.
+    A mixed agent's non-rate leaves (pnl, day_val, day_pct, …) never
+    consult baseline_live at all — only the two rate metrics do — so a
+    mixed agent stays partially evaluable during the opening window,
+    which the old whole-agent `_v2_all_rate_metric` gate could never do
+    (real loss-rate agents mix a day_val/pnl leaf with a rate leaf, so
+    the old gate never actually applied to them)."""
 
-    def test_v2_all_rate_metric_pure_rate(self):
-        """All leaves contain _rate_ → True."""
-        cond = {
-            "any": [
-                {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.total", "value": -6000},
-                {"metric": "pnl_rate_pct", "op": "<=", "scope": "positions.total", "value": -0.25}
-            ]
-        }
-        result = _v2_all_rate_metric(cond)
-        assert result is True, (
-            f"Expected _v2_all_rate_metric(pure rate) = True, got {result}"
-        )
+    def _hist(self, now, n=5, step_min=2):
+        return [(now - timedelta(minutes=step_min * (n - 1 - i)), -1000.0 * i, -1.0 * i)
+                for i in range(n)]
 
-    def test_v2_all_rate_metric_mixed(self):
-        """Some leaves without _rate_ → False."""
-        cond = {
-            "any": [
-                {"metric": "pnl", "op": "<=", "scope": "positions.total", "value": -50000},
-                {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.total", "value": -6000}
-            ]
-        }
-        result = _v2_all_rate_metric(cond)
-        assert result is False, (
-            f"Expected _v2_all_rate_metric(mixed) = False, got {result}"
-        )
-
-    def test_v2_all_rate_metric_pure_static(self):
-        """All leaves are static (no _rate_) → False."""
-        cond = {
-            "any": [
-                {"metric": "pnl", "op": "<=", "scope": "positions.total", "value": -50000},
-                {"metric": "day_pct", "op": "<=", "scope": "positions.total", "value": -3.0}
-            ]
-        }
-        result = _v2_all_rate_metric(cond)
-        assert result is False, (
-            f"Expected _v2_all_rate_metric(pure static) = False, got {result}"
-        )
-
-    def test_v2_all_rate_metric_nested_all(self):
-        """Nested 'all' with pure-rate children → True."""
-        cond = {
-            "all": [
-                {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.any_acct", "value": -3000},
-                {"metric": "pnl_rate_pct", "op": "<=", "scope": "positions.any_acct", "value": -0.25}
-            ]
-        }
-        result = _v2_all_rate_metric(cond)
-        assert result is True, (
-            f"Expected _v2_all_rate_metric(nested all, pure rate) = True, got {result}"
-        )
-
-
-class TestCycleBaselineNotReady:
-    """_cycle_baseline_not_ready gates pure-rate agents during baseline window."""
-
-    def test_cycle_baseline_not_ready_mixed_agent_never_blocks(self):
-        """Mixed-condition agent (pnl + pnl_rate_abs) → always False (not blocked)."""
-        class FakeAgent:
-            conditions = {
-                "any": [
-                    {"metric": "pnl", "op": "<=", "scope": "positions.total", "value": -50000},
-                    {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.total", "value": -6000},
-                ]
-            }
-
-        state = {}  # no session_start
+    def test_baseline_live_false_blocks_rate_abs(self):
+        """baseline_live=False → rate_abs returns None even with rich history."""
         now = _now()
-        cfg = {"baseline_offset_min": 15}
-        result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=False)
-        assert result is False, (
-            f"Expected mixed-condition agent NOT blocked (False), got {result}"
+        ctx = Context(alert_state={'pnl_history': {('positions', 'TOTAL'): self._hist(now)}},
+                      now=now, rate_window_min=10, baseline_live=False)
+        result = ctx.rate_abs(('positions', 'TOTAL'))
+        assert result is None, f"Expected None while baseline not live, got {result}"
+
+    def test_baseline_live_false_blocks_rate_pct(self):
+        now = _now()
+        ctx = Context(alert_state={'pnl_history': {('positions', 'TOTAL'): self._hist(now)}},
+                      now=now, rate_window_min=10, baseline_live=False)
+        result = ctx.rate_pct(('positions', 'TOTAL'))
+        assert result is None, f"Expected None while baseline not live, got {result}"
+
+    def test_baseline_live_true_computes_rate(self):
+        """baseline_live=True (default) → rate_abs computes normally when
+        history is sufficient (fix #1's sample/span gate satisfied)."""
+        now = _now()
+        ctx = Context(alert_state={'pnl_history': {('positions', 'TOTAL'): self._hist(now)}},
+                      now=now, rate_window_min=10, baseline_live=True)
+        result = ctx.rate_abs(('positions', 'TOTAL'))
+        assert result is not None, "Expected a real rate value when baseline is live"
+
+    def test_baseline_live_default_true_backcompat(self):
+        """Context() with baseline_live unset defaults to True — legacy/back-compat
+        callers that don't set it explicitly keep the old always-live behaviour."""
+        now = _now()
+        ctx = Context(alert_state={'pnl_history': {('positions', 'TOTAL'): self._hist(now)}}, now=now)
+        assert ctx.baseline_live is True, (
+            f"Expected baseline_live default True, got {ctx.baseline_live}"
         )
 
-    def test_cycle_baseline_not_ready_pure_rate_blocks_without_start(self):
-        """Pure-rate agent with no session_start → True (blocked)."""
-        class FakeAgent:
-            conditions = {
-                "any": [
-                    {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.any_acct", "value": -3000},
-                    {"metric": "pnl_rate_pct", "op": "<=", "scope": "positions.any_acct", "value": -0.25},
-                ]
-            }
 
-        state = {}  # no session_start
-        now = _now()
-        cfg = {"baseline_offset_min": 15}
-        result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=False)
-        assert result is True, (
-            f"Expected pure-rate agent blocked without session_start (True), got {result}"
+class TestSegmentAnchoredSessionStart:
+    """Fix #6b — session_start anchors to the actual market-open moment
+    (via market_state's nse_open/mcx_open flags), not to whenever the
+    background poller first ran today (~08:00 IST, which expired the
+    15-min opening gate around 08:19 — 40+ min before NSE even opens)."""
+
+    def test_no_segment_open_defers_session_start(self):
+        """market_state present but nothing open yet → session_start still
+        gets a value (cold-start fallback) but NO pnl_history is recorded."""
+        state = {}
+        now = datetime(2026, 9, 17, 8, 30, 0)
+        market_state = {'nse_open': False, 'mcx_open': False}
+        pos_df = pd.DataFrame([{'account': 'TOTAL', 'day_change_val': -1000.0,
+                                 'day_change_percentage': -1.0}])
+        _update_pnl_history(state, now, pos_df, None, market_state=market_state)
+        assert state.get('pnl_history', {}) == {}, (
+            f"Expected no history recorded while market closed, got {state.get('pnl_history')}"
         )
 
-    def test_cycle_baseline_not_ready_pure_rate_unblocks_after_offset(self):
-        """Pure-rate agent with session_start N min ago → False (not blocked)."""
-        class FakeAgent:
-            conditions = {
-                "any": [
-                    {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.any_acct", "value": -3000},
-                ]
-            }
+    def test_session_start_anchors_to_segment_open(self):
+        """Once NSE opens at 09:15, session_start anchors to that moment,
+        not to the (earlier) wall-clock time _update_pnl_history first ran."""
+        state = {}
+        cold_start = datetime(2026, 9, 17, 8, 5, 0)
+        _update_pnl_history(state, cold_start, None, None,
+                            market_state={'nse_open': False, 'mcx_open': False})
 
-        now = _now()
-        session_start = now - timedelta(minutes=20)  # 20 minutes ago
-        state = {"session_start": session_start}
-        cfg = {"baseline_offset_min": 15}  # offset is 15 min
-        result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=False)
-        assert result is False, (
-            f"Expected pure-rate agent NOT blocked after offset (False), got {result}"
+        nse_open_ts = datetime(2026, 9, 17, 9, 15, 0)
+        _update_pnl_history(state, nse_open_ts, None, None,
+                            market_state={'nse_open': True, 'mcx_open': False})
+        assert state['session_start'] == nse_open_ts, (
+            f"Expected session_start anchored to NSE open {nse_open_ts}, "
+            f"got {state['session_start']}"
         )
 
-    def test_cycle_baseline_not_ready_bypass_schedule_always_unblocks(self):
-        """With bypass_schedule=True, always return False regardless of state."""
-        class FakeAgent:
-            conditions = {
-                "any": [
-                    {"metric": "pnl_rate_abs", "op": "<=", "scope": "positions.any_acct", "value": -3000},
-                ]
-            }
-
-        state = {}  # no session_start
-        now = _now()
-        cfg = {"baseline_offset_min": 15}
-        result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=True)
-        assert result is False, (
-            f"Expected bypass_schedule=True → always False, got {result}"
+    def test_session_start_uses_latest_opening_segment(self):
+        """When MCX (09:00) opens before NSE (09:15), session_start tracks
+        the LATER of the two opens — conservative, keeps the gate live
+        until every currently-open segment has cleared its own open."""
+        state = {}
+        mcx_open_ts = datetime(2026, 9, 17, 9, 0, 0)
+        _update_pnl_history(state, mcx_open_ts, None, None,
+                            market_state={'nse_open': False, 'mcx_open': True})
+        assert state['session_start'] == mcx_open_ts, (
+            f"Expected session_start={mcx_open_ts} after MCX-only open, "
+            f"got {state['session_start']}"
         )
 
-    def test_cycle_baseline_not_ready_pure_rate_blocks_within_offset(self):
-        """Pure-rate agent with session_start less than offset ago → True (blocked)."""
-        class FakeAgent:
-            conditions = {
-                "any": [
-                    {"metric": "pnl_rate_pct", "op": "<=", "scope": "positions.total", "value": -0.5},
-                ]
-            }
+        nse_open_ts = datetime(2026, 9, 17, 9, 15, 0)
+        _update_pnl_history(state, nse_open_ts, None, None,
+                            market_state={'nse_open': True, 'mcx_open': True})
+        assert state['session_start'] == nse_open_ts, (
+            f"Expected session_start advanced to the LATER open {nse_open_ts}, "
+            f"got {state['session_start']}"
+        )
 
-        now = _now()
-        session_start = now - timedelta(minutes=10)  # 10 minutes ago
-        state = {"session_start": session_start}
-        cfg = {"baseline_offset_min": 15}  # offset is 15 min
-        result = _cycle_baseline_not_ready(FakeAgent(), state, now, cfg, bypass_schedule=False)
-        assert result is True, (
-            f"Expected pure-rate agent blocked within offset (True), got {result}"
+    def test_history_recorded_once_a_segment_is_open(self):
+        """Once any segment is open, pnl_history records normally."""
+        state = {}
+        now = datetime(2026, 9, 17, 9, 20, 0)
+        pos_df = pd.DataFrame([{'account': 'TOTAL', 'day_change_val': -1000.0,
+                                 'day_change_percentage': -1.0}])
+        _update_pnl_history(state, now, pos_df, None,
+                            market_state={'nse_open': True, 'mcx_open': False})
+        assert ('positions', 'TOTAL') in state['pnl_history'], (
+            "Expected a positions/TOTAL bucket once NSE is open"
+        )
+
+    def test_market_state_none_keeps_legacy_unconditional_behaviour(self):
+        """market_state=None (sim / back-compat) never gates on open/closed —
+        history is always recorded, matching the pre-fix behaviour."""
+        state = {}
+        now = datetime(2026, 9, 17, 3, 0, 0)  # deep closed-hours wall clock
+        pos_df = pd.DataFrame([{'account': 'TOTAL', 'day_change_val': -1000.0,
+                                 'day_change_percentage': -1.0}])
+        _update_pnl_history(state, now, pos_df, None, market_state=None)
+        assert ('positions', 'TOTAL') in state['pnl_history'], (
+            "Expected history recorded regardless of market hours when market_state=None"
         )
 
 

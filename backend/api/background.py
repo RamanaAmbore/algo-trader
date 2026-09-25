@@ -298,6 +298,92 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
     return summary.drop(columns=['_prev_val'])
 
 
+def _account_margin_base(df_margins: "pd.DataFrame", account) -> float | None:
+    """Total margin base for one account = used margin + available net
+    margin ('util debits' + 'net'). Used as the day_pct/pnl_rate_pct
+    denominator for POSITIONS (fix #10 — audit defect: notional was
+    Σ|prev_close × quantity| over CURRENT rows, which drops closed
+    (qty=0) legs from the denominator while their P&L stays in the
+    numerator; worked example: -25k realised + one small open leg
+    computed to -500% against notional).
+
+    Why used+available, not used margin alone: `util debits` shrinks
+    the instant a position closes and grows the instant one opens, so
+    it reproduces the SAME "opening/closing swings the ratio with zero
+    P&L change" symptom the audit flagged for notional. used+available
+    approximates the account's total deployable capital, which stays
+    roughly constant intraday regardless of how many positions happen
+    to be open right now — the denominator the "-2% of margin" agent
+    descriptions actually mean.
+
+    Returns None when margins data is unavailable for this account (no
+    row, or both fields missing/NaN) — callers must NOT fall back to
+    notional; a missing margin figure should skip the leaf (fix #3's
+    missing-vs-zero convention), not silently revert to the denominator
+    fix #10 exists to replace.
+    """
+    if df_margins is None or df_margins.empty or 'account' not in df_margins.columns:
+        return None
+    match = df_margins[df_margins['account'].astype(str) == str(account)]
+    if match.empty:
+        return None
+    row = match.iloc[0]
+    used = pd.to_numeric(row.get('util debits'), errors='coerce')
+    avail = pd.to_numeric(row.get('net'), errors='coerce')
+    used_v = None if pd.isna(used) else float(used)
+    avail_v = None if pd.isna(avail) else float(avail)
+    if used_v is None and avail_v is None:
+        return None
+    total = (used_v or 0.0) + (avail_v or 0.0)
+    return total if total > 0 else None
+
+
+def _apply_positions_margin_pct(
+    summary: "pd.DataFrame", df_margins: "pd.DataFrame",
+) -> "pd.DataFrame":
+    """Add a `day_change_pct_margin` column to a positions summary frame
+    (fix #10): day_change_val / account margin base × 100 — see
+    `_account_margin_base` for the denominator rationale.
+
+    MCX lots-vs-contracts — verified, not assumed, before wiring this
+    in (per the audit's explicit ask): this denominator is entirely ₹
+    sourced from the funds API, with no quantity/lot_size term at all,
+    so the historical MCX lots-vs-contracts bug class (CLAUDE.md
+    "Critical math guards") cannot reach this computation. The notional
+    denominator it replaces was ALSO already lot-safe — `quantity` is
+    normalised to contracts by `broker_apis._annotate_lot_size` before
+    `_fetch_positions_direct` / `_rebuild_positions_summary` ever read
+    it (confirmed by reading `_annotate_lot_size` + `_fetch_positions_local`,
+    2026-09 alerts audit) — so no unit bug existed at this specific
+    point either way.
+
+    Writes a NEW column rather than overwriting `day_change_percentage`
+    (notional-based) — that column has no other confirmed consumer today
+    (send_summary's `_summary_positions_rows` only reads `pnl`), but
+    leaving it untouched avoids ever having to prove a negative for a
+    future caller. NaN where margin data is unavailable for an account;
+    `grammar._metric_day_pct` and this module's `_update_pnl_history`
+    both treat NaN as "skip" rather than falling back to notional.
+    """
+    if summary is None or summary.empty or 'account' not in summary.columns:
+        return summary
+    summary = summary.copy()
+    if 'day_change_val' not in summary.columns:
+        summary['day_change_pct_margin'] = float('nan')
+        return summary
+    # Vectorised (no iterrows — perf gate) — one margin-base lookup per
+    # DISTINCT account (typically a handful), then a single vectorised
+    # divide across the whole frame.
+    base_map = {
+        acct: _account_margin_base(df_margins, acct)
+        for acct in summary['account'].unique()
+    }
+    bases = pd.to_numeric(summary['account'].map(base_map), errors='coerce')
+    dcv = pd.to_numeric(summary['day_change_val'], errors='coerce')
+    summary['day_change_pct_margin'] = (dcv / bases) * 100.0
+    return summary
+
+
 def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.brokers import broker_apis
     from backend.api.algo.pnl_math import apply_day_change_backstop
@@ -686,6 +772,16 @@ async def _perf_fetch_all_broker_data() -> tuple:
     except asyncio.TimeoutError:
         logger.warning("[BROKER-TIMEOUT] account=all op=margins timeout=45s")
         df_margins = pd.DataFrame()
+
+    # Fix #10 — margin (not notional) denominator for positions day_pct /
+    # pnl_rate_pct. Must run here (margins fetched serially AFTER
+    # positions, by design — see this function's docstring) rather than
+    # inside `_fetch_positions_direct`/`_rebuild_positions_summary`
+    # themselves, which run before df_margins exists.
+    try:
+        sum_positions = _apply_positions_margin_pct(sum_positions, df_margins)
+    except Exception as _mpe:
+        logger.warning(f"[PERF] positions margin-pct denominator failed: {_mpe}")
 
     return df_holdings, sum_holdings, df_positions, sum_positions, df_margins
 

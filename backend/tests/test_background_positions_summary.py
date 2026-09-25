@@ -446,3 +446,109 @@ def test_fetch_positions_direct_would_use_summary():
     """
     # This is a documentation test — actual test requires broker mock
     pass
+
+
+# ---------------------------------------------------------------------------
+# Fix #10 — margin (not notional) denominator for positions day_pct /
+# pnl_rate_pct. Writes a NEW `day_change_pct_margin` column; the notional
+# `day_change_percentage` column tested above is left completely
+# unchanged (still used by nothing this module owns other than the
+# now-superseded metric path — see grammar._metric_day_pct).
+# ---------------------------------------------------------------------------
+
+from backend.api.background import _apply_positions_margin_pct, _account_margin_base
+
+
+def _margins_df(rows):
+    return pd.DataFrame(rows)
+
+
+class TestAccountMarginBase:
+    def test_uses_used_plus_available(self):
+        df = _margins_df([{'account': 'ZD1234', 'util debits': 40000.0, 'net': 60000.0}])
+        result = _account_margin_base(df, 'ZD1234')
+        assert result == 100000.0, f"Expected used+available=100000.0, got {result}"
+
+    def test_none_when_account_missing(self):
+        df = _margins_df([{'account': 'ZD1234', 'util debits': 40000.0, 'net': 60000.0}])
+        assert _account_margin_base(df, 'OTHER') is None
+
+    def test_none_when_both_fields_missing(self):
+        df = _margins_df([{'account': 'ZD1234'}])
+        assert _account_margin_base(df, 'ZD1234') is None
+
+    def test_falls_back_to_whichever_field_present(self):
+        df = _margins_df([{'account': 'ZD1234', 'util debits': None, 'net': 75000.0}])
+        assert _account_margin_base(df, 'ZD1234') == 75000.0
+
+    def test_none_when_total_is_zero_or_negative(self):
+        df = _margins_df([{'account': 'ZD1234', 'util debits': 0.0, 'net': 0.0}])
+        assert _account_margin_base(df, 'ZD1234') is None
+
+
+class TestApplyPositionsMarginPct:
+    def test_worked_example_mostly_closed_book_no_longer_blows_up(self):
+        """The exact audit worked example: -25k realised + one small open
+        leg computed to -500% against notional (closed legs drop out of
+        the Σ|prev_close × quantity| denominator while their P&L stays in
+        the numerator). Against a realistic account margin base, the same
+        move is a sane, bounded percentage."""
+        summary = pd.DataFrame([
+            {'account': 'ZD1234', 'pnl': -25000.0, 'day_change_val': -25000.0},
+            {'account': 'TOTAL', 'pnl': -25000.0, 'day_change_val': -25000.0},
+        ])
+        df_margins = _margins_df([
+            {'account': 'ZD1234', 'util debits': 15000.0, 'net': 485000.0},  # 500k total base
+            {'account': 'TOTAL', 'util debits': 15000.0, 'net': 485000.0},
+        ])
+        result = _apply_positions_margin_pct(summary, df_margins)
+        pct = result.loc[result['account'] == 'ZD1234', 'day_change_pct_margin'].iloc[0]
+        assert pct == pytest.approx(-5.0), (
+            f"Expected -25000/500000*100=-5.0%, got {pct} — "
+            f"the notional formula this replaces would have shown -500%"
+        )
+        assert abs(pct) < 100, (
+            f"Margin-based day_pct must stay a sane bounded percentage, got {pct}%"
+        )
+
+    def test_opening_closing_position_no_phantom_swing(self):
+        """Opening/closing a position must not swing the margin-based
+        ratio the way it swung the old notional one (audit: 'Opening/
+        closing a position also swings the ratio with zero P&L change')
+        — the margin base is independent of how many positions are
+        currently open."""
+        df_margins = _margins_df([{'account': 'ZD1234', 'util debits': 50000.0, 'net': 450000.0}])
+        before = pd.DataFrame([{'account': 'ZD1234', 'pnl': -1000.0, 'day_change_val': -1000.0}])
+        after_open_more = pd.DataFrame([{'account': 'ZD1234', 'pnl': -1000.0, 'day_change_val': -1000.0}])
+        pct_before = _apply_positions_margin_pct(before, df_margins)['day_change_pct_margin'].iloc[0]
+        pct_after = _apply_positions_margin_pct(after_open_more, df_margins)['day_change_pct_margin'].iloc[0]
+        assert pct_before == pct_after, (
+            "Same day_change_val + same margin base must give the same "
+            "percentage regardless of how many positions are open"
+        )
+
+    def test_nan_when_margin_unavailable_no_notional_fallback(self):
+        summary = pd.DataFrame([{'account': 'UNKNOWN', 'pnl': -5000.0, 'day_change_val': -5000.0}])
+        df_margins = _margins_df([{'account': 'OTHER', 'util debits': 1000.0, 'net': 9000.0}])
+        result = _apply_positions_margin_pct(summary, df_margins)
+        assert pd.isna(result['day_change_pct_margin'].iloc[0]), (
+            "Missing margin data must resolve to NaN — never silently fall "
+            "back to the notional figure"
+        )
+
+    def test_empty_summary_returns_unchanged(self):
+        empty = pd.DataFrame()
+        assert _apply_positions_margin_pct(empty, pd.DataFrame()).empty
+
+    def test_does_not_mutate_day_change_percentage(self):
+        """The existing notional column must be left completely untouched
+        — this fix adds a new column, it does not overwrite the old one."""
+        summary = pd.DataFrame([
+            {'account': 'ZD1234', 'pnl': -25000.0, 'day_change_val': -25000.0,
+             'day_change_percentage': -500.0},
+        ])
+        df_margins = _margins_df([{'account': 'ZD1234', 'util debits': 15000.0, 'net': 485000.0}])
+        result = _apply_positions_margin_pct(summary, df_margins)
+        assert result['day_change_percentage'].iloc[0] == -500.0, (
+            "day_change_percentage (notional) must be untouched by this fix"
+        )

@@ -1588,6 +1588,31 @@ def _dhan_num(v: Any, default: float = 0.0) -> float:
         return default
 
 
+def _dhan_num_or_none(*values: Any) -> float | None:
+    """Coerce the first genuinely-present value in `values` to float;
+    returns None (not a coerced 0.0) when every candidate is absent/None/"".
+
+    Used for margins/funds fields where "field genuinely missing from
+    Dhan's fund_limits response" must stay distinguishable from "Dhan
+    reported an actual 0 balance" — collapsing both to 0.0 (the old
+    `_dhan_num(... , default=0.0)` behaviour) made several accounts
+    permanently show avail_margin=0.00 and fired false loss-margin-low
+    alerts on nothing but an unmapped field, not a real risk event. The
+    None this returns flows through pandas/json_normalize as NaN and is
+    read by `grammar.py`/`agent_engine.py`'s metric resolvers, which skip
+    a leaf when its metric is None rather than treating it as a real 0.
+    Mirrors `groww.py`'s `_gf_native_or_none` convention.
+    """
+    for v in values:
+        if v is None or v == "":
+            continue
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def _dhan_int(v: Any, default: int = 0) -> int:
     """Coerce any value to int; empty/None/invalid → default."""
     if v is None or v == "":
@@ -1971,33 +1996,53 @@ def _normalise_position_exchange(p: dict) -> str:
 _DHAN_MARGINS_LOGGED: set[str] = set()
 
 
-def _dhan_margins_available(data: dict, cash: float) -> dict:
-    """Build the `available` sub-dict for a Dhan margins response."""
-    sod = _dhan_num(data.get("sodLimit"))
+def _dhan_margins_available(data: dict, cash: float | None) -> dict:
+    """Build the `available` sub-dict for a Dhan margins response.
+
+    Missing-vs-zero fix (audit cycle 8 follow-up): `sodLimit` and
+    `collateralAmount` are each sourced from a single Dhan key — when
+    that key is absent from the response, the field now resolves to
+    None (via `_dhan_num_or_none`), not a coerced 0.0, so a genuinely
+    missing/unmapped value stays distinguishable downstream from Dhan
+    actually reporting a real zero. `intraday_payin` has no Dhan
+    fund_limits source field at all (Dhan does not expose this concept
+    on this endpoint) — reported as None instead of a hardcoded
+    placeholder 0.0, honestly reflecting "not supported by this broker"
+    rather than a fabricated value."""
+    sod = _dhan_num_or_none(data.get("sodLimit"))
     return {
         "adhoc_margin":    sod,
         "cash":            cash,
         "opening_balance": sod,
         "live_balance":    cash,
-        "collateral":      _dhan_num(data.get("collateralAmount")),
-        "intraday_payin":  0.0,
+        "collateral":      _dhan_num_or_none(data.get("collateralAmount")),
+        "intraday_payin":  None,
     }
 
 
-def _dhan_margins_utilised(data: dict, realised: float, opt_prem: float) -> dict:
-    """Build the `utilised` sub-dict for a Dhan margins response."""
-    collateral = _dhan_num(data.get("collateralAmount"))
+def _dhan_margins_utilised(data: dict, realised: float | None, opt_prem: float | None) -> dict:
+    """Build the `utilised` sub-dict for a Dhan margins response.
+
+    Missing-vs-zero fix (audit cycle 8 follow-up): `utilizedAmount` and
+    `withdrawableBalance`/`collateralAmount` are each sourced from a
+    single Dhan key — absent key now resolves to None, not a coerced
+    0.0. `exposure`, `m2m_unrealised`, `span`, `holding_sales`,
+    `turnover`, and `liquid_collateral` have no Dhan fund_limits source
+    field at all — reported as None (not a hardcoded 0.0 placeholder)
+    since Dhan genuinely does not expose these concepts on this
+    endpoint."""
+    collateral = _dhan_num_or_none(data.get("collateralAmount"))
     return {
-        "debits":            _dhan_num(data.get("utilizedAmount")),
-        "exposure":          0.0,
+        "debits":            _dhan_num_or_none(data.get("utilizedAmount")),
+        "exposure":          None,
         "m2m_realised":      realised,
-        "m2m_unrealised":    0.0,
+        "m2m_unrealised":    None,
         "option_premium":    opt_prem,
-        "payout":            _dhan_num(data.get("withdrawableBalance")),
-        "span":              0.0,
-        "holding_sales":     0.0,
-        "turnover":          0.0,
-        "liquid_collateral": 0.0,
+        "payout":            _dhan_num_or_none(data.get("withdrawableBalance")),
+        "span":              None,
+        "holding_sales":     None,
+        "turnover":          None,
+        "liquid_collateral": None,
         "stock_collateral":  collateral,
     }
 
@@ -2007,28 +2052,41 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
     Map to Kite's `equity` shape; if the caller passed segment='commodity'
     we still return the same payload (Dhan doesn't slice this way).
 
-    Audit cycle 8: realized-P&L + option-premium fields now resolve
-    through a fallback chain across plausible Dhan v2 field names."""
+    Audit cycle 8: realized-P&L + option-premium fields resolve through
+    a fallback chain across plausible Dhan v2 field names.
+
+    Missing-vs-zero fix: every extraction below now uses
+    `_dhan_num_or_none`, which returns None (not a coerced 0.0) only
+    when NONE of the candidate keys is present on the raw response —
+    and, unlike the previous `a or b or c` chaining, a genuine 0 on an
+    earlier-priority key is no longer skipped in favour of a
+    later-priority key. Pre-fix, an account whose response used neither
+    `availabelBalance` nor `availableBalance` silently reported
+    `net`/avail_margin as a real 0.00 — indistinguishable from Dhan
+    actually reporting a wiped-out account — and fired false
+    `loss-margin-low` alerts on nothing but an unmapped field.
+    `grammar.py`/`agent_engine.py`'s metric resolvers treat a None
+    metric as "skip this leaf", not "breach"."""
     data = resp.get("data") if isinstance(resp, dict) else {}
     if not isinstance(data, dict):
         data = {}
 
     # Available-cash: Dhan's typo `availabelBalance` + spelled-correctly variant.
-    _cash = _dhan_num(data.get("availabelBalance") or data.get("availableBalance"))
+    _cash = _dhan_num_or_none(data.get("availabelBalance"), data.get("availableBalance"))
 
     # Realised M2M: four spellings observed across SDK builds.
-    _realised = _dhan_num(
-        data.get("realizedProfit")
-        or data.get("realisedProfit")
-        or data.get("realizedPnl")
-        or data.get("realisedPnl")
+    _realised = _dhan_num_or_none(
+        data.get("realizedProfit"),
+        data.get("realisedProfit"),
+        data.get("realizedPnl"),
+        data.get("realisedPnl"),
     )
 
     # Option premium: three observed field names.
-    _opt_prem = _dhan_num(
-        data.get("optionPremium")
-        or data.get("optionsPremium")
-        or data.get("optionsTraded")
+    _opt_prem = _dhan_num_or_none(
+        data.get("optionPremium"),
+        data.get("optionsPremium"),
+        data.get("optionsTraded"),
     )
 
     payload = {

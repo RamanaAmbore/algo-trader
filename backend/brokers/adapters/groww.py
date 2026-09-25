@@ -450,31 +450,80 @@ def _groww_build_gtt_order_leg(r: dict, order_inner: dict) -> dict:
 
 
 def _groww_margin_available(data: dict) -> dict:
-    """Build the `available` sub-dict from Groww margin data."""
+    """Build the `available` sub-dict from Groww margin data.
+
+    Field names confirmed against a real Groww `get_available_margin_
+    details()` response (prod raw-key log, GR87DF, 2026-09):
+    ``['adhoc_margin', 'brokerage_and_charges', 'clear_cash',
+    'collateral_available', 'collateral_used', 'commodity_margin_details',
+    'equity_margin_details', 'fno_margin_details', 'net_margin_used']``.
+    The PRE-fix mapping (`available_balance`, `cash`, `opening_balance`,
+    `collateral`, `utilised`, `exposure_margin`, `realised_pnl`,
+    `unrealised_pnl`, `option_premium`, `payout`, `span_margin`,
+    `stock_collateral`) matched NONE of these real keys except
+    `adhoc_margin` — every other field was permanently defaulting to
+    0.0 on every real account, not just on a rare missing-field edge
+    case. `clear_cash` is Groww's free/withdrawable cash balance — the
+    best available proxy for both "cash" and "opening_balance" (Groww's
+    endpoint does not expose a distinct start-of-day figure the way
+    Dhan's `sodLimit` does). `collateral_available` is the clear
+    counterpart to `collateral_used` (mapped in `_groww_margin_utilised`
+    below as `stock_collateral`). The old guessed keys are kept as a
+    secondary fallback in case a different Groww account type/SDK
+    version ever ships that shape. `_gf_or_none` returns None (not a
+    coerced 0.0) only when NONE of a field's candidate keys is present,
+    so a genuinely missing value stays distinguishable from Groww
+    reporting a real zero. `intraday_payin` has no confirmed Groww
+    source field at all — honestly None rather than a fabricated 0.0.
+
+    Semantic-mapping caveat (flagged, not fully broker-doc-verified):
+    `clear_cash` as "net available margin for new trades" is a
+    best-effort reading grounded in the confirmed real field NAMES, not
+    a documented Groww API contract — the segment-broken-down detail
+    dicts (`equity_margin_details` / `commodity_margin_details` /
+    `fno_margin_details`) are not parsed (nested, unconfirmed inner
+    shape) and may carry a more precise "available for new trades"
+    figure than the flat `clear_cash` used here."""
     return {
-        "adhoc_margin":    float(data.get("adhoc_margin", 0) or 0),
-        "cash":            float(_first(data, "available_balance", "cash", default=0)),
-        "opening_balance": float(data.get("opening_balance", 0) or 0),
-        "live_balance":    float(data.get("available_balance", 0) or 0),
-        "collateral":      float(data.get("collateral", 0) or 0),
-        "intraday_payin":  float(data.get("intraday_payin", 0) or 0),
+        "adhoc_margin":    _gf_or_none(data, "adhoc_margin"),
+        "cash":            _gf_or_none(data, "clear_cash", "available_balance", "cash"),
+        "opening_balance": _gf_or_none(data, "clear_cash", "opening_balance"),
+        "live_balance":    _gf_or_none(data, "clear_cash", "available_balance"),
+        "collateral":      _gf_or_none(data, "collateral_available", "collateral"),
+        "intraday_payin":  _gf_or_none(data, "intraday_payin"),
     }
 
 
 def _groww_margin_utilised(data: dict) -> dict:
-    """Build the `utilised` sub-dict from Groww margin data."""
+    """Build the `utilised` sub-dict from Groww margin data.
+
+    Field names confirmed against a real Groww response (see
+    `_groww_margin_available` docstring for the full raw-key list and
+    the finding that the pre-fix guessed keys matched none of them).
+    `net_margin_used` is the confirmed real field for total margin
+    utilised (`debits`); `collateral_used` is the confirmed real field
+    for `stock_collateral`. `exposure`, `m2m_realised`,
+    `m2m_unrealised`, `option_premium`, `payout`, `span`,
+    `holding_sales`, `turnover`, and `liquid_collateral` have no
+    confirmed Groww source field on this endpoint at all (the old
+    guessed keys — `exposure_margin`, `realised_pnl`, `unrealised_pnl`,
+    `option_premium`, `payout`, `span_margin` — are kept as a secondary
+    fallback in case a different account/SDK version ships them) —
+    reported as None instead of a hardcoded 0.0 placeholder, honestly
+    reflecting "not supported/not confirmed on this endpoint" rather
+    than a fabricated value."""
     return {
-        "debits":            float(data.get("utilised", 0) or 0),
-        "exposure":          float(data.get("exposure_margin", 0) or 0),
-        "m2m_realised":      float(data.get("realised_pnl", 0) or 0),
-        "m2m_unrealised":    float(data.get("unrealised_pnl", 0) or 0),
-        "option_premium":    float(data.get("option_premium", 0) or 0),
-        "payout":            float(data.get("payout", 0) or 0),
-        "span":              float(data.get("span_margin", 0) or 0),
-        "holding_sales":     0.0,
-        "turnover":          0.0,
-        "liquid_collateral": 0.0,
-        "stock_collateral":  float(data.get("stock_collateral", 0) or 0),
+        "debits":            _gf_or_none(data, "net_margin_used", "utilised"),
+        "exposure":          _gf_or_none(data, "exposure_margin"),
+        "m2m_realised":      _gf_or_none(data, "realised_pnl"),
+        "m2m_unrealised":    _gf_or_none(data, "unrealised_pnl"),
+        "option_premium":    _gf_or_none(data, "option_premium"),
+        "payout":            _gf_or_none(data, "payout"),
+        "span":              _gf_or_none(data, "span_margin"),
+        "holding_sales":     None,
+        "turnover":          None,
+        "liquid_collateral": None,
+        "stock_collateral":  _gf_or_none(data, "collateral_used", "stock_collateral"),
     }
 
 
@@ -1423,6 +1472,31 @@ def _gf_native_or_none(row: dict, key: str) -> float | None:
         return None
 
 
+def _gf_or_none(row: dict, *keys: str) -> float | None:
+    """Like `_gf` but returns None (not a coerced default) when NONE of
+    `keys` is present on `row` — a multi-key-fallback sibling of
+    `_gf_native_or_none`. Unlike `_first`/`_gf` (which use truthiness,
+    so a genuine 0 on an earlier key is skipped in favour of a later
+    one), this checks `is not None` — a real 0 on the first present key
+    is returned as-is, not treated as absent.
+
+    Used for margins/funds fields where "genuinely missing from Groww's
+    response" must stay distinguishable from "Groww reported a real
+    0" — collapsing both to a default 0.0 made several accounts
+    permanently show avail_margin=0.00 and fired false loss-margin-low
+    alerts on nothing but an unmapped field. See `grammar.py`'s
+    None-means-missing metric-resolver convention.
+    """
+    for k in keys:
+        v = row.get(k)
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
 def _unwrap(resp: Any, key: str = "data") -> Any:
     """Most Groww responses look like {"status": "SUCCESS", "data": ...}.
     Unwrap the inner payload; return [] if it's not a list/dict we can
@@ -1623,7 +1697,17 @@ def _normalise_margins(resp: Any, segment: str | None) -> dict:
         data = payload.get(seg, payload.get("equity", {}))
     else:
         data = payload
-    net = float(_first(data, "net", "available_balance", default=0))
+    # Missing-vs-zero fix (audit cycle 8 follow-up): `net` (the
+    # avail_margin alert metric's direct source) now resolves to None
+    # via `_gf_or_none` only when none of the candidate keys is present
+    # on the response, instead of the old `_first(..., default=0)`
+    # collapsing an unmapped field to a real-looking 0.00 — the exact
+    # cause of the false `loss-margin-low` fires this fix addresses.
+    # `clear_cash` is the confirmed real top-level field on Groww's
+    # actual response (prod raw-key log, see `_groww_margin_available`
+    # docstring) — `net`/`available_balance` were never-observed guessed
+    # names, kept only as a defensive fallback.
+    net = _gf_or_none(data, "clear_cash", "net", "available_balance")
     return {
         "enabled":   True,
         "net":       net,

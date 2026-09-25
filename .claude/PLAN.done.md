@@ -1,112 +1,238 @@
-# Plan: Fix "0 Instead of Last-Known-Good" Data Bug (NavStrip + Payoff Chart) and Payoff Chart Flash/Desync
+# Plan: Fix Loss / Rate-of-Change Alert Condition Bugs
 
 ## Context
 
-Operator reported, across several messages, one connected bug cluster:
-1. Payoff chart flashes/redraws the whole chart on every refresh instead of showing a small progress indicator over just the LTP/CHG% values.
-2. The Payoff chart's overlay values (LTP, CHG%, Exp P&L) can disagree with the curve itself.
-3. When ticks/data can't refresh, the Payoff chart draws a flat **0** line and NavStrip positions show **0** — real money displayed as zero. Wanted behavior: **never show 0 as a stand-in for missing data** — freeze and keep showing the **last known good values**, with proper color-coding to signal staleness.
+Operator: "look at current loss and rate of change alerts. if margin or cash of 0
+should not generate alerts. audit the alerts fix the conditions make sure the
+alerts are generated based proper risk events. there are multiple bugs there in
+conditions." A read-only audit (code + live prod DB queries + prod log grep over
+`ssh ramboq`) found **11 confirmed defects** — a mix of false-positive spam,
+missed real risk, and repeat-alert bugs — plus several high-likelihood risks. This
+is a genuinely broken subsystem, not one isolated bug: alert values in prod
+frequently reflect broker-fetch noise or bookkeeping artifacts rather than real
+risk, several agents can never re-arm correctly, and the live prod DB's agent
+conditions have already drifted from the code defaults. Fixing the operator's
+specific "margin/cash of 0" ask requires touching the same missing-vs-zero
+handling that several other confirmed bugs share, so this plan fixes all 11
+confirmed defects together as one coherent alerts-correctness pass.
 
-Two read-only audits (this session) traced this precisely:
-- **NavStrip audit**: a genuine root cause. The broker conn-service turns a positions-fetch **failure** into an HTTP 200 with `accounts: []`. Every layer above that — the sync client, the route, the snapshot-gate cache, the frontend store, `portfolioStore`, `PositionStrip`, and `PerformancePage.loadAll` — treats that empty-but-"successful" response as genuine fresh data (a real empty book) rather than a degraded read, so it overwrites the last-known-good value (in memory AND in localStorage) with 0. **This is the same root data source the Payoff chart's book-poller reads from** — confirmed shared root cause for the "0 line" symptom.
-- **Payoff chart audit**: the flash and the desync are mostly separate mechanisms (not both caused by the 0-data bug): a chart-wide "pulse" animation firing on every routine 5s refetch, the x/y axis re-centering on every refetch, a 4Hz-rebuilding stub replacing the real curve during any brief `strategy`-null window, several overlay props (Exp P&L, DTE, σ, spot) reading stale or differently-clocked data than the curve itself, and — for NSE underlyings specifically — the overlay only updating once per 5s refetch instead of ticking live like the rest of the page.
+**Important pre-existing fact, not a bug to fix**: `_ae_sync_existing_builtin`
+never overwrites an existing agent row's `conditions` in the DB from the code
+defaults — this is presumably intentional (agents are operator-editable via
+`/agents`, so code changes must not silently clobber an operator's customization).
+This means fixing the CODE defaults alone will not reach prod's live rows. See
+"Flagged decision" at the end.
 
-This plan fixes both, in order: the shared 0-vs-last-known-good root cause first (affects real money display on the highest-traffic surface, NavStrip), then the Payoff-chart-specific flash/desync mechanisms.
+## The 11 confirmed defects and their fixes
 
-**Operator decision**: the Payoff chart's Exp P&L number (shown next to the expiry marker) will be priced at the **anchor-contract spot** (matching what the marker itself points at), not the front-month spot — so the number and the dart always visually agree. The separate Legs-grid Exp P&L total is unaffected (stays front-month).
+**1. Rate window is really one ~5-minute delta, not a 10-minute average.**
+`agent_evaluator.py:113-160` / `agent_engine.py:775` (`rate_window_min=10`). The
+perf loop runs every ~5m05s, so only 2 samples ever fall in the window; the
+5-or-more-sample smoothing path never engages. Prod fired -28k/min to -33k/min
+"rates" that are just one poll's raw Δ. **Fix**: require a minimum sample count
+(≥3) and a minimum time span (≥0.8× the window) before a rate leaf can evaluate
+to a real value; otherwise return None (skip, per the None-means-missing
+convention established in fix #3). Size the window from the actual poll cadence
+rather than a fixed constant.
 
-## Part A — Root cause: failed fetch → HTTP 200 empty → 0 overwrites last-known-good
+**2. `all[]` doesn't require the same account.** `agent_evaluator.py:330-338`
+evaluates each child leaf over its own row set independently, so
+`all[acctA_leaf, acctB_leaf]` can fire when NO single account met both
+conditions (prod repro: `loss-margin-low` fired combining one account's
+`avail_margin=0` with a different, healthy account's `373,828.52`). **Fix**: when
+sibling leaves under `all[]` share a scope that includes `account`, join matches
+per-account (row-level AND) instead of per-leaf-independently.
 
-**A1 (broker, CONFIRMED).** `backend/brokers/service/routes.py:269-281` — the `/internal/positions` handler (and the equivalent `/holdings`, `/margins` handlers) catches every exception and returns `InternalPerAccountResp(accounts=[], errors=[...])` with HTTP 200. `backend/brokers/client/sync.py:42-61` never reads `payload.errors` and treats `accounts=[]` as a real empty result, so no `fetch_failed` marker is ever set for this failure path.
-**Fix**: `sync.py`'s per-account fetch should surface the `fetch_failed` sentinel (the same one already used for direct-path broker exceptions) whenever `payload.errors` is non-empty or `accounts` comes back empty while accounts are actually configured for that call.
+**3. Missing/unmapped funds fields are read as a real 0 (operator's explicit
+ask).** `grammar.py:81-85` (`_metric_cash`/`_metric_avail_margin`) and
+`agent_engine.py:386-394` both do `float(row.get(col, 0) or 0)` — a genuinely
+missing, unmapped, or NaN value collapses to `0`, indistinguishable from a real
+zero balance. Dhan (`dhan.py:1974-1984,2016-2036`) and Groww
+(`groww.py:452-461,1626`) map some funds fields inconsistently, so several
+accounts permanently report `avail_margin=0.00` and fired `loss-margin-low` 61
+times in 60 days on nothing but stale/missing data. **Fix**: the resolvers must
+return `None` (not `0`) when the source column is absent, NaN, or not supported
+by that broker for that field — add a per-broker capability flag if needed so a
+broker that genuinely doesn't expose a field isn't treated as reporting a false
+zero. `_eval_leaf` already correctly skips a `None` metric (verified-clean per
+audit) — this fix just needs the resolvers to actually emit `None` instead of a
+coerced `0` in the missing case. A **true** `0` value (broker actively reports
+exactly zero) must still be allowed to alert — only *missing* data is suppressed.
 
-**A2 (backend, CONFIRMED).** `backend/api/routes/positions.py:858` only treats the response as an outage when **all** per-account results carry `fetch_failed` — an empty list (`per_acct == []`, A1's failure mode) trivially satisfies neither "all failed" nor "not all failed" correctly and falls through to `PositionsResponse(rows=[])` at ~line 869-870, treated as a genuine empty book. Separately, `snapshot_gate.py`'s `_stash_live_response("positions", data)` and the TTL/SSOT caches will happily stash this empty payload as the new "last-good," poisoning the cache for the whole TTL window.
-**Fix**: treat `per_acct == []` (with accounts configured) as an outage, matching the existing all-failed path. Never stash or TTL-cache an empty `rows` payload as last-good — only stash genuine non-empty or genuinely-confirmed-empty (e.g. post-08:00-rollover with 0 real positions) results.
+**4. `cash` metric reads start-of-day cash, never live cash.** `grammar.py:81-82`
+reads `avail opening_balance` (Dhan: `sodLimit`), which cannot move intraday, so
+`loss-funds-negative`'s `cash<0` leaf can never fire on a real intraday cash
+drop — all 6 of its prod fires were on the `avail_margin` leaf instead. **Fix**:
+source this metric from a live cash field (the cash-plan work elsewhere in this
+session already identified the correct live-cash field per broker — reuse that
+resolution once it lands, or use `avail live_balance`/`avail cash` directly here
+if that plan hasn't landed yet), or rename the metric to `sod_cash` and add a
+genuinely live `cash` metric alongside it if both are useful.
 
-**A3 (frontend data layer, CONFIRMED — 4 sub-fixes, keep them together since they interact).**
-- `frontend/src/lib/data/marketDataStores.svelte.js:283-293` — `positionsStore`/`pulsePositionsStore` don't set `keepStaleOnEmpty` (movers/activeLists/sparklines already do — reuse that same mechanism, don't invent a new one). A **blanket** `keepStaleOnEmpty` would be wrong on its own, though — a genuinely empty book (operator closed everything, or the 08:00 daily rollover) is legitimate and must still be able to show 0. The real fix is for the frontend to keep last-good only when the **backend explicitly tags the response as degraded** (via A1/A2's fix exposing `source`/`stale_accounts` — these fields already exist on `PositionsResponse`, `backend/api/schemas.py:256-261`, but are currently dropped by the frontend's `parse` step, `marketDataStores.svelte.js:288-291`, which keeps only `r?.rows`). Fix `parse` to retain `{rows, source, as_of, stale_accounts}` together.
-- `frontend/src/lib/data/portfolioStore.svelte.js:399,490-501` — two of the three P slots (`_livePositionsPnl` at 490-501, and the `_portfolio` exp-pnl path at 399) have no stale-while-revalidate guard for an empty-but-non-null array; only a `null` `_posAgg` triggers the existing fallback-to-last path, but `[]` produces a non-null `_posAgg` with `exp_pnl: 0`, so the fallback never engages. Extend the fallback condition to also trigger when the response is tagged degraded (per the `source`/`stale_accounts` plumbing above), not only when it's literally `null`.
-- `frontend/src/lib/PositionStrip.svelte:35-38,475-480` — filters out only `null`, so `positions = []` passes through, then the existing "prevent 0-flash" guard at 475-480 (`else if (positions.length === 0) dispPositionsToday = 0`) ironically forces the exact 0-flash it was meant to prevent, for a degraded-not-really-empty response. Gate this branch on "confirmed empty" (no degradation tag) vs. "degraded" (keep last value).
-- `frontend/src/lib/PerformancePage.svelte:1146-1152` — `loadAll` does `_p_rows = p?.rows ?? []` then unconditionally `positionsStore.set(_p_rows)`, even when only the positions promise rejected (holdings/funds succeeded) — this bypasses every store guard and persists `[]` straight to localStorage, corrupting the shared singleton for every other route in the SPA until the next successful poll. Same bug applies to the holdings/funds `.set()` calls in the same function. **Fix**: only call `.set()` for slices whose promise actually fulfilled; leave a rejected slice's store untouched.
+**5. A missing-data tick is treated as "recovered" and re-arms a latched
+alert.** `agent_engine.py:1835-1837` calls `_v2_unlatch` whenever a cycle
+produces no matches — but "no matches" also happens when a fetch times out,
+fails, or returns an empty frame (positions timeout → empty frame,
+`background.py:652-654`; per-account fetch failure → empty frame with
+`fetch_failed`, `broker_apis.py:2071-2075`; `attrs` lost at `pd.concat`). The
+next good tick then re-fires the *same* breach as if it were new. **Fix**: only
+unlatch when the scope's rows were actually present (fetch succeeded, non-empty
+frame, no `fetch_failed` flag) AND none breached — never unlatch on an
+empty/failed fetch.
 
-**A4 (frontend, CONFIRMED, should-fix, same pass).**
-- **Stale indicator currently dead for this failure mode** — `PositionStrip.svelte:121-122`'s `_staleFailCount` only increments inside `_load()`, which (per an earlier fix, "Fix 4") now only runs on mount/`bookChanged`/mode-transition, not on a timer — so continuous failures seen by the background book-poller never increment it, and the counter only looks at `.error` anyway (an empty-200 "success" never trips it). Wire the staleness signal from the new `source`/`stale_accounts`/`as_of` tags (A3) instead of `_staleFailCount`.
-- **Partial-account failure (R1, CONFIRMED)** — an account without circuit-breaker opt-in never gets last-known-good substitution (`_is_circuit_open` false → `_stale_substitute_frame` never reached, `backend/brokers/broker_apis.py:842-844`); if a SECOND account succeeds (even with a real empty book), `positions.py:858`'s "not all failed" check passes and the failing account's rows silently vanish from an otherwise-`'live'` 200. Fix: substitute last-known-good on ANY per-account failure, not only when the breaker is open; at minimum put `fetch_failed` accounts into `stale_accounts` so A3's frontend fix can react to it.
-- **`softInvalidate()`/`invalidate()` set `.value = null`** (`dataStore.svelte.js:196-214`), and every `portfolioAggregates` getter returns 0 on null with no stale-while-revalidate guard (R3) — affects lifetime P&L, cash, margin, holdings value until the next poll. Apply the same stale-while-revalidate treatment here as A3's positions fix.
+**6. Opening-baseline gate doesn't cover the agents that need it.** The 15-minute
+post-open suppression gate (`agent_engine.py:317-322,1530-1537`) only applies to
+agents whose conditions are ALL rate leaves (`_v2_all_rate_metric`), but both
+prod rate agents mix a `day_val` leaf in with the rate leaf, so neither is ever
+gated — and even when it would apply, the gate's own baseline
+(`_update_pnl_history`, session_start ~08:04 IST) expires ~08:19, before the
+09:00 MCX / 09:15 NSE opens it's meant to protect against. **Fix**: (a) apply
+the gate per rate LEAF, not per whole agent, so a mixed agent's rate leaf is
+still suppressed even though its `day_val` leaf isn't; (b) anchor each segment's
+baseline to that segment's actual open time, and don't record P&L history for a
+segment while it's still closed.
 
-**A5 (visual — reuse existing conventions, no new pattern needed).** The audit confirmed this app already has a full staleness vocabulary: `.ps-strip.ps-stale` (amber strip tint, `PositionStrip.svelte:795-798`), `.ag-row.row-account-stale` (slate desaturation + diagonal hatch, `app.css:819-831`), the `STALE@HH:MM` badge (slate, `pulseColumns.js:408-420`), and `StaleBanner.svelte` (amber "showing last-good" vs. red "unavailable"). **Fix**: drive these from the new `source`/`stale_accounts`/`as_of` tags (A3/A4) instead of introducing anything new — apply the same desaturated/STALE@HH:MM treatment to the P values in NavStrip and (per A6 below) the Payoff chart overlay when showing frozen data.
+**7. Topic suppression only lasts one tick; same-tier agents aren't deduped.**
+`agent_engine.py:1993-2023` — a suppressed fire records no latch/cooldown, so it
+fires for real on the very next tick once the higher-tier agent enters its own
+cooldown (prod repro: suppressed at 11:46:49, fired for real at 11:51:58, same
+pattern 3× in one day). Separately, `_ae_suppressed_in_group` never suppresses
+equal-tier agents against each other, so two critical-tier agents in the same
+topic (`loss-rate-acct` + `loss-positions-total`) both fire on the same event,
+sending two urgent pushes ~3s apart. **Fix**: record a latch/cooldown for a
+suppressed fire too (not just for one that actually alerts), and extend
+same-topic dedup to cover equal-tier agents, not only strictly-lower-tier ones.
 
-## Part B — Payoff chart: stop the full-chart flash
+**8. Rate-agent re-alert check mixes units and uses the wrong cooldown.**
+`agent_engine.py:687-712,745-753` — `worst_val` takes the MIN across every
+matched leaf regardless of unit (₹ `day_val` vs ₹/min vs %/min), so the ₹
+`day_val` leaf's much larger magnitude always wins and the "material delta"
+threshold ends up comparing against day P&L instead of the actual rate; wrapping
+it in `abs()` also means an *improvement* of the same magnitude wrongly re-fires
+the alert. Separately, this gate's cooldown reads the global `cfg['cooldown_min']`
+(30) instead of the specific agent's own `cooldown_minutes` (10 for
+`loss-rate-acct`), so the documented "10-minute critical cooldown" is actually
+30. **Fix**: track the re-alert latch per `(leaf metric, account)` so units are
+never mixed, drop the `abs()` (a move toward improvement should never re-fire),
+and read the cooldown from the specific agent's own configured value.
 
-**B1 (CONFIRMED).** `OptionsPayoff.svelte:419-421,860` — a `$effect` fires `_pulse.notify('payoff')` (a cyan background flash on the whole SVG stack, `.payoff-svg-stack`) whenever the `payoff` prop's array identity changes, which now happens on **every** routine 5s refetch (since a recent commit made the derivatives page refetch every ~5s even with unchanged legs) — not just on a genuine leg/strategy change.
-**Fix**: only notify the pulse when the leg *signature* changes, not on every routine refetch identity-change; move the "something is refreshing" cue to a small spinner in the LTP/CHG% rows of `.payoff-stats` instead (the `rbq-spin` keyframe already exists, `app.css:2887` — this doubles as the operator's originally-requested "progress wheel over LTP/CHG%" feature).
+**9. Static (non-rate) latch has no hysteresis and no escalation.**
+`agent_engine.py:701-704` re-fires on every re-crossing of the threshold with no
+buffer, producing repeat spam as a value oscillates around the line (4 fires in
+one day for `loss-positions-acct` between -2.37% and -2.52%) — while conversely a
+breach that only keeps deepening monotonically never re-alerts at all (a -31k
+alert followed by a slide to -200k stays silent). **Fix**: add a re-arm band
+(only clear the latch once the value recovers past e.g. 80% of the threshold,
+not the instant it re-crosses) and escalation re-fires at meaningfully worse
+multiples of the original threshold (e.g. 2× and 4×) even while still latched.
 
-**B2 (CONFIRMED).** The x/y axis re-centers on every refetch — `payoff`'s grid is recomputed centered on `strategy.spot` at fetch time (`backend/api/algo/derivatives.py`, several `np.linspace` call sites) and `yDomain` also rescales on a second, unsynchronized 5s clock (the positions-poll-driven `chartPnlOffset`, `+page.svelte:2336`) — so σ-tick labels and the visible plot range visibly jump independent of any real change.
-**Fix**: pin the x-domain across refetches while the leg signature is unchanged, re-centering only once spot drifts outside the middle ~60% of the current range; add hysteresis to `yDomain` (grow immediately, shrink only past a threshold) instead of rescaling every cycle.
+**10. Positions `day_pct`/`pnl_rate_pct` are computed against notional, not
+margin, despite being described and thresholded as "% of margin."**
+`background.py:267-297,333-349` — denominator is Σ|prev_close × quantity| over
+CURRENT rows, but closed (qty=0) rows drop out of the denominator while staying
+in the numerator, so a short-premium/mostly-closed book can produce absurd
+percentages (worked example: -25k realized + one small open leg → `day_pct`
+computes to -500%, firing a -2%-of-margin threshold that the actual P&L
+wouldn't). Opening/closing a position also swings the ratio with zero P&L
+change, producing phantom "rate" alerts. **Fix**: use actual margin (`util
+debits`, matching what the description already claims) as the denominator, not
+notional. Flag but do not blind-fix: audit noted MCX `quantity` may still be in
+lots vs contracts at this specific point in `background.py` — verify units match
+before wiring in the margin denominator (same lots-vs-contracts discipline as
+the C1-C7 order-safety fixes elsewhere in this session).
 
-**B3 (CONFIRMED).** Whenever `strategy` is null or `_strategyStale` is true, `payoff` falls back to `_clientPayoffStub` (`+page.svelte:2571-2634`), which rebuilds a new array on every 250ms tick — so the pulse fires continuously and the real (amber "today") curve disappears for the whole fetch duration, not "one render frame" as a stale comment claims.
-**Fix**: stale-while-revalidate — keep the last good merged payoff for the current root instead of swapping to the stub during a routine refetch; only show the stub/placeholder for a genuine cold start (no data ever rendered for this root yet).
+**11. "Worst" scopes never match anything (latent, no built-in agent uses
+them).** `grammar.py:408-437` — `holdings.worst_acct`/`worst_symbol` key on
+`'day_pct'`, `positions.worst_acct` keys on `'pnl_pct'`, but the actual summary
+frames only carry `day_change_percentage` — so `_row_with_min` always returns
+`[]`. Only matters for operator-authored agents using these scopes today, but
+it's a one-line key fix. **Fix**: correct the dict key lookups to match the
+frame's actual column name.
 
-**B4 (CONFIRMED, must fix alongside B1-B3).** A superseded fetch's `finally` block clears `loading` even for a stale generation (`+page.svelte:4033,4055`) — any new "refreshing" flag added for B1's spinner must be generation-guarded, or it inherits this same early-clear bug.
+## Also fold in (directly required for #7/#8/#9 to hold across deploys)
 
-## Part C — Payoff chart: overlay/curve desync
-
-**C1 (CONFIRMED — recurrence of commit b1b946a8's bug class, missed consumer).** The Exp P&L number is evaluated at `liveSpot` (front-month, `+page.svelte:2161-2162`) while the LTP row, spot line, CHG%, and the expiry marker/dart all use `payoffSpot` (anchor-contract basis, per b1b946a8's fix). **Fix (operator-approved)**: evaluate the Exp P&L value shown ON THE CHART at `payoffSpot` (anchor basis) instead of `liveSpot`, so it always agrees with where the dart is drawn. Leave the separate Legs-grid Exp P&L total on `liveSpot`/front-month — that's a different, correctly-scoped consumer.
-
-**C2 (CONFIRMED).** For NSE underlyings, `payoffSpot` has no anchor-contract tick available (`backend/api/routes/options_helpers.py:111` always returns a null anchor for NSE) and falls back to `strategy.spot`, which only changes once per 5s refetch — so the overlay LTP/CHG% visibly "steps" every 5s instead of ticking live like the rest of the page (this is very likely what the operator means by "overlay not in sync").
-**Fix**: in `payoffSpot`'s resolution (`+page.svelte:1881-1898`), when the anchor is null and the spot source is the NSE ticker path, use the live tick for that resolved NSE symbol (`liveSpot`'s own Tier-1 lookup already has this) before falling back to `strategy.spot`.
-
-**C3 (CONFIRMED — same stale-root-leak class b1b946a8 partially fixed).** Only `payoff` and `intermediateCurves` are gated on `_strategyStale`; `breakevens`, `spanSigmas`, `spanPct`, `dte`, `ivProxy`, `legCount`, `legSymbols`, and `spotAnchor` all keep reading the OLD `strategy` during the stale window after switching underlyings, while `spot`/`prevClose` have already switched to the new root — so briefly after a symbol switch, the overlay can show the new symbol's LTP next to the old symbol's DTE/σ/legs.
-**Fix**: one derived `payoffStrategy = _strategyStale ? null : strategy`, used for every strategy-derived prop (not just the two currently gated), so the whole overlay switches atomically — combine with B3's stale-while-revalidate approach (keep last-good PER ROOT, not a blanket null).
-
-**C4 (CONFIRMED, lower priority — visual only).** The P&L/Exp-P&L readout is read at the nearest payoff-grid point rather than linearly interpolated at the exact spot x-position, so it "steps" in increments and the marker dart can visibly float off the drawn curve line on steep sections (masked for NSE today since `payoffSpot` currently equals a grid point exactly, per C2 — will become visible once C2 lands).
-**Fix**: linearly interpolate between the two bracketing grid points (same interpolation the line-drawing already effectively does), applied consistently to both the chart's own readout and `chartTheoreticalAtSpot` (`+page.svelte:2298`).
-
-**C5 (CONFIRMED, lower priority — visual only).** The displayed P&L combines the book-poll's `candidatesActualPnl` (priced at whatever spot the poll landed on) with `curve(payoffSpot) − curve(strategy.spot)` (a second, unsynchronized clock) — when the two 5s timers don't align, the spot move gets double-counted for 0-5s then snaps back, a visible sawtooth (mainly affects MCX anchors with live ticks; NSE is naturally immune since `payoffSpot` already equals `strategy.spot` there).
-**Fix**: anchor the offset calculation to the spot the book poll was actually priced at (e.g. store `(pnl, spot_at_poll)` together from the poll response) so both terms share one clock instead of two.
-
-## Explicitly out of scope
-
-- Payoff chart's `_stickyXTicks` dead-code/stale-zoom hazard (audit "Risks/cleanup" section) — real but low-severity, not tied to either reported symptom; leave for a future pass.
-- R2 (SUSPECT — `snapshot-fallback` mid-session after 120s of failures could show yesterday's settlement as if live, with no staleness marker) — needs live verification the session can't perform; A5's staleness-tag plumbing should incidentally cover this once `as_of` is properly threaded through, but no dedicated fix is scoped here beyond that.
-- Format/alignment consistency work on the order ticket — separate, already-approved, already in-flight plan; no file overlap with this plan (confirmed: this plan never touches `OrderTicket.svelte`/`SymbolPanel.svelte`/`SideToggle.svelte`/`QtyInput.svelte`/`OrderKnobsRow.svelte`/`OrderDepth.svelte`/`Select.svelte`).
+`_V2_LAST_ALERT` (the in-memory latch backing the static/rate re-alert logic) is
+wiped on every process restart, and this app redeploys on every push to `main` —
+so every deploy re-fires every currently-latched standing breach. The audit notes
+a DB-backed cooldown gate (`_cycle_in_cooldown`) already exists and is "correct
+as written" for a different purpose. Before implementing #7-#9, the backend agent
+should determine whether extending that existing DB-backed mechanism to also
+cover the per-leaf/per-account latch is the right vehicle (reuse) versus adding
+new persistence for `_V2_LAST_ALERT` — investigate both during implementation
+and pick whichever fits the existing schema/pattern with less duplication; note
+the choice in the commit.
 
 ## Files
 
-- `backend/brokers/service/routes.py`, `backend/brokers/client/sync.py` — A1.
-- `backend/api/routes/positions.py`, `backend/api/helpers/snapshot_gate.py`, `backend/brokers/broker_apis.py` — A2, A4 (R1 substitution).
-- `frontend/src/lib/data/marketDataStores.svelte.js`, `frontend/src/lib/data/dataStore.svelte.js`, `frontend/src/lib/data/portfolioStore.svelte.js`, `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/PerformancePage.svelte` — A3, A4, A5 (NavStrip data-layer + staleness visuals). Does NOT touch `admin/derivatives/+page.svelte` or `OptionsPayoff.svelte`.
-- `frontend/src/lib/OptionsPayoff.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`, `backend/api/algo/derivatives.py` — B1-B4, C1-C5, plus the book-poller propagation fallback fix (the Payoff-chart half of A3's shared root cause — `+page.svelte:3743-3778`'s effect needs the same last-good fallback `loadPositions()` already has at `:3811-3813`). Does NOT touch any NavStrip data-layer file.
+- `backend/api/algo/agent_evaluator.py` — #1 (rate window sample/span
+  requirement), #2 (`all[]` same-account join).
+- `backend/api/algo/grammar.py` — #3 (None-for-missing resolvers), #4 (live cash
+  metric), #11 (worst-scope key fix).
+- `backend/api/algo/agent_engine.py` — #3 (engine-side metric read at
+  `:386-394`), #5 (don't unlatch on empty/failed fetch), #6 (per-leaf opening
+  gate + segment-anchored baseline), #7 (suppression latch + same-tier dedup),
+  #8 (per-leaf/account re-alert unit fix + correct cooldown source), #9
+  (hysteresis + escalation), plus the deploy-survival latch fix.
+- `backend/api/background.py` — #10 (margin, not notional, as the `day_pct`/
+  `pnl_rate_pct` denominator; verify MCX lot/contract units first), #6 (segment
+  open anchoring touches `_update_pnl_history`/`_get_segments` here too).
+- `backend/brokers/adapters/dhan.py`, `backend/brokers/adapters/groww.py` — fix
+  funds-field mapping gaps feeding #3 (report a field as absent/None rather than
+  a coerced 0 when the broker's response genuinely doesn't carry it).
 
 ## Agents
 
-- **broker**: A1 (`backend/brokers/service/routes.py`, `backend/brokers/client/sync.py`).
-- **backend**: A2, A4's R1 substitution (`backend/api/routes/positions.py`, `backend/api/helpers/snapshot_gate.py`, `backend/brokers/broker_apis.py`) — dispatched parallel to broker agent, no file overlap.
-- **frontend** (agent 1 — NavStrip data layer): A3, A4, A5 (`marketDataStores.svelte.js`, `dataStore.svelte.js`, `portfolioStore.svelte.js`, `PositionStrip.svelte`, `PerformancePage.svelte`).
-- **frontend** (agent 2 — Payoff chart): B1-B4, C1-C5, plus the derivatives-page book-poller fallback (`OptionsPayoff.svelte`, `admin/derivatives/+page.svelte`) — dispatched parallel to frontend agent 1, no file overlap (confirmed above).
-- **backend-test**: pytest coverage for A1/A2/A4, with the exact repro from the audit (conn-service positions fetch raises → client must NOT silently return `[]`; per-account failure with one healthy sibling account must NOT drop the failing account's rows from a `'live'`-tagged response).
-- **doc**: sync CLAUDE.md — this is exactly the kind of cross-cutting invariant CLAUDE.md already has a home for ("Market-close snapshot" is currently only in memory per the audit, not in CLAUDE.md itself — worth promoting it there now, generalized from "market-close" to "any degraded/failed fetch," since this plan is the second time this exact bug class has been found).
+- **backend**: all of the above (single agent — every file is under
+  `backend/api/algo/` or `backend/api/`, all part of one coherent alert-
+  evaluation pipeline; splitting would fragment a change where #3/#5/#6/#7/#8/#9
+  interact within `agent_engine.py`).
+- **broker**: the Dhan/Groww funds-field-mapping half of #3
+  (`backend/brokers/adapters/dhan.py`, `groww.py`) — dispatched in parallel with
+  the backend agent since it's a separate, narrower file set with no overlap.
+- **backend-test**: pytest coverage for all 11 fixes, with particular focus on
+  regression tests reproducing each prod-observed worked example from the audit
+  (the paired-different-account `all[]` false fire, the one-sample rate spam,
+  the missing-data re-arm, the notional-vs-margin `day_pct` blowup).
+- **doc**: sync `CLAUDE.md` (there's currently no "alerts" section — add one
+  summarizing the missing-vs-zero convention and the per-leaf gating/cooldown
+  model, since this is exactly the kind of non-obvious invariant CLAUDE.md exists
+  to capture) and note in the `/agents`-related guide (`docs/guides/AGENTS_GUIDE.md`
+  if it exists) that fixed code defaults require the explicit prod sync step
+  below before they take effect on already-created agent rows.
 
 ## Tests
 
-- pytest: yes — `venv/bin/pytest backend/tests/ -q --tb=line`.
-- svelte-check: yes.
-- vitest: yes — store-level tests for the stale-while-revalidate guards (A3/A4).
-- playwright: yes — a spec that mocks a positions-fetch failure (empty-200 shape) and asserts NavStrip keeps showing the last non-zero value with a stale badge instead of 0; a spec for the Payoff chart confirming no full-chart pulse fires on a routine refetch and the overlay doesn't visibly step for an NSE underlying.
+- pytest: yes — `venv/bin/pytest backend/tests/ -q --tb=line`, new/updated
+  coverage for every fix above.
+- No frontend files are touched by this plan (`/agents` UI itself is out of
+  scope — the audit didn't review it and no defect was found there); svelte-check
+  should stay green as a byproduct but isn't the focus.
 
 ## Commit message
 
-fix(data): never display 0 in place of missing/degraded data on NavStrip or
-the Payoff chart — freeze to last-known-good with staleness indicators;
-Payoff chart stops full-chart flash on routine refresh and fixes overlay/
-curve desync (shared root cause: conn-service swallows fetch failures into
-a fake-fresh empty 200)
+fix(alerts): correct 11 confirmed loss/rate-of-change alert condition bugs —
+missing-data-as-zero, single-sample rate spam, cross-account all[] false
+positives, notional-vs-margin day_pct, and re-alert/latch lifecycle gaps
 
 ## Done when
 
-A1-A5 and B1-C5 each have a passing regression test reproducing the original
-failure mode; `venv/bin/pytest`, `npx svelte-check`, `npx vitest run` all
-green; self-audit confirms the "freeze to last-known-good + staleness tag"
-fix reaches every consumer of the shared `positionsStore` singleton (grep
-every `.set()`/`.value =` call site on it, not just the ones named above),
-matching this session's standing rule for any shared-data-surface fix.
+All 11 fixes have a regression test reproducing the original prod-observed
+behavior and passing after the fix; `venv/bin/pytest backend/tests/ -q --tb=line`
+green; self-audit confirms the None-for-missing convention is applied
+consistently everywhere `_eval_leaf` reads a metric, not just at the two sites
+named above.
+
+## Flagged decision — prod agent-row conditions have already drifted from code
+
+Prod's live `agents` DB rows for `loss-rate-acct` and `loss-pos-total-auto-close`
+already differ from the code's current defaults (and `_ae_sync_existing_builtin`
+will not silently overwrite them, by design, to protect operator customization).
+After this fix ships, the corrected code defaults will not reach those two
+already-created prod rows automatically. Before this plan can be considered fully
+effective in prod, the operator needs to decide: (a) manually re-apply the
+corrected conditions to those specific rows via `/agents`, (b) have me write a
+one-off, explicitly-scoped migration that updates only those named rows (not a
+blanket re-sync that could clobber other operator customizations), or (c) leave
+prod's current (drifted) conditions in place and treat this fix as only affecting
+newly-created agents. I'll surface this again with the specific before/after
+condition diff once implementation lands, rather than deciding it now.

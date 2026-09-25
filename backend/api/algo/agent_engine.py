@@ -15,7 +15,9 @@ from sqlalchemy import select, update
 
 from backend.api.algo.events import dispatch, log_event, EvalResult
 from backend.api.algo.actions import execute
-from backend.api.algo.agent_evaluator import Context as V2Context, evaluate as v2_evaluate
+from backend.api.algo.agent_evaluator import (
+    Context as V2Context, evaluate as v2_evaluate, windowed_rate,
+)
 from backend.api.database import async_session
 from backend.api.models import Agent
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -24,19 +26,247 @@ from backend.shared.helpers.utils import config as app_config
 logger = get_logger(__name__)
 
 
-# Module-level per-agent suppression state for v2-grammar agents.
-# Keyed by agent slug: {'ts': datetime, 'pnl': float, 'pct': float}.
-# Survives across ticks but is wiped daily by _maybe_reset_v2_state below.
-_V2_LAST_ALERT: dict[str, dict] = {}
+# ═══════════════════════════════════════════════════════════════════════════
+#  Per-key re-alert latch (fixes #5, #7, #8, #9 + deploy-survival)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# REPLACES the old per-AGENT `_V2_LAST_ALERT` latch, which mixed units
+# across leaves (a ₹ day_val leaf's magnitude always dominated a %/min
+# rate leaf's — fix #8), used the wrong (global, not per-agent) cooldown
+# for rate agents (fix #8), had no re-arm hysteresis so a value
+# oscillating around the threshold spammed repeat fires (fix #9), never
+# escalated for a monotonically-worsening breach (fix #9), and unlatched
+# on ANY no-match tick even when that tick's "no match" was really a
+# fetch timeout/failure/empty-frame masking the true state, not a real
+# recovery (fix #5).
+#
+# Keyed by (agent_slug, metric, scope, account) — one independent latch
+# per LEAF per ACCOUNT, so a ₹ leaf and a %/min leaf on the same agent
+# never influence each other's re-fire timing, and one account's
+# recovery never re-arms a DIFFERENT account's still-breaching leaf.
+_V2_LATCH: dict[tuple, dict] = {}   # key -> {'ts': datetime, 'val': float}
 _V2_LAST_RESET_DATE = None
+
+# Cold-start hydration guard (deploy-survival — see "Also fold in" in the
+# alerts audit plan). `_V2_LATCH` is in-memory and this app redeploys on
+# every push to main; without hydration, every deploy would re-fire every
+# currently-latched standing breach the moment its DB-level cooldown
+# status naturally elapses post-restart. Set True on the FIRST attempt
+# (success or failure) so a DB hiccup never retries every tick.
+_V2_LATCH_HYDRATED = False
 
 
 def _maybe_reset_v2_state(today):
-    """Wipe v2 suppression state once per new trading day."""
+    """Wipe v2 latch state once per new trading day."""
     global _V2_LAST_RESET_DATE
     if _V2_LAST_RESET_DATE != today:
         _V2_LAST_RESET_DATE = today
-        _V2_LAST_ALERT.clear()
+        _V2_LATCH.clear()
+
+
+def _latch_key(agent_slug: str, m: dict) -> tuple:
+    """Per-leaf, per-account latch key. `m` is a match/observation dict
+    from `agent_evaluator` — has 'metric', 'scope', 'account'."""
+    return (agent_slug, m.get('metric'), m.get('scope'), m.get('account') or 'TOTAL')
+
+
+# Ops for which "worse" has a well-defined direction. -1 ⇒ smaller is
+# worse (loss thresholds); +1 ⇒ larger is worse. Ops absent from this map
+# (==, !=, in, not_in, between) have no ordered "worse" direction — they
+# get a plain cooldown-gated re-latch with no hysteresis/escalation math,
+# same as a boolean condition (e.g. is_itm/is_future).
+_ORDERED_OPS_WORSE_DIR = {'<': -1, '<=': -1, '>': 1, '>=': 1}
+
+# Re-arm band — how far PAST the threshold a value must recover before
+# the latch clears (fix #9 hysteresis). 0.2 = must recover to within 80%
+# of the threshold's magnitude, not merely tick back over the line.
+_V2_REARM_BAND = 0.2
+
+
+def _v2_recovered_past_band(obs: dict) -> bool:
+    """True when an OBSERVED non-breaching row has recovered past the
+    hysteresis re-arm band (fix #9), not merely back over the raw
+    threshold line. Only called for rows the evaluator actually saw this
+    tick (`fired=False` in `Context.observations`) — a row that's simply
+    absent from observations (fetch failure/timeout/empty frame) is
+    handled by the caller and never reaches this function (fix #5)."""
+    op = obs.get('op')
+    worse_dir = _ORDERED_OPS_WORSE_DIR.get(op)
+    if worse_dir is None:
+        return True  # non-ordered op — plain re-arm, no hysteresis math
+    try:
+        thr = float(obs.get('threshold'))
+        val = float(obs.get('value'))
+    except (TypeError, ValueError):
+        return True
+    if thr == 0:
+        return True  # no magnitude to band against
+    rearm_at = thr - worse_dir * _V2_REARM_BAND * abs(thr)
+    return (val - rearm_at) * worse_dir < 0
+
+
+def _v2_leaf_should_fire(agent_slug: str, m: dict, now, cooldown_min: float,
+                         store: dict) -> bool:
+    """Per-(metric, scope, account) re-alert gate (fixes #8 + #9).
+
+    - First breach for this key (no latch) → always fires.
+    - Otherwise: never re-fires inside `cooldown_min` of the last fire
+      for THIS key — the caller passes the AGENT's own
+      `cooldown_minutes` (fix #8; the old code read the global
+      `cfg['cooldown_min']` default for rate agents regardless of the
+      agent's configured value).
+    - Past cooldown, an ordered-op leaf only re-fires once the value has
+      moved at least one more |threshold| unit further in the "worse"
+      direction since the last alert (escalation — fix #9: a
+      monotonically-worsening breach must eventually re-alert, not stay
+      silent forever). Zero-threshold leaves (e.g. `cash < 0`) have no
+      escalation step — cooldown elapsed alone re-arms them, since
+      "worse by another $0" is meaningless.
+    - Non-ordered ops (==, in, between, …) simply re-fire once cooldown
+      has elapsed.
+
+    `store` is the latch dict to read (see `_v2_reconcile_latch` for why
+    this is parametrised rather than reading the module-level `_V2_LATCH`
+    directly — sim runs use an isolated per-run store).
+    """
+    key = _latch_key(agent_slug, m)
+    prev = store.get(key)
+    if prev is None:
+        return True
+    if (now - prev['ts']) < timedelta(minutes=cooldown_min):
+        return False
+    worse_dir = _ORDERED_OPS_WORSE_DIR.get(m.get('op'))
+    if worse_dir is None:
+        return True
+    try:
+        thr = float(m.get('threshold'))
+        val = float(m.get('value'))
+        prev_val = float(prev.get('val'))
+    except (TypeError, ValueError):
+        return True
+    step = abs(thr)
+    if step == 0:
+        return True
+    moved = (val - prev_val) * worse_dir
+    return moved >= step
+
+
+def _v2_apply_recovery(agent, observations: list, *, store: dict | None = None) -> None:
+    """Clear per-key latches for rows that were OBSERVED to have
+    recovered past the hysteresis re-arm band this tick (fix #9). A key
+    that's simply absent from `observations` (fetch timeout/failure/
+    masked-empty frame) is left untouched — never treated as recovered
+    (fix #5). MUST run on every tick the agent is evaluated, regardless
+    of whether it produced any matches this tick — a fully-recovered
+    agent (matches == []) is exactly the case that needs its latches
+    cleared, so this is called unconditionally, not gated on `matches`
+    being non-empty (unlike `_v2_apply_escalation_gate` below).
+
+    `store` defaults to the module-level `_V2_LATCH`; sim runs pass an
+    isolated per-run dict instead (see `_v2_apply_escalation_gate`)."""
+    if store is None:
+        store = _V2_LATCH
+    agent_slug = agent.slug
+    for obs in observations:
+        if obs.get('fired'):
+            continue
+        key = _latch_key(agent_slug, obs)
+        if key in store and _v2_recovered_past_band(obs):
+            store.pop(key, None)
+
+
+def _v2_apply_escalation_gate(agent, matches: list, now,
+                              cooldown_min: float, *, store: dict | None = None) -> list:
+    """Filter `matches` down to the subset whose per-key latch gate
+    (`_v2_leaf_should_fire`) says this is a genuinely new/worse breach
+    (fixes #8/#9). Keys that pass have their latch updated to
+    (now, value). Call `_v2_apply_recovery` FIRST (same tick) so a key
+    that just recovered doesn't wrongly inherit stale escalation state.
+
+    `store` defaults to the module-level `_V2_LATCH` (the live-engine
+    latch). Callers running a simulator tick MUST pass an isolated
+    per-run dict instead — writing sim fires into the live latch would
+    corrupt real re-alert timing for the rest of the trading session.
+
+    Returns the filtered matches — empty ⇒ nothing about this tick's
+    breach is new enough to fire, even though `matches` (the raw
+    breaching rows) may be non-empty.
+    """
+    if store is None:
+        store = _V2_LATCH
+    agent_slug = agent.slug
+    effective = []
+    for m in matches:
+        if _v2_leaf_should_fire(agent_slug, m, now, cooldown_min, store):
+            effective.append(m)
+            store[_latch_key(agent_slug, m)] = {'ts': now, 'val': m.get('value')}
+    return effective
+
+
+def _hydrate_latch_from_rows(rows, today) -> None:
+    """Pure helper — populate `_V2_LATCH` from (slug, detail_json,
+    timestamp) tuples. Rows must be pre-sorted ascending by timestamp so
+    a later row naturally overwrites an earlier one for the same key.
+    Rows whose IST calendar date isn't `today` are skipped — the daily
+    reset (`_maybe_reset_v2_state`) wipes the latch at day-start, so a
+    stale prior-day entry must never survive into hydration. Split out
+    from `_v2_hydrate_latch` (the DB-querying wrapper) so this can be
+    unit-tested with plain tuples — no DB session needed."""
+    import json as _json
+    from zoneinfo import ZoneInfo
+    _ist = ZoneInfo("Asia/Kolkata")
+    for slug, detail_raw, ts in rows:
+        if ts is None or not detail_raw:
+            continue
+        if ts.astimezone(_ist).date() != today:
+            continue
+        try:
+            detail = _json.loads(detail_raw) if isinstance(detail_raw, str) else detail_raw
+        except Exception:
+            continue
+        for m in (detail.get('matches') or []):
+            if m.get('value') is None:
+                continue
+            _V2_LATCH[_latch_key(slug, m)] = {'ts': ts, 'val': m.get('value')}
+
+
+async def _v2_hydrate_latch() -> None:
+    """Cold-start hydration of `_V2_LATCH` from today's `agent_events`
+    rows — the deploy-survival fix ("Also fold in", alerts audit plan).
+
+    Persistence choice: reuses the EXISTING `agent_events` table instead
+    of adding a new DB column. Every fire — survivor or suppressed
+    (fix #7 makes suppressed fires also record a latch) — already writes
+    its full match list (metric/scope/account/value) into
+    `agent_events.detail` via `events.dispatch()`/`log_event()`, so no
+    schema change or migration is required. `_cycle_in_cooldown`'s DB
+    `status`/`last_triggered_at` columns were considered as the reuse
+    target instead, but they are agent-level-only (one timestamp per
+    agent) and cannot represent this per-(metric, scope, account)
+    hysteresis state, so `agent_events` — which already carries
+    everything the latch needs, per-row — is the lower-duplication
+    choice. Runs once per process; guarded so a DB hiccup never retries
+    every tick (worst case: this process starts cold, same as before
+    this fix existed)."""
+    global _V2_LATCH_HYDRATED
+    if _V2_LATCH_HYDRATED:
+        return
+    _V2_LATCH_HYDRATED = True
+    try:
+        from backend.api.models import AgentEvent
+        from backend.shared.helpers.date_time_utils import timestamp_indian
+        async with async_session() as session:
+            result = await session.execute(
+                select(Agent.slug, AgentEvent.detail, AgentEvent.timestamp)
+                .join(AgentEvent, AgentEvent.agent_id == Agent.id)
+                .where(AgentEvent.event_type.in_(('triggered', 'triggered_suppressed')))
+                .order_by(AgentEvent.timestamp.asc())
+            )
+            rows = result.all()
+        _hydrate_latch_from_rows(rows, today=timestamp_indian().date())
+        logger.info(f"Agent engine: v2 latch hydrated from agent_events — {len(_V2_LATCH)} keys")
+    except Exception as e:
+        logger.warning(f"Agent engine: v2 latch hydration failed (starting cold): {e}")
 
 
 # Max samples per (section, scope) bucket in alert_state['pnl_history'].
@@ -47,7 +277,33 @@ def _maybe_reset_v2_state(today):
 _PNL_HISTORY_CAP = 200
 
 
-def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> None:
+def _v2_positions_pct_raw(row: dict):
+    """Return the percentage figure to record in pnl_history for a
+    POSITIONS row (fix #10 wiring): prefer the margin-based
+    `day_change_pct_margin` column (see `background._apply_positions_margin_pct`)
+    over the notional-based `day_change_percentage` when the row carries
+    it, so the `pnl_rate_pct` rate metric — which reads this same
+    history bucket — is fixed by the same margin-denominator change as
+    the static `day_pct` metric. NaN (margin unavailable for that
+    account) resolves to None (skip), never a silent fallback to the
+    broken notional figure. Rows without the new column at all (e.g. an
+    older in-memory alert_state predating this fix, or `df_margins`
+    unavailable this tick) fall back to `day_change_percentage`."""
+    import math
+    if 'day_change_pct_margin' in row:
+        v = row.get('day_change_pct_margin')
+        if v is None:
+            return None
+        try:
+            fv = float(v)
+        except (TypeError, ValueError):
+            return None
+        return None if math.isnan(fv) else fv
+    return row.get('day_change_percentage')
+
+
+def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings,
+                        market_state: dict | None = None) -> None:
     """
     Append the current per-(section, scope) P&L snapshot to
     `alert_state['pnl_history']` so the rate evaluator has something
@@ -67,15 +323,55 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> 
     dropped). Session reset: when `alert_state['session_date']` no
     longer matches `now.date()`, the whole pnl_history is wiped so
     yesterday's tail doesn't leak into today's rate window.
+
+    Fix #6b — `market_state` (the `nse_open`/`mcx_open` flags from
+    `_build_context`, computed by the caller BEFORE calling this
+    function) does two things:
+
+      (a) Segment-anchored baseline: `session_start` tracks the moment a
+          market segment actually opened today (09:15 NSE / 09:00 MCX),
+          not "whenever the background poller first ran" (~08:00 IST —
+          the old anchor made the 15-min opening-gap gate expire around
+          08:19, a full 40+ minutes before NSE even opens, providing
+          ZERO protection against the volatility it exists to suppress).
+          Anchored to the LATEST-opening segment that's currently open
+          (conservative — keeps the gate live until every relevant
+          segment has cleared its own open, not just the first one).
+      (b) Don't record P&L history for a segment while it's still
+          closed — samples are only appended once at least one market
+          segment is actually open, so the very first rate-window
+          samples of the day never span the closed→open discontinuity
+          (which would itself look like a huge, fake "rate of change").
+
+    `market_state=None` (back-compat / simulator convenience) falls back
+    to the old unconditional-append behaviour — sim ticks aren't tied to
+    wall-clock market hours, so "is a segment open" isn't a meaningful
+    gate there; the simulator's own scenario clock decides what's live.
     """
     today = now.date() if hasattr(now, 'date') else None
     last_date = alert_state.get('session_date')
     if today and last_date != today:
         alert_state['pnl_history'] = {}
         alert_state['session_date'] = today
-        alert_state['session_start'] = now   # reset per-day baseline anchor
+        alert_state.pop('session_start', None)
+        alert_state.pop('_segment_open_seen', None)
+
+    any_open = False
+    if market_state is not None:
+        any_open = bool(market_state.get('nse_open') or market_state.get('mcx_open'))
+        seen = alert_state.setdefault('_segment_open_seen', {})
+        for seg_key, flag_key in (('equity', 'nse_open'), ('commodity', 'mcx_open')):
+            if market_state.get(flag_key) and seg_key not in seen:
+                seen[seg_key] = now
+        if seen:
+            alert_state['session_start'] = max(seen.values())
+
     if 'session_start' not in alert_state:
-        alert_state['session_start'] = now   # set on cold start / process restart
+        alert_state['session_start'] = now   # cold start / no segment open yet
+
+    if market_state is not None and not any_open:
+        return  # fix #6b — nothing open yet; don't record the closed-market noise
+
     hist_map = alert_state.setdefault('pnl_history', {})
 
     def _append(section: str, df):
@@ -93,7 +389,7 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings) -> 
                     pnl = float(row.get('day_change_val', 0) or 0)
                 except (TypeError, ValueError):
                     continue
-                pct_raw = row.get('day_change_percentage')
+                pct_raw = _v2_positions_pct_raw(row)
             else:
                 try:
                     pnl = float(row.get('pnl', 0) or 0)
@@ -281,39 +577,6 @@ def _fire_at_window_active(fire_at: str, now, window_sec: int = 360) -> bool:
         return False
 
 
-def _v2_has_rate_metric(cond) -> bool:
-    """
-    Walk the tree looking for any leaf whose metric is a rate_* metric. When
-    present, the engine applies the opening-gap baseline gate to the whole
-    agent. This keeps the per-agent config simple — operator does not have
-    to set a baseline flag; the engine infers it from the tree.
-    """
-    if not isinstance(cond, dict):
-        return False
-    for key in ('all', 'any'):
-        if key in cond:
-            return any(_v2_has_rate_metric(c) for c in (cond.get(key) or []))
-    if 'not' in cond:
-        return _v2_has_rate_metric(cond['not'])
-    m = cond.get('metric', '') or ''
-    return '_rate_' in m
-
-
-def _v2_all_rate_metric(cond) -> bool:
-    """True when ALL leaf metrics require a rate baseline (contain _rate_).
-    Used by baseline gate — blocks only pure-rate agents, not mixed ones."""
-    if not isinstance(cond, dict):
-        return False
-    for key in ('all', 'any'):
-        if key in cond:
-            children = cond.get(key) or []
-            return bool(children) and all(_v2_all_rate_metric(c) for c in children)
-    if 'not' in cond:
-        return _v2_all_rate_metric(cond['not'])
-    m = cond.get('metric', '') or ''
-    return '_rate_' in m
-
-
 def _v2_baseline_live(alert_state, now, offset_min: float) -> bool:
     start = alert_state.get('session_start') if alert_state else None
     if not start:
@@ -386,12 +649,17 @@ def _ae_holdings_pct(row: dict) -> float | None:
 def _ae_funds_pnl(metric: str, value, row: dict) -> float:
     """Return the pnl float for a Funds section row.
 
-    Extracted from _v2_extract_pnl_fields to replace the elif chain."""
-    if metric == 'cash':
-        return float(row.get('avail opening_balance', 0) or 0)
-    if metric == 'avail_margin':
-        return float(row.get('net', 0) or 0)
-    return float(value or 0)
+    Fix #3/#4 — this now trusts the MATCH's already-resolved `value`
+    (produced by the grammar's metric resolver — `cash` reads live
+    'avail cash', `sod_cash` reads 'avail opening_balance', etc.) instead
+    of independently re-reading raw columns with its own hard-coded
+    field map. The old per-metric branch here read 'avail opening_balance'
+    for `cash` even after the resolver itself was fixed to read live
+    cash — so the alert BODY would keep showing SOD cash while the leaf
+    actually fired on live cash. `row`/`metric` args are kept for call-
+    site compatibility but are no longer consulted; extracted from
+    `_v2_extract_pnl_fields` to keep that function's CC down."""
+    return float(value) if value is not None else 0.0
 
 
 def _v2_extract_pnl_fields(row: dict, section: str, metric: str,
@@ -435,26 +703,22 @@ def _v2_static_rate_enrichment(alert_state: dict, kind: str, scope_label: str,
                                rate_window_min: int) -> float | None:
     """Compute ΔP&L/min from pnl_history for static position alerts.
 
-    Returns the rate value (float ₹/min) when at least 2 history samples
-    span a non-zero time window, otherwise None.  Reads the same history
-    bucket that rate-metric evaluators use so the numbers are consistent.
+    Fix #1 — routed through the SAME `windowed_rate` helper the live
+    `pnl_rate_abs`/`pnl_rate_pct` metrics use, so a static alert's
+    displayed rate no longer shows a raw one-poll Δ ("-28k/min") when the
+    live metric itself would have returned None for insufficient sample
+    count/span. Anchored on the last sample's own timestamp (not
+    wall-clock `now`) since this runs once, right after dispatch, using
+    whatever history existed at that moment.
     """
     from backend.shared.helpers.settings import get_bool
     if not get_bool('alerts.show_rate_in_static_alerts', True):
         return None
     hist = (alert_state.get('pnl_history') or {}).get(('positions', scope_label), []) or []
-    if len(hist) < 2:
-        return None
-    cutoff_window = hist[-1][0] - timedelta(minutes=rate_window_min)
-    window = [s for s in hist if s[0] >= cutoff_window]
-    if len(window) < 2:
-        return None
-    oldest, latest = window[0], window[-1]
-    mins = (latest[0] - oldest[0]).total_seconds() / 60.0
-    if mins <= 0:
+    if not hist:
         return None
     # field_idx=1 → pnl ₹/min, matching rate_abs metric
-    return (latest[1] - oldest[1]) / mins
+    return windowed_rate(hist, hist[-1][0], rate_window_min, field_idx=1)
 
 
 def _v2_derive_section(scope_tok: str) -> str:
@@ -664,54 +928,6 @@ def _agent_execution_mode_tag(agent) -> str:
     return ''
 
 
-def _v2_should_suppress(agent, matches, now, cfg) -> bool:
-    """
-    Per-agent suppression for v2 grammar.
-
-    Two semantics depending on whether the agent uses a rate metric:
-
-    - **Static agents** (threshold floors like `pnl <= -30000` or `day_pct <= -3`)
-      latch on first fire. They stay silent for the rest of the session as
-      long as the condition keeps matching. They re-arm ONLY when a cycle
-      sees zero matches (caller clears the latch in that case), i.e. the
-      value has recovered above the threshold. This prevents the "same
-      breach keeps screaming every tick" behaviour operators saw in the
-      simulator and in real-market prolonged drawdowns.
-
-    - **Rate agents** (ΔP&L/Δmin): keep the cooldown + material-delta logic.
-      Rate rules are *meant* to re-fire when the bleed accelerates — that's
-      the whole point — so we gate on cooldown elapsed + |Δvalue| material.
-    """
-    from datetime import timedelta
-
-    # Use the WORST (smallest / most-negative) value across matches as the
-    # representative loss number for delta comparisons.
-    worst_val = None
-    for m in matches:
-        v = m.get('value')
-        if v is None:
-            continue
-        if worst_val is None or v < worst_val:
-            worst_val = v
-
-    prev = _V2_LAST_ALERT.get(agent.slug)
-    if not prev:
-        return False
-
-    # Static agents: latched since the last fire. Re-fire blocked until the
-    # latch is cleared by run_cycle on a no-match tick (see below).
-    if not _v2_has_rate_metric(agent.conditions):
-        return True
-
-    # Rate agents: cooldown + material delta.
-    if worst_val is None:
-        return False
-    if (now - prev['ts']) < timedelta(minutes=cfg['cooldown_min']):
-        return True
-    abs_moved = abs(worst_val - prev.get('val', 0)) >= cfg['suppress_delta_abs']
-    return not abs_moved
-
-
 def _initial_shadow_remaining(agent) -> int | None:
     """
     Compute the shadow remaining-fires count for an agent at sim
@@ -740,27 +956,6 @@ def _initial_shadow_remaining(agent) -> int | None:
     if lt == "until_date":
         return 999
     return None
-
-
-def _v2_record(agent, matches, now) -> None:
-    worst_val = None
-    for m in matches:
-        v = m.get('value')
-        if v is None:
-            continue
-        if worst_val is None or v < worst_val:
-            worst_val = v
-    _V2_LAST_ALERT[agent.slug] = {'ts': now, 'val': worst_val if worst_val is not None else 0.0}
-
-
-def _v2_unlatch(agent) -> None:
-    """
-    Clear the static-agent latch so the agent is armed for its next fire.
-    Called by run_cycle on any tick where the agent produced zero matches —
-    i.e. the condition has recovered. Safe to call unconditionally; no-op
-    if the agent was never latched.
-    """
-    _V2_LAST_ALERT.pop(agent.slug, None)
 
 
 def _v2_cfg():
@@ -1527,16 +1722,6 @@ def _cycle_in_blackout(agent, now, *, bypass_schedule: bool) -> bool:
     return bool(blackouts and _in_blackout_window(now, blackouts))
 
 
-def _cycle_baseline_not_ready(agent, alert_state: dict, now, cfg: dict, *,
-                              bypass_schedule: bool) -> bool:
-    """True when a PURE rate-metric agent should be suppressed during baseline window."""
-    return (
-        not bypass_schedule
-        and _v2_all_rate_metric(agent.conditions)
-        and not _v2_baseline_live(alert_state, now, cfg['baseline_offset_min'])
-    )
-
-
 async def _cycle_maybe_expire_lifespan(agent, now, *, bypass_schedule: bool,
                                        broadcast_fn) -> bool:
     """Auto-complete until_date agents whose expiry has passed.
@@ -1615,15 +1800,29 @@ async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
         return list(result.scalars().all())
 
 
-def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dict) -> list:
+def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dict,
+                          *, bypass_schedule: bool = False) -> tuple[list, list]:
     """Build a V2Context for the agent and run the condition tree evaluator.
 
     alert_state must be the same dict object held by run_cycle so that any
     mutations made by the evaluator (e.g. pnl_history updates) remain visible
     to subsequent per-agent gates on the same tick.
 
-    Returns the list of match dicts (empty on no match or on evaluator error).
+    Fix #6a — `baseline_live` is computed HERE (once per agent per tick,
+    cheap) and passed onto the Context so every rate leaf (`rate_abs`/
+    `rate_pct`) self-gates during the post-open baseline window, instead
+    of the old whole-agent gate that only worked for agents whose
+    conditions were ENTIRELY rate leaves (both real loss-rate agents mix
+    a `day_val`/`pnl` leaf in, so the old gate never actually applied to
+    them). `bypass_schedule` (sim mode) always treats the baseline as
+    live — sim ticks aren't tied to wall-clock market hours.
+
+    Returns (matches, observations) — see `agent_evaluator.Context.observations`
+    for what an observation carries. Both empty on evaluator error.
     """
+    baseline_live = bypass_schedule or _v2_baseline_live(
+        alert_state, now, cfg['baseline_offset_min']
+    )
     v2_ctx = V2Context(
         sum_holdings=context.get("sum_holdings"),
         sum_positions=context.get("sum_positions"),
@@ -1636,12 +1835,14 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         segments=context.get("segments", []),
         rate_window_min=cfg['rate_window_min'],
         agent=agent,
+        baseline_live=baseline_live,
     )
     try:
-        return v2_evaluate(agent.conditions, v2_ctx)
+        matches = v2_evaluate(agent.conditions, v2_ctx)
+        return matches, v2_ctx.observations
     except Exception as e:
         logger.error(f"Agent [{agent.slug}] v2 evaluate failed: {e}")
-        return []
+        return [], []
 
 
 def _cycle_maybe_buffer_fire(
@@ -1658,14 +1859,35 @@ def _cycle_maybe_buffer_fire(
     debounce_min: int,
     pending_dispatches: list,
 ) -> bool:
-    """Evaluate the suppression gate and, when the agent fires, buffer a dispatch entry.
+    """Evaluate the per-key re-alert escalation gate and, when the agent
+    fires, buffer a dispatch entry.
 
     Returns True when the agent fired (triggered), False otherwise.
     Mutates pending_dispatches in place on fire.
+
+    Caller MUST have already run `_v2_apply_recovery` for this tick
+    (unconditionally, even when `matches` is empty) — recovery clearing
+    and the escalation gate both read/write the same per-key latch, and
+    a key that just recovered must not carry stale escalation state into
+    this function.
+
+    `bypass_suppression` means "fire on every match, ignore the latch
+    entirely" (isolated single-agent sim runs). Otherwise the escalation
+    gate always applies — sim runs use an ISOLATED per-simulation store
+    (`alert_state['_sim_latch']`) rather than the live module-level
+    `_V2_LATCH`, so a sim/backtest never corrupts real re-alert timing.
     """
     if not matches:
         return False
-    if not (bypass_suppression or not _v2_should_suppress(agent, matches, now, cfg)):
+    if bypass_suppression:
+        effective = matches
+    else:
+        cooldown_min = getattr(agent, 'cooldown_minutes', None) or cfg['cooldown_min']
+        store = alert_state.setdefault('_sim_latch', {}) if sim_mode else None
+        effective = _v2_apply_escalation_gate(
+            agent, matches, now, cooldown_min, store=store,
+        )
+    if not effective:
         return False
 
     result = _v2_build_evalresult(matches, agent.name)
@@ -1832,9 +2054,20 @@ async def _ae_cycle_eval_and_buffer(
 
     Also persists non-triggered state changes. Extracted from
     _cycle_process_agent to reduce CC there."""
-    matches = _cycle_evaluate_agent(agent, context, cfg, now, alert_state)
-    if not matches:
-        _v2_unlatch(agent)
+    matches, observations = _cycle_evaluate_agent(
+        agent, context, cfg, now, alert_state, bypass_schedule=bypass_schedule,
+    )
+    # Recovery pass runs UNCONDITIONALLY, on the RAW evaluator result —
+    # before debounce filtering (which can suppress `matches` to [] for
+    # reasons unrelated to the underlying condition, e.g. "not sustained
+    # long enough yet") and regardless of whether `matches` is empty this
+    # tick (fix #5/#9: a fully-recovered tick, matches == [], is exactly
+    # the case whose latches need clearing). Skipped entirely in sim mode
+    # bypass_suppression runs (isolated single-agent "run in simulator"),
+    # which don't use the latch at all.
+    if not bypass_suppression:
+        store = alert_state.setdefault('_sim_latch', {}) if sim_mode else None
+        _v2_apply_recovery(agent, observations, store=store)
 
     matches, debounce_new_first_true_at, debounce_first_true_changed = (
         _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
@@ -1891,10 +2124,11 @@ async def _cycle_process_agent(
     sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
     _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
 
-    if _cycle_baseline_not_ready(agent, alert_state, now, cfg,
-                                 bypass_schedule=bypass_schedule):
-        return
-
+    # Fix #6a — the whole-agent "pure rate metric" baseline gate is gone;
+    # _cycle_evaluate_agent now computes `baseline_live` once per agent
+    # and threads it onto the Context so each rate LEAF self-gates
+    # (agent_evaluator.Context.rate_abs/rate_pct), letting a mixed
+    # agent's non-rate leaves keep evaluating during the opening window.
     await _ae_cycle_eval_and_buffer(
         agent, context, cfg, now,
         alert_state=alert_state, sim_mode=sim_mode,
@@ -1931,18 +2165,9 @@ async def run_cycle(context: dict, broadcast_fn=None,
     if not now:
         return
 
-    # Append the current P&L snapshot to alert_state.pnl_history so the
-    # rate evaluator has samples to compute ΔP&L/min against. The
-    # background performance task and the simulator both pass the same
-    # long-lived `alert_state` dict, so each run_cycle call grows the
-    # history one entry per (section, scope) bucket.
-    _alert_state = context.get("alert_state")
-    if _alert_state is not None:
-        _update_pnl_history(
-            _alert_state, now,
-            context.get("sum_positions"),
-            context.get("sum_holdings"),
-        )
+    # Deploy-survival latch hydration (fixes #7/#8/#9's "Also fold in") —
+    # no-op after the first successful/attempted call this process.
+    await _v2_hydrate_latch()
 
     # Tier-suppression buffer — fires accumulate here during the per-agent
     # loop, then a single post-loop pass computes topic-scoped suppression
@@ -1956,10 +2181,13 @@ async def run_cycle(context: dict, broadcast_fn=None,
     if not agents:
         return
 
-    # Build base context. When the simulator passes a `market_state`
-    # override dict on the context, forward it so the per-segment open
-    # flags reflect the simulated clock (e.g. "pre_close" preset) instead
-    # of real wall-clock time.
+    # Build base context BEFORE _update_pnl_history (fix #6b — the
+    # segment-open flags computed here drive whether/how this tick's P&L
+    # snapshot gets recorded; the old ordering called _update_pnl_history
+    # first, so it never had this information). When the simulator passes
+    # a `market_state` override dict on the context, forward it so the
+    # per-segment open flags reflect the simulated clock (e.g.
+    # "pre_close" preset) instead of real wall-clock time.
     # _build_context can do a blocking HTTP GET to nseindia.com when
     # the holidays cache is cold (once per day per exchange). Offload
     # to a thread so the agent tick doesn't stall the event loop.
@@ -1971,6 +2199,26 @@ async def run_cycle(context: dict, broadcast_fn=None,
     nse_open_flag = bool(base_ctx.get("nse_open"))
     mcx_open_flag = bool(base_ctx.get("mcx_open"))
     any_market_open = nse_open_flag or mcx_open_flag
+
+    # Append the current P&L snapshot to alert_state.pnl_history so the
+    # rate evaluator has samples to compute ΔP&L/min against. The
+    # background performance task and the simulator both pass the same
+    # long-lived `alert_state` dict, so each run_cycle call grows the
+    # history one entry per (section, scope) bucket.
+    #
+    # Fix #6b — under bypass_schedule (sim), always record unconditionally
+    # (market_state=None) — sim ticks aren't tied to wall-clock market
+    # hours, so "is a segment open" isn't a meaningful gate for a
+    # scenario the operator is explicitly driving. On the live path, pass
+    # base_ctx so the segment-anchored baseline + closed-market skip apply.
+    _alert_state = context.get("alert_state")
+    if _alert_state is not None:
+        _update_pnl_history(
+            _alert_state, now,
+            context.get("sum_positions"),
+            context.get("sum_holdings"),
+            market_state=None if bypass_schedule else base_ctx,
+        )
 
     # Hoist _v2_cfg() outside the per-agent loop — it reads global Settings
     # rows and has no per-agent dependency. Avoids 15 redundant dict lookups
@@ -2034,7 +2282,10 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     result      = entry['result']
     sim_mode_p  = entry['sim_mode']
 
-    _v2_record(agent, matches_, now)
+    # Fix #7 — the per-key latch is already updated at buffer-time
+    # (`_cycle_maybe_buffer_fire` → `_v2_reconcile_latch`), BEFORE
+    # topic-tier suppression runs, so a suppressed fire's latch is
+    # recorded exactly like a survivor's — no separate write needed here.
     if not entry.get('bypass_schedule', False):
         new_status_p   = entry['new_status']
         debounce_min_p = entry.get('debounce_min', 0)
@@ -2088,12 +2339,20 @@ async def _cycle_dispatch_survivors(
     no action execution. Survivor agents commit all side-effects (DB state,
     WS broadcast, rich alert / dispatch, actions).
     """
-    suppressed_ids = _compute_topic_suppression(pending_dispatches)
+    suppressed_ids, merge_map = _compute_topic_suppression(pending_dispatches)
     for entry in pending_dispatches:
         agent = entry['agent']
         if agent.id in suppressed_ids:
             await _ae_dispatch_suppressed_entry(entry, suppressed_ids, broadcast_fn)
             continue
+        extra = merge_map.get(agent.id)
+        if extra:
+            # Fix #7 — fold suppressed same-topic siblings' rows into the
+            # winner's alert body so extending dedup to equal-tier agents
+            # never silently drops a row the operator would otherwise see.
+            entry = dict(entry)
+            entry['matches'] = list(entry['matches']) + extra
+            entry['result'] = _v2_build_evalresult(entry['matches'], agent.name)
         await _ae_dispatch_survivor_entry(entry, now, context, broadcast_fn)
 
 
@@ -2101,48 +2360,75 @@ async def _cycle_dispatch_survivors(
 _TIER_RANK = {'critical': 0, 'high': 1, 'medium': 2, 'low': 3}
 
 
-def _ae_topic_winner(group: list[dict]) -> tuple[int, str]:
-    """Return (min_rank, winner_slug) for a topic group.
+def _ae_has_actions(agent) -> bool:
+    """True when the agent carries at least one action.
 
-    min_rank is the lowest (highest-priority) tier rank present;
-    winner_slug is the first agent slug at that rank.
+    Fix #7 — action-bearing agents (e.g. loss-pos-total-auto-close's
+    `chase_close_positions` kill-switch) must NEVER be suppressed by
+    topic-tier dedup, regardless of tier. Before this fix, a suppressed
+    entry ran no action at all (`_ae_dispatch_suppressed_entry` is
+    audit-log-only) — if a notify-only critical-tier sibling in the same
+    topic happened to win, the auto-close kill-switch would silently
+    never fire."""
+    return bool(getattr(agent, 'actions', None))
+
+
+def _ae_topic_winner(group: list[dict]) -> dict:
+    """Return the winning entry for a topic group.
+
+    Fix #7 — an action-bearing agent always wins over a notify-only one
+    (a kill-switch must always execute), regardless of tier. Among
+    entries with the same action-bearing status, the highest-priority
+    tier wins (lower `_TIER_RANK`). Ties broken by list order.
     Extracted from _compute_topic_suppression to reduce CC there."""
-    min_rank = min(
-        _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99)
-        for e in group
-    )
-    winner_slug = next(
-        e['agent'].slug for e in group
-        if _TIER_RANK.get(getattr(e['agent'], 'tier', 'medium'), 99) == min_rank
-    )
-    return min_rank, winner_slug
+    def sort_key(e: dict) -> tuple:
+        agent = e['agent']
+        return (
+            0 if _ae_has_actions(agent) else 1,
+            _TIER_RANK.get(getattr(agent, 'tier', 'medium'), 99),
+        )
+    return min(group, key=sort_key)
 
 
-def _ae_suppressed_in_group(group: list[dict], suppressed: dict) -> None:
-    """Populate suppressed dict with lower-tier agent ids in this topic group.
-
+def _ae_suppressed_in_group(group: list[dict], suppressed: dict,
+                            merge_map: dict) -> None:
+    """Populate `suppressed` with every non-winner entry in this topic
+    group EXCEPT action-bearing ones (fix #7 — never suppress a
+    kill-switch), and fold each suppressed entry's matches into
+    `merge_map[winner_agent_id]` so the winner's alert body still
+    surfaces every row (fix #7 — extending dedup to equal-tier siblings
+    must not silently drop information the operator would otherwise see).
     Extracted from _compute_topic_suppression to reduce CC there."""
-    min_rank, winner_slug = _ae_topic_winner(group)
+    winner = _ae_topic_winner(group)
+    winner_agent = winner['agent']
     for entry in group:
         agent = entry['agent']
-        rank = _TIER_RANK.get(getattr(agent, 'tier', 'medium'), 99)
-        if rank > min_rank:
-            suppressed[agent.id] = winner_slug
+        if agent is winner_agent or _ae_has_actions(agent):
+            continue
+        suppressed[agent.id] = winner_agent.slug
+        merge_map.setdefault(winner_agent.id, []).extend(entry.get('matches') or [])
 
 
-def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
+def _compute_topic_suppression(pending: list[dict]) -> tuple[dict[int, str], dict[int, list]]:
     """
-    Given the list of buffered fires from a single run_cycle, return a
-    dict mapping `suppressed_agent_id → suppressing_agent_slug`.
+    Given the list of buffered fires from a single run_cycle, return
+    (suppressed_agent_id → suppressing_agent_slug, winner_agent_id →
+    extra matches merged in from suppressed same-topic siblings).
 
-    Rule: within each topic, the highest-priority tier wins. Every fire
-    at a lower tier within the same topic is suppressed (dispatch +
-    actions skipped). Topic 'general' is opt-out — agents at the default
-    tag don't participate, so legacy untagged agents behave exactly as
-    before.
+    Rule (fix #7): within each topic, one entry wins per tick — an
+    action-bearing agent always wins over a notify-only one; among
+    non-action entries, dedup is extended to cover EQUAL-tier siblings
+    too, not just strictly-lower tiers (previously two same-tier agents
+    in one topic both pushed separately — prod repro: `loss-rate-acct` +
+    `loss-positions-total`, both critical, ~3s apart). Every OTHER
+    non-action-bearing entry in the topic is suppressed (dispatch +
+    actions skipped), with its matches merged into the winner's alert so
+    the wider dedup never silently drops a row. Topic 'general' is
+    opt-out — agents at the default tag don't participate, so legacy
+    untagged agents behave exactly as before.
 
-    Returns an empty dict when no suppression applies (single-fire ticks,
-    all-equal-tier ticks, all-untagged ticks).
+    Returns empty dicts when no suppression applies (single-fire ticks,
+    all-untagged ticks).
     """
     by_topic: dict[str, list[dict]] = {}
     for entry in pending:
@@ -2153,10 +2439,11 @@ def _compute_topic_suppression(pending: list[dict]) -> dict[int, str]:
         by_topic.setdefault(topic, []).append(entry)
 
     suppressed: dict[int, str] = {}
+    merge_map: dict[int, list] = {}
     for topic, group in by_topic.items():
         if len(group) > 1:
-            _ae_suppressed_in_group(group, suppressed)
-    return suppressed
+            _ae_suppressed_in_group(group, suppressed, merge_map)
+    return suppressed, merge_map
 
 
 # ---------------------------------------------------------------------------

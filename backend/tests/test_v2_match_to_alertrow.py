@@ -572,16 +572,26 @@ class TestV2MatchToAlertrowRateEnrichment:
         """
         When section='Positions', kind='static_pct', and alert_state has
         sufficient pnl_history → rate_val is computed and populated.
+
+        Fix #1 — the enrichment now routes through `windowed_rate`, which
+        requires >= 3 samples spanning >= 80% of the effective window
+        before producing a value (a 2-sample fixture 5 minutes apart is
+        EXACTLY the "one poll's raw Δ" shape the audit found firing
+        spurious -28k/min to -33k/min 'rates' in prod — that shape must
+        now return None, not a number). Uses 3 samples at a realistic
+        ~5-minute poll cadence instead.
         """
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
 
         now = datetime(2026, 7, 11, 10, 30, 0, tzinfo=timezone.utc)
-        old_ts = now - timedelta(minutes=5)
+        mid_ts = now - timedelta(minutes=5)
+        old_ts = now - timedelta(minutes=10)
 
         alert_state = {
             'pnl_history': {
                 ('positions', 'TOTAL'): [
-                    (old_ts, -100000, -5.0),  # (timestamp, pnl_abs, pnl_pct)
+                    (old_ts, -90000, -4.5),   # (timestamp, pnl_abs, pnl_pct)
+                    (mid_ts, -100000, -5.0),
                     (now, -110000, -5.5),
                 ]
             }
@@ -601,10 +611,42 @@ class TestV2MatchToAlertrowRateEnrichment:
                 alert_state=alert_state,
                 rate_window_min=10,
             )
-        # rate_val = (latest_pnl - oldest_pnl) / minutes
-        # = (-110000 - -100000) / 5 = -10000 / 5 = -2000/min
+        # rate_val = (latest_pnl - oldest_pnl) / minutes over the 3-sample,
+        # 10-minute span = (-110000 - -90000) / 10 = -2000/min
         assert result['rate_val'] == -2000.0, (
-            "rate_val must be computed as (latest - oldest) / minutes"
+            f"Expected rate_val=-2000.0 over the 3-sample span, got {result['rate_val']}"
+        )
+
+    def test_rate_enrichment_none_for_single_poll_delta(self):
+        """Fix #1 regression — the exact prod-observed shape (2 samples,
+        one poll cadence apart) must NOT produce a rate value anymore."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+
+        now = datetime(2026, 7, 11, 10, 30, 0, tzinfo=timezone.utc)
+        old_ts = now - timedelta(minutes=5)
+
+        alert_state = {
+            'pnl_history': {
+                ('positions', 'TOTAL'): [
+                    (old_ts, -100000, -5.0),
+                    (now, -110000, -5.5),
+                ]
+            }
+        }
+        match = {
+            'metric': 'pnl_pct',
+            'scope': 'positions_TOTAL',
+            'threshold': -10,
+            'value': -5.5,
+            'row': {'account': 'TOTAL', 'pnl': -110000},
+        }
+        with patch('backend.shared.helpers.settings.get_bool', return_value=True):
+            result = _v2_match_to_alertrow(
+                match, alert_state=alert_state, rate_window_min=10,
+            )
+        assert result['rate_val'] is None, (
+            f"Expected None for a single-poll-delta (2 samples), got {result['rate_val']} — "
+            f"this is the exact prod-observed -28k/min..-33k/min spam shape"
         )
 
     def test_no_rate_enrichment_when_rate_already_populated(self):

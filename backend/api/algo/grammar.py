@@ -53,6 +53,39 @@ logger = get_logger(__name__)
 # row; any_acct yields all non-TOTAL rows and the leaf is OR-combined).
 # ───────────────────────────────────────────────────────────────────────────
 
+# ── Missing-vs-zero convention (fix #3) ───────────────────────────────
+#
+# `float(row.get(col, 0) or 0)` collapses THREE distinct states — column
+# genuinely absent, column present but None/NaN, and a real reported 0 —
+# into the SAME value (0.0). For raw per-broker funds/margin columns that
+# convention is actively dangerous: Dhan/Groww map some fields
+# inconsistently (see `dhan.py`/`groww.py` `_dhan_num_or_none` /
+# `_gf_or_none`), so an unmapped column silently looked exactly like a
+# real zero balance and fired `loss-margin-low` on nothing but missing
+# data (61 fires / 60 days, prod audit).
+#
+# Applied to the raw-broker-column funds metrics below (cash, sod_cash,
+# avail_margin, used_margin, collateral) — every one of these reads a
+# single column straight off `df_margins`, which is exactly where a
+# broker can genuinely omit a field. NOT applied to computed
+# positions/holdings aggregate columns (pnl, day_val, day_pct, inv_val,
+# cur_val) — those are always populated by the background summary
+# builder (groupby + `.fillna(0)`), so a real 0 there is a real 0, never
+# an "unmapped field" — see the self-audit note in agent_engine.py's
+# `_ae_funds_pnl` docstring for the full boundary rationale.
+def _num_or_none(v) -> float | None:
+    """Coerce to float; return None (not 0.0) when v is None, NaN, or
+    non-numeric. A genuine 0.0 passes through unchanged."""
+    if v is None:
+        return None
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return None
+    import math
+    return None if math.isnan(fv) else fv
+
+
 def _metric_pnl(ctx, row):
     """Positions P&L in ₹ (mark-to-market)."""
     return float(row.get('pnl', 0) or 0)
@@ -69,8 +102,24 @@ def _metric_day_val(ctx, row):
     return float(row.get('day_change_val', 0) or 0)
 
 def _metric_day_pct(ctx, row):
-    """Holdings day-change percentage."""
-    return float(row.get('day_change_percentage', 0) or 0)
+    """Day-change percentage.
+
+    Fix #10 — for POSITIONS rows, prefer `day_change_pct_margin` (added by
+    `background._apply_positions_margin_pct`: day_change_val / account
+    margin base, NOT notional) when present on the row. Notional
+    (Σ|prev_close × quantity| over CURRENT rows) drops closed (qty=0)
+    legs from the denominator while the numerator still carries their
+    P&L, so a mostly-closed book could show -500% on a real -2%-of-margin
+    move. HOLDINGS rows never carry that column — they keep the existing
+    `day_change_percentage` (opening-value denominator), which is the
+    standard, uncontested definition for a day's % move on a holding.
+    Returns None (not 0) when the value itself is missing — real 0% is
+    still a valid value and must pass through.
+    """
+    if 'day_change_pct_margin' in row:
+        return _num_or_none(row.get('day_change_pct_margin'))
+    val = row.get('day_change_percentage')
+    return _num_or_none(val) if val is not None else 0.0
 
 def _metric_inv_val(ctx, row):
     return float(row.get('inv_val', 0) or 0)
@@ -79,16 +128,33 @@ def _metric_cur_val(ctx, row):
     return float(row.get('cur_val', 0) or 0)
 
 def _metric_cash(ctx, row):
-    return float(row.get('avail opening_balance', 0) or 0)
+    """Live available cash (fix #4 — was reading start-of-day
+    'avail opening_balance', which cannot move intraday, so
+    loss-funds-negative's cash<0 leaf could never fire on a real
+    intraday cash drop). 'avail cash' is the same column
+    `routes/funds.py` maps to `live_cash` (Kite's `available.cash` /
+    Dhan+Groww adapters' normalised `available.cash`, both None-safe —
+    see `dhan.py:_dhan_margins_available` / `groww.py:_groww_margin_available`).
+    Kept the token name `cash` (not renamed) so existing agent rows
+    (prod's `loss-funds-negative`) get the corrected live-cash semantics
+    without an operator having to re-save the agent — see `sod_cash`
+    below for the retained start-of-day reading."""
+    return _num_or_none(row.get('avail cash'))
+
+def _metric_sod_cash(ctx, row):
+    """Start-of-day cash (the value `cash` used to read before fix #4).
+    Kept as its own token for agents that specifically want the SOD
+    baseline rather than live intraday cash."""
+    return _num_or_none(row.get('avail opening_balance'))
 
 def _metric_avail_margin(ctx, row):
-    return float(row.get('net', 0) or 0)
+    return _num_or_none(row.get('net'))
 
 def _metric_used_margin(ctx, row):
-    return float(row.get('util debits', 0) or 0)
+    return _num_or_none(row.get('util debits'))
 
 def _metric_collateral(ctx, row):
-    return float(row.get('avail collateral', 0) or 0)
+    return _num_or_none(row.get('avail collateral'))
 
 # Rate-of-change metrics. They use the rolling history the engine maintains
 # per (section, scope). Section is inferred from the scope token.
@@ -406,34 +472,45 @@ def _row_with_min(rows: list, key: str) -> list:
 
 
 def _scope_holdings_worst_acct(ctx):
-    """Single per-account holdings row with the worst day_pct."""
+    """Single per-account holdings row with the worst day_change_percentage.
+
+    Fix #11 — was keying on 'day_pct', a column name the holdings summary
+    frame never carries (it carries 'day_change_percentage' — see
+    background._bg_holdings_add_pct), so this scope always returned []."""
     rows = _scope_holdings_any_acct(ctx)
-    return _row_with_min(rows, 'day_pct')
+    return _row_with_min(rows, 'day_change_percentage')
 
 def _scope_holdings_worst_symbol(ctx):
-    """Single per-symbol holdings row with the worst day_pct. Note: relies
-    on the engine context populating per-symbol detail. When the live
-    pipeline only carries per-account aggregates (current default), this
-    falls back to the same row as worst_acct — operators get an honest
-    drawdown signal either way."""
+    """Single per-symbol holdings row with the worst day_change_percentage.
+    Note: relies on the engine context populating per-symbol detail. When
+    the live pipeline only carries per-account aggregates (current
+    default), this falls back to the same row as worst_acct — operators
+    get an honest drawdown signal either way."""
     df = getattr(ctx, 'holdings_rows', None)
     if df is None or (hasattr(df, 'empty') and df.empty):
         return _scope_holdings_worst_acct(ctx)
     rows = [r.to_dict() for _, r in df.iterrows()] if hasattr(df, 'iterrows') else list(df)
-    return _row_with_min(rows, 'day_pct')
+    return _row_with_min(rows, 'day_change_percentage')
 
 def _scope_positions_worst_acct(ctx):
-    """Single per-account positions row with the worst pnl_pct."""
+    """Single per-account positions row with the worst day_change_percentage.
+
+    Fix #11 — was keying on 'pnl_pct', a column the positions summary
+    frame never carries at all (only 'day_change_val'/'day_change_percentage'
+    — see background._fetch_positions_direct / _rebuild_positions_summary),
+    so this scope always returned []."""
     rows = _scope_positions_any_acct(ctx)
-    return _row_with_min(rows, 'pnl_pct')
+    return _row_with_min(rows, 'day_change_percentage')
 
 def _scope_positions_worst_symbol(ctx):
-    """Single per-symbol positions row with the worst pnl. Falls back to
-    worst_acct semantics when per-symbol rows aren't on the context."""
-    df = getattr(ctx, 'positions_rows', None)
-    if df is None or (hasattr(df, 'empty') and df.empty):
+    """Single per-symbol positions row with the worst pnl.
+
+    Fix #11 — was reading `ctx.positions_rows`, an attribute that does not
+    exist on Context (the real field is `position_rows`, singular), so
+    this scope always fell through to the worst_acct fallback."""
+    rows = getattr(ctx, 'position_rows', None) or []
+    if not rows:
         return _scope_positions_worst_acct(ctx)
-    rows = [r.to_dict() for _, r in df.iterrows()] if hasattr(df, 'iterrows') else list(df)
     return _row_with_min(rows, 'pnl')
 
 
@@ -526,8 +603,12 @@ SYSTEM_TOKENS: list[dict] = [
      'resolver': 'backend.api.algo.grammar._metric_cur_val'},
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'cash',
      'value_type': 'number', 'units': '₹',
-     'description': 'Available cash on the funds row.',
+     'description': 'Live available cash on the funds row (moves intraday). None when the broker does not report this field for the account.',
      'resolver': 'backend.api.algo.grammar._metric_cash'},
+    {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'sod_cash',
+     'value_type': 'number', 'units': '₹',
+     'description': 'Start-of-day cash (opening balance) — does not move intraday. None when the broker does not report this field for the account.',
+     'resolver': 'backend.api.algo.grammar._metric_sod_cash'},
     {'grammar_kind': 'condition', 'token_kind': 'metric', 'token': 'avail_margin',
      'value_type': 'number', 'units': '₹',
      'description': 'Net available margin.',

@@ -5,12 +5,16 @@ P1 regression test: topic-tier suppression must NOT mutate DB state
 Setup:
   - Two agents share topic='pnl_loss', tier=critical (fires) and tier=low
     (suppressed by critical via _compute_topic_suppression).
-  - Both pass _v2_should_suppress (they are not in cooldown per the latch).
+  - Neither agent has a pre-existing per-key latch entry (fresh
+    `_V2_LATCH`), so `_v2_apply_escalation_gate`'s "first breach for this
+    key always fires" rule lets both through to the pending_dispatches
+    buffer — same effect the old test achieved by forcing
+    `_v2_should_suppress` to always return False.
   - After run_cycle, only the critical agent's trigger_count is incremented
     and status transitions to cooldown. The low-tier agent stays untouched.
 
 This test exercises the real _compute_topic_suppression path — NOT a mock
-of _v2_should_suppress, which would skip the pending_dispatches buffer
+of the latch gate, which would skip the pending_dispatches buffer
 entirely and prove nothing.
 """
 
@@ -108,6 +112,12 @@ async def test_suppressed_agent_db_state_not_mutated():
     """
     from backend.api.algo import agent_engine
 
+    # Fresh latch state — these slugs are unique to this test, but clear
+    # defensively so a prior test in this process can never leave a
+    # stale key behind (the latch is a module-level dict by design —
+    # fix "Also fold in" deploy-survival note).
+    agent_engine._V2_LATCH.clear()
+
     now = datetime(2026, 7, 11, 10, 0, 0, tzinfo=timezone.utc)
 
     # Two agents: same topic, different tiers
@@ -171,9 +181,10 @@ async def test_suppressed_agent_db_state_not_mutated():
         # Both agents evaluate to dummy_matches (condition always True)
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
 
-        # Neither agent is in the _v2_should_suppress latch → both enter
-        # pending_dispatches so topic-suppression can do its job
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
+        # Fresh per-key latch (cleared above) → both agents' first breach
+        # passes _v2_apply_escalation_gate unconditionally, so both enter
+        # pending_dispatches and topic-suppression can do its job
+        patch.object(agent_engine, "_v2_hydrate_latch", new=AsyncMock()),
 
         # Skip rich-alert + dispatch channels (not what we're testing)
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
@@ -240,6 +251,8 @@ async def test_survivor_agent_db_state_mutated():
     """
     from backend.api.algo import agent_engine
 
+    agent_engine._V2_LATCH.clear()
+
     now = datetime(2026, 7, 11, 10, 0, 0, tzinfo=timezone.utc)
 
     agent_critical = _make_agent(
@@ -281,7 +294,7 @@ async def test_survivor_agent_db_state_mutated():
         patch.object(agent_engine, "async_session", side_effect=_make_session),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
+        patch.object(agent_engine, "_v2_hydrate_latch", new=AsyncMock()),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "dispatch",  new=AsyncMock()),

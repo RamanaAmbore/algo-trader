@@ -193,7 +193,6 @@ async def test_active_agent_evaluated_on_default_run():
         patch.object(agent_engine, "async_session", side_effect=_make_session_collector),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "dispatch", new=AsyncMock()),
@@ -203,7 +202,6 @@ async def test_active_agent_evaluated_on_default_run():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
@@ -481,7 +479,6 @@ async def test_condition_tree_evaluated_by_v2_evaluate():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", side_effect=_track_eval),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "_v2_cfg", return_value={
@@ -489,7 +486,6 @@ async def test_condition_tree_evaluated_by_v2_evaluate():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
@@ -701,7 +697,6 @@ async def test_debounce_window_expired_allows_fire():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=_track_fire),
         patch.object(agent_engine, "_v2_cfg", return_value={
             "rate_window_min": 10, "baseline_offset_min": 15,
@@ -709,7 +704,6 @@ async def test_debounce_window_expired_allows_fire():
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, bypass_schedule=False)
 
@@ -720,46 +714,58 @@ async def test_debounce_window_expired_allows_fire():
 @pytest.mark.asyncio
 async def test_baseline_gate_skips_rate_metric_agents_early_in_session():
     """
-    When agent has a rate metric and we're within the baseline_offset_min
-    window from session start → agent is skipped.
+    Fix #6a — the opening-baseline gate moved from a whole-agent
+    short-circuit (v2_evaluate never called) to a PER-LEAF gate inside
+    `agent_evaluator.Context.rate_abs`/`rate_pct` (v2_evaluate IS always
+    called; the rate leaf itself resolves to None while the baseline
+    isn't live). This is exactly what lets a MIXED agent's non-rate
+    leaves keep evaluating during the opening window — the old
+    whole-agent gate could never do that for either real loss-rate
+    agent, since both mix a day_val/pnl leaf with a rate leaf.
+
+    Uses the REAL condition-tree evaluator (not a mock of v2_evaluate)
+    against `_cycle_evaluate_agent` directly so the assertion covers the
+    actual per-leaf mechanism, not a stand-in for it.
     """
-    from backend.api.algo import agent_engine
+    import pandas as pd
+    from backend.api.algo.agent_engine import _cycle_evaluate_agent, _v2_cfg
 
     now = datetime(2026, 7, 11, 10, 0, 0, tzinfo=timezone.utc)
-    # Agent has a rate metric
-    conditions = {"metric": "pnl_rate_abs", "scope": "positions_TOTAL", "op": "lt", "value": -1000}
-    agent = _make_agent(
-        id=1, slug="rate_agent",
-        status="active",
-        conditions=conditions,
+    conditions = {"metric": "pnl_rate_abs", "scope": "positions.total", "op": "<", "value": -1000}
+    agent = _make_agent(id=1, slug="rate_agent", status="active", conditions=conditions)
+
+    sum_positions = pd.DataFrame([{
+        "account": "TOTAL", "pnl": -50000.0, "day_change_val": -50000.0,
+        "day_change_percentage": -5.0,
+    }])
+    context = {"sum_positions": sum_positions, "sum_holdings": pd.DataFrame(), "df_margins": pd.DataFrame()}
+    cfg = _v2_cfg()
+
+    # No session_start in alert_state → _v2_baseline_live() is False —
+    # the opening window hasn't cleared yet.
+    matches, observations = _cycle_evaluate_agent(
+        agent, context, cfg, now, alert_state={}, bypass_schedule=False,
     )
-    agents_list = [agent]
+    assert matches == [], (
+        f"Expected the rate leaf to be gated (no matches) while baseline "
+        f"isn't live, got {matches}"
+    )
+    # The leaf itself was evaluated (scope resolved a row) — the metric
+    # resolver just returned None because baseline_live was False, so no
+    # observation was recorded either (Context.observations only records
+    # rows where the metric resolved to a non-None value).
+    assert observations == [], (
+        f"Expected no observations (metric resolved to None), got {observations}"
+    )
 
-    context = {
-        "now": now,
-        "sum_positions": MagicMock(),
-        "sum_holdings": MagicMock(),
-        "df_margins": MagicMock(),
-        "alert_state": {},
-    }
-
-    eval_calls = []
-
-    def _track_eval(*args, **kwargs):
-        eval_calls.append((args, kwargs))
-        return []
-
-    with (
-        patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
-        patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
-        patch.object(agent_engine, "_v2_has_rate_metric", return_value=True),  # Has rate metric
-        patch.object(agent_engine, "_v2_baseline_live", return_value=False),  # Outside baseline window
-        patch.object(agent_engine, "v2_evaluate", side_effect=_track_eval),
-    ):
-        await agent_engine.run_cycle(context=context, bypass_schedule=False)
-
-    # v2_evaluate should NOT have been called
-    assert len(eval_calls) == 0
+    # bypass_schedule=True (sim) always treats the baseline as live —
+    # the same leaf now produces a real (empty, since no pnl_history
+    # samples exist yet) rate value instead of being gated.
+    matches2, observations2 = _cycle_evaluate_agent(
+        agent, context, cfg, now,
+        alert_state={"pnl_history": {}}, bypass_schedule=True,
+    )
+    assert matches2 == [], "No pnl_history samples yet — rate is still None, just for a different reason"
 
 
 @pytest.mark.asyncio
@@ -800,7 +806,6 @@ async def test_debounce_bypassed_in_sim_mode():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=_track_fire),
         patch.object(agent_engine, "_v2_cfg", return_value={
             "rate_window_min": 10, "baseline_offset_min": 15,
@@ -808,7 +813,6 @@ async def test_debounce_bypassed_in_sim_mode():
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, bypass_schedule=True)
 
@@ -855,7 +859,6 @@ async def test_agent_with_actions_executes_on_fire():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "execute", new=_track_execute),
@@ -864,7 +867,6 @@ async def test_agent_with_actions_executes_on_fire():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
@@ -905,7 +907,6 @@ async def test_agent_without_actions_skips_execute():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "execute", new=_track_execute),
@@ -914,7 +915,6 @@ async def test_agent_without_actions_skips_execute():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
@@ -929,8 +929,11 @@ async def test_agent_without_actions_skips_execute():
 @pytest.mark.asyncio
 async def test_no_matches_unlatch_agent():
     """
-    When condition returns no matches → _v2_unlatch() is called to clear
-    any static-agent latch.
+    Fix #5 — when a tick produces no matches, `_v2_apply_recovery` (which
+    replaced `_v2_unlatch`) runs UNCONDITIONALLY, on the real Context
+    observations list, so a genuinely-recovered key clears — but a key
+    that's simply absent this tick (fetch failure/empty frame) never
+    does, because it's never in `observations` in the first place.
     """
     from backend.api.algo import agent_engine
 
@@ -946,16 +949,16 @@ async def test_no_matches_unlatch_agent():
         "alert_state": {},
     }
 
-    unlatch_calls = []
+    recovery_calls = []
 
-    def _track_unlatch(ag):
-        unlatch_calls.append(ag)
+    def _track_recovery(ag, observations, *, store=None):
+        recovery_calls.append((ag, observations))
 
     with (
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=[]),  # No matches
-        patch.object(agent_engine, "_v2_unlatch", side_effect=_track_unlatch),
+        patch.object(agent_engine, "_v2_apply_recovery", side_effect=_track_recovery),
         patch.object(agent_engine, "_v2_cfg", return_value={
             "rate_window_min": 10, "baseline_offset_min": 15,
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
@@ -964,9 +967,66 @@ async def test_no_matches_unlatch_agent():
     ):
         await agent_engine.run_cycle(context=context, bypass_schedule=False)
 
-    # _v2_unlatch should have been called
-    assert len(unlatch_calls) == 1
-    assert unlatch_calls[0] == agent
+    # _v2_apply_recovery should have been called exactly once, unconditionally,
+    # even though this tick produced zero matches.
+    assert len(recovery_calls) == 1
+    assert recovery_calls[0][0] == agent
+
+
+@pytest.mark.asyncio
+async def test_missing_data_tick_never_clears_latch():
+    """
+    Fix #5 — the exact prod-observed regression: a fetch timeout/failure/
+    empty-frame tick must NEVER be read as "condition recovered". Since
+    such a tick never produces an observation for the latched key (the
+    row simply isn't in the evaluated scope that tick), `_v2_apply_recovery`
+    must leave the pre-existing latch untouched.
+    """
+    from backend.api.algo.agent_engine import _v2_apply_recovery, _latch_key
+
+    class FakeAgent:
+        slug = "loss-positions-acct"
+
+    agent = FakeAgent()
+    store = {}
+    m = {'metric': 'day_pct', 'scope': 'positions.any_acct', 'account': 'ZD1234',
+         'op': '<=', 'threshold': -2.0, 'value': -2.6}
+    key = _latch_key(agent.slug, m)
+    store[key] = {'ts': datetime(2026, 7, 11, 9, 30, 0), 'val': -2.6}
+
+    # This tick's evaluator saw NO rows at all for this scope (empty/failed
+    # fetch) — observations is empty, not "recovered".
+    _v2_apply_recovery(agent, observations=[], store=store)
+
+    assert key in store, (
+        "Missing-data tick must NOT clear the latch — the breach may still "
+        "be active; a fetch failure is not evidence of recovery."
+    )
+
+
+@pytest.mark.asyncio
+async def test_observed_recovery_past_band_clears_latch():
+    """Fix #5/#9 — a row that WAS observed this tick, and has recovered
+    PAST the hysteresis re-arm band, does clear the latch."""
+    from backend.api.algo.agent_engine import _v2_apply_recovery, _latch_key
+
+    class FakeAgent:
+        slug = "loss-positions-acct"
+
+    agent = FakeAgent()
+    store = {}
+    m = {'metric': 'day_pct', 'scope': 'positions.any_acct', 'account': 'ZD1234',
+         'op': '<=', 'threshold': -2.0, 'value': -2.6}
+    key = _latch_key(agent.slug, m)
+    store[key] = {'ts': datetime(2026, 7, 11, 9, 30, 0), 'val': -2.6}
+
+    # Recovered well past the -2.0 threshold's 80% re-arm band (-1.6).
+    obs = {**m, 'value': -0.5, 'fired': False}
+    _v2_apply_recovery(agent, observations=[obs], store=store)
+
+    assert key not in store, (
+        "Expected the latch cleared once the value recovered past the re-arm band"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1063,7 +1123,6 @@ async def test_agent_lifespan_one_shot_transitions_to_completed():
         patch.object(agent_engine, "async_session", side_effect=_make_session_collector),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "_v2_cfg", return_value={
@@ -1071,7 +1130,6 @@ async def test_agent_lifespan_one_shot_transitions_to_completed():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
@@ -1126,7 +1184,6 @@ async def test_agent_lifespan_n_fires_exhausted():
         patch.object(agent_engine, "async_session", side_effect=_make_session_collector),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", return_value=dummy_matches),
-        patch.object(agent_engine, "_v2_should_suppress", return_value=False),
         patch.object(agent_engine, "_v2_send_rich_alert", new=AsyncMock(return_value=True)),
         patch.object(agent_engine, "log_event", new=AsyncMock()),
         patch.object(agent_engine, "_v2_cfg", return_value={
@@ -1134,7 +1191,6 @@ async def test_agent_lifespan_n_fires_exhausted():
             "cooldown_min": 30, "suppress_delta_abs": 15000, "suppress_delta_pct": 0.5,
         }),
         patch.object(agent_engine, "_update_pnl_history", return_value=None),
-        patch.object(agent_engine, "_v2_record", return_value=None),
     ):
         await agent_engine.run_cycle(context=context, broadcast_fn=None)
 
