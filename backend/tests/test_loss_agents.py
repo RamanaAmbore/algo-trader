@@ -26,6 +26,15 @@ class TestLossRateAcct:
         a = _agent("loss-rate-acct")
         assert a is not None, "loss-rate-acct not found in BUILTIN_AGENTS"
 
+    def test_status_is_inactive(self):
+        """2026-09 alert-count reduction: loss-rate-acct ships inactive —
+        redundant with the aggregate loss-positions-total agent now that
+        rate/loss checks are aggregate-only."""
+        a = _agent("loss-rate-acct")
+        assert a.get("status") == "inactive", (
+            f"Expected status='inactive', got {a.get('status')}"
+        )
+
     def test_tier_is_critical(self):
         """loss-rate-acct is critical-tier (short 10-min cooldown)."""
         a = _agent("loss-rate-acct")
@@ -154,6 +163,15 @@ class TestLossPositionsAcct:
         a = _agent("loss-positions-acct")
         assert a is not None, "loss-positions-acct not found in BUILTIN_AGENTS"
 
+    def test_status_is_inactive(self):
+        """2026-09 alert-count reduction: loss-positions-acct ships inactive —
+        redundant with the aggregate loss-positions-total agent now that
+        rate/loss checks are aggregate-only."""
+        a = _agent("loss-positions-acct")
+        assert a.get("status") == "inactive", (
+            f"Expected status='inactive', got {a.get('status')}"
+        )
+
     def test_tier_is_high(self):
         """loss-positions-acct is high-tier (vs critical for rate version)."""
         a = _agent("loss-positions-acct")
@@ -251,6 +269,15 @@ class TestLossMarginLow:
         """loss-margin-low must be in BUILTIN_AGENTS."""
         a = _agent("loss-margin-low")
         assert a is not None, "loss-margin-low not found in BUILTIN_AGENTS"
+
+    def test_status_is_inactive(self):
+        """loss-margin-low ships inactive — cross-account false-positive
+        source, superseded by loss-funds-negative (unchanged by the
+        2026-09 alert-count reduction; already inactive before it)."""
+        a = _agent("loss-margin-low")
+        assert a.get("status") == "inactive", (
+            f"Expected status='inactive', got {a.get('status')}"
+        )
 
     def test_tier_is_high(self):
         """loss-margin-low is high-tier (warning, not critical)."""
@@ -421,11 +448,22 @@ class TestLossAgentsConsistency:
         )
 
     def test_loss_agents_are_active_except_auto_close(self):
-        """All loss agents except loss-pos-total-auto-close ship active."""
+        """Alert-count reduction (2026-09): loss-rate-acct and
+        loss-positions-acct are now redundant with the aggregate
+        loss-positions-total agent and ship inactive by default, alongside
+        the pre-existing inactive-by-default loss-pos-total-auto-close
+        (destructive gate) and loss-margin-low (cross-account false-positive
+        source, superseded by loss-funds-negative)."""
+        inactive_slugs = (
+            "loss-pos-total-auto-close",
+            "loss-margin-low",
+            "loss-rate-acct",
+            "loss-positions-acct",
+        )
         for agent in BUILTIN_AGENTS:
             if not agent["slug"].startswith("loss-"):
                 continue
-            if agent["slug"] in ("loss-pos-total-auto-close", "loss-margin-low"):
+            if agent["slug"] in inactive_slugs:
                 assert agent.get("status") == "inactive", (
                     f"{agent['slug']} should ship inactive"
                 )

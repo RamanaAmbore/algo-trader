@@ -25,6 +25,7 @@ from backend.api.algo.agent_engine import (
     _ae_has_pnl_leaf,
     _ae_should_reset_conditions,
     _ae_sync_existing_builtin,
+    BUILTIN_AGENTS,
 )
 from backend.api.algo.agent_evaluator import Context
 
@@ -388,4 +389,100 @@ class TestAeSyncExistingBuiltinResetsStaleConditions:
         _ae_sync_existing_builtin(existing, agent_def)
         assert existing.conditions == clean_cond, (
             f"Expected clean conditions unchanged, got {existing.conditions}"
+        )
+
+
+class TestAeSyncExistingBuiltinPreservesCustomizationAcrossStatusChange:
+    """Regression guard (2026-09 alert-count reduction): flipping a built-in
+    agent's code-default `status` to 'inactive' (loss-rate-acct,
+    loss-positions-acct) must not make _ae_sync_existing_builtin more
+    aggressive about any OTHER field. conditions/cooldown_minutes/actions
+    on an operator-customized existing row stay untouched. `status` itself
+    IS expected to bidirectionally converge to the code default — that is
+    pre-existing, documented, intentional behavior (`_ae_sync_builtin_status`
+    force-syncs schedule + status; only conditions/cooldown/events/actions
+    are preserved) and unrelated to this change, so it is asserted
+    separately rather than frozen.
+    """
+
+    def _make_existing(self, conditions, status="active", cooldown_minutes=45,
+                        actions=None, events=None):
+        """Minimal Agent-like stub simulating an operator-customized row."""
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            conditions=conditions,
+            long_name="operator renamed this",
+            schedule="market_hours",
+            tier="high",
+            topic="positions_loss",
+            status=status,
+            events=events if events is not None else [
+                {"channel": "telegram", "enabled": True},
+            ],
+            actions=actions if actions is not None else [
+                {"type": "notify_only", "params": {}},
+            ],
+            cooldown_minutes=cooldown_minutes,
+            fire_at_time=None,
+            last_fired=None,
+        )
+
+    @pytest.mark.parametrize("slug", ["loss-rate-acct", "loss-positions-acct"])
+    def test_code_default_status_is_now_inactive(self, slug):
+        """Sanity check on the change itself: both slugs ship inactive."""
+        agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == slug)
+        assert agent_def.get("status") == "inactive", (
+            f"{slug} code default should be 'inactive' (2026-09 alert-count "
+            f"reduction — redundant with loss-positions-total), got "
+            f"{agent_def.get('status')}"
+        )
+
+    @pytest.mark.parametrize("slug", ["loss-rate-acct", "loss-positions-acct"])
+    def test_status_flip_does_not_reset_customized_conditions(self, slug):
+        """An operator-customized existing row's non-pnl conditions survive
+        a code status flip to inactive (no accidental conditions reset)."""
+        agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == slug)
+        custom_cond = {"any": [
+            {"metric": "day_val", "scope": "positions.any_acct",
+             "op": "<=", "value": -99999},
+        ]}
+        existing = self._make_existing(custom_cond, status="active")
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.conditions == custom_cond, (
+            f"{slug}: operator-customized conditions must survive a code "
+            f"status flip, got {existing.conditions}"
+        )
+
+    @pytest.mark.parametrize("slug", ["loss-rate-acct", "loss-positions-acct"])
+    def test_status_flip_does_not_touch_cooldown_or_actions(self, slug):
+        """cooldown_minutes and actions are never touched by
+        _ae_sync_existing_builtin — confirmed unaffected by this status
+        default change."""
+        agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == slug)
+        custom_actions = [{"type": "notify_only", "params": {"custom": True}}]
+        existing = self._make_existing(
+            agent_def["conditions"], status="active",
+            cooldown_minutes=99, actions=custom_actions,
+        )
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.cooldown_minutes == 99, (
+            f"{slug}: cooldown_minutes must not be touched by sync, "
+            f"got {existing.cooldown_minutes}"
+        )
+        assert existing.actions == custom_actions, (
+            f"{slug}: actions must not be touched by sync, got {existing.actions}"
+        )
+
+    @pytest.mark.parametrize("slug", ["loss-rate-acct", "loss-positions-acct"])
+    def test_status_does_bidirectionally_converge_by_design(self, slug):
+        """Unlike conditions/cooldown/actions, status IS expected to flip —
+        pre-existing, intentional force-sync behavior (`_ae_sync_builtin_status`),
+        not something this change should freeze. An existing 'active' row
+        converges to the new code default 'inactive' on next sync."""
+        agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == slug)
+        existing = self._make_existing(agent_def["conditions"], status="active")
+        _ae_sync_existing_builtin(existing, agent_def)
+        assert existing.status == "inactive", (
+            f"{slug}: status should converge to the new code default "
+            f"'inactive', got {existing.status}"
         )

@@ -1030,6 +1030,7 @@ _LOSS_AGENTS = [
              {"metric": "day_pct", "scope": "positions.any_acct", "op": "<=", "value": -2.0},
          ]},
          scope="total",
+         status="inactive",
          ),
 
     # ── Positions: per-account burn-rate guardrail (critical tier) ───────
@@ -1047,6 +1048,7 @@ _LOSS_AGENTS = [
              {"metric": "pnl_rate_pct", "scope": "positions.any_acct", "op": "<=", "value": -0.25},
          ]},
          cooldown_minutes=10,
+         status="inactive",
          ),
 
     # ── Positions: total guardrail (critical tier) ──────────────────────
