@@ -572,6 +572,12 @@ def test_rebuild_lot_index_adds_valid_new_entries(monkeypatch):
     """
     When the instruments response contains valid F&O entries (lot_size > 1),
     they must be added / updated in the index normally.
+
+    D6 fix (2026-09) flips the NSE/RELIANCE assertion: a CONFIRMED
+    lot_size=1 for a non-MCX/NCO exchange is now STORED (not skipped)
+    so `get_lot_size` can distinguish "genuinely confirmed 1" from "cache
+    miss, return the 0 unknown sentinel". MCX is still excluded from
+    this — see `test_rebuild_lot_index_mcx_raw_one_still_skipped` below.
     """
     import backend.brokers.adapters.kite as kite_mod
     from backend.brokers.adapters.kite import _rebuild_lot_index
@@ -587,13 +593,41 @@ def test_rebuild_lot_index_adds_valid_new_entries(monkeypatch):
     _rebuild_lot_index([
         _FakeInst("NFO", "NIFTY25JULFUT", 75),
         _FakeInst("MCX", "CRUDEOIL25AUGFUT", 100),
-        _FakeInst("NSE", "RELIANCE", 1),   # equity sentinel — must be skipped
+        _FakeInst("NSE", "RELIANCE", 1),   # confirmed equity 1 — now stored (D6)
     ])
 
     assert kite_mod._LOT_INDEX.get(("NFO", "NIFTY25JULFUT")) == 75
     assert kite_mod._LOT_INDEX.get(("MCX", "CRUDEOIL25AUGFUT")) == 100
-    assert ("NSE", "RELIANCE") not in kite_mod._LOT_INDEX, (
-        "Equity (lot_size=1) must not be stored in _LOT_INDEX."
+    assert kite_mod._LOT_INDEX.get(("NSE", "RELIANCE")) == 1, (
+        "D6: a CONFIRMED equity lot_size=1 must now be stored in "
+        "_LOT_INDEX so get_lot_size can tell it apart from a genuine "
+        "cache miss (which now returns 0 for every exchange)."
+    )
+
+
+def test_rebuild_lot_index_mcx_raw_one_still_skipped(monkeypatch):
+    """
+    D6 carve-out regression guard: MCX/NCO is excluded from the "store
+    confirmed 1" change — Kite ships lot_size=1 for every MCX commodity
+    NOT present in `instruments.py`'s `_MCX_LOT_OVERRIDES`, so an MCX
+    "1" is never a confirmed value and must not be stored (storing it
+    would mask a genuine MCX cache-miss as "no translation needed").
+    """
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    monkeypatch.setattr(kite_mod, "_LOT_INDEX", {})
+
+    class _FakeInst:
+        def __init__(self, e, s, ls):
+            self.e = e
+            self.s = s
+            self.ls = ls
+
+    _rebuild_lot_index([_FakeInst("MCX", "SOMEOBSCURECOMMODITY", 1)])
+
+    assert ("MCX", "SOMEOBSCURECOMMODITY") not in kite_mod._LOT_INDEX, (
+        "MCX raw lot_size=1 must never be stored as confirmed."
     )
 
 

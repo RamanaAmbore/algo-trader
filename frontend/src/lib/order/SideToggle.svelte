@@ -22,9 +22,9 @@
             class={'ot-side-btn ot-side-buy' + (side === 'BUY' ? ' on' : '')}
             disabled={locked || disabled}
             aria-pressed={side === 'BUY'}
-            title={sideLabels.BUY.startsWith('ADD') ? 'Add to position (BUY)' :
+            title={(sideLabels.BUY.startsWith('ADD') ? 'Add to position (BUY)' :
                    sideLabels.BUY.startsWith('CLOSE') ? 'Close short position (BUY)' :
-                   'Buy'}
+                   'Buy') + ' — selects the side, does not submit'}
             onclick={() => { if (!locked) {
               side = 'BUY'; onChange?.('BUY');
             } }}>
@@ -34,9 +34,9 @@
             class={'ot-side-btn ot-side-sell' + (side === 'SELL' ? ' on' : '')}
             disabled={locked || disabled}
             aria-pressed={side === 'SELL'}
-            title={sideLabels.SELL.startsWith('ADD') ? 'Add to position (SELL)' :
+            title={(sideLabels.SELL.startsWith('ADD') ? 'Add to position (SELL)' :
                    sideLabels.SELL.startsWith('CLOSE') ? 'Close long position (SELL)' :
-                   'Sell'}
+                   'Sell') + ' — selects the side, does not submit'}
             onclick={() => { if (!locked) {
               side = 'SELL'; onChange?.('SELL');
             } }}>

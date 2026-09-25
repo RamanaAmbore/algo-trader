@@ -11,6 +11,8 @@
 //   4. buildOnSubmitPayload — outer onSubmit payload (all modes)
 //   5. buildPlacePayload   — placeTicketOrder arguments (paper/live)
 //   6. formatPlacementOk   — inline success message after place
+//   7. nextTriggerState    — D4: atomic counter-prop dispatch guard
+//   8. formatSubmitLabel   — R7: pre-submit button label (pending action)
 
 /**
  * Coerce a template-override field.
@@ -234,4 +236,70 @@ export function formatPlacementOk(ctx) {
     `${(ctx.mode || '').toUpperCase()} ${ctx.side} ${ctx.qty} ${ctx.symbolLabel} ${px} · ` +
     `#${ctx.orderId}`
   );
+}
+
+/**
+ * D4 fix (2026-09) — atomic guard for the counter-prop dispatch pattern
+ * host pages use to fire OrderTicket's submit without a function-ref
+ * binding (`triggerSubmit++`). The bug: the previous inline effect only
+ * updated its "last seen" counter when it did NOT early-return on
+ * `submitting`, so once `submitting` flipped back to `false` the effect
+ * re-ran, still saw the stale mismatch from the ORIGINAL click, and
+ * fired `submit()` a second time — a delayed duplicate order from what
+ * felt like one click plus one impatient re-click.
+ *
+ * This helper makes the "have I seen this trigger value" bookkeeping
+ * atomic with the guard check: the caller updates its `seen` counter
+ * from the returned value UNCONDITIONALLY, every call, regardless of
+ * whether `fire` is true — so a rerun after `submitting` flips false
+ * never re-evaluates against a stale trigger value.
+ *
+ * @param {number} prevSeen   Last trigger value this guard has recorded.
+ *                            -1 means "never seen a trigger yet" (initial
+ *                            mount) — never fires on the first render.
+ * @param {number} trigger    Current value of the host's counter prop.
+ * @param {boolean} submitting Whether a submit is already in flight.
+ * @returns {{ fire: boolean, seen: number }}
+ *          `seen` — the caller's new "last seen" value (always `trigger`).
+ *          `fire` — true only when this is a genuinely new trigger value
+ *          AND no submit is currently in flight.
+ */
+export function nextTriggerState(prevSeen, trigger, submitting) {
+  const fire = prevSeen >= 0 && trigger !== prevSeen && !submitting;
+  return { fire, seen: trigger };
+}
+
+/**
+ * R7 fix (2026-09) — the Submit button's label should always reflect
+ * the REAL pending action about to fire (side, verb, qty), not just a
+ * bare "Submit" — this was the root of the operator's original report
+ * ("close buy close sell buttons don't work"): the CLOSE/BUY pills are
+ * side SELECTORS, not submit buttons, and with chase on (the default
+ * for LIMIT/SL tickets) the actual submit button just said "Submit"
+ * with no hint of what it would do.
+ *
+ * Mirrors `formatPlacementOk`'s existing "LIVE BUY 75 X at-price" convention
+ * so the pre-submit label and the post-submit success line read
+ * consistently. Symbol is intentionally NOT included — callers put it
+ * in a `title` tooltip instead (the label must fit a <600px footer).
+ *
+ * @param {{
+ *   side:        'BUY'|'SELL'|null,
+ *   currentQty:  number,
+ *   qty:         number|string,
+ *   basketCount: number,
+ * }} ctx
+ * @returns {string}
+ */
+export function formatSubmitLabel(ctx) {
+  if (ctx.basketCount > 0) return `Submit (${ctx.basketCount})`;
+  if (!ctx.side) return 'Submit';
+  const qty = Number(ctx.qty) || 0;
+  const qtySuffix = qty > 0 ? ` ${qty}` : '';
+  const cq = Number(ctx.currentQty) || 0;
+  if (cq === 0) return `Submit · ${ctx.side}${qtySuffix}`;
+  // ADD = same direction as the existing position; CLOSE = opposite.
+  const verb = (cq > 0 ? (ctx.side === 'BUY' ? 'ADD' : 'CLOSE')
+                       : (ctx.side === 'BUY' ? 'CLOSE' : 'ADD'));
+  return `Submit · ${verb} · ${ctx.side}${qtySuffix}`;
 }

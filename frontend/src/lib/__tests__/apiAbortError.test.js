@@ -29,8 +29,10 @@ vi.mock('$lib/stores', () => ({
 // Import AFTER the mock is registered.
 // fetchWhoami calls _get with no external signal → exercises the internal
 // AbortController branch. fetchChainExpiries accepts a caller signal → exercises
-// the caller-abort branch.
-import { fetchWhoami, fetchChainExpiries } from '$lib/api';
+// the caller-abort branch. placeTicketOrder opts into `throwOnTimeout` (D3 fix,
+// 2026-09) → exercises the new TimeoutError-throwing branch.
+import { fetchWhoami, fetchChainExpiries, placeTicketOrder } from '$lib/api';
+import { authStore } from '$lib/stores';
 
 // ── Fetch mock helpers ────────────────────────────────────────────────────────
 
@@ -124,5 +126,109 @@ describe('_request — normal success path', () => {
 
     const result = await fetchWhoami();
     expect(result).toEqual(payload);
+  });
+});
+
+// ── D3 fix (2026-09): opt-in `throwOnTimeout` — order placement must ─────────
+// NEVER render a timeout as a false success. placeTicketOrder is the one
+// caller that opts into this; every other _request caller (tested above via
+// fetchWhoami) keeps the null-swallow default so a hung poll doesn't surface
+// an error banner.
+describe('_request — throwOnTimeout opt-in (placeTicketOrder)', () => {
+  it('throws a distinctly-named TimeoutError instead of resolving null on the internal 15s timeout', async () => {
+    fetchSpy.mockRejectedValue(makeAbortError());
+
+    let caught = null;
+    try {
+      await placeTicketOrder({ tradingsymbol: 'NIFTY26JUN22000CE', side: 'BUY', quantity: 1 });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught.name).toBe('TimeoutError');
+    // Must NOT be an AbortError — callers key off the distinct name to avoid
+    // rendering the old false-success `submitOk` (order id shown as "#?").
+    expect(caught.name).not.toBe('AbortError');
+  });
+
+  it('does not resolve null on timeout (the old false-success shape)', async () => {
+    fetchSpy.mockRejectedValue(makeAbortError());
+
+    await expect(
+      placeTicketOrder({ tradingsymbol: 'NIFTY26JUN22000CE', side: 'BUY', quantity: 1 })
+    ).rejects.toBeTruthy();
+  });
+
+  it('a genuine successful response is unaffected by throwOnTimeout', async () => {
+    const payload = { order_id: '12345', mode: 'paper', status: 'COMPLETE' };
+    fetchSpy.mockResolvedValue(makeFetchResponse(payload));
+
+    const result = await placeTicketOrder({ tradingsymbol: 'NIFTY26JUN22000CE', side: 'BUY', quantity: 1 });
+    expect(result).toEqual(payload);
+  });
+
+  it('a caller-supplied signal abort still re-throws a real AbortError, not TimeoutError', async () => {
+    // Sanity check: throwOnTimeout only governs the INTERNAL (no external
+    // signal) timeout branch — an external AbortController abort must keep
+    // propagating as a genuine AbortError, unchanged by this fix.
+    fetchSpy.mockRejectedValue(makeAbortError());
+    const controller = new AbortController();
+    controller.abort();
+
+    let caught = null;
+    try {
+      await fetchChainExpiries('NIFTY', controller.signal);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught?.name).toBe('AbortError');
+  });
+});
+
+// ── R6 fix (2026-09): `err.fullMessage` — full detail alongside the ──────────
+// truncated ~32-char banner. Requires an authenticated (non-anonymous) caller
+// — `_friendlyError` intentionally suppresses raw backend detail for
+// anonymous/demo sessions, and `fullMessage` must respect the same gate.
+describe('_request — err.fullMessage (R6)', () => {
+  beforeEach(() => {
+    vi.mocked(authStore.getToken).mockReturnValue('fake-jwt-token');
+  });
+  afterEach(() => {
+    vi.mocked(authStore.getToken).mockReturnValue(null);
+  });
+
+  it('joins ALL blocked[] reasons, not just the first, in fullMessage', async () => {
+    const longReason1 = 'Preflight blocked: available margin ₹12,345 is below the required ₹98,765 for this basket';
+    const longReason2 = 'Second leg also blocked: lot size mismatch detected for CRUDEOIL26JUNFUT';
+    fetchSpy.mockResolvedValue(makeFetchResponse(
+      { detail: { blocked: [{ reason: longReason1 }, { reason: longReason2 }] } },
+      422,
+    ));
+
+    let caught = null;
+    try {
+      await placeTicketOrder({ tradingsymbol: 'NIFTY26JUN22000CE', side: 'BUY', quantity: 1 });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).not.toBeNull();
+    // Short banner stays clamped (~32 chars + ellipsis) — layout guarantee.
+    expect(caught.message.length).toBeLessThanOrEqual(35);
+    // Full message carries BOTH reasons, not just blocked[0].
+    expect(caught.fullMessage).toContain(longReason1);
+    expect(caught.fullMessage).toContain(longReason2);
+  });
+
+  it('fullMessage equals the short message when nothing was actually truncated', async () => {
+    fetchSpy.mockResolvedValue(makeFetchResponse({ detail: 'Pick an account' }, 400));
+
+    let caught = null;
+    try {
+      await placeTicketOrder({ tradingsymbol: 'NIFTY26JUN22000CE', side: 'BUY', quantity: 1 });
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught.message).toBe('Pick an account');
+    expect(caught.fullMessage).toBe('Pick an account');
   });
 });

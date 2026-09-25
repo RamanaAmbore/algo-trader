@@ -32,6 +32,7 @@
   import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
+  import { formatSubmitLabel } from '$lib/order/orderTicketSubmit.js';
   import { SYM_TYPE_OPTS } from '$lib/data/symbolTypes';
   import { aggregateCapWarnings } from '$lib/data/brokerCapWarnings';
   import { placeBasket, fetchBasketMargin, fetchLiveStatus, previewTicketTemplate } from '$lib/api';
@@ -1289,25 +1290,42 @@
   // Format:
   //   basket has legs           → "Submit (N)"
   //   modal cold + side null    → "Submit"
-  //   modal cold + side set     → "Submit · BUY"  /  "Submit · SELL"
-  //   from symbol row + side    → "Submit · ADD · BUY"  /  "Submit · CLOSE · SELL"
+  //   modal cold + side set     → "Submit · BUY 75"  /  "Submit · SELL 75"
+  //   from symbol row + side    → "Submit · ADD · BUY 75"  /  "Submit · CLOSE · SELL 75"
   //                               (verb derived from side vs position direction)
+  //
+  // R7 fix (2026-09): the label now ALWAYS reflects the real pending
+  // action (side / verb / qty), including while chase is on. This
+  // supersedes a prior operator instruction ("when chase is active the
+  // button should say submit") — that carve-out is exactly the scenario
+  // the operator's later report ("close buy close sell buttons don't
+  // work") happened in, since chase is the default for LIMIT/SL
+  // tickets: a bare "Submit" with no hint of side/qty/close-vs-add read
+  // as broken. Qty/side come from `_ticketState` (live, reported by
+  // OrderTicket via `onTicketStateChange`) so the label tracks lot
+  // steppers and side flips made INSIDE the ticket, not just the
+  // initial props this modal was opened with.
   const _submitLabel = $derived.by(() => {
     if (basketLegs.length > 0) return `Submit (${basketLegs.length})`;
-    // Operator: "when chase is active the button should say submit."
-    // Chase fires re-quotes off the form's side anyway; the label just
-    // needs to say what action the operator is committing to (a chase),
-    // not parrot the side that's already visible on the BUY/SELL toggle.
-    if (_chaseEnabled) return 'Submit';
-    if (!_modalSide) return 'Submit';
+    const liveSide = _ticketState.side || _modalSide;
+    const liveQty  = _ticketState.qty || Number(_ticketProps?.qty ?? qty) || 0;
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    if (cq === 0) return `Submit · ${_modalSide}`;
-    // ADD = same direction as the existing position
-    // CLOSE = opposite direction
-    const verb = (cq > 0 ? (_modalSide === 'BUY' ? 'ADD' : 'CLOSE')
-                         : (_modalSide === 'BUY' ? 'CLOSE' : 'ADD'));
-    return `Submit · ${verb} · ${_modalSide}`;
+    return formatSubmitLabel({ side: liveSide, currentQty: cq, qty: liveQty, basketCount: 0 });
   });
+  // D4 fix (2026-09): the common-action Submit button's `onclick` only
+  // routes to OrderTicket's own `submit()` (via `_modalFireSubmit` →
+  // `triggerSubmit++`) in the plain-ticket-submit branch — basket
+  // submits go through `submitBasket()`/`_modalFireBasket()` instead,
+  // which don't touch OrderTicket's `submitting` state at all. This
+  // mirrors that same branch condition so the button disables (and
+  // shows a pending label) for the FULL duration of a single-ticket
+  // submit, not just the unrelated `basketSubmitting` flag — previously
+  // a re-click during a slow submit (D3's territory) was a completely
+  // natural operator reaction that queued a genuine duplicate order.
+  const _ticketOwnSubmitBusy = $derived.by(() =>
+    _activeTab === 'ticket' && !_toBasket && basketLegs.length === 0
+    && (_ticketState.submitting || _ticketState.pending)
+  );
   // Style class for the submit button — green when the submit will
   // place a BUY OR add to long OR close short; red when it will place
   // a SELL OR close long OR add to short. Cyan when basket-submit
@@ -1330,6 +1348,18 @@
   // fires but the form is blocking placement silently (e.g. depth
   // ladder hasn't loaded the limit price yet after a 2s poll delay).
   let _ticketValidationErr = $state('');
+  // Live side / qty / submitting / pending mirror from OrderTicket
+  // (D4 + R7, 2026-09) via the `onTicketStateChange` callback. Without
+  // this, the common-action Submit button's label + disabled state can
+  // only see the ticket's INITIAL props (`_modalSide`, `_ticketProps.qty`)
+  // — stale the moment the operator bumps a lot stepper or the ticket's
+  // own submit is in flight (the latter previously left the button
+  // clickable for the ENTIRE duration of a slow submit, since it was
+  // only gated on the unrelated `basketSubmitting` flag).
+  let _ticketState = $state(
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}} */
+    ({ side: null, qty: 0, submitting: false, pending: false })
+  );
   function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -2299,6 +2329,7 @@
               _modalCapWarning     = capW;
             }}
             onValidationChange={(err) => { _ticketValidationErr = err; }}
+            onTicketStateChange={(s) => { _ticketState = s; }}
             initialDraftId={_ticketProps.initialDraftId ?? null}
             {onSubmit}
             {onClose} />
@@ -2915,6 +2946,15 @@
                "Pick side". -->
           {#if _activeTab === 'ticket' && action !== 'modify'}
             {@const _cq = Number(_ticketProps?.currentQty ?? currentQty) || 0}
+            <!-- R7 fix (2026-09): this is a SIDE SELECTOR, not a submit
+                 button — clicking it only flips BUY/SELL, it never
+                 places an order (that's the button to its right). The
+                 operator's original report ("close buy close sell
+                 buttons don't work") was this exact button read as an
+                 action. Ghost/outlined styling (was filled, visually
+                 near-identical to the primary Submit button) + a small
+                 swap glyph + "Side" title-prefix disambiguate it without
+                 changing WHEN an order actually fires. -->
             <button type="button"
                     class="oes-footer-side-btn-single"
                     class:on-buy={_modalSide === 'BUY'}
@@ -2923,12 +2963,13 @@
                     class:is-stacked={!!_modalSide && _cq !== 0}
                     title={!_modalSide
                       ? (_cq === 0
-                          ? 'Pick a side — click to set BUY (click again to flip to SELL)'
-                          : 'Pick — click to ADD to the existing position')
+                          ? 'Side — click to set BUY (click again to flip to SELL). This does not submit.'
+                          : 'Side — click to ADD to the existing position. This does not submit.')
                       : (_cq === 0
-                          ? `Side is ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}`
-                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}`)}
+                          ? `Side is ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}. This does not submit.`
+                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}. This does not submit.`)}
                     onclick={_cycleSide}>
+              <span class="oes-side-swap-glyph" aria-hidden="true">⇄</span>
               {#if !_modalSide}
                 <span>Pick side</span>
               {:else if _cq !== 0}
@@ -2950,9 +2991,12 @@
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _toBasket
                     ? 'Add this ticket as a basket leg'
-                    : 'Place the order')}
+                    : _ticketOwnSubmitBusy
+                      ? (_ticketState.pending ? 'Still processing — check Orders' : 'Placing…')
+                      : 'Place the order')}
             disabled={basketSubmitting
-                      || (basketLegs.length === 0 && _activeTab === 'chain')}
+                      || (basketLegs.length === 0 && _activeTab === 'chain')
+                      || _ticketOwnSubmitBusy}
             onclick={() => {
               if (basketLegs.length > 0) {
                 // Global basket submit — fires from any tab whenever there
@@ -2977,7 +3021,9 @@
                            adds this ticket as a new leg, so basket goes
                            from N to N+1. */
                         ? `Submit (${basketLegs.length + 1})`
-                        : _submitLabel)}</button>
+                        : _ticketOwnSubmitBusy
+                          ? (_ticketState.pending ? 'Processing…' : 'Placing…')
+                          : _submitLabel)}</button>
           <!-- Basket icon at the trailing edge. Operator:
                · "in chain tab, basket icon enabled by default" →
                  Chain renders the icon in the `.on` state but as a
@@ -4494,16 +4540,34 @@
     color: #cbd5e1;
     background: rgba(255,255,255,0.04);
   }
+  /* R7 fix (2026-09): ghost/outlined, NOT filled — the prior 18%-opacity
+     fill + solid border was visually near-identical to
+     `.oes-common-submit-buy`/`-sell` (the actual submit button), which
+     is exactly why this side SELECTOR read as an action button. Border
+     + text color still carry the BUY/SELL meaning; background stays
+     transparent so it reads as a toggle, not a primary action. */
   .oes-footer-side-btn-single.on-buy {
     color: var(--c-long);
-    background: rgba(74, 222, 128, 0.18);
+    background: transparent;
     border-color: rgba(74, 222, 128, 0.70);
   }
   .oes-footer-side-btn-single.on-sell {
     color: var(--c-short);
-    background: rgba(248, 113, 113, 0.18);
+    background: transparent;
     border-color: rgba(248, 113, 113, 0.70);
   }
+  .oes-footer-side-btn-single.on-buy:hover  { background: rgba(74, 222, 128, 0.10); }
+  .oes-footer-side-btn-single.on-sell:hover { background: rgba(248, 113, 113, 0.10); }
+  /* Small swap glyph — visual cue that this button toggles a value
+     rather than firing an action. Muted so it doesn't compete with the
+     BUY/SELL/ADD/CLOSE text. */
+  .oes-side-swap-glyph {
+    font-size: var(--fs-2xs);
+    opacity: 0.55;
+    margin-right: 0.15rem;
+    line-height: 1;
+  }
+  .oes-footer-side-btn-single.is-stacked .oes-side-swap-glyph { display: none; }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.

@@ -1,238 +1,236 @@
-# Plan: Fix 7 Confirmed Order-Safety / Lot-Size Bugs (C1–C7)
+# Plan: Fix Order-Ticket / Chase / Close-Button Audit Findings (D1–D6, R1, R3, R6, R7)
 
 ## Context
 
-The operator asked for an exhaustive audit of MCX/NFO lot-vs-contract normalization
-across Kite/Dhan/Groww, "make sure there are no gaps." The audit (read-only, opus)
-found **7 confirmed code defects**, 5 of them silent oversize/overfill, 3 reachable
-on ordinary trading flows — the exact bug class CLAUDE.md already flags as having
-caused "multi-lakh P&L distortion + 20× over-orders" historically. I independently
-re-verified the 5 highest-severity findings (C2, C5, C6, C7, and the position-
-normalization premise behind C7's stale-comment claim) by reading the actual code —
-all confirmed exactly as described, including working through the audit's numeric
-examples against the real logic. C1, C3, C4 are trusted from the audit report
-(narrower, and consistent with patterns already confirmed correct/incorrect
-elsewhere in the same files). Operator approved: "go ahead with order-safety fixes."
+Operator reported: "in orders, some times close buy and close sell buttons
+don't work. margins also I am not sure if it is correct. When order is placed,
+it fails chase behavior etc need to be audited. entire order ticket, order
+chain, price chart needs to be audited." A read-only audit (this session) found
+**6 confirmed defects (D1–D6)** in the order-ticket → chase pipeline, several of
+which compound into exactly the symptoms reported ("close didn't work", "order
+fails", margin-looks-right-then-fails). Two of the audit's flagged risks (R2 —
+chase restart-recovery, R3 — chase placing a stale-remainder order after a
+failed cancel) turned out to already be fixed as a side effect of the C1–C7
+order-safety commit (`f5db7765`) that just shipped — verified directly against
+the current code below, not assumed. This plan covers the still-open items:
+D1–D6 (must-fix), R1 (real waste, not just theoretical), R6 (quick), and R7
+(the specific "close button does nothing" symptom the operator described —
+confirmed as a UX defect, not a placement bug: the CLOSE/BUY buttons are side
+selectors, not submit buttons).
 
-This plan covers only the **7 CONFIRMED must-fix defects**. The audit's 4 SUSPECT
-items (need a live broker check, e.g. Kite's CDS `multiplier` field) and its
-"should-fix risks"/"drift" lists are follow-up work, not in this plan, per scope
-discipline — flagged at the end.
+**Operator decision on R7**: keep the existing two-step flow (select side, then
+Submit) — do not make CLOSE a one-click submit. Fix by making the labels
+unambiguous: the Submit button reflects the actual action about to fire, and
+the side-selector buttons get a visual/label cue that they only select side.
 
-## The defects
+**Already fixed, no action needed (verified against current code, not the stale
+audit text)**:
+- **R2** (chase restart-recovery duplicating/overfilling) — this is exactly C4
+  from the just-shipped order-safety fix. `background.py:_recover_chase_already_filled`
+  now reconciles true fill state and cancels orphaned resting orders before
+  restarting.
+- **R3** (chase places a new order for a stale remainder when the previous
+  order's cancel "fails" because it already completed) — this is now resolved
+  as a side effect of C2's `_ch_capture_late_fill`: it re-queries the
+  just-cancelled order's FINAL status AFTER the cancel call (regardless of
+  whether the cancel itself succeeded, since a completed order's cancel is a
+  no-op/failure at the broker but the post-cancel status read still returns the
+  true COMPLETE state), folding any late fill into `cumulative_filled` before
+  the next order is sized. Will still add one regression test confirming this
+  (not previously covered), since it was fixed incidentally, not intentionally
+  tested for this exact scenario.
 
-- **C1** — Modifying a resting order can silently resize it on MCX. Order-book rows
-  aren't normalized (`orders_helpers.py:334-355` `_row_from_dict` passes broker
-  `quantity` through raw — lots for Kite/Dhan MCX). The modify ticket derives
-  `_lots` from that raw value, so a price-only change still recomputes and sends
-  `quantity = _lots × lot_size` (contracts) into a field the broker reads as lots.
-  1-lot CRUDEOILM → broker receives `quantity=10` → modified to 10 lots.
+## The defects and fixes
 
-- **C2** — Chase treats each new attempt's fresh `filled_quantity` as if it were
-  the running total, not that attempt's own delta. Verified: `_chase_poll_status`
-  (`chase.py:916-928`) computes `_already_filled = quantity - remaining_qty` (fill
-  from prior orders) then `_new_delta = filled_qty - _already_filled`, but
-  `filled_qty` is the CURRENT (freshly re-placed) order's own cumulative fill,
-  which starts at 0 — not a chase-wide running total. When the new order's fill
-  happens to equal the prior orders' total fill, delta computes to 0 and the real
-  fill is silently dropped from `remaining_qty`, so the next re-place re-orders the
-  already-filled amount. Worked example (3-lot NIFTY, 225): ends up 300 filled,
-  one lot oversize.
+**D1 — Chased ticket orders always go out as NRML, regardless of the operator's
+selected product.** `orders_place.py:_ticket_place_or_chase_live` calls
+`_start_live_chase(...)` without `product`/`variety`/`validity`;
+`orders_helpers.py:_live_chase_config` never sets them either, so
+`ChaseConfig.product` keeps its dataclass default `"NRML"` (verified:
+`chase.py:362`). Chase is on by default for every LIMIT/SL ticket. Closing an
+MIS F&O position via chase sends NRML to the broker — opens a separate opposite
+NRML leg instead of flattening the MIS one (matches "close didn't work"), or
+gets rejected for margin ("order fails"). Closing/buying CNC equity with chase
+gets rejected outright. The non-chase direct-place branch three lines below
+already reads `data.variety` correctly (`orders_place.py:1559`) — only the
+chase path is missing this.
+**Fix**: thread `data.product`, `data.variety`, `data.validity` from the ticket
+request into `_start_live_chase` → `_live_chase_config` → `ChaseConfig`, mirroring
+how the direct-place branch already reads them.
 
-- **C3** — Same MCX lots→contracts reverse-translate as C2's fix target
-  (`chase.py:902-907`) is applied by *exchange* (`MCX`/`NCO`) regardless of
-  *broker*, but Groww already reports MCX fills in contracts, not lots
-  (`groww.py:492`, `translate_qty` is a no-op there). Applying the reverse-
-  translate to Groww inflates the observed fill by `lot_size×`, which — combined
-  with C2 — causes a different double-count on Groww MCX chases.
+**D2 — Close tickets opened while the instrument cache is still loading send a
+many-times-oversized order.** `MarketPulse.svelte` and
+`admin/derivatives/+page.svelte` fall back to `lot = Number(inst?.ls || 1)` = 1
+when `getInstrument` hasn't resolved yet. `OrderTicket.svelte` only repairs a
+lot size that starts at 0 (never one that starts at 1 — a "1" looks like a
+valid equity lot size, not a placeholder), and the repair effect only re-runs
+when `_resolvedSymbol` changes, which never happens for a close ticket (same
+symbol throughout). With `_lotSize=1`, `buildPlacePayload` sends raw contracts
+as if non-F&O; the backend's `_resolve_fno_qty` always treats F&O quantity as
+lots and multiplies by the real lot size again (e.g. 1-lot NIFTY close →
+`quantity=75` sent → backend computes `75 × 75 = 5625` contracts). Close intent
+skips the 5-lot/MCX-20-lot/50-lot ceilings, so nothing catches this. The margin
+preview uses a different, correct code path, so it shows a small, correct
+number right up until submit. `PerformancePage.svelte` already awaits
+`_instrumentsReady` before reading lot size — the correct pattern the other two
+hosts should follow.
+**Fix**: `MarketPulse.svelte` and `admin/derivatives/+page.svelte` await
+instrument readiness (mirror `PerformancePage.svelte:183`'s pattern) before
+opening a close ticket, instead of falling back to `1`. As defense in depth,
+also make `OrderTicket.svelte`'s lot-size repair effect re-check when
+`getInstrument` transitions from unresolved→resolved even when
+`_resolvedSymbol` hasn't changed (a close ticket's symbol is static).
 
-- **C4** — Service-restart chase recovery (`background.py:6010-6018`) always
-  restarts with `quantity=row.quantity` (the *original* full size), never
-  subtracting `row.filled_quantity`, and never checks or cancels whatever order
-  is still resting at the broker from before the restart (nothing cancels
-  resting chase orders on shutdown). `chase_order` starts fresh with
-  `current_order_id=None`, so its first attempt cancels nothing. A 2-lot NIFTY
-  chase resting during a webhook-triggered deploy (this app's standard deploy
-  path — not hypothetical) can end up with up to 300 filled instead of 150.
+**D3 — A 15s client timeout renders a failed/slow order as a false success.**
+`frontend/src/lib/api.js:_request` returns `null` instead of throwing when its
+internal 15s timeout fires. `placeTicketOrder` resolves `null` →
+`OrderTicket.svelte`'s `submitOk` renders "LIVE BUY 75 X @₹… · #?" and the
+modal closes — a fake success with an unknown order id. The ticket can
+legitimately exceed 15s because of preflight's full instruments download (R1)
+plus the chase's own internal 15s `wait_for`.
+**Fix**: distinguish a genuine timeout from a real response in `api.js` — throw
+(or return a distinct sentinel) on timeout instead of `null`, and have the
+ticket's error handler render an explicit "still processing, check the order
+book" state rather than a false success when it can't confirm one way or the
+other.
 
-- **C5** — Verified by hand-tracing the code: template scale-out allocation
-  (`template_attach.py:1004-1015`) rounds every non-last scale **up** to a whole
-  lot, so a percent-split across N scales can overshoot the position before the
-  last scale is computed. The last scale's raw allocation goes negative
-  (`parent_qty - used < 0`), and because that negative value is still summed into
-  `_total_alloc`, the total coincidentally equals `parent_qty`, so the
-  over-allocation warning never fires. The negative-qty scale itself is silently
-  dropped (`if q <= 0: continue`), leaving the earlier over-sized GTTs live.
-  Traced example: 1-lot NIFTY (75) with scales [40, 40, 20] → two separate 1-lot
-  (75) TP GTTs get created against a 75-share position. The first fully exits;
-  the second later fires against a flat position and **opens a new opposite
-  position**.
+**D4 — A second click while a submit is in flight queues and fires a duplicate
+order.** `OrderTicket.svelte:submit()`'s trigger-effect reruns when `submitting`
+flips back to `false` and sees the trigger counter still mismatched, calling
+`submit()` again. Nothing disables the submit button or shows a loading state
+during a slow submit (`SymbolPanel.svelte`'s footer submit is only disabled on
+`basketSubmitting`, a different flag), so a re-click during the D3 delay is a
+natural operator reaction. The derivatives page keeps its modal open after
+success, so the queued second order genuinely fires; for a close, that's a
+second, unwanted order.
+**Fix**: disable the submit button and show an explicit loading/pending state
+for the whole duration of `submitting`, and make the trigger-counter update
+atomic with the guard check so a rerun after `submitting` flips false can't
+re-fire a stale trigger.
 
-- **C6** — Verified: the trailing stop-loss ratchet path
-  (`background.py:3243-3267`, called from `_process_trail_entry` at `:3424`)
-  builds GTT leg `quantity: parent_qty` (contracts) with **no** `translate_qty`
-  call, and `Broker.modify_gtt` (`kite.py:494-518`) does no translation and has
-  no ceiling check (unlike `place_gtt`, which requires the caller to have
-  translated and additionally calls `_check_kite_gtt_qty_ceiling` as a last-line
-  defense at `:474`). A 1-lot CRUDEOIL trail ratchet rewrites the SL leg to
-  `quantity=100`, which Kite reads as 100 lots; when it fires, it leaves a
-  99-lot reverse position. Also verified the audit's side-note: normally-attached
-  GTTs never populate `parent_qty`/`parent_symbol` on the trail entry at all
-  (`orders_place.py`'s `_opp_build_attach_entries:515-543` only sets those fields
-  inside the OCO-sibling branch), so trailing is currently only reachable via the
-  retry-attach path — this is fixed as part of C6 so the ratchet is both safe
-  *and* actually functions on the normal fill path.
+**D5 — A ticket that reports "failed" can still have its chase place the order
+anyway.** `orders_helpers.py`'s ticket future resolves with an exception on
+certain pre-placement errors (e.g. a `ValueError` from a zero lot size), and
+the ticket returns 400 — but `chase_order` treats non-`BrokerInputError`
+exceptions as retryable and keeps going (sleep, retry, up to
+`_MAX_CHASE_ERRORS`). If market depth returns a non-positive price, the chase
+sleeps and continues silently with no event emitted, so the ticket's 15s
+`wait_for` times out (near-blank error) while the chase task keeps running
+unaffected — `wait_for` only cancels the *future*, not the chase task itself.
+Operator sees "failed", retries, and can end up with two live orders.
+**Fix**: when the ticket-side `wait_for` times out or the future resolves with
+an error that isn't a genuine terminal broker rejection, actually track and
+cancel the underlying `chase_order` asyncio task (not just its future) so a
+"failed" ticket response can't leave a live chase running unattended; at
+minimum, this requires the ticket handler to hold a reference to the chase task
+it spawned.
 
-- **C7** — Verified: the shared lots↔contracts helper
-  (`base.py:_exchange_contracts_to_wire:29-61`) silently passes sub-lot MCX
-  quantities through **unconverted** with only a log warning ("broker will likely
-  reject" — false; the broker accepts the number as lots), and silently
-  **floors** non-multiple quantities with no error. Also verified the stale
-  rationale behind the MCX skip in the G1 lot-multiple preflight check
-  (`actions_preflight.py:92-99`, comment claims "broker returns qty already in
-  LOTS"): `broker_apis.py:1992-2003` confirms positions ARE converted to
-  contracts for MCX rows before reaching this check, so the skip is wrong and
-  lets agent-driven `place_order`/`close_position` quantities through unchecked,
-  bypassing every ceiling.
+**D6 — A lot-size cache-miss silently sends NFO/BFO/CDS orders in contracts
+instead of lots.** `kite.py:get_lot_size` returns `0` (safe "unknown" sentinel,
+correctly triggers a 503) for an MCX cache miss, but `1` for a non-MCX miss —
+verified still present. `_resolve_fno_qty` accepts `1` as valid (never triggers
+the 503 guard), so the frontend's own `lot_size_hint` is discarded and a 1-lot
+NIFTY order goes out as `quantity=1` (rejected by the broker as not a lot
+multiple) instead of `75`. The "1 is a safe no-op" premise predates the v2
+lots-in-requests convention change and is now false for F&O.
+**Constraint verified before fixing**: `_rebuild_lot_index` only stores entries
+with `lot_size > 1` (by design, to avoid a bad response overwriting a real F&O
+lot size with a stray `1`). This means a genuine equity/CDS/BCD instrument
+(real `lot_size == 1`) is currently indistinguishable from a true cache miss —
+naively changing the miss-fallback to `0` for all exchanges would make every
+CDS order 503.
+**Fix**: change `_rebuild_lot_index` to also store confirmed `lot_size == 1`
+entries (so the index can tell "confirmed 1" apart from "not in the index at
+all"), then change `get_lot_size`'s miss-fallback to `0` (unknown → 503) for
+ALL exchanges, not just MCX. Before landing, grep every other consumer of
+`_LOT_INDEX` to confirm none of them relies on the old "only `>1` entries are
+ever stored" contract.
 
-## Fix approach
+## Also fixing (real waste / quick / operator-reported UX)
 
-**C1 (backend + frontend, defense in depth)**
-- Backend: normalize MCX order-row quantity to contracts at the same boundary
-  where positions are normalized — `orders_helpers.py:_row_from_dict`/
-  `_fetch_orders` — reusing the existing `_MCX_LOTS_CONVENTION_BROKERS` allow-list
-  and lots→contracts conversion helper already used for positions, so every
-  consumer of `OrderRow.quantity` (order book display, modify ticket) sees
-  contracts uniformly like everywhere else in the app.
-- Frontend: `orderTicketSubmit.js:buildModifyPayload` should omit `quantity` from
-  the PUT payload when it equals the order's original quantity (i.e. only the
-  price/trigger changed) — a second, independent guard against sending a
-  recomputed quantity the operator never touched.
+**R1 — every preflight margin-check and live ticket downloads the FULL
+instruments dump (NFO ≈90k rows) with no caching**, on every debounced margin
+preview (350ms) and every live ticket (`actions_preflight.py:606-613,747-752`).
+Pushes tickets toward the D3 timeout and duplicates the OOM-incident concern
+("no T+0 broker downloads"). The dead `_preflight_check_qty_freeze` check
+(Kite's instrument dump has no `freeze_qty` field) never fires, so this cost
+buys nothing.
+**Fix**: cache the instruments dump behind a short TTL (module-level cache,
+matching the pattern already used for e.g. the holiday-calendar 4-tier read),
+reused across preview/ticket calls within the TTL window instead of a fresh
+fetch every call.
 
-**C2 (backend, chase.py)** — Replace the delta-reconstruction with a real
-persisted cumulative-fill counter, maintained across attempts in `chase_order`'s
-loop scope (not re-derived from `quantity - remaining_qty` each poll). Each
-freshly re-placed order's own `filled_quantity` is added directly to that
-counter as soon as it's observed (it's already a from-zero delta for that order,
-so no subtraction against prior fills is needed or correct). Additionally,
-right before `_ch_cancel_previous` cancels the current resting order, re-query
-its status once and fold any last-second fill into the cumulative counter first
-— closing the "fill lands between poll and cancel" gap the audit also flagged.
-`remaining_qty` for the next `_place_order` call is always
-`quantity − cumulative_filled`, derived fresh from the persisted counter.
+**R6 — error messages are truncated to ~32 characters** (`api.js:102`), so a
+422 preflight block, a broker rejection, a 503 lot-size guard, and a chase
+timeout are all indistinguishable in the UI.
+**Fix**: raise the truncation limit (or show the full message in a tooltip/
+expandable detail) so the operator can actually tell which failure they hit —
+directly useful for diagnosing D3/D5 if they recur.
 
-**C3 (backend, chase.py:902-907)** — Gate the MCX/NCO reverse-translate by
-broker-id membership in `_MCX_LOTS_CONVENTION_BROKERS` (the same allow-list
-already used correctly elsewhere, e.g. postback conversion), not by exchange
-alone.
+**R7 — the CLOSE/BUY buttons are side selectors, not submit buttons (the
+operator's reported symptom).** `SymbolPanel.svelte`'s footer side button and
+`SideToggle.svelte`'s pills only flip the ticket's side; clicking the
+already-active CLOSE option switches it to ADD and resets lots to 1. With
+chase on (default), the actual submit button just says "Submit" — nothing
+labeled CLOSE places an order, which reads as "I clicked close and nothing
+happened."
+**Fix (operator-approved, clarify-only)**: the submit button's label reflects
+the real pending action (e.g. "SUBMIT — CLOSE BUY 75", mirroring the existing
+`submitOk` success-string convention already used elsewhere in
+`OrderTicket.svelte`), and the side-selector buttons/pills get a visual or
+textual cue (e.g. a distinct style or a "select side" microcopy) that
+disambiguates them from a submit action. No change to when an order actually
+fires. Also fix the stale drift note flagged alongside this
+(`MarketPulse.svelte:3845-3846` claims the footer shows "CLOSE BUY"/"CLOSE
+SELL" — update to match the corrected label).
 
-**C4 (backend, background.py chase-recovery)** — Before restarting a chase row:
-query the broker for `row.broker_order_id`'s live status if present; if still
-resting, cancel it and fold any fill it shows into the recovery's starting
-cumulative-filled value (`max(row.filled_quantity, live_filled)`, mirroring the
-existing `_ch_compute_new_filled` MAX-clamp pattern). Add an
-`already_filled: int = 0` parameter to `chase_order` so `quantity` keeps meaning
-"true original size" (needed downstream for template-attach sizing, G1, etc.)
-while `remaining_qty` initializes to `quantity − already_filled`. Pass
-`already_filled=` from the recovery path instead of always restarting at full
-size. This composes directly with C2's cumulative-counter fix.
+## Explicitly out of scope for this plan
 
-**C5 (backend, template_attach.py:989-1023)** — Round every scale's allocation
-**down** to a whole lot (not up), including the last scale
-(`max(0, parent_qty − used)`, floored), so the running sum can never exceed
-`parent_qty` and no allocation can go negative. Any leftover fractional-lot
-residual is left unexited exactly as the existing "residual left open" note
-already describes — that note's trigger condition stays correct once
-over-allocation is structurally impossible.
+- **R4** (chase ignores the entered limit price) — by design (chase computes
+  its own price from live depth), not a bug.
+- **R5** (margin chip for close orders can blank the "available" figure /
+  cash-mode comparison) — ties into the already-approved-but-unimplemented
+  cash/margin fix plan from earlier this session; not duplicated here.
+- **Drift/cleanup items** (unused `_sideBtnLabel`/`_modalFlipSide`, stale
+  ADMIN_GUIDE ticker-health claim) — cosmetic, no behavior risk; left for a
+  future pass.
+- **Price chart audit findings** — separate audit, separate plan, not covered
+  here.
 
-**C6 (backend + broker)**
-- `orders_place.py:_opp_build_attach_entries` — populate `parent_qty`,
-  `parent_symbol`, `parent_exchange`, `parent_account`, `parent_product`,
-  `current_trigger` on every trailing-eligible entry unconditionally (not only
-  inside the OCO-sibling branch), so trailing activates on the normal
-  direct-fill attach path, not just retry-attach.
-- `background.py:_process_trail_entry`/`_build_trail_modify_kwargs` — resolve
-  lot size for the parent symbol/exchange and call `broker.translate_qty`
-  before building `orders_payload["quantity"]`, mirroring `apply_plan_live`'s
-  pattern for `place_gtt`.
-- `kite.py:modify_gtt` (broker agent) — add the same
-  `_check_kite_gtt_qty_ceiling(exchange, orders, tradingsymbol)` last-line
-  defense `place_gtt` already has, at `:494-518` before calling
-  `self.kite.modify_gtt`. Check whether Dhan's `modify_gtt` adapter needs the
-  equivalent ceiling and add it if the same gap exists there.
+## Files
 
-**C7 (broker + backend)**
-- `base.py:_exchange_contracts_to_wire` — raise `ValueError` (same pattern as
-  the existing `lot_size <= 1` guard) instead of silently passing through when
-  `contracts < lot_size`, and instead of silently flooring when `contracts` is
-  not a whole multiple of `lot_size`. Both cases mean the caller's quantity is
-  wrong, and the broker will silently misinterpret whatever number crosses the
-  wire — refuse rather than guess.
-- `actions_preflight.py:92-99` — remove the MCX/NCO skip from the G1
-  lot-multiple check; the stale "broker returns qty already in LOTS" premise is
-  now confirmed false for the paths that reach this preflight (positions are in
-  contracts by the time they get here, per `broker_apis.py:1992-2003`). Update
-  the comment to state the current (correct) premise so this doesn't regress
-  again.
+- `backend/api/routes/orders_place.py`, `backend/api/routes/orders_helpers.py` — D1 (thread product/variety/validity), D5 (track+cancel chase task on ticket-side failure/timeout)
+- `backend/brokers/adapters/kite.py` — D6 (`_rebuild_lot_index` + `get_lot_size` miss-fallback)
+- `backend/api/algo/actions_preflight.py` — R1 (instruments-dump caching)
+- `frontend/src/lib/MarketPulse.svelte`, `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` — D2 (await instrument readiness before close-ticket open), R7 (stale label drift)
+- `frontend/src/lib/order/OrderTicket.svelte` — D2 (lot-size repair on cache-resolve), D3 (false-success rendering), D4 (submit button loading/disabled state, atomic trigger guard), R7 (submit button label reflects action)
+- `frontend/src/lib/SymbolPanel.svelte`, `frontend/src/lib/order/SideToggle.svelte` — R7 (side-selector visual/label cue)
+- `frontend/src/lib/api.js` — D3 (timeout vs. false-success), R6 (error message truncation)
+- `backend/api/algo/chase.py` — new regression test only for the already-fixed R3 scenario, no source change expected
 
 ## Agents
 
-- **broker**: `backend/brokers/base.py` (C7 core fix), `backend/brokers/adapters/kite.py`
-  (`modify_gtt` ceiling, C6), check + fix `backend/brokers/adapters/dhan.py`
-  `modify_gtt` for the same gap if present.
-- **backend** (agent 1 — chase fill-accounting, bundled since C2/C3/C4 are the
-  same function family in the same file): `backend/api/algo/chase.py`
-  (C2 cumulative-counter redesign, C3 broker-gated conversion), `backend/api/background.py`
-  chase-recovery block (C4).
-- **backend** (agent 2 — remaining backend-side fixes):
-  `backend/api/routes/orders_helpers.py` (C1 order-row normalization),
-  `backend/api/algo/template_attach.py` (C5 floor-rounding),
-  `backend/api/background.py` trail-modify block + `backend/api/routes/orders_place.py`
-  `_opp_build_attach_entries` (C6 backend half), `backend/api/algo/actions_preflight.py`
-  (C7 G1 skip removal).
-- **frontend**: `frontend/src/lib/order/orderTicketSubmit.js` `buildModifyPayload`
-  (C1 frontend defense-in-depth) — bundle its own Playwright spec update per the
-  standing frontend-change-loop rule.
-- **backend-test**: pytest coverage for all 6 backend/broker-touched files —
-  especially C2's cumulative-counter chase simulation (multi-attempt partial
-  fills reproducing the exact 225→300 scenario) and C5's scale-out allocation
-  (the exact [40,40,20] over-lot scenario), both as regression tests that fail
-  against the pre-fix logic.
-- **doc**: sync `CLAUDE.md`'s "Critical math guards" section — these fixes
-  supersede/extend the existing GTT-translate-qty and G1-guard notes.
+- **backend**: D1, D5, D6, R1 (bundled — all backend/api + brokers, no file overlap risk since nothing else is in flight right now)
+- **frontend**: D2, D3, D4, R6, R7 (bundled — all frontend, one coherent order-ticket UX pass; write/update its own Playwright spec per the standing frontend-change-loop rule)
+- **backend-test**: pytest coverage for D1, D5, D6, R1, plus the R3 regression test confirming the already-shipped fix
+- **doc**: no CLAUDE.md entry needed unless the implementer's D6 fix changes a documented invariant beyond what's already there — check first, only add if something genuinely new needs recording
 
 ## Tests
 
-- pytest: yes — new/updated tests for chase.py (C2/C3/C4), template_attach.py
-  (C5), background.py trail (C6), base.py (C7), actions_preflight.py (C7),
-  orders_helpers.py (C1).
+- pytest: yes.
 - svelte-check: yes.
-- playwright: yes — modify-ticket flow (C1), targeted at the price-only-change
-  scenario from the audit's own worked example.
+- playwright: yes — targeted specs for D2 (close ticket on cold cache doesn't oversize), D4 (double-click doesn't duplicate), R7 (submit button label matches pending action).
 
 ## Commit message
 
-fix(orders): eliminate 7 confirmed lot/contract silent-oversize bugs in chase,
-template exits, trailing SL, and order modify (C1–C7)
+fix(orders): order-ticket/chase pipeline — product/variety on chased orders,
+cold-cache close oversize, false-success timeout, double-submit, orphaned
+chase on ticket failure, NFO/BFO/CDS lot-size cache-miss, and close-button
+label clarity (D1-D6, R1, R6, R7)
 
 ## Done when
 
-All 7 defects have a code fix with a test that reproduces the original failure
-mode and passes after the fix; `venv/bin/pytest backend/tests/ -q --tb=line` and
-`npx svelte-check`/`npx vitest run` are green; self-audit confirms no other
-order-placement/modify/GTT path was left calling the old unguarded
-`_exchange_contracts_to_wire`/`modify_gtt`/chase fill-accounting behavior.
-
-## Explicitly out of scope for this plan (flagged, not forgotten)
-
-- **S1–S4 (suspects)**: CDS/currency 1000× multiplier risk, MCX lot-size table
-  entries for CPO/GOLDGUINEA/COTTON, Groww MCX unit convention, Dhan trade
-  display units — all need a live broker check before a code fix can be
-  written with confidence.
-- **"Should-fix" risks**: cold-cache lot-size fallback-to-1 entry points,
-  template preview quantity display bug, template exits not attaching on
-  direct (non-chase) Kite fills, exits sized too small after a chased partial
-  fill, postback fallback match failing on MCX, Kite-only conversion used in
-  margin checks for all brokers, BFO/CDS missing from expiry auto-close.
-- **Drift/cleanup**: dead `placeBasket` function, stale comments not tied to
-  an active defect.
+D1–D6, R1, R6, R7 each have a passing regression test reproducing the original
+failure mode; `venv/bin/pytest backend/tests/ -q --tb=line`,
+`npx svelte-check`, and `npx vitest run` all green; self-audit confirms D6's
+`_LOT_INDEX` change doesn't break any other consumer of that cache.

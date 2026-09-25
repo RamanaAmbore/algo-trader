@@ -1549,6 +1549,17 @@ async def _ticket_place_or_chase_live(
             aggressiveness=(data.chase_aggressiveness or "low"),
             algo_order_id=live_algo_id,
             intent=getattr(data, "intent", None),
+            # D1 fix (2026-09) — thread the operator's actual
+            # product/variety/validity into the chase loop so every
+            # re-place attempt matches the ticket, instead of the
+            # previously-hardcoded ChaseConfig defaults (NRML/regular/
+            # DAY) regardless of what was selected (e.g. MIS intraday).
+            # TicketOrderRequest has no `validity` field (only
+            # ModifyOrderRequest does) — getattr fallback mirrors the
+            # direct-place branch below's hardcoded "DAY".
+            product=(data.product or "NRML"),
+            variety=(data.variety or "regular"),
+            validity=(getattr(data, "validity", None) or "DAY"),
         )
     else:
         broker = _broker_for(account)

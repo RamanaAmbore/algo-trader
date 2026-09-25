@@ -99,17 +99,38 @@ def _rebuild_lot_index(items) -> None:
     """Merge (exchange, tradingsymbol) → lot_size entries from the
     instruments cache into _LOT_INDEX.  Never clears the dict so that
     stale entries survive partial-response or zero-lot_size returns.
-    Only entries with lot_size > 1 are stored — lot_size == 1 is the
-    equity sentinel (no translation needed) and must not overwrite a
-    valid F&O lot size that happened to arrive as 1 in a bad response.
+
+    Entries with lot_size > 1 are always stored (real F&O lot sizes).
+
+    D6 fix (2026-09) — a CONFIRMED lot_size == 1 (equity, or an NFO/
+    BFO/CDS/BCD micro-lot contract) is now ALSO stored, except for
+    MCX/NCO. Storing it distinguishes "genuinely confirmed lot_size=1"
+    from "never looked up" (a true cache miss), which get_lot_size()
+    now needs to return 0 (not 1) on for every exchange. MCX/NCO is
+    excluded from this: `backend/api/routes/instruments.py`'s
+    `_MCX_LOT_OVERRIDES` comment confirms Kite ships lot_size=1 for
+    every MCX/NCO commodity NOT present in that override table, so an
+    MCX/NCO "1" from the raw instruments dump is never a confirmed
+    value — storing it would mask a genuine MCX cache-miss as "no
+    translation needed" and silently skip the intended 503.
+
+    Never downgrades an existing entry that's already > 1 — protects a
+    valid, previously-cached F&O lot size from a bad partial response
+    that happens to report 1 for the same key.
+
     Called once per cache version-stamp flip in get_lot_size()."""
     for inst in items:
         try:
             ls = int(inst.ls)
         except (TypeError, ValueError):
             continue
+        key = (inst.e, inst.s)
         if ls > 1:
-            _LOT_INDEX[(inst.e, inst.s)] = ls
+            _LOT_INDEX[key] = ls
+        elif ls == 1 and str(inst.e).upper() not in ("MCX", "NCO"):
+            existing = _LOT_INDEX.get(key)
+            if existing is None or existing <= 1:
+                _LOT_INDEX[key] = ls
 
 
 async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
@@ -117,21 +138,33 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     (O(1) dict lookup; rebuilt only when the cache version stamp
     flips).
 
-    Return convention:
-      - Found in cache with lot_size > 1: returns actual lot_size.
-      - Found in cache with lot_size == 1 (equity / micro): returns 1.
-      - NOT found / cache cold: returns 0 (sentinel for "unknown").
+    D6 fix (2026-09) — return convention, now uniform across every
+    exchange (previously non-MCX misses silently returned 1, which
+    let a genuinely-unknown NFO/BFO/CDS lot_size sail through
+    `to_kite_qty` as a false "no translation needed" no-op, risking a
+    wrong-unit quantity reaching the exchange — exactly the failure
+    mode MCX already guarded against):
+      - Found in cache: returns the confirmed lot_size (may be 1 for
+        equity / a genuinely single-unit F&O contract — see
+        `_rebuild_lot_index`).
+      - NOT found / cache cold: returns 0 (sentinel for "unknown") for
+        EVERY exchange, not just MCX/NCO.
 
-    Callers must handle 0 for MCX/NCO — to_kite_qty raises ValueError
-    when lot_size == 1 on MCX (likely cache miss); a 0 return lets the
-    route layer raise a clean 503 before invoking to_kite_qty.
+    Callers must handle 0 — to_kite_qty raises ValueError when
+    lot_size == 0; a 0 return lets the route layer raise a clean 503
+    before invoking to_kite_qty rather than guessing.
 
-    For non-MCX exchanges the fallback was always 1 (no translation),
-    which is still safe — we preserve that by returning 1 for non-MCX
-    misses so existing NSE/NFO paths are unaffected.
+    KNOWN GAP (flagged, not fixed here): `instruments.py`'s
+    `_EXCHANGES` tuple does not include BFO/NCO/BCD, so those symbols
+    are never loaded into the instruments cache at all — a lookup for
+    them always misses and now always returns 0 (was 1 pre-fix). This
+    is a deliberate behavior change: an always-wrong silent 1 is
+    replaced by an honest "unknown" that blocks the order. Widening
+    `_EXCHANGES` to actually populate those exchanges is a separate,
+    bigger decision (touches the shared instruments cache used by
+    other routes) — out of scope here.
     """
     global _LOT_INDEX_STAMP
-    _mcx = exchange in ("MCX", "NCO")
     try:
         from backend.api.cache import get_or_fetch
         from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
@@ -143,15 +176,15 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     except Exception as e:
         logger.warning(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
         _stale = _LOT_INDEX.get((exchange, tradingsymbol))
-        if _stale and _stale > 1:
+        if _stale is not None:
             logger.warning(
                 "[KITE-QTY] using stale lot_size=%s for %s/%s — cache unavailable",
                 _stale, exchange, tradingsymbol,
             )
             return _stale
-        return 0 if _mcx else 1
-    # Cache miss sentinel: 0 for MCX (dangerous to assume), 1 for non-MCX (safe no-op).
-    return _LOT_INDEX.get((exchange, tradingsymbol), 0 if _mcx else 1)
+        return 0
+    # Cache miss sentinel: 0 for every exchange (unknown → callers must refuse).
+    return _LOT_INDEX.get((exchange, tradingsymbol), 0)
 
 
 # Kite rejects orders with `tag` > 20 chars: "invalid tags - maximum

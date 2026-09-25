@@ -622,11 +622,79 @@ async def _preflight_fetch_profile(broker, loop, account: str):
         return None
 
 
-async def _preflight_fetch_instruments(broker, loop, exchange: str, qty: int, account: str):
+# R1 fix (2026-09) — cache the preflight instruments dump behind a
+# short TTL. Pre-fix, every `run_preflight` call (each debounced
+# margin-preview keystroke AND every ticket placement) fired a fresh
+# uncached full-exchange `broker.instruments(exchange)` download —
+# tens of thousands of rows — even though the same (account, exchange)
+# dump is valid for several seconds. A literal swap to the existing
+# `get_or_fetch("instruments", _fetch_instruments, ...)` cache used by
+# `_align_price_to_tick`/`get_lot_size` is NOT viable here: that
+# cache's `InstrumentsResponse.items` are trimmed msgspec structs
+# (`s`/`e`/`t`/`ls`/`ts`/`u`/`x`/`k`, no `.get()`, no `freeze_qty`
+# field), while `_preflight_check_qty_freeze` needs the RAW broker
+# dict shape (`inst.get("tradingsymbol")`, `inst.get("freeze_qty")`,
+# `inst.get("lot_size")`). It would also trigger a cold 5-exchange
+# dump synchronously inside a request if that shared cache hadn't been
+# warmed yet — the same "no T+0 broker downloads inside a request"
+# pattern that caused the Aug-2026 OOM incident. So this reuses the
+# `get_or_fetch` PRIMITIVE with its own dedicated short-TTL cache key
+# and fetcher instead, preserving the raw dict shape.
+_PREFLIGHT_INSTR_CACHE_PREFIX = "preflight_instr:"
+_PREFLIGHT_INSTR_TTL_S = 5  # covers the 350ms-debounced margin-preview storm
+
+
+def _preflight_trim_instruments(raw: list | None) -> list[dict]:
+    """Trim a raw broker instruments(exchange) dump down to only the
+    3 fields `_preflight_check_qty_freeze` reads.
+
+    `get_or_fetch` never proactively evicts expired entries (they sit
+    in `cache._store` until the next call for the same key overwrites
+    them), so caching the FULL raw dump — tens of thousands of rows ×
+    ~20 keys each, per (account, exchange) — would grow unbounded
+    memory the same way the shared `instruments.py` cache did before
+    it was trimmed to slim structs (the Aug-2026 OOM incident). A
+    trimmed 3-key dict list keeps the retained footprint a small
+    fraction of the raw response while preserving the exact shape
+    `_preflight_check_qty_freeze` needs (`.get("tradingsymbol")`,
+    `.get("freeze_qty")`, `.get("lot_size")`).
+    """
+    return [
+        {
+            "tradingsymbol": r.get("tradingsymbol"),
+            "freeze_qty":    r.get("freeze_qty"),
+            "lot_size":      r.get("lot_size"),
+        }
+        for r in (raw or [])
+    ]
+
+
+async def _preflight_fetch_instruments(broker, exchange: str, qty: int, account: str):
+    """Cached instruments(exchange) fetch for the QTY_FREEZE gate.
+
+    Key is `{account}:{exchange}` (string-keyed, not `id(broker)`) —
+    `registry.get_broker()` constructs a fresh adapter instance on
+    every call, so keying on `id(broker)` would never hit the cache in
+    production. `get_or_fetch` handles the sync-fetcher-to-thread
+    offload internally, so no explicit `loop.run_in_executor` call is
+    needed here (the `loop` param this function previously took is no
+    longer used — see the `run_preflight` call site). The cached value
+    is TRIMMED (see `_preflight_trim_instruments`), not the raw broker
+    response.
+    """
     if exchange not in ("NFO", "BFO", "MCX", "CDS") or qty <= 0:
         return None
+    from backend.api.cache import get_or_fetch
+
+    def _fetch_and_trim():
+        return _preflight_trim_instruments(broker.instruments(exchange))
+
     try:
-        return await loop.run_in_executor(None, broker.instruments, exchange)
+        return await get_or_fetch(
+            f"{_PREFLIGHT_INSTR_CACHE_PREFIX}{account}:{exchange}",
+            _fetch_and_trim,
+            ttl_seconds=_PREFLIGHT_INSTR_TTL_S,
+        )
     except Exception as e:
         logger.debug(f"[PREFLIGHT] instruments fetch failed for {account}/{exchange}: {e}")
         return None
@@ -765,7 +833,7 @@ async def run_preflight(
 
     profile_res, instruments_res, bm_res, margins_res = await asyncio.gather(
         _preflight_fetch_profile(broker, loop, account),
-        _preflight_fetch_instruments(broker, loop, exchange, qty, account),
+        _preflight_fetch_instruments(broker, exchange, qty, account),
         _preflight_fetch_basket_margin(broker, loop, basket_orders),
         _preflight_fetch_account_margins(broker, loop, segment),
     )

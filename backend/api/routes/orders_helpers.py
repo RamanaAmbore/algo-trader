@@ -215,7 +215,9 @@ def _broker_for(account: str):
 
 # ── Chase helpers ─────────────────────────────────────────────────────────────
 
-def _live_chase_config(aggressiveness: str, intent: str | None = None):
+def _live_chase_config(aggressiveness: str, intent: str | None = None,
+                       product: str = "NRML", variety: str = "regular",
+                       validity: str = "DAY"):
     """Map operator-facing L/M/H aggressiveness to ChaseConfig.
 
     Industry analogue: IBKR Adaptive Algo Patient / Normal / Urgent.
@@ -235,6 +237,16 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None):
     intent is forwarded to ChaseConfig so that close orders
     (intent="close") bypass the 50-lot Kite ceiling on each
     re-place attempt inside the chase loop.
+
+    D1 fix (2026-09): product/variety/validity are now forwarded onto
+    ChaseConfig too — every re-place attempt was previously hardcoded
+    to ChaseConfig's dataclass defaults (product="NRML",
+    variety="regular", validity="DAY") regardless of what the
+    operator actually selected on the ticket (e.g. MIS intraday), so
+    a chased MIS close was silently re-placed as NRML on every
+    attempt. Defaults here match ChaseConfig's own defaults so every
+    OTHER caller (test_close_intent_chase.py, any future caller that
+    doesn't pass these kwargs) keeps its current behavior unchanged.
     """
     from backend.api.algo.chase import ChaseConfig
     a = (aggressiveness or "low").lower()
@@ -250,14 +262,25 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None):
         cfg = ChaseConfig(interval_seconds=30, aggression_step=0.05,
                           max_attempts=30)
     cfg.intent = intent
+    cfg.product = product
+    cfg.variety = variety
+    cfg.validity = validity
     return cfg
+
+
+# D5 fix (2026-09) — module constant so tests can shrink the confirm
+# window via monkeypatch instead of sleeping the full 15s.
+_LIVE_CHASE_CONFIRM_TIMEOUT_S = 15.0
 
 
 async def _start_live_chase(account: str, symbol: str, exchange: str,
                             transaction_type: str, quantity: int,
                             aggressiveness: str,
                             algo_order_id: int | None = None,
-                            intent: str | None = None) -> str:
+                            intent: str | None = None,
+                            product: str = "NRML",
+                            variety: str = "regular",
+                            validity: str = "DAY") -> str:
     """Place + chase a LIVE order in the background.
 
     Spawns `chase_order()` as an asyncio task and synchronously
@@ -273,13 +296,43 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     has mutated since the original place. Without this, chased orders
     silently failed to flip to FILLED in the DB → templates never
     attached on fill.
+
+    D5 fix (2026-09) — a ticket-side failure/timeout used to leave the
+    spawned `chase_order` task running unattended: `chase_order`
+    tolerates its first attempt's error (retries up to
+    `_MAX_CHASE_ERRORS`) while this function's `on_event` resolved
+    `fut` with an exception on the very FIRST "error" event, so the
+    ticket route returned 400 immediately while the background task
+    kept going — possibly placing a live order nobody was watching.
+    Now: on an "error"/"chase_failed" pre-placement event, the task is
+    cancelled outright (safe — chase_order parks in `asyncio.sleep`
+    between attempts, or is already finishing on chase_failed). On a
+    15s confirm-timeout (chase_order's FIRST place_order call may
+    still be in flight on the executor thread — NOT safe to hard
+    -cancel, since chase_order has no CancelledError handling and the
+    broker call could still land), the task is left running but
+    "abandoned": if it later reports order_placed, that order id is
+    immediately fed to chase.py's existing `mark_killed()` so the next
+    poll cycle's `_ch_post_replace_kill_check` cancels it at the
+    broker and terminates the chase — closing the unattended-chase
+    window without touching chase.py's core logic. A done-callback
+    also fast-fails the ticket (instead of eating the full timeout)
+    when `chase_order` returns without ever emitting an event at all
+    (e.g. market-closed / non-prod-branch early-return paths).
     """
     from backend.api.algo.chase import chase_order
-    cfg = _live_chase_config(aggressiveness, intent=intent)
+    cfg = _live_chase_config(aggressiveness, intent=intent,
+                             product=product, variety=variety,
+                             validity=validity)
     cfg.exchange = exchange or "NFO"
 
     loop = asyncio.get_running_loop()
     fut: asyncio.Future = loop.create_future()
+    # Set once the ticket-side wait gives up on this chase (error or
+    # timeout) so on_event can (a) suppress the misleading
+    # "post-placement failure" alert for a chase we already gave up
+    # on, and (b) kill any order that lands late.
+    _abandoned = {"v": False}
 
     def on_event(evt: str, detail: dict):
         # First order_placed event resolves the future. Subsequent
@@ -293,6 +346,38 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
                 fut.set_exception(RuntimeError(
                     detail.get("error") or "chase failed before initial placement"
                 ))
+        elif _abandoned["v"] or fut.cancelled():
+            # The ticket-side wait already gave up (timeout or error) —
+            # OR `fut` was cancelled by `asyncio.wait_for`'s own timeout
+            # handling before this function's `except asyncio.TimeoutError`
+            # block got a chance to flip `_abandoned["v"]` (a genuine
+            # race: wait_for cancels the awaited future synchronously
+            # when its timer fires, one loop tick before the awaiting
+            # coroutine resumes to run the except block). Checking
+            # `fut.cancelled()` directly closes that gap — without it, a
+            # `order_placed` landing in that narrow window would fall
+            # through to the "post-placement" branch below and do
+            # nothing, leaving exactly the unattended live order D5
+            # exists to prevent.
+            #
+            # A late order_placed means chase_order's in-flight first
+            # attempt actually landed at the broker after we stopped
+            # waiting — kill it via chase.py's own operator-kill signal
+            # so the next poll cancels it and the chase terminates.
+            if evt == "order_placed":
+                _late_id = str(detail.get("order_id") or "")
+                if _late_id:
+                    from backend.api.algo.chase import mark_killed
+                    mark_killed(_late_id)
+                    logger.warning(
+                        "[CHASE-ABANDONED] late order_placed after ticket-side "
+                        "give-up — killed order_id=%s algo_order_id=%s %s %s "
+                        "acct=%s qty=%s",
+                        _late_id, algo_order_id, symbol, transaction_type,
+                        account, quantity,
+                    )
+            # Suppress the post-placement alert below for an abandoned
+            # chase — the operator already saw the ticket-side failure.
         else:
             # Initial placement already succeeded (future resolved). Alert on
             # terminal chase failures so the operator knows the fill didn't land.
@@ -323,10 +408,52 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
     _LIVE_CHASE_TASKS.add(_chase_task)
     _chase_task.add_done_callback(_LIVE_CHASE_TASKS.discard)
 
-    # 15 s timeout — chase_order's first iteration fetches depth
+    def _on_task_done(t: asyncio.Task) -> None:
+        # Covers paths where chase_order returns/raises WITHOUT ever
+        # emitting an event (market-closed / non-prod-branch early
+        # returns) — without this, the ticket route silently ate the
+        # full confirm-timeout for a blank TimeoutError instead of
+        # failing fast with the real reason.
+        if fut.done() or t.cancelled():
+            return
+        _exc = t.exception()
+        if _exc is not None:
+            fut.set_exception(RuntimeError(f"chase task raised before placement: {_exc}"))
+        else:
+            _result = t.result()
+            _detail = getattr(_result, "detail", None) or "chase ended before initial placement"
+            fut.set_exception(RuntimeError(_detail))
+
+    _chase_task.add_done_callback(_on_task_done)
+
+    # Confirm timeout — chase_order's first iteration fetches depth
     # and fires place_order; even a cold market should land
-    # under 5 s. 15 s gives Kite room for a slow first call.
-    return await asyncio.wait_for(fut, timeout=15.0)
+    # under 5 s. This gives Kite room for a slow first call.
+    try:
+        return await asyncio.wait_for(fut, timeout=_LIVE_CHASE_CONFIRM_TIMEOUT_S)
+    except RuntimeError:
+        # Pre-placement "error"/"chase_failed" event — chase_order is
+        # parked in its inter-attempt sleep (safe to cancel) or already
+        # finishing (chase_failed). Cancel outright to close the
+        # unattended-chase window immediately.
+        _abandoned["v"] = True
+        if not _chase_task.done():
+            _chase_task.cancel()
+        raise
+    except asyncio.TimeoutError:
+        # No event at all within the confirm window — chase_order's
+        # FIRST place_order call may still be in flight on the executor
+        # thread. Do NOT hard-cancel (chase_order has no CancelledError
+        # handling; the broker call would land untracked). Mark
+        # abandoned so a late order_placed gets killed via on_event
+        # above, and surface a descriptive error instead of a blank
+        # TimeoutError.
+        _abandoned["v"] = True
+        raise RuntimeError(
+            f"chase confirm timed out after {_LIVE_CHASE_CONFIRM_TIMEOUT_S}s "
+            f"waiting for the first order_placed event — chase task left "
+            f"running; any late placement will be killed"
+        ) from None
 
 
 # ── Row builders ──────────────────────────────────────────────────────────────

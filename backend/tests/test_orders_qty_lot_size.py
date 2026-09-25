@@ -142,21 +142,34 @@ async def test_get_lot_size_mcx_cache_miss_returns_0():
 
 
 @pytest.mark.asyncio
-async def test_get_lot_size_nfo_cache_miss_returns_1():
-    """Non-MCX cache miss still returns 1 (safe no-op — to_kite_qty
-    doesn't translate NSE/NFO symbols)."""
+async def test_get_lot_size_nfo_cache_miss_returns_0():
+    """D6 fix (2026-09) — a genuine NFO cache miss now returns 0 (not 1).
+
+    Pre-fix, a non-MCX miss silently returned 1 (a false "no
+    translation needed" no-op), letting a genuinely-unknown NFO/BFO/
+    CDS lot_size sail straight through `to_kite_qty` as a no-op
+    instead of blocking with a clean 503 — the exact failure mode MCX
+    already guarded against. get_lot_size's miss sentinel is now
+    uniform (0 == unknown) across every exchange; see
+    `_rebuild_lot_index`'s docstring for how a CONFIRMED lot_size=1 is
+    now distinguished from a genuine miss."""
     with patch(
         "backend.api.cache.get_or_fetch",
         new=AsyncMock(side_effect=Exception("cache cold")),
     ):
         result = await get_lot_size("NFO", "NIFTY26JUNFUT")
-    assert result == 1
+    assert result == 0, (
+        f"NFO cache miss must return 0 (unknown sentinel) since D6 — "
+        f"a 1 here would mean an unconfirmed lot_size is silently "
+        f"treated as 'no translation needed'. Got {result}."
+    )
 
 
 @pytest.mark.asyncio
 async def test_get_lot_size_mcx_symbol_not_in_cache_returns_0():
-    """MCX symbol not found in cache index → return 0 (unknown).
-    NSE miss → 1 (safe)."""
+    """D6 fix (2026-09) — MCX symbol not found in cache index → 0
+    (unchanged). NSE miss ALSO now returns 0 (was 1 pre-D6) since a
+    genuine cache miss is unconfirmed on every exchange now."""
     # Reset the module-level _LOT_INDEX_STAMP so the index is rebuilt.
     import backend.brokers.adapters.kite as kite_mod
     original_stamp = kite_mod._LOT_INDEX_STAMP
@@ -176,7 +189,90 @@ async def test_get_lot_size_mcx_symbol_not_in_cache_returns_0():
         kite_mod._LOT_INDEX_STAMP = original_stamp
 
     assert mcx_result == 0
-    assert nse_result == 1
+    assert nse_result == 0, (
+        f"D6: a genuine NSE cache miss must also return 0 now (was 1 "
+        f"pre-fix) — the miss sentinel is uniform across exchanges. "
+        f"Got {nse_result}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_lot_size_nfo_confirmed_lot_size_one_still_returns_1():
+    """D6 regression guard: a CONFIRMED lot_size=1 entry (an NFO/BFO/
+    CDS symbol whose instruments row genuinely reports lot_size=1,
+    fed into `_LOT_INDEX` via `_rebuild_lot_index`) must still return
+    1 — proving the 'confirmed 1' vs 'genuinely absent' distinction
+    actually works end-to-end, not just fall back to the new 0
+    sentinel for every lookup."""
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    original_stamp = kite_mod._LOT_INDEX_STAMP
+    original_index = dict(kite_mod._LOT_INDEX)
+    kite_mod._LOT_INDEX_STAMP = None
+    kite_mod._LOT_INDEX = {}
+    try:
+        class _FakeInst:
+            def __init__(self, e, s, ls):
+                self.e = e
+                self.s = s
+                self.ls = ls
+
+        _rebuild_lot_index([_FakeInst("NFO", "MICRONIFTY26JUNFUT", 1)])
+        mock_resp = type("Resp", (), {"items": []})()
+        with patch(
+            "backend.api.cache.get_or_fetch",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            result = await get_lot_size("NFO", "MICRONIFTY26JUNFUT")
+    finally:
+        kite_mod._LOT_INDEX_STAMP = original_stamp
+        kite_mod._LOT_INDEX = original_index
+
+    assert result == 1, (
+        f"a CONFIRMED lot_size=1 entry must return 1, not the 0 "
+        f"'unknown' sentinel. Got {result}."
+    )
+
+
+@pytest.mark.asyncio
+async def test_get_lot_size_mcx_raw_one_never_confirmed_still_returns_0():
+    """D6 regression guard: MCX carve-out. Even when the raw
+    instruments dump reports lot_size=1 for an MCX symbol (Kite's
+    convention for every MCX commodity NOT in the override table —
+    see `instruments.py:_MCX_LOT_OVERRIDES`), `_rebuild_lot_index`
+    must NOT store it as a confirmed 1 — MCX behavior is unchanged by
+    D6: still 0 on both a raw-1 response and a genuine miss."""
+    import backend.brokers.adapters.kite as kite_mod
+    from backend.brokers.adapters.kite import _rebuild_lot_index
+
+    original_stamp = kite_mod._LOT_INDEX_STAMP
+    original_index = dict(kite_mod._LOT_INDEX)
+    kite_mod._LOT_INDEX_STAMP = None
+    kite_mod._LOT_INDEX = {}
+    try:
+        class _FakeInst:
+            def __init__(self, e, s, ls):
+                self.e = e
+                self.s = s
+                self.ls = ls
+
+        _rebuild_lot_index([_FakeInst("MCX", "SOMEOBSCURECOMMODITY", 1)])
+        mock_resp = type("Resp", (), {"items": []})()
+        with patch(
+            "backend.api.cache.get_or_fetch",
+            new=AsyncMock(return_value=mock_resp),
+        ):
+            result = await get_lot_size("MCX", "SOMEOBSCURECOMMODITY")
+    finally:
+        kite_mod._LOT_INDEX_STAMP = original_stamp
+        kite_mod._LOT_INDEX = original_index
+
+    assert result == 0, (
+        f"MCX raw lot_size=1 must never be treated as confirmed — "
+        f"expected the 0 unknown sentinel (unchanged MCX behavior). "
+        f"Got {result}."
+    )
 
 
 # ── Integration tests: /ticket MCX gate ───────────────────────────────────

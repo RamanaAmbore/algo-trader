@@ -21,6 +21,8 @@ import {
   buildOnSubmitPayload,
   buildPlacePayload,
   formatPlacementOk,
+  nextTriggerState,
+  formatSubmitLabel,
 } from '../src/lib/order/orderTicketSubmit.js';
 
 // ── numericOverride ───────────────────────────────────────────────────────────
@@ -381,5 +383,126 @@ describe('formatPlacementOk', () => {
       orderId: '?',
     });
     assert.ok(s.includes('#?'), `expected #? in "${s}"`);
+  });
+});
+
+// ── nextTriggerState (D4 fix) ─────────────────────────────────────────────────
+
+describe('nextTriggerState', () => {
+  test('never fires on the initial render (prevSeen=-1)', () => {
+    const { fire, seen } = nextTriggerState(-1, 0, false);
+    assert.strictEqual(fire, false);
+    assert.strictEqual(seen, 0);
+  });
+
+  test('fires on a genuine new trigger value when not submitting', () => {
+    const { fire, seen } = nextTriggerState(5, 6, false);
+    assert.strictEqual(fire, true);
+    assert.strictEqual(seen, 6);
+  });
+
+  test('does NOT fire when a submit is already in flight', () => {
+    const { fire, seen } = nextTriggerState(5, 6, true);
+    assert.strictEqual(fire, false);
+    // `seen` still updates unconditionally — this is the atomicity fix.
+    assert.strictEqual(seen, 6);
+  });
+
+  test('does not re-fire on the SAME trigger value (no-op rerun)', () => {
+    const { fire, seen } = nextTriggerState(6, 6, false);
+    assert.strictEqual(fire, false);
+    assert.strictEqual(seen, 6);
+  });
+
+  // ── D4 regression: the exact bug scenario ──────────────────────────────────
+  // A click bumps the trigger counter and fires submit(); a second click
+  // arrives while submitting=true (queued); once submitting flips back to
+  // false, the SAME (already-seen) trigger value must NOT re-fire — this is
+  // the delayed-duplicate-order bug the fix closes.
+  test('regression: submitting flips false on an already-seen trigger — no re-fire', () => {
+    // Click 1: trigger 5→6, not submitting yet.
+    let state = nextTriggerState(5, 6, false);
+    assert.strictEqual(state.fire, true);
+    let lastSeen = state.seen; // 6
+
+    // submit() is now in flight (submitting=true). Some other reactive
+    // dependency reruns the effect with the SAME trigger value (6) while
+    // still submitting — must not fire again.
+    state = nextTriggerState(lastSeen, 6, true);
+    assert.strictEqual(state.fire, false);
+    lastSeen = state.seen; // still 6
+
+    // submitting flips back to false — a rerun against the SAME trigger (6)
+    // must still not fire (this is exactly what the old buggy effect got
+    // wrong: it never updated its "last seen" counter on the early-return
+    // path, so this rerun saw a stale mismatch and fired a duplicate order).
+    state = nextTriggerState(lastSeen, 6, false);
+    assert.strictEqual(state.fire, false);
+  });
+
+  test('a genuine second click (new trigger value) after the first completes DOES fire', () => {
+    let state = nextTriggerState(5, 6, false);
+    let lastSeen = state.seen; // 6, fired
+
+    // First submit finishes; operator deliberately clicks again → trigger 7.
+    state = nextTriggerState(lastSeen, 7, false);
+    assert.strictEqual(state.fire, true);
+  });
+});
+
+// ── formatSubmitLabel (R7 fix) ────────────────────────────────────────────────
+
+describe('formatSubmitLabel', () => {
+  test('basket mode shows "Submit (N)" regardless of side', () => {
+    const s = formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 5, basketCount: 3 });
+    assert.strictEqual(s, 'Submit (3)');
+  });
+
+  test('no side picked yet → bare "Submit"', () => {
+    const s = formatSubmitLabel({ side: null, currentQty: 0, qty: 0, basketCount: 0 });
+    assert.strictEqual(s, 'Submit');
+  });
+
+  test('cold ticket (currentQty=0) with side + qty → "Submit · SIDE QTY"', () => {
+    const s = formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 75, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · BUY 75');
+  });
+
+  test('long position + SELL → CLOSE verb', () => {
+    const s = formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · CLOSE · SELL 75');
+  });
+
+  test('long position + BUY → ADD verb', () => {
+    const s = formatSubmitLabel({ side: 'BUY', currentQty: 75, qty: 75, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · ADD · BUY 75');
+  });
+
+  test('short position + BUY → CLOSE verb', () => {
+    const s = formatSubmitLabel({ side: 'BUY', currentQty: -75, qty: 75, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · CLOSE · BUY 75');
+  });
+
+  test('short position + SELL → ADD verb', () => {
+    const s = formatSubmitLabel({ side: 'SELL', currentQty: -75, qty: 75, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · ADD · SELL 75');
+  });
+
+  test('qty=0 omits the qty suffix (not yet resolved)', () => {
+    const s = formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 0, basketCount: 0 });
+    assert.strictEqual(s, 'Submit · BUY');
+  });
+
+  // ── R7 regression: label must reflect the pending action even while
+  // chase is on — this supersedes the prior "when chase is active the
+  // button should say submit" carve-out, which is exactly the scenario
+  // the operator's "close buy close sell buttons don't work" report
+  // happened in (chase is the default for LIMIT/SL tickets).
+  test('label is fully descriptive independent of chase state (no bare-Submit carve-out)', () => {
+    // formatSubmitLabel takes no chase param at all — the caller (SymbolPanel)
+    // no longer special-cases chase-on tickets to a bare "Submit".
+    const s = formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 });
+    assert.notStrictEqual(s, 'Submit');
+    assert.strictEqual(s, 'Submit · CLOSE · SELL 75');
   });
 });

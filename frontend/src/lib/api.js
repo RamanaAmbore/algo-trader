@@ -79,26 +79,41 @@ function _logApiError(/** @type {string} */ path,
   console.warn(`[api] ${path}${status ? ` (${status})` : ' (network)'}:`, safe);
 }
 
-// Strip HTTP-method boilerplate and clamp to one banner line. Full
-// detail still lives in the console — this is just for display.
+// Strip HTTP-method boilerplate. `_fullDetail` returns the complete,
+// untruncated text (all `blocked[]` reasons joined, not just the
+// first); `_trimDetail` clamps it to one banner line for the inline
+// UI. R6 fix (2026-09): every error used to be truncated to ~32 chars
+// at this single point, so a 422 preflight block, a broker rejection,
+// a 503 lot-size guard, and a chase timeout all rendered as
+// indistinguishable fragments. The short banner convention itself is
+// intentional (CLAUDE.md: ~25-35 chars so layout doesn't shift) — the
+// fix is exposing the full text via `err.fullMessage` (see `_request`)
+// so callers that have room (a tooltip, an expandable detail) can show
+// the operator what actually happened.
 // Non-string inputs (e.g. structured 422 detail = {blocked: [...]})
 // are summarised before regex-replace so .replace never blows up.
 const _METHOD_PREFIX_RE = /^(GET|POST|PUT|PATCH|DELETE)\s+\S+\s+failed:\s*/i;
-function _trimDetail(/** @type {unknown} */ s) {
+function _fullDetail(/** @type {unknown} */ s) {
   let str;
   if (typeof s === 'string') {
     str = s;
   } else if (s && typeof s === 'object') {
     const o = /** @type {any} */ (s);
     if (Array.isArray(o.blocked) && o.blocked.length) {
-      str = o.blocked[0]?.reason || 'Order blocked.';
+      str = o.blocked
+        .map((/** @type {any} */ b) => b?.reason)
+        .filter(Boolean)
+        .join(' · ') || 'Order blocked.';
     } else {
       str = o.reason || o.message || JSON.stringify(o);
     }
   } else {
     str = String(s ?? '');
   }
-  const cleaned = str.replace(_METHOD_PREFIX_RE, '');
+  return str.replace(_METHOD_PREFIX_RE, '');
+}
+function _trimDetail(/** @type {unknown} */ s) {
+  const cleaned = _fullDetail(s);
   return cleaned.length > 35 ? cleaned.slice(0, 32) + '…' : cleaned;
 }
 
@@ -157,11 +172,22 @@ function _friendlyError(/** @type {number|null} */ status,
  *  Callers may pass an `AbortSignal` via `opts.signal` so they can
  *  cancel in-flight requests (e.g. component unmount, per-call timeout).
  *  An AbortError is re-thrown as-is so the caller can distinguish
- *  intentional cancellation from a real network failure. */
+ *  intentional cancellation from a real network failure.
+ *
+ *  `opts.throwOnTimeout` (D3 fix, 2026-09, opt-in — default behaviour
+ *  unchanged for every other caller): when the INTERNAL 15s timeout
+ *  fires (no external signal supplied), throw a distinctly-named
+ *  `TimeoutError` instead of quietly returning `null`. Order placement
+ *  (`placeTicketOrder`) sets this — a timed-out submit must never be
+ *  mistaken for a `null`/204 "no content" response, which is what
+ *  produced a false "order placed" confirmation with `#?` as the order
+ *  id. Left off (the default) for every poll/read call site, which
+ *  intentionally relies on the null-swallow so a single hung background
+ *  fetch doesn't surface an error banner. */
 async function _request(/** @type {string} */ method,
                         /** @type {string} */ path,
-                        /** @type {{auth?: boolean, body?: unknown, signal?: AbortSignal}} */ opts = {}) {
-  const { auth = false, body, signal } = opts;
+                        /** @type {{auth?: boolean, body?: unknown, signal?: AbortSignal, throwOnTimeout?: boolean}} */ opts = {}) {
+  const { auth = false, body, signal, throwOnTimeout = false } = opts;
   /** @type {Record<string, string>} */
   const headers = auth ? { ..._authHeaders() } : {};
   /** @type {RequestInit} */
@@ -185,11 +211,21 @@ async function _request(/** @type {string} */ method,
   } catch (e) {
     if (_timeoutId != null) clearTimeout(_timeoutId);
     if (/** @type {any} */ (e)?.name === 'AbortError') {
-      // Internal 15s timeout (no external signal was supplied) — swallow
-      // quietly so a slow poll doesn't surface an uncaught error to the UI.
+      // Internal 15s timeout (no external signal was supplied). Default:
+      // swallow quietly so a slow poll doesn't surface an uncaught error
+      // to the UI. `throwOnTimeout` opts a caller (order placement) into
+      // a distinctly-named error instead, so a timeout can never be
+      // mistaken for a genuine (possibly empty/204) success response.
       // Caller-supplied signal aborts propagate so the caller can detect
       // intentional cancellation (e.g. component unmount, navigation).
-      if (_defaultAc) return null;
+      if (_defaultAc) {
+        if (throwOnTimeout) {
+          const timeoutErr = new Error('Request timed out.');
+          timeoutErr.name = 'TimeoutError';
+          throw timeoutErr;
+        }
+        return null;
+      }
       throw e;
     }
     _logApiError(path, null, /** @type {any} */ (e)?.message || e);
@@ -209,6 +245,13 @@ async function _request(/** @type {string} */ method,
     const err = new Error(_friendlyError(res.status, detail));
     /** @type {any} */ (err).status = res.status;
     /** @type {any} */ (err).detail = detail;
+    // R6 fix — full, untruncated detail for callers with room to show
+    // it (tooltip / expandable). Demo (anonymous) sessions keep the
+    // short friendly message here too — `_friendlyError` already
+    // suppresses raw backend detail for anonymous visitors, and the
+    // full form must not leak past that gate.
+    /** @type {any} */ (err).fullMessage =
+      (!_isAnonymous() && detail) ? _fullDetail(detail) : err.message;
     throw err;
   }
   if (res.status === 204) return null;
@@ -815,9 +858,14 @@ export async function fetchQuote(exchange, tradingsymbol) {
 /** POST /api/orders/ticket — operator-initiated order from the
  *  reusable <OrderTicket>. Phase 2: only mode='paper' is wired —
  *  routes through the prod paper engine. mode='live' returns 501
- *  until phase 3. mode='draft' is client-side, never reaches here. */
+ *  until phase 3. mode='draft' is client-side, never reaches here.
+ *
+ *  `throwOnTimeout: true` (D3 fix, 2026-09) — a hung/slow submit must
+ *  throw a distinct `TimeoutError` rather than silently resolve `null`,
+ *  which OrderTicket used to render as a false "order placed" success
+ *  with the order id shown as `#?`. */
 export async function placeTicketOrder(payload) {
-  return _post('/orders/ticket', payload, { auth: true });
+  return _post('/orders/ticket', payload, { auth: true, throwOnTimeout: true });
 }
 
 /** POST /api/orders/preflight — pre-submit cost/margin estimate. Reuses

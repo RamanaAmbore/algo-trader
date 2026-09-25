@@ -38,6 +38,15 @@ async def test_ticket_missing_account(async_client, stub_connections):
     """
     POST /api/orders/ticket with empty account field returns 400
     with "Account is required."
+
+    D6 fix (2026-09) — `lot_size_hint` is now required for this test to
+    reach the account-validation branch at all: `_ticket_validate_input`
+    (which resolves F&O lot_size BEFORE account validation runs) 503s on
+    a genuine instruments-cache miss instead of the pre-D6 silent
+    fallback of lot_size=1. This test environment has no warmed
+    instruments cache, so without the hint every NFO ticket would 503
+    on the lot-size guard before ever reaching the account check this
+    test is actually exercising.
     """
     payload = {
         "mode": "paper",
@@ -46,6 +55,7 @@ async def test_ticket_missing_account(async_client, stub_connections):
         "quantity": 1,
         "price": 22500.0,
         "account": "",  # Empty
+        "lot_size_hint": 50,
     }
 
     with _admin_auth_patches():
@@ -61,6 +71,11 @@ async def test_ticket_unknown_account(async_client, stub_connections):
     """
     POST /api/orders/ticket with an account not in Connections()
     returns 400 with "Unknown account: <name>."
+
+    D6 fix (2026-09) — see `test_ticket_missing_account`'s docstring:
+    `lot_size_hint` is required so the lot-size resolution (which runs
+    before account validation) doesn't 503 first in this test's
+    cold-cache environment.
     """
     payload = {
         "mode": "paper",
@@ -69,6 +84,7 @@ async def test_ticket_unknown_account(async_client, stub_connections):
         "quantity": 1,
         "price": 22500.0,
         "account": "UNKNOWN_ACCT",
+        "lot_size_hint": 50,
     }
 
     with _admin_auth_patches():

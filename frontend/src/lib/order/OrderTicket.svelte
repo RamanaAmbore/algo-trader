@@ -34,6 +34,7 @@
   import SideToggle from '$lib/order/SideToggle.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { placeTicketOrder, previewOrderMargin, fetchAccounts, modifyOrder, previewTicketTemplate, fetchStrategies, cancelOrder } from '$lib/api';
   import {
@@ -42,6 +43,7 @@
     buildPlacePayload,
     formatPlacementOk,
     classifyIntent,
+    nextTriggerState,
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
@@ -55,7 +57,7 @@
   import {
     getInstrument, listExpiries, listStrikes,
     findOption, findNearestFuture, listFutures,
-    listExchangesForSymbol,
+    listExchangesForSymbol, instrumentsCacheVersion,
   } from '$lib/data/instruments';
   import { isNseOpen, isMcxOpen, isMarketOpen } from '$lib/marketHours';
   import { getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
@@ -100,6 +102,7 @@
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -213,6 +216,13 @@
     // has a validation block that would otherwise silently prevent
     // placement (e.g. limit price not yet filled by the depth ladder).
     onValidationChange = /** @type {((err: string) => void) | null} */ (null),
+    // Fires whenever the ticket's live side / qty / submitting / pending
+    // state changes (D4 + R7, 2026-09). Host (SymbolPanel) has no other
+    // visibility into these — they're internal `$state`, resolved from
+    // the operator's lot steppers / side flips — so its own common-
+    // action Submit button label and disabled state would otherwise go
+    // stale the moment the operator touches the ticket after opening it.
+    onTicketStateChange = /** @type {((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}) => void) | null} */ (null),
     // When true, the in-ticket per-account funds line is suppressed.
     // The order modal sets this so the funds row only renders once in
     // the common action footer (visible on every tab).
@@ -596,14 +606,30 @@
   // so the ticket displays "2 Lots" instead of staying stuck at the
   // fallback "1 Lot". Set true by the +/- steppers + direct input.
   let _lotsTouched = $state(false);
-  // When _lotSize transitions from 0 → positive (instrument cache
-  // resolved after mount), recompute _lots from the caller's original
-  // qty prop. Skipped once the operator has manually adjusted.
-  // intentional: snapshot of _lotSize at mount to detect the 0→positive transition
+  // When _lotSize transitions from a PLACEHOLDER (0, or the D2-era
+  // bogus 1-fallback a caller uses when the instruments cache was
+  // still cold — see MarketPulse.svelte / admin/derivatives +page.svelte)
+  // to a real resolved lot size (>1), recompute _lots from the caller's
+  // original qty prop. Skipped once the operator has manually adjusted.
+  //
+  // Widened 2026-09 (D2 fix): the original condition only fired on an
+  // exact 0→positive transition. A close ticket opened before the
+  // instruments cache warmed seeds `_lotSize=1` (not 0 — 1 looks like a
+  // legitimate equity lot size, not a placeholder), so `_lots` computed
+  // at mount as `round(qty / 1)` — e.g. 75 lots instead of 1 — and this
+  // effect never repaired it because `_prevLotSize` was never exactly 0.
+  // Catching the 1→real transition too (guarded by `_lotSize > 1` so a
+  // genuine equity ticket settling at 0 is never touched) closes that
+  // gap: once the cache resolves — see the re-derive effect below,
+  // which now also reacts to `instrumentsCacheVersion` so it fires even
+  // when `_resolvedSymbol` stays static for a close ticket's lifetime —
+  // `_lots` is recomputed from the real lot size instead of the bogus one.
+  // intentional: snapshot of _lotSize at mount to detect the placeholder→real transition
   // svelte-ignore state_referenced_locally
   let _prevLotSize = $state.snapshot(_lotSize);
   $effect(() => {
-    if (_prevLotSize === 0 && _lotSize > 0 && !_lotsTouched) {
+    const wasPlaceholder = _prevLotSize === 0 || _prevLotSize === 1;
+    if (wasPlaceholder && _lotSize > 1 && !_lotsTouched) {
       _lots = Math.max(1, Math.round((Number(qty) || _lotSize) / _lotSize));
     }
     _prevLotSize = _lotSize;
@@ -649,7 +675,19 @@
   // strike + CE → resolved = NIFTY26JUN22000CE — but _lotSize stays
   // at whatever was passed in via the prop (often 0 because the
   // caller didn't know the lot yet). Pulls from the instruments cache.
+  //
+  // Also re-fires on `instrumentsCacheVersion` bumps (D2 fix, 2026-09):
+  // `getInstrument`'s backing index is a plain module-level `let`,
+  // invisible to Svelte on its own, so this effect used to run ONCE at
+  // mount and never again unless `_resolvedSymbol` itself changed. A
+  // CLOSE ticket's symbol is static for its whole lifetime — if the
+  // cache was still cold at mount, `_lotSize` (and therefore `_lots`,
+  // via the repair effect above) stayed wrong forever, even after the
+  // cache warmed up moments later. Reading `$instrumentsCacheVersion`
+  // here makes the effect re-run every time the cache (re)builds.
   $effect(() => {
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const r = _resolvedSymbol;
     if (!r || typeof r !== 'string') return;
     const up = r.toUpperCase();
@@ -735,7 +773,9 @@
     _setChase(defaultChase);
     _setChaseAgg(defaultChaseAgg);
     submitErr = '';
+    submitErrFull = '';
     submitOk = '';
+    submitPending = '';
     // _shownErr is a $derived from `_submitTried && validationErr`; flip
     // _submitTried back to false so the inline validation error chip
     // clears alongside the form fields.
@@ -1503,6 +1543,45 @@
   }
 
   /**
+   * D2 defense-in-depth (2026-09): block a CLOSE order whose lot size
+   * never resolved from the instruments cache — e.g. the cache load
+   * failed outright, or the operator submitted faster than the cache
+   * could warm even after the `_instrumentsReady` awaits added to the
+   * MarketPulse / admin-derivatives callers. Close orders skip the
+   * 5-lot / MCX-20-lot / 50-lot safety ceilings by design (an operator
+   * must be able to exit a position larger than those caps), so an
+   * unresolved lot size is the one class of unit mismatch none of the
+   * existing guards catch — `_qty` would go out as a raw contract count
+   * read by the backend as a LOT count, a many-times oversize order.
+   * Equities/cash legitimately resolve to lot size 0 and must not trip
+   * this — only fires when the cache DOES know a real (>1) lot size for
+   * the symbol but the ticket's own resolved `_lotSize` disagrees.
+   *
+   * Scoped to `action === 'close'` (the caller-supplied prop) rather
+   * than `classifyIntent(currentQty, _side)` — the `action==='modify'`
+   * path never reaches `buildPlacePayload`/`placeTicketOrder` at all
+   * (it uses `buildModifyPayload`/`modifyOrder` instead), so gating on
+   * a currentQty/side-derived classification risked spuriously blocking
+   * a modify submit whose qty/side combination happened to look like a
+   * close.
+   * @param {string} sym
+   * @param {number} resolvedLotSize
+   * @param {string} actionProp
+   * @returns {string | null}
+   */
+  function _validateLotSizeResolved(sym, resolvedLotSize, actionProp) {
+    if (actionProp !== 'close') return null;
+    const up = String(sym || '').toUpperCase();
+    if (!up) return null;
+    const inst = getInstrument(up);
+    const realLotSize = Number(inst?.ls) || 0;
+    if (realLotSize > 1 && Number(resolvedLotSize) !== realLotSize) {
+      return 'Lot size unresolved — wait a moment and retry';
+    }
+    return null;
+  }
+
+  /**
    * Validate price / trigger fields including tick-alignment.
    * Returns an error string or null.
    * @param {boolean} needsLimit
@@ -1545,6 +1624,7 @@
 
   const validationErr = $derived.by(() =>
     _validateQtyLots(Number(_qty), Number(_lots), _lotSize, symbol) ??
+    _validateLotSizeResolved(_resolvedSymbol || symbol, _lotSize, action) ??
     _validatePriceTrigger(showLimit, showTrigger, Number(_price), Number(_trigger), _tickSize, _tickDecimals) ??
     _validateOrderContext(_mode, _account) ??
     // #7 — TemplateBar override validation (blocks submit on invalid override values)
@@ -1578,6 +1658,21 @@
     onValidationChange?.(validationErr);
   });
 
+  // Pipe live side / qty / submitting / pending state to the host
+  // (D4 + R7, 2026-09) — SymbolPanel's own common-action Submit button
+  // needs this to (a) show an accurate label as the operator adjusts
+  // lots or flips side, and (b) stay disabled for the FULL duration of
+  // a submit (not just the host's own separate `basketSubmitting` flag,
+  // which doesn't cover a single-ticket submit at all).
+  $effect(() => {
+    onTicketStateChange?.({
+      side: _side,
+      qty: Number(_qty) || 0,
+      submitting,
+      pending: !!submitPending,
+    });
+  });
+
   // True when no symbol has been resolved yet — disables all form
   // controls below the symbol picker so the operator can't accidentally
   // submit a blank order. Cleared as soon as the picker resolves a
@@ -1608,12 +1703,23 @@
   // initial render doesn't auto-fire on mount.
   let _lastSubmitTrigger = $state(/** @type {number} */ (-1));
   let _lastBasketTrigger = $state(/** @type {number} */ (-1));
+  // D4 fix (2026-09): `_lastSubmitTrigger` used to be updated only on
+  // the branch that DIDN'T early-return on `submitting` — so once
+  // `submitting` flipped back to false, this effect re-ran, still saw
+  // the stale trigger mismatch from the original click, and fired
+  // `submit()` a second time (a delayed duplicate order). `triggerSubmit`
+  // is read OUTSIDE `untrack` (it's the only value this effect should
+  // react to); `submitting` + `_lastSubmitTrigger` are read/written
+  // INSIDE `untrack` via `nextTriggerState` so a `submitting` flip alone
+  // never reschedules this effect — see orderTicketSubmit.js for the
+  // pure (unit-tested) guard logic.
   $effect(() => {
-    if (triggerSubmit !== _lastSubmitTrigger && _lastSubmitTrigger >= 0) {
-      if (submitting) return;
-      submit();
-    }
-    _lastSubmitTrigger = triggerSubmit;
+    const t = triggerSubmit;
+    untrack(() => {
+      const { fire, seen } = nextTriggerState(_lastSubmitTrigger, t, submitting);
+      _lastSubmitTrigger = seen;
+      if (fire) submit();
+    });
   });
   $effect(() => {
     if (triggerBasket !== _lastBasketTrigger && _lastBasketTrigger >= 0) {
@@ -1651,6 +1757,13 @@
   let _submitTried = $state(false);
   const _shownErr = $derived(_submitTried ? validationErr : '');
   /** @type {string} */ let submitErr = $state('');
+  // R6 fix (2026-09): full, untruncated detail behind `submitErr`'s
+  // ~32-char banner (api.js's `err.fullMessage`) — empty unless the
+  // short message actually cut something off. Surfaced via an InfoHint
+  // (i) chip next to the banner so a 422 preflight block, a broker
+  // rejection, a 503 lot-size guard, and a chase timeout no longer read
+  // as indistinguishable fragments.
+  /** @type {string} */ let submitErrFull = $state('');
 
   // ── Margin / cash preview ────────────────────────────────────────
   // Calls /api/orders/preflight on field change (debounced 350 ms) so
@@ -1828,8 +1941,25 @@
   // before the modal closes. Without it the modal disappears silently
   // and the operator has no idea whether the order actually landed.
   /** @type {string} */ let submitOk = $state('');
+  // D3 fix (2026-09): distinct "still processing" state for a client-
+  // side submit timeout. Previously a 15s timeout on placeTicketOrder
+  // resolved as `null` (not a thrown error), which fell through to the
+  // SAME code path as a genuine success — the modal rendered
+  // `submitOk` with the order id literally shown as "#?" even though
+  // the order may have failed, may still be processing, or may or may
+  // not exist at the broker. `api.js`'s `throwOnTimeout` now makes this
+  // case distinguishable (a `TimeoutError`); render it here instead of
+  // a false ✓. Kept short (≤35 chars) per the api.js error-banner
+  // convention.
+  /** @type {string} */ let submitPending = $state('');
 
   async function submit() {
+    // D4 fix (2026-09): belt-and-suspenders guard. The trigger-dispatch
+    // effect below is the primary defense against a double-fire, but a
+    // direct `onclick={submit}` call (OrderTicket's own internal footer
+    // button, used when `actionsHidden` is false) has no trigger-counter
+    // protection of its own — refuse a re-entrant call outright.
+    if (submitting) return;
     _submitTried = true;
 
     // ── "Add to Payoff" / "Update Draft" path ───────────────────
@@ -1900,7 +2030,7 @@
         submitErr = 'Modify path requires an order id.';
         return;
       }
-      submitting = true; submitErr = ''; submitOk = '';
+      submitting = true; submitErr = ''; submitErrFull = ''; submitOk = ''; submitPending = '';
       try {
         const modPayload = buildModifyPayload({
           account: _account,
@@ -1964,7 +2094,7 @@
       chaseAgg: _chaseAgg,
     };
     const payload = buildOnSubmitPayload(submitCtx);
-    submitting = true; submitErr = ''; submitOk = '';
+    submitting = true; submitErr = ''; submitErrFull = ''; submitOk = ''; submitPending = '';
     /** @type {any} */
     let brokerResp = null;
     try {
@@ -2023,7 +2153,27 @@
         onClose();
       }
     } catch (e) {
-      submitErr = /** @type {any} */ (e)?.message || String(e);
+      // D3 fix (2026-09): a client-side submit timeout is NOT a known
+      // failure — the request may have succeeded, may still be
+      // processing, or may have genuinely failed. Render a distinct
+      // "still processing" state instead of a generic error (which
+      // would read as a definite failure) AND instead of the false
+      // `submitOk` success the old null-return path produced. Do NOT
+      // call `onSubmit` — callers (e.g. the derivatives page) remove
+      // the draft / mutate local state on a successful submit, and an
+      // indeterminate outcome must not trigger that.
+      if (/** @type {any} */ (e)?.name === 'TimeoutError') {
+        submitPending = 'Still processing — check Orders';
+      } else {
+        submitErr = /** @type {any} */ (e)?.message || String(e);
+        // R6 fix (2026-09): api.js attaches the full, untruncated detail
+        // as `err.fullMessage` (all `blocked[]` reasons joined, not just
+        // the first). Only set when it actually carries MORE than the
+        // already-shown short message, so the (i) hint doesn't appear
+        // for errors that were never truncated in the first place.
+        const full = /** @type {any} */ (e)?.fullMessage;
+        submitErrFull = (full && full !== submitErr) ? full : '';
+      }
     } finally {
       submitting = false;
     }
@@ -2754,8 +2904,18 @@
     {#if submitErr}
       <!-- Surface backend rejections (preflight 422, 503, broker errors)
            inline. Silent failure was causing operators to believe orders
-           had been placed when they hadn't. -->
-      <div class="ot-err">{submitErr}</div>
+           had been placed when they hadn't. R6 fix (2026-09): the ~32-
+           char banner is intentionally short (api.js's error-banner
+           convention), but a 422 preflight block, a broker rejection, a
+           503 lot-size guard, and a chase timeout used to be genuinely
+           indistinguishable at that length — the (i) hint expands to the
+           full untruncated text when the banner actually cut something. -->
+      <div class="ot-err">
+        {submitErr}
+        {#if submitErrFull}
+          <InfoHint text={submitErrFull} popup={true} align="right" />
+        {/if}
+      </div>
     {/if}
     {#if _draftMissing}
       <!-- B3: draft entry gone — warn before a live order is placed -->
@@ -2772,11 +2932,14 @@
            host can render its own page-level common action strip. -->
       {#if !actionsHidden}
       <div class="ot-footer-actions">
-        {#if submitOk}
-          <!-- Post-submit success: Clear wipes the form so the operator
-               can immediately enter the next order (operator: "there is
-               not exit button required. probably clear button required").
-               × on the SymbolPanel header handles modal dismissal. -->
+        {#if submitOk || submitPending}
+          <!-- Post-submit success (or an indeterminate timeout — D3):
+               Clear wipes the form so the operator can immediately enter
+               the next order (operator: "there is not exit button
+               required. probably clear button required"). × on the
+               SymbolPanel header handles modal dismissal. No Submit here
+               while pending — the operator must confirm via the order
+               book before firing anything else for this ticket. -->
           <button type="button" class="ot-exit"
                   title="Reset the ticket to a clean form"
                   onclick={clearForm}>Clear</button>
@@ -2856,9 +3019,13 @@
            cost/cash vs margin/avail readout for both tabs.
            Keeps the success message slot since that's a
            per-ticket lifecycle signal (not shared). -->
-      {#if submitOk || _draftOk}
+      {#if submitOk || _draftOk || submitPending}
         <div class="ot-footer-info">
-          <div class="ot-ok">✓ {_draftOk || submitOk}</div>
+          {#if submitPending}
+            <div class="ot-pending">⏳ {submitPending}</div>
+          {:else}
+            <div class="ot-ok">✓ {_draftOk || submitOk}</div>
+          {/if}
         </div>
       {/if}
 
@@ -3573,6 +3740,11 @@
     border-radius: 3px;
     font-size: var(--fs-sm);
     margin: 0.4rem 0;
+    /* R6 — layout for the (i) full-detail hint chip beside the
+       truncated banner text. */
+    display: flex;
+    align-items: center;
+    gap: 0.35rem;
   }
   /* B3: missing-draft amber notice */
   .ot-warn-draft-missing {
@@ -3607,6 +3779,20 @@
     background: var(--c-long-10);
     border: 1px solid rgba(74,222,128,0.45);
     color: var(--c-long);
+    padding: 0.3rem 0.5rem;
+    border-radius: 3px;
+    font-size: var(--fs-md);
+    font-weight: 700;
+    line-height: 1.3;
+    word-break: break-word;
+  }
+  /* D3 — indeterminate submit-timeout state. Amber (action color),
+     distinct from the green .ot-ok success so an operator scanning the
+     footer can't mistake "still processing" for a confirmed fill. */
+  .ot-pending {
+    background: var(--c-action-14, rgba(251,191,36,0.14));
+    border: 1px solid rgba(251,191,36,0.45);
+    color: var(--algo-amber, var(--c-action));
     padding: 0.3rem 0.5rem;
     border-radius: 3px;
     font-size: var(--fs-md);

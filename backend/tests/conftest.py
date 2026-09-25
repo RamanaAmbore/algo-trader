@@ -75,6 +75,33 @@ def reset_singletons():
     SingletonBase._instances.clear()
 
 
+@pytest.fixture(autouse=True)
+def _reset_preflight_instruments_cache():
+    """R1 test-isolation fix — `run_preflight` now caches
+    `broker.instruments(exchange)` behind a real 5s TTL keyed by
+    `account:exchange` (see `actions_preflight.py:_preflight_fetch_instruments`).
+    Several preflight test modules reuse the same account/exchange
+    across test functions with DIFFERENT mocked `instruments()`
+    content within the same pytest process; without a per-test purge,
+    a later test could observe an earlier test's stale cached dump.
+    Narrowly scoped to the `preflight_instr:` key prefix only — does
+    NOT do a blanket `_store.clear()`, since other test modules may
+    seed `_store["instruments"]` via a module/class-scoped fixture and
+    a full wipe could break that."""
+    from backend.api import cache as _cache_mod
+    _PREFIX = "preflight_instr:"
+
+    def _purge():
+        for k in [k for k in _cache_mod._store if k.startswith(_PREFIX)]:
+            _cache_mod._store.pop(k, None)
+        for k in [k for k in _cache_mod._locks if k.startswith(_PREFIX)]:
+            _cache_mod._locks.pop(k, None)
+
+    _purge()
+    yield
+    _purge()
+
+
 @pytest.fixture
 def stub_kite_connection():
     """

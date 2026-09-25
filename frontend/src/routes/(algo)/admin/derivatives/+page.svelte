@@ -3400,7 +3400,7 @@
    *  sorted to end of list, included for visibility). The
    *  checkbox inside the row stops propagation so its toggle
    *  doesn't double-fire as a close. */
-  function closePosition(/** @type {any} */ c) {
+  async function closePosition(/** @type {any} */ c) {
     if (!c?.symbol || c.source === 'draft') return;
     // Effective qty for the close ticket. When the row came from the
     // Close tab's netting pass, `_residualQty` carries the un-netted
@@ -3411,8 +3411,15 @@
       : Number(c.qty || 0);
     const qty = Math.abs(effectiveSignedQty);
     if (!qty) return;       // already closed (or fully netted)
+    // D2 fix (2026-09): loadInstruments() is memoized (see
+    // frontend/src/lib/data/instruments.js) so this is a no-op once the
+    // cache is warm, but rescues a close click that lands before the
+    // cache has loaded — without it, `inst` resolves to null, lot size
+    // falls back to a bogus 1, and OrderTicket sends the raw contract
+    // count as if it were lots (a many-times oversize CLOSE order).
+    await loadInstruments().catch(() => {});
     const inst = getInstrument(String(c.symbol).toUpperCase());
-    const lot  = Number(inst?.ls || 1);
+    const lot  = Number(inst?.ls) || 0;
     openTicket({
       symbol:   c.symbol,
       exchange: inst?.e || 'NFO',

@@ -18,6 +18,17 @@ C4 — service-restart recovery (`backend.api.background.recover_live_chases`)
     `filled_quantity` and never checking whether the pre-restart resting
     order was still live at the broker — risking a full duplicate order
     alongside an orphan.
+
+R3 — (already fixed, test-only — no chase.py source change here) an
+    end-to-end regression guard confirming `_ch_cancel_previous`'s
+    cancel-and-replace path doesn't double-count or re-place a
+    "stale remainder" order when the cancel itself effectively no-ops
+    because the resting order already COMPLETEd at the broker between
+    the last regular poll and the cancel attempt. Covered at the unit
+    level by `test_c2_late_fill_race_before_cancel_is_captured` above;
+    this test proves the SAME scenario end-to-end through the full
+    `chase_order()` loop — specifically that no second/replacement
+    order is ever placed for the stale 60-qty remainder.
 """
 from __future__ import annotations
 
@@ -590,3 +601,113 @@ class TestC4RecoveryAlreadyFilled:
             "skipping auto-TP/template-attach for a recovered position that "
             "IS live at the broker; got fill_price={}".format(result.fill_price)
         )
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# R3 (already fixed, test-only) — end-to-end: cancel-and-replace race
+# where the resting order actually finishes at the broker between the
+# chase's last regular poll and the cancel attempt, so the cancel
+# effectively no-ops. Must fold the late delta into cumulative_filled
+# (not lose it, not double-count it) and must NOT place a
+# second/replacement order for the stale remainder.
+# ─────────────────────────────────────────────────────────────────────────
+
+class _FakeLateCompleteBroker:
+    """Order A (100 qty) reports 40/100 filled on the chase's regular
+    post-attempt-1 poll (still OPEN — not yet terminal, so the loop
+    proceeds to cancel-and-replace on attempt 2). By the time the
+    cancel-and-replace's POST-cancel status read happens
+    (`_ch_capture_late_fill`), the SAME order has actually reached
+    100/100 COMPLETE at the broker — the cancel_order() call itself
+    effectively no-ops (a real broker rejects/ignores cancelling an
+    already-COMPLETE order)."""
+
+    def __init__(self):
+        self.orders: dict[str, dict] = {}
+        self._n = 0
+        self.placed_qtys: list[int] = []
+        self.cancel_calls = 0
+        self._status_polls: dict[str, int] = {}
+
+    def normalise_qty(self, exchange, qty, lot_size):
+        return qty
+
+    def quote(self, keys):
+        key = keys[0]
+        return {key: {"depth": {
+            "buy":  [{"price": 100.00, "quantity": 500}],
+            "sell": [{"price": 100.10, "quantity": 500}],
+        }}}
+
+    def place_order(self, **kwargs):
+        self._n += 1
+        oid = f"order_{self._n}"
+        placed_qty = int(kwargs["quantity"])
+        self.placed_qtys.append(placed_qty)
+        self.orders[oid] = {"placed_qty": placed_qty}
+        self._status_polls[oid] = 0
+        return oid
+
+    def cancel_order(self, order_id, variety="regular", exchange=""):
+        # Broker no-ops — the order already COMPLETEd before the
+        # cancel landed. No state mutation needed; order_status below
+        # already reflects the true terminal state on every poll after
+        # the first.
+        self.cancel_calls += 1
+
+    def order_status(self, order_id):
+        o = self.orders.get(order_id)
+        if o is None:
+            return {}
+        self._status_polls[order_id] += 1
+        n = self._status_polls[order_id]
+        if order_id == "order_1":
+            if n == 1:
+                # Regular poll after attempt 1's placement — still resting.
+                return {"status": "OPEN", "quantity": 100,
+                        "filled_quantity": 40, "average_price": 100.05}
+            # Post-cancel read (attempt 2's cancel-and-capture) — the
+            # order actually finished in the race window; cancel no-op'd.
+            return {"status": "COMPLETE", "quantity": 100,
+                    "filled_quantity": 100, "average_price": 100.07}
+        return {"status": "OPEN", "quantity": 0, "filled_quantity": 0, "average_price": 0}
+
+
+@pytest.mark.asyncio
+async def test_r3_cancel_race_already_complete_no_stale_remainder_replace():
+    """R3 — the cancel-and-replace race where the resting order
+    finishes at the broker before the cancel lands must fold the late
+    delta (40→100) into cumulative_filled and terminate FILLED WITHOUT
+    placing a second order for the stale 60-qty remainder. A
+    regression here would either lose the late fill (order stays
+    PARTIAL forever) or double-count it (a second order placed for 60
+    on top of the 100 already filled — 160 total)."""
+    from backend.api.algo.chase import chase_order, ChaseConfig, ChaseStatus
+
+    broker = _FakeLateCompleteBroker()
+    cfg = ChaseConfig(exchange="NFO", interval_seconds=0, max_attempts=6)
+
+    with (
+        patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
+        patch("backend.api.algo.agent_engine._symbol_exchange_open", return_value=True),
+        patch("backend.api.algo.agent_engine._build_now_ctx", return_value={}),
+        patch("backend.api.algo.chase._get_broker_registry", return_value=broker),
+        patch("backend.api.algo.chase._emit_chase_terminal", new_callable=AsyncMock),
+    ):
+        result = await chase_order(
+            account="ACC1", symbol="NIFTY24DECFUT",
+            transaction_type="BUY", quantity=100, cfg=cfg,
+        )
+
+    assert broker.placed_qtys == [100], (
+        f"expected exactly ONE order placed (the initial 100) — a "
+        f"second entry (e.g. [100, 60]) would mean a stale-remainder "
+        f"replacement order was placed for qty already filled at the "
+        f"broker; got {broker.placed_qtys}"
+    )
+    assert broker.cancel_calls == 1, "the (no-op) cancel must still be attempted exactly once"
+    assert result.status == ChaseStatus.FILLED, (
+        f"expected FILLED via the post-cancel late-fill capture path, "
+        f"got {result.status}"
+    )
+    assert result.fill_price == 100.07

@@ -1264,6 +1264,15 @@
   let getInstrument     = $state(/** @type {((s: string) => any) | null} */ (null));
   let findNearestFuture = $state(/** @type {((u: string) => any) | null} */ (null));
   let listFutures       = $state(/** @type {((u: string) => any[]) | null} */ (null));
+  // Resolves once the instruments cache has (re)loaded — awaited before
+  // opening a CLOSE ticket so lot size is never read while the cache is
+  // still cold. Mirrors PerformancePage.svelte's `_instrumentsReady`
+  // pattern (D2 fix, 2026-09): without this, a close ticket opened
+  // before the cache warms falls back to a bogus lot=1, and
+  // OrderTicket's qty math sends a raw contract count as if it were
+  // lots — a ~75x oversize order on the very first click after page
+  // load or a fresh trading day.
+  let _instrumentsReady = /** @type {Promise<unknown>} */ (Promise.resolve());
   // F&O underlying lot lookup — returns the contract lot size when the
   // tradingsymbol has CE/PE listed (covered-call viable), 0 otherwise.
   // Loaded alongside getInstrument so the Holdings row-class can fire
@@ -1401,6 +1410,11 @@
         _fnoLotForState   = mod.getOptionUnderlyingLot;
       } catch (_) { /* cache cold — group/sort falls back to alphabetical */ }
     })();
+    // Expose the same promise so a click that lands before this
+    // resolves can await it instead of reading a still-null lot size.
+    // instrumentsP never rejects (errors are swallowed above), so this
+    // is safe to await directly with no further try/catch.
+    _instrumentsReady = instrumentsP;
     const accountsP = (async () => {
       try {
         const r = await fetchAccounts();
@@ -3838,15 +3852,23 @@
   // Use the row's own account field directly — each position/holding
   // row carries one unmasked account id for admin sessions.
   async function _openTicketFromRow(/** @type {any} */ r) {
+    // D2 fix (2026-09): wait for the instruments cache before reading
+    // lot size. A click that lands before the cache has loaded (first
+    // click after page load / a fresh trading day) used to fall back to
+    // a bogus lot=1 here — OrderTicket then sent the raw contract count
+    // as if it were lots, a ~75x oversize CLOSE order. No-op once the
+    // cache is warm (the common case).
+    await _instrumentsReady;
     const inst = getInstrument?.(r.tradingsymbol);
-    const lot = Number(inst?.ls || 1);
+    const lot = Number(inst?.ls) || 0;
     const side = _computeTicketSide(r);
     const isRealAcct = (/** @type {any} */ a) => !!(a && !String(a).includes('#'));
     const preAccount = isRealAcct(r.account) ? String(r.account) : '';
     await _ensureRealAccountsLoaded();
     // Pass currentQty (signed position qty) so SymbolPanel's footer
-    // button shows "CLOSE BUY" / "CLOSE SELL" for position rows.
-    // Watchlist/mover/anchor rows (no position) get currentQty=0.
+    // Submit button reflects the real pending action ("Submit · CLOSE ·
+    // SELL 75") for position rows. Watchlist/mover/anchor rows (no
+    // position) get currentQty=0.
     const posQty = r.src?.p ? (Number(r.qty_pos) || 0) : 0;
     openTicket({
       symbol:     r.tradingsymbol,
