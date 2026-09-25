@@ -357,15 +357,24 @@ export function didUnderlyingChange(cleanLegs, currentStrategy, decomposeSymbol)
 
 /**
  * Build a cache key for the equity-only synth strategy.
- * Encodes (underlying, per-leg symbol+qty+cost+ltp) so a re-derive
- * only fires when inputs actually changed.
+ * Encodes (underlying, per-leg symbol+qty+cost+ltp, target spot/prev-close)
+ * so a re-derive only fires when inputs actually changed.
+ *
+ * `targetSpot`/`targetPrevClose` (D2026-09 proxy-hedge fix) are included so
+ * a proxy-hedged root's shell re-derives when the HEDGED root's own live
+ * price ticks — not just when the proxy leg's own ltp/qty/cost changes.
+ * Without this, a GOLDBEES proxy leg whose own price is flat would freeze
+ * the GOLDM shell's spot at whatever GOLDM price was live on the first
+ * derive, even as GOLDM itself keeps ticking.
  *
  * @param {string} underlying  - selectedUnderlying value
  * @param {any[]} eqs          - equity leg rows
+ * @param {number} [targetSpot]      - target root's own live LTP (proxy case)
+ * @param {number} [targetPrevClose] - target root's own live prev-close
  * @returns {string}
  */
-export function synthCacheKey(underlying, eqs) {
-  const parts = [underlying || ''];
+export function synthCacheKey(underlying, eqs, targetSpot, targetPrevClose) {
+  const parts = [underlying || '', Number(targetSpot) || 0, Number(targetPrevClose) || 0];
   for (const e of eqs) {
     parts.push(
       `${e.symbol || ''}:${Number(e.qty) || 0}:${Number(e.avg_cost) || 0}:${Number(e.ltp) || 0}`
@@ -379,17 +388,54 @@ export function synthCacheKey(underlying, eqs) {
  * card renders a linear long-stock curve when no options/futures are present.
  * Returns null when no eq leg has a usable spot anchor.
  *
+ * Proxy-hedge aware (2026-09 fix, incident: GOLDM Exp P&L inflated ~1211×
+ * when its options settled to qty=0, leaving only GOLDBEES beta-hedge
+ * legs — `proxy_for: 'GOLDM'`). When any passed eq leg is a proxy for
+ * `underlying`, the shell MUST price itself in the HEDGED root's own price
+ * space (`targetSpot`/`targetPrevClose`, sourced by the caller from
+ * `_undLive[underlying]` — the same SSOT the Snapshot grid and payoffSpot
+ * use) — NOT the proxy ETF's own `primary.ltp`/`primary.prev_close`, which
+ * can differ from the hedged root's spot by three orders of magnitude
+ * (e.g. GOLDBEES ₹124.43 vs GOLDM ₹1,50,736). Returns null rather than
+ * falling back to the proxy's own price when no target spot is available
+ * yet (cold start) — showing a wrong-scale shell is worse than showing none.
+ *
+ * When no leg carries `proxy_for` (the eq legs genuinely ARE the plotted
+ * underlying, e.g. holding GOLDBEES under its own "GOLDBEES" tab), behavior
+ * is UNCHANGED — `primary.ltp`/`primary.prev_close` remain the basis, as
+ * before this fix.
+ *
  * @param {any[]} eqs       - equity leg rows (kind='eq')
  * @param {string} underlying - selectedUnderlying value
+ * @param {number} [targetSpot]      - target root's own live LTP, required
+ *   when any leg proxies `underlying` (from `_undLive[underlying]?.ltp`)
+ * @param {number} [targetPrevClose] - target root's own live prev-close
+ *   (from `_undLive[underlying]?.close`)
  * @returns {object|null}
  */
-export function synthEquityOnlyStrategy(eqs, underlying) {
+export function synthEquityOnlyStrategy(eqs, underlying, targetSpot, targetPrevClose) {
   if (!Array.isArray(eqs) || eqs.length === 0) return null;
   const primary = eqs.find(e => Number(e.ltp) > 0) || eqs[0];
-  const spot = Number(primary.ltp) || Number(primary.avg_cost) || 0;
+
+  const _und = String(underlying || '').toUpperCase();
+  const isProxyHedge = eqs.some(e => String(e.proxy_for || '').toUpperCase() === _und && _und);
+  const _targetSpot = Number(targetSpot) || 0;
+
+  let spot;
+  if (isProxyHedge) {
+    // Proxy-hedge case (D1 fix): price the shell in the HEDGED root's own
+    // space, never the proxy ETF's own ltp/avg_cost.
+    if (_targetSpot <= 0) return null;
+    spot = _targetSpot;
+  } else {
+    spot = Number(primary.ltp) || Number(primary.avg_cost) || 0;
+  }
   if (spot <= 0) return null;
 
-  const prevClose = Number(primary.prev_close) || spot;
+  const _targetPrevClose = Number(targetPrevClose) || 0;
+  const prevClose = isProxyHedge
+    ? (_targetPrevClose > 0 ? _targetPrevClose : spot)
+    : (Number(primary.prev_close) || spot);
   const spanPct   = 0.15;
   const N = 41;
   const lo = spot * (1 - spanPct);

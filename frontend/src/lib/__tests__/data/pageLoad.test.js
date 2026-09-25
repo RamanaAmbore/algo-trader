@@ -21,7 +21,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   splitClosedReopened, buildPositionRowFromBroker,
-  didUnderlyingChange, synthEquityOnlyStrategy,
+  didUnderlyingChange, synthEquityOnlyStrategy, synthCacheKey,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
@@ -279,5 +279,109 @@ describe('didUnderlyingChange — root-switch detection + the equity-synth gap',
     const cleanLegs = [{ symbol: 'NIFTY25SEP24000CE' }];
     // didUnderlyingChange cannot see the switch — this is the gap.
     expect(didUnderlyingChange(cleanLegs, synthStrategy, decomposeSymbol)).toBe(false);
+  });
+});
+
+describe('synthEquityOnlyStrategy — proxy-hedge spot basis (D1 fix, 2026-09)', () => {
+  // Regression test for the confirmed real-money incident: GOLDM's F&O legs
+  // all settled to qty=0 at expiry, leaving only 2 GOLDBEES beta-hedge
+  // proxy legs (`proxy_for: 'GOLDM'`). Before the fix, the shell's `spot`
+  // silently fell back to `primary.ltp` — GOLDBEES's OWN price (₹124.43) —
+  // instead of GOLDM's real spot (₹1,50,736), a ~1211× difference that
+  // cascaded into a ₹76.4-crore Exp P&L and a +122,012.77% CHG% on screen.
+  const GOLDBEES_LTP = 124.43;
+  const GOLDBEES_PREV_CLOSE = 123.44;
+  const GOLDM_SPOT = 150736;
+  const GOLDM_PREV_CLOSE = 148500;
+
+  function makeGoldbeesProxyLegs() {
+    return [
+      { symbol: 'GOLDBEES', kind: 'eq', qty: 500, avg_cost: 60, ltp: GOLDBEES_LTP, prev_close: GOLDBEES_PREV_CLOSE, proxy_for: 'GOLDM' },
+      { symbol: 'GOLDBEES', kind: 'eq', qty: 300, avg_cost: 58, ltp: GOLDBEES_LTP, prev_close: GOLDBEES_PREV_CLOSE, proxy_for: 'GOLDM' },
+    ];
+  }
+
+  it('prices the shell in the HEDGED root\'s own space, not the proxy ETF\'s own ltp — the exact root-cause regression', () => {
+    const legs = makeGoldbeesProxyLegs();
+    const strat = synthEquityOnlyStrategy(legs, 'GOLDM', GOLDM_SPOT, GOLDM_PREV_CLOSE);
+    expect(strat).not.toBeNull();
+    // The ~1211× smoking gun: spot must be GOLDM's real spot, never GOLDBEES's own ltp.
+    expect(strat.spot).toBe(GOLDM_SPOT);
+    expect(strat.spot).not.toBeCloseTo(GOLDBEES_LTP, 0);
+    const ratio = GOLDM_SPOT / GOLDBEES_LTP;
+    expect(ratio).toBeGreaterThan(1200);
+    expect(ratio).toBeLessThan(1220);
+    expect(strat.spot_prev_close).toBe(GOLDM_PREV_CLOSE);
+  });
+
+  it('builds the payoff grid centered on the target spot, in the real underlying\'s price space', () => {
+    const legs = makeGoldbeesProxyLegs();
+    const strat = synthEquityOnlyStrategy(legs, 'GOLDM', GOLDM_SPOT, GOLDM_PREV_CLOSE);
+    expect(strat.payoff.length).toBe(41);
+    // spanPct = 0.15 around GOLDM_SPOT — grid must span ~1,28,000–1,73,000,
+    // NOT ~106–143 (the proxy-price-space grid the bug produced).
+    expect(strat.payoff[0].spot).toBeCloseTo(GOLDM_SPOT * 0.85, 1);
+    expect(strat.payoff[40].spot).toBeCloseTo(GOLDM_SPOT * 1.15, 1);
+    for (const pt of strat.payoff) {
+      expect(pt.spot).toBeGreaterThan(1000); // sanity: never in GOLDBEES's ~100-140 range
+    }
+  });
+
+  it('returns null (fail-closed) for a proxy leg when no target spot is available yet — never falls back to the proxy\'s own price', () => {
+    const legs = makeGoldbeesProxyLegs();
+    expect(synthEquityOnlyStrategy(legs, 'GOLDM')).toBeNull();
+    expect(synthEquityOnlyStrategy(legs, 'GOLDM', 0, 0)).toBeNull();
+    expect(synthEquityOnlyStrategy(legs, 'GOLDM', NaN, NaN)).toBeNull();
+  });
+
+  it('proxy_for match is case-insensitive against `underlying`', () => {
+    const legs = [{ symbol: 'GOLDBEES', kind: 'eq', qty: 100, avg_cost: 60, ltp: GOLDBEES_LTP, prev_close: GOLDBEES_PREV_CLOSE, proxy_for: 'goldm' }];
+    const strat = synthEquityOnlyStrategy(legs, 'GOLDM', GOLDM_SPOT, GOLDM_PREV_CLOSE);
+    expect(strat.spot).toBe(GOLDM_SPOT);
+  });
+
+  it('net_cost still sums real invested rupees from the proxy legs, unaffected by the spot-basis fix', () => {
+    const legs = makeGoldbeesProxyLegs();
+    const strat = synthEquityOnlyStrategy(legs, 'GOLDM', GOLDM_SPOT, GOLDM_PREV_CLOSE);
+    expect(strat.net_cost).toBeCloseTo(500 * 60 + 300 * 58, 6);
+  });
+
+  // ── Must-not-regress: no-proxy case (holdings genuinely ARE the plotted
+  // underlying, e.g. holding GOLDBEES under its own "GOLDBEES" tab) ──────
+  it('non-proxy case: still uses primary.ltp/prev_close, ignoring any passed target spot', () => {
+    const eqLeg = { symbol: 'RELIANCE', qty: 10, avg_cost: 2500, ltp: 2600, prev_close: 2580 };
+    // Call site now always passes SOME target spot (from _undLive[selectedUnderlying]) —
+    // a deliberately WRONG one here (9999) proves the no-proxy branch ignores it.
+    const strat = synthEquityOnlyStrategy([eqLeg], 'RELIANCE', 9999, 9998);
+    expect(strat.spot).toBe(2600);
+    expect(strat.spot).not.toBe(9999);
+    expect(strat.spot_prev_close).toBe(2580);
+    expect(strat.payoff[0].spot).toBeCloseTo(2600 * 0.85, 6);
+    expect(strat.payoff[40].spot).toBeCloseTo(2600 * 1.15, 6);
+    expect(strat.net_cost).toBeCloseTo(25000, 6);
+  });
+
+  it('non-proxy case with no explicit target args (backward-compatible 2-arg call): unchanged behavior', () => {
+    const eqLeg = { symbol: 'RELIANCE', qty: 10, avg_cost: 2500, ltp: 2600, prev_close: 2580 };
+    const strat = synthEquityOnlyStrategy([eqLeg], 'RELIANCE');
+    expect(strat.spot).toBe(2600);
+    expect(strat.spot_prev_close).toBe(2580);
+    expect(strat.legs).toEqual([]);
+  });
+});
+
+describe('synthCacheKey — includes target spot/prev-close (D1 fix, 2026-09)', () => {
+  it('changes when the target root\'s own spot moves, even if the proxy leg\'s own fields are unchanged', () => {
+    const eqLeg = { symbol: 'GOLDBEES', qty: 500, avg_cost: 60, ltp: 124.43, proxy_for: 'GOLDM' };
+    const k1 = synthCacheKey('GOLDM', [eqLeg], 150736, 148500);
+    const k2 = synthCacheKey('GOLDM', [eqLeg], 150900, 148500);
+    expect(k1).not.toBe(k2);
+  });
+
+  it('is stable when nothing changes (memo hit)', () => {
+    const eqLeg = { symbol: 'GOLDBEES', qty: 500, avg_cost: 60, ltp: 124.43, proxy_for: 'GOLDM' };
+    const k1 = synthCacheKey('GOLDM', [eqLeg], 150736, 148500);
+    const k2 = synthCacheKey('GOLDM', [eqLeg], 150736, 148500);
+    expect(k1).toBe(k2);
   });
 });

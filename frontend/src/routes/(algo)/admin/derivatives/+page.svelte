@@ -2070,6 +2070,18 @@
   // payoffPrevClose — matches payoffSpot's contract basis (the strategy's
   // anchor contract) so the Payoff overlay's own SPOT chip Chg% isn't
   // computed by mixing an anchor-contract LTP against a front-month close.
+  //
+  // Tier 1b (D2 fix, 2026-09): mirrors payoffSpot's own Tier 1b exactly —
+  // when there's no anchor future, use `_undLive[sel]?.close` (the SAME
+  // SSOT payoffSpot's Tier 1b and the Snapshot grid's P.Close column use)
+  // BEFORE falling through to `strategy.spot_prev_close`. Without this the
+  // two derived were asymmetric: payoffSpot already had this tier (added
+  // earlier this session) but payoffPrevClose didn't, so a real anchor-less
+  // spot (e.g. a correctly D1-fixed proxy-hedge shell) could still pair
+  // with a WRONG prev-close still carried on `strategy.spot_prev_close`
+  // (e.g. the proxy ETF's own prev_close) — producing a nonsensical CHG%
+  // even after D1 lands. Confirmed root cause of the GOLDM incident's
+  // +122,012.77% CHG% alongside D1.
   const payoffPrevClose = $derived.by(() => {
     const sel = selectedUnderlying;
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
@@ -2078,6 +2090,9 @@
       if (anchor) {
         const c = liveSnap(anchor)?.close;
         if (c != null && c > 0) return c;
+      } else {
+        const _c = _undLive[sel]?.close;
+        if (_c != null && _c > 0) return _c;
       }
       if ((strategy?.spot_prev_close ?? 0) > 0) return strategy.spot_prev_close;
     }
@@ -2161,14 +2176,20 @@
    * the legs grid and _legsExpPnlTotal so sum(rows) == TOTAL by construction.
    * - Open F&O: intrinsic at expiry + partial-close realised
    * - Closed F&O (qty=0): locked-in realised || pnl (Kite settled-option fallback)
-   * - Equity / proxy hedge: beta-adjusted linear P&L via _eqExpPnlByKey
+   * - Equity / proxy hedge: beta-adjusted linear P&L via
+   *   _equityLinearLegsByKey, valued at the PASSED-IN `spot` (D3 fix,
+   *   2026-09 — previously hardwired to liveSpot regardless of caller)
    * - No spot or unparseable option: null (shows '—')
    * @param {any} c
    * @param {number|null} spot
    * @returns {number|null}
    */
   function _legExpPnlDisplay(c, spot) {
-    if (c.kind === 'eq') return _eqExpPnlByKey[enKey(c)] ?? null;
+    if (c.kind === 'eq') {
+      if (spot == null) return null;
+      const leg = _equityLinearLegsByKey[enKey(c)];
+      return leg ? (spot - leg.cost) * leg.qty : null;
+    }
     // Futures value at THEIR OWN contract's live price, not the shared
     // front-month root `spot` — these only coincide when the held future
     // IS the front-month contract (§4 futures-own-price fix). Options
@@ -2608,6 +2629,24 @@
     return out;
   });
 
+  /** `_equityLinearLegs` re-keyed for O(1) per-candidate lookup (D3 fix,
+   *  2026-09) — `_legExpPnlDisplay`'s eq/proxy branch values a leg's
+   *  effective (qty, cost) at whatever `spot` basis ITS CALLER passed in
+   *  (liveSpot for the Legs-grid TOTAL, payoffSpot for the chart's own
+   *  on-chart readout — the C1 anchor-basis decision), instead of always
+   *  valuing at `liveSpot` regardless of argument (the latent
+   *  `_eqExpPnlByKey` issue found alongside D1/D2 — didn't corrupt the
+   *  GOLDM incident's numbers since payoffSpot and liveSpot coincidentally
+   *  agreed there, but would silently diverge the chart from the grid on
+   *  any root whose anchor contract differs from front-month while a
+   *  proxy leg is present). */
+  const _equityLinearLegsByKey = $derived.by(() => {
+    /** @type {Record<string, {qty:number, cost:number}>} */
+    const m = {};
+    for (const l of _equityLinearLegs) m[l.key] = { qty: l.qty, cost: l.cost };
+    return m;
+  });
+
   /** Payoff chart's "leg composition" identity — the signal OptionsPayoff
    *  uses to distinguish "same strategy, new data landed on the routine
    *  5s refetch" from "the operator actually changed the basket" (B1 fix).
@@ -2636,14 +2675,10 @@
     return `${selectedUnderlying}|${optLegs}|${eqLegs}|H${_includeHoldings ? 1 : 0}|D${showDraftInPayoff ? 1 : 0}`;
   });
 
-  const _eqExpPnlByKey = $derived.by(() => {
-    const spot = liveSpot;
-    if (spot == null) return /** @type {Record<string,number>} */ ({});
-    /** @type {Record<string,number>} */
-    const m = {};
-    for (const l of _equityLinearLegs) m[l.key] = (spot - l.cost) * l.qty;
-    return m;
-  });
+  // _eqExpPnlByKey removed (D3 fix, 2026-09) — replaced by
+  // _equityLinearLegsByKey above, valued at each caller's OWN passed
+  // `spot` inside _legExpPnlDisplay instead of being pre-baked at
+  // liveSpot regardless of caller.
   const _mergedPayoff = $derived.by(() => {
     const base = strategy?.payoff;
     if (!Array.isArray(base) || base.length === 0) {
@@ -4090,7 +4125,10 @@
   let _stratLastFetchAt = 0;
   const _STRAT_REFRESH_MS = 5000; // matches book-poll cadence
   // synthCacheKey, synthEquityOnlyStrategy — imported from $lib/derivatives/pageLoad.js
-  // (renamed: synthCacheKey(underlying, eqs), synthEquityOnlyStrategy(eqs, underlying))
+  // synthCacheKey(underlying, eqs, targetSpot?, targetPrevClose?)
+  // synthEquityOnlyStrategy(eqs, underlying, targetSpot?, targetPrevClose?)
+  // — targetSpot/targetPrevClose (D1 proxy-hedge fix, 2026-09) sourced from
+  // _undLive[selectedUnderlying] at the call site below.
 
   /** @param {{ force?: boolean, clear?: boolean }} [opts] */
   async function loadStrategy(opts = {}) {
@@ -4117,11 +4155,25 @@
         ? candidatePositions.filter(c => c.kind === 'eq' && _isLegEnabled(c))
         : [];
       if (enabledEqs.length > 0) {
-        // Memoize by (underlying, per-leg signature) to skip re-render when
-        // the 5s poll brings no relevant change.
-        const key = synthCacheKey(selectedUnderlying, enabledEqs);
+        // Proxy-hedge fix (D1, 2026-09): pass the TARGET root's own live
+        // spot/prev-close (same SSOT the Snapshot grid + payoffSpot's
+        // Tier-1/1b use, `_undLive[selectedUnderlying]`) so a proxy-hedge
+        // equity leg (e.g. GOLDBEES `proxy_for:'GOLDM'`) prices the shell
+        // in GOLDM's own space instead of silently falling back to
+        // GOLDBEES's own ~1211× smaller LTP. No effect on the non-proxy
+        // case (holdings ARE the plotted underlying) — synthEquityOnlyStrategy
+        // only consults these when a passed leg actually carries `proxy_for`.
+        const _target = untrack(() => _undLive[selectedUnderlying]);
+        // Memoize by (underlying, per-leg signature, target spot/prev-close)
+        // to skip re-render when the 5s poll brings no relevant change —
+        // target spot/prev-close included so the shell re-derives when the
+        // HEDGED root's own price ticks, not just the proxy leg's own price.
+        const key = synthCacheKey(selectedUnderlying, enabledEqs, _target?.ltp, _target?.close);
         if (!_synthCache || _synthCache.key !== key) {
-          _synthCache = { key, value: synthEquityOnlyStrategy(enabledEqs, selectedUnderlying) };
+          _synthCache = {
+            key,
+            value: synthEquityOnlyStrategy(enabledEqs, selectedUnderlying, _target?.ltp, _target?.close),
+          };
         }
         if (strategy !== _synthCache.value) {
           strategy = _synthCache.value;
