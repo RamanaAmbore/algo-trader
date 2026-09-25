@@ -28,14 +28,25 @@
  * replaces branchy Case-override logic. _lastCandidatesDayPnl changed from $state() to plain
  * JSDoc type (Svelte 5 rule: don't write $state inside $derived).
  *
+ * Fix (item-1/§1, supersedes the 2026-07-04/09-07/09-08 fixes above):
+ * `livePositionDayPnl` (baseline-diff + live-tick delta) was removed entirely —
+ * positions/holdings Day P&L is now purely poll-driven, no live-tick term
+ * anywhere. `_candDayPnl` (derivatives page) and `mergePositionRows`
+ * (pulseUnified.js) both now delegate directly to `baseDayPnlForPosition`,
+ * with no `untrack(getSnapshot(...))` code path left (nothing left to
+ * throttle-guard — there's no live-tick read at all). Both surfaces still
+ * converge on the same number by construction since they call the same
+ * poll-only helper.
+ *
  * Quality dimensions checked:
  *   SSOT   — candidatesDayPnl uses _candDayPnl per row (not store lookups that can
- *            return undefined for filtered-out symbols); _candDayPnl delegates to
- *            livePositionDayPnl; pulseUnified.js calls livePositionDayPnl
+ *            return undefined for filtered-out symbols); _candDayPnl and
+ *            pulseUnified.js's mergePositionRows both delegate to baseDayPnlForPosition
  *   Perf   — no XHR budget regression on Pulse cold-load
  *   Stale  — _lastCandidatesDayPnl caches last non-empty value to bridge 5s poll gaps;
- *            no inline Day P&L computation remaining in consumers
- *   Reuse  — baseDayPnlForPosition + livePositionDayPnl are the SSOT functions
+ *            no inline Day P&L computation remaining in consumers; livePositionDayPnl
+ *            confirmed absent (removed by §1)
+ *   Reuse  — baseDayPnlForPosition is the sole SSOT function (no separate live-tick variant)
  *   UX     — DAY P&L row in payoff overlay renders for flat days (dayPnl=0 no longer hidden)
  */
 
@@ -65,17 +76,19 @@ const PAYOFF_SRC = path.resolve(
 
 // ── Static SSOT checks ────────────────────────────────────────────────────────
 
-test('SSOT: livePositionDayPnl is defined and exported from nav.js', () => {
+test('SSOT: baseDayPnlForPosition is defined and exported from nav.js; livePositionDayPnl no longer exists (§1)', () => {
   const src = fs.readFileSync(NAV_SRC, 'utf8');
   expect(
-    src.includes('export function livePositionDayPnl('),
-    'nav.js must export livePositionDayPnl as the canonical live-LTP-rescue helper'
+    src.includes('export function baseDayPnlForPosition('),
+    'nav.js must export baseDayPnlForPosition as the canonical poll-only Day P&L helper'
   ).toBe(true);
-  // Must call baseDayPnlForPosition internally (not reimplement)
+  // livePositionDayPnl (baseline-diff + live-tick delta) was removed
+  // entirely by §1 — positions/holdings Day P&L is purely poll-driven now,
+  // with no separate live-tick-rescue function left to reintroduce.
   expect(
-    src.includes('baseDayPnlForPosition('),
-    'livePositionDayPnl must delegate to baseDayPnlForPosition for the base path'
-  ).toBe(true);
+    /\blivePositionDayPnl\b/.test(src),
+    'nav.js must NOT define/reference livePositionDayPnl — removed by §1 (poll-only Day P&L redesign)'
+  ).toBe(false);
 });
 
 test('SSOT: _lastCandidatesDayPnl stale-cache variable is present in derivatives page source', () => {
@@ -153,12 +166,16 @@ test('SSOT: OptionsPayoff DAY P&L guard uses null-only check (shows 0 on flat da
   ).toBe(true);
 });
 
-test('SSOT: pulseUnified.js calls livePositionDayPnl (not inline recompute)', () => {
+test('SSOT: pulseUnified.js calls baseDayPnlForPosition (not livePositionDayPnl, not inline recompute)', () => {
   const src = fs.readFileSync(PULSE_SRC, 'utf8');
   expect(
-    src.includes('livePositionDayPnl'),
-    'pulseUnified.js must call livePositionDayPnl from nav.js'
+    src.includes('baseDayPnlForPosition('),
+    'pulseUnified.js must call baseDayPnlForPosition from nav.js'
   ).toBe(true);
+  expect(
+    /\blivePositionDayPnl\b/.test(src),
+    'pulseUnified.js must NOT reference livePositionDayPnl — removed by §1'
+  ).toBe(false);
 });
 
 test('Stale: no inline Day P&L formula computation left in consumers', () => {
@@ -166,20 +183,22 @@ test('Stale: no inline Day P&L formula computation left in consumers', () => {
   const pulseSrc = fs.readFileSync(PULSE_SRC, 'utf8');
 
   // OLD pattern: inline computation of day P&L per row (e.g. "realisedToday" variable).
-  // NEW pattern: both surfaces delegate to helpers (livePositionDayPnl, baseDayPnlForPosition)
-  // instead of reimplementing the atomic baseline-diff formula.
+  // NEW pattern: both surfaces delegate to the single poll-only helper
+  // (baseDayPnlForPosition) instead of reimplementing the atomic
+  // baseline-diff formula or layering a live-tick delta on top of it.
 
-  // Consumers must NOT inline the formula — they should call the nav.js helpers.
+  // Consumers must NOT inline the formula — they should call the nav.js helper.
   expect(
     derivSrc.includes('realisedToday'),
-    'derivatives page must not inline realisedToday — delegate to livePositionDayPnl'
+    'derivatives page must not inline realisedToday — delegate to baseDayPnlForPosition'
   ).toBe(false);
   expect(
     pulseSrc.includes('realisedToday'),
-    'pulseUnified.js must not inline realisedToday — delegate to livePositionDayPnl'
+    'pulseUnified.js must not inline realisedToday — delegate to baseDayPnlForPosition'
   ).toBe(false);
 
-  // nav.js MUST export the SSOT helpers (baseDayPnlForPosition and livePositionDayPnl)
+  // nav.js MUST export the SSOT helper (baseDayPnlForPosition) — livePositionDayPnl
+  // no longer exists (§1 removed it entirely).
   const navSrc = fs.readFileSync(NAV_SRC, 'utf8');
   expect(
     navSrc.includes('export function baseDayPnlForPosition('),
@@ -191,19 +210,25 @@ test('Stale: no inline Day P&L formula computation left in consumers', () => {
   ).toBe(true);
 });
 
-test('Stale: derivatives _candDayPnl uses untrack() on getSnapshot to respect throttle', () => {
+test('Stale: derivatives _candDayPnl delegates to baseDayPnlForPosition, no live-tick (untrack/getSnapshot) path', () => {
   const src = fs.readFileSync(DERIV_SRC, 'utf8');
 
-  // _candDayPnl is now a const arrow function (not a named function declaration)
+  // _candDayPnl is a one-line const arrow function delegating straight to
+  // baseDayPnlForPosition — §1 removed the live-tick rescue entirely, so
+  // there's no getSnapshot read left to throttle-guard with untrack().
   const fnStart = src.indexOf('const _candDayPnl = (');
   expect(fnStart, '_candDayPnl const declaration must exist').toBeGreaterThan(-1);
 
-  const fnEnd = src.indexOf('\n  };', fnStart) + 5;
-  const fnBody = src.slice(fnStart, fnEnd);
+  const lineEnd = src.indexOf('\n', fnStart);
+  const fnLine = src.slice(fnStart, lineEnd);
   expect(
-    fnBody.includes('untrack('),
-    '_candDayPnl must wrap getSnapshot in untrack() to prevent throttle bypass'
+    fnLine.includes('baseDayPnlForPosition('),
+    `_candDayPnl must delegate to baseDayPnlForPosition. Got: "${fnLine.trim()}"`
   ).toBe(true);
+  expect(
+    fnLine.includes('untrack(') || fnLine.includes('getSnapshot('),
+    '_candDayPnl must NOT read a live symbol snapshot — it is poll-only per §1'
+  ).toBe(false);
 });
 
 // ── Live UI checks ────────────────────────────────────────────────────────────

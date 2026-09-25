@@ -68,11 +68,12 @@ test('SSOT: MarketPulse imports baseDayPnlForPosition from $lib/data/nav', () =>
   ).toBe(true);
 });
 
-test('SSOT: pulseUnified positions row.day_pnl uses livePositionDayPnl (baseline-diff SSOT), not raw day_change_val', () => {
-  // Day P&L / Exp P&L redesign (2026-09): the Case-branch `brokerDcv` local
-  // variable was eliminated — mergePositionRows now calls livePositionDayPnl
-  // directly (which itself delegates to baseDayPnlForPosition for the base
-  // and applies a live-tick delta on top). Check the helper module.
+test('SSOT: pulseUnified positions row.day_pnl uses baseDayPnlForPosition (poll-only SSOT, §1), not raw day_change_val', () => {
+  // §1 (positions/holdings LTP-source redesign, supersedes the 2026-09
+  // Day P&L redesign referenced above): livePositionDayPnl (baseline-diff
+  // + live-tick delta) was removed entirely — mergePositionRows now calls
+  // baseDayPnlForPosition directly with NO live-tick delta at all.
+  // Positions Day P&L is purely poll-driven (5s/30s book-poll cadence).
   const src = fs.readFileSync(PULSE_UNIFIED_SRC, 'utf8');
 
   // The old raw read pattern must not appear in the positions section
@@ -81,10 +82,16 @@ test('SSOT: pulseUnified positions row.day_pnl uses livePositionDayPnl (baseline
     'Old "const brokerDcv = Number(r.day_change_val) || 0" must not be in pulseUnified'
   ).toBe(false);
 
-  // The new SSOT pattern — row.day_pnl accumulates via livePositionDayPnl
+  // livePositionDayPnl no longer exists anywhere (§1 removed it from nav.js).
   expect(
-    src.includes('row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl('),
-    'pulseUnified must accumulate row.day_pnl via livePositionDayPnl(...)'
+    /\blivePositionDayPnl\b/.test(src),
+    'pulseUnified must NOT reference livePositionDayPnl — it was removed by §1'
+  ).toBe(false);
+
+  // The current SSOT pattern — row.day_pnl accumulates via baseDayPnlForPosition
+  expect(
+    src.includes('row.day_pnl = (row.day_pnl ?? 0) + baseDayPnlForPosition('),
+    'pulseUnified must accumulate row.day_pnl via baseDayPnlForPosition(...)'
   ).toBe(true);
 });
 

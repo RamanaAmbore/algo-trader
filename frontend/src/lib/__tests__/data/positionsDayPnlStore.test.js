@@ -5,15 +5,22 @@
  *
  * The store aggregates day P&L across all positions by:
  *   1. Reading from positionsStore.value (array of broker position rows)
- *   2. For each row, calling livePositionDayPnl with live LTP from symbolStore
+ *   2. For each row, calling baseDayPnlForPosition (poll-only — §1)
  *   3. Exporting { total: number, byKey: { "EXCHANGE:SYMBOL": number } }
  *
+ * §1 (positions/holdings LTP-source redesign) removed the live-tick-delta
+ * wrapper `livePositionDayPnl` entirely — Day P&L is now purely poll-driven.
+ * This test file was rewritten accordingly: `computePositionsDayPnl` below
+ * mirrors the real store's (now simpler) computation, and every test's
+ * expected value is the "base" figure from the original test's own comment
+ * (the live-tick delta term is gone, not just zeroed).
+ *
  * This test file validates the underlying computation using the actual
- * livePositionDayPnl and baseDayPnlForPosition functions from nav.js,
- * following the pattern established in positions_holdings_ssot.test.js.
+ * baseDayPnlForPosition function from nav.js, following the pattern
+ * established in positions_holdings_ssot.test.js.
  *
  * Five quality dimensions:
- *   1. SSOT   — livePositionDayPnl and baseDayPnlForPosition are canonical
+ *   1. SSOT   — baseDayPnlForPosition is canonical
  *   2. Perf   — pure unit, no DOM / network, sub-millisecond
  *   3. Stale  — market-closed and edge cases still return correct values
  *   4. Reuse  — exercises exported nav.js functions
@@ -21,15 +28,17 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { livePositionDayPnl, baseDayPnlForPosition } from '$lib/data/nav.js';
+import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Simulate the store's computation: given positions array, symbolStore snapshots,
- * return { total, byKey }.
+ * Simulate the store's computation: given positions array, return
+ * { total, byKey }. `snapshots`/`marketOpen` params are retained in the
+ * signature for call-site compatibility with existing tests below but are
+ * no longer read — Day P&L is purely poll-driven (§1), no live-tick input.
  */
-function computePositionsDayPnl(positions = [], snapshots = {}, marketOpen = true) {
+function computePositionsDayPnl(positions = [], _snapshots = {}, _marketOpen = true) {
   const byKey = {};
   let total = 0;
 
@@ -38,20 +47,7 @@ function computePositionsDayPnl(positions = [], snapshots = {}, marketOpen = tru
     const exchange = (pos.exchange || '').toUpperCase();
     const key = `${exchange}:${symbol.toUpperCase()}`;
 
-    // Get live LTP from snapshot, fall back to last_price
-    const snap = snapshots[symbol];
-    const liveLtp = snap?.ltp ?? pos.last_price ?? null;
-
-    // Compute day P&L using livePositionDayPnl
-    const dayPnl = livePositionDayPnl(
-      {
-        pollLtp: pos.last_price || 0,
-        qty: pos.quantity || 0,
-        dcvRow: pos, // raw row for baseDayPnlForPosition
-      },
-      liveLtp,
-      { marketOpen }
-    );
+    const dayPnl = baseDayPnlForPosition(pos);
 
     byKey[key] = dayPnl;
     total += dayPnl;
@@ -97,10 +93,10 @@ describe('positionsDayPnlStore computation — single position', () => {
     const snapshots = { RELIANCE: { ltp: 1010, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base = pnl(200) - prev_settlement_pnl(150) = 50
-    // delta = (1010-1005)*10 = 50 → result = 100
-    expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(100, 4);
-    expect(result.total).toBeCloseTo(100, 4);
+    // base = pnl(200) - prev_settlement_pnl(150) = 50. No live-tick delta (§1) —
+    // the snapshot ltp=1010 has zero effect on the result.
+    expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(50, 4);
+    expect(result.total).toBeCloseTo(50, 4);
   });
 
   it('single position, key format is EXCHANGE:SYMBOL uppercase', () => {
@@ -115,7 +111,7 @@ describe('positionsDayPnlStore computation — single position', () => {
     expect(Object.keys(result.byKey)[0]).toBe('NSE:RELIANCE');
   });
 
-  it('single position, snapshot ltp used over last_price', () => {
+  it('single position, snapshot ltp has no effect — poll-only (§1)', () => {
     const positions = [
       makePositionRow({
         tradingsymbol: 'NIFTY25AUGFUT',
@@ -131,9 +127,9 @@ describe('positionsDayPnlStore computation — single position', () => {
     const snapshots = { NIFTY25AUGFUT: { ltp: 24200, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base = 100; delta = (24200-24100)*1 = 100 → result = 200
-    // Snapshot LTP (24200) takes precedence over last_price (24100) for pollLtp comparison.
-    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(200, 4);
+    // base = 100. A symbolStore snapshot LTP diverging from last_price no
+    // longer affects the result — positions Day P&L is poll-only (§1).
+    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(100, 4);
   });
 });
 
@@ -211,12 +207,12 @@ describe('positionsDayPnlStore — multiple positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // Pos 1: base=25, delta=(1010-1005)*5=25 → 50
-    // Pos 2: base=50, delta=(1010-1005)*10=50 → 100
-    // Total: 150
-    expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(50, 4);
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(100, 4);
-    expect(result.total).toBeCloseTo(150, 4);
+    // Pos 1: base=25 (no live-tick delta — §1)
+    // Pos 2: base=50
+    // Total: 75
+    expect(result.byKey['NSE:RELIANCE']).toBeCloseTo(25, 4);
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(50, 4);
+    expect(result.total).toBeCloseTo(75, 4);
   });
 
   it('three mixed positions with different exchanges', () => {
@@ -259,14 +255,14 @@ describe('positionsDayPnlStore — multiple positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // MCX: base=10, delta=(510-505)*2=10 → 20
-    // CDS: base=1, delta=(90-89)*1=1 → 2
-    // NFO: base=100, delta=(24200-24100)*1=100 → 200
-    // Total: 222
-    expect(result.byKey['MCX:CRUDEOIL25AUGFUT']).toBeCloseTo(20, 4);
-    expect(result.byKey['CDS:EURINR25AUGFUT']).toBeCloseTo(2, 4);
-    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(200, 4);
-    expect(result.total).toBeCloseTo(222, 4);
+    // MCX: base=10 (no live-tick delta — §1)
+    // CDS: base=1
+    // NFO: base=100
+    // Total: 111
+    expect(result.byKey['MCX:CRUDEOIL25AUGFUT']).toBeCloseTo(10, 4);
+    expect(result.byKey['CDS:EURINR25AUGFUT']).toBeCloseTo(1, 4);
+    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(100, 4);
+    expect(result.total).toBeCloseTo(111, 4);
   });
 });
 
@@ -288,8 +284,8 @@ describe('positionsDayPnlStore — short positions', () => {
     const snapshots = { INFY25AUGFUT: { ltp: 480, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=50; delta = (480-490)*(-5) = 50 → result = 100
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(100, 4);
+    // base=50, no live-tick delta (§1)
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(50, 4);
   });
 
   it('short position, qty=-10, price spikes up → loss', () => {
@@ -307,8 +303,8 @@ describe('positionsDayPnlStore — short positions', () => {
     const snapshots = { INFY25AUGFUT: { ltp: 520, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=-100; delta = (520-510)*(-10) = -100 → result = -200
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-200, 4);
+    // base=-100, no live-tick delta (§1)
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-100, 4);
   });
 
   it('short position with negative day_change_val in total', () => {
@@ -338,11 +334,11 @@ describe('positionsDayPnlStore — short positions', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // PE short: base=-5, delta=(60-55)*(-1)=-5 → -10
-    // CE long: base=5, delta=(60-55)*1=5 → 10
+    // PE short: base=-5 (no live-tick delta — §1)
+    // CE long: base=5
     // Total: 0 (hedge neutral)
-    expect(result.byKey['NFO:NIFTY25AUG100PE']).toBeCloseTo(-10, 4);
-    expect(result.byKey['NFO:NIFTY25AUG100CE']).toBeCloseTo(10, 4);
+    expect(result.byKey['NFO:NIFTY25AUG100PE']).toBeCloseTo(-5, 4);
+    expect(result.byKey['NFO:NIFTY25AUG100CE']).toBeCloseTo(5, 4);
     expect(result.total).toBeCloseTo(0, 4);
   });
 });
@@ -465,8 +461,8 @@ describe('positionsDayPnlStore — mixed overnight + intraday positions', () => 
     const snapshots = { INFY25AUGFUT: { ltp: 220, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=-25; delta=(220-215)*(-15)=-75 → result=-100
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-100, 4);
+    // base=-25, no live-tick delta (§1)
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(-25, 4);
   });
 
   it('overnight + intraday buy adds: correct aggregation', () => {
@@ -487,8 +483,8 @@ describe('positionsDayPnlStore — mixed overnight + intraday positions', () => 
     const snapshots = { INFY25AUGFUT: { ltp: 1020, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=75; delta=(1020-1015)*10=50 → result=125
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(125, 4);
+    // base=75, no live-tick delta (§1)
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(75, 4);
   });
 });
 
@@ -524,11 +520,11 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // NIFTY: base=100, delta=(24200-24100)*1=100 → 200
-    // BANKNIFTY: base=-100, delta=(51800-51900)*1=-100 → -200
+    // NIFTY: base=100 (no live-tick delta — §1)
+    // BANKNIFTY: base=-100
     // Total: 0
-    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(200, 4);
-    expect(result.byKey['NFO:BANKNIFTY25AUGFUT']).toBeCloseTo(-200, 4);
+    expect(result.byKey['NFO:NIFTY25AUGFUT']).toBeCloseTo(100, 4);
+    expect(result.byKey['NFO:BANKNIFTY25AUGFUT']).toBeCloseTo(-100, 4);
     expect(result.total).toBeCloseTo(0, 4);
   });
 
@@ -569,14 +565,14 @@ describe('positionsDayPnlStore — aggregation with mixed profit/loss', () => {
     };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // P1: base=5, delta=(110-105)*1=5 → 10
-    // P2: base=-10, delta=(185-190)*1=-5 → -15
-    // P3: base=4, delta=(55-52)*2=6 → 10
-    // Total: 5
-    expect(result.byKey['NFO:P1']).toBeCloseTo(10, 4);
-    expect(result.byKey['NFO:P2']).toBeCloseTo(-15, 4);
-    expect(result.byKey['NFO:P3']).toBeCloseTo(10, 4);
-    expect(result.total).toBeCloseTo(5, 4);
+    // P1: base=5 (no live-tick delta — §1)
+    // P2: base=-10
+    // P3: base=4
+    // Total: -1
+    expect(result.byKey['NFO:P1']).toBeCloseTo(5, 4);
+    expect(result.byKey['NFO:P2']).toBeCloseTo(-10, 4);
+    expect(result.byKey['NFO:P3']).toBeCloseTo(4, 4);
+    expect(result.total).toBeCloseTo(-1, 4);
   });
 });
 
@@ -598,8 +594,8 @@ describe('positionsDayPnlStore — fractional values', () => {
     const snapshots = { INFY25AUGFUT: { ltp: 1235.1, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=0.8075; delta=(1235.1-1234.890)*2.5=0.525 → 1.3325
-    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(1.3325, 3);
+    // base=0.8075, no live-tick delta (§1)
+    expect(result.byKey['NFO:INFY25AUGFUT']).toBeCloseTo(0.8075, 3);
   });
 });
 
@@ -623,8 +619,8 @@ describe('positionsDayPnlStore — large positions', () => {
     const snapshots = { CRUDEOIL25SEPTFUT: { ltp: 6520, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=1000; delta=(6520-6510)*100=1000 → 2000
-    expect(result.byKey['MCX:CRUDEOIL25SEPTFUT']).toBeCloseTo(2000, 4);
+    // base=1000, no live-tick delta (§1)
+    expect(result.byKey['MCX:CRUDEOIL25SEPTFUT']).toBeCloseTo(1000, 4);
   });
 });
 
@@ -658,10 +654,12 @@ describe('positionsDayPnlStore — close_price/previous_close no longer affect t
     expect(rDrift.byKey['NSE:RELIANCE']).toBe(rNoRef.byKey['NSE:RELIANCE']);
   });
 
-  it('no epsilon guard on positions — live delta fires even for a sub-paisa move', () => {
-    // Unlike holdingsDayPnlStore (which skips its formula when |ltp−close| ≤
-    // 0.005 as a post-settlement guard), livePositionDayPnl has no epsilon
-    // guard — the delta applies at any non-zero (liveLtp − pollLtp).
+  it('§1 regression guard: a live snapshot diverging from last_price — even by a sub-paisa move — has zero effect', () => {
+    // Historical: livePositionDayPnl had no epsilon guard, so even a
+    // sub-paisa (liveLtp − pollLtp) move produced a nonzero delta. §1
+    // removed the live-tick delta entirely — positions Day P&L is now
+    // purely poll-driven, so ANY live snapshot value (sub-paisa or large)
+    // has zero effect on the result.
     const positions = [
       makePositionRow({
         tradingsymbol: 'TATASTEEL',
@@ -676,8 +674,8 @@ describe('positionsDayPnlStore — close_price/previous_close no longer affect t
     const snapshots = { TATASTEEL: { ltp: 500.001, ltp_ts: 1 } };
     const result = computePositionsDayPnl(positions, snapshots, true);
 
-    // base=50; delta=(500.001-500)*100=0.1 → 50.1
-    expect(result.byKey['NSE:TATASTEEL']).toBeCloseTo(50.1, 3);
+    // base=50, unaffected by the live snapshot's sub-paisa move.
+    expect(result.byKey['NSE:TATASTEEL']).toBeCloseTo(50, 3);
   });
 });
 

@@ -11,7 +11,8 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher } from '$lib/data/derivativesMath.js';
+import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Minimal fixture helpers
@@ -355,5 +356,68 @@ describe('rollupByUnderlying — holdingsDayPnlByKey param', () => {
     expect(tcsGroup.day_with).toBe(250);
     expect(infyGroup.day_with).toBe(200);
     expect(relianceGroup.day_with).toBe(300);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// perRootReduce — item-2 fix (round 4): per-row accessor, no double-counting
+// across accounts holding the same symbol. Confirmed worked example:
+// CRUDEOIL CE held in ACCT_A and ACCT_B, real per-account extrinsic −3,000
+// each (real cross-account total −6,000, per-account share −3,000).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('perRootReduce — Extrinsic, multi-account same-symbol (item-2 fix)', () => {
+  // strike 6000, pollAnchor (underlying poll-time spot) 6100 → intrinsic 100.
+  // ltp (option's own poll price) 130, qty 100 per account → extrinsic
+  // (intrinsic - ltp) * qty = (100 - 130) * 100 = -3000 per row.
+  const rowFor = (account) => ({
+    symbol: 'CRUDEOIL6000CE', account, source: 'live',
+    qty: 100, avg_cost: 125, ltp: 130, underlying_ltp: 6100,
+  });
+  const positions = [rowFor('ACCT_A'), rowFor('ACCT_B')];
+
+  const reduceParams = (matchAccount) => ({
+    positions,
+    wantedSource: /** @type {'live'} */ ('live'),
+    matchAccount,
+    matchStrategy: () => true,
+    decomposeSymbol: () => ({ root: 'CRUDEOIL' }),
+    getSpot: () => 0, // unused — legExtrinsicDisplay reads c.underlying_ltp, not the getSpot-resolved value
+    accessor: (c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0),
+  });
+
+  it('sums real per-account contributions across both accounts: -3000 + -3000 = -6000 (NOT -12000)', () => {
+    const out = perRootReduce(reduceParams(() => true));
+    expect(out.CRUDEOIL).toBe(-6000);
+  });
+
+  it('filtered to ACCT_A alone: shows that account\'s own share (-3000), not the whole-book cross-account sum', () => {
+    const out = perRootReduce(reduceParams((a) => a === 'ACCT_A'));
+    expect(out.CRUDEOIL).toBe(-3000);
+  });
+
+  it('round-trip against the pre-fix bug: an accessor that returns a value ALREADY pre-summed across every account (simulating positionsDerivedStore.get(sym).extrinsic, keyed by symbol only) double-counts when perRootReduce walks per-account rows', () => {
+    // This reproduces the exact round-3 defect: positionsDerivedStore's
+    // byKey/byRoot maps are pre-summed across every account for a given
+    // symbol — indexing that pre-summed value from INSIDE a per-account
+    // row walk adds the same total once per account row touched.
+    const preSummedCrossAccountTotal = -6000; // what the store would report for this symbol
+    const oldBuggyAccessor = () => preSummedCrossAccountTotal;
+    const out = perRootReduce({ ...reduceParams(() => true), accessor: oldBuggyAccessor });
+    // Confirms the bug: sums to -12000 (2x the real -6000) when the
+    // accessor doesn't compute per-row — proving this suite WOULD have
+    // caught the round-3 regression had it existed at the time.
+    expect(out.CRUDEOIL).toBe(-12000);
+    expect(out.CRUDEOIL).not.toBe(-6000);
+  });
+
+  it('strategy filter (buildStrategyMatcher): excludes a symbol not in the strategy\'s open legs, matching the Exp P&L filter basis (item-3)', () => {
+    const matchStrategy = buildStrategyMatcher('strat-1', new Set(['CRUDEOIL6000CE']));
+    const outIncluded = perRootReduce({ ...reduceParams(() => true), matchStrategy });
+    expect(outIncluded.CRUDEOIL).toBe(-6000);
+
+    const matchStrategyExcluding = buildStrategyMatcher('strat-1', new Set(['CRUDEOIL6500PE']));
+    const outExcluded = perRootReduce({ ...reduceParams(() => true), matchStrategy: matchStrategyExcluding });
+    expect(outExcluded.CRUDEOIL).toBeUndefined();
   });
 });

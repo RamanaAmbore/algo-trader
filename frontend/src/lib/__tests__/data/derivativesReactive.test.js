@@ -12,87 +12,47 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
+import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Fix 5 — _snapshotTotalDay live-LTP path
+// Fix 5 (superseded by §1 positions/holdings LTP-source redesign) —
+// _snapshotTotalDay live-LTP path
 //
-// _snapshotTotalDay switched from baseDayPnlForPosition to livePositionDayPnl.
-// The tests below verify that livePositionDayPnl diverges from
-// baseDayPnlForPosition when a live tick is available and price has moved,
-// matching the intent of Fix 5 (TOTAL row stays current at 4 Hz).
+// Historical: _snapshotTotalDay used to switch from baseDayPnlForPosition to
+// livePositionDayPnl (a live-tick-delta wrapper) so the TOTAL row tracked SSE
+// ticks at 4 Hz. §1 removed that wrapper entirely — Day P&L for positions/
+// derivative legs is now purely poll-driven; baseDayPnlForPosition IS the
+// value, with no delta layered on top regardless of market-open state or a
+// live tick being available. The tests below guard against that delta being
+// reintroduced.
 // ─────────────────────────────────────────────────────────────────────────────
 
-describe('Fix 5 — livePositionDayPnl vs baseDayPnlForPosition diverges on live tick', () => {
-  /**
-   * Overnight position: base = pnl - prev_settlement_pnl = 10. Broker poll
-   * ltp=102, live tick 108 (moved since last poll) → live delta layers on top.
-   */
-  it('market open: live tick adds a delta on top of the settlement-diff base', () => {
+describe('Fix 5 (superseded) — baseDayPnlForPosition has no live-tick delta', () => {
+  it('market open: no delta layers on top of the settlement-diff base', () => {
     const dcvRow = { pnl: 60, prev_settlement_pnl: 50 };
-    const fields = { closePx: 100, pollLtp: 102, qty: 5, avg: 95, dcvRow };
-    const liveLtp = 108;
-
     const base = baseDayPnlForPosition(dcvRow);
-    const live = livePositionDayPnl(fields, liveLtp, { marketOpen: true });
-
-    // base = 60 - 50 = 10; live = 10 + (108-102)*5 = 40
+    // base = 60 - 50 = 10 — a live tick moving 102→108 has zero effect.
     expect(base).toBe(10);
-    expect(live).not.toBe(base);
-    expect(live).toBeCloseTo(40, 4);
   });
 
-  /**
-   * Off-market: market closed → live delta gate ('marketOpen') is false, so
-   * livePositionDayPnl returns the same value as baseDayPnlForPosition —
-   * including the flat-settlement zero case (pnl === prev_settlement_pnl).
-   */
-  it('market closed: returns base honestly, including flat-settlement zero', () => {
+  it('market closed: base is honest, including flat-settlement zero', () => {
     const dcvRow = {
       pnl: -5000,
       prev_settlement_pnl: -5000,  // identical → base = 0
     };
-    const fields = { closePx: 930, pollLtp: 850, qty: 100, avg: 1000, dcvRow };
-
-    const base = baseDayPnlForPosition(dcvRow);  // 0 (flat settlement)
-    const live = livePositionDayPnl(fields, null, { marketOpen: false });
-
-    expect(base).toBe(0);
-    expect(live).toBe(0);
-    expect(live).toBe(base);
+    expect(baseDayPnlForPosition(dcvRow)).toBe(0);
   });
 
-  /**
-   * When liveLtp is null (no SSE tick yet), livePositionDayPnl must fall
-   * back to baseDayPnlForPosition. SSOT consistency: the two functions must
-   * agree when no live data is available.
-   */
-  it('liveLtp=null (no tick yet) → matches baseDayPnlForPosition exactly', () => {
+  it('no live-price parameter exists — result is a pure function of the row', () => {
     const dcvRow = { pnl: 800, prev_settlement_pnl: 480 };
-    const fields = { closePx: 200, pollLtp: 280, qty: 4, avg: 190, dcvRow };
-
-    const base = baseDayPnlForPosition(dcvRow);
-    const live = livePositionDayPnl(fields, null, { marketOpen: true });
-
-    expect(base).toBe(320);
-    expect(live).toBe(base);
+    expect(baseDayPnlForPosition(dcvRow)).toBe(320);
+    expect(baseDayPnlForPosition.length).toBe(1);
   });
 
-  /**
-   * Short position (negative qty): livePositionDayPnl must handle the sign
-   * correctly when combining the settlement-diff base with the live delta.
-   */
-  it('short overnight position: live tick computes gain on price fall', () => {
+  it('short overnight position: base is signed pnl-diff only, no qty-scaled tick delta', () => {
     // Short 10 lots; base = pnl(1000) - prev_settlement_pnl(700) = 300.
-    // Price fell from pollLtp=195 to liveLtp=190 (profit for short).
     const dcvRow = { pnl: 1000, prev_settlement_pnl: 700 };
-    const fields = { closePx: 200, pollLtp: 195, qty: -10, avg: 210, dcvRow };
-    const liveLtp = 190;
-
-    const live = livePositionDayPnl(fields, liveLtp, { marketOpen: true });
-
-    // base = 300; delta = (190-195)*(-10) = 50 → result = 350
-    expect(live).toBeCloseTo(350, 4);
+    expect(baseDayPnlForPosition(dcvRow)).toBe(300);
   });
 });
 

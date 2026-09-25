@@ -20,7 +20,7 @@
 // Shared utilities (also exported for unit tests):
 //   parseSymbolFallback, parseSymbol, fillSymbolMeta, makeRowFactory
 
-// livePositionDayPnl injected via ctx bag — see mergePositionRows ctx param.
+// baseDayPnlForPosition injected via ctx bag — see mergePositionRows ctx param.
 
 // ── Shared constants ─────────────────────────────────────────────────────────
 
@@ -405,8 +405,9 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  * Section 2 — merge position rows (major: 'positions').
  *
  * Multi-account positions for the same symbol merge into one row.
- * Includes the Day P&L recompute with market-open gate, realised-today
- * carry, Contract A branch, and price_source / is_animating propagation.
+ * Includes the Day P&L recompute (poll-only — §1, no live-tick delta),
+ * realised-today carry, Contract A branch, and price_source / is_animating
+ * propagation.
  *
  * @param {Record<string, any>} byKey
  * @param {any[]} pos
@@ -415,15 +416,13 @@ export function mergeWatchlistRows(byKey, actLists, ctx) {
  * @param {{
  *   snapOf: (sym: string) => any,
  *   getInst: ((s: string) => any) | null,
- *   isMarketOpen: () => boolean,
  *   baseDayPnlForPosition: (r: any) => number,
- *   livePositionDayPnl: (fields: any, liveLtp: number|null, opts: {marketOpen: boolean}) => number,
  * }} ctx
  */
 export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
   if (includePos === false) return;
   const get = makeRowFactory(byKey);
-  const { snapOf, getInst, isMarketOpen, baseDayPnlForPosition, livePositionDayPnl } = ctx;
+  const { snapOf, getInst, baseDayPnlForPosition } = ctx;
   for (const r of pos) {
     const exch = r.exchange || 'NFO';
     const sym  = String(r.symbol || r.tradingsymbol || '').toUpperCase();
@@ -455,23 +454,17 @@ export function mergePositionRows(byKey, pos, includePos, cq, ctx) {
       // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
       row.ltp = r.last_price ?? null;
     }
-    // Day P&L — livePositionDayPnl reduces to baseDayPnlForPosition(r) (the
-    // baseline-diff formula: current_total_profit − prev_settlement_pnl)
-    // plus a live-tick delta on top. The live delta is gated on marketOpen
-    // (see livePositionDayPnl's marketOpen check) — after close the base
-    // value alone persists, same as holdings EOD behaviour.
+    // Day P&L — poll-only (§1): baseDayPnlForPosition(r) is the baseline-diff
+    // formula (current_total_profit − prev_settlement_pnl), no live-tick
+    // delta layered on top. Positions/holdings Day P&L is purely poll-driven;
+    // roots/underlyings remain tick-driven elsewhere (unaffected by this).
+    row.day_pnl = (row.day_pnl ?? 0) + baseDayPnlForPosition(r);
+    // Total P&L (lifetime, not Day P&L) still recomputes live from the
+    // freshest LTP available — this is a distinct metric from Day P&L and
+    // is intentionally still tick-sensitive (matches the "P" lifetime pill).
     const _snapLtp   = snap?.ltp;
     const posLiveLtp = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                      : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp) : null);
-    row.day_pnl = (row.day_pnl ?? 0) + livePositionDayPnl(
-      {
-        pollLtp: Number(r.last_price) || 0,
-        qty:     q,
-        dcvRow:  r,
-      },
-      posLiveLtp,
-      { marketOpen: isMarketOpen() },
-    );
     // Total P&L live recompute.
     if (posLiveLtp != null && avg > 0 && q !== 0) {
       row.pnl = (row.pnl ?? 0) + (posLiveLtp - avg) * q + (Number(r.realised) || 0);
@@ -552,23 +545,35 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     }
     if (liveQ?.volume != null) row.volume = liveQ.volume;
     if (liveQ?.oi     != null) row.oi     = liveQ.oi;
-    // Day P&L and total P&L — use snapshot LTP regardless of market-open state.
+    // Total P&L / LTP display — use snapshot LTP regardless of market-open state.
     const liveHold = (_snapLtp != null && Number(_snapLtp) > 0) ? Number(_snapLtp)
                    : (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp)
                    : (Number(r.last_price) > 0 ? Number(r.last_price) : null));
-    const holdClose = Number(r.previous_close) || 0;
+    // Day P&L specifically is poll-only (item-8 fix): unlike liveHold above,
+    // this excludes `_snapLtp` (SSE-tick-driven) so it matches
+    // portfolioStore's `_holdTier1` (NavStrip H slot — poll-only per §1),
+    // which is now poll-only by design. `positionsDerivedStore`/
+    // `holdingsDayPnlStore`'s setFromPulse overrides are confirmed no-op
+    // dead code, so this is the only place Pulse's own holdings Day P&L is
+    // computed; without this it could silently diverge from NavStrip H
+    // between polls on a live price tick. liveQ (batchQuote contracts bag)
+    // and r.last_price (broker poll) are both poll-sourced — only the SSE
+    // tick term is excluded.
+    const pollHold = (Number(liveQ?.ltp) > 0 ? Number(liveQ.ltp)
+                   : (Number(r.last_price) > 0 ? Number(r.last_price) : null));
+    const holdClose = Number(r.prev_close) || 0;
     const holdAvg   = Number(r.average_price) || 0;
     const holdDcv = Number(r.day_change_val) || 0;
     // Guard 1: holdClose<=0 → (ltp-0)*qty = current value, not day P&L (also guards negative previous_close).
     // Guard 2: holdClose===holdAvg → computes lifetime P&L instead of day P&L.
-    // Guard 3: |liveHold-holdClose|≤0.005 → post-settlement, ltp≈close → use dcv.
+    // Guard 3: |pollHold-holdClose|≤0.005 → post-settlement, ltp≈close → use dcv.
     // Mirrors holdingsDayPnlStore._store formula exactly.
     // NOTE: close_price is NOT used (removed from fallback chain per CLAUDE.md fix).
     if (holdClose <= 0 || holdClose === holdAvg) {
       row.day_pnl = (row.day_pnl ?? 0) + holdDcv;
-    } else if (liveHold != null && holdClose > 0 && heldQty !== 0
-               && Math.abs(liveHold - holdClose) > 0.005) {
-      row.day_pnl = (row.day_pnl ?? 0) + (liveHold - holdClose) * heldQty;
+    } else if (pollHold != null && holdClose > 0 && heldQty !== 0
+               && Math.abs(pollHold - holdClose) > 0.005) {
+      row.day_pnl = (row.day_pnl ?? 0) + (pollHold - holdClose) * heldQty;
     } else {
       // Holdings: day_change_val is correct (no new-position overnight_qty=0 edge case — holdings don't have intraday P&L splits)
       row.day_pnl = (row.day_pnl ?? 0) + holdDcv;

@@ -72,13 +72,13 @@
     // curve shifts by exactly the realised gain without incorporating
     // any mark-to-market noise that has no meaning at settlement.
     expiryPnlOffset = /** @type {number} */ (0),
-    // Sum of baseDayPnlForPosition/livePositionDayPnl (the baseline-diff
-    // Day P&L formula: current_total_profit − prev_settlement_pnl, plus a
-    // live-tick delta) for the enabled candidates. Rendered as the DAY row
-    // in the stat overlay so the operator can compare it against the
-    // PositionStrip's P∆ chip. Subset relationship: when the basket covers
-    // EVERY open position in the operator's book, DAY equals P∆ exactly.
-    // null / 0 → DAY row hides.
+    // Sum of baseDayPnlForPosition (the baseline-diff Day P&L formula:
+    // current_total_profit − prev_settlement_pnl) for the enabled
+    // candidates — purely poll-driven (§1 redesign), no live-tick delta
+    // term. Rendered as the DAY row in the stat overlay so the operator
+    // can compare it against the PositionStrip's P∆ chip. Subset
+    // relationship: when the basket covers EVERY open position in the
+    // operator's book, DAY equals P∆ exactly. null / 0 → DAY row hides.
     dayPnl = /** @type {number|null} */ (null),
     // Expiry P&L at the current spot computed from the legs grid's
     // canonical _legsExpPnlTotal helper — intrinsic-value formula

@@ -9,15 +9,20 @@
  *   3. expiryByAcct, byRootPositions, byRootHoldings — for Snapshot
  *
  * Five quality dimensions:
- *   1. SSOT  — livePositionDayPnl + expiryPnl are canonical; no inline duplication
+ *   1. SSOT  — baseDayPnlForPosition + expiryPnl are canonical; no inline duplication
  *   2. Perf  — pure unit tests, no DOM / network, sub-millisecond
  *   3. Stale — closed-leg, missing spot, equity exclusion, stale-close cases
  *   4. Reuse — exercises shared nav.js + expiryPnl.js exports via _computeDerived
  *   5. UX    — totals match NavStrip expectations; equity excluded from Exp P&L
+ *
+ * §1 (positions/holdings LTP-source redesign): the live-tick-delta wrapper
+ * `livePositionDayPnl` was removed from nav.js — Day P&L is now purely
+ * poll-driven via `baseDayPnlForPosition` alone. The local `livePosDay`
+ * default below mirrors that.
  */
 
 import { describe, it, expect } from 'vitest';
-import { livePositionDayPnl, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
+import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 
 // ── _computeDerived pure-function mirror ─────────────────────────────────────
@@ -33,16 +38,7 @@ function _computeDerived(posRows, holdRows, deps = {}) {
     getSpot    = root => 0,
     getTargets = sym  => [],
     getProxy   = (sym, tgt) => null,
-    livePosDay = (p, ltp, opts) => livePositionDayPnl(
-      {
-        pollLtp: Number(p?.last_price ?? 0),
-        qty:     Number(p?.quantity   ?? 0),
-        dcvRow:  p,
-      },
-      ltp,
-      opts,
-    ),
-    marketOpen = true,
+    livePosDay = (p) => baseDayPnlForPosition(p),
   } = deps;
 
   const total = { day_pnl: 0, exp_pnl: 0, extrinsic: 0 };
@@ -61,7 +57,7 @@ function _computeDerived(posRows, holdRows, deps = {}) {
     const snap = getSnap(sym);
     const ltp  = snap?.ltp ?? Number(p?.last_price ?? 0);
 
-    const day_pnl = livePosDay(p, ltp, { marketOpen });
+    const day_pnl = livePosDay(p);
 
     const exch = String(p?.exchange || '').toUpperCase();
     const isFO = FO_EXCHS.has(exch);
@@ -192,15 +188,15 @@ function makePos(overrides = {}) {
 // ── Day P&L tests ─────────────────────────────────────────────────────────────
 
 describe('positionsDerivedStore — Day P&L (byKey and total.day_pnl)', () => {
-  it('uses livePositionDayPnl with SSE ltp when available', () => {
-    // base = pnl(2500) - prev_settlement_pnl(0) = 2500; pollLtp=last_price=23100
-    // delta = (23200-23100)*25 = 2500 → total = 5000
+  it('a live SSE snapshot has no effect — positions Day P&L is poll-only (§1)', () => {
+    // base = pnl(2500) - prev_settlement_pnl(0) = 2500. A getSnap ltp diverging
+    // from last_price (23200 vs 23100) no longer produces a delta.
     const pos = makePos({ last_price: 23100, close_price: 22800, quantity: 25, prev_settlement_pnl: 0 });
     const { total, byKey } = _computeDerived([pos], [], {
       getSnap: (sym) => sym === 'NIFTY26JUNFUT' ? { ltp: 23200 } : undefined,
     });
-    expect(total.day_pnl).toBeCloseTo(5000, 1);
-    expect(byKey['NIFTY26JUNFUT'].day_pnl).toBeCloseTo(5000, 1);
+    expect(total.day_pnl).toBeCloseTo(2500, 1);
+    expect(byKey['NIFTY26JUNFUT'].day_pnl).toBeCloseTo(2500, 1);
   });
 
   it('falls back to pnl when prev_settlement_pnl is null (new/no baseline)', () => {

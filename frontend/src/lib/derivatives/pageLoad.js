@@ -73,6 +73,14 @@ export function buildPositionRowFromBroker(p, source) {
     avg_cost: p?.average_price != null ? Number(p.average_price) : null,
     ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
     prev_close: Number(p?.prev_close) || null,
+    // Poll-time underlying spot, stamped by the backend's option-Greeks
+    // enrichment pass (_enrich_position_greeks, positions.py) on BOTH the
+    // live-fetch and closed-hours-snapshot paths — 0.0 default when unset
+    // (qty=0 rows, or futures, which the enrichment loop skips). Required
+    // by the extrinsic formula's poll-consistent anchor (expiryPnl.js
+    // legExtrinsicDisplay / item-2 fix) so the exp-P&L term and the MTM
+    // term share the same point in time, not a live tick vs a stale poll.
+    underlying_ltp: p?.underlying_ltp != null ? Number(p.underlying_ltp) : 0,
     pnl:      p?.pnl != null ? Number(p.pnl) : 0,
     realised: p?.realised != null ? Number(p.realised) : 0,
     // unrealised is left undefined (not defaulted to 0) when the backend

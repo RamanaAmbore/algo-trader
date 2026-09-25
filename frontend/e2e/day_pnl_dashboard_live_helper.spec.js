@@ -1,20 +1,31 @@
 /**
  * day_pnl_dashboard_live_helper.spec.js
  *
- * Regression guard for Dashboard Day P&L (2026-09-24):
- * The dashboard now uses _livePosDayPnl(p) helper for per-position Day P&L,
- * which applies live-LTP-aware Day P&L (baseline-diff + live-tick delta).
- * This ensures the dashboard's hero P&L updates on live ticks during market hours,
- * rather than stalling until the next 5s backend poll.
+ * Regression guard for Dashboard Day P&L.
+ *
+ * Updated (item-9 fix, §1 positions/holdings LTP redesign): the dashboard's
+ * _livePosDayPnl(p) helper is now POLL-ONLY — it delegates straight to
+ * baseDayPnlForPosition(p) from nav.js with NO live-tick delta and no
+ * getSnapshot/untrack read at all. `livePositionDayPnl` (the old live-tick-
+ * delta function this spec originally guarded) no longer exists in nav.js —
+ * §1 removed it entirely, collapsing the formula to baseDayPnlForPosition.
+ * The dashboard's hero P&L is therefore poll-driven (5s/30s book-poll
+ * cadence), matching portfolioStore's own positions/holdings Day P&L
+ * (NavStrip P slot 1) by construction — no separate live-tick code path
+ * left to diverge from it.
  *
  * Quality dimensions:
- *   SSOT   — _livePosDayPnl is defined locally and calls livePositionDayPnl
- *            from nav.js (not inline recompute)
+ *   SSOT   — _livePosDayPnl is defined locally and delegates directly to
+ *            baseDayPnlForPosition from nav.js (no inline recompute, no
+ *            live-tick term reintroduced)
  *   Perf   — dashboard's _todayPnl includes explicit void positionsDerivedStore.total
- *            tick dependency for 4Hz-throttled reactivity
- *   Stale  — _livePosDayPnl wraps getSnapshot in untrack() per project convention
- *   Reuse  — same pattern as derivatives page _candDayPnl
- *   UX     — dashboard Day P&L updates live during market hours
+ *            tick dependency so it reruns when the poll-driven aggregate changes
+ *   Stale  — confirms livePositionDayPnl is NOT imported/reintroduced and
+ *            _livePosDayPnl has no live-tick (getSnapshot/untrack) code path
+ *   Reuse  — same pattern as derivatives page _candDayPnl / portfolioStore's
+ *            _posTier2 (all poll-only per §1)
+ *   UX     — dashboard Day P&L matches NavStrip P (poll-cadence parity, no
+ *            tick-vs-poll flash between the two surfaces)
  */
 
 import { test, expect } from '@playwright/test';
@@ -31,16 +42,24 @@ const DASHBOARD_SRC = path.resolve(
 
 // ── Static source checks ──────────────────────────────────────────────────────
 
-test('SSOT: Dashboard imports livePositionDayPnl from $lib/data/nav', () => {
+test('SSOT: Dashboard imports baseDayPnlForPosition from $lib/data/nav (poll-only, §1)', () => {
   const src = fs.readFileSync(DASHBOARD_SRC, 'utf8');
 
   expect(
-    /import\s*\{[^}]*\blivePositionDayPnl\b[^}]*\}\s*from\s*'\$lib\/data\/nav'/.test(src),
-    'Dashboard must import livePositionDayPnl from $lib/data/nav'
+    /import\s*\{[^}]*\bbaseDayPnlForPosition\b[^}]*\}\s*from\s*'\$lib\/data\/nav'/.test(src),
+    'Dashboard must import baseDayPnlForPosition from $lib/data/nav'
   ).toBe(true);
+
+  // livePositionDayPnl no longer exists (§1 removed it entirely — the
+  // live-tick delta term collapsed the whole function into
+  // baseDayPnlForPosition) — must not be reintroduced.
+  expect(
+    /\blivePositionDayPnl\b/.test(src),
+    'Dashboard must NOT reference livePositionDayPnl — it was removed by §1 (positions/holdings Day P&L is poll-only)'
+  ).toBe(false);
 });
 
-test('SSOT: Dashboard defines _livePosDayPnl helper function', () => {
+test('SSOT: Dashboard defines _livePosDayPnl helper function (poll-only, no live-tick path)', () => {
   const src = fs.readFileSync(DASHBOARD_SRC, 'utf8');
 
   const fnStart = src.indexOf('function _livePosDayPnl(');
@@ -49,17 +68,19 @@ test('SSOT: Dashboard defines _livePosDayPnl helper function', () => {
   const fnEnd = src.indexOf('\n  }', fnStart) + 4;
   const fnBody = src.slice(fnStart, fnEnd);
 
-  // Must call livePositionDayPnl
+  // Must delegate directly to baseDayPnlForPosition — poll-only, §1.
   expect(
-    fnBody.includes('livePositionDayPnl('),
-    '_livePosDayPnl must call livePositionDayPnl for the live-LTP-aware computation'
+    fnBody.includes('baseDayPnlForPosition('),
+    '_livePosDayPnl must call baseDayPnlForPosition for the poll-only computation'
   ).toBe(true);
 
-  // Must wrap getSnapshot in untrack()
+  // Must NOT have a live-tick code path (getSnapshot/untrack) — §1
+  // removed the live-tick delta term entirely, so no reactive-safety
+  // untrack() wrapping is needed here anymore.
   expect(
-    fnBody.includes('untrack('),
-    '_livePosDayPnl must wrap getSnapshot in untrack() per project convention'
-  ).toBe(true);
+    fnBody.includes('getSnapshot(') || fnBody.includes('untrack('),
+    '_livePosDayPnl must NOT read a live symbol snapshot — it is poll-only per §1'
+  ).toBe(false);
 });
 
 test('SSOT: Dashboard _todayPnl uses _livePosDayPnl (not bare baseDayPnlForPosition)', () => {

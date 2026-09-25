@@ -98,7 +98,7 @@
   import AddToPulseModal from '$lib/AddToPulseModal.svelte';
   import OrderPairModal from '$lib/order/OrderPairModal.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { baseDayPnlForPosition, livePositionDayPnl, dayChangePct } from '$lib/data/nav';
+  import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
   import { lotsForRow, fmtLots } from '$lib/data/lotsForRow';
   import {
@@ -1977,13 +1977,16 @@
   }
 
   // Accumulate one row into acc (mutates in place).
-  // Prefers live-recomputed r.pnl / r.day_pnl so the TOTAL tracks SSE ticks.
+  // Prefers live-recomputed r.pnl / r.day_pnl over the frozen broker
+  // snapshot (_broker_pnl / _broker_day_pnl) so the TOTAL tracks whatever
+  // cadence the individual row uses: r.pnl (lifetime P&L, both positions
+  // and holdings) is still SSE-tick-driven by design — a distinct metric
+  // from Day P&L. r.day_pnl (both positions AND holdings) is poll-only
+  // (§1 redesign / item-8 fix, mirrors portfolioStore's _posTier2/
+  // _holdTier1 and NavStrip P/H) — using r._broker_pnl for the TOTAL
+  // would leave it frozen while individual rows update either way.
   // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
   function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
-    // Prefer live-recomputed r.pnl / r.day_pnl over the frozen broker
-    // snapshot (_broker_pnl / _broker_day_pnl). Individual rows track
-    // live LTP via (ltp - avg) × qty; using _broker_pnl for the TOTAL
-    // means the TOTAL row stays frozen while individual rows update.
     const rowPnl    = r.pnl     ?? r._broker_pnl;
     const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
     if (rowDayPnl != null) { acc.day_pnl += Number(rowDayPnl) || 0; acc.anyDayPnl = true; }
@@ -3013,7 +3016,7 @@
 
     // Context bags passed to each helper.
     const wlCtx  = { snapOf, getInst };
-    const posCtx = { snapOf, getInst, isMarketOpen, baseDayPnlForPosition, livePositionDayPnl };
+    const posCtx = { snapOf, getInst, baseDayPnlForPosition };
     const holdCtx = { snapOf, getInst, isMarketOpen };
     const anchCtx = { getInst };
     const movCtx  = { snapOf };

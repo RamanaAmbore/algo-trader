@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS } from '../../data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay } from '../../data/expiryPnl.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -431,5 +431,47 @@ describe('expiryPnlWithRealised', () => {
   it('no spot / unparseable option and qty != 0: returns null', () => {
     const c = { symbol: 'BADOPTION', qty: 1, avg_cost: 5, kind: 'opt', realised: 10 };
     expect(expiryPnlWithRealised(c, 100)).toBe(null);
+  });
+});
+
+// ============================================================================
+// legExtrinsicDisplay — item-2/item-7 fix (round 4): per-row, poll-time-
+// consistent Extrinsic, options-only.
+// ============================================================================
+
+describe('legExtrinsicDisplay', () => {
+  it('option: (intrinsic - ltp) * qty — cost cancels out of the subtraction', () => {
+    // strike 6000, pollAnchor(underlying spot) 6100 → intrinsic 100.
+    // ltp (option's own poll price) 130, qty 100, avg_cost 125 (irrelevant —
+    // both terms of the ev-minus-mtm subtraction carry avg_cost, so it
+    // cancels: ev - mtm = (100-cost)*100 - (130-cost)*100 = (100-130)*100).
+    const c = { symbol: 'CRUDEOIL6000CE', kind: 'opt', qty: 100, avg_cost: 125, ltp: 130 };
+    expect(legExtrinsicDisplay(c, 6100)).toBe(-3000);
+  });
+
+  it('futures: not applicable — always null, never a computed number (§7)', () => {
+    const c = { symbol: 'CRUDEOIL25OCTFUT', kind: 'fut', qty: 10, avg_cost: 5800, ltp: 5850 };
+    expect(legExtrinsicDisplay(c, 5900)).toBe(null);
+  });
+
+  it('equity/proxy legs: not applicable — extrinsic is an options-only concept', () => {
+    const c = { symbol: 'RELIANCE', kind: 'eq', qty: 100, avg_cost: 2500, ltp: 2550 };
+    expect(legExtrinsicDisplay(c, 2550)).toBe(null);
+  });
+
+  it('closed leg (qty=0): 0, not null — no time value remains on a flat position', () => {
+    const c = { symbol: 'CRUDEOIL6000CE', kind: 'opt', qty: 0, avg_cost: 125, ltp: 130 };
+    expect(legExtrinsicDisplay(c, 6100)).toBe(0);
+  });
+
+  it('draft/provisional row with no real market price (ltp<=0): null, not a fabricated number', () => {
+    const c = { symbol: 'CRUDEOIL6000CE', kind: 'opt', qty: 100, avg_cost: 125, ltp: null };
+    expect(legExtrinsicDisplay(c, 6100)).toBe(null);
+  });
+
+  it('missing/zero poll-time underlying spot: null, not a live-tick fallback', () => {
+    const c = { symbol: 'CRUDEOIL6000CE', kind: 'opt', qty: 100, avg_cost: 125, ltp: 130 };
+    expect(legExtrinsicDisplay(c, 0)).toBe(null);
+    expect(legExtrinsicDisplay(c, null)).toBe(null);
   });
 });

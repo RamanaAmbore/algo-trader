@@ -6,15 +6,13 @@
   // Whole strip is a single link to /dashboard.
 
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, executionMode, ltpFlashPct, postHibernationRefiring } from '$lib/stores';
+  import { visibleInterval, executionMode, ltpFlashPct } from '$lib/stores';
   import { get } from 'svelte/store';
   import { aggCompact } from '$lib/format';
   import { getInstrument, loadInstruments, findNearestFuture } from '$lib/data/instruments';
-  import { createTickFlash, createFreshnessShimmer } from '$lib/data/tickFlash.svelte.js';
+  import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { cachedDelete } from '$lib/data/persistentCache';
-  import { getSnapshot, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
-  import { sessionBoundaryMs } from '$lib/data/symbolStoreArbitration.js';
-  import { isMarketOpen, isNseOpen, isMcxOpen } from '$lib/marketHours';
+  import { isNseOpen, isMcxOpen } from '$lib/marketHours';
   import { positionsStore, holdingsStore, pulseHoldingsStore, fundsStore, bookPollerTick } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
@@ -22,10 +20,11 @@
   import { portfolioAggregates } from '$lib/data/portfolioStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
-  import { expiryPnl } from '$lib/data/expiryPnl';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
-  import { getUnderlyingSpot, loadUnderlyingSpots } from '$lib/data/underlyingSpotStore.svelte.js';
-  // baseDayPnlForPosition + livePositionDayPnl removed — now in positionsDayPnlStore
+  import { loadUnderlyingSpots } from '$lib/data/underlyingSpotStore.svelte.js';
+  // baseDayPnlForPosition computation lives in portfolioStore.svelte.js now (poll-only,
+  // §1 redesign — no live-tick delta term; livePositionDayPnl was removed entirely, not
+  // just moved). positionsDayPnlStore is a backward-compat shim over portfolioStore.
   import NavBreakdown from '$lib/NavBreakdown.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import { debugLog } from '$lib/debug/debugLog.js';
@@ -50,10 +49,10 @@
     untrack(() => { if (v != null) funds = v; });
   });
   // Market-state tick — flips between 0/1/2/3 (no markets / NSE / MCX /
-  // both) when the session boundary crosses. The _liveDeltaByRow derived
-  // reads this to re-run on the boundary even when no other state has
-  // changed (otherwise we'd wait up to 30s for the next loadOnce poll
-  // before clearing the stale-tick delta after market close).
+  // both) when the session boundary crosses. Drives the closed→open
+  // transition detection in the freeze/thaw $effect below and the
+  // heartbeat/poll-pulse gating (otherwise we'd wait up to 30s for the
+  // next poll to notice the boundary crossed).
   let _breakdown = $state(
     /** @type {{ open: boolean, slot: 'P'|'M'|'C'|'H', left: number, top: number }} */
     ({ open: false, slot: 'P', left: 0, top: 0 })
@@ -201,14 +200,6 @@
     debugLog('navstrip:spot', 'result', { count: pairs.length });
   }
 
-  // BH2: live LTP reads come from symbolStore.get(sym) via getSnapshot.
-  // SvelteMap's fine-grained reactivity scopes re-runs of
-  // _liveDeltaByRow to the specific syms it touches — each tick only
-  // re-triggers consumers reading THAT sym, not every consumer. The
-  // local _liveLtpSnap mirror is gone; the writable `liveLtp` store is
-  // intentionally still kept alive in quoteStream.js for back-compat
-  // until BH3 drops it.
-
   // Local $state mirror of executionMode so the freeze/thaw $effect can
   // track mode transitions without subscribing inside the effect itself.
   // Mid-session SIM↔LIVE switches need to clear the day-delta freeze so
@@ -234,41 +225,6 @@
     });
   });
 
-  // 250 ms-throttled tick clock. _liveDeltaByRow + the freeze effect
-  // depend on this instead of per-tick SvelteMap reactivity, so the
-  // derived block re-runs at most 4 Hz even when SSE is bursting at
-  // 100 ticks/sec. Operator: "order button response is slow. any click
-  // event across the page should have the highest priority." Throttling
-  // the per-tick scheduler work frees the main thread for click
-  // dispatch. The subscribe is registered inside onMount (NOT inside
-  // an $effect that reads reactive state) so it stays at one timer.
-  let _throttledTick = $state(0);
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _tickThrottleTimer = null;
-  /** @type {(() => void) | null} */
-  let _tickThrottleUnsub = null;
-  onMount(() => {
-    _tickThrottleUnsub = symbolTickCount.subscribe(() => {
-      if (_tickThrottleTimer) return;
-      _tickThrottleTimer = setTimeout(() => {
-        if (isMarketOpen()) _throttledTick++;
-        _tickThrottleTimer = null;
-      }, 250);
-    });
-    // Tick-bus freshness-shimmer subscription — fire the underline sweep
-    // on every real SSE LTP tick. 'strip' is the single tracking key for
-    // the whole strip surface (no per-symbol routing needed here — any tick
-    // landing on any tracked symbol signals liveness to the operator).
-    _tickBusUnsub = tickBus.subscribe(() => {
-      // Skip the underline sweep during the post-hibernation SSE reconnect burst
-      // (tab just returned from hibernation — stores are reloading and a flurry
-      // of ticks arrives before data stabilises). postHibernationRefiring clears
-      // after all stores resolve or after a 3s max-wait timeout.
-      // _shimmer.notify removed: cell-freshness-pulse rainbow fires on every SSE tick;
-      // flash discipline limits per-tick animation to ltp/spot/chg% columns only.
-    });
-  });
-
   // Tick-flash — directional pulse when any of the strip's nine
   // pills changes value on the 30s poll. Subtle enough to read as
   // ambient liveness; loud enough that the operator sees a refresh
@@ -279,15 +235,6 @@
   const flash = createTickFlash({ threshold: 0, durationMs: 300 });
   const _unsubFlashPct = ltpFlashPct.subscribe(v => flash.setPctThreshold(v));
 
-  // Freshness-shimmer — 1px gradient underline sweep on the strip bottom edge
-  // each time a real SSE tick arrives for any tracked symbol. Distinct from the
-  // amber heartbeat (poll-based) and the per-cell directional flash. Sky/indigo
-  // palette matches .cell-freshness-pulse::after in app.css. Uses a single
-  // 'strip' key so any tick fires the same animation regardless of symbol.
-  const _shimmer = createFreshnessShimmer({ durationMs: 700 });
-  /** @type {(() => void) | null} */
-  let _tickBusUnsub = null;
-
   onMount(() => {
     // Instruments cache feeds both the long-options premium derivation
     // (lot_size for the C pill) and the expiry profit (slot 3) which
@@ -297,7 +244,8 @@
     // broker without waiting for instruments. After instruments resolve,
     // _loadUnderlyingSpots() is re-run with the now-warm findNearestFuture
     // so MCX option spots (CRUDEOIL26JUNFUT etc.) land in symbolStore and
-    // _expiryProfit picks them up on the next _throttledTick.
+    // _expiryProfit (positionsDerivedStore) picks them up on its next
+    // 4 Hz tick.
     //
     // Without this, the cold-cache first load calls findNearestFuture while
     // the instruments map is empty → MCX options fall back to synthetic
@@ -311,8 +259,8 @@
     // Fix 4: 30s _load timer removed — book poller (5s) drives positions/holdings/funds.
     // _loadUnderlyingSpots fires via bookPollerTick $effect above. Event-driven _load()
     // calls (onMount, mode-change, boundary-trigger, bookChanged) still fire as before.
-    // Watch the market-session boundary so _liveDeltaByRow can drop
-    // the stale-tick delta immediately on close (not 30s late).
+    // Watch the market-session boundary so the freeze/thaw $effect below
+    // can react to a close→open transition promptly (not 30s late).
     // visibleInterval: pauses when hidden, fires immediately on tab return.
     _mktTick = (isNseOpen() ? 1 : 0) + (isMcxOpen() ? 2 : 0);
     _mktTimer = visibleInterval(() => {
@@ -329,12 +277,8 @@
   });
   onDestroy(() => {
     flash.dispose();
-    _shimmer.dispose();
     _unsubFlashPct();
     _mktTimer?.();   // visibleInterval teardown
-    if (_tickThrottleTimer) { clearTimeout(_tickThrottleTimer); _tickThrottleTimer = null; }
-    _tickThrottleUnsub?.();
-    _tickBusUnsub?.();
     // _heartbeatTimer is the 300ms pulse decay timer scheduled inside
     // the heartbeat $effect. Latent leak today (strip is layout-
     // persistent so it never unmounts) but the timer would fire into
@@ -360,98 +304,6 @@
   // Hld  = total unrealised P&L on holdings since entry.
   // H    = current holding value (cur_val sum across holdings).
   // P∆   = today's mark-to-market move on positions (day_change_val).
-  // Delta-replacement helper: the broker's `pnl` field at poll time is
-  // computed as `(poll_ltp − avg) × qty + realised`. When a live tick
-  // arrives we want pnl(live) = `(live_ltp − avg) × qty + realised`.
-  // That equals `broker_pnl + (live − poll_ltp) × qty`, which avoids
-  // re-deriving `realised` from scratch. Same trick applies to
-  // `day_change_val` (LTP coefficient is also × qty) and to holdings'
-  // `cur_val` (= LTP × qty).
-  //
-  // Memoization: build the delta ONCE per symbolStore + rows change,
-  // keyed by tradingsymbol+account. All 5 derived sums read from this
-  // Map in O(1) rather than calling _liveDelta() 5× per row per tick.
-  // At 20 positions × 90 ticks/sec burst this drops inner-loop calls
-  // from ~100 to ~20 (one Map build + five O(1) lookups per tick).
-  //
-  // BH2: live LTPs sourced via symbolStore.get(sym) (SvelteMap). The
-  // $derived.by re-runs only when one of the syms it actually read
-  // changes — fine-grained reactivity at the symbol level, not the
-  // whole-map churn of the old liveLtp writable. Touch symbolStore.size
-  // once at the top so the derived also re-runs when symbols are
-  // ADDED to the store (first SSE tick for a previously-unknown sym).
-  // Helper: populate delta entries for one row array into m.
-  // Called from inside $derived.by so positions/holdings reads stay
-  // in reactive scope. untrack is preserved per-snapshot so we don't
-  // register per-symbol deps that would defeat the 4 Hz throttle.
-  // Guard order, Number() coercions, and key format must not change —
-  // _delta() consumes this map with the exact same key shape.
-  function _addDeltaEntries(
-    /** @type {Map<string, number>} */ m,
-    /** @type {any[]} */ rows,
-    /** @type {'P'|'H'} */ kind,
-    /** @type {(row: any) => boolean} */ appliesToRow,
-  ) {
-    for (const row of rows) {
-      if (!appliesToRow(row)) continue;
-      const sym  = String(row?.tradingsymbol || '').toUpperCase();
-      // Only use SSE ticks (ltp_ts > 0, AND from the current trading
-      // session). REST publishers set ltp_ts=0 to prevent phantom deltas
-      // when batchQuote races the SSE stream. The session-boundary check
-      // closes a narrow cold-start gap: a symbolStore entry hydrated from
-      // yesterday's localStorage still has ltp_ts > 0, and without this
-      // gate would be treated as "live" here until the first poll write
-      // resets it (symbolStore's own session-boundary fix handles that
-      // reset, but only takes effect after that first poll completes).
-      const snap = untrack(() => getSnapshot(sym));
-      if (!snap || !(snap.ltp_ts > 0) || snap.ltp_ts < sessionBoundaryMs()) continue;
-      const live = snap.ltp;
-      // LTP flicker fix: treat any non-positive live as "no tick yet".
-      if (typeof live !== 'number' || !(live > 0)) continue;
-      const pollLtp = Number(row?.last_price || 0);
-      const qty     = Number(row?.quantity   || 0);
-      if (!pollLtp || !qty) continue;
-      // BUGFIX: prefix key by kind so same symbol in positions + holdings
-      // for the same account doesn't collide ('P' vs 'H' namespace).
-      const key = kind + '\x00' + sym + '\x00' + String(row?.account || '');
-      m.set(key, (live - pollLtp) * qty);
-    }
-  }
-
-  const _liveDeltaByRow = $derived.by(() => {
-    /** @type {Map<string, number>} */
-    const m = new Map();
-    // Read _throttledTick so the derived re-runs at 4 Hz max — not on
-    // every SvelteMap entry change (which fires per-tick). getSnapshot
-    // calls inside _addDeltaEntries are wrapped in untrack so they don't
-    // register per-symbol reactive deps that would defeat the throttle.
-    // Same scheduler-pressure fix BH6 applied to MarketPulse buildUnified.
-    void _throttledTick;
-    // Read _mktTick so the derived re-runs on the market open/close
-    // boundary (otherwise we'd wait up to 30s for _load to pick it up).
-    void _mktTick;
-    // Gate the delta per exchange: MCX rows during MCX hours (09:00–23:30
-    // IST), NSE/BSE/NFO/BFO/CDS rows during NSE hours (09:15–15:30 IST).
-    const nseOpen = isNseOpen();
-    const mcxOpen = isMcxOpen();
-    const appliesToRow = (/** @type {any} */ row) => {
-      const exch = String(row?.exchange || '').toUpperCase();
-      if (exch === 'MCX') return mcxOpen;
-      return nseOpen;
-    };
-    _addDeltaEntries(m, positions, 'P', appliesToRow);
-    _addDeltaEntries(m, holdings,  'H', appliesToRow);
-    return m;
-  });
-
-  /** @param {any} row @param {'P'|'H'} kind */
-  function _delta(row, kind) {
-    const key = kind + '\x00'
-              + String(row?.tradingsymbol || '').toUpperCase()
-              + '\x00' + String(row?.account || '');
-    return _liveDeltaByRow.get(key) || 0;
-  }
-
   // Operator: "P calculation is not correct. It should show the
   // current position profit. P delta is change in position profit
   // in the day".
@@ -475,10 +327,40 @@
   //
   // Margin / cash / util / liveCash cells are also always-live —
   // they're broker balance-sheet fields without a "day" concept.
-  let dispPositionsToday = $state(0);
-  let dispHoldingsToday  = $state(0);
+  // Initialize from whatever the underlying stores ALREADY have by the
+  // time this component first renders — positionsStore / pulseHoldingsStore
+  // (createDataStore) hydrate synchronously from a localStorage-backed disk
+  // cache at module-eval time, before this component even mounts, so a
+  // warm cache/reload often already has a real value here. Unconditionally
+  // starting at 0 discarded that already-available value and held the
+  // strip at 0 until the next poll landed (up to 5s) on every fresh page
+  // load/reload — the actual zero-flash trigger (distinct from the
+  // remount case _prevExecMode's init below already handles). A genuine
+  // cold start with no cached data at all still yields 0 here, which is
+  // the only honest value when nothing is known yet.
+  let dispPositionsToday = $state(positionsDayPnlStore.total || 0);
+  let dispHoldingsToday  = $state(holdingsDayPnlStore.total || 0);
   let _prevMktOpen       = isNseOpen() || isMcxOpen();
-  let _prevExecMode      = 'idle';
+  // Initialize from the ACTUAL current mode, not a hardcoded 'idle' default.
+  // executionMode is already live by the time this script runs (the store
+  // subscribe below fires synchronously with the current value) — a
+  // hardcoded 'idle' start made every fresh component mount (leaving/
+  // returning to the (algo) layout area) misread as a market-open mode
+  // transition on the first effect run, force-resetting dispPositionsToday/
+  // dispHoldingsToday to 0 until the next poll landed.
+  /** @type {string} */
+  let _prevExecMode      = get(executionMode) || 'idle';
+  // One-shot latch (item-6 fix, round 4): distinguishes "the app is
+  // learning the real current mode for the first time after boot" (must
+  // NOT reset the day-delta buffers) from "the operator manually switched
+  // FROM idle TO another mode via the navbar mode picker" (MUST reset —
+  // 'idle' is also a genuine, operator-selectable mode in dev; see
+  // pickMode('idle') in (algo)/+layout.svelte). The boot-placeholder
+  // resolution is always the FIRST mode change this component observes;
+  // any transition after that is real operator action, even if it also
+  // starts from 'idle'. Consumed (flips to true) the first time a mode
+  // change is actually seen — see the $effect below.
+  let _sawFirstModeChange = false;
   // P pill slots 1 + 2: ALL positions (no exchange filter), matching the
   // MarketPulse positions TOTAL row (gold standard SSOT). Includes NSE/BSE
   // equity intraday positions alongside F&O so the P pill stays in sync
@@ -489,8 +371,9 @@
   // `_broker_pnl` (= Σ r.pnl) without a live-tick delta so both surfaces
   // stay in sync. Adding a delta to slot 2 (lifetime P&L) would diverge from
   // the TOTAL row whenever SSE ticks arrive between polls, which is the root
-  // cause of the operator-reported slot-2 inconsistency. Slot 1 (day P&L)
-  // carries the live signal via dispPositionsToday which IS delta-corrected.
+  // cause of the operator-reported slot-2 inconsistency. Slot 1 (day P&L,
+  // dispPositionsToday below) is now poll-only too (§1 redesign) — no live-
+  // tick delta anywhere in either slot.
   // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
   const _livePositionsPnl = $derived(portfolioAggregates.livePositionsPnl);
   // Holdings day P&L SSOT: holdingsDayPnlStore is the module-level singleton
@@ -502,9 +385,8 @@
   // A recent MarketPulse fix changed the TOTAL row to use this live formula
   // instead of the broker-snapshot `r.pnl`, so the H pill slot 3 must do the
   // same to stay in sync. Falls back to broker `h.pnl` when no live LTP is
-  // available (cold-cache or missing symbol). H:3 throttle: `void _throttledTick`
-  // registers _throttledTick as a reactive dependency so this derived re-runs
-  // at 4Hz maximum, matching P:1, H:1, and P:3 cadence.
+  // available (cold-cache or missing symbol). Throttled to 4Hz maximum via
+  // portfolioStore's own _tick counter, matching P:1, H:1, and P:3 cadence.
   // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
   const _liveHoldingsTotal = $derived(portfolioAggregates.liveHoldingsTotal);
   // Live LTP × qty from symbolStore, matching finalizeRows in pulseUnified.js:697.
@@ -522,13 +404,17 @@
   // Lifetime P/Hld/H mirror their live derived directly at render
   // time — they're never frozen.
   //
-  // Track the live derived values too so the dispPositionsToday /
-  // dispHoldingsToday assignment fires on every SSE tick during market
-  // hours. Without this the effect's tracked deps were _mktTick +
-  // _execMode only — both rare — so P updated per-tick (rendered
-  // directly from _livePositionsPnl) while P∆ stayed stuck at the
-  // last-poll value until the next 30s poll. Operator: "any change
-  // in P is caused by change in P∆ — I see P∆ constant while P is
+  // Track positionsDayPnlStore.total / holdingsDayPnlStore.total directly
+  // as effect dependencies (not just _mktTick + _execMode) so the
+  // dispPositionsToday / dispHoldingsToday assignment fires whenever the
+  // underlying poll-driven aggregate actually changes (§1: both are
+  // poll-only, no SSE-tick input) — not just on the rare _mktTick (market
+  // session boundary, checked every 30s) / _execMode transitions. Without
+  // this the effect's tracked deps were _mktTick + _execMode only — both
+  // rare — so P updated on every poll (rendered directly from
+  // _livePositionsPnl) while P∆ stayed stuck at the last-poll value until
+  // the NEXT poll's unrelated _mktTick/_execMode re-run. Operator: "any
+  // change in P is caused by change in P∆ — I see P∆ constant while P is
   // changing. Fix it."
   $effect(() => {
     void _mktTick;
@@ -536,7 +422,21 @@
     void positionsDayPnlStore.total;
     void holdingsDayPnlStore.total;
     const open = isNseOpen() || isMcxOpen();
-    const modeChanged = _execMode !== _prevExecMode;
+    // modeChanged, with a one-shot exclusion for the DEV boot-time
+    // placeholder resolution (item-6 fix, round 4 — see _sawFirstModeChange
+    // above). Only the FIRST mode change this component ever observes is
+    // exempted when it starts from 'idle' — that is the _bootMode()
+    // placeholder (stores.js: "Dev defaults to IDLE... API confirms (or
+    // upgrades) the value on the first poll cycle") resolving to the real
+    // mode, not a genuine operator action. Every SUBSEQUENT transition
+    // resets normally even if it also starts from 'idle' — 'idle' is also
+    // a real, operator-selectable mode (pickMode('idle') in
+    // (algo)/+layout.svelte), so a genuine mid-session idle→live/paper/etc.
+    // switch must still clear the buffers like any other mode flip.
+    const _rawModeChanged = _execMode !== _prevExecMode;
+    const _isBootIdleResolution = _rawModeChanged && !_sawFirstModeChange && _prevExecMode === 'idle';
+    if (_rawModeChanged) _sawFirstModeChange = true;
+    const modeChanged = _rawModeChanged && !_isBootIdleResolution;
     if ((open && !_prevMktOpen) || modeChanged) {
       // Closed → Open transition OR execution-mode switch. Snapshot the
       // current poll cycle so we suppress stale day_change_val (from the
@@ -702,12 +602,12 @@
     }, 300);
   });
 
-  // Tick-bus border shimmer — per-tick sky/indigo gradient underline driven
-  // by real SSE ticks via tickBus (separate from the poll-based amber
-  // heartbeat and the closed-hours slate poll-pulse). _shimmer.notify('strip')
-  // is called in the tickBus subscription (onMount above); the reactive
-  // classOf read below applies 'cell-freshness-pulse' for 700 ms, which
-  // triggers the rainbow-fade keyframe defined in app.css.
+  // Tick-bus border shimmer (dead code removed): a per-tick sky/indigo
+  // gradient underline driven by tickBus was scaffolded here (createFreshnessShimmer,
+  // .notify('strip')) but the notify() call was removed before shipping —
+  // flash discipline limits per-tick animation to the ltp/spot/chg% columns
+  // only (see `flash` above). The unused tickBus subscription, _shimmer
+  // instance, and .cell-freshness-pulse wiring were removed as dead code.
 </script>
 
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_staleFailCount >= 2 ? ' ps-stale' : '')}>

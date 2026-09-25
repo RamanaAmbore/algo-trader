@@ -449,7 +449,9 @@ Where:
   `pnl_math.py`, frontend `nav.js:currentTotalProfit()`, and Polars enrichment
 
 Implementation: `frontend/src/lib/data/nav.js:baseDayPnlForPosition(p)` and vectorised 
-variants (`currentTotalProfit()`, `livePositionDayPnl()`). **Per-position Day P&L IS still 
+variant `currentTotalProfit()` — the sole Day P&L formula (poll-only, §1 redesign; 
+`livePositionDayPnl` and its live-tick delta term were removed entirely, not vectorised 
+alongside it). **Per-position Day P&L IS still 
 displayed** on every position row (Pulse grid, derivatives Legs/Expiry grid, PerformancePage) —
 an earlier mid-redesign plan to remove per-row display was reverted by explicit operator
 instruction; only the underlying *calculation* changed, not the display. Account-level

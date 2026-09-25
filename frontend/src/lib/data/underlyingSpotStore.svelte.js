@@ -94,6 +94,28 @@ export async function loadUnderlyingSpots(pairs) {
 }
 
 /**
+ * Remove specific root entries from the store. Callers pass only the roots
+ * THEY stopped tracking (e.g. a page's own previous subscription set minus
+ * its current one) — never a blanket "keep only these" filter, since this
+ * store is shared across pages (PositionStrip / derivatives) that each
+ * track their own independent root set. A root removed here that another
+ * page still needs is self-healing: that page's own periodic
+ * loadUnderlyingSpots() re-populates it on its next poll cycle.
+ *
+ * @param {string[]} roots
+ */
+export function pruneUnderlyingSpotRoots(roots) {
+  if (!roots || roots.length === 0) return;
+  let changed = false;
+  const next = { ..._quotes };
+  for (const r of roots) {
+    if (r in next) { delete next[r]; changed = true; }
+    delete _lastTickAt[r];
+  }
+  if (changed) _quotes = next;
+}
+
+/**
  * Apply a single live-tick LTP patch to the store without triggering a full
  * batchQuote reload. Preserves day_pct and prev_close from the last batchQuote.
  * Used by tickBus handlers in the derivatives page so NavStrip (via getUnderlyingSpot)

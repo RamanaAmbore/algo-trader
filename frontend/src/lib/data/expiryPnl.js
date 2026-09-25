@@ -204,3 +204,77 @@ export function expiryPnlWithRealised(c, spot, legAnalyticsBySymbol = {}) {
   if (ev == null) return null;
   return AVG_PRICE_IS_COST_BASIS ? ev + realised : ev;
 }
+
+/**
+ * Anchor-price selection for Exp P&L / extrinsic valuation (§4 — futures
+ * own-price valuation fix). Shared decision tree used by BOTH:
+ *   - portfolioStore.svelte.js's _posTier2 (exp_pnl/extrinsic block)
+ *   - derivatives/+page.svelte's _legExpPnlDisplay(c, spot)
+ *
+ * Options always value at the front-month root spot (the Exp P&L SSOT for
+ * options — matches Snapshot / Legs TOTAL / the column tooltip). Futures
+ * value at THEIR OWN contract's price — a future's Exp P&L only equals the
+ * root's front-month spot when the held contract IS the front-month
+ * future; a far-month future (e.g. CRUDEOIL in contango/backwardation)
+ * must be valued on its own price, not the root's front-month resolution.
+ *
+ * Futures priority: own live tick > own polled LTP > root spot (last
+ * resort — e.g. cold MCX cache with no tick and no polled LTP yet).
+ *
+ * @param {{ isOpt: boolean, rootSpot: number, ownLiveLtp?: number, ownPolledLtp?: number }} p
+ * @returns {number}
+ */
+export function resolveExpiryAnchor({ isOpt, rootSpot, ownLiveLtp = 0, ownPolledLtp = 0 }) {
+  if (isOpt) return rootSpot;
+  if (ownLiveLtp > 0) return ownLiveLtp;
+  if (ownPolledLtp > 0) return ownPolledLtp;
+  return rootSpot;
+}
+
+/**
+ * Per-leg Extrinsic value — `Exp P&L − MTM`, both terms evaluated on the
+ * SAME poll-time snapshot so the subtraction isn't contaminated by a
+ * tick-vs-poll skew (confirmed regression: ~₹2,000 phantom extrinsic on a
+ * CRUDEOIL future from an unrelated spot tick landing between polls).
+ * Single shared implementation used by BOTH:
+ *   - portfolioStore.svelte.js's _posTier2 (aggregate + per-symbol/root)
+ *   - derivatives/+page.svelte's _filteredExtrinsicByRoot / per-leg
+ *     Extrinsic cell (Snapshot grid + Legs grid)
+ * so a multi-account or multi-surface view can never double-count or
+ * diverge on the same underlying data.
+ *
+ * §7 (operator-approved): extrinsic ("time value remaining") is an
+ * options-only concept — futures and equity/proxy legs track spot 1:1
+ * with no time-decay component, so `Exp P&L − MTM` is either
+ * tautologically 0 (a future valued at its own price, by construction —
+ * see resolveExpiryAnchor) or a meaningless root-spot-vs-own-price
+ * artifact (equity/proxy hedges). Returns `null` (not-applicable, not
+ * zero) for every non-option leg — same convention the EV column uses
+ * for rows it can't compute, rendered as '—' by callers.
+ *
+ * `pollAnchor` MUST be the underlying's poll-time spot (backend's
+ * `underlying_ltp` field, stamped by the same enrichment pass on both
+ * the live and closed-hours-snapshot paths) — NOT a live/tick-driven
+ * root spot, which is what `spot` means everywhere else in this file.
+ * Passing a live spot here silently reintroduces the tick-vs-poll bug
+ * this function was written to close.
+ *
+ * @param {{ symbol?: string, kind?: string, qty?: number|string, quantity?: number|string, avg_cost?: number|string, average_price?: number|string, ltp?: number|string|null }} c
+ * @param {number|null|undefined} pollAnchor  underlying's poll-time spot (c's OWN poll-time ltp for the exp-P&L term's spot input)
+ * @returns {number|null}
+ */
+export function legExtrinsicDisplay(c, pollAnchor) {
+  if (c?.kind !== 'opt') return null;
+  const qty = Number(c?.qty ?? c?.quantity ?? 0);
+  if (!qty) return 0; // fully closed today — no time value remaining
+  const ltp = Number(c?.ltp ?? 0);
+  // Draft / provisional rows carry no real market price (ltp null/0) —
+  // without this guard `expiryPnl(c, pollAnchor) - (0 - avg_cost)*qty`
+  // would print a fabricated "extrinsic" number instead of '—'.
+  if (!(ltp > 0)) return null;
+  if (pollAnchor == null || !isFinite(Number(pollAnchor)) || Number(pollAnchor) <= 0) return null;
+  const cost = Number(c?.avg_cost ?? c?.average_price ?? 0);
+  const ev = expiryPnl({ symbol: String(c?.symbol || ''), qty, avg_cost: cost, kind: 'opt' }, pollAnchor);
+  if (ev == null) return null;
+  return ev - (ltp - cost) * qty;
+}

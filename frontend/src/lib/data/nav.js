@@ -126,46 +126,6 @@ export function aggregateDayPnlForPositions(rows) {
 }
 
 /**
- * Live-LTP-aware Day P&L for a single position.
- *
- * Extends `baseDayPnlForPosition` with a live-tick delta for ticks arriving
- * faster than the backend poll: the base Day P&L already reflects the last
- * polled LTP (baked into `unrealised`/`pnl`), so the live delta is applied
- * directly as `(liveLtp − pollLtp) × qty` — no separate branch logic needed.
- *
- *   result = baseDayPnlForPosition(dcvRow) + (liveLtp − pollLtp) × qty
- *
- * The delta only applies when ALL of these hold: `marketOpen`, `liveLtp` is
- * a positive finite number, `pollLtp` is positive (a missing/zero pollLtp
- * would otherwise blow the delta up to `liveLtp × qty`), and `qty !== 0`.
- * Otherwise returns `baseDayPnlForPosition(dcvRow)` unchanged.
- *
- * IMPORTANT — callers source `pollLtp`/`qty` from different raw field names:
- *   - Pulse (raw broker row): last_price, quantity
- *   - Derivatives (normalised candidate): ltp, qty
- * Each caller normalises to `pollLtp`/`qty` before calling this helper.
- *
- * @param {{
- *   pollLtp:  number,  // LTP at last broker poll (r.last_price / c.ltp)
- *   qty:      number,  // signed net qty
- *   dcvRow:   object,  // raw row for baseDayPnlForPosition (needs realised / unrealised / pnl / prev_settlement_pnl)
- * }} fields
- * @param {number|null|undefined} liveLtp  - live SSE tick LTP for this leg's own symbol
- * @param {{ marketOpen: boolean }} opts
- * @returns {number}
- */
-export function livePositionDayPnl({ pollLtp, qty, dcvRow }, liveLtp, { marketOpen }) {
-  const base = baseDayPnlForPosition(dcvRow);
-  const live   = Number(liveLtp);
-  const poll   = Number(pollLtp);
-  const q      = Number(qty);
-  if (marketOpen && live > 0 && poll > 0 && q !== 0) {
-    return base + (live - poll) * q;
-  }
-  return base;
-}
-
-/**
  * Compute today's day P&L and lifetime P&L for F&O/derivative positions only.
  * Excludes equity (NSE/BSE) positions to avoid double-counting with the H pill.
  *

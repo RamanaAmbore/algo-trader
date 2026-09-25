@@ -1,3 +1,5 @@
+import { resolveVirtual } from './rootOf.js';
+
 /**
  * Resolve an underlying name to a tradeable tradingsymbol + exchange.
  *
@@ -27,7 +29,8 @@ export function resolveUnderlying(name, findNearestFut) {
   // commodity/currency root in the set lookups. Strip the suffix so we
   // match MCX_COMMODITIES / CDS_CURRENCIES correctly — the sets contain
   // bare roots only (CRUDEOIL, USDINR, …).
-  const root = n.endsWith('_NEXT') ? n.slice(0, -5) : n;
+  const isNext = n.endsWith('_NEXT');
+  const root = isNext ? n.slice(0, -5) : n;
   const idx = INDEX_LTP_KEY[root];
   if (idx) {
     return {
@@ -39,6 +42,26 @@ export function resolveUnderlying(name, findNearestFut) {
     };
   }
   if (MCX_COMMODITIES.has(root)) {
+    // _NEXT means back/next-month (rootOf.js / ChartWorkspace.svelte's
+    // established meaning — e.g. CRUDEOIL_NEXT → CRUDEOIL26JULFUT when
+    // front-month is CRUDEOIL26JUNFUT), NOT front-month. Resolve via
+    // rootOf.js's seeded two-slot map (front/back), same mechanism
+    // ChartWorkspace already uses for its own _NEXT historical-data path.
+    if (isNext) {
+      const resolved = resolveVirtual(n, 'MCX');
+      if (resolved && resolved !== n) {
+        return {
+          tradingsymbol: resolved,
+          exchange: 'MCX',
+          quoteKey: `MCX:${resolved}`,
+          underlying_group: root,
+          kind: 'fut',
+        };
+      }
+      // Back-month slot not yet seeded (cold instruments cache) — fall
+      // through to the front-month resolution below rather than return
+      // nothing; a stale-but-present quote beats none.
+    }
     const fut = findNearestFut?.(root);
     if (fut?.s && fut?.e) {
       return {
@@ -64,6 +87,19 @@ export function resolveUnderlying(name, findNearestFut) {
     };
   }
   if (CDS_CURRENCIES.has(root)) {
+    // Same _NEXT = back-month semantics as the MCX branch above.
+    if (isNext) {
+      const resolved = resolveVirtual(n, 'CDS');
+      if (resolved && resolved !== n) {
+        return {
+          tradingsymbol: resolved,
+          exchange: 'CDS',
+          quoteKey: `CDS:${resolved}`,
+          underlying_group: root,
+          kind: 'fut',
+        };
+      }
+    }
     const fut = findNearestFut?.(root);
     if (fut?.s && fut?.e) {
       return {

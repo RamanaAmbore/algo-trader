@@ -1,10 +1,18 @@
 /**
  * positions_holdings_ssot.test.js
  *
- * Verifies that mergePositionRows produces correct day_pnl via livePositionDayPnl,
- * and that pure overnight positions agree with mergeHoldingRows (which uses the
- * same (ltp−close)×qty formula — valid for holdings because they never have
+ * Verifies that mergePositionRows produces correct day_pnl via
+ * baseDayPnlForPosition (poll-only — §1, no live-tick delta), and that pure
+ * overnight positions agree with mergeHoldingRows (which uses the same
+ * (ltp−close)×qty formula — valid for holdings because they never have
  * intraday adds).
+ *
+ * §1 (positions/holdings LTP-source redesign) removed the live-tick-delta
+ * wrapper `livePositionDayPnl` — mergePositionRows now calls
+ * baseDayPnlForPosition(r) directly, with no ctx.isMarketOpen gate. The test
+ * fixtures below were already self-consistent (constructed so any live-tick
+ * delta would compute to 0), so their expected values are unchanged; only
+ * the ctx shape / imports needed updating.
  *
  * Five quality dimensions:
  *   1. SSOT   — pure overnight positions: both functions derive (ltp−close)×qty
@@ -16,7 +24,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { mergePositionRows, mergeHoldingRows } from '../../data/pulseUnified.js';
-import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
+import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -24,9 +32,7 @@ function makePositionCtx(snapMap = {}) {
   return {
     snapOf: (sym) => snapMap[sym] ?? null,
     getInst: null,
-    isMarketOpen: () => false,  // deliberately false — livePositionDayPnl ignores this
     baseDayPnlForPosition,
-    livePositionDayPnl,
   };
 }
 
@@ -64,7 +70,7 @@ function makeHoldingRow(overrides = {}) {
     quantity:           10,
     opening_quantity:   10,
     average_price:      990,
-    previous_close:     1000,  // Use previous_close instead of close_price per fix
+    prev_close:         1000,  // Real HoldingRow field (item-4 fix, round 4) — NOT previous_close
     close_price:        1000,
     last_price:         1005,
     pnl:                150,
@@ -73,15 +79,12 @@ function makeHoldingRow(overrides = {}) {
   };
 }
 
-// ── Test 1: live tick fires regardless of isMarketOpen in ctx ─────────────────
+// ── Test 1: day_pnl is poll-only — a live snapshot has no effect ──────────────
 
-describe('mergePositionRows — live tick fires regardless of ctx.isMarketOpen', () => {
-  it('ltp=1005, close=1000, qty=10 → day_pnl=50 (isMarketOpen=false in ctx)', () => {
-    // livePositionDayPnl is called with marketOpen:true always.
-    // ctx.isMarketOpen is not forwarded → no gate → live tick is used.
-    // brokerDcv = baseDayPnlForPosition(r): oq=10, dcv=50 → returns 50
-    // realisedToday = 50 − (1005−1000)×10 = 0
-    // result = 0 + (1005−1000)×10 = 50
+describe('mergePositionRows — day_pnl is poll-only (§1, no live-tick delta)', () => {
+  it('ltp=1005, close=1000, qty=10 → day_pnl=50 (base only)', () => {
+    // baseDayPnlForPosition(r): pnl(150) - prev_settlement_pnl(100) = 50.
+    // No live-tick delta (§1) — snap ltp has no effect on the result.
     const snapMap = { INFY25AUGFUT: { ltp: 1005, ltp_ts: 1 } };
     const byKey = {};
     mergePositionRows(byKey, [makePositionRow()], true, {}, makePositionCtx(snapMap));
@@ -95,7 +98,7 @@ describe('mergePositionRows — live tick fires regardless of ctx.isMarketOpen',
     const byKey   = {};
     mergePositionRows(byKey, [makePositionRow()], true, liveQ, makePositionCtx(snapMap));
     const row = Object.values(byKey)[0];
-    // snap (1005) wins: (1005−1000)×10 = 50, not (999−1000)×10 = −10
+    // base=50 regardless of snap/liveQ ltp values (both ignored — §1).
     expect(row.day_pnl).toBeCloseTo(50, 4);
   });
 
@@ -112,8 +115,8 @@ describe('mergePositionRows — live tick fires regardless of ctx.isMarketOpen',
 
 describe('mergePositionRows — fallback to baseDayPnlForPosition', () => {
   it('uses baseDayPnlForPosition (dcv path) when no snap and no liveQ ltp', () => {
-    // No snap → liveLtp=null → livePositionDayPnl falls through to baseDayPnlForPosition.
-    // row: oq=10, dcv=50, oq!==0 && dcv!==0 → returns dcv=50.
+    // No live-tick path exists anymore (§1) — day_pnl is always
+    // baseDayPnlForPosition(r): pnl(150) - prev_settlement_pnl(100) = 50.
     const byKey = {};
     mergePositionRows(byKey, [makePositionRow()], true, {}, makePositionCtx({}));
     const row = Object.values(byKey)[0];
@@ -121,7 +124,7 @@ describe('mergePositionRows — fallback to baseDayPnlForPosition', () => {
   });
 
   it('ltp=0 guard: falls back to baseDayPnlForPosition (dcv=50)', () => {
-    // ltp=0 fails the > 0 guard in livePositionDayPnl → fallback to brokerDcv=50.
+    // ltp=0 in the snap has no effect either way — base=50 (§1).
     const snapMap = { INFY25AUGFUT: { ltp: 0, ltp_ts: 1 } };
     const byKey   = {};
     mergePositionRows(byKey, [makePositionRow()], true, {}, makePositionCtx(snapMap));
@@ -130,9 +133,7 @@ describe('mergePositionRows — fallback to baseDayPnlForPosition', () => {
   });
 
   it('close_price=0 guard: falls back to baseDayPnlForPosition (new position — pnl path)', () => {
-    // close=0 → livePositionDayPnl first branch fails (closePx must be > 0).
-    // Second branch: close===0, avg>0, qty!==0 → returns (liveLtp−avg)*qty.
-    // avg=990, liveLtp=1005, qty=10 → (1005−990)*10 = 150.
+    // close=0, no prior close-reset snapshot (new position) → base = pnl.
     const snapMap = { INFY25AUGFUT: { ltp: 1005, ltp_ts: 1 } };
     const byKey   = {};
     mergePositionRows(
@@ -152,8 +153,9 @@ describe('mergePositionRows — fallback to baseDayPnlForPosition', () => {
 
 describe('Formula symmetry — pure overnight position = holdings for same inputs', () => {
   it('produces equal day_pnl for same ltp/close/qty (pure overnight position)', () => {
-    // For a pure overnight position (no intraday adds), livePositionDayPnl reduces to
-    // (ltp−close)×qty — same as holdings. Symmetry holds.
+    // For a pure overnight position (no intraday adds), baseDayPnlForPosition
+    // reduces to (ltp−close)×qty by construction of the fixture below — same
+    // as holdings. Symmetry holds.
     const ltp   = 1020;
     const close = 1000;
     const qty   = 10;

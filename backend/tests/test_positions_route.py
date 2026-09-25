@@ -213,6 +213,41 @@ def test_override_stale_ltp_from_ticker_patches_unrealised_alongside_pnl():
 
 
 # ---------------------------------------------------------------------------
+# _override_stale_ltp_from_ticker call sites (2026-09-24 correction):
+# this function runs INSIDE each poll (not between polls) to correct that
+# poll's stale broker REST data using the ticker as the correction source.
+# It is unrelated to the frontend's between-poll live-delta removal
+# (nav.js's livePositionDayPnl). Both the live `_fetch()` route and
+# `_build_paper_positions_response` must call it.
+# ---------------------------------------------------------------------------
+
+def test_fetch_route_calls_ticker_ltp_override():
+    """`_fetch()` (live/real-broker positions path) must call
+    _override_stale_ltp_from_ticker — this corrects that poll's stale
+    broker REST data using the ticker, guarding against the 2026-06-22
+    incident (Kite REST lagging WS by ~30 min)."""
+    from backend.api.routes.positions import _fetch
+    src = inspect.getsource(_fetch)
+    assert "_override_stale_ltp_from_ticker(" in src, (
+        "_fetch() (live positions path) must call "
+        "_override_stale_ltp_from_ticker to correct stale broker REST data "
+        "at poll time"
+    )
+
+
+def test_paper_positions_response_still_calls_ticker_ltp_override():
+    """`_build_paper_positions_response` must still call
+    _override_stale_ltp_from_ticker — paper positions have no broker book to
+    poll, so the ticker remains their only live mark-to-market source."""
+    from backend.api.routes.positions import _build_paper_positions_response
+    src = inspect.getsource(_build_paper_positions_response)
+    assert "_override_stale_ltp_from_ticker(" in src, (
+        "_build_paper_positions_response must still call "
+        "_override_stale_ltp_from_ticker for paper mark-to-market"
+    )
+
+
+# ---------------------------------------------------------------------------
 # _override_stale_close_from_snapshot — MCX overnight stale prev_close fix
 #
 # Five quality dimensions:

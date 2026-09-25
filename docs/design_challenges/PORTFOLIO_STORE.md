@@ -152,7 +152,11 @@ These are `createDataStore` instances with explicit `null` state during fetch.
 The WebSocket is alive whenever the market is open, ticking independently of poll cycles.
 
 ### Tier 2: Per-Symbol Derived (depends on T0 + T1)
-- `livePositionDayPnl(closePx, qty, ltp)` — reads Tier 0 for position shape, Tier 1 for live price
+- `baseDayPnlForPosition(r)` — reads Tier 0 for position shape only. *(As of the §1 poll-only
+  redesign, position/holding Day P&L dropped the Tier 1 live-price dependency entirely —
+  `livePositionDayPnl` and its SSE-tick delta were removed; Day P&L is purely poll-driven now.
+  Tier 1 (live price) remains a dependency for `exp_pnl`/`extrinsic` below, and for
+  roots/underlyings generally — not for Day P&L.)*
 - `expiryPnl(symbol, qty, avg, spot)` — reads Tier 0 for qty/avg, Tier 1 for live spot
 - `dayChangePct(day_pnl, prev_mv)` — depends on Tier 2 computation result
 

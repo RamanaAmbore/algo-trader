@@ -303,7 +303,11 @@ def test_fetch_positions_direct_calls_ltp_override():
 
     This ensures the NavStrip P "today" slot gets the ticker-corrected LTP
     rather than the potentially-stale REST LTP (observed 2026-06-22 where
-    Kite's REST lagged WS by 30 min for CRUDEOIL options).
+    Kite's REST lagged WS by 30 min for CRUDEOIL options). This is an
+    at-poll correction (runs inside each poll, using the ticker to fix
+    that poll's own stale broker REST data) — distinct from, and
+    unaffected by, the 2026-09-24 removal of the frontend's between-poll
+    live-tick delta (nav.js's livePositionDayPnl).
     """
     from backend.api.background import _fetch_positions_direct
 

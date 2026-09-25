@@ -190,8 +190,10 @@ but is orthogonal to user-visible Day P&L rendering.
   Holdings day P&L during closed hours computed from actual price diff. Fallback to 
   `(ltp - previous_close) × qty` when `prev_ltp` unavailable/zero
 - **Per-position display**: Do NOT read `day_change_val` directly on a per-row basis — as of
-  the 2026-09 redesign, per-row Day P&L must go through `baseDayPnlForPosition`/
-  `livePositionDayPnl` (`nav.js`), NOT the legacy backstop-derived `day_change_val`. Per-row
+  the §1 poll-only redesign (round 4), per-row Day P&L must go through `baseDayPnlForPosition`
+  (`nav.js`) alone — `livePositionDayPnl` was removed entirely (no live-tick delta term; positions
+  Day P&L is purely poll-driven, 5s/30s book-poll cadence), NOT the legacy backstop-derived
+  `day_change_val`. Per-row
   Day P&L IS still displayed (a mid-redesign plan to remove it was reverted by explicit
   operator instruction); account-level rollups are ALSO shown alongside it (see CLAUDE.md and
   backend `PositionsResponse.summary`). A parallel `PositionsResponse.symbol_summary` field
@@ -593,8 +595,10 @@ option underlyings, and movers into a single row array. Every row carries accoun
 }
 ```
 
-**Market-open gate** — LTP and day P&L depend on `isMarketOpen()`:
-- Open: live SSE tick + broker poll LTP used; day P&L via `livePositionDayPnl()` helper
+**Market-open gate** — LTP depends on `isMarketOpen()`; day P&L is purely poll-driven (§1)
+with no live-SSE-tick dependency at all:
+- Open: live SSE tick + broker poll LTP used for display; day P&L via `baseDayPnlForPosition()`
+  (the sole Day P&L formula — `livePositionDayPnl` and its live-tick delta term were removed)
 - Closed: `daily_book` snapshot LTP + zero day P&L (no intraday MTM)
 
 **Throttle** — `_throttledTick` 4 Hz (250ms) max; SSE ticks can fire 100/sec under load
@@ -789,9 +793,10 @@ Holdings grid (St column filtered out):
 - Account (86px)
 
 **Day P&L recompute** — reads from `positionsDerivedStore.byKey[sym].day_pnl` (5s cadence):
-- Store computes via `livePositionDayPnl()` helper on every 5s book-poll cycle + immediate on postback fill (WebSocket order_update triggers cache invalidation)
-- When market open: `(liveLtp − closePx) × qty + realisedToday` with SSE live-tick override
-- When market closed: `baseDayPnlForPosition(row)` (broker day_change_val or lifetime pnl if missing)
+- Store computes via `baseDayPnlForPosition()` on every 5s book-poll cycle + immediate on postback
+  fill (WebSocket order_update triggers cache invalidation) — purely poll-driven (§1), no live-tick
+  delta term (`livePositionDayPnl` was removed entirely, not just for the closed-market branch)
+- `baseDayPnlForPosition(row)`: broker day_change_val, or lifetime pnl if missing, open or closed
 - **No Pulse override**: Replaces legacy `setFromPulse()` mechanism; all consumers read the store's computed value directly instead of Pulse-written values
 - **Derivatives candidates**: Per-root day P&L sums in overlay converge to Pulse positions TOTAL by reading `positionsDerivedStore.byKey[sym]` (F&O/equity positions) and `holdingsDayPnlStore.byKey[sym]` (equity holdings). `_dayPnlForLeg` helper retained for `_legExpPnlDisplay`, flash updates, and per-root aggregation.
 
@@ -875,7 +880,10 @@ payoff chart spot-price, and TOTAL row convergence with NavStrip.
    as `positionsDayPnlStore`) with live LTP sourced from `getSnapshot(sym)?.ltp` at 4Hz 
    via `void _throttledTick`. The Snapshot grid TOTAL row now matches NavStrip P1 exactly 
    when no equity intraday positions exist (eliminating prior discrepancies from separate 
-   day-P&L calculation paths).
+   day-P&L calculation paths). *(Superseded — §1 poll-only redesign, round 4:
+   `livePositionDayPnl` was removed entirely; positions Day P&L is purely poll-driven via
+   `baseDayPnlForPosition`, no live-SSE-tick delta term. See §13.3 for the current
+   per-row-sum TOTAL formula.)*
 
 **CandidateLegRow LTP reactivity**:
 7. LTP in CandidateLegRow now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), 
@@ -939,7 +947,12 @@ operator's most material positions immediately.
 
 The Snapshot grid TOTAL row day P&L now computes as the sum of per-row day P&L values 
 via `Object.values(_dayPnlByRootMap)` instead of applying `livePositionDayPnl` to raw 
-`positionsStore.value` rows.
+`positionsStore.value` rows. *(`livePositionDayPnl` referenced here is historical — it
+was removed entirely in the §1 poll-only redesign, round 4; the per-row values summed
+into the TOTAL now come from `baseDayPnlForPosition` via `_byUnderlyingTotals`'
+`day_without`/`day_with` fields, sourced from `rollupByUnderlying` in
+`derivativesMath.js` — same "sum of rows" principle this section documents, current
+plumbing differs from the `_dayPnlByRootMap` name below.)*
 
 **Problem fixed**:
 - Prior formula applied `livePositionDayPnl` to broker-stamped positions, which included 

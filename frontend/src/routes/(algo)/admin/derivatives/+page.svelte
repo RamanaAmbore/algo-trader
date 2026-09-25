@@ -45,7 +45,7 @@
     findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying, resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying';
-  import { expiryPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl';
+  import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
@@ -57,7 +57,7 @@
   import {
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
-  import { baseDayPnlForPosition, livePositionDayPnl, FO_EXCHANGES } from '$lib/data/nav';
+  import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -86,7 +86,7 @@
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import { debugLog } from '$lib/debug/debugLog.js';
-  import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
+  import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot, pruneUnderlyingSpotRoots } from '$lib/data/underlyingSpotStore.svelte.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -549,50 +549,6 @@
   // allocate a new object on every render cycle.
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
 
-  /**
-   * Multi-source spot resolver for the expiry-close analysis.
-   * Resolution chain (matches the `liveSpot` chain):
-   *   1. strategy anchor contract tick (SSE) — only when strategy is for selUnd
-   *   2. bare selUnd SSE tick
-   *   3. _underlyingQuotes batchQuote cache
-   *   4. strategy.spot server-poll value  (same underlying only)
-   *
-   * When strategy.underlying ≠ selectedUnderlying the strategy-derived keys
-   * are deliberately skipped to avoid returning stale spot for a different
-   * underlying (e.g. NIFTY 24500 as BHEL's spot — see comment in derived block).
-   *
-   * Called inside untrack() so this helper does not add reactive subscriptions.
-   *
-   * @param {string}                selUnd            - selectedUnderlying
-   * @param {any}                   strategy          - current strategy response
-   * @param {Record<string,any>}    underlyingQuotes  - _underlyingQuotes map
-   * @param {(sym:string)=>any}     getSnapshotFn     - symbolStore.getSnapshot
-   * @returns {number}  0 when no source resolves (triggers early-return in caller)
-   */
-  function _resolveExpirySpot(selUnd, strategy, underlyingQuotes, getSnapshotFn) {
-    const selKey   = String(selUnd    || '').toUpperCase();
-    const stratUnd = String(strategy?.underlying || '').toUpperCase();
-    if (selKey && stratUnd === selKey) {
-      // strategy is current for this underlying — try its anchor keys first.
-      const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
-      if (anchor) {
-        const v = Number(getSnapshotFn(anchor)?.ltp);
-        if (Number.isFinite(v) && v > 0) return v;
-      }
-      const v2 = Number(getSnapshotFn(selKey)?.ltp);
-      if (Number.isFinite(v2) && v2 > 0) return v2;
-      const bqLtp = underlyingQuotes[selUnd]?.ltp;
-      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-      return Number(strategy?.spot || 0);
-    }
-    // strategy still loading for selUnd — skip strategy-derived keys.
-    const v3 = Number(getSnapshotFn(selKey)?.ltp);
-    if (Number.isFinite(v3) && v3 > 0) return v3;
-    const bqLtp = underlyingQuotes[selUnd]?.ltp;
-    if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-    return 0;
-  }
-
   // Band sort order — shared by both equity + commodity sort comparators.
   const expiryCloseAnalysis = $derived.by(() => {
     // Track candidatePositions + selectedExpiries reactively (this is
@@ -692,6 +648,33 @@
     return rows;
   });
 
+  /** Same rows as displayedCandidates, but WITHOUT the search-text filter
+   *  (_filterLegs) — the base for the Legs TOTAL / Exp P&L / offset
+   *  computations below, so typing in the Legs search box narrows the
+   *  grid's VISIBLE rows without shifting the computed totals (§5: the
+   *  curve is built from the unfiltered leg set, so totals derived from a
+   *  search-filtered set could silently diverge from the curve). Still
+   *  applies the legsTab (legs vs expiry) and _includeHoldings gates,
+   *  since those are intentional scope changes the operator expects
+   *  totals to reflect (operator: "when [holdings] is off, legs should
+   *  not show holdings rows. the totals should reflect that"). */
+  const _legsTotalsBase = $derived.by(() => {
+    let rows;
+    if (legsTab !== 'expiry') {
+      rows = candidatePositions;
+    } else {
+      rows = [];
+      for (const r of expiryCloseAnalysis.equity)
+        rows.push({ ...r, _expiryStatus: `equity-${r._band}` });
+      for (const r of expiryCloseAnalysis.commodity)
+        rows.push({ ...r, _expiryStatus: `commodity-${r._band}` });
+    }
+    if (!_includeHoldings) {
+      rows = rows.filter(c => c.kind !== 'eq');
+    }
+    return rows;
+  });
+
   /** Whole-book snapshot grouped by parsed underlying root. Operator:
    *  "The underlying snapshot should show all totals for all
    *  underlying with no relation with root/symbol selector for
@@ -778,11 +761,16 @@
    * @param {Function} ensure     - (root) => out[root]
    * @returns {boolean}  true if row was accumulated
    */
-  // _accumulatePosExpPnl, _accumulateHoldingExpPnl, _byUnderlyingExp removed —
-  // Exp P&L per root now comes from positionsDerivedStore.byRootPositions /
-  // positionsDerivedStore.byRootHoldings (unified 4 Hz SSOT).
-  // Note: positionsDerivedStore reads the unfiltered positionsStore; the
-  // derivatives page account + strategy filter is NOT applied to these values.
+  // _accumulatePosExpPnl, _accumulateHoldingExpPnl, _byUnderlyingExp removed.
+  // Exp P&L per root for the Snapshot grid now comes from
+  // _filteredExpPnlByRoot (built via _perRootReduce below), NOT from
+  // positionsDerivedStore.byRootPositions/byRootHoldings directly —
+  // those read the unfiltered book with no matchAccount/matchStrategy
+  // gate. _filteredExpPnlByRoot DOES apply the same filter as the rest
+  // of the Snapshot row (item-4/§5 fix), uniformly for EVERY root
+  // including the selected one (item-3 fix, round 4 — see
+  // _rowExpPnlFor's docstring; it no longer special-cases the selected
+  // underlying against the differently-filtered Legs TOTAL).
 
   /** Shared per-root accumulator — mirrors overlay's per-leg iteration
    *  (candidatesDayPnl / candidatesActualPnl / _legsExpPnlTotal) but
@@ -821,9 +809,21 @@
       positions, wantedSource,
       matchAccount, matchStrategy,
       decomposeSymbol,
+      // Live-first (§4/§5): _undLive (liveSnap of the resolved front-month
+      // tradingsymbol, same Tier-1 source liveSpot uses) takes priority,
+      // matching the priority reversal already applied in portfolioStore's
+      // exp_pnl block and _legExpPnlDisplay, then falls back to _rootSpot's
+      // own multi-source chain. This tick-driven `spot` is the Exp P&L
+      // DISPLAY basis (§4) — it is NOT used for Extrinsic (item-2 fix):
+      // legExtrinsicDisplay reads `c.underlying_ltp` (the row's own
+      // poll-time field, now carried by buildPositionRowFromBroker)
+      // directly instead, so the exp-P&L and MTM terms of that
+      // subtraction share one poll-time snapshot rather than mixing a
+      // live tick with a poll-only price.
       getSpot: (root, p) => {
-        const p_ul = Number(p.underlying_ltp || 0);
-        return p_ul > 0 ? p_ul : untrack(() => _rootSpot(root));
+        const live = _undLive[root]?.ltp;
+        if (live > 0) return live;
+        return untrack(() => _rootSpot(root)) || 0;
       },
       accessor,
     });
@@ -838,16 +838,81 @@
   }
 
 
-  // Snapshot TOTAL sums — read directly from positionsDerivedStore.byRootPositions
-  // (accumulated across accounts, selection-independent, reactive at 4Hz).
+  // Snapshot filter consistency (§5): rows are filtered by account/strategy
+  // (_byUnderlyingTotals via matchAccount/matchStrategy), but Day/P&L/Exp
+  // values used to come from positionsDerivedStore.getByRoot /
+  // byRootPositions — selection-independent by design, summed across ALL
+  // accounts/strategies regardless of the active filter. Day P&L and
+  // lifetime P&L are already correctly filtered on each _byUnderlyingTotals
+  // row (g.day_without / g.pnl_without via rollupByUnderlying's own
+  // matchAccount/matchStrategy) — those are used directly at each render
+  // site instead of the unfiltered store. Exp P&L has no such filtered
+  // per-root source yet, so it's computed here via the same _perRootReduce
+  // infrastructure the overlay already uses (same iteration, same
+  // _legExpPnlDisplay accessor, same matchStrategy gate) so filtered rows
+  // and the filtered TOTAL are internally consistent by construction.
+  const _filteredExpPnlByRoot = $derived.by(() => {
+    const matchStrategy = _makeStrategyMatcher();
+    return _perRootReduce((c, spot) => _legExpPnlDisplay(c, spot), matchStrategy);
+  });
+
+  // Extrinsic, filtered by the same account/strategy gate as the other four
+  // Snapshot columns (§4/item-4 fix). Computed PER ROW via the shared
+  // legExtrinsicDisplay (expiryPnl.js) — NOT via positionsDerivedStore.get()
+  // (item-2 fix, round 4): that store's byKey/byRoot maps are already
+  // summed across every account for a given symbol, but this reduction
+  // walks PER-ACCOUNT position rows — indexing the pre-summed store from
+  // inside a per-row walk added the same cross-account total once per
+  // account row it touched (2 accounts on the same symbol → 2× the real
+  // number, filtering to one account still showed the full cross-account
+  // sum instead of that account's own share). legExtrinsicDisplay takes
+  // this row's OWN qty/avg_cost/ltp + its OWN poll-time underlying_ltp, so
+  // perRootReduce's normal per-row accumulation (already correct for
+  // everything else) sums real per-account contributions instead.
+  const _filteredExtrinsicByRoot = $derived.by(() => {
+    const matchStrategy = _makeStrategyMatcher();
+    return _perRootReduce((c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0), matchStrategy);
+  });
+
+  /** Per-row Snapshot Exp P&L — uniform across EVERY root, including the
+   *  currently selected one (item-3 fix, round 4). Always reads
+   *  `_filteredExpPnlByRoot` — the same account/strategy-filtered
+   *  reduction `_byUnderlyingTotals`' Day P&L / P&L columns are built from
+   *  — so the Snapshot row's four value columns are computed on ONE
+   *  consistent filter basis regardless of selection state.
+   *
+   *  Previously the selected root took a DIFFERENT path
+   *  (`_legsExpPnlTotal`, sourced from `_legsTotalsBase` — expiry-picker
+   *  filtered but NOT strategy-filtered) while every other root used
+   *  `_filteredExpPnlByRoot` (strategy-filtered but NOT expiry-picker
+   *  filtered). Confirmed repro: a strategy scoped to NIFTY 24500CE only,
+   *  while the book also holds NIFTY 24000PE — with NIFTY selected the row
+   *  showed CE+PE (unfiltered by strategy); deselecting NIFTY made the
+   *  SAME row jump to CE-only (strategy-filtered) with no change to the
+   *  book. Day P&L / P&L never had this problem (`g.day_without` /
+   *  `g.pnl_without` are already uniformly strategy-filtered for every
+   *  row) — Exp P&L was the one column that special-cased the selected
+   *  root. `_legsExpPnlTotal` remains valid as its OWN thing: the
+   *  Legs-tab TOTAL row, which is intentionally expiry-picker-scoped and
+   *  what-if aware (leg checkboxes / drafts) — see its own docstring. It
+   *  is no longer read from here. */
+  function _rowExpPnlFor(/** @type {string} */ underlying) {
+    return _filteredExpPnlByRoot[underlying] ?? 0;
+  }
+
+  // Snapshot TOTAL sums — sum ONLY the filtered per-root values so TOTAL
+  // always equals the sum of the visible (filtered) rows above it.
   const _snapshotTotalPnl = $derived.by(() =>
-    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.pnl ?? 0), 0)
+    _byUnderlyingTotals.reduce((s, g) => s + (g.pnl_without ?? 0), 0)
   );
   const _snapshotTotalDay = $derived.by(() =>
-    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.day_pnl ?? 0), 0)
+    _byUnderlyingTotals.reduce((s, g) => s + (g.day_without ?? 0), 0)
   );
   const _snapshotTotalExp = $derived.by(() =>
-    Object.values(positionsDerivedStore.byRootPositions).reduce((s, v) => s + (v?.exp_pnl ?? 0), 0)
+    _byUnderlyingTotals.reduce((s, g) => s + _rowExpPnlFor(g.underlying), 0)
+  );
+  const _snapshotTotalExtrinsic = $derived.by(() =>
+    _byUnderlyingTotals.reduce((s, g) => s + (_filteredExtrinsicByRoot[g.underlying] ?? 0), 0)
   );
 
 
@@ -887,6 +952,22 @@
       const r = resolveUnderlying(selectedUnderlying, findNearestFuture);
       if (r?.quoteKey) out.push({ root: selectedUnderlying, quoteKey: r.quoteKey });
     }
+    // Anchor contract subscription (§5): strategy.spot_anchor_contract can be
+    // a DIFFERENT contract than the front-month resolution above (e.g. a
+    // far-month MCX option chain whose pricing anchor isn't the front-month
+    // future). Without a dedicated subscription entry here, liveSpot/
+    // payoffSpot's Tier-1 anchor read (liveSnap(anchor)?.ltp) never gets a
+    // batch-quote refresh or ticker subscription and can silently serve a
+    // days-old localStorage-cached price. Reuses the underlying's own
+    // resolved exchange (MCX/CDS anchors always share the underlying's
+    // exchange) since the strategy response carries no exchange field.
+    const _stratUnd = String(strategy?.underlying || '').toUpperCase();
+    const _anchor    = String(strategy?.spot_anchor_contract || '').toUpperCase();
+    if (_anchor && !out.some(p => p.quoteKey.endsWith(`:${_anchor}`))) {
+      const r = resolveUnderlying(_stratUnd || selectedUnderlying, findNearestFuture);
+      const exch = r?.exchange || 'MCX';
+      out.push({ root: `${_anchor}__ANCHOR`, quoteKey: `${exch}:${_anchor}` });
+    }
     return out;
   });
 
@@ -924,7 +1005,7 @@
     const groups = _byUnderlyingTotals;
     untrack(() => {
       for (const g of groups) {
-        flash.update(`${g.underlying}:day_w`,  positionsDerivedStore.getByRoot(g.underlying, 0).day_pnl);
+        flash.update(`${g.underlying}:day_w`,  g.day_without ?? 0);
         flash.update(`${g.underlying}:pnl_w`,  g.pnl_without);
       }
     });
@@ -1055,28 +1136,17 @@
     return t;
   });
 
-  /** Per-candidate Day P&L — computed per-row using livePositionDayPnl.
+  /** Per-candidate Day P&L — computed per-row using baseDayPnlForPosition
+   *  (poll-only — §1, no live-tick delta).
    *
    *  positionsDayPnlStore.byKey[sym] aggregates across ALL accounts
    *  for that symbol. candidatePositions has per-account rows so using
    *  byKey would double-count when two accounts hold the same symbol
    *  (e.g. CRUDEOIL26AUGPE5400 in two accounts → byKey returns 2×).
-   *  Fix: apply livePositionDayPnl directly using each candidate's own
+   *  Fix: apply baseDayPnlForPosition directly using each candidate's own
    *  fields, which is exactly what the store does per-row before aggregating.
    */
-  const _candDayPnl = (c) => {
-    const sym  = String(c?.symbol || c?.tradingsymbol || '').toUpperCase();
-    const snap = untrack(() => getSnapshot(sym));
-    return livePositionDayPnl(
-      {
-        pollLtp: c.ltp ?? 0,
-        qty:     c.qty ?? 0,
-        dcvRow:  c,
-      },
-      snap?.ltp ?? null,
-      { marketOpen: isMarketOpen() },
-    );
-  };
+  const _candDayPnl = (c) => baseDayPnlForPosition(c);
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
@@ -1871,6 +1941,19 @@
     String(strategy.underlying || '').toUpperCase() !== selectedUnderlying.toUpperCase()
   );
 
+  // The anchor future's OWN expiry (for the "rolls in N days" chip) — NOT
+  // strategy.expiry, which is the OPTIONS' expiry and can differ from the
+  // anchor contract's own roll date (e.g. a monthly option chain priced
+  // off a quarterly MCX future). Falls back to strategy.expiry only when
+  // the instrument cache can't resolve the anchor (cold cache) so the
+  // chip never goes blank.
+  const _spotAnchorExpiryISO = $derived.by(() => {
+    const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
+    if (!anchor) return strategy?.expiry ?? '';
+    const inst = getInstrument(anchor);
+    return inst?.x || strategy?.expiry || '';
+  });
+
   // prevClose for the payoff chart — throttle-gated to prevent OptionsPayoff
   // from re-rendering on every _underlyingQuotes wholesale replacement
   // (which happens on every loadUnderlyingQuotes() call, including on tab
@@ -2013,45 +2096,78 @@
    */
   function _legExpPnlDisplay(c, spot) {
     if (c.kind === 'eq') return _eqExpPnlByKey[enKey(c)] ?? null;
+    // Futures value at THEIR OWN contract's live price, not the shared
+    // front-month root `spot` — these only coincide when the held future
+    // IS the front-month contract (§4 futures-own-price fix). Options
+    // keep using the front-month root spot passed in via `spot` (the Exp
+    // P&L SSOT for options — Snapshot/Legs TOTAL convergence).
+    // resolveExpiryAnchor (expiryPnl.js) is the SAME shared decision tree
+    // portfolioStore.svelte.js's _posTier2 uses for this call — a single
+    // pure function both sites delegate to, rather than two hand-mirrored
+    // copies of the same if/else chain.
+    let effSpot = spot;
+    if (c.kind === 'fut') {
+      const sym = String(c?.symbol || c?.tradingsymbol || '').toUpperCase();
+      const ownLive = Number(liveSnap(sym)?.ltp || 0);
+      effSpot = resolveExpiryAnchor({ isOpt: false, rootSpot: spot, ownLiveLtp: ownLive, ownPolledLtp: Number(c?.ltp) || 0 });
+    }
     // Unified with portfolioStore's Pulse/NavStrip path via the shared
     // expiryPnlWithRealised helper (expiryPnl.js). c already carries both
     // realised and pnl (buildPositionRowFromBroker) — the pnl-fallback is
     // applied INSIDE expiryPnlWithRealised, and only on its qty===0 branch,
     // so it must not be pre-merged into realised here (would double-count
     // against unrealised on still-open legs).
-    return expiryPnlWithRealised(c, spot, legAnalyticsBySymbol);
+    return expiryPnlWithRealised(c, effSpot, legAnalyticsBySymbol);
   }
 
   /** Day P&L TOTAL for the currently selected underlying across all enabled
    *  F&O legs — script-level SSOT shared by the Legs TOTAL row AND the
-   *  Snapshot row for the selected underlying. Excludes equity (kind === 'eq'). */
+   *  Snapshot row for the selected underlying. Excludes equity (kind === 'eq').
+   *  Reads _legsTotalsBase (unaffected by the Legs search box — see its
+   *  own comment) rather than displayedCandidates. */
   const _legsDayPnlTotal = $derived.by(() =>
-    displayedCandidates
+    _legsTotalsBase
       .filter(c => _isLegEnabled(c) && c.kind !== 'eq')
       .reduce((s, c) => s + _candDayPnl(c), 0)
   );
 
   /** Exp P&L total for the CURRENTLY SELECTED underlying across all
-   *  enabled, displayed candidate legs — the single source of truth
-   *  shared by the legs grid TOTAL row and the snapshot row whose
-   *  underlying matches `selectedUnderlying`. Both surfaces now read
-   *  this value so they are always identical (same spot, same leg set,
-   *  same enabled-gate).
+   *  enabled, displayed candidate legs — the Legs-tab TOTAL row's own
+   *  SSOT. Expiry-picker filtered (via `_legsTotalsBase`), what-if aware
+   *  (`_isLegEnabled`/`showDraftInPayoff` gates), scoped to
+   *  `selectedUnderlying` only.
    *
-   *  Uses `liveSpot` (already throttled to 250 ms via _throttledTick)
-   *  rather than reading `_underlyingQuotes[selectedUnderlying]?.ltp`
-   *  directly. The direct read would register a dependency on the whole
-   *  `_underlyingQuotes` object — which is replaced wholesale every 30 s
-   *  — causing this derived AND every downstream ($equityLegs, payoff
-   *  chart, legs-grid TOTAL row) to re-run at the snapshot poll cadence
-   *  on top of the 4 Hz tick rate. With `liveSpot` as the sole spot
-   *  source the cascade is bounded by the _throttledTick gate. */
+   *  NOT read by the Snapshot grid (item-3 fix, round 4) — every Snapshot
+   *  row, including the one for `selectedUnderlying`, reads
+   *  `_filteredExpPnlByRoot` via `_rowExpPnlFor` instead (account/strategy
+   *  filtered, NOT expiry-picker filtered, no leg-toggle awareness — see
+   *  `_rowExpPnlFor`'s docstring for why mixing the two filter bases
+   *  produced an inconsistent Snapshot row that changed value purely from
+   *  (de)selecting the root). This TOTAL and the Snapshot row for the
+   *  same underlying can legitimately differ whenever the expiry picker,
+   *  an unchecked leg, or a draft leg is in play.
+   *
+   *  Uses `liveSpot` rather than reading
+   *  `_underlyingQuotes[selectedUnderlying]?.ltp` directly. The direct
+   *  read would register a dependency on the whole `_underlyingQuotes`
+   *  object — which is replaced wholesale every 30 s — causing this
+   *  derived AND every downstream ($equityLegs, payoff chart, legs-grid
+   *  TOTAL row) to re-run at the snapshot poll cadence on top of the 4 Hz
+   *  tick rate. `liveSpot` itself is tick-driven (its Tier 1/2/3 sources
+   *  each track `snapTick` internally via `liveSnap`/`getSnapshot`, not
+   *  `_throttledTick` — that gate belongs to a different derived further
+   *  down in this file), so using it as the sole spot source keeps this
+   *  cascade bounded without a separate throttle here. */
   const _legsExpPnlTotal = $derived.by(() => {
     const spot = liveSpot ?? null;
     // Single pass: _legExpPnlDisplay is the canonical per-candidate formula
     // so sum(per-leg rows in the grid) == this TOTAL by construction.
     // Handles open F&O, closed F&O, equity/proxy legs, and null (no-spot) legs uniformly.
-    return displayedCandidates
+    // Reads _legsTotalsBase (unaffected by the Legs search box) so typing
+    // in the search box narrows the grid without shifting this total or
+    // diverging it from the payoff curve, which is built from the
+    // unfiltered leg set (§5).
+    return _legsTotalsBase
       .filter(c => {
         if (!_isLegEnabled(c)) return false;
         if (!showDraftInPayoff &&
@@ -2064,6 +2180,30 @@
       }, 0);
   });
 
+  /** Legs-tab TOTAL row Extrinsic — same enabled/draft gate as
+   *  `_legsExpPnlTotal` above, so sum(visible leg rows' Extrinsic) equals
+   *  this TOTAL by construction (previously read
+   *  `positionsDerivedStore.total.extrinsic`, the WHOLE-BOOK aggregate —
+   *  unaffected by search box, expiry filter, OR the enabled/draft
+   *  checkboxes — so it silently diverged from the per-leg cells the
+   *  moment a leg was unchecked or a filter narrowed the grid). Per-leg
+   *  values come from the same `legExtrinsicDisplay` (expiryPnl.js) the
+   *  Snapshot row and Legs cells use — poll-time `c.underlying_ltp`, not
+   *  the tick-driven `spot` used for Exp P&L (item-2 fix). */
+  const _legsExtrinsicTotal = $derived.by(() =>
+    _legsTotalsBase
+      .filter(c => {
+        if (!_isLegEnabled(c)) return false;
+        if (!showDraftInPayoff &&
+            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
+        return true;
+      })
+      .reduce((/** @type {number} */ s, c) => {
+        const v = legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0);
+        return v == null ? s : s + v;
+      }, 0)
+  );
+
   /** Realised P&L offset for the expiry curve — locked-in gains from
    *  partially/fully closed F&O legs. Unlike `chartPnlOffset` (which
    *  carries full BS-vs-broker MTM drift to align the today curve),
@@ -2074,8 +2214,11 @@
    *  For closed legs (qty=0): use c.realised || c.pnl — Kite returns
    *  realised=0 for options settled at expiry and puts the P&L in c.pnl.
    *  For open legs: c.realised only (c.pnl includes unrealised MTM). */
+  // Reads _legsTotalsBase (unaffected by the Legs search box — see its
+  // own comment) so the curve's offset stays stable while the operator
+  // types in the search box (§5).
   const _expiryPnlOffset = $derived.by(() =>
-    displayedCandidates
+    _legsTotalsBase
       .filter(c => {
         if (!_isLegEnabled(c) || c.kind === 'eq') return false;
         if (!showDraftInPayoff &&
@@ -3364,15 +3507,38 @@
   // only read inside the async loadPositions() function, not in $derived.
   let _lastDervPulsePos = /** @type {any[]} */ ([]);
 
-  const _snapshotTotalEvFull = $derived.by(() => {
-    const base = _snapshotTotalExp;
-    const mergedEv = _mergedEv;
-    if (mergedEv == null) return base;
-    // Replace the selected underlying's _legsExpPnlTotal contribution with the
-    // overlay-merged EV. base already contains _legsExpPnlTotal for selectedUnderlying
-    // (via the new _snapshotTotalExp formula), so subtract that exact term.
-    return base - _legsExpPnlTotal + mergedEv;
-  });
+  /** Per-row "EV" column value (§5 EV fix) — real merged EV for the
+   *  currently-selected underlying when a strategy is loaded (matches the
+   *  Payoff overlay's EV chip), Exp P&L as a proxy for every other root
+   *  (no per-underlying EV without a loaded strategy for that root).
+   *  Shared by the row template AND _snapshotTotalEvFull below so TOTAL
+   *  equals the sum of the visible rows BY CONSTRUCTION — matches what
+   *  the column tooltip claims. (Previously _snapshotTotalEvFull computed
+   *  `base − _legsExpPnlTotal + mergedEv`, where `base` no longer
+   *  contained exactly `_legsExpPnlTotal` for the selected underlying
+   *  after the §5 filtered-per-root Exp P&L fix, leaving a residual
+   *  error term — and it added mergedEv even when the selected
+   *  underlying wasn't among the displayed rows.) */
+  function _rowEvFor(/** @type {string} */ underlying) {
+    // _strategyStale gate (same pattern as the OptionsPayoff props above):
+    // during the one-render-frame window between selectedUnderlying
+    // changing and loadStrategy({clear:true}) landing, `strategy` (and
+    // therefore _mergedEv) still holds the PREVIOUS root's data. Without
+    // this gate that stale EV briefly displays on the NEW root's row (and
+    // sums into TOTAL) before the real fetch completes.
+    if (underlying === selectedUnderlying && !_strategyStale && _mergedEv != null) return _mergedEv;
+    // Exp P&L proxy — delegates to _rowExpPnlFor rather than indexing
+    // _filteredExpPnlByRoot directly, so this fallback always matches
+    // whatever the Exp P&L column itself shows for the same row.
+    // _rowExpPnlFor no longer special-cases the selected underlying
+    // (item-3 fix, round 4) so this is now the SAME filtered per-root
+    // reduction for every row, selected or not.
+    return _rowExpPnlFor(underlying);
+  }
+
+  const _snapshotTotalEvFull = $derived.by(() =>
+    _byUnderlyingTotals.reduce((s, g) => s + _rowEvFor(g.underlying), 0)
+  );
 
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
@@ -3589,6 +3755,18 @@
       }
       const simRows = positions.filter(r => r.source === 'sim');
       positions = [...merged, ...simRows];
+      // §5: this propagation path also refreshes positions data (every 5s
+      // via positionsStore.value's book-poller cadence) — it must stamp
+      // _positionsRefreshedAt too, not just loadPositions(). Without this,
+      // switching to a position-less root can permanently stick the
+      // Payoff card in "loading": loadStrategy()'s equity-only-synth
+      // branch gates the strategy-wipe on _positionsFresh (< 30s since
+      // _positionsRefreshedAt), and if this propagation effect is the
+      // ONLY thing keeping positions current (loadPositions() not
+      // re-invoked), _positionsRefreshedAt goes stale, _positionsFresh
+      // stays false forever, strategy never nulls out for the new root,
+      // and _strategyStale (strategy.underlying mismatch) never clears.
+      _positionsRefreshedAt = Date.now();
     });
   });
 
@@ -3719,8 +3897,21 @@
   let _synthCache = /** @type {{key: string, value: any} | null} */ (null);
   // Signature of the legs that produced the current `strategy` value
   // via the broker fetch path. Used to short-circuit duplicate
-  // round-trips on the 5 s poll when nothing has changed.
+  // round-trips when nothing has changed AND a refresh isn't due yet
+  // (see _stratLastFetchAt below) — the memo dedupes identical concurrent
+  // requests, it must NOT suppress every periodic refresh.
   let _stratLastKey = '';
+  // Timestamp (Date.now()) of the last successful fetch. buildCleanLegs
+  // sends `ltp: null` for live (non-sim/draft) legs, so legsKey never
+  // changes purely from price movement — without this, the legsKey memo
+  // above silently blocked every 5s marketAwareInterval(loadStrategy)
+  // tick once legs stopped changing, leaving `strategy.spot` (feeding
+  // chartTheoreticalAtSpot/EV/POP/chainSpot) stale from whenever legs
+  // last changed while candidatesActualPnl kept moving live — an implicit
+  // double-count of price movement. A fetch is forced once REFRESH_MS has
+  // elapsed since the last one, independent of legsKey.
+  let _stratLastFetchAt = 0;
+  const _STRAT_REFRESH_MS = 5000; // matches book-poll cadence
   // synthCacheKey, synthEquityOnlyStrategy — imported from $lib/derivatives/pageLoad.js
   // (renamed: synthCacheKey(underlying, eqs), synthEquityOnlyStrategy(eqs, underlying))
 
@@ -3787,17 +3978,37 @@
       _stratLastKey = '';
     }
 
-    // Legs-signature memo: skip round-trip when inputs are unchanged and
-    // a chart is already rendered. The `strategy &&` guard is critical:
-    // without it a single failure sets the key and recovery never fires.
+    // Legs-signature memo: skip round-trip when inputs are unchanged, a
+    // chart is already rendered, AND a periodic refresh isn't due yet.
+    // The `strategy &&` guard is critical: without it a single failure
+    // sets the key and recovery never fires. `_dueForRefresh` is what
+    // keeps this a "dedupe identical concurrent requests" memo rather
+    // than a blanket suppression of the 5s periodic refetch.
     const legsKey = computeLegsKey(cleanLegs);
-    if (!opts?.force && strategy && legsKey === _stratLastKey) {
+    // ~10% margin below the nominal cadence (item-5 fix, round 4): the
+    // caller is a setInterval/visibleInterval tick that fires at
+    // approximately _STRAT_REFRESH_MS, not exactly — a tick landing a few
+    // ms early (timer jitter, event-loop backpressure) would otherwise
+    // miss `_dueForRefresh` by a hair and silently push the refresh to
+    // the NEXT tick, halving the effective cadence to ~10s.
+    const _dueForRefresh = (Date.now() - _stratLastFetchAt) >= (_STRAT_REFRESH_MS - 500);
+    if (!opts?.force && strategy && legsKey === _stratLastKey && !_dueForRefresh) {
       strategyErr = ''; _stratFails = 0;
       return;
     }
 
     const _thisGen = ++_stratGen;
     if (!strategy) loading = true;
+    // Stamp BEFORE the await (item-6 fix), not after. Stamping post-await
+    // only counted (5000ms − request latency) as "elapsed" by the time the
+    // next 5s interval tick checked _dueForRefresh, so the effective
+    // cadence became ~10s instead of 5s. It also left the stamp stale
+    // WHILE a request was in flight, letting other independent triggers
+    // (legs-change effect, bookChanged, a fill event) each decide a
+    // refresh was "due" and fire their own overlapping request. Stamping
+    // here — once the memo/dedupe checks above have already decided this
+    // call IS going to fetch — closes both gaps.
+    _stratLastFetchAt = Date.now();
     try {
       // No `spot` override (cold-start spot-anchor fix): sending a nonzero
       // override made the backend's _resolve_spot short-circuit to
@@ -3815,6 +4026,9 @@
       if (_thisGen !== _stratGen) return;
       strategy      = resp;
       _stratLastKey = legsKey;
+      // _stratLastFetchAt is stamped BEFORE the await above (item-6 fix) —
+      // not re-stamped here so an overlapping/superseded response (caught
+      // by the _thisGen check) can't push the timestamp forward twice.
       strategyErr   = '';
       _stratFails   = 0;
       _saveCache();
@@ -4129,10 +4343,24 @@
   // operator's account filter shrinks/grows the set, or a front-month
   // roll changes the quoteKey for an MCX commodity root).
   let _lastQuoteSig = '';
+  /** @type {Set<string>} */
+  let _prevQuoteRoots = new Set();
   $effect(() => {
-    const sig = _underlyingQuoteKeys.map(p => `${p.root}:${p.quoteKey}`).sort().join('|');
+    const keys = _underlyingQuoteKeys;
+    const sig = keys.map(p => `${p.root}:${p.quoteKey}`).sort().join('|');
     if (sig === _lastQuoteSig) return;
     _lastQuoteSig = sig;
+    // Prune roots this page stopped tracking (§5) — a previously-selected,
+    // now-deselected root's stale entry can otherwise linger indefinitely
+    // and be silently served by _activeQuoteLtp / _clientPayoffStub. Only
+    // roots THIS page dropped are removed — pruneUnderlyingSpotRoots never
+    // touches roots another page (e.g. PositionStrip) still tracks under a
+    // different subscription cycle; any accidental cross-page removal is
+    // self-healing on that page's own next poll.
+    const nextRoots = new Set(keys.map(p => p.root));
+    const dropped = [..._prevQuoteRoots].filter(r => !nextRoots.has(r));
+    if (dropped.length) untrack(() => pruneUnderlyingSpotRoots(dropped));
+    _prevQuoteRoots = nextRoots;
     if (sig) loadUnderlyingQuotes();
   });
 
@@ -4473,7 +4701,7 @@
         spotAnchor={strategy?.spot_anchor_contract
           ? { contract: strategy.spot_anchor_contract,
               source: strategy.spot_source || 'futures',
-              expiryISO: strategy.expiry ?? '' }
+              expiryISO: _spotAnchorExpiryISO }
           : null}
         includeHoldings={_includeHoldings}
         onToggleHoldings={_flipHoldings}
@@ -4657,7 +4885,7 @@
               enabled={_isLegEnabled(c)}
               dayPnl={_candDayPnl(c)}
               expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
-              extrinsic={positionsDerivedStore.get(c.symbol).extrinsic}
+              extrinsic={legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0)}
               legExpired={_isLegExpired(c)}
               {strategy}
               {flash}
@@ -4717,8 +4945,14 @@
                  already dropped it. _isLegEnabled is the same gate
                  _mergedPayoff / _mergedGreeks already use, so the
                  TOTAL row now reconciles cell-by-cell with the chart. -->
-            {@const _selectedCands = displayedCandidates.filter(c => _isLegEnabled(c))}
-            {@const _totalPnl = _selectedCands.reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
+            <!-- P&L TOTAL reads _legsTotalsBase (unaffected by the Legs
+                 search box — item-7 fix), same pattern as _legsDayPnlTotal /
+                 _legsExpPnlTotal above. Previously this read the
+                 search-filtered `displayedCandidates`, so typing in the
+                 search box moved P&L TOTAL while Day/Exp TOTAL stayed
+                 fixed, and P&L TOTAL no longer equalled the sum of the
+                 rows actually visible in the grid either. -->
+            {@const _totalPnl = _legsTotalsBase.filter(c => _isLegEnabled(c)).reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
@@ -4736,18 +4970,28 @@
                 {aggCompact(_legsDayPnlTotal)}
               </span>
               <span class="num tf-cell cand-pnl {_totalPnl > 0 ? 'cell-pos' : _totalPnl < 0 ? 'cell-neg' : 'cell-flat'}"
-                    title="Σ P&L across every visible row = strip's P chip for these accounts">
+                    title="Σ P&L across every enabled leg (unaffected by the search box) = strip's P chip for these accounts">
                 {aggCompact(_totalPnl)}
               </span>
-              <!-- Strict SSOT: Snapshot row for selectedUnderlying reads
-                   _legsExpPnlTotal directly (same value shown here). -->
+              <!-- This is the Legs-tab TOTAL row — expiry-picker-filtered,
+                   what-if aware (leg checkboxes / drafts), scoped to
+                   selectedUnderlying only. The Snapshot grid's row for this
+                   same underlying does NOT read this value (item-3 fix,
+                   round 4) — every Snapshot row, selected or not, uses the
+                   account/strategy-filtered _filteredExpPnlByRoot instead,
+                   so Snapshot stays internally consistent with its own
+                   Day P&L/P&L columns regardless of which root happens to
+                   be selected. This TOTAL and the Snapshot row for the same
+                   root can legitimately differ whenever the expiry picker,
+                   an unchecked leg, or a draft leg puts them out of scope
+                   with each other — see _rowExpPnlFor's docstring. -->
               <span class="num tf-cell cand-pnl {_legsExpPnlTotal > 0 ? 'cell-pos' : _legsExpPnlTotal < 0 ? 'cell-neg' : 'cell-flat'}"
                     title="Σ Exp P&L across every selected leg — strategy expiry-day P&L at current spot.">
                 {aggCompact(_legsExpPnlTotal)}
               </span>
-              <span class="num tf-cell cand-pnl {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}"
-                    title="Σ Extrinsic value across all positions — total time value remaining in the portfolio.">
-                {aggCompact(positionsDerivedStore.total.extrinsic)}
+              <span class="num tf-cell cand-pnl {_legsExtrinsicTotal > 0 ? 'cell-pos' : _legsExtrinsicTotal < 0 ? 'cell-neg' : 'cell-flat'}"
+                    title="Σ Extrinsic value across every selected leg — time value remaining, same scope as Exp P&L above.">
+                {aggCompact(_legsExtrinsicTotal)}
               </span>
               <span class="num"></span>
               <span class="num"></span>
@@ -4803,16 +5047,29 @@
     detectOverflow={false}
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
-        const _q      = _underlyingQuotes[g.underlying];
-        const _snRow  = positionsDerivedStore.getByRoot(g.underlying);
-        const dayVal  = _snRow.day_pnl ?? 0;
-        const pnlVal  = _snRow.pnl     ?? 0;
-        const expVal  = _snRow.exp_pnl ?? 0;
+        // Same LTP/Chg%/Close source as the on-screen row (_undLive first,
+        // _underlyingQuotes fallback) — CSV export must match the display,
+        // not read a different (batch-cache-only) source (§6).
+        const _q    = _underlyingQuotes[g.underlying];
+        const _live = _undLive[g.underlying];
+        const _ltp   = _live ? _live.ltp   : (_q ? Number(_q.ltp) : null);
+        const _close = _live ? _live.close : (_q ? Number(_q.prev_close) : null);
+        const _pct   = _live
+          ? (_close != null && _close > 0 ? ((_ltp - _close) / _close) * 100 : null)
+          : (_q?.day_pct ?? null);
+        // Day P&L / lifetime P&L already filtered by matchAccount/matchStrategy
+        // on the _byUnderlyingTotals row; Exp P&L via _rowExpPnlFor — the
+        // SAME function the on-screen row calls, so the export can never
+        // diverge from the display (§6: CSV must match on-screen, same
+        // pattern already applied to LTP/Chg%/Close).
+        const dayVal  = g.day_without ?? 0;
+        const pnlVal  = g.pnl_without ?? 0;
+        const expVal  = _rowExpPnlFor(g.underlying);
         return {
           underlying:  g.underlying,
-          spot:        _q ? _q.ltp        : '',
-          day_pct:     _q && _q.day_pct != null ? _q.day_pct : '',
-          prev_close:  _q ? _q.prev_close : '',
+          spot:        _ltp != null ? _ltp : '',
+          day_pct:     _pct != null ? _pct : '',
+          prev_close:  _close != null ? _close : '',
           day_pnl:     dayVal,
           pnl:         pnlVal,
           exp_pnl:     expVal,
@@ -4856,7 +5113,7 @@
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
           <span class="num"
-                title="Expected value — probability-weighted average payoff at expiry. Per-underlying EV requires backend support; populates only when the current strategy is scoped to a single underlying. TOTAL carries the merged strategy EV.">
+                title="Expected value — probability-weighted average payoff at expiry. Shown for the currently-selected underlying when a strategy is loaded (uses the same merged EV as the Payoff overlay); other rows show Exp P&L as a proxy since no per-underlying EV exists without a loaded strategy for that root. TOTAL sums exactly these per-row values.">
             EV
           </span>
         </div>
@@ -4885,18 +5142,33 @@
           {@const _pct   = _live
               ? (_close != null && _close > 0 ? ((_ltp - _close) / _close) * 100 : null)
               : (_q?.day_pct ?? null)}
-          <!-- SSOT: all three trios read from per-root maps that share
-               _perRootReduce (same iteration, same _isLegEnabled gate,
-               same _includeHoldings gate, same proxy routing). Only the
-               per-leg accessor differs — matching overlay's compute for
-               each metric (candidatesDayPnl, candidatesActualPnl,
-               _legsExpPnlTotal). Operator 2026-07-01: "reusable similar
-               code should be used for both." -->
-          {@const _snRow   = positionsDerivedStore.getByRoot(g.underlying)}
-          {@const _dayVal  = _snRow.day_pnl   ?? 0}
-          {@const _pnlVal  = _snRow.pnl       ?? 0}
-          {@const _expVal  = _snRow.exp_pnl   ?? 0}
-          {@const _extVal  = _snRow.extrinsic ?? 0}
+          <!-- Filter consistency (§5, tightened item-3 round 4): Day P&L /
+               lifetime P&L come from THIS row's own g.day_without /
+               g.pnl_without — already filtered by the same
+               matchAccount/matchStrategy gate that determined whether this
+               row is even shown (rollupByUnderlying). Exp P&L uses
+               _rowExpPnlFor, which ALWAYS reads _filteredExpPnlByRoot —
+               the same account/strategy-filtered _perRootReduce
+               infrastructure, for every row, selected underlying included
+               (no more special-casing the selected root against the
+               differently-filtered Legs-tab TOTAL — see _rowExpPnlFor's
+               docstring). Extrinsic uses the same _perRootReduce
+               filtered-reduction pattern via _filteredExtrinsicByRoot
+               (item-4 fix), so it also respects the active
+               account/strategy filter and TOTAL sums exactly these
+               per-row values. -->
+          {@const _dayVal  = g.day_without ?? 0}
+          {@const _pnlVal  = g.pnl_without ?? 0}
+          {@const _expVal  = _rowExpPnlFor(g.underlying)}
+          {@const _extVal  = _filteredExtrinsicByRoot[g.underlying] ?? 0}
+          <!-- Per-underlying EV: real merged EV (_mergedEv) when the current
+               strategy is scoped to this exact root — matches the Payoff
+               overlay's EV chip and _snapshotTotalEvFull's per-row term
+               exactly. Other roots have no loaded-strategy EV to show, so
+               they fall back to Exp P&L as a proxy (same fallback
+               _snapshotTotalEvFull assumes for non-selected roots) rather
+               than a real (but uncomputed) EV. -->
+          {@const _rowEv = _rowEvFor(g.underlying)}
           <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
             <span class="byund-und" style="background: {acctColor(g.underlying) ? acctColor(g.underlying) + '1a' : 'transparent'}">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
@@ -4908,12 +5180,8 @@
             <span class="num {_extVal > 0 ? 'cell-pos' : _extVal < 0 ? 'cell-neg' : 'cell-flat'}">{_extVal === 0 ? '—' : aggCompact(_extVal)}</span>
             <span class="num cell-muted">{Math.round(g.legs_without)}</span>
             <span class="num cell-muted">{g.qty_fno || '—'}</span>
-            <!-- Per-underlying EV: surfaces _mergedEv when the
-                 current strategy is scoped to this exact root.
-                 Otherwise '—' (placeholder for backend per-group
-                 EV support). -->
-            <span class="num {_expVal > 0 ? 'cell-pos' : _expVal < 0 ? 'cell-neg' : 'cell-muted'}">
-              {_expVal !== 0 ? aggCompact(_expVal) : '—'}
+            <span class="num {_rowEv > 0 ? 'cell-pos' : _rowEv < 0 ? 'cell-neg' : 'cell-muted'}">
+              {_rowEv !== 0 ? aggCompact(_rowEv) : '—'}
             </span>
           </div>
         {/each}
@@ -4926,7 +5194,7 @@
             <span class="num tf-cell {_snapshotTotalDay > 0 ? 'cell-pos' : _snapshotTotalDay < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalDay)}</span>
             <span class="num tf-cell {_snapshotTotalPnl > 0 ? 'cell-pos' : _snapshotTotalPnl < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalPnl)}</span>
             <span class="num tf-cell {_snapshotTotalExp > 0 ? 'cell-pos' : _snapshotTotalExp < 0 ? 'cell-neg' : 'cell-flat'}">{aggCompact(_snapshotTotalExp)}</span>
-            <span class="num tf-cell {positionsDerivedStore.total.extrinsic > 0 ? 'cell-pos' : positionsDerivedStore.total.extrinsic < 0 ? 'cell-neg' : 'cell-flat'}">{positionsDerivedStore.total.extrinsic === 0 ? '' : aggCompact(positionsDerivedStore.total.extrinsic)}</span>
+            <span class="num tf-cell {_snapshotTotalExtrinsic > 0 ? 'cell-pos' : _snapshotTotalExtrinsic < 0 ? 'cell-neg' : 'cell-flat'}">{_snapshotTotalExtrinsic === 0 ? '' : aggCompact(_snapshotTotalExtrinsic)}</span>
             <span class="num">{Math.round(_byUnderlyingTotal.legs_without)}</span>
             <span class="num">{_byUnderlyingTotal.qty_fno || ''}</span>
             <span class="num {_snapshotTotalEvFull > 0 ? 'cell-pos' : _snapshotTotalEvFull < 0 ? 'cell-neg' : 'cell-flat'}">

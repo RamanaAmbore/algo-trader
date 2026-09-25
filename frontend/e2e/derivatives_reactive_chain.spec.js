@@ -485,36 +485,47 @@ test.describe('SPEC 3: Snapshot TOTAL Day P&L matches NavStrip P1', () => {
     ).toBe(true);
   });
 
-  test('_snapshotTotalDay computes from _dayPnlByRootMap, not raw broker rows (source audit)', async () => {
-    // Source audit: the fix changed _snapshotTotalDay from iterating raw
-    // positionsStore rows + livePositionDayPnl to summing _dayPnlByRootMap
-    // values. This ensures consistency: per-row grid uses _dayPnlByRootMap,
-    // TOTAL sums the same _dayPnlByRootMap → exact parity.
+  test('_snapshotTotalDay computes from per-row _byUnderlyingTotals values, not raw broker rows (source audit)', async () => {
+    // Source audit: TOTAL must sum the SAME per-row day_without values the
+    // Snapshot grid renders (rollupByUnderlying's matchAccount/matchStrategy-
+    // filtered rollup), not re-iterate raw positionsStore rows with a
+    // separately-computed formula — that's what keeps TOTAL == Σ rows by
+    // construction. (item-8 fix, round 4: the string match below previously
+    // searched for `const _snapshotTotalDay = $derived.by(() => {` — a
+    // brace-bodied arrow — but the actual declaration is a single-expression
+    // arrow with no trailing `{`, so the match always missed and this check
+    // never actually ran. Also updated the pass/fail patterns: this
+    // assertion predates the §1 poll-only redesign and still referenced
+    // `_dayPnlByRootMap`/`livePositionDayPnl`, both since replaced by
+    // `_byUnderlyingTotals`/`baseDayPnlForPosition`.)
 
     const src = fs.readFileSync(SRC, 'utf8');
 
-    // Find the _snapshotTotalDay definition
-    const totalStart = src.indexOf('const _snapshotTotalDay = $derived.by(() => {');
+    // Find the _snapshotTotalDay definition — single-expression arrow, no
+    // opening brace after `=>`.
+    const totalStart = src.indexOf('const _snapshotTotalDay = $derived.by(() =>');
     if (totalStart < 0) {
       expect(false, '_snapshotTotalDay must be a $derived.by block').toBe(true);
       return;
     }
 
-    const totalEnd = src.indexOf('\n  });', totalStart) + 4;
+    const totalEnd = src.indexOf('\n  );', totalStart) + 5;
     const totalBlock = src.slice(totalStart, totalEnd);
 
-    // Option 1 (new correct code): sums _dayPnlByRootMap
-    const sumsDayPnlByRootMap = totalBlock.includes('_dayPnlByRootMap') &&
-                                (totalBlock.includes('Object.values') || totalBlock.includes('for'));
+    // Option 1 (current correct code): sums _byUnderlyingTotals' per-row
+    // day_without field — the same field the Snapshot grid rows render.
+    const sumsPerRowValues = totalBlock.includes('_byUnderlyingTotals') &&
+                              totalBlock.includes('day_without');
 
-    // Option 2 (old buggy code): iterates positionsStore + uses livePositionDayPnl
+    // Option 2 (old buggy code, pre-§1): iterated raw positionsStore rows
+    // and recomputed day P&L via the since-removed livePositionDayPnl.
     const iteratesRawRows = totalBlock.includes('positionsStore.value') &&
                             totalBlock.includes('livePositionDayPnl');
 
-    if (sumsDayPnlByRootMap) {
-      expect(true).toBe(true);  // Pass — new correct logic
+    if (sumsPerRowValues) {
+      expect(true).toBe(true);  // Pass — current correct logic
     } else if (iteratesRawRows) {
-      expect(false, '_snapshotTotalDay must use _dayPnlByRootMap, not raw livePositionDayPnl').toBe(true);
+      expect(false, '_snapshotTotalDay must sum _byUnderlyingTotals rows, not re-derive via raw broker rows / livePositionDayPnl').toBe(true);
     } else {
       // Neither pattern found — check for a different implementation
       const hasSomeDayPnlLogic = totalBlock.includes('day') || totalBlock.includes('pnl');
@@ -1131,8 +1142,15 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
     const src = fs.readFileSync(SRC, 'utf8');
 
     // Verify order in the source: _positionsLoaded → _positionsRefreshedAt → lastRefreshAt.set
+    // (all three inside loadPositions()). Note: a SECOND, EARLIER
+    // '_positionsRefreshedAt = Date.now();' assignment now also exists in
+    // the book-poller propagation effect (§5 fix — stamps it too, so a
+    // switch to a position-less root doesn't permanently stick the Payoff
+    // card in "loading"). A bare indexOf() would match that earlier
+    // occurrence instead of the loadPositions() one this test targets, so
+    // the search starts AFTER loadedIdx to skip it.
     const loadedIdx    = src.indexOf('_positionsLoaded   = true;');
-    const refreshedIdx = src.indexOf('_positionsRefreshedAt = Date.now();');
+    const refreshedIdx = src.indexOf('_positionsRefreshedAt = Date.now();', loadedIdx);
     const lastSetIdx   = src.indexOf('if (!positionsStore.error) lastRefreshAt.set(Date.now())');
 
     expect(loadedIdx,    '_positionsLoaded = true must exist').toBeGreaterThan(0);

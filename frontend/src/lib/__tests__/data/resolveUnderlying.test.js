@@ -14,7 +14,7 @@
  *             historical API responses for CDS and MCX symbols.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import {
   MCX_COMMODITIES,
   CDS_CURRENCIES,
@@ -24,6 +24,7 @@ import {
   resolveAnchorToTradeable,
   resolveUnderlyingTradingsymbol,
 } from '$lib/data/resolveUnderlying.js';
+import { seedRootMap } from '$lib/data/rootOf.js';
 
 // ── Fix #14: MCX_COMMODITIES must match backend MCX_VIRTUAL_ROOTS ─────────────
 
@@ -271,6 +272,71 @@ describe('resolveUnderlying — _NEXT virtual roots', () => {
     expect(result.exchange).toBe('MCX');
     expect(result.underlying_group).toBe('CRUDEOIL');
     expect(result.kind).toBe('fut');
+  });
+});
+
+// ── §5: _NEXT means back/next-month, not front-month ─────────────────────────
+//
+// rootOf.js / ChartWorkspace.svelte establish `_NEXT` as meaning the
+// BACK-month contract (e.g. CRUDEOIL_NEXT → CRUDEOIL26JULFUT when
+// front-month is CRUDEOIL26JUNFUT) — resolveUnderlying() must resolve it
+// the same way (via rootOf.js's seeded two-slot map), not silently
+// collapse it to front-month via findNearestFut. These tests seed
+// rootOf.js's map directly (seedRootMap) so the back-month slot actually
+// differs from the findNearestFut front-month stub, proving the two
+// resolutions diverge — the earlier "_NEXT virtual roots" describe block
+// above doesn't seed the map, so it only exercises the cold-cache
+// fallback path (front-month), not this back-month-resolved path.
+
+describe('resolveUnderlying — _NEXT resolves to BACK-month, not front-month (§5)', () => {
+  afterEach(() => {
+    seedRootMap({}, {}); // reset module-level state between tests
+  });
+
+  it('CRUDEOIL_NEXT resolves to the back-month slot, diverging from findNearestFut front-month', () => {
+    seedRootMap({ CRUDEOIL: ['CRUDEOIL26JUNFUT', 'CRUDEOIL26JULFUT'] }, {});
+    // findNearestFut stub only knows the front-month contract — if
+    // resolveUnderlying fell back to it for _NEXT, the test would see
+    // CRUDEOIL26JUNFUT (front) instead of CRUDEOIL26JULFUT (back).
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.tradingsymbol).toBe('CRUDEOIL26JULFUT');
+    expect(result.tradingsymbol).not.toBe('CRUDEOIL26JUNFUT');
+    expect(result.exchange).toBe('MCX');
+    expect(result.kind).toBe('fut');
+    expect(result.underlying_group).toBe('CRUDEOIL');
+    expect(result.quoteKey).toBe('MCX:CRUDEOIL26JULFUT');
+  });
+
+  it('CRUDEOIL (no _NEXT) still resolves to front-month even when the back-month map is seeded', () => {
+    seedRootMap({ CRUDEOIL: ['CRUDEOIL26JUNFUT', 'CRUDEOIL26JULFUT'] }, {});
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL', findFut);
+    expect(result.tradingsymbol).toBe('CRUDEOIL26JUNFUT');
+  });
+
+  it('USDINR_NEXT resolves to the back-month CDS slot', () => {
+    seedRootMap({}, { USDINR: ['USDINR26JUNFUT', 'USDINR26JULFUT'] });
+    const findFut = (root) => (root === 'USDINR' ? { s: 'USDINR26JUNFUT', e: 'CDS' } : null);
+    const result = resolveUnderlying('USDINR_NEXT', findFut);
+    expect(result.tradingsymbol).toBe('USDINR26JULFUT');
+    expect(result.exchange).toBe('CDS');
+  });
+
+  it('back-month slot absent (front-only map): falls through to findNearestFut front-month rather than returning nothing', () => {
+    seedRootMap({ CRUDEOIL: ['CRUDEOIL26JUNFUT'] }, {}); // no back-month slot
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.tradingsymbol).toBe('CRUDEOIL26JUNFUT');
+  });
+
+  it('cold map (not seeded at all): falls through to findNearestFut front-month', () => {
+    const findFut = (root) => (root === 'CRUDEOIL' ? { s: 'CRUDEOIL26JUNFUT', e: 'MCX' } : null);
+    const result = resolveUnderlying('CRUDEOIL_NEXT', findFut);
+    expect(result).not.toBeNull();
+    expect(result.tradingsymbol).toBe('CRUDEOIL26JUNFUT');
   });
 });
 

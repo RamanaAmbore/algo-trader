@@ -1807,8 +1807,9 @@ When a holding is partially or fully sold:
 5. **No sharing or double-counting** between holdings and positions surfaces
 
 **Files:**
-- `frontend/src/lib/data/nav.js::baseDayPnlForPosition` — primary SSOT
-- `frontend/src/lib/data/nav.js::livePositionDayPnl` — adds SSE tick delta for live display
+- `frontend/src/lib/data/nav.js::baseDayPnlForPosition` — sole SSOT (poll-only, §1 redesign —
+  `livePositionDayPnl`/its SSE-tick delta term were removed entirely; positions/holdings Day P&L
+  follows the book-poll cadence only, 5s foreground/30s background, no live-tick input)
 - `backend/api/algo/pnl_math.py::apply_day_change_backstop` — backend fallback for case A only
 - `backend/api/routes/positions.py::_override_stale_close_from_snapshot` — frozen-close guardian
 - All callers: PerformancePage TOTAL row, Derivatives Greeks aggregate, Dashboard hero,
@@ -3289,19 +3290,26 @@ classDiagram
 | `bookChanged` counter | `frontend/src/lib/stores.js` |
 | `RefreshButton` / `CollapseButton` / `PageHeaderActions` | `frontend/src/lib/*.svelte` |
 
-### 18.0a positionsDayPnlStore — aggregated per-position intraday P&L
+### 18.0a positionsDayPnlStore — backward-compat shim over portfolioStore
 
-Module-level singleton in `frontend/src/lib/data/positionsDayPnlStore.svelte.js`. Aggregates
-`livePositionDayPnl` across all positions from `positionsStore` to provide a single source
-of truth for intraday portfolio P&L.
+`frontend/src/lib/data/positionsDayPnlStore.svelte.js` is now a thin backward-compat shim,
+not an independent aggregator — all computation lives in `portfolioStore.svelte.js`
+(`portfolioStore.positions`), the real SSOT. The shim exists purely so pre-existing consumers
+(NavCard, NavBreakdown, MarketPulse) need no import/call-site changes.
 
-**Features:**
-- **4Hz throttle**: cadence driven by `symbolTickCount` events (KiteTicker ticks)
-- **250ms debounce**: buffers rapid ticks to avoid wasteful re-aggregations
-- **Exports `{ total, byKey }`**: `total` is the sum across all positions; `byKey` is a
-  per-symbol map for fine-grained consumption
-- **SSE delta included**: wraps `livePositionDayPnl(r, liveLtp, pollLtp)` which applies
-  live LTP adjustments on top of the settled Day P&L baseline
+**Shape (unchanged from the caller's perspective):**
+- `.total` → `portfolioStore.positions.total.day_pnl`
+- `.byKey[sym]` → `portfolioStore.positions.byKey[sym]?.day_pnl ?? 0` (via a `Proxy`, so
+  `Object.entries`/`Object.keys` on `.byKey` still work for callers that iterate it)
+- `.byAccount` → `portfolioStore.positions.byAccount`
+- `.setFromPulse()` → no-op (Pulse no longer pushes overrides; the store is the sole SSOT)
+
+**Poll-only, no live-tick delta (§1 redesign)**: `portfolioStore`'s underlying computation
+(`baseDayPnlForPosition`) is purely poll-driven (5s foreground / 30s background book-poll
+cadence) — `livePositionDayPnl` and its SSE-tick delta term were removed entirely, not
+wrapped or superseded. There is no 4Hz `symbolTickCount`-driven throttle in this store any
+more; positions Day P&L recomputes only when the underlying `positionsStore.value` (poll/fill)
+actually changes.
 
 **Consuming layers:**
 - **PositionStrip P pill (slot 1)**: NavStrip intraday P&L badge
@@ -3313,8 +3321,10 @@ Dashboard, the operator sees a single canonical intraday P&L figure without drif
 surfaces (compare to pre-fix where each surface computed independently).
 
 **Files:**
-- `frontend/src/lib/data/positionsDayPnlStore.svelte.js` — singleton store
-- `frontend/src/lib/data/nav.js` — `livePositionDayPnl()` computation
+- `frontend/src/lib/data/positionsDayPnlStore.svelte.js` — backward-compat shim
+- `frontend/src/lib/data/portfolioStore.svelte.js` — real SSOT (`_posTier2`'s
+  `baseDayPnlForPosition` call)
+- `frontend/src/lib/data/nav.js` — `baseDayPnlForPosition()` computation
 - Callers: PositionStrip, MarketPulse, Dashboard
 
 ### 18.1 Why no global store for order state?
@@ -4085,10 +4095,9 @@ day_delta = pnl − overnight_quantity × (close_price − average_price)
 - `backend/api/models.py::PositionRow` — added `prev_settlement_pnl: Optional[float]`
 
 **Frontend SSOT:**
-- `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js` — applies two-tier
-  formula above
-- `livePositionDayPnl(r, liveLtp, pollLtp)` wraps `baseDayPnlForPosition` + adds
-  live SSE tick adjustment `(liveLtp − pollLtp) × qty`
+- `baseDayPnlForPosition(r)` in `frontend/src/lib/data/nav.js` — applies the two-tier
+  formula above; sole Day P&L formula for positions (§1 poll-only redesign — no live-tick
+  adjustment layered on top; `livePositionDayPnl` was removed entirely, not wrapped)
 - Used by:
   - PerformancePage TOTAL row (sum of daily P&L)
   - Derivatives page `_byUnderlyingTotal` loop (F&O aggregate)

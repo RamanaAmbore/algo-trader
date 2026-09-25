@@ -18,12 +18,11 @@
 
 import { browser } from '$app/environment';
 import { untrack } from 'svelte';
-import { symbolTickCount, getSnapshot } from '$lib/data/symbolStore.svelte.js';
+import { symbolTickCount, getSnapshot, liveSnap } from '$lib/data/symbolStore.svelte.js';
 import { positionsStore, pulseHoldingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
-import { livePositionDayPnl, dayChangePct } from '$lib/data/nav.js';
-import { isMarketOpen } from '$lib/marketHours';
+import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
-import { expiryPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
@@ -73,16 +72,17 @@ const _rootSpotCache = $derived.by(() => {
 
 // ── Tier 1 — raw + LTP ───────────────────────────────────────────────────────
 const _posTier1 = $derived.by(() => {
-  void _tick;
   const posRows = positionsStore.value;
   if (!posRows) return null;
   return posRows.map(p => {
     const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    const snap = untrack(() => getSnapshot(sym));
     return {
       ...p,
       _sym:        sym,
-      _ltp:        snap?.ltp ?? Number(p?.last_price ?? 0),
+      // Poll-only LTP — positions/holdings Day P&L is purely poll-driven
+      // (5s/30s book-poll cadence); no symbolStore/liveSnap tick read here.
+      // Roots/underlyings (via _rootSpotCache below) remain tick-driven.
+      _ltp:        Number(p?.last_price ?? 0),
       _prev_close: Number(p?.prev_close) || null,
       _qty:        Number(p?.quantity ?? 0),
       _avg:        Number(p?.average_price ?? 0),
@@ -95,13 +95,11 @@ const _posTier1 = $derived.by(() => {
 // ── Tier 2 — prev_mv, day_pnl, F&O exp_pnl ──────────────────────────────────
 const _posTier2 = $derived.by(() => {
   if (!_posTier1) return null;
-  const marketOpen = isMarketOpen();
   return _posTier1.map(p => {
     const isFO = FO_EXCHS.has(p._exch);
-    const day_pnl = livePositionDayPnl(
-      { pollLtp: Number(p?.last_price ?? 0), qty: p._qty, dcvRow: p },
-      p._ltp, { marketOpen }
-    );
+    // Poll-only — no live-tick delta (§1: positions Day P&L is purely
+    // poll-driven; see baseDayPnlForPosition's baseline-diff formula).
+    const day_pnl = baseDayPnlForPosition(p);
     // prev_mv: prev_close × |qty| for overnight positions.
     // For new intraday positions (oq=0, no prior session close), fall back to
     // avg_cost so chg_pct has a valid denominator (day_pnl / avg_cost × 100).
@@ -118,7 +116,12 @@ const _posTier2 = $derived.by(() => {
     if (isFO) {
       const decomp = decomposeSymbol(p._sym);
       const root   = (decomp.root || p._sym).toUpperCase();
-      const spot   = Number(p?.underlying_ltp || 0) || _rootSpotCache[root] || 0;
+      // Live front-month root spot is primary (tick-driven — the Exp P&L
+      // SSOT for options); the polled `underlying_ltp` field is only a
+      // fallback for the brief window before the first live root spot
+      // lands. Reversed from the prior priority (polled-first) so Snapshot
+      // Exp P&L / Legs TOTAL converge on the same source.
+      const spot   = _rootSpotCache[root] || Number(p?.underlying_ltp || 0) || 0;
       const isCE   = p._sym.endsWith('CE'), isPE = p._sym.endsWith('PE');
       const isOpt  = isCE || isPE;
       // realised/pnl are passed through as-is — expiryPnlWithRealised applies
@@ -127,21 +130,46 @@ const _posTier2 = $derived.by(() => {
       // unrealised component already inside expiryPnl's intrinsic-value calc
       // for still-open legs.
       if (p._qty !== 0) {
-        // Futures value at SPOT (matches the Exp P&L column tooltip), not
-        // the future's own LTP — falls back to own LTP only when spot is
-        // unavailable (e.g. MCX contracts with no underlying spot index).
-        const anchor = isOpt ? spot : (spot > 0 ? spot : (p._ltp || 0));
+        // Options value at the front-month root spot (matches the Exp P&L
+        // column tooltip / Snapshot / Legs TOTAL). Futures value at THEIR
+        // OWN contract's live price — a future's Exp P&L only equals the
+        // root's front-month spot when the held contract IS the front-month
+        // future; a far-month future must be valued on its own tick, not
+        // the root's front-month resolution. liveSnap() is called directly
+        // inside this $derived — safe per CLAUDE.md's reactive-safety rule
+        // (it internally tracks snapTick and untrack-reads the map).
+        const futLive = isOpt ? 0 : Number(liveSnap(p._sym)?.ltp || 0);
+        const anchor = resolveExpiryAnchor({ isOpt, rootSpot: spot, ownLiveLtp: futLive, ownPolledLtp: p._ltp || 0 });
         if (anchor > 0) {
-          const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl };
+          const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, ltp: p._ltp, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl };
           const ev = expiryPnl(cRow, anchor);
           if (ev != null) {
-            exp_pnl   = expiryPnlWithRealised(cRow, anchor);
-            extrinsic = ev - (p._ltp - p._avg) * p._qty;
+            exp_pnl = expiryPnlWithRealised(cRow, anchor);
           }
+          // Extrinsic (§7 + item-2 fix): delegates to the shared
+          // legExtrinsicDisplay (expiryPnl.js) — the single implementation
+          // also used by derivatives/+page.svelte's Snapshot/Legs Extrinsic
+          // cells, so both surfaces stay identical by construction. That
+          // helper (a) evaluates BOTH terms of the subtraction on the SAME
+          // poll-time snapshot (c.ltp for MTM, the underlying's poll-time
+          // spot — `p?.underlying_ltp` — for the exp-P&L term), never the
+          // live-tick `anchor` above, closing the tick-vs-poll skew bug
+          // (confirmed: ~₹2,000 phantom extrinsic on a CRUDEOIL future from
+          // an unrelated spot tick landing between polls); (b) returns
+          // `null` outright for futures — extrinsic ("time value") is an
+          // options-only concept, not tautologically 0 for a linear
+          // instrument valued at its own price. The live-tick `ev`/`exp_pnl`
+          // above remain the Exp P&L column's DISPLAY value (correct,
+          // intended per §4) — only Extrinsic needs the poll-consistent
+          // basis.
+          const pollAnchor = isOpt ? (Number(p?.underlying_ltp || 0) || 0) : 0;
+          extrinsic = legExtrinsicDisplay(cRow, pollAnchor);
         }
       } else {
         exp_pnl = expiryPnlWithRealised({ symbol: p._sym, qty: 0, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl }, null);
-        extrinsic = 0;
+        // §7: closed futures have no time-value concept either — only
+        // closed options settle to a well-defined "no time value left" 0.
+        extrinsic = isOpt ? 0 : null;
       }
     }
 
@@ -230,19 +258,17 @@ const _posAgg = $derived.by(() => {
 
 // ── Holdings tiers ────────────────────────────────────────────────────────────
 const _holdTier1 = $derived.by(() => {
-  void _tick;
   const holdRows = pulseHoldingsStore.value;
   if (!holdRows) return null;
   return holdRows.map(h => {
     const sym  = String(h?.tradingsymbol || h?.symbol || '').toUpperCase();
-    const snap = untrack(() => getSnapshot(sym));
-    const snapLtp = snap?.ltp;
     return {
       ...h,
       _sym:        sym,
       _prev_close: Number(h?.prev_close) || null,
       _held_qty:   Number(h?.quantity ?? 0),
-      _ltp:        (snapLtp != null && snapLtp > 0) ? Number(snapLtp) : Number(h?.last_price ?? 0),
+      // Poll-only LTP — see _posTier1's matching comment (§1).
+      _ltp:        Number(h?.last_price ?? 0),
       _dcv:        Number(h?.day_change_val) || 0,
     };
   });
@@ -363,10 +389,16 @@ const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chg
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
 
 // ── Final collector ────────────────────────────────────────────────────────
+// Partial fallback: as soon as ANY of positions/holdings/funds has landed,
+// build a snapshot using that fresh slice + the last-known (or empty) value
+// for whichever slice(s) haven't arrived yet — rather than blocking P:1/H:1
+// display on the slowest of three independent fetches. Only when NONE has
+// ever landed do we fall through to the previous full snapshot (or null on
+// first paint, handled by the exported getters' `?? _EMPTY_*` fallback).
 const _portfolio = $derived.by(() => {
-  if (!_posAgg || !_holdAgg || !_fundsAgg) return _last;
+  if (!_posAgg && !_holdAgg && !_fundsAgg) return _last;
   _last = {
-    positions: {
+    positions: _posAgg ? {
       total:           _posAgg.posTotal,
       byKey:           _posAgg.posByKey,
       byAccount:       _posAgg.posByAccount,
@@ -374,9 +406,9 @@ const _portfolio = $derived.by(() => {
       byRootPositions: _posAgg.byRootPos,
       byRootHoldings:  _byRootHoldings,
       expiryByAcct:    _posAgg.expiryByAcct,
-    },
-    holdings: _holdAgg,
-    funds:    _fundsAgg,
+    } : (_last?.positions ?? _EMPTY_POSITIONS),
+    holdings: _holdAgg ?? (_last?.holdings ?? _EMPTY_HOLDINGS),
+    funds:    _fundsAgg ?? (_last?.funds ?? _EMPTY_FUNDS),
   };
   return _last;
 });
@@ -432,15 +464,36 @@ export const portfolioStore = {
 
 // ── Cross-page portfolio aggregates (moved from PositionStrip) ────────────────
 // Pre-computed totals that PositionStrip reads as $derived reflectors instead
-// of re-deriving inline. All gate on _tick (4Hz) and use untrack() for any
-// getSnapshot call, consistent with the SSOT pattern throughout this file.
+// of re-deriving inline. Each does a TRACKED (non-untrack) read of the
+// underlying store's .value (positionsStore/pulseHoldingsStore/fundsStore),
+// so the derived re-runs whenever the poll/fill reload actually lands — the
+// store's own .value assignment already IS the poll/fill/bookChanged signal,
+// so a separate `void bookPollerTick.value; void _bookChangedTick;` pair was
+// redundant (round-3 audit, cleaned up round 4) — removed. `void _tick;`
+// (the SSE-tick throttle) was also removed — matches §1's poll-only
+// unification for positions/holdings (Day P&L already went poll-only; these
+// lifetime/value aggregates now consistently follow the same cadence rather
+// than being the one remaining tick-reactive exception). Two of these
+// (_liveHoldingsTotal/_liveHoldingsValue) still read the CURRENT live
+// getSnapshot()/liveSnap() value at each poll-triggered recompute — they
+// just no longer force a re-render on every intermediate SSE tick between
+// polls, matching every sibling position/holding aggregate. Only
+// `_rootSpotCache` above (root/underlying spot, intentionally still
+// tick-driven per §1's carve-out) keeps its own `void _tick;`. Only
+// per-symbol getSnapshot()/liveSnap() reads (raw Map lookups, not $state
+// themselves) are wrapped in untrack(), per CLAUDE.md's reactive-safety
+// rule.
 
 // Sum of lifetime pnl across all position rows (P pill slot 2 in NavStrip).
 // Reads raw broker pnl — no live-LTP delta — matching the MarketPulse TOTAL row
 // which uses _broker_pnl (= Σ r.pnl) without an SSE delta.
 const _livePositionsPnl = $derived.by(() => {
-  void _tick;
-  const posRows = untrack(() => positionsStore.value);
+  // Tracked read — positionsStore.value is a $state getter, so this
+  // derived re-runs whenever the poll/fill reload actually lands (the
+  // store's own .set() IS the poll/fill signal — see the file-header
+  // comment above this block). Wrapping this in untrack() was the root
+  // cause of stale-until-next-poll aggregates in an earlier iteration.
+  const posRows = positionsStore.value;
   if (!posRows) return 0;
   let s = 0;
   for (const p of posRows) s += Number(p?.pnl || 0);
@@ -451,8 +504,8 @@ const _livePositionsPnl = $derived.by(() => {
 // Matches MarketPulse mergeHoldingRows which uses live-LTP when available.
 // Falls back to broker h.pnl when no live LTP is present.
 const _liveHoldingsTotal = $derived.by(() => {
-  void _tick;
-  const holdRows = untrack(() => pulseHoldingsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const holdRows = pulseHoldingsStore.value;
   if (!holdRows) return 0;
   let s = 0;
   for (const h of holdRows) {
@@ -473,8 +526,8 @@ const _liveHoldingsTotal = $derived.by(() => {
 // Tier 1: symbolStore ltp × qty. Tier 2: h.last_price × qty (avoids cur_val=inv_val trap).
 // Tier 3: h.cur_val (broker computed, may equal inv_val when last_price=0).
 const _liveHoldingsValue = $derived.by(() => {
-  void _tick;
-  const holdRows = untrack(() => pulseHoldingsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const holdRows = pulseHoldingsStore.value;
   if (!holdRows) return 0;
   let s = 0;
   for (const h of holdRows) {
@@ -496,8 +549,8 @@ const _liveHoldingsValue = $derived.by(() => {
 // Live cash: Kite avail.cash (= live_balance) summed across all accounts.
 // Falls back to f.cash if live_cash is not yet surfaced by the backend.
 const _liveCashTotal = $derived.by(() => {
-  void _tick;
-  const fundRows = untrack(() => fundsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const fundRows = fundsStore.value;
   if (!fundRows) return 0;
   let s = 0;
   for (const f of fundRows) {
@@ -511,8 +564,8 @@ const _liveCashTotal = $derived.by(() => {
 // For each long CE/PE row: avg × lot_size × (qty / lot_size) = avg × qty.
 // Using num_lots path for clarity; falls back to avg × qty if lot_size unavailable.
 const _longOptionsCashPaid = $derived.by(() => {
-  void _tick;
-  const posRows = untrack(() => positionsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const posRows = positionsStore.value;
   if (!posRows) return 0;
   let s = 0;
   for (const p of posRows) {
@@ -535,8 +588,8 @@ const _longOptionsCashPaid = $derived.by(() => {
 
 // Margin available (deployable) across all accounts.
 const _marginAvail = $derived.by(() => {
-  void _tick;
-  const fundRows = untrack(() => fundsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const fundRows = fundsStore.value;
   if (!fundRows) return 0;
   let s = 0;
   for (const f of fundRows) s += Number(f?.avail_margin || 0);
@@ -545,8 +598,8 @@ const _marginAvail = $derived.by(() => {
 
 // Margin total (used + available = full capacity) across all accounts.
 const _marginTotal = $derived.by(() => {
-  void _tick;
-  const fundRows = untrack(() => fundsStore.value);
+  // Tracked read — see _livePositionsPnl's comment above.
+  const fundRows = fundsStore.value;
   if (!fundRows) return 0;
   let s = 0;
   for (const f of fundRows) {

@@ -3,7 +3,6 @@ import {
   currentTotalProfit,
   baseDayPnlForPosition,
   aggregateDayPnlForPositions,
-  livePositionDayPnl,
   navTotalRow,
   navByAccount,
   positionsPnlFiltered,
@@ -124,74 +123,39 @@ describe('aggregateDayPnlForPositions', () => {
   });
 });
 
-// ── livePositionDayPnl ───────────────────────────────────────────────────────
-
-// livePositionDayPnl = baseDayPnlForPosition(dcvRow) + (liveLtp − pollLtp) × qty,
-// applied only when marketOpen && liveLtp>0 && pollLtp>0 && qty!==0.
-describe('livePositionDayPnl', () => {
-  const makeFields = (overrides = {}) => ({
-    pollLtp: 102,
-    qty: 5,
-    dcvRow: { pnl: 110, prev_settlement_pnl: 100 },  // base = 10
-    ...overrides,
+// ── livePositionDayPnl removal regression guard ─────────────────────────────
+//
+// §1 (positions/holdings LTP-source redesign): the live-tick delta wrapper
+// `livePositionDayPnl` was removed from nav.js — positions/holdings Day P&L
+// is now purely poll-driven via `baseDayPnlForPosition` alone, with NO
+// `(liveLtp − pollLtp) × qty` adjustment layered on top. These tests guard
+// against the delta term being reintroduced: baseDayPnlForPosition's result
+// must be identical regardless of any "live LTP" context a caller might have
+// (there is no live-LTP parameter left to pass — the function signature
+// itself is the guard).
+describe('baseDayPnlForPosition — no live-tick sensitivity (§1 regression guard)', () => {
+  it('base = pnl − prev_settlement_pnl, independent of any live-price context', () => {
+    const dcvRow = { pnl: 110, prev_settlement_pnl: 100 };
+    expect(baseDayPnlForPosition(dcvRow)).toBe(10);
   });
 
-  it('market closed → live delta not applied, returns base only', () => {
-    const fields = makeFields();
-    const result = livePositionDayPnl(fields, 105, { marketOpen: false });
-    expect(result).toBe(10);
+  it('short position: base is signed pnl-diff only, no qty-scaled tick delta', () => {
+    const dcvRow = { pnl: -10, prev_settlement_pnl: -20 };
+    expect(baseDayPnlForPosition(dcvRow)).toBe(10);
   });
 
-  it('market open + liveLtp > 0 + pollLtp > 0 + qty != 0 → base + (liveLtp - pollLtp) * qty', () => {
-    // base = 10, (105-102)*5 = 15 → 25
-    const fields = makeFields();
-    const result = livePositionDayPnl(fields, 105, { marketOpen: true });
-    expect(result).toBe(25);
+  it('new position (no prev_settlement_pnl): base = pnl, no tick adjustment possible', () => {
+    const dcvRow = { pnl: 0, prev_settlement_pnl: null };
+    expect(baseDayPnlForPosition(dcvRow)).toBe(0);
   });
 
-  it('pollLtp = 0 → delta not applied (would otherwise blow up to liveLtp × qty), returns base', () => {
-    const fields = makeFields({ pollLtp: 0 });
-    const result = livePositionDayPnl(fields, 105, { marketOpen: true });
-    expect(result).toBe(10);
-  });
-
-  it('qty = 0 → delta not applied, returns base', () => {
-    const fields = makeFields({ qty: 0 });
-    const result = livePositionDayPnl(fields, 105, { marketOpen: true });
-    expect(result).toBe(10);
-  });
-
-  it('liveLtp absent (null) → falls back to base', () => {
-    const fields = makeFields();
-    const result = livePositionDayPnl(fields, null, { marketOpen: true });
-    expect(result).toBe(10);
-  });
-
-  it('liveLtp = 0 (zero, not positive) → falls back to base', () => {
-    const fields = makeFields();
-    const result = livePositionDayPnl(fields, 0, { marketOpen: true });
-    expect(result).toBe(10);
-  });
-
-  it('short position (negative qty) — live delta applies with correct sign', () => {
-    // base = pnl(-10) - prev_settlement_pnl(-20) = 10
-    // delta = (97 - 100) * (-5) = 15 → result = 25
-    const fields = { pollLtp: 100, qty: -5, dcvRow: { pnl: -10, prev_settlement_pnl: -20 } };
-    const result = livePositionDayPnl(fields, 97, { marketOpen: true });
-    expect(result).toBe(25);
-  });
-
-  it('new position (no prev_settlement_pnl): base = pnl, live delta still applies', () => {
-    const fields = { pollLtp: 50, qty: 3, dcvRow: { pnl: 0, prev_settlement_pnl: null } };
-    // base = 0; delta = (60-50)*3 = 30 → result = 30
-    const result = livePositionDayPnl(fields, 60, { marketOpen: true });
-    expect(result).toBe(30);
-  });
-
-  it('flat settlement (pnl = prev_settlement_pnl) with market closed → base is honestly 0', () => {
+  it('flat settlement (pnl = prev_settlement_pnl): base is honestly 0', () => {
     const dcvRow = { pnl: -5000, prev_settlement_pnl: -5000 };
-    const result = livePositionDayPnl({ pollLtp: 850, qty: 100, dcvRow }, null, { marketOpen: false });
-    expect(result).toBe(0);
+    expect(baseDayPnlForPosition(dcvRow)).toBe(0);
+  });
+
+  it('function signature takes only the row — no liveLtp/pollLtp/marketOpen params', () => {
+    expect(baseDayPnlForPosition.length).toBe(1);
   });
 });
 

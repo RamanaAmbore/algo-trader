@@ -102,60 +102,45 @@ class TestSourceChecks:
             "so the Contract A branch can be gated during closed hours"
         )
 
-    def test_marketpulse_positions_direct_formula_no_market_gate(self):
-        """mergePositionRows uses direct (ltp-close)*qty formula — no isMarketOpen gate.
-
-        As of ffff74af, positions day P&L mirrors the holdings formula:
-        symbolStore LTP first, no market-open gate, falls back to
-        baseDayPnlForPosition when LTP unavailable. The old _mktOpen gate
-        in mergePositionRows was removed so after-close P&L is preserved.
-
-        Contract A branch (new position, no prior close) still lives in
-        livePositionDayPnl in nav.js for callers that use it (derivatives
-        page). mergePositionRows itself uses the simpler direct formula.
+    def test_marketpulse_positions_poll_only_formula_no_live_delta(self):
+        """mergePositionRows computes day_pnl via baseDayPnlForPosition only —
+        positions Day P&L is purely poll-driven (§1 "foundational: remove
+        tick-based LTP for positions/holdings" — book poll cadence only,
+        no live-tick delta term). livePositionDayPnl was removed from
+        nav.js entirely as part of that fix, not merely left unused —
+        assert its ABSENCE from nav.js, not its presence.
         """
         unified_src = _src(_PULSE_UNIFIED_SRC)
         nav_src     = _src(_NAV_SRC)
 
         # mergePositionRows must NOT have the old _mktOpen LTP gate
         merge_start = unified_src.find("export function mergePositionRows")
+        assert merge_start != -1, "mergePositionRows must exist in pulseUnified.js"
         merge_end   = unified_src.find("export function mergeHoldingRows", merge_start)
         merge_body  = unified_src[merge_start:merge_end] if merge_end != -1 else unified_src[merge_start:merge_start + 2000]
         assert "_mktOpen" not in merge_body, (
             "mergePositionRows must not gate LTP on _mktOpen — "
-            "positions day P&L uses direct formula without market-open gate"
+            "positions day P&L uses the poll-only baseline-diff formula "
+            "without a market-open gate"
         )
-        # As of the Day P&L redesign, mergePositionRows no longer needs
-        # close_price/previous_close at all — the baseline-diff formula
-        # (currentTotalProfit(p) - base_pnl) is delegated entirely to
-        # livePositionDayPnl, which computes off realised/unrealised/
-        # prev_settlement_pnl, not close/avg. Assert the delegation instead.
-        assert "livePositionDayPnl(" in merge_body, (
-            "mergePositionRows must compute day_pnl via livePositionDayPnl "
-            "(the baseline-diff formula), not a locally re-derived formula"
+        assert "baseDayPnlForPosition(" in merge_body, (
+            "mergePositionRows must compute day_pnl via baseDayPnlForPosition "
+            "— the sole Day P&L formula for positions as of the §1 fix"
+        )
+        assert "livePositionDayPnl(" not in merge_body, (
+            "Regression: livePositionDayPnl reappeared in mergePositionRows — "
+            "positions Day P&L must stay purely poll-driven (§1), with no "
+            "live-tick delta term layered on top of baseDayPnlForPosition"
         )
 
-        # livePositionDayPnl no longer needs a separate "Contract A" (new-position,
-        # no prior close) branch — as of the Day P&L redesign, that case is handled
-        # by baseDayPnlForPosition itself (currentTotalProfit(p) - base_pnl, where
-        # base_pnl defaults to 0 when there's no close-reset baseline), so
-        # livePositionDayPnl's live-delta guard no longer references closePx at all.
-        live_start = nav_src.find("export function livePositionDayPnl")
-        live_end   = nav_src.find("\nexport function", live_start + 1)
-        live_body  = nav_src[live_start:live_end] if live_end != -1 else nav_src[live_start:live_start + 1500]
-        assert "baseDayPnlForPosition(dcvRow)" in live_body, (
-            "livePositionDayPnl must delegate the base (non-live-delta) figure to "
-            "baseDayPnlForPosition, which already covers the new-position (no prior "
-            "close) case via its prev_settlement_pnl fallback."
-        )
-        assert "marketOpen && live" in live_body and "poll > 0" in live_body, (
-            "livePositionDayPnl must still gate its live-tick delta on marketOpen, "
-            "a positive live price, and a positive poll price."
-        )
-        assert "closePx" not in live_body, (
-            "Regression: closePx reappeared in livePositionDayPnl — the new formula "
-            "no longer needs a separate closePx===0 branch, that case is handled by "
-            "baseDayPnlForPosition's prev_settlement_pnl fallback."
+        # §1 removed livePositionDayPnl from nav.js entirely (not just from
+        # mergePositionRows's call site) — no caller anywhere needs a
+        # live-tick delta for positions/holdings LTP any more.
+        assert "export function livePositionDayPnl" not in nav_src, (
+            "Regression: livePositionDayPnl reappeared as an export in "
+            "nav.js — §1 deleted the live-tick delta term for "
+            "positions/holdings LTP entirely; baseDayPnlForPosition (poll-"
+            "only baseline-diff) is the sole Day P&L formula now"
         )
 
     def test_marketpulse_holdings_recompute_gated_on_market_open(self):

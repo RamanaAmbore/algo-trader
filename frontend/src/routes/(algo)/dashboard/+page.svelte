@@ -45,9 +45,7 @@
   } from '$lib/data/indexConstituents';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { livePositionDayPnl } from '$lib/data/nav';
-  import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
-  import { isMarketOpen } from '$lib/marketHours';
+  import { baseDayPnlForPosition } from '$lib/data/nav';
   import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, mkBaseGridOpts } from '$lib/data/algoGridUtils.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
@@ -117,14 +115,16 @@
   // for its summaries, so picking an account filter desynced the
   // overlay from the TOTAL row. Reactive derivation closes the gap.
   const _todayPnl = $derived.by(() => {
-    // Explicit tick dependency — _livePosDayPnl's getSnapshot read is
-    // wrapped in untrack() (per project convention: never read a live
-    // symbol snapshot untracked-AND-undeclared inside a $derived), so
-    // without this the block only reran on the 5s poll (when _positions
-    // changes), not on every live tick. positionsDerivedStore.total
-    // delegates to portfolioStore's _posAgg, which itself depends on the
-    // same 4Hz-throttled tick counter portfolioStore.svelte.js uses —
-    // reading it here mirrors that cadence so the hero P&L stays live.
+    // Explicit tick dependency — _livePosDayPnl is now poll-only (§1: it
+    // just delegates to baseDayPnlForPosition, no live-tick getSnapshot read
+    // at all), so this block reruns whenever positionsDerivedStore.total
+    // changes (which delegates to portfolioStore's _posAgg — itself
+    // poll-driven per §1) rather than on every _positions poll write
+    // alone. Kept as an explicit dependency for the same reason
+    // portfolioStore.svelte.js's own aggregates declare it: this $derived
+    // reads portfolioStore-adjacent state inside a loop below, not via a
+    // single tracked top-level expression, so Svelte's dependency
+    // tracker needs the explicit nudge.
     void positionsDerivedStore.total;
     let dayPnl = 0;
     let any = false;
@@ -300,23 +300,16 @@
     return rows.filter(r => allow.has(String(r.account || '')));
   }
 
-  // Live-LTP-aware Day P&L for a single position row, mirroring
-  // portfolioStore's Tier-2 computation (livePositionDayPnl on top of
-  // baseDayPnlForPosition). This page can't delegate straight to
-  // portfolioStore.positions.byKey/.byAccount because its rows are
-  // additionally scoped by the strategy filter (_matchStrategySym) and
-  // per-card account filters (_eqAccounts) that portfolioStore has no
-  // knowledge of — so the live-tick delta is applied locally instead of
-  // reading the bare base formula, keeping this page's numbers from
-  // diverging from the store's during market hours.
+  // Day P&L for a single position row — poll-only (§1: positions/holdings
+  // Day P&L is purely poll-driven, no live-tick delta). This page can't
+  // delegate straight to portfolioStore.positions.byKey/.byAccount because
+  // its rows are additionally scoped by the strategy filter
+  // (_matchStrategySym) and per-card account filters (_eqAccounts) that
+  // portfolioStore has no knowledge of — so baseDayPnlForPosition is applied
+  // locally instead, keeping this page's numbers in sync with the store's
+  // (both now read the same poll-only formula with no divergence risk).
   function _livePosDayPnl(p) {
-    const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    const snap = untrack(() => getSnapshot(sym));
-    return livePositionDayPnl(
-      { pollLtp: Number(p?.last_price ?? 0), qty: Number(p?.quantity ?? 0), dcvRow: p },
-      snap?.ltp ?? null,
-      { marketOpen: isMarketOpen() },
-    );
+    return baseDayPnlForPosition(p);
   }
 
   // Winners / Losers cards each tab through the 5 buckets

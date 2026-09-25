@@ -22,7 +22,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { livePositionDayPnl, dayChangePct } from '$lib/data/nav.js';
+import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -39,15 +39,7 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     getSpot    = root => 0,
     getTargets = sym  => [],
     getProxy   = (sym, tgt) => null,
-    livePosDay = (p, ltp, opts) => livePositionDayPnl(
-      {
-        pollLtp: Number(p?.last_price ?? 0),
-        qty:     Number(p?.quantity   ?? 0),
-        dcvRow:  p,
-      },
-      ltp,
-      opts,
-    ),
+    livePosDay = (p) => baseDayPnlForPosition(p),
     marketOpen = true,
   } = deps;
 
@@ -1186,15 +1178,7 @@ function computePositionsByAccount(posRows, deps = {}) {
   const {
     getSnap    = sym  => undefined,
     getSpot    = root => 0,
-    livePosDay = (p, ltp, opts) => livePositionDayPnl(
-      {
-        pollLtp: Number(p?.last_price ?? 0),
-        qty:     Number(p?.quantity   ?? 0),
-        dcvRow:  p,
-      },
-      ltp,
-      opts,
-    ),
+    livePosDay = (p) => baseDayPnlForPosition(p),
     marketOpen = true,
   } = deps;
 
@@ -1327,15 +1311,7 @@ describe('portfolioStore.positions.byAccount — multiple accounts', () => {
     ];
 
     const result = computePositionsByAccount(positions, {
-      livePosDay: (p, ltp, opts) => livePositionDayPnl(
-        {
-          pollLtp: Number(p?.last_price ?? 0),
-          qty: Number(p?.quantity ?? 0),
-          dcvRow: p,
-        },
-        ltp,
-        opts,
-      ),
+      livePosDay: (p) => baseDayPnlForPosition(p),
     });
 
     expect(result.byAccount['ZERODHA']).toBeGreaterThan(0);
@@ -1498,15 +1474,7 @@ describe('portfolioStore.positions.byAccount — edge cases', () => {
     ];
 
     const result = computePositionsByAccount(positions, {
-      livePosDay: (p, ltp, opts) => livePositionDayPnl(
-        {
-          pollLtp: Number(p?.last_price ?? 0),
-          qty: Number(p?.quantity ?? 0),
-          dcvRow: p,
-        },
-        ltp,
-        opts,
-      ),
+      livePosDay: (p) => baseDayPnlForPosition(p),
     });
 
     expect(result.byAccount['ZERODHA']).toBeLessThanOrEqual(0);

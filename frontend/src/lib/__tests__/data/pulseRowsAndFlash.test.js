@@ -40,7 +40,7 @@ vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
 
 import { mergePositionRows, mergeHoldingRows, makeRowFactory } from '../../data/pulseUnified.js';
 import { mkResolveCellLtp } from '../../data/pulseColumns.js';
-import { baseDayPnlForPosition, livePositionDayPnl } from '$lib/data/nav.js';
+import { baseDayPnlForPosition } from '$lib/data/nav.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,9 +48,7 @@ function makePositionCtx(snapMap = {}) {
   return {
     snapOf: (sym) => snapMap[sym] ?? null,
     getInst: null,
-    isMarketOpen: () => true,
     baseDayPnlForPosition,
-    livePositionDayPnl,
   };
 }
 
@@ -561,7 +559,7 @@ describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () 
     const byKey = {};
     mergeHoldingRows(
       byKey,
-      [makeHoldingRow({ previous_close: 0, close_price: 0, day_change_val: 500 })],
+      [makeHoldingRow({ prev_close: 0, close_price: 0, day_change_val: 500 })],
       true,
       {},
       makeHoldingCtx(snapMap)
@@ -576,10 +574,10 @@ describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () 
     // With guard: holdClose===holdAvg → uses day_change_val=500
     const snapMap = { RELIANCE: { ltp: 2900 } };
     const byKey = {};
-    // average_price = previous_close = 2800 → holdClose===holdAvg triggers fallback
+    // average_price = prev_close = 2800 → holdClose===holdAvg triggers fallback
     mergeHoldingRows(
       byKey,
-      [makeHoldingRow({ average_price: 2800, previous_close: 2800, day_change_val: 500 })],
+      [makeHoldingRow({ average_price: 2800, prev_close: 2800, day_change_val: 500 })],
       true,
       {},
       makeHoldingCtx(snapMap)
@@ -589,14 +587,19 @@ describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () 
     expect(row.day_pnl).not.toBeCloseTo(1000, 1);
   });
 
-  it('post-settlement: |liveHold-holdClose|<=0.005 → uses day_change_val not formula', () => {
-    // At NSE settlement ltp≈close (within 0.005) — formula gives ~0 instead of real dcv.
-    // liveHold=2850.001, holdClose=2850 → diff=0.001 ≤ 0.005 → use day_change_val=350
-    const snapMap = { RELIANCE: { ltp: 2850.001 } };
+  it('post-settlement: |pollHold-holdClose|<=0.005 → uses day_change_val not formula (day_pnl is poll-only, §1/item-8)', () => {
+    // At NSE settlement pollHold≈close (within 0.005) — formula gives ~0 instead of real dcv.
+    // pollHold comes from last_price/liveQ ONLY — day_pnl no longer reads the
+    // SSE-tick snap at all (item-8 fix). A snap value is included here
+    // specifically to prove it has NO effect: snap.ltp=2900 would pass the
+    // epsilon check and fire the formula if it were still read, but
+    // last_price=2850.001 (poll-sourced) is what actually drives day_pnl.
+    // last_price=2850.001, holdClose=2850 → diff=0.001 ≤ 0.005 → use day_change_val=350
+    const snapMap = { RELIANCE: { ltp: 2900 } };
     const byKey = {};
     mergeHoldingRows(
       byKey,
-      [makeHoldingRow({ previous_close: 2850, average_price: 2800, day_change_val: 350 })],
+      [makeHoldingRow({ prev_close: 2850, average_price: 2800, last_price: 2850.001, day_change_val: 350 })],
       true,
       {},
       makeHoldingCtx(snapMap)
@@ -607,13 +610,15 @@ describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () 
     expect(row.day_pnl).not.toBeCloseTo(0.01, 1);
   });
 
-  it('normal case: |liveHold-holdClose|>0.005 → uses formula (not dcv)', () => {
-    // liveHold=2900, holdClose=2850, qty=10 → (2900-2850)*10=500; dcv=350 (differs to discriminate)
-    const snapMap = { RELIANCE: { ltp: 2900 } };
+  it('normal case: |pollHold-holdClose|>0.005 → uses formula (not dcv); SSE snap tick has no effect (§1/item-8)', () => {
+    // pollHold (last_price/liveQ) =2900, holdClose=2850, qty=10 → (2900-2850)*10=500;
+    // dcv=350 (differs to discriminate). snap.ltp=3500 is a deliberately
+    // wild divergent value to prove the SSE tick is ignored for day_pnl.
+    const snapMap = { RELIANCE: { ltp: 3500 } };
     const byKey = {};
     mergeHoldingRows(
       byKey,
-      [makeHoldingRow({ previous_close: 2850, average_price: 2800, day_change_val: 350 })],
+      [makeHoldingRow({ prev_close: 2850, average_price: 2800, last_price: 2900, day_change_val: 350 })],
       true,
       {},
       makeHoldingCtx(snapMap)
@@ -621,18 +626,18 @@ describe('mergeHoldingRows — day_pnl guards matching holdingsDayPnlStore', () 
     const row = Object.values(byKey)[0];
     expect(row.day_pnl).toBeCloseTo(500, 1);
     expect(row.day_pnl).not.toBeCloseTo(350, 1);
+    expect(row.day_pnl).not.toBeCloseTo(650, 1); // NOT (3500-2850)*10 — snap must not drive day_pnl
   });
 });
 
 // ── mergePositionRows — day_pnl mixed overnight + intraday ───────────────────
 
 describe('mergePositionRows — day_pnl with mixed overnight + intraday sell adds', () => {
-  it('live tick + overnight+intraday: uses livePositionDayPnl not naive formula', () => {
+  it('a live SSE tick has no effect — day_pnl is baseDayPnlForPosition only (§1)', () => {
     // overnight short -10 at avg=200, prev_close=210, sold 5 more today at fill=220
-    // total qty=-15, blended avg=206.67, dcv=-25 (at pollLtp=215)
-    // live SSE tick = 220
-    // livePositionDayPnl: realisedToday=50, result=50+(220-210)*(-15)=-100
-    // naive (wrong): (220-210)*(-15)=-150
+    // total qty=-15, blended avg=206.67. base = pnl(-125) - prev_settlement_pnl(-100) = -25.
+    // A live SSE tick (220) diverging from last_price (215) has zero effect —
+    // no live-tick delta code path remains in mergePositionRows (§1).
     const row = {
       tradingsymbol: 'CRUDEOIL25AUGCE7800',
       exchange: 'MCX',
@@ -649,8 +654,8 @@ describe('mergePositionRows — day_pnl with mixed overnight + intraday sell add
     const ctx = makePositionCtx({ CRUDEOIL25AUGCE7800: { ltp: 220, ltp_ts: 1 } });
     mergePositionRows(byKey, [row], true, {}, ctx);
     const merged = Object.values(byKey)[0];
-    expect(merged.day_pnl).toBeCloseTo(-100, 1);
-    expect(merged.day_pnl).not.toBeCloseTo(-150, 1);
+    expect(merged.day_pnl).toBeCloseTo(-25, 1);
+    expect(merged.day_pnl).not.toBeCloseTo(-100, 1);
   });
 
   it('no live tick: falls back to baseDayPnlForPosition (dcv path)', () => {
@@ -685,21 +690,27 @@ describe('mergePositionRows — day_pnl with mixed overnight + intraday sell add
 // Test 4 is the only case where dcv IS the correct fallback (all LTP sources null).
 
 describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val', () => {
-  // Common row shape: previous_close=2800, qty=100, avg=2500.
+  // Common row shape: prev_close=2800, qty=100, avg=2500.
   // Formula path: (ltp - 2800) * 100 = 5000 when ltp=2850.
 
-  it('Test 1 — snap LTP wins (market open, subscribed symbol)', () => {
-    // snap.ltp=2850 → liveHold=2850; formula: (2850-2800)*100 = 5000
-    // day_change_val=99999 is a wrong sentinel — if dcv path fires, test fails.
-    const snapMap = { RELIANCE: { ltp: 2850 } };
+  it('Test 1 — last_price (poll) wins over any SSE snap tick, which has NO effect on day_pnl (§1/item-8)', () => {
+    // day_pnl is poll-only: last_price=2850 (poll) drives the formula,
+    // (2850-2800)*100 = 5000. snap.ltp=99999999 is a deliberately wild
+    // divergent SSE-tick value included ONLY to prove it's ignored — if
+    // day_pnl still read the snap (pre-item-8 behavior), this would blow
+    // the formula up to a huge number instead of 5000.
+    // day_change_val=99999 is also a wrong sentinel — if the dcv path
+    // fires instead of the formula, the test fails too.
+    const snapMap = { RELIANCE: { ltp: 99999999 } };
     const byKey = {};
     mergeHoldingRows(
       byKey,
       [makeHoldingRow({
         quantity: 100,
         average_price: 2500,
-        previous_close: 2800,
+        prev_close: 2800,
         close_price: 2800,
+        last_price: 2850,
         day_change_val: 99999,
       })],
       true,
@@ -707,7 +718,7 @@ describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val'
       makeHoldingCtx(snapMap)
     );
     const row = Object.values(byKey)[0];
-    // Formula must fire, not dcv.
+    // Formula must fire (using poll-sourced last_price), not dcv, not the snap tick.
     expect(row.day_pnl).toBeCloseTo(5000, 1);
     expect(row.day_pnl).not.toBeCloseTo(99999, 1);
   });
@@ -722,7 +733,7 @@ describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val'
       [makeHoldingRow({
         quantity: 100,
         average_price: 2500,
-        previous_close: 2800,
+        prev_close: 2800,
         close_price: 2800,
         day_change_val: 99999,
       })],
@@ -745,7 +756,7 @@ describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val'
       [makeHoldingRow({
         quantity: 100,
         average_price: 2500,
-        previous_close: 2800,
+        prev_close: 2800,
         close_price: 2800,
         last_price: 2850,
         day_change_val: 99999,
@@ -768,7 +779,7 @@ describe('mergeHoldingRows — H:1 day_pnl cross-check vs broker day_change_val'
       [makeHoldingRow({
         quantity: 100,
         average_price: 2500,
-        previous_close: 2800,
+        prev_close: 2800,
         close_price: 2800,
         last_price: null,
         day_change_val: 5000,

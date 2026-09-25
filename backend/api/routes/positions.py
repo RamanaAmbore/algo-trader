@@ -884,6 +884,19 @@ async def _fetch() -> PositionsResponse:
     # feed by minutes — observed on 2026-06-22 around 09:30 IST where
     # CRUDEOIL options showed last_price === close_price (stuck on
     # yesterday's EOD) even though MCX had been open 30 min.
+    #
+    # NOTE (2026-09-24, positions/holdings poll-only redesign): this
+    # call is NOT the "between-poll tick patch" the redesign removed
+    # from the frontend (`livePositionDayPnl` in nav.js) — it runs
+    # INSIDE this poll (_fetch()) itself, once per poll, correcting
+    # stale/wrong data that THIS poll's broker REST call returned,
+    # using the ticker only as the correction source for that single
+    # poll. Removing it reintroduces the 2026-06-22 incident and drops
+    # the last-known-good fallback (positions_policy's consider_cache)
+    # for Dhan/Groww rows still at last_price=0 after
+    # backfill_market_data. Do not remove without an explicit, separate
+    # operator decision — see holdings.py's equivalent call for the
+    # symmetric holdings-side correction.
     _override_stale_ltp_from_ticker(raw)
 
     raw = await _patch_raw_positions(raw)
@@ -998,6 +1011,22 @@ def _override_stale_ltp_from_ticker(raw: pd.DataFrame) -> None:
     Bookkeeping (ticker pull + LKG fallback + stale flag) is owned
     by `helpers/ltp_patch.apply_ltp_patch`. This route only owns the
     decomposed pnl recompute (positions-specific).
+
+    Scope note (2026-09-24, positions/holdings poll-only redesign):
+    an earlier pass of this redesign mistakenly removed this
+    function's call sites in `_fetch()` and
+    `background._fetch_positions_direct`, on the premise that it was
+    the same "between-poll tick patch" mechanism the redesign
+    intentionally removed from the frontend. That premise was wrong —
+    this function runs INSIDE each poll, correcting that poll's own
+    stale broker REST data using the ticker as the correction source;
+    it is unrelated to the frontend's between-poll live-delta removal
+    (`nav.js`'s `livePositionDayPnl`). The call sites were restored.
+    This function is called from three places: `_fetch()` (live
+    positions), `background._fetch_positions_direct` (NavStrip poll),
+    and `_build_paper_positions_response` (paper positions, which
+    have no broker book to poll at all — the ticker is their only
+    live mark-to-market source).
     """
     res = apply_ltp_patch(raw, positions_policy)
     if res is None or not res.any_patched:

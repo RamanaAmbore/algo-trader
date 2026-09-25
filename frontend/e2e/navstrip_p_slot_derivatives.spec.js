@@ -71,12 +71,16 @@ test.describe('snapshotTotals static guards', () => {
     expect(writers[0]).toContain(path.join('admin', 'derivatives'));
   });
 
-  test('derivatives page imports livePositionDayPnl (wraps baseDayPnlForPosition — SSOT)', () => {
+  test('derivatives page imports baseDayPnlForPosition (the sole Day P&L SSOT, §1 poll-only redesign)', () => {
     const derivFile = path.join(
       __dirname, '..', 'src', 'routes', '(algo)', 'admin', 'derivatives', '+page.svelte',
     );
     const content = readFileSync(derivFile, 'utf8');
-    // livePositionDayPnl wraps baseDayPnlForPosition — importing either satisfies SSOT.
+    // livePositionDayPnl was removed entirely (§1) — baseDayPnlForPosition is now the
+    // only Day P&L formula, so it's the only string this check needs to require. The OR
+    // with livePositionDayPnl is kept only as a tolerant fallback in case some other
+    // still-valid caller reintroduces it under a different name; it is NOT expected to
+    // ever be the one that fires.
     const hasImport = content.includes('baseDayPnlForPosition') || content.includes('livePositionDayPnl');
     expect(hasImport).toBe(true);
   });
