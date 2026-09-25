@@ -1,4 +1,5 @@
 import { decomposeSymbol } from './decomposeSymbol.js';
+import { baseDayPnlForPosition, currentTotalProfit } from './nav.js';
 
 // Structural tail regexes mirroring decomposeSymbol's own _OPT_MONTHLY /
 // _OPT_WEEKLY shapes (YY+MON+strike+CE/PE, or YY+month-code+DD+strike+
@@ -193,16 +194,368 @@ export function expiryPnlWithRealised(c, spot, legAnalyticsBySymbol = {}) {
   const realised = (realisedField != null && isFinite(Number(realisedField))) ? Number(realisedField) : 0;
   if (!qty) {
     // Fully closed today (no remaining qty) — the whole expiry-day value
-    // IS the realised P&L; nothing left to mark at spot. Falls back to
-    // lifetime pnl ONLY here (qty=0 makes pnl == realised by construction).
-    // Null only when the row carries neither field (unusable, not "flat zero").
-    if (realisedField != null && isFinite(Number(realisedField))) return realised;
+    // IS the realised P&L; nothing left to mark at spot.
+    //
+    // Trust `realised` only when it's non-zero — mirrors nav.js's
+    // currentTotalProfit()/the backend's resolve_realised_unrealised
+    // both-zero-fields-fall-back-to-`pnl` convention exactly. Kite is
+    // documented (PULSE_SPEC.md) to ship `realised: 0` ALONGSIDE a real
+    // non-zero `pnl` on settlement/full-close — treating a present-but-zero
+    // `realised` as authoritative (the old behavior) silently dropped that
+    // pnl and under-reported the closed leg's Exp P&L (confirmed root cause
+    // of the NavStrip-vs-Snapshot divergence audit, worked example: overnight
+    // short 150 NIFTY CE bought back 75 today, realised=0/pnl=3750 → old
+    // code returned 0 instead of 3750).
+    if (realised) return realised;
     const pnlField = c?.pnl;
-    return (pnlField != null && isFinite(Number(pnlField))) ? Number(pnlField) : null;
+    if (pnlField != null && isFinite(Number(pnlField))) return Number(pnlField);
+    // Neither field usable for a real value — 0 is a legitimate answer when
+    // `realised` was explicitly supplied (even as 0); null only when the row
+    // carries NEITHER field at all (genuinely unusable, not "flat zero").
+    return (realisedField != null && isFinite(Number(realisedField))) ? realised : null;
   }
   const ev = expiryPnl(c, spot, legAnalyticsBySymbol);
   if (ev == null) return null;
   return AVG_PRICE_IS_COST_BASIS ? ev + realised : ev;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// splitClosedReopened + buildPositionRowFromBroker — moved here from
+// derivatives/pageLoad.js (2026-09 SSOT fix) so portfolioStore.svelte.js can
+// import the SAME precise partial/full-close realised-P&L derivation the
+// derivatives Snapshot grid already used, without a derivatives-page
+// dependency. pageLoad.js re-exports both names unchanged so existing call
+// sites (+page.svelte, pageLoad.test.js) are unaffected. Logic below is
+// UNCHANGED from the original — only the file it lives in moved.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Map a raw broker position row into the internal position shape.
+ * Does NOT split closed-reopened rows — callers pass the result through
+ * splitClosedReopened if needed.
+ *
+ * @param {any} p  - raw broker position object
+ * @param {'live'|'sim'} source
+ * @returns {object}
+ */
+export function buildPositionRowFromBroker(p, source) {
+  const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+  return {
+    symbol:   sym,
+    account:  String(p?.account || ''),
+    qty:      Number(p?.quantity || 0),
+    // lots / lot_size — new backend fields (quantity is now always contracts).
+    // lots = integer lot count for display; lot_size = contracts per lot.
+    // Preserved as-is (null when absent) so lotsForRow can use the fast path.
+    lots:     p?.lots     != null ? Number(p.lots)     : null,
+    lot_size: p?.lot_size != null ? Number(p.lot_size) : null,
+    source,
+    avg_cost: p?.average_price != null ? Number(p.average_price) : null,
+    ltp:      p?.last_price    != null ? Number(p.last_price)    : null,
+    prev_close: Number(p?.prev_close) || null,
+    // Poll-time underlying spot, stamped by the backend's option-Greeks
+    // enrichment pass (_enrich_position_greeks, positions.py) on BOTH the
+    // live-fetch and closed-hours-snapshot paths — 0.0 default when unset
+    // (qty=0 rows, or futures, which the enrichment loop skips). Required
+    // by the extrinsic formula's poll-consistent anchor (legExtrinsicDisplay
+    // above) so the exp-P&L term and the MTM term share the same point in
+    // time, not a live tick vs a stale poll.
+    underlying_ltp: p?.underlying_ltp != null ? Number(p.underlying_ltp) : 0,
+    pnl:      p?.pnl != null ? Number(p.pnl) : 0,
+    realised: p?.realised != null ? Number(p.realised) : 0,
+    // unrealised is left undefined (not defaulted to 0) when the backend
+    // doesn't ship it — currentTotalProfit()/baseDayPnlForPosition() in
+    // nav.js require BOTH realised and unrealised to be present+finite
+    // before preferring realised+unrealised over the pnl fallback; a
+    // premature 0 default here would silently switch that formula on.
+    unrealised: p?.unrealised != null ? Number(p.unrealised) : undefined,
+    day_change_val: p?.day_change_val != null ? Number(p.day_change_val) : 0,
+    day_pnl: p?.day_pnl != null ? Number(p.day_pnl) : null,
+    chg_pct: p?.day_change_percentage != null ? Number(p.day_change_percentage) : null,
+    overnight_quantity: Number(p?.overnight_quantity || 0),
+    day_buy_quantity:   Number(p?.day_buy_quantity || 0),
+    day_sell_quantity:  Number(p?.day_sell_quantity || 0),
+    day_buy_value:      Number(p?.day_buy_value || 0),
+    day_sell_value:     Number(p?.day_sell_value || 0),
+    prev_settlement_pnl: p?.prev_settlement_pnl != null ? Number(p.prev_settlement_pnl) : null,
+  };
+}
+
+/**
+ * Split a broker-consolidated position into separate display rows
+ * when it had intraday close/reopen activity.
+ *
+ * Trigger (Variant 1, with partial-reduction): `overnight ≠ 0` AND
+ * (`day_buy > 0` OR `day_sell > 0`).
+ *
+ * The split produces:
+ *   - Closed row  — qty = 0, P&L = realised on the closed portion.
+ *   - Open row    — qty = current_qty, P&L = unrealised on what remains.
+ *
+ * Sum of the two rows' Day P&L equals the original total day change.
+ *
+ * @param {any} p  - normalised position row (buildPositionRowFromBroker output)
+ * @returns {any[]}
+ */
+/**
+ * Compute the weighted average exit price for the closed portion.
+ * Long positions exit via sells; short positions exit via buys.
+ * @param {number} oq   overnight_quantity
+ * @param {number} dbq  day_buy_quantity
+ * @param {number} dsq  day_sell_quantity
+ * @param {number} dbv  day_buy_value
+ * @param {number} dsv  day_sell_value
+ * @returns {number}
+ */
+function _exitPrice(oq, dbq, dsq, dbv, dsv) {
+  if (oq > 0) return dsq > 0 ? dsv / dsq : 0;
+  return dbq > 0 ? dbv / dbq : 0;
+}
+
+/**
+ * Day P&L on the closed portion.
+ * Long: (exit − prev_close) × closedQty. Short: (prev_close − exit) × closedQty.
+ * @param {number} oq          overnight_quantity
+ * @param {number} exitPrice
+ * @param {number} close       prev_close
+ * @param {number} closedQty
+ * @returns {number}
+ */
+function _closedDayPnl(oq, exitPrice, close, closedQty) {
+  return oq > 0
+    ? (exitPrice - close) * closedQty
+    : (close - exitPrice) * closedQty;
+}
+
+/**
+ * Lifetime P&L attributable to the closed portion.
+ * When broker already closed the whole position (brokerQty=0) use p.pnl;
+ * otherwise compute from cost basis. Arithmetic is identical to original.
+ * @param {number} brokerQty   Math.abs(p.qty)
+ * @param {number} pnl         p.pnl
+ * @param {number} oq          overnight_quantity
+ * @param {number} exitPrice
+ * @param {number} avgCost     p.avg_cost
+ * @param {number} closedQty
+ * @returns {number}
+ */
+function _closedLifetimePnl(brokerQty, pnl, oq, exitPrice, avgCost, closedQty) {
+  if (brokerQty === 0) return pnl;
+  return oq > 0
+    ? (exitPrice - avgCost) * closedQty
+    : (avgCost - exitPrice) * closedQty;
+}
+
+/**
+ * Force `row.prev_settlement_pnl` so that `baseDayPnlForPosition(row) ===
+ * targetDayPnl` exactly, regardless of whether `currentTotalProfit(row)`
+ * resolves via `realised+unrealised` or the `pnl` fallback. Used for the
+ * "open" half of a closed/reopened split, whose Day P&L is computed
+ * independently (`open_dcv` / `baseDayPnlForPosition(p) - closed_day_pnl`)
+ * and must not silently diverge depending on which total-profit field pair
+ * the backend has populated on the pre-split row.
+ * @param {any} row
+ * @param {number} targetDayPnl
+ * @returns {any} the same row, mutated
+ */
+function _forceBaseline(row, targetDayPnl) {
+  row.prev_settlement_pnl = currentTotalProfit(row) - targetDayPnl;
+  return row;
+}
+
+/**
+ * Entry/exit price + direction for an intraday round-trip (overnight_quantity
+ * === 0, both day_buy_quantity and day_sell_quantity > 0 — the position was
+ * opened AND partially/fully closed within today's session). Also the path
+ * for every Groww row, which hardcodes overnight_quantity=0 regardless of
+ * whether the position is actually overnight.
+ * @param {number} dbq
+ * @param {number} dsq
+ * @param {number} dbv
+ * @param {number} dsv
+ * @returns {{ entry: number, exit: number, closedQty: number, dir: 1|-1 }|null}
+ */
+function _intradayEntryExit(dbq, dsq, dbv, dsv) {
+  const closedQty = Math.min(dbq, dsq);
+  if (closedQty <= 0) return null;
+  const buyPrice  = dbq > 0 ? dbv / dbq : 0;
+  const sellPrice = dsq > 0 ? dsv / dsq : 0;
+  // dir=1: net addition was long (bought more than sold) — opened via buys,
+  // closed portion exited via sells. dir=-1: net addition was short.
+  const dir = /** @type {1|-1} */ (dbq >= dsq ? 1 : -1);
+  return {
+    entry: dir === 1 ? buyPrice  : sellPrice,
+    exit:  dir === 1 ? sellPrice : buyPrice,
+    closedQty,
+    dir,
+  };
+}
+
+export function splitClosedReopened(p) {
+  const oq  = Number(p.overnight_quantity || 0);
+  const dbq = Number(p.day_buy_quantity   || 0);
+  const dsq = Number(p.day_sell_quantity  || 0);
+  const dbv = Number(p.day_buy_value      || 0);
+  const dsv = Number(p.day_sell_value     || 0);
+  const close = Number(p.prev_close ?? 0);
+
+  if (dbq === 0 && dsq === 0) return [p];
+
+  if (oq === 0) {
+    // Intraday round-trip with no overnight carry — opened and (partially
+    // or fully) closed today. Covers intraday partial closes AND every
+    // Groww row (overnight_quantity hardcoded to 0 by that broker). No
+    // prior-session close exists, so the closed portion's day P&L IS its
+    // lifetime P&L (mirrors the "new position" Case-1 convention).
+    const trip = _intradayEntryExit(dbq, dsq, dbv, dsv);
+    if (!trip) return [p];
+    const { entry, exit, closedQty, dir } = trip;
+    const closed_lifetime_pnl = dir === 1
+      ? (exit - entry) * closedQty
+      : (entry - exit) * closedQty;
+
+    const brokerQty = Math.abs(Number(p.qty || 0));
+    if (brokerQty === 0) {
+      // Fully closed today. Do NOT size the closed row on closedQty
+      // (min(dbq,dsq)) alone — Groww hardcodes overnight_quantity=0 even
+      // when a position genuinely carried overnight, so a position that
+      // closed BOTH a hidden overnight portion AND an intraday round-trip
+      // would have the overnight portion's P&L silently dropped if we only
+      // counted the round-trip-sized closedQty (min(dbq,dsq) undersizes the
+      // true realized amount whenever dbq !== dsq). `currentTotalProfit(p)`
+      // (realised+unrealised when both present, else the pnl fallback — the
+      // same SSOT baseDayPnlForPosition itself builds on) is the
+      // authoritative total realized P&L for the whole (now-flat) position
+      // — safe to use directly regardless of Groww's oq mislabeling, and
+      // correct even when Groww ships realised+unrealised without a
+      // top-level `pnl` field. `baseDayPnlForPosition(p)` on the ORIGINAL
+      // unsplit row likewise already resolves Day P&L correctly against
+      // whatever prev_settlement_pnl the backend supplied for this
+      // (account,symbol) — the backend baseline join is keyed by
+      // account+symbol, not by Groww's (untrustworthy) overnight_quantity
+      // flag — so it correctly captures any real overnight carry that oq=0
+      // hides.
+      const wholeLifetimePnl = currentTotalProfit(p);
+      const wholeDayPnl = baseDayPnlForPosition(p);
+      return [_forceBaseline({
+        ...p,
+        qty: 0,
+        pnl: wholeLifetimePnl,
+        realised: wholeLifetimePnl,
+        unrealised: 0,
+        day_change_val: wholeDayPnl,
+        _splitTag: 'closed',
+      }, wholeDayPnl)];
+    }
+    const closedRow = {
+      ...p,
+      qty: 0,
+      pnl: closed_lifetime_pnl,
+      // realised/unrealised forced consistent with pnl on the closed row so
+      // currentTotalProfit()/baseDayPnlForPosition() agree regardless of
+      // which field pair the backend has populated (realised+unrealised vs
+      // pnl-only) — otherwise the whole-position realised/unrealised
+      // inherited via the spread above (attributable to the FULL position,
+      // not just today's closed portion) would double-count now that the
+      // backend reliably populates `unrealised` on every row.
+      realised: closed_lifetime_pnl,
+      unrealised: 0,
+      // No prior-session baseline for the closed portion — it was opened
+      // AND closed today, so Day P&L IS its lifetime P&L (base=0).
+      prev_settlement_pnl: 0,
+      day_change_val: closed_lifetime_pnl,
+      _splitTag: 'closed',
+    };
+
+    const open_dcv_intraday = baseDayPnlForPosition(p) - closed_lifetime_pnl;
+    const openRow = _forceBaseline({
+      ...p,
+      pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
+      realised: 0,
+      day_change_val: open_dcv_intraday,
+      _splitTag: 'open',
+    }, open_dcv_intraday);
+    return [closedRow, openRow];
+  }
+
+  const closed_qty = oq > 0 ? Math.min(oq, dsq) : Math.min(-oq, dbq);
+  if (closed_qty <= 0) return [p];
+
+  const exit_price       = _exitPrice(oq, dbq, dsq, dbv, dsv);
+  const closed_day_pnl   = _closedDayPnl(oq, exit_price, close, closed_qty);
+
+  const brokerQty        = Math.abs(Number(p.qty || 0));
+  const avg_cost         = Number(p.avg_cost || 0);
+  const closed_lifetime_pnl = _closedLifetimePnl(
+    brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty
+  );
+
+  const open_dcv = baseDayPnlForPosition(p) - closed_day_pnl;
+
+  // Forcing realised/unrealised consistent with pnl (closed portion has no
+  // remaining unrealised — qty=0) and forcing prev_settlement_pnl via
+  // _forceBaseline means baseDayPnlForPosition(closedRow) = closed_day_pnl
+  // regardless of which total-profit field pair the backend has populated.
+  const closedRow = _forceBaseline({
+    ...p,
+    qty: 0,
+    pnl: closed_lifetime_pnl,
+    realised: closed_lifetime_pnl,
+    unrealised: 0,
+    day_change_val: closed_day_pnl,
+    _splitTag: 'closed',
+  }, closed_day_pnl);
+
+  if (brokerQty === 0) return [closedRow];
+
+  const openRow = _forceBaseline({
+    ...p,
+    pnl: Number(p.pnl || 0) - closed_lifetime_pnl,
+    realised: 0,
+    day_change_val: open_dcv,
+    _splitTag: 'open',
+  }, open_dcv);
+  return [closedRow, openRow];
+}
+
+/**
+ * Store-side SSOT wrapper: derive one raw broker position row's Exp P&L
+ * using the SAME split-aware realised derivation the derivatives Snapshot
+ * grid uses (splitClosedReopened → per-piece expiryPnlWithRealised, summed).
+ *
+ * This is the fix for the NavStrip-vs-Snapshot Exp P&L divergence: NavStrip
+ * (portfolioStore.svelte.js) used to pass the raw, unsplit position straight
+ * into expiryPnlWithRealised, trusting the broker's raw `realised` field —
+ * which Kite documents as unreliable on same-day partial/full closes
+ * (`realised: 0` alongside a real settlement `pnl`). Snapshot instead ran
+ * every position through splitClosedReopened first, producing a precise
+ * closed/open realised split. This function makes that same derivation
+ * available to portfolioStore, computed once, so both surfaces agree.
+ *
+ * @param {any} rawRow  - raw broker position row (portfolioStore's `p`,
+ *   still carrying its ORIGINAL Kite field names — quantity/average_price/
+ *   overnight_quantity/day_buy_quantity/... — normalised internally via
+ *   buildPositionRowFromBroker).
+ * @param {'opt'|'fut'} kind
+ * @param {number|null|undefined} anchor  underlying spot (options) or the
+ *   contract's own price (futures) — see resolveExpiryAnchor. Only required
+ *   when at least one split piece still carries a non-zero qty; ignored
+ *   entirely for a row that split into an all-closed (qty=0) piece.
+ * @returns {number|null}
+ */
+export function positionExpPnl(rawRow, kind, anchor) {
+  if (kind !== 'opt' && kind !== 'fut') return null;
+  const normRow = buildPositionRowFromBroker(rawRow, 'live');
+  normRow.kind = kind;
+  const pieces = splitClosedReopened(normRow);
+  const needsAnchor = pieces.some(pc => Number(pc?.qty || 0) !== 0);
+  if (needsAnchor && !(Number(anchor) > 0)) return null;
+  let sum = null;
+  for (const piece of pieces) {
+    const v = expiryPnlWithRealised(piece, anchor);
+    if (v != null && isFinite(Number(v))) sum = (sum ?? 0) + Number(v);
+  }
+  return sum;
 }
 
 /**

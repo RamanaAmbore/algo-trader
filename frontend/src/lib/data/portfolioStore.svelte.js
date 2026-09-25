@@ -22,7 +22,7 @@ import { symbolTickCount, getSnapshot, liveSnap } from '$lib/data/symbolStore.sv
 import { positionsStore, pulseHoldingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
-import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
+import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
@@ -124,11 +124,7 @@ const _posTier2 = $derived.by(() => {
       const spot   = _rootSpotCache[root] || Number(p?.underlying_ltp || 0) || 0;
       const isCE   = p._sym.endsWith('CE'), isPE = p._sym.endsWith('PE');
       const isOpt  = isCE || isPE;
-      // realised/pnl are passed through as-is — expiryPnlWithRealised applies
-      // the pnl-fallback ONLY on its qty===0 branch (fully closed today);
-      // pre-merging pnl into realised here would double-count against the
-      // unrealised component already inside expiryPnl's intrinsic-value calc
-      // for still-open legs.
+      const kind   = isOpt ? 'opt' : 'fut';
       if (p._qty !== 0) {
         // Options value at the front-month root spot (matches the Exp P&L
         // column tooltip / Snapshot / Legs TOTAL). Futures value at THEIR
@@ -141,15 +137,26 @@ const _posTier2 = $derived.by(() => {
         const futLive = isOpt ? 0 : Number(liveSnap(p._sym)?.ltp || 0);
         const anchor = resolveExpiryAnchor({ isOpt, rootSpot: spot, ownLiveLtp: futLive, ownPolledLtp: p._ltp || 0 });
         if (anchor > 0) {
-          const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, ltp: p._ltp, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl };
-          const ev = expiryPnl(cRow, anchor);
-          if (ev != null) {
-            exp_pnl = expiryPnlWithRealised(cRow, anchor);
-          }
+          // SSOT fix (2026-09): positionExpPnl runs the SAME
+          // splitClosedReopened-based derivation the derivatives Snapshot
+          // grid uses (now shared in expiryPnl.js) over this RAW row before
+          // valuing it, so a same-day partial/full close's realised P&L is
+          // derived precisely from entry/exit price math instead of
+          // trusting the broker's raw `realised` field — which Kite
+          // documents (PULSE_SPEC.md) as unreliable on settlement (ships
+          // `realised: 0` alongside a real `pnl`). This is what makes
+          // NavStrip's Exp P&L total agree with Snapshot's TOTAL by
+          // construction (previously the two surfaces derived the realised
+          // component independently and could diverge — confirmed audit
+          // finding).
+          exp_pnl = positionExpPnl(p, kind, anchor);
           // Extrinsic (§7 + item-2 fix): delegates to the shared
           // legExtrinsicDisplay (expiryPnl.js) — the single implementation
           // also used by derivatives/+page.svelte's Snapshot/Legs Extrinsic
-          // cells, so both surfaces stay identical by construction. That
+          // cells, so both surfaces stay identical by construction. Not
+          // split-aware (and doesn't need to be): a closed piece always
+          // contributes 0 (qty=0 guard), and the open piece's qty/avg_cost/
+          // ltp are identical to this unsplit row's — same as before. That
           // helper (a) evaluates BOTH terms of the subtraction on the SAME
           // poll-time snapshot (c.ltp for MTM, the underlying's poll-time
           // spot — `p?.underlying_ltp` — for the exp-P&L term), never the
@@ -158,15 +165,19 @@ const _posTier2 = $derived.by(() => {
           // an unrelated spot tick landing between polls); (b) returns
           // `null` outright for futures — extrinsic ("time value") is an
           // options-only concept, not tautologically 0 for a linear
-          // instrument valued at its own price. The live-tick `ev`/`exp_pnl`
-          // above remain the Exp P&L column's DISPLAY value (correct,
-          // intended per §4) — only Extrinsic needs the poll-consistent
-          // basis.
+          // instrument valued at its own price.
+          const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, ltp: p._ltp, kind };
           const pollAnchor = isOpt ? (Number(p?.underlying_ltp || 0) || 0) : 0;
           extrinsic = legExtrinsicDisplay(cRow, pollAnchor);
         }
       } else {
-        exp_pnl = expiryPnlWithRealised({ symbol: p._sym, qty: 0, kind: isOpt ? 'opt' : 'fut', realised: p?.realised, pnl: p?._pnl }, null);
+        // Fully closed (no remaining qty) — positionExpPnl still runs the
+        // row through splitClosedReopened (a harmless no-op when there was
+        // no today's buy/sell activity) and applies the both-zero-fields-
+        // fall-back-to-pnl convention on its qty=0 branch (see
+        // expiryPnl.js:expiryPnlWithRealised) instead of trusting a
+        // present-but-zero `realised` field.
+        exp_pnl = positionExpPnl(p, kind, null);
         // §7: closed futures have no time-value concept either — only
         // closed options settle to a well-defined "no time value left" 0.
         extrinsic = isOpt ? 0 : null;
@@ -198,6 +209,14 @@ const _posAgg = $derived.by(() => {
   const byRootPos     = {};
   const byRoot        = {};
   const expiryByAcct  = new Map();
+  // Per-row F&O Exp P&L/Extrinsic entries — the SSOT the derivatives
+  // Snapshot grid's account/strategy-filtered totals read from (2026-09 SSOT
+  // fix) instead of independently recomputing exp_pnl per leg. One entry per
+  // raw position row (not per split closed/open piece — positionExpPnl
+  // already sums the pieces into a single per-row value, so this is the
+  // same granularity `positions` (the derivatives page's own per-row array)
+  // exposes to its own per-root reduction).
+  const expPnlRows = [];
 
   for (const p of _posTier3) {
     if (!posByKey[p._sym]) posByKey[p._sym] = { day_pnl: 0, exp_pnl: null, extrinsic: null, pnl: 0, prev_mv: 0, chg_pct: null };
@@ -237,6 +256,15 @@ const _posAgg = $derived.by(() => {
           const acct = String(p?.account || '');
           if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + p._exp_pnl);
         }
+
+        expPnlRows.push({
+          account:    _acct,
+          symbol:     p._sym,
+          root:       r,
+          source:     'live',
+          exp_pnl:    p._exp_pnl,
+          extrinsic:  p._extrinsic,
+        });
       }
     }
   }
@@ -253,7 +281,7 @@ const _posAgg = $derived.by(() => {
   }
 
   posByAccount['TOTAL'] = posTotal.day_pnl;
-  return { posTotal, posByKey, posByAccount, byRoot, byRootPos, expiryByAcct };
+  return { posTotal, posByKey, posByAccount, byRoot, byRootPos, expiryByAcct, expPnlRows };
 });
 
 // ── Holdings tiers ────────────────────────────────────────────────────────────
@@ -384,6 +412,7 @@ const _EMPTY_POSITIONS = {
   byRootHoldings: {},
   byRoot:         {},
   expiryByAcct:   new Map(),
+  expPnlRows:     [],
 };
 const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {} };
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
@@ -424,6 +453,7 @@ const _portfolio = $derived.by(() => {
       byRootPositions: _posAgg.byRootPos,
       byRootHoldings:  _byRootHoldings,
       expiryByAcct:    _posAgg.expiryByAcct,
+      expPnlRows:      _posAgg.expPnlRows,
     } : (_last?.positions ?? _EMPTY_POSITIONS),
     holdings: holdFresh  ? _holdAgg   : (_last?.holdings ?? _EMPTY_HOLDINGS),
     funds:    fundsFresh ? _fundsAgg  : (_last?.funds    ?? _EMPTY_FUNDS),
@@ -440,7 +470,22 @@ const _portfolio = $derived.by(() => {
  */
 export const portfolioStore = {
   // ── Positions ────────────────────────────────────────────────────────────
-  /** { total: {day_pnl,exp_pnl,extrinsic,prev_mv,chg_pct}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct } */
+  /**
+   * { total: {day_pnl,exp_pnl,extrinsic,prev_mv,chg_pct}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct, expPnlRows }
+   *
+   * `expPnlRows` (2026-09 SSOT fix): one entry per LIVE F&O position row —
+   * { account, symbol, root, source:'live', exp_pnl, extrinsic } — each
+   * `exp_pnl` already derived via the split-aware `positionExpPnl` helper
+   * (expiryPnl.js), the SAME precise partial/full-close realised-P&L
+   * derivation the derivatives Snapshot grid uses. Consumers that need a
+   * FILTERED (account/strategy/search) Exp P&L rollup — e.g. the Snapshot
+   * grid — should reduce over this array (matchAccount/matchStrategy +
+   * group by `root`) instead of recomputing exp_pnl per leg themselves.
+   * `total.exp_pnl` (unfiltered, whole book) is the sum of every row here.
+   * Sim positions are NOT included (this store only reflects the live
+   * broker book) — sim-mode consumers must compute their own via the same
+   * `positionExpPnl` pure function.
+   */
   get positions() { return _portfolio?.positions ?? _EMPTY_POSITIONS; },
 
   // ── Holdings (pulse-overridable) ─────────────────────────────────────────

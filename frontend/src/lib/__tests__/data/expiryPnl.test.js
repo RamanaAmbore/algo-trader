@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay } from '../../data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl } from '../../data/expiryPnl.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -405,9 +405,14 @@ describe('expiryPnlWithRealised', () => {
     expect(expiryPnlWithRealised(c, null)).toBe(750);
   });
 
-  it('fully closed today with realised=0: returns 0, not null', () => {
+  it('fully closed today with realised=0 AND no pnl field: returns 0, not null (realised was explicitly supplied)', () => {
     const c = { symbol: 'NIFTY100CE', qty: 0, kind: 'opt', realised: 0 };
     expect(expiryPnlWithRealised(c, null)).toBe(0);
+  });
+
+  it('fully closed today with realised=0 alongside a real pnl: falls back to pnl, not 0 (both-zero-fields-fall-back-to-pnl convention — matches nav.js:currentTotalProfit exactly). Kite is documented to ship realised=0 on settlement alongside the true P&L in pnl; trusting a present-but-zero realised used to silently drop it — the audited root cause of the NavStrip/Snapshot Exp P&L divergence.', () => {
+    const c = { symbol: 'NIFTY100CE', qty: 0, kind: 'opt', realised: 0, pnl: 750 };
+    expect(expiryPnlWithRealised(c, null)).toBe(750);
   });
 
   it('fully closed today with no realised field at all: returns null (unusable row)', () => {
@@ -431,6 +436,68 @@ describe('expiryPnlWithRealised', () => {
   it('no spot / unparseable option and qty != 0: returns null', () => {
     const c = { symbol: 'BADOPTION', qty: 1, avg_cost: 5, kind: 'opt', realised: 10 };
     expect(expiryPnlWithRealised(c, 100)).toBe(null);
+  });
+});
+
+// ============================================================================
+// positionExpPnl — NavStrip/Snapshot SSOT fix (2026-09). Store-side split-
+// aware realised derivation: runs a RAW broker position row through the
+// SAME splitClosedReopened the derivatives Snapshot grid uses before
+// valuing it, instead of trusting the broker's raw (documented-unreliable)
+// `realised` field directly.
+//
+// Worked example from the audit (docs/specs/PULSE_SPEC.md:1343 documents
+// Kite shipping `realised: 0` alongside a real settlement pnl): overnight
+// short 150 NIFTY CE @200, 75 bought back today @150 (realising 3,750),
+// OTM at expiry (0 intrinsic on the remaining 75-short). This is the exact
+// scenario that used to make NavStrip's Exp P&L total diverge from the
+// derivatives Snapshot grid's TOTAL.
+// ============================================================================
+
+describe('positionExpPnl — split-aware realised derivation (NavStrip/Snapshot SSOT regression)', () => {
+  const rawRow = {
+    tradingsymbol: 'NIFTY24000CE',
+    account: 'ACC1',
+    quantity: -75,           // remaining (post-buyback) short qty
+    average_price: 200,      // original entry cost (unaffected by the partial close)
+    last_price: 10,
+    prev_close: 200,
+    overnight_quantity: -150,
+    day_buy_quantity: 75,
+    day_sell_quantity: 0,
+    day_buy_value: 11250,    // 75 @ 150
+    day_sell_value: 0,
+    pnl: 3750,
+    realised: 0,             // Kite ships this — the documented-unreliable field
+  };
+  const spot = 23000; // OTM — intrinsic 0 at strike 24000
+
+  it('sums the closed + open pieces: 3,750 realised (closed) + 15,000 unrealised (open) = 18,750 — matches Snapshot', () => {
+    expect(positionExpPnl(rawRow, 'opt', spot)).toBe(18750);
+  });
+
+  it('the OLD unsplit computation (pre-fix NavStrip behavior) undercounts by exactly the closed realised leg: 15,000, not 18,750', () => {
+    const unsplitRow = {
+      symbol: rawRow.tradingsymbol, qty: rawRow.quantity, avg_cost: rawRow.average_price,
+      kind: 'opt', realised: rawRow.realised, pnl: rawRow.pnl,
+    };
+    expect(expiryPnlWithRealised(unsplitRow, spot)).toBe(15000);
+    expect(expiryPnlWithRealised(unsplitRow, spot)).not.toBe(positionExpPnl(rawRow, 'opt', spot));
+  });
+
+  it('returns null (not a partial sum) when a still-open split piece has no anchor yet — matches the prior `anchor > 0` gate', () => {
+    expect(positionExpPnl(rawRow, 'opt', null)).toBe(null);
+    expect(positionExpPnl(rawRow, 'opt', 0)).toBe(null);
+  });
+
+  it('a row with no today activity (no split) still returns the plain intrinsic + realised value', () => {
+    const flatRow = { tradingsymbol: 'NIFTY24000CE', quantity: -75, average_price: 200, realised: 500, pnl: 3000 };
+    // no split (dbq=dsq=0) → ev = (0-200)*(-75) = 15000; + realised(500) = 15500
+    expect(positionExpPnl(flatRow, 'opt', spot)).toBe(15500);
+  });
+
+  it('non-FO kind returns null', () => {
+    expect(positionExpPnl(rawRow, /** @type {any} */ ('eq'), spot)).toBe(null);
   });
 });
 

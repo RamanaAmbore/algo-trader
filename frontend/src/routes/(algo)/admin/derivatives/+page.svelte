@@ -58,6 +58,7 @@
     loadHedgeProxies, proxiesForTarget, targetsForProxy, getProxyRow,
   } from '$lib/data/hedgeProxies';
   import { baseDayPnlForPosition, FO_EXCHANGES } from '$lib/data/nav';
+  import { portfolioStore } from '$lib/data/portfolioStore.svelte.js';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { RISK_FREE_R as _RISK_FREE_R, normCdf as _normCdf, probAbove as _probAbove, expectedValueOnCurve as _expectedValueOnCurve, multilegPopOnCurve as _multilegPopOnCurve } from '$lib/data/riskMath.js';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -86,7 +87,7 @@
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
   import { payoffDrafts } from '$lib/data/payoffDrafts.svelte.js';
   import { debugLog } from '$lib/debug/debugLog.js';
-  import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot, pruneUnderlyingSpotRoots } from '$lib/data/underlyingSpotStore.svelte.js';
+  import { underlyingSpotStore, loadUnderlyingSpots as _loadUnderlyingSpotsFn, patchUnderlyingSpot, pruneUnderlyingSpotRoots, getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 
   // Row-level chart modal for Candidates panel rows.
   let _chartModalSym  = $state('');
@@ -720,21 +721,23 @@
    *  _underlyingQuotes[root]?.ltp alone; when batchQuote missed the root
    *  (equity delisted from batch response, MCX nearest-future resolution
    *  failure, or transient response error), the row silently dropped
-   *  every leg and totalled 0. Chain of fallbacks so most roots resolve:
-   *    1. _underlyingQuotes[root]?.ltp — batchQuote-cached snapshot
-   *    2. symbolStore for resolveUnderlying(root)?.tradingsymbol — SSE tick
-   *    3. symbolStore for bare root — bare-name subscription
+   *  every leg and totalled 0.
+   *
+   *  SSOT fix (2026-09, plan item 4): delegates its first three tiers to
+   *  `getUnderlyingSpot` (underlyingSpotStore.svelte.js) — the CLAUDE.md-
+   *  documented SSOT fallback chain for underlying spot resolution that
+   *  portfolioStore's own `_rootSpotCache` already uses (resolved
+   *  front-month tradingsymbol tick → bare-root tick → batchQuote cache).
+   *  Previously this function maintained a second, nearly-identical chain
+   *  independently, which could drift from portfolioStore's resolution in
+   *  closed-hours/no-live-tick edge cases. Fallback 4 below (scan positions/
+   *  holdings for a row's own last_price) is kept as the tail — it has
+   *  visibility into THIS page's own position/holding rows, which
+   *  getUnderlyingSpot cannot reach.
    */
   function _rootSpot(/** @type {string} */ root) {
-    const v0 = _underlyingQuotes[root]?.ltp;
-    if (typeof v0 === 'number' && v0 > 0) return v0;
-    const resolved = resolveUnderlying(root, findNearestFuture);
-    if (resolved?.tradingsymbol) {
-      const v1 = getSnapshot(String(resolved.tradingsymbol).toUpperCase())?.ltp;
-      if (typeof v1 === 'number' && v1 > 0) return v1;
-    }
-    const v2 = getSnapshot(String(root).toUpperCase())?.ltp;
-    if (typeof v2 === 'number' && v2 > 0) return v2;
+    const v = getUnderlyingSpot(root);
+    if (v > 0) return v;
     // Fallback 4 (closed-hours-critical): scan positions + holdings for a
     // row whose tradingsymbol IS the underlying root (equity holding /
     // spot future) OR whose resolveUnderlying match hits this root. Use
@@ -743,6 +746,7 @@
     // ticks for equity roots — but the position/holding row still has
     // the LAST session's close price which is authoritative for expiry-
     // day P&L intrinsic calculation.
+    const resolved = resolveUnderlying(root, findNearestFuture);
     const targetKey = String(resolved?.tradingsymbol || root).toUpperCase();
     const targetRoot = String(root).toUpperCase();
     for (const src of [positions, holdings]) {
@@ -848,6 +852,34 @@
   }
 
 
+  /** SSOT reduction (2026-09 fix, plan items 1+2): in LIVE mode, Exp P&L /
+   *  Extrinsic per root now read `portfolioStore.positions.expPnlRows` —
+   *  the store's own canonical per-row values, already derived via the
+   *  split-aware `positionExpPnl` (expiryPnl.js), the SAME precise
+   *  partial/full-close realised-P&L derivation NavStrip's unfiltered
+   *  total is built from — instead of recomputing exp_pnl/extrinsic
+   *  independently here via `_legExpPnlDisplay`/`legExtrinsicDisplay`.
+   *  Only account/strategy FILTERING (a scope decision, not a math
+   *  derivation — the operator's own framing) happens at this layer.
+   *  Root-grouping mirrors `_perRootReduce`'s own accumulation exactly.
+   *  @param {'exp_pnl'|'extrinsic'} field
+   *  @param {(sym: string) => boolean} matchStrategy
+   *  @returns {Record<string, number>}
+   */
+  function _reduceStoreExpRows(field, matchStrategy) {
+    const matchAccount = buildAcctMatcher(selectedAccounts);
+    /** @type {Record<string, number>} */
+    const out = {};
+    for (const r of portfolioStore.positions.expPnlRows) {
+      if (!matchAccount(r.account)) continue;
+      if (!matchStrategy(r.symbol)) continue;
+      const v = r[field];
+      if (v == null || !isFinite(Number(v))) continue;
+      out[r.root] = (out[r.root] || 0) + Number(v);
+    }
+    return out;
+  }
+
   // Snapshot filter consistency (§5): rows are filtered by account/strategy
   // (_byUnderlyingTotals via matchAccount/matchStrategy), but Day/P&L/Exp
   // values used to come from positionsDerivedStore.getByRoot /
@@ -856,32 +888,39 @@
   // lifetime P&L are already correctly filtered on each _byUnderlyingTotals
   // row (g.day_without / g.pnl_without via rollupByUnderlying's own
   // matchAccount/matchStrategy) — those are used directly at each render
-  // site instead of the unfiltered store. Exp P&L has no such filtered
-  // per-root source yet, so it's computed here via the same _perRootReduce
-  // infrastructure the overlay already uses (same iteration, same
-  // _legExpPnlDisplay accessor, same matchStrategy gate) so filtered rows
-  // and the filtered TOTAL are internally consistent by construction.
+  // site instead of the unfiltered store. Exp P&L reads the store's
+  // canonical per-row values (SSOT fix, _reduceStoreExpRows above) in live
+  // mode, so filtered rows and the filtered TOTAL are internally consistent
+  // by construction AND agree with NavStrip's unfiltered total. SIM mode
+  // keeps the local _perRootReduce computation — sim positions never reach
+  // portfolioStore (it only reflects the live broker book).
   const _filteredExpPnlByRoot = $derived.by(() => {
     const matchStrategy = _makeStrategyMatcher();
-    return _perRootReduce((c, spot) => _legExpPnlDisplay(c, spot), matchStrategy);
+    if (simActive) {
+      return _perRootReduce((c, spot) => _legExpPnlDisplay(c, spot), matchStrategy);
+    }
+    return _reduceStoreExpRows('exp_pnl', matchStrategy);
   });
 
   // Extrinsic, filtered by the same account/strategy gate as the other four
-  // Snapshot columns (§4/item-4 fix). Computed PER ROW via the shared
-  // legExtrinsicDisplay (expiryPnl.js) — NOT via positionsDerivedStore.get()
-  // (item-2 fix, round 4): that store's byKey/byRoot maps are already
-  // summed across every account for a given symbol, but this reduction
-  // walks PER-ACCOUNT position rows — indexing the pre-summed store from
-  // inside a per-row walk added the same cross-account total once per
-  // account row it touched (2 accounts on the same symbol → 2× the real
-  // number, filtering to one account still showed the full cross-account
-  // sum instead of that account's own share). legExtrinsicDisplay takes
-  // this row's OWN qty/avg_cost/ltp + its OWN poll-time underlying_ltp, so
-  // perRootReduce's normal per-row accumulation (already correct for
-  // everything else) sums real per-account contributions instead.
+  // Snapshot columns (§4/item-4 fix). Live mode reads the store's canonical
+  // per-row values (same SSOT rationale as _filteredExpPnlByRoot above —
+  // the store's own extrinsic computation was already split-safe, see
+  // portfolioStore.svelte.js's Tier2 comment). SIM mode keeps the local
+  // _perRootReduce/legExtrinsicDisplay computation — NOT via
+  // positionsDerivedStore.get() (item-2 fix, round 4): that store's
+  // byKey/byRoot maps are already summed across every account for a given
+  // symbol, but this reduction walks PER-ACCOUNT position rows — indexing
+  // the pre-summed store from inside a per-row walk added the same
+  // cross-account total once per account row it touched (2 accounts on the
+  // same symbol → 2× the real number, filtering to one account still showed
+  // the full cross-account sum instead of that account's own share).
   const _filteredExtrinsicByRoot = $derived.by(() => {
     const matchStrategy = _makeStrategyMatcher();
-    return _perRootReduce((c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0), matchStrategy);
+    if (simActive) {
+      return _perRootReduce((c) => legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0), matchStrategy);
+    }
+    return _reduceStoreExpRows('extrinsic', matchStrategy);
   });
 
   /** Per-row Snapshot Exp P&L — uniform across EVERY root, including the
@@ -5330,7 +5369,7 @@
           <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
           <span class="num" title="Total P&L from F&O legs only. Sums to the NavStrip P slot 2 value.">P&amp;L</span>
-          <span class="num" title="F&O-only expiry P&L for this group. Sums to the NavStrip P slot 3 value.">Exp P&amp;L</span>
+          <span class="num" title="F&O-only expiry P&L for this group. Sum of the rows shown below — matches NavStrip P slot 3 only when no account/strategy/search filter is active.">Exp P&amp;L</span>
           <span class="num" title="Extrinsic value in P&L terms — Exp P&L minus (ltp−avg)×qty. Positive when premium captured exceeds current mark-to-market.">Extrinsic</span>
           <span class="num">Legs</span>
           <span class="num" title="Sum of contract-qty across option + future legs.">F&amp;O qty</span>
