@@ -45,9 +45,20 @@ export function classifyIntent(currentQty, side) {
 /**
  * Build the request body for action='modify' (PUT /api/orders/{id}).
  *
+ * Defense-in-depth (audit C1, 2026-09): `ctx.qty` is the ticket's resolved
+ * quantity (`_lots × _lotSize`), which can silently diverge from the order's
+ * real size when the lot-size resolves late or the row's raw `quantity`
+ * field carries a unit mismatch (see feedback_option_math_qty_vs_lots).
+ * A price/trigger-only edit must never re-send a recomputed `quantity` — so
+ * `quantity` is included in the payload ONLY when it genuinely differs from
+ * `ctx.originalQty` (the order's untouched quantity, echoed straight from
+ * the broker row into the ticket's `qty` prop). When `originalQty` isn't
+ * supplied, falls back to always including it (legacy behaviour).
+ *
  * @param {{
  *   account:      string,
  *   qty:          number|string,
+ *   originalQty?: number|string|null,
  *   showLimit:    boolean,
  *   showTrigger:  boolean,
  *   roundToTick:  (v: number|string) => number,
@@ -60,9 +71,14 @@ export function classifyIntent(currentQty, side) {
  * @returns {object}
  */
 export function buildModifyPayload(ctx) {
+  const nextQty = Number(ctx.qty) || 0;
+  const origQty = ctx.originalQty != null && ctx.originalQty !== ''
+    ? Number(ctx.originalQty)
+    : null;
+  const qtyChanged = origQty == null || nextQty !== origQty;
   return {
     account:       ctx.account,
-    quantity:      Number(ctx.qty) || undefined,
+    quantity:      qtyChanged ? (nextQty || undefined) : undefined,
     price:         ctx.showLimit   ? ctx.roundToTick(ctx.price)   : null,
     trigger_price: ctx.showTrigger ? ctx.roundToTick(ctx.trigger) : null,
     order_type:    ctx.type,

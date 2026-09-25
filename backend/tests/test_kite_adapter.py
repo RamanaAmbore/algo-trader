@@ -134,9 +134,12 @@ class TestKiteQtyTranslation:
         """to_kite_qty: NFO unchanged."""
         assert to_kite_qty("NFO", 1000, 50) == 1000
 
-    def test_to_kite_qty_sub_lot_size_passthrough(self):
-        """to_kite_qty: qty < lot_size passes through unchanged."""
-        assert to_kite_qty("MCX", 50, 100) == 50
+    def test_to_kite_qty_sub_lot_size_raises(self):
+        """to_kite_qty: qty < lot_size raises (C7 fix, 2026-09) — Kite
+        accepts a sub-lot qty AS LOTS (silent oversize), so it must be
+        refused rather than passed through unchanged."""
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            to_kite_qty("MCX", 50, 100)
 
     def test_to_kite_qty_mcx_zero_lot_size_raises(self):
         """to_kite_qty: MCX with lot_size=0 raises ValueError."""

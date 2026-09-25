@@ -771,11 +771,63 @@ async def _record_partial_fill(algo_order_id: int | None,
 
 # ── Poll-status terminal handlers (extracted to reduce CC) ──────────────
 
+def _ch_mcx_lots_broker(account: str) -> bool:
+    """C3 — True when `account`'s broker ships MCX/NCO order-status
+    `filled_quantity` in LOTS (not contracts).
+
+    Reuses `orders.py:_MCX_LOTS_CONVENTION_BROKERS` — the SAME
+    allow-list already used to gate the equivalent postback lots→
+    contracts conversion — rather than duplicating the broker-id list
+    here. Groww is CONFIRMED to report MCX fills in contracts already
+    (`groww.py:492`, `translate_qty` no-op at `:1367`); applying the
+    Kite/Dhan lots→contracts reverse-translate to a Groww fill count
+    would inflate it by lot_size×.
+
+    "zerodha_kite" (canonical `broker_accounts.broker_id`) and "kite"
+    (legacy YAML alias) both mean Kite — normalised the same way
+    `registry.py`'s own `_KITE_IDS` set does before the allow-list
+    membership check.
+    """
+    try:
+        from backend.api.routes.orders import _MCX_LOTS_CONVENTION_BROKERS
+        from backend.brokers.registry import _broker_id_for
+        bid = str(_broker_id_for(account) or "").lower()
+        if bid == "zerodha_kite":
+            bid = "kite"
+        return bid in _MCX_LOTS_CONVENTION_BROKERS
+    except Exception:
+        # Conservative default on resolution failure: assume the
+        # lots-convention (matches pre-fix behaviour / the majority
+        # broker, Kite) rather than silently under-counting a Kite/Dhan
+        # fill by skipping the reverse-translate.
+        return True
+
+
+def _ch_reverse_translate_mcx_filled(
+    cfg: "ChaseConfig", symbol: str, account: str, raw_filled: int,
+) -> int:
+    """C3 — reverse-translate a broker's raw `filled_quantity` from LOTS
+    to CONTRACTS for MCX/NCO, gated by broker identity (see
+    `_ch_mcx_lots_broker`) rather than by exchange alone.
+
+    Non-MCX/NCO exchanges and non-lots-convention brokers pass through
+    unchanged.
+    """
+    if cfg.exchange not in ("MCX", "NCO") or raw_filled <= 0:
+        return raw_filled
+    if not _ch_mcx_lots_broker(account):
+        return raw_filled
+    from backend.brokers.adapters.kite import from_kite_qty
+    lot = _lot_size_sync(cfg.exchange, symbol)
+    return from_kite_qty(cfg.exchange, raw_filled, lot)
+
+
 async def _ch_poll_handle_complete(
     result: "ChaseResult", avg_price: float, filled_qty: int,
     quantity: int, attempt: int, remaining_qty: int,
     current_order_id: str, symbol: str, transaction_type: str,
     algo_order_id: "int | None", emit: Callable,
+    cumulative_filled: int = 0,
 ) -> "tuple[str, int]":
     """Handle COMPLETE status: update result + schedule terminal event."""
     result.status    = ChaseStatus.FILLED
@@ -788,6 +840,17 @@ async def _ch_poll_handle_complete(
     })
     logger.info(f"Chase {symbol}: FILLED @ {avg_price} "
                 f"(attempt {attempt}, slippage ₹{result.slippage:.2f})")
+    # C2 (adjacent fix) — persist the FINAL cumulative filled_quantity so
+    # downstream template-attach exit GTTs size against the TRUE total
+    # (prior partials + this order's own completion), not whatever the
+    # last partial-fill write happened to leave in the row. Gated on
+    # `cumulative_filled > 0` (prior partials existed on EARLIER orders
+    # this chase cycle) so a normal single-shot fill (no prior partials)
+    # doesn't get a synthetic "PARTIAL n/n" detail string written.
+    # Awaited (not fire-and-forget) so the write commits BEFORE the
+    # terminal-event task below snapshots the row for template attach.
+    if cumulative_filled > 0:
+        await _record_partial_fill(algo_order_id, quantity, avg_price, quantity)
     import asyncio as _asyncio
     _asyncio.create_task(_emit_chase_terminal(
         current_order_id, "chase_fill",
@@ -871,10 +934,21 @@ async def _chase_poll_status(
     remaining_qty: int,
     algo_order_id: int | None,
     emit: Callable,
-) -> tuple[str | None, int]:
+    cumulative_filled: int = 0,
+    current_order_filled: int = 0,
+) -> tuple[str | None, int, int, int]:
     """Check order status after the per-attempt sleep. Mutates result in-place.
 
-    Returns (signal, new_remaining_qty) where signal is one of:
+    `cumulative_filled` is the chase-WIDE running total (across every
+    order placed so far this chase cycle) — NOT this specific order's
+    own fill count. `current_order_filled` is how much of THIS order's
+    own (from-zero) fill has already been folded into
+    `cumulative_filled` — it lets repeated polls of the same still-
+    resting order detect only the NEW delta instead of re-adding the
+    whole amount (C2 fix; see module-level notes in `chase_order`).
+
+    Returns (signal, new_remaining_qty, new_cumulative_filled,
+    new_current_order_filled) where signal is one of:
       'filled'            — order fully complete; caller should return result
       'killed'            — operator cancelled; caller should return result
       'rejected'          — broker rejected; caller should return result
@@ -889,60 +963,68 @@ async def _chase_poll_status(
     # Check status
     status = await _run(_order_status, account, current_order_id)
     order_status = status.get("status", "").upper()
-    # Sprint D — Kite reports `filled_quantity` in WHATEVER
-    # units `place_order` was given. For MCX/NCO we placed in
-    # LOTS (translate_qty divides by lot_size), so the status
-    # filled_quantity is also in lots — but our `remaining_qty`
-    # / `quantity` track CONTRACTS. Without the reverse-
-    # translate, every MCX partial-fill comparison fires
-    # (1 lot < 100 contracts always) and AlgoOrder.filled_qty
-    # accumulated as lots into a contracts column. Reverse-
-    # translate once here so downstream math is in one unit.
-    _kite_filled = int(status.get("filled_quantity", 0) or 0)
-    if cfg.exchange in ("MCX", "NCO") and _kite_filled > 0:
-        from backend.brokers.adapters.kite import from_kite_qty
-        _lot = _lot_size_sync(cfg.exchange, symbol)
-        filled_qty = from_kite_qty(cfg.exchange, _kite_filled, _lot)
-    else:
-        filled_qty = _kite_filled
+    # Sprint D / C3 — Kite AND Dhan report `filled_quantity` in
+    # WHATEVER units `place_order` was given. For MCX/NCO those two
+    # brokers were placed in LOTS (translate_qty divides by lot_size),
+    # so the status filled_quantity is also in lots — but our
+    # `remaining_qty` / `quantity` track CONTRACTS. Groww already
+    # reports MCX fills in contracts, so it must NOT go through this
+    # reverse-translate (broker-gated via `_ch_mcx_lots_broker`).
+    _raw_filled = int(status.get("filled_quantity", 0) or 0)
+    filled_qty = _ch_reverse_translate_mcx_filled(cfg, symbol, account, _raw_filled)
     avg_price = status.get("average_price", 0)
 
     if order_status == "COMPLETE":
-        return await _ch_poll_handle_complete(
+        signal, remaining_qty = await _ch_poll_handle_complete(
             result, avg_price, filled_qty, quantity, attempt, remaining_qty,
             current_order_id, symbol, transaction_type, algo_order_id, emit,
+            cumulative_filled,
         )
+        return signal, remaining_qty, quantity, filled_qty
 
-    # Audit fix (C-1): partial fill — react to NEW fills since last poll.
-    _already_filled = quantity - remaining_qty
-    _new_delta = filled_qty - _already_filled
-    if filled_qty > 0 and _new_delta > 0 and filled_qty < quantity:
-        remaining_qty = max(0, quantity - filled_qty)
-        result.status = ChaseStatus.PARTIAL
-        logger.info(
-            f"Chase {symbol}: partial fill +{_new_delta} "
-            f"(total {filled_qty}/{quantity}, remaining {remaining_qty})"
-        )
-        emit("partial_fill", {"filled": filled_qty, "delta": _new_delta,
-                              "remaining": remaining_qty})
-        await _record_partial_fill(algo_order_id, filled_qty, avg_price, quantity)
+    # C2 fix — `filled_qty` is THIS order's own from-zero cumulative
+    # fill (every SDK reports cumulative-per-order, never a delta). The
+    # pre-fix code subtracted `quantity - remaining_qty` (the chase-WIDE
+    # total filled by PRIOR orders) from `filled_qty` as if `filled_qty`
+    # were itself a chase-wide total — it isn't, so two orders each
+    # filling half the quantity independently summed to double-counted
+    # `remaining_qty` and a full duplicate re-order. Comparing against
+    # `current_order_filled` (this order's own previously-observed fill)
+    # instead correctly isolates the NEW delta regardless of how much
+    # any earlier order already contributed.
+    if filled_qty > current_order_filled:
+        _new_delta = filled_qty - current_order_filled
+        cumulative_filled += _new_delta
+        current_order_filled = filled_qty
+        remaining_qty = max(0, quantity - cumulative_filled)
+        if cumulative_filled < quantity:
+            result.status = ChaseStatus.PARTIAL
+            logger.info(
+                f"Chase {symbol}: partial fill +{_new_delta} "
+                f"(total {cumulative_filled}/{quantity}, remaining {remaining_qty})"
+            )
+            emit("partial_fill", {"filled": cumulative_filled, "delta": _new_delta,
+                                  "remaining": remaining_qty})
+        await _record_partial_fill(algo_order_id, cumulative_filled, avg_price, quantity)
 
     if order_status == "REJECTED":
-        return _ch_poll_handle_rejected(
+        signal, remaining_qty = _ch_poll_handle_rejected(
             result, status, attempt, remaining_qty,
             account, symbol, transaction_type, quantity,
             current_order_id, cfg, algo_order_id, emit,
         )
+        return signal, remaining_qty, cumulative_filled, current_order_filled
 
     if order_status in ("CANCELLED", "EXPIRED"):
-        return _ch_poll_handle_cancelled(
+        signal, remaining_qty = _ch_poll_handle_cancelled(
             result, status, attempt, remaining_qty,
             current_order_id, symbol, transaction_type, quantity,
             algo_order_id, emit,
         )
+        return signal, remaining_qty, cumulative_filled, current_order_filled
 
     # No terminal status — partial fill or benign (e.g. OPEN/TRIGGER_PENDING).
-    return None, remaining_qty
+    return None, remaining_qty, cumulative_filled, current_order_filled
 
 
 def _chase_default_cfg() -> "ChaseConfig":
@@ -1159,6 +1241,150 @@ async def _ch_cancel_previous(
         logger.warning(f"Chase {symbol}: cancel failed: {e}")
 
 
+async def _ch_capture_late_fill(
+    account: str, order_id: str, cfg: "ChaseConfig", symbol: str,
+    quantity: int, cumulative_filled: int, current_order_filled: int,
+    algo_order_id: "int | None",
+) -> "tuple[int, int, int, float]":
+    """C2 — poll the just-cancelled order's FINAL status and fold any
+    fill that happened between the LAST regular poll and the cancel
+    into `cumulative_filled`, before the next attempt sizes its
+    replacement order off a stale `remaining_qty`.
+
+    Deliberately called AFTER `_ch_cancel_previous` (not immediately
+    before it, as literally specified) — a limit order's
+    `filled_quantity` freezes the instant a cancel is confirmed (no
+    further quantity can trade against a cancelled order), so reading
+    status post-cancel closes the read/cancel race window entirely
+    instead of merely narrowing it. This achieves the spec's stated
+    goal ("a fill racing the cancel isn't lost") more robustly than a
+    pre-cancel read would.
+
+    Best-effort — never raises; a failed poll here just means the
+    fill (if any) is picked up by whatever reconciliation already
+    exists downstream (next `_task_performance` sweep).
+
+    Returns (cumulative_filled, current_order_filled, remaining_qty, avg_price).
+    """
+    avg_price = 0.0
+    try:
+        status = await _run(_order_status, account, order_id)
+        _raw = int((status or {}).get("filled_quantity", 0) or 0)
+        filled_qty = _ch_reverse_translate_mcx_filled(cfg, symbol, account, _raw)
+        avg_price = float((status or {}).get("average_price", 0) or 0)
+        if filled_qty > current_order_filled:
+            delta = filled_qty - current_order_filled
+            cumulative_filled += delta
+            current_order_filled = filled_qty
+            logger.info(
+                f"Chase {symbol}: captured late fill +{delta} on order {order_id} "
+                f"after cancel-and-replace (cumulative {cumulative_filled}/{quantity})"
+            )
+            await _record_partial_fill(algo_order_id, cumulative_filled, avg_price, quantity)
+    except Exception as e:
+        logger.debug(f"Chase {symbol}: late-fill capture failed for order {order_id}: {e}")
+    remaining_qty = max(0, quantity - cumulative_filled)
+    return cumulative_filled, current_order_filled, remaining_qty, avg_price
+
+
+def _ch_already_filled_at_start(
+    quantity: int, cumulative_filled: int, remaining_qty: int,
+    result: "ChaseResult", symbol: str, transaction_type: str,
+    algo_order_id: "int | None", emit: Callable,
+    avg_price: float = 0.0,
+) -> "ChaseResult | None":
+    """C4 — pre-loop guard: True when recovery already started fully
+    filled (nothing left to chase). Returns a finalized FILLED
+    ChaseResult when so, else None (caller proceeds into the loop).
+
+    `avg_price` must be the REAL recovered fill price (from
+    `chase_order`'s `already_filled_price` param), not a placeholder —
+    it gates whether `_emit_chase_terminal` fires the auto-TP/
+    template-attach hooks (see `_ch_zero_remaining_fill`'s docstring)."""
+    if remaining_qty > 0 or quantity <= 0:
+        return None
+    logger.info(
+        f"Chase {symbol}: already fully filled ({cumulative_filled}/{quantity}) "
+        f"at start — skipping chase."
+    )
+    return _ch_zero_remaining_fill(
+        result, symbol, transaction_type, quantity,
+        0, None, algo_order_id, emit, avg_price,
+    )
+
+
+async def _ch_cancel_and_capture(
+    account: str, current_order_id: "str | None", cfg: "ChaseConfig",
+    symbol: str, attempt: int, emit: Callable,
+    quantity: int, remaining_qty: int,
+    cumulative_filled: int, current_order_filled: int,
+    algo_order_id: "int | None", result: "ChaseResult", transaction_type: str,
+) -> "tuple[int, int, int, ChaseResult | None]":
+    """Cancel the previous resting order (if any) and capture any fill
+    that landed in the race window before the cancel confirmed (C2).
+
+    Returns (cumulative_filled, current_order_filled, remaining_qty,
+    early_result). `early_result` is non-None when the caller must
+    immediately `return early_result` — the late-fill capture revealed
+    `cumulative_filled` already reached `quantity`, so there's nothing
+    left to place a replacement order for.
+    """
+    await _ch_cancel_previous(account, current_order_id, cfg, symbol, attempt, emit)
+    if not current_order_id:
+        return cumulative_filled, current_order_filled, remaining_qty, None
+    cumulative_filled, current_order_filled, remaining_qty, late_avg_price = (
+        await _ch_capture_late_fill(
+            account, current_order_id, cfg, symbol, quantity,
+            cumulative_filled, current_order_filled, algo_order_id,
+        )
+    )
+    if remaining_qty <= 0:
+        early = _ch_zero_remaining_fill(
+            result, symbol, transaction_type, quantity, attempt,
+            current_order_id, algo_order_id, emit, late_avg_price,
+        )
+        return cumulative_filled, current_order_filled, remaining_qty, early
+    return cumulative_filled, current_order_filled, remaining_qty, None
+
+
+def _ch_zero_remaining_fill(
+    result: "ChaseResult", symbol: str, transaction_type: str, quantity: int,
+    attempt: int, current_order_id: "str | None", algo_order_id: "int | None",
+    emit: Callable, avg_price: float,
+) -> "ChaseResult":
+    """C2/C4 — finalize the chase as FILLED when `cumulative_filled` has
+    reached `quantity` OUTSIDE the normal broker COMPLETE-status path:
+    either the post-cancel late-fill capture revealed the previous
+    order actually finished in the race window before the cancel
+    landed, or (C4) a service-restart recovery started already fully
+    filled (no order needs to be — or safely CAN be — placed for a
+    zero/negative remaining quantity).
+
+    Mirrors `_ch_poll_handle_complete` so the AlgoOrder row + terminal
+    event + downstream Auto-TP / template-attach hooks fire identically
+    regardless of which code path detected the fill.
+    """
+    result.status = ChaseStatus.FILLED
+    result.fill_price = avg_price
+    result.slippage = abs(avg_price - result.initial_price) * quantity
+    result.detail = f"Filled at {avg_price} in {attempt} attempts"
+    emit("order_filled", {
+        "order_id": current_order_id, "fill_price": avg_price,
+        "attempts": attempt, "slippage": result.slippage,
+    })
+    logger.info(
+        f"Chase {symbol}: FILLED @ {avg_price} (attempt {attempt}, "
+        f"detected via post-cancel/recovery reconciliation — no new order placed)"
+    )
+    asyncio.create_task(_emit_chase_terminal(
+        current_order_id or "", "chase_fill",
+        symbol, transaction_type, quantity,
+        final_price=avg_price, attempts=attempt,
+        slippage=result.slippage, algo_order_id=algo_order_id,
+    ))
+    return result
+
+
 async def _ch_post_replace_kill_check(
     account: str, current_order_id: str,
     cfg: "ChaseConfig", result: "ChaseResult",
@@ -1205,6 +1431,8 @@ async def chase_order(
     cfg: ChaseConfig | None = None,
     on_event: Callable | None = None,
     algo_order_id: int | None = None,
+    already_filled: int = 0,
+    already_filled_price: float = 0.0,
 ) -> ChaseResult:
     """
     Chase a limit order until filled.
@@ -1213,7 +1441,10 @@ async def chase_order(
         account: Kite account ID (e.g. 'ZG0790')
         symbol: Trading symbol (e.g. 'NIFTY24APR25000CE')
         transaction_type: 'BUY' or 'SELL'
-        quantity: Number of lots/shares
+        quantity: Number of lots/shares — the TRUE ORIGINAL total size of
+                  the chase. This never changes meaning regardless of
+                  `already_filled`; it's what downstream template-attach
+                  sizing, logging, and G1-style checks key off of.
         cfg: Chase configuration (defaults used if None)
         on_event: Optional callback(event_type: str, detail: dict) for real-time updates
         algo_order_id: Optional AlgoOrder row id — when set, the chase
@@ -1222,6 +1453,25 @@ async def chase_order(
                        _emit_chase_terminal calls. Required for any
                        chased order that has a template attached
                        (Phase 0.5).
+        already_filled: C4 — quantity already filled by a PRIOR chase
+                       cycle before this call started (service-restart
+                       recovery). Seeds the chase-wide cumulative-fill
+                       counter so the FIRST attempt sizes its order at
+                       `quantity - already_filled` instead of the full
+                       original `quantity` — recovering a chase always
+                       started fresh at full size pre-fix, risking a
+                       full duplicate order alongside whatever was still
+                       resting at the broker from before the restart.
+        already_filled_price: C4 — average fill price for `already_filled`
+                       (from the broker's live order-status read at
+                       recovery time). Used ONLY when recovery starts
+                       already fully filled (`already_filled >= quantity`)
+                       — that path finalizes the chase immediately via
+                       `_ch_already_filled_at_start`, and the price feeds
+                       `_emit_chase_terminal`'s `final_price`, which gates
+                       whether auto-TP/template-attach fire. A 0.0 here
+                       silently skips attaching exits for an already-
+                       filled recovery.
 
     Returns:
         ChaseResult with fill details
@@ -1265,9 +1515,30 @@ async def chase_order(
 
     emit = _ch_make_emit(on_event, account, symbol, transaction_type, quantity)
     current_order_id = None
-    remaining_qty    = quantity
     consecutive_errors = 0        # reset on any successful broker call
     last_placed_price: float = 0.0  # enforces minimum 1-tick movement per attempt
+
+    # C2/C4 — cumulative_filled is the chase-WIDE running total across
+    # every order placed this cycle (seeded from `already_filled` on
+    # restart recovery). current_order_filled tracks how much of the
+    # CURRENTLY resting order's own fill has already been folded into
+    # cumulative_filled — reset to 0 every time a fresh order is placed.
+    cumulative_filled    = max(0, int(already_filled or 0))
+    current_order_filled = 0
+    remaining_qty         = max(0, quantity - cumulative_filled)
+
+    # C4 — recovery may have started already fully filled (the resting
+    # order from before the restart finished in the gap between the
+    # crash and this recovery running). Nothing to chase in that case;
+    # finalize immediately rather than placing a 0-qty order
+    # (BrokerInputError) or a full duplicate at `quantity`.
+    _already_done = _ch_already_filled_at_start(
+        quantity, cumulative_filled, remaining_qty,
+        result, symbol, transaction_type, algo_order_id, emit,
+        already_filled_price,
+    )
+    if _already_done is not None:
+        return _already_done
 
     for attempt in range(1, cfg.max_attempts + 1):
         result.attempts = attempt
@@ -1307,13 +1578,31 @@ async def chase_order(
             if attempt == 1:
                 result.initial_price = price
 
-            # Cancel previous order (best-effort, never raises)
-            await _ch_cancel_previous(account, current_order_id, cfg, symbol, attempt, emit)
+            # Cancel previous order + capture any fill that landed on it
+            # between its last regular poll and the cancel (C2) — a
+            # cancelled limit order's filled_quantity freezes once the
+            # cancel confirms, so reading post-cancel closes the race
+            # window rather than merely narrowing it.
+            cumulative_filled, current_order_filled, remaining_qty, _early = (
+                await _ch_cancel_and_capture(
+                    account, current_order_id, cfg, symbol, attempt, emit,
+                    quantity, remaining_qty, cumulative_filled, current_order_filled,
+                    algo_order_id, result, transaction_type,
+                )
+            )
+            if _early is not None:
+                # The just-cancelled order actually finished in the race
+                # window before our cancel landed — nothing left to
+                # chase. Placing a 0-qty order here would trip a
+                # BrokerInputError and incorrectly mark the chase FAILED
+                # even though it's already complete.
+                return _early
 
             # Place new order
             current_order_id = await _run(
                 _place_order, account, symbol, transaction_type, remaining_qty, price, cfg
             )
+            current_order_filled = 0  # fresh order — starts unfilled
             consecutive_errors = 0   # successful placement resets the error streak
             last_placed_price = price  # track for minimum-tick progression check
             result.order_id = current_order_id
@@ -1342,9 +1631,10 @@ async def chase_order(
             # Wait for fill
             await asyncio.sleep(cfg.interval_seconds)
 
-            signal, remaining_qty = await _chase_poll_status(
+            signal, remaining_qty, cumulative_filled, current_order_filled = await _chase_poll_status(
                 account, current_order_id, cfg, symbol, transaction_type,
                 quantity, result, attempt, remaining_qty, algo_order_id, emit,
+                cumulative_filled, current_order_filled,
             )
             done, current_order_id = await _ch_handle_poll_signal(
                 signal, current_order_id, cfg, symbol,

@@ -125,8 +125,8 @@ async def test_buy_forced_one_tick_higher_on_repeat():
     async def _fake_poll(*args, **kwargs):
         # First iteration: continue; second: fill
         if len(placed_prices) < 2:
-            return "continue", args[7]  # (signal, remaining_qty)
-        return "filled", 0
+            return "continue", args[7], 0, 0  # (signal, remaining_qty, cumulative_filled, current_order_filled)
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -191,8 +191,8 @@ async def test_sell_forced_one_tick_lower_on_repeat():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -263,8 +263,8 @@ async def test_buy_forced_clamped_to_best_ask():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -330,8 +330,8 @@ async def test_sell_forced_floored_by_best_bid():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -395,8 +395,8 @@ async def test_buy_stale_depth_no_clamp_to_zero():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -466,8 +466,8 @@ async def test_force_path_uses_same_depth_no_extra_broker_call():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -530,7 +530,7 @@ async def test_no_force_on_first_attempt():
 
     async def _fake_poll(*args, **kwargs):
         # Fill immediately on attempt 1
-        return "filled", 0
+        return "filled", 0, 0, 0
 
     with (
         patch("backend.shared.helpers.utils.is_prod_branch", return_value=True),
@@ -596,8 +596,8 @@ async def test_no_force_when_price_changes_naturally():
 
     async def _fake_poll(*args, **kwargs):
         if len(placed_prices) < 2:
-            return "continue", args[7]
-        return "filled", 0
+            return "continue", args[7], 0, 0
+        return "filled", 0, 0, 0
 
     mock_tick_sync = MagicMock(return_value=tick)
 

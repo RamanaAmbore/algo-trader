@@ -502,6 +502,11 @@ class KiteBroker(Broker):
         orders: list[dict],
         trigger_values: list[float],
     ) -> str:
+        # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_gtt, applied
+        # to each modified leg. Without this, a modify carrying an
+        # untranslated raw contract qty (e.g. 100 for CRUDEOIL) would reach
+        # the exchange unchecked even though place_gtt is guarded.
+        _check_kite_gtt_qty_ceiling(exchange, orders, tradingsymbol)
         enriched_orders = [
             {**o, "exchange": exchange, "tradingsymbol": tradingsymbol}
             for o in orders

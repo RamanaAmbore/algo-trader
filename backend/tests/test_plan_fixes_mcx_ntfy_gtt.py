@@ -1,6 +1,12 @@
 """
 Tests for three order rejection fixes from the plan:
-1. MCX G1 LOT_MULTIPLE skip — should NOT fire for MCX/NCO broker qty
+1. MCX G1 LOT_MULTIPLE — applies uniformly to MCX/NCO too (C7 fix,
+   2026-09): qty reaching preflight is always normalized to CONTRACTS
+   (see `broker_apis.py:_annotate_lot_size`), so a genuine non-multiple
+   quantity now correctly blocks, and a proper whole-lot-in-contracts
+   quantity still passes cleanly. FAT_FINGER_5_LOT_CAP still skips
+   MCX/NCO (independent rationale — route-level 20-lot guard already
+   covers it).
 2. ntfy priority=None header — should NOT include "None" string in X-Priority
 3. MCX GTT ceiling config — should read from backend_config.yaml, not hard-coded 50
 
@@ -19,17 +25,20 @@ from zoneinfo import ZoneInfo
 
 class TestMcxG1SkipForClose:
     """
-    MCX broker returns position qty in LOTS (e.g., 50 lots).
-    A close order with qty=50 lots should NOT trigger G1 LOT_MULTIPLE,
-    since 50 is already a valid whole-lot quantity for MCX (lot_size=100).
-
-    Testing the fix: _preflight_validate_lots should skip LOT_MULTIPLE check
-    for MCX/NCO when they're being closed (qty is already in lots from broker).
+    C7 fix (2026-09) — qty reaching preflight is ALWAYS already
+    normalized to CONTRACTS for MCX/NCO too (see
+    `broker_apis.py:_annotate_lot_size`, ~line 1992-2003). The previous
+    "broker returns qty in lots, so skip G1 for MCX/NCO" premise was
+    confirmed FALSE for the paths that reach `_preflight_validate_lots`
+    — the skip let genuinely non-multiple quantities bypass G1
+    entirely. G1 now applies uniformly to every F&O exchange.
     """
 
     @pytest.mark.asyncio
-    async def test_mcx_close_position_qty_50_lots_passes_g1(self):
-        """MCX close: qty=50 lots (broker qty) with lot_size=100 → G1 skipped."""
+    async def test_mcx_close_position_qty_non_multiple_now_blocked_by_g1(self):
+        """MCX close: qty=50 CONTRACTS with lot_size=100 is a genuine
+        non-multiple (0.5 lots) — G1 LOT_MULTIPLE must now fire.
+        (Pre-fix this incorrectly passed — the C7 regression case.)"""
         from backend.api.algo.actions import run_preflight
 
         broker = MagicMock()
@@ -63,21 +72,129 @@ class TestMcxG1SkipForClose:
             result = await run_preflight("ZG0790", {
                 "exchange": "MCX",
                 "tradingsymbol": "CRUDEOILAUG25FUT",
-                "quantity": 50,  # Broker qty: 50 lots (not 50 contracts)
+                "quantity": 50,  # CONTRACTS — not a multiple of lot_size=100
                 "order_type": "LIMIT",
                 "product": "NRML",
                 "variety": "regular",
                 "side": "SELL",
                 "price": 5500.0,
-                "intent": "close",  # Close intent
+                "intent": "close",  # Close intent — G1 still applies
             })
 
-        # G1 LOT_MULTIPLE should NOT fire for MCX close
-        # (50 lots is valid MCX qty, even though 50 % 100 ≠ 0 in contract terms)
+        codes = [b["code"] for b in result["blocked"]]
+        assert "LOT_MULTIPLE" in codes, (
+            f"G1 must now fire for a genuinely non-multiple MCX qty, "
+            f"got: {result['blocked']}"
+        )
+        assert result["ok"] is False
+
+    @pytest.mark.asyncio
+    async def test_mcx_close_position_qty_clean_multiple_passes_g1(self):
+        """MCX close: qty=5000 CONTRACTS (=50 lots) with lot_size=100 is
+        a clean multiple — G1 LOT_MULTIPLE must NOT fire."""
+        from backend.api.algo.actions import run_preflight
+
+        broker = MagicMock()
+        broker.profile.return_value = {
+            "exchanges": ["NSE", "NFO", "BSE", "MCX", "NCO", "CDS"]
+        }
+        broker.instruments.return_value = [{
+            "tradingsymbol": "CRUDEOILAUG25FUT",
+            "exchange": "MCX",
+            "instrument_type": "FUT",
+            "freeze_qty": 10_000,
+            "lot_size": 100,
+            "tick_size": 1.0,
+        }]
+        broker.basket_order_margins.return_value = [{
+            "initial": {"total": 10_000.0},
+        }]
+        broker.margins.return_value = {
+            "equity": {"enabled": True, "net": 500_000.0},
+            "commodity": {"enabled": True, "net": 500_000.0},
+        }
+        broker.normalise_qty.side_effect = lambda exchange, qty, lot_size: int(qty)
+
+        conns = MagicMock()
+        conns.conn = {"ZG0790": object()}
+
+        with patch("backend.brokers.connections.Connections", return_value=conns), \
+             patch("backend.brokers.registry.get_broker", return_value=broker), \
+             patch("backend.brokers.adapters.kite.get_lot_size",
+                   new=AsyncMock(return_value=100)):
+            result = await run_preflight("ZG0790", {
+                "exchange": "MCX",
+                "tradingsymbol": "CRUDEOILAUG25FUT",
+                "quantity": 5000,  # 50 lots in CONTRACTS — clean multiple
+                "order_type": "LIMIT",
+                "product": "NRML",
+                "variety": "regular",
+                "side": "SELL",
+                "price": 5500.0,
+                "intent": "close",
+            })
+
         codes = [b["code"] for b in result["blocked"]]
         assert "LOT_MULTIPLE" not in codes, (
-            f"G1 must be skipped for MCX close, but got: {result['blocked']}"
+            f"G1 must NOT fire for a clean-multiple MCX qty, "
+            f"got: {result['blocked']}"
         )
+
+    @pytest.mark.asyncio
+    async def test_mcx_open_within_lot_cap_not_blocked_by_fat_finger(self):
+        """MCX open (not close): qty=100 contracts (1 lot at
+        lot_size=100) must NOT trigger FAT_FINGER_5_LOT_CAP — that
+        guard still skips MCX/NCO for its own independent reason (the
+        route-level 20-lot cap is authoritative there), unaffected by
+        the G1 fix."""
+        from backend.api.algo.actions import run_preflight
+
+        broker = MagicMock()
+        broker.profile.return_value = {
+            "exchanges": ["NSE", "NFO", "BSE", "MCX", "NCO", "CDS"]
+        }
+        broker.instruments.return_value = [{
+            "tradingsymbol": "CRUDEOILAUG25FUT",
+            "exchange": "MCX",
+            "instrument_type": "FUT",
+            "freeze_qty": 10_000,
+            "lot_size": 100,
+            "tick_size": 1.0,
+        }]
+        broker.basket_order_margins.return_value = [{
+            "initial": {"total": 10_000.0},
+        }]
+        broker.margins.return_value = {
+            "equity": {"enabled": True, "net": 500_000.0},
+            "commodity": {"enabled": True, "net": 500_000.0},
+        }
+        broker.normalise_qty.side_effect = lambda exchange, qty, lot_size: int(qty)
+
+        conns = MagicMock()
+        conns.conn = {"ZG0790": object()}
+
+        with patch("backend.brokers.connections.Connections", return_value=conns), \
+             patch("backend.brokers.registry.get_broker", return_value=broker), \
+             patch("backend.brokers.adapters.kite.get_lot_size",
+                   new=AsyncMock(return_value=100)):
+            result = await run_preflight("ZG0790", {
+                "exchange": "MCX",
+                "tradingsymbol": "CRUDEOILAUG25FUT",
+                "quantity": 1000,  # 10 lots — well above the 5-lot FAT_FINGER cap
+                "order_type": "LIMIT",
+                "product": "NRML",
+                "variety": "regular",
+                "side": "BUY",
+                "price": 5500.0,
+                # no intent="close" — this is a new open
+            })
+
+        codes = [b["code"] for b in result["blocked"]]
+        assert "FAT_FINGER_5_LOT_CAP" not in codes, (
+            f"FAT_FINGER_5_LOT_CAP must still skip MCX/NCO (route-level "
+            f"20-lot guard is authoritative), got: {result['blocked']}"
+        )
+        assert "LOT_MULTIPLE" not in codes
 
 
 # =============================================================================
@@ -314,7 +431,8 @@ class TestPlanFixesIntegration:
 
     @pytest.mark.asyncio
     async def test_mcx_close_with_preflight_and_no_false_blocks(self):
-        """Full close order preflight with MCX qty in lots → no G1 block."""
+        """Full close order preflight with a clean-multiple MCX qty (in
+        CONTRACTS, per C7) → no G1 block."""
         from backend.api.algo.actions import run_preflight
 
         broker = MagicMock()
@@ -345,11 +463,12 @@ class TestPlanFixesIntegration:
              patch("backend.brokers.registry.get_broker", return_value=broker), \
              patch("backend.brokers.adapters.kite.get_lot_size",
                    new=AsyncMock(return_value=100)):
-            # Simulate a close order with qty=50 lots (from broker position)
+            # Simulate a close order with qty=5000 CONTRACTS (= 50 lots,
+            # a clean multiple of lot_size=100).
             result = await run_preflight("ZG0790", {
                 "exchange": "MCX",
                 "tradingsymbol": "CRUDEOILAUG25FUT",
-                "quantity": 50,
+                "quantity": 5000,
                 "order_type": "LIMIT",
                 "product": "NRML",
                 "variety": "regular",

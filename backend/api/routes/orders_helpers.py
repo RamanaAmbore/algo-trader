@@ -331,16 +331,80 @@ async def _start_live_chase(account: str, symbol: str, exchange: str,
 
 # ── Row builders ──────────────────────────────────────────────────────────────
 
-def _row_from_dict(d: dict, account: str) -> OrderRow:
+# Broker ids CONFIRMED to report MCX/NCO order-row quantity fields
+# (quantity / pending_quantity / filled_quantity) in LOTS — the exchange
+# wire convention — rather than CONTRACTS. Accepts both the canonical
+# `Broker.broker_id` value ("zerodha_kite") and the short-form id used by
+# the postback fan-out helpers ("kite"), plus "dhan". Mirrors the
+# lots→contracts conversion already applied to the positions DataFrame in
+# `backend/brokers/broker_apis.py:_annotate_lot_size` (~line 1992-2003)
+# and to postback fill quantities in
+# `backend/api/routes/orders.py:_mcx_postback_qty_to_contracts`. Groww
+# reports MCX quantity in contracts already and must NOT appear here —
+# double-converting it would silently under-report Groww MCX order qty.
+_MCX_LOTS_CONVENTION_BROKER_IDS = frozenset({"zerodha_kite", "kite", "dhan"})
+
+
+def _mcx_row_qty_to_contracts(exchange: str, symbol: str, broker_id: str, qty) -> int:
+    """Convert a raw order-row quantity field from LOTS to CONTRACTS for
+    MCX/NCO rows sourced from Kite/Dhan.
+
+    Reads `_LOT_INDEX` directly (no cache refresh — same synchronous,
+    best-effort pattern as `_mcx_postback_qty_to_contracts`) because this
+    runs inside a `ThreadPoolExecutor` worker (`_fetch_orders._one_account`)
+    with no running event loop to `await` a refresh on.
+
+    Returns qty unchanged (best-effort, never raises) when: the exchange
+    isn't MCX/NCO, the broker isn't in the lots-convention allow-list
+    (Groww, paper, simulated fan-out), or the lot-size cache is cold —
+    in the cold-cache case the raw value passes through with a warning
+    rather than risk under/over-converting.
+    """
+    try:
+        _qty_int = int(qty or 0)
+    except (TypeError, ValueError):
+        return 0
+    if (exchange or "").upper() not in ("MCX", "NCO"):
+        return _qty_int
+    if str(broker_id or "").lower() not in _MCX_LOTS_CONVENTION_BROKER_IDS:
+        return _qty_int
+    try:
+        from backend.brokers.adapters.kite import _LOT_INDEX
+        lot_size = _LOT_INDEX.get((exchange, symbol), 0)
+        if lot_size > 1:
+            return _qty_int * lot_size
+        logger.warning(
+            f"[MCX-ORDER-ROW-QTY] cold/missing lot_size for {exchange}/{symbol} — "
+            f"passing raw qty={_qty_int} through unconverted"
+        )
+    except Exception as _lex:
+        logger.warning(f"[MCX-ORDER-ROW-QTY] lot_size lookup failed for {exchange}/{symbol}: {_lex}")
+    return _qty_int
+
+
+def _row_from_dict(d: dict, account: str, broker_id: str = "") -> OrderRow:
+    """Build an `OrderRow` from a broker-native order dict.
+
+    `broker_id` gates the MCX/NCO lots→contracts normalization applied to
+    `quantity`, `pending_quantity`, and `filled_quantity` — all three
+    carry the same broker-native unit for a given order (Kite/Dhan ship
+    all three in LOTS for MCX/NCO, same as their intraday position
+    fields; see `_mcx_row_qty_to_contracts`). Every other `OrderRow`
+    consumer (ticket qty math, modify-ticket lot/contract round-trip,
+    chase) treats `quantity` as CONTRACTS — leaving these fields
+    unnormalized silently resizes MCX order modifications.
+    """
+    exchange = str(d.get("exchange", ""))
+    symbol = str(d.get("tradingsymbol", ""))
     return OrderRow(
         order_id=str(d.get("order_id", "")),
         account=account,
-        exchange=str(d.get("exchange", "")),
-        tradingsymbol=str(d.get("tradingsymbol", "")),
+        exchange=exchange,
+        tradingsymbol=symbol,
         transaction_type=str(d.get("transaction_type", "")),
-        quantity=int(d.get("quantity") or 0),
-        pending_quantity=int(d.get("pending_quantity") or 0),
-        filled_quantity=int(d.get("filled_quantity") or 0),
+        quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("quantity")),
+        pending_quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("pending_quantity")),
+        filled_quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("filled_quantity")),
         price=float(d.get("price") or 0),
         trigger_price=float(d.get("trigger_price") or 0),
         average_price=float(d.get("average_price") or 0),
@@ -368,8 +432,9 @@ def _fetch_orders() -> OrdersResponse:
 
     def _one_account(broker) -> list[OrderRow]:  # type: ignore[no-untyped-def]
         account = broker.account
+        broker_id = getattr(broker, "broker_id", "")
         try:
-            return [_row_from_dict(o, account) for o in reversed(broker.orders() or [])]
+            return [_row_from_dict(o, account, broker_id) for o in reversed(broker.orders() or [])]
         except Exception as e:
             logger.error(f"Orders list failed for {account}: {e}")
             return []

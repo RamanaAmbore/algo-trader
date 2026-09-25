@@ -131,9 +131,37 @@ describe('buildModifyPayload', () => {
     assert.strictEqual(p.quantity, undefined);
   });
 
-  test('qty: 50 → 50', () => {
+  test('qty: 50 → 50 (no originalQty supplied → legacy always-include)', () => {
     const p = buildModifyPayload(base);
     assert.strictEqual(p.quantity, 50);
+  });
+
+  // ── C1 audit fix (2026-09): price-only modify must omit quantity ──────────
+  // A resting MCX order's PUT payload must not re-send a `quantity` derived
+  // from _lots × _lotSize when the operator only touched price/trigger —
+  // combined with a backend normalization gap this silently resized a
+  // 1-lot CRUDEOILM order to 10 lots.
+
+  test('price-only change (qty === originalQty) → quantity omitted', () => {
+    const p = buildModifyPayload({ ...base, qty: 50, originalQty: 50, price: '600' });
+    assert.strictEqual(p.quantity, undefined);
+    // Price change itself must still go through.
+    assert.strictEqual(p.price, 600);
+  });
+
+  test('genuine quantity change (qty !== originalQty) → quantity included', () => {
+    const p = buildModifyPayload({ ...base, qty: 100, originalQty: 50 });
+    assert.strictEqual(p.quantity, 100);
+  });
+
+  test('originalQty as string (broker row echo) compares numerically', () => {
+    const p = buildModifyPayload({ ...base, qty: 50, originalQty: '50' });
+    assert.strictEqual(p.quantity, undefined);
+  });
+
+  test('originalQty=0 (edge case) still treated as a real baseline', () => {
+    const p = buildModifyPayload({ ...base, qty: 0, originalQty: 0 });
+    assert.strictEqual(p.quantity, undefined);
   });
 });
 

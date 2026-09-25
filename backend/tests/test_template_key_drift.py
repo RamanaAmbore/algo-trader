@@ -139,3 +139,54 @@ class TestTemplateGttKeyConsistency:
         assert "lowest_ltp" in entry, "must have lowest_ltp"
         assert "parent_side" in entry, "must have parent_side"
         assert entry["parent_side"] == parent_side
+
+    def test_opp_entry_populates_trail_fields_unconditionally_c6_regression(self):
+        """C6 regression — normally-attached (non-retry, non-OCO-sibling)
+        GTTs must carry `parent_qty` / `parent_symbol` / `parent_exchange` /
+        `parent_account` / `parent_product` / `current_trigger` so
+        `background.py:_bg_trail_entry_is_valid` accepts the entry.
+
+        Pre-fix: with `sibling_pairs=[]` (the common single-GTT SL case,
+        no OCO sibling), `parent_account`/`parent_exchange` were never set
+        at all (only inside `if _sib:`), and `parent_qty`/`parent_symbol`/
+        `current_trigger` were NEVER set on any branch — trailing silently
+        never activated for a normally-attached SL.
+        """
+        from backend.api.routes.orders_place import _opp_build_attach_entries
+
+        mock_result = MagicMock()
+        mock_result.sibling_pairs = []  # no OCO sibling — the common case
+        mock_spec = MagicMock()
+        mock_spec.placed_id = "gtt_c6"
+        mock_spec.label = "SL"
+        mock_spec.sl_trail_pct = 2.0
+        mock_spec.trigger_values = [98.0]
+        mock_spec.trigger_type = "single"
+        mock_result.plan = MagicMock()
+        mock_result.plan.gtts = [mock_spec]
+        mock_result.plan.parent_qty = 75
+        mock_result.plan.parent_symbol = "NIFTY24MAY24000CE"
+        mock_result.plan.parent_exchange = "NFO"
+        mock_result.plan.parent_account = "ZG0790"
+
+        attached = _opp_build_attach_entries(
+            mock_result, fill_price=100.0, parent_side="BUY",
+            parent_product="NRML",
+        )
+
+        assert len(attached) == 1
+        entry = attached[0]
+        assert entry.get("parent_qty") == 75, f"parent_qty missing/wrong: {entry}"
+        assert entry.get("parent_symbol") == "NIFTY24MAY24000CE"
+        assert entry.get("parent_exchange") == "NFO"
+        assert entry.get("parent_account") == "ZG0790"
+        assert entry.get("parent_product") == "NRML"
+        assert entry.get("current_trigger") == 98.0
+
+        # Validate against the actual background.py gate — this is the
+        # exact function that silently rejected pre-fix entries.
+        from backend.api.background import _bg_trail_entry_is_valid, _bg_trail_entry_build_fields
+        fields = _bg_trail_entry_build_fields(entry)
+        assert _bg_trail_entry_is_valid(fields) is True, (
+            f"entry must pass the trail-stop poller's validity gate: {fields}"
+        )

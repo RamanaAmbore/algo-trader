@@ -93,17 +93,19 @@ async def test_preflight_nco_valid_lot_passes():
 
 @pytest.mark.asyncio
 async def test_preflight_nco_g1_fires_on_non_multiple():
-    """NCO qty not a multiple (in contract terms) → G1 SKIPPED (Bug 1 fix).
+    """NCO qty not a multiple in CONTRACTS → G1 FIRES (C7 fix, 2026-09).
 
-    NCO is commodity exchange like MCX. Broker returns qty in LOTS.
-    So qty like 107 is a valid whole-lot qty and should NOT trigger G1.
+    NCO is a commodity exchange like MCX; qty reaching preflight is
+    already normalized to CONTRACTS for both (see
+    `broker_apis.py:_annotate_lot_size`), so a genuinely non-multiple
+    quantity like 107 must now be blocked.
     """
     from backend.api.algo.actions import run_preflight
 
     broker = _make_broker_stub_nco()
     conns  = _conns_with("ZG0790")
 
-    qty_in_lots = NCO_LOT_SIZE + 7   # 107 lots (would be "non-multiple" in contracts)
+    qty_contracts = NCO_LOT_SIZE + 7   # not a multiple of lot_size
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -112,7 +114,7 @@ async def test_preflight_nco_g1_fires_on_non_multiple():
         result = await run_preflight("ZG0790", {
             "exchange":      "NCO",
             "tradingsymbol": NCO_SYMBOL,
-            "quantity":      qty_in_lots,
+            "quantity":      qty_contracts,
             "order_type":    "LIMIT",
             "product":       "NRML",
             "variety":       "regular",
@@ -120,10 +122,10 @@ async def test_preflight_nco_g1_fires_on_non_multiple():
             "price":         5500.0,
         })
 
-    # G1 must be SKIPPED for NCO (qty already in lots)
+    # G1 must FIRE for a genuinely non-multiple NCO contracts qty.
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" not in codes, (
-        f"NCO G1 must be skipped, but got: {result['blocked']}"
+    assert "LOT_MULTIPLE" in codes, (
+        f"NCO G1 must fire for non-multiple contracts qty, but got: {result['blocked']}"
     )
 
 

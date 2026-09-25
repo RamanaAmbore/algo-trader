@@ -1905,6 +1905,11 @@
         const modPayload = buildModifyPayload({
           account: _account,
           qty: _qty,
+          // Original order quantity as passed in by the caller (raw
+          // `qty` prop, untouched by the _lots/_lotSize resolution
+          // math below) — lets buildModifyPayload detect "operator
+          // only changed price/trigger" and omit `quantity` entirely.
+          originalQty: qty,
           showLimit,
           showTrigger,
           roundToTick: _roundToTick,

@@ -3378,6 +3378,59 @@ def _compute_trail_watermark(
     return proposed, more_favorable, watermark_changed
 
 
+async def _resolve_trail_wire_qty(
+    broker,
+    exchange: str,
+    symbol: str,
+    parent_qty: int,
+    row_id: int,
+) -> Optional[int]:
+    """Resolve the wire-format (lots for MCX/NCO, contracts otherwise)
+    quantity for a trailing-stop `modify_gtt` call.
+
+    C6 fix (2026-09) — Kite's `modify_gtt` performs NO server-side
+    lots translation (unlike `apply_plan_live`'s initial GTT placement,
+    which calls `broker.translate_qty` per leg — see
+    `template_attach.py:_translate_gtt_orders`). Without this, the
+    trail-ratchet builder sent raw `parent_qty` CONTRACTS straight into
+    `orders_payload["quantity"]`, so a ratchet on a CRUDEOIL SL (lot
+    size 100) would resize the live GTT to 100× the intended lots.
+
+    Returns `None` (caller must skip the modify this cycle rather than
+    risk sending an untranslated/rejected quantity) when: the lot-size
+    lookup fails, the MCX/NCO lot-size cache is cold (`lot_size <= 1`),
+    or `translate_qty` itself rejects the quantity (e.g. the base-layer
+    QTY-GUARD now raises `ValueError` on sub-lot / non-multiple MCX
+    qty). Never raises — the trail poller must keep processing other
+    entries/rows on this row's poll cycle.
+    """
+    try:
+        from backend.brokers.adapters.kite import get_lot_size
+        lot_size = await get_lot_size(exchange, symbol)
+    except Exception as e:
+        logger.warning(
+            f"[TRAIL] #{row_id} lot_size lookup failed for "
+            f"{exchange}/{symbol}: {e} — skipping modify_gtt this cycle"
+        )
+        return None
+    if exchange.upper() in ("MCX", "NCO") and lot_size <= 1:
+        logger.warning(
+            f"[TRAIL] #{row_id} cold/missing lot_size for {exchange}/{symbol} "
+            f"(lot_size={lot_size}) — skipping modify_gtt this cycle rather "
+            f"than risk sending an untranslated quantity"
+        )
+        return None
+    try:
+        return broker.translate_qty(exchange, parent_qty, lot_size)
+    except (ValueError, AttributeError) as e:
+        logger.warning(
+            f"[TRAIL] #{row_id} translate_qty failed for {exchange}/{symbol} "
+            f"qty={parent_qty} lot_size={lot_size}: {e} — skipping "
+            f"modify_gtt this cycle"
+        )
+        return None
+
+
 async def _process_trail_entry(
     entry: dict,
     row,
@@ -3412,9 +3465,18 @@ async def _process_trail_entry(
     if not more_favorable:
         return watermark_changed
     proposed = round(proposed, 4)
+    # C6 fix — resolve the wire-format (lots) qty BEFORE building the
+    # modify_gtt payload; `_build_trail_modify_kwargs` stays a pure
+    # function that only ever sees an already-translated quantity.
+    wire_qty = await _resolve_trail_wire_qty(
+        broker, fields["parent_exchange"], fields["parent_symbol"],
+        fields["parent_qty"], row.id,
+    )
+    if wire_qty is None:
+        return watermark_changed
     built = _build_trail_modify_kwargs(
         entry, proposed,
-        fields["parent_side"], fields["parent_qty"], fields["parent_product"],
+        fields["parent_side"], wire_qty, fields["parent_product"],
         fields["trigger_type"], row.id,
     )
     if built is None:
@@ -5970,6 +6032,129 @@ async def _task_purge_perf_snapshots() -> None:
         await _purge_once()
 
 
+async def _recover_query_and_cancel_resting(row, cfg, broker_order_id: str) -> "dict | None":
+    """C4 helper (extracted from `_recover_chase_already_filled` to keep
+    its own complexity down) — query the resting order's live status,
+    cancel it if still open, then re-read status once more POST-cancel
+    (a limit order's `filled_quantity` freezes once the cancel confirms,
+    so re-reading after closes the read/cancel race window instead of
+    merely narrowing it — mirrors `chase.py`'s own
+    `_ch_capture_late_fill`). Returns None (caller must skip restarting
+    this row) on any broker-call failure — never silently trusts a
+    stale/unverifiable read, which could be hiding a still-resting
+    orphaned order at the broker."""
+    from backend.api.algo.chase import _order_status, _cancel_order, _run
+
+    _TERMINAL = ("COMPLETE", "REJECTED", "CANCELLED", "EXPIRED")
+    try:
+        status = await _run(_order_status, row.account, broker_order_id)
+        order_state = str((status or {}).get("status", "") or "").upper()
+        if order_state and order_state not in _TERMINAL:
+            try:
+                await _run(_cancel_order, row.account, broker_order_id,
+                           cfg.variety, cfg.exchange)
+                logger.info(
+                    "[CHASE-RECOVERY] cancelled orphaned resting order %s "
+                    "for #%s before restart", broker_order_id, row.id,
+                )
+            except Exception as _ce:
+                logger.warning(
+                    "[CHASE-RECOVERY] cancel failed for orphaned resting "
+                    "order %s (#%s): %s", broker_order_id, row.id, _ce,
+                )
+            status = await _run(_order_status, row.account, broker_order_id) or status
+        return status
+    except Exception as e:
+        logger.warning(
+            "[CHASE-RECOVERY] order_status/cancel failed for #%s (%s) — "
+            "skipping restart this cycle: %s", row.id, broker_order_id, e,
+        )
+        return None
+
+
+async def _recover_chase_already_filled(row, cfg) -> "tuple[int, float] | None":
+    """C4 — resolve the true already-filled quantity (and its average
+    fill price) for a chase being recovered after a service restart,
+    and cancel any resting order still live at the broker so
+    `chase_order`'s first attempt doesn't place a full duplicate order
+    alongside an orphan.
+
+    Returns None when the row's live state can't be verified (broker
+    call failed, or the response is missing `status`/`quantity`) — the
+    caller MUST skip restarting this row rather than falling back to
+    the DB's `filled_quantity` alone, because an unverified live read
+    could hide a still-resting orphaned order at the broker. A skipped
+    row is retried on the NEXT service restart (its `status` stays
+    'OPEN' in the DB) — conservative by design: never risk a duplicate
+    order to avoid a delayed recovery.
+
+    Math — NOT the C2 bug: the resting order (if any) was itself sized
+    as `row.quantity - <total filled by all PRIOR orders>` when it was
+    placed, so its own unfilled remainder derives the chase-wide total
+    directly from ONE order's own numbers:
+        already_filled = row.quantity - (live_order_qty - live_filled)
+    (`live_order_qty` and `live_filled` both come from the SAME
+    `order_status` call — this does not treat a from-zero fill count as
+    if it were already a chase-wide total, which is what C2 fixes.)
+
+    Council architect review — the average fill price MUST be returned
+    alongside the quantity. `chase_order`'s finalize-already-filled path
+    (`_ch_already_filled_at_start`) feeds this price into
+    `_emit_chase_terminal`'s `final_price`, which gates
+    `_chase_terminal_fire_fill_hooks` (`if not final_price: return`) —
+    the hook that arms auto-TP and fires template-attach. A hardcoded
+    0.0 here silently skips attaching exits for a chase recovered as
+    already-fully-filled, leaving a real live position with no SL/TP.
+    """
+    db_filled = int(getattr(row, "filled_quantity", 0) or 0)
+    db_price  = float(getattr(row, "fill_price", 0) or 0)
+    broker_order_id = getattr(row, "broker_order_id", None)
+    if not broker_order_id:
+        # No resting order recorded — nothing to reconcile or cancel;
+        # the DB's own filled_quantity/fill_price is the best available
+        # truth.
+        return db_filled, db_price
+
+    status = await _recover_query_and_cancel_resting(row, cfg, broker_order_id)
+    _raw_order_qty = int((status or {}).get("quantity", 0) or 0)
+    if not status or _raw_order_qty <= 0:
+        logger.warning(
+            "[CHASE-RECOVERY] empty/unverifiable order_status for #%s (%s) — "
+            "skipping restart this cycle", row.id, broker_order_id,
+        )
+        return None
+    _raw_filled = int((status or {}).get("filled_quantity", 0) or 0)
+    _live_price = float((status or {}).get("average_price", 0) or 0)
+
+    from backend.api.algo.chase import _ch_reverse_translate_mcx_filled
+
+    # Both sides of the subtraction below must be in the SAME unit
+    # (contracts). `status["quantity"]` and `status["filled_quantity"]`
+    # come back from the broker in the SAME broker-native unit (lots,
+    # for MCX/NCO on a lots-convention broker) — reverse-translating
+    # only `filled_quantity` and leaving `quantity` raw would mix lots
+    # and contracts in `live_unfilled_remainder` below. Convert both.
+    live_order_qty = _ch_reverse_translate_mcx_filled(
+        cfg, row.symbol, row.account, _raw_order_qty,
+    )
+    live_filled = _ch_reverse_translate_mcx_filled(
+        cfg, row.symbol, row.account, _raw_filled,
+    )
+    live_unfilled_remainder = max(0, live_order_qty - live_filled)
+    total_qty = int(row.quantity or 0)
+    derived_already_filled = total_qty - live_unfilled_remainder
+    # MAX-clamp against the DB value (harmless — the DB can only be <=
+    # the freshly-derived number) then clamp into [0, total_qty], the
+    # same defensive-cap pattern `_ch_compute_new_filled` uses in
+    # chase.py.
+    already_filled = max(0, min(total_qty, max(db_filled, derived_already_filled)))
+    # Prefer the freshly-read live average price; fall back to the DB's
+    # last-known fill_price only when the live read didn't carry one
+    # (e.g. the resting order had zero fill, so Kite reports no average).
+    avg_price = _live_price if _live_price > 0 else db_price
+    return already_filled, avg_price
+
+
 async def recover_live_chases() -> None:
     """Restart chase_order tasks for live AlgoOrder rows that were interrupted
     by a service restart.
@@ -6007,6 +6192,19 @@ async def recover_live_chases() -> None:
                 cfg.intent = _intent
             cfg.exchange = getattr(row, "exchange", None) or cfg.exchange
             cfg.product  = getattr(row, "product",  None) or cfg.product
+
+            # C4 — reconcile the true fill state (+ cancel any orphaned
+            # resting order) BEFORE restarting the chase, so the first
+            # attempt doesn't size off the full original quantity.
+            _recovered = await _recover_chase_already_filled(row, cfg)
+            if _recovered is None:
+                logger.warning(
+                    "[CHASE-RECOVERY] skipping order #%s this cycle — "
+                    "live broker state could not be verified", row.id,
+                )
+                continue
+            already_filled, already_filled_price = _recovered
+
             task = asyncio.create_task(
                 chase_order(
                     algo_order_id=row.id,
@@ -6015,14 +6213,17 @@ async def recover_live_chases() -> None:
                     transaction_type=row.transaction_type,
                     quantity=row.quantity,
                     cfg=cfg,
+                    already_filled=already_filled,
+                    already_filled_price=already_filled_price,
                 ),
                 name=f"bg-chase-recovery-{row.id}",
             )
             _LIVE_CHASE_TASKS.add(task)
             task.add_done_callback(_LIVE_CHASE_TASKS.discard)
             logger.info(
-                "[CHASE-RECOVERY] restarting chase for order #%s %s",
-                row.id, row.symbol,
+                "[CHASE-RECOVERY] restarting chase for order #%s %s "
+                "(already_filled=%s/%s)",
+                row.id, row.symbol, already_filled, row.quantity,
             )
         except Exception as e:
             logger.warning(

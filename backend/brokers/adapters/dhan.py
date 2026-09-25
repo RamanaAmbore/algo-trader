@@ -87,6 +87,32 @@ _DHAN_RATE_LIMITER = TokenBucketLimiter({
 # lots vs contracts bugs reaching the Dhan Forever Order API.
 _DHAN_GTT_MAX_QTY = 50_000  # contracts
 
+
+def _check_dhan_gtt_qty_ceiling(
+    exchange: str,
+    orders: list[dict],
+    tradingsymbol: str,
+) -> None:
+    """Apply absurd-qty ceiling to each Dhan GTT (Forever Order) leg.
+
+    Shared last-line-defense used by both place_gtt and modify_gtt —
+    catches untranslated lots-vs-contracts bugs before they reach the
+    Dhan API. Dhan Forever Orders don't cover MCX/NCO (see
+    _DHAN_GTT_UNSUPPORTED / validate_gtt_exchange), so only NFO/BFO are
+    checked here, mirroring the ceiling place_gtt already applied inline.
+    """
+    _exch_upper = exchange.upper()
+    if _exch_upper not in ("NFO", "BFO"):
+        return
+    for _leg in orders:
+        _qty = int(_leg.get("quantity") or 0)
+        if _qty > _DHAN_GTT_MAX_QTY:
+            raise ValueError(
+                f"Dhan GTT qty {_qty} exceeds ceiling {_DHAN_GTT_MAX_QTY} "
+                f"for {_exch_upper} — check lots vs contracts "
+                f"(symbol={tradingsymbol!r})"
+            )
+
 from backend.brokers.conn_event_shim import _emit_conn_event
 
 
@@ -1420,16 +1446,7 @@ class DhanBroker(Broker):
             )
         # Absurd-qty ceiling for NFO/BFO legs — catches untranslated
         # lots vs contracts bugs before they reach the Dhan API.
-        _exch_upper = exchange.upper()
-        if _exch_upper in ("NFO", "BFO"):
-            for _leg in orders:
-                _qty = int(_leg.get("quantity") or 0)
-                if _qty > _DHAN_GTT_MAX_QTY:
-                    raise ValueError(
-                        f"Dhan GTT qty {_qty} exceeds ceiling {_DHAN_GTT_MAX_QTY} "
-                        f"for {_exch_upper} — check lots vs contracts "
-                        f"(symbol={tradingsymbol!r})"
-                    )
+        _check_dhan_gtt_qty_ceiling(exchange, orders, tradingsymbol)
         security_id = _resolve_security_id(tradingsymbol, exchange)
         if not security_id:
             raise RuntimeError(
@@ -1477,6 +1494,12 @@ class DhanBroker(Broker):
         one per leg — because `modify_forever` only updates the named leg.
         Sprint C fix: was hardcoded to ENTRY_LEG only; target TP never landed.
         """
+        # LAST-LINE DEFENSE (GTT layer) — same ceiling as place_gtt, checked
+        # across ALL legs up front (before either SDK call). Checking only
+        # the entry leg here (or inline inside _modify_gtt_target_leg) would
+        # let an oversized target leg fire AFTER the entry leg was already
+        # modified, leaving an asymmetric OCO on the book.
+        _check_dhan_gtt_qty_ceiling(exchange, orders, tradingsymbol)
         order_flag = "SINGLE" if trigger_type == "single" else "OCO"
         order0    = orders[0] if orders else {}
         trig0     = _dhan_num(trigger_values[0]) if trigger_values else 0.0

@@ -73,6 +73,14 @@ async def _preflight_validate_lots(
     """
     G1 (LOT_MULTIPLE) + G2 (FAT_FINGER_5_LOT_CAP) guards.
 
+    G1 applies uniformly to every F&O exchange, including MCX/NCO — qty
+    reaching this preflight is always already normalized to CONTRACTS
+    (see `backend/brokers/broker_apis.py:_annotate_lot_size`), so the
+    lot-multiple check is exchange-agnostic. G2 (FAT_FINGER_5_LOT_CAP)
+    still skips MCX/NCO, but for an independent reason: the route-level
+    MCX size guard (20-lot cap, 422) is the authoritative fat-finger
+    check for that exchange.
+
     Returns (blockers, hard_stop). hard_stop=True when LOT_MULTIPLE or
     LOT_SIZE_UNKNOWN fires — caller should short-circuit immediately.
     FAT_FINGER_5_LOT_CAP does NOT set hard_stop; broker instruments may
@@ -89,14 +97,29 @@ async def _preflight_validate_lots(
     except Exception:
         _pf_lot = 0
 
-    # MCX/NCO: broker returns position qty already in LOTS (e.g. 50 lots), not
-    # contracts. A G1 lot-multiple check against lot_size (e.g. 100) would
-    # incorrectly reject a valid whole-lot quantity (50 % 100 ≠ 0).
-    # FAT_FINGER_5_LOT_CAP skips MCX/NCO below for the same reason — mirror
-    # that pattern here so close_position paths don't get spuriously blocked.
+    # Position/order quantities reaching this preflight are already
+    # normalized to CONTRACTS for every exchange, including MCX/NCO —
+    # `backend/brokers/broker_apis.py:_annotate_lot_size` (~line
+    # 1992-2003) converts MCX/NCO position quantity columns (and the
+    # overnight/day_buy/day_sell variants) from broker-native LOTS to
+    # CONTRACTS before a positions row ever reaches an agent-driven
+    # `place_order`/`close_position` call that lands here. The prior
+    # premise — "MCX/NCO qty is already in lots, so a G1 lot-multiple
+    # check would wrongly reject a valid whole-lot quantity" — is FALSE
+    # for the paths that reach this function; skipping G1 for MCX/NCO
+    # instead let genuinely non-multiple quantities through unchecked,
+    # bypassing every ceiling. The G1 check itself (`qty % lot_size`) is
+    # exchange-agnostic and correct once qty is confirmed to be in
+    # contracts, so it now applies uniformly to every F&O exchange.
+    #
+    # FAT_FINGER_5_LOT_CAP still skips MCX/NCO below, but for an
+    # INDEPENDENT, still-valid reason unrelated to the units premise
+    # above: the route-level MCX size guard (20-lot cap, 422) is the
+    # authoritative fat-finger check for that exchange, and re-applying
+    # a 5-lot cap here would shadow it with a spurious preflight block.
     _is_mcx_exch = exchange in ("MCX", "NCO")
 
-    if _pf_lot > 1 and not _is_mcx_exch:
+    if _pf_lot > 1:
         if qty % _pf_lot != 0:
             blockers.append({
                 "code": "LOT_MULTIPLE",
@@ -110,12 +133,8 @@ async def _preflight_validate_lots(
                 ),
                 "data": {"qty": qty, "lot_size": _pf_lot},
             })
-        elif not is_close:
+        elif not is_close and not _is_mcx_exch:
             _pf_lots = qty // _pf_lot
-            # MCX/NCO: the route-level MCX size guard (20-lot cap, 422) is
-            # the authoritative check. Skip the 5-lot FAT_FINGER cap here
-            # to avoid a 422 preflight-block that shadows the MCX route guard.
-            # (_is_mcx_exch is already False here — outer guard ensures that)
             if _pf_lots > 5:
                 blockers.append({
                     "code": "FAT_FINGER_5_LOT_CAP",

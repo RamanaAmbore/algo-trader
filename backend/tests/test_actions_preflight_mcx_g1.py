@@ -59,17 +59,21 @@ def _conns_with(account: str) -> MagicMock:
 
 @pytest.mark.asyncio
 async def test_mcx_g1_fires_on_non_multiple_qty():
-    """MCX qty=50 with lot_size=100 (non-multiple in contract terms) → G1 SKIPPED.
+    """MCX qty=50 CONTRACTS with lot_size=100 (0.5 lots — genuinely
+    non-multiple) → G1 FIRES.
 
-    MCX broker returns position qty in LOTS (e.g., 50 lots), not contracts.
-    So 50 is a valid whole-lot quantity and should NOT trigger G1 LOT_MULTIPLE.
-    This is the POST-FIX behavior (Bug 1 fix).
+    C7 fix (2026-09): qty reaching preflight is already normalized to
+    CONTRACTS for MCX/NCO too (see
+    `broker_apis.py:_annotate_lot_size`, ~line 1992-2003) — the prior
+    "broker returns qty in lots, so skip G1" premise was confirmed
+    FALSE. G1 now applies uniformly to every F&O exchange, including
+    MCX/NCO.
     """
     from backend.api.algo.actions import run_preflight
 
     broker = _make_broker_stub()
     conns = _conns_with("ZG0790")
-    qty_in_lots = 50  # 50 lots is valid for MCX (even though 50 % 100 ≠ 0 in contracts)
+    qty_contracts = 50  # not a multiple of lot_size=100 (0.5 lots)
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -78,7 +82,7 @@ async def test_mcx_g1_fires_on_non_multiple_qty():
         result = await run_preflight("ZG0790", {
             "exchange": "MCX",
             "tradingsymbol": MCX_SYMBOL,
-            "quantity": qty_in_lots,
+            "quantity": qty_contracts,
             "order_type": "LIMIT",
             "product": "NRML",
             "variety": "regular",
@@ -86,10 +90,10 @@ async def test_mcx_g1_fires_on_non_multiple_qty():
             "price": 5500.0,
         })
 
-    # G1 must be SKIPPED for MCX (qty already in lots from broker)
+    # G1 must FIRE for a genuinely non-multiple MCX contracts qty.
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" not in codes, (
-        f"MCX G1 must be skipped (qty already in lots), but got: {result['blocked']}"
+    assert "LOT_MULTIPLE" in codes, (
+        f"MCX G1 must fire for non-multiple contracts qty, but got: {result['blocked']}"
     )
 
 
@@ -227,16 +231,16 @@ async def test_nfo_g2_still_fires_for_6_lots():
 
 @pytest.mark.asyncio
 async def test_nco_g1_fires_on_non_multiple():
-    """NCO qty not a multiple (in contract terms) → G1 SKIPPED (like MCX).
+    """NCO qty not a multiple in CONTRACTS → G1 FIRES (like MCX/NFO).
 
-    NCO is commodity exchange like MCX, so qty is already in LOTS from broker.
-    G1 must be skipped for NCO just like MCX (Bug 1 fix).
+    C7 fix (2026-09): NCO qty reaching preflight is already normalized
+    to CONTRACTS, same as MCX — G1 applies uniformly.
     """
     from backend.api.algo.actions import run_preflight
 
     broker = _make_broker_stub()
     conns = _conns_with("ZG0790")
-    qty_in_lots = MCX_LOT_SIZE + 7  # 107 lots (would be "non-multiple" in contracts)
+    qty_contracts = MCX_LOT_SIZE + 7  # 107 — not a multiple of lot_size=100
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -245,7 +249,7 @@ async def test_nco_g1_fires_on_non_multiple():
         result = await run_preflight("ZG0790", {
             "exchange": "NCO",
             "tradingsymbol": "CRUDEOILNOV25FUT",
-            "quantity": qty_in_lots,
+            "quantity": qty_contracts,
             "order_type": "LIMIT",
             "product": "NRML",
             "variety": "regular",
@@ -253,10 +257,10 @@ async def test_nco_g1_fires_on_non_multiple():
             "price": 5500.0,
         })
 
-    # G1 must be SKIPPED for NCO (qty already in lots from broker)
+    # G1 must FIRE for a genuinely non-multiple NCO contracts qty.
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" not in codes, (
-        f"NCO G1 must be skipped (qty already in lots), but got: {result['blocked']}"
+    assert "LOT_MULTIPLE" in codes, (
+        f"NCO G1 must fire for non-multiple contracts qty, but got: {result['blocked']}"
     )
 
 

@@ -325,12 +325,16 @@ def test_nfo_qty_passthrough():
     assert to_kite_qty("BFO", 25, 25) == 25     # BFO SENSEX
 
 
-# ── Boundary: sub-lot MCX qty passes through unchanged ───────────────────
+# ── Boundary: sub-lot MCX qty raises (C7 fix) ─────────────────────────────
+#
+# C7 audit fix (2026-09): sub-lot MCX qty used to pass through unchanged,
+# which Kite silently accepts AS LOTS — e.g. 50 contracts (sub-lot of a
+# 100 lot_size) was sent as "50 lots" instead of being refused, a silent
+# 50× oversize. to_kite_qty now raises ValueError instead of guessing.
 
 
-def test_mcx_sub_lot_passthrough():
-    """If raw_qty < lot_size on MCX, to_kite_qty passes through rather
-    than dividing (odd qty — let Kite reject it rather than rounding)."""
-    # 50 contracts with lot_size=100 — sub-lot, pass through
-    result = to_kite_qty("MCX", 50, 100)
-    assert result == 50
+def test_mcx_sub_lot_raises():
+    """raw_qty < lot_size on MCX must raise — Kite accepts the raw number
+    AS LOTS (silent oversize), it does not reject a sub-lot quantity."""
+    with pytest.raises(ValueError, match="QTY-GUARD"):
+        to_kite_qty("MCX", 50, 100)

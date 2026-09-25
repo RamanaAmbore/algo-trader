@@ -975,10 +975,13 @@ def _build_scale_out_gtts(
     LAST phase so allocations always sum to parent_qty. Returns
     (gtts_to_add, notes_to_add).
 
-    `lot_size` (#3): each scale qty is rounded UP to the nearest lot multiple
-    so no sub-lot GTT leg ever reaches the broker. The last entry is trimmed
-    to ensure the cumulative total does not exceed parent_qty. Any remaining
-    qty lost to rounding is noted in plan.notes.
+    `lot_size` (#3): each scale qty is rounded DOWN to the nearest lot
+    multiple so no sub-lot GTT leg ever reaches the broker and allocations
+    can never exceed parent_qty. The last entry takes whatever remains
+    (also floored to a lot multiple, never negative) — this guarantees
+    `sum(allocations) <= parent_qty` structurally, by construction, so no
+    allocation is ever negative. Any remaining qty lost to rounding is
+    noted in plan.notes.
 
     `parent_exchange` (#1): forwarded to `_leg` so LIMIT TP legs apply the
     exchange-appropriate tick offset (NFO/BFO/CDS vs futures/others).
@@ -986,31 +989,37 @@ def _build_scale_out_gtts(
     gtts: list[GttSpec] = []
     notes: list[str] = []
 
-    # Lot-size rounding (#3): compute raw floor allocations, then round each
-    # UP to the nearest lot multiple. The last scale absorbs the remainder
-    # (capped at parent_qty so we never over-allocate).
+    # Lot-size rounding (#3, fixed): every scale — including the last —
+    # is floored to the nearest lot multiple. Rounding UP (the prior
+    # behaviour) let cumulative non-last allocations overshoot parent_qty,
+    # which forced the last scale's `parent_qty - used` remainder negative;
+    # `min(rounded, negative)` then let that negative value through, was
+    # silently dropped by the `if q <= 0: continue` guard below, and left
+    # earlier over-sized GTTs live and unaccounted (e.g. 1-lot NIFTY (75)
+    # with scales [40,40,20] rounded scale 0 and scale 1 UP to 75 each —
+    # two live 75-qty TP GTTs against a single 75-share position). Flooring
+    # makes over-allocation structurally impossible.
     _ls = max(1, int(lot_size or 1))
 
-    def _round_up_lots(raw_q: int) -> int:
+    def _round_down_lots(raw_q: int) -> int:
         if _ls <= 1 or raw_q <= 0:
             return max(0, raw_q)
         remainder = raw_q % _ls
-        if remainder == 0:
-            return raw_q
-        return raw_q + (_ls - remainder)
+        return raw_q - remainder
 
     allocations: list[int] = []
     used = 0
     for i, sc in enumerate(tp_scales):
         if i == len(tp_scales) - 1:
-            # Last scale: take the remaining qty, round up to lot multiple,
-            # then cap at parent_qty so we never exceed total.
-            _raw = parent_qty - used
-            _rounded = _round_up_lots(_raw)
-            allocations.append(min(_rounded, parent_qty - used))
+            # Last scale: take whatever remains (never negative — every
+            # prior scale was floored, so `used` can never exceed
+            # parent_qty), floored to a lot multiple.
+            _raw = max(0, parent_qty - used)
+            _rounded = _round_down_lots(_raw)
+            allocations.append(_rounded)
         else:
             _raw = int((parent_qty * float(sc["close_pct"])) // 100)
-            _rounded = _round_up_lots(_raw)
+            _rounded = _round_down_lots(_raw)
             allocations.append(_rounded)
             used += _rounded
 

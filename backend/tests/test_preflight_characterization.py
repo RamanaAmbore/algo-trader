@@ -120,10 +120,12 @@ async def test_preflight_g1_nfo_non_multiple():
 
 @pytest.mark.asyncio
 async def test_preflight_g1_mcx_non_multiple():
-    """MCX: qty not a multiple (in contract terms) → G1 SKIPPED (Bug 1 fix).
+    """MCX: qty not a multiple in CONTRACTS → G1 FIRES (C7 fix, 2026-09).
 
-    MCX broker returns position qty in LOTS, so qty like 107 is valid and should
-    NOT trigger G1 LOT_MULTIPLE. This is the post-fix behavior.
+    Qty reaching preflight is already normalized to CONTRACTS for
+    MCX/NCO too (see `broker_apis.py:_annotate_lot_size`), so a
+    genuinely non-multiple quantity like 107 must be blocked, not
+    passed through.
     """
     from backend.api.algo.actions import run_preflight
 
@@ -137,7 +139,7 @@ async def test_preflight_g1_mcx_non_multiple():
     }])
     conns = _conns_with("ZG0790")
 
-    qty_in_lots = 107  # 107 lots (would be "non-multiple" in contracts)
+    qty_contracts = 107  # not a multiple of lot_size=100
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -146,7 +148,7 @@ async def test_preflight_g1_mcx_non_multiple():
         result = await run_preflight("ZG0790", {
             "exchange":      "MCX",
             "tradingsymbol": "CRUDEOILJUL25FUT",
-            "quantity":      qty_in_lots,
+            "quantity":      qty_contracts,
             "order_type":    "LIMIT",
             "product":       "NRML",
             "variety":       "regular",
@@ -154,10 +156,10 @@ async def test_preflight_g1_mcx_non_multiple():
             "price":         5500.0,
         })
 
-    # G1 must be SKIPPED for MCX (qty already in lots)
+    # G1 must FIRE for a genuinely non-multiple MCX contracts qty.
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" not in codes, (
-        f"MCX G1 must be skipped, but got: {result['blocked']}"
+    assert "LOT_MULTIPLE" in codes, (
+        f"MCX G1 must fire for non-multiple contracts qty, but got: {result['blocked']}"
     )
 
 
@@ -239,10 +241,10 @@ async def test_preflight_g1_bfo_non_multiple():
 
 @pytest.mark.asyncio
 async def test_preflight_g1_nco_non_multiple():
-    """NCO qty not a multiple (in contract terms) → G1 SKIPPED (Bug 1 fix).
+    """NCO qty not a multiple in CONTRACTS → G1 FIRES (C7 fix, 2026-09).
 
-    NCO is commodity exchange. Broker returns qty in LOTS, so qty like 205 lots
-    is a valid whole-lot qty and should NOT trigger G1.
+    NCO qty reaching preflight is already normalized to CONTRACTS,
+    same as MCX — a non-multiple quantity like 205 must be blocked.
     """
     from backend.api.algo.actions import run_preflight
 
@@ -256,7 +258,7 @@ async def test_preflight_g1_nco_non_multiple():
     }])
     conns = _conns_with("ZG0790")
 
-    qty_in_lots = 205  # 205 lots (would be "non-multiple" in contracts)
+    qty_contracts = 205  # not a multiple of lot_size=100
 
     with patch("backend.brokers.connections.Connections", return_value=conns), \
          patch("backend.brokers.registry.get_broker", return_value=broker), \
@@ -265,7 +267,7 @@ async def test_preflight_g1_nco_non_multiple():
         result = await run_preflight("ZG0790", {
             "exchange":      "NCO",
             "tradingsymbol": "CRUDEOILJUL25FUT",
-            "quantity":      qty_in_lots,
+            "quantity":      qty_contracts,
             "order_type":    "LIMIT",
             "product":       "NRML",
             "variety":       "regular",
@@ -273,10 +275,10 @@ async def test_preflight_g1_nco_non_multiple():
             "price":         5500.0,
         })
 
-    # G1 must be SKIPPED for NCO (qty already in lots)
+    # G1 must FIRE for a genuinely non-multiple NCO contracts qty.
     codes = [b["code"] for b in result["blocked"]]
-    assert "LOT_MULTIPLE" not in codes, (
-        f"NCO G1 must be skipped, but got: {result['blocked']}"
+    assert "LOT_MULTIPLE" in codes, (
+        f"NCO G1 must fire for non-multiple contracts qty, but got: {result['blocked']}"
     )
 
 

@@ -516,8 +516,23 @@ def _opp_build_attach_entries(
     result,
     fill_price: float,
     parent_side: str,
+    parent_product: str = "NRML",
 ) -> list:
-    """Build the attached-GTTs list from an apply_template_to_order result."""
+    """Build the attached-GTTs list from an apply_template_to_order result.
+
+    C6 fix (2026-09) — the trail-stop scaffolding (`parent_qty`,
+    `parent_symbol`, `parent_exchange`, `parent_account`, `parent_product`,
+    `current_trigger`, `trigger_type`, `tp_trigger`) is now populated
+    UNCONDITIONALLY on every entry with `sl_trail_pct` set, mirroring
+    `_retry_build_gtt_entry` (orders.py) field-for-field. Previously
+    `parent_account`/`parent_exchange` were set ONLY inside the
+    OCO-sibling (`if _sib:`) branch, and `parent_qty`/`parent_symbol`/
+    `current_trigger` were never set on any branch — so
+    `background.py:_bg_trail_entry_is_valid` (which requires
+    `parent_symbol`, `parent_qty > 0`, `account`, `trail_pct > 0`) always
+    failed validation for normally-attached (non-retry, non-sibling) GTTs,
+    silently disabling trailing for every fresh fill.
+    """
     sibling_by_id = _opl_build_sibling_map(result.sibling_pairs)
     attached = []
     for spec in (result.plan.gtts or []):
@@ -534,11 +549,28 @@ def _opp_build_attach_entries(
             entry["parent_account"]  = str(result.plan.parent_account)
             entry["parent_exchange"] = str(result.plan.parent_exchange)
         if spec.sl_trail_pct is not None and spec.trigger_values:
-            entry["sl_trail_pct"]   = float(spec.sl_trail_pct)
-            entry["trigger_values"] = list(spec.trigger_values)
+            _trigger_values = list(spec.trigger_values)
+            _is_two_leg = (str(spec.trigger_type) == "two-leg"
+                           and len(_trigger_values) >= 2)
+            entry["sl_trail_pct"]    = float(spec.sl_trail_pct)
+            entry["trigger_values"] = _trigger_values
+            entry["trigger_type"]   = str(spec.trigger_type)
+            entry["current_trigger"] = float(_trigger_values[-1])
+            if _is_two_leg:
+                entry["tp_trigger"] = float(_trigger_values[0])
             entry["highest_ltp"]    = float(fill_price)
             entry["lowest_ltp"]     = float(fill_price)
             entry["parent_side"]    = parent_side
+            # Populated UNCONDITIONALLY — not only inside the OCO-sibling
+            # branch above. The trail-stop poller (`_task_trail_stop` /
+            # `_extract_trail_entry_fields` in background.py) requires
+            # these on every trailing-eligible entry, including
+            # normally-attached fills that never go through `if _sib:`.
+            entry["parent_qty"]      = int(result.plan.parent_qty)
+            entry["parent_symbol"]   = str(result.plan.parent_symbol)
+            entry["parent_exchange"] = str(result.plan.parent_exchange)
+            entry["parent_account"]  = str(result.plan.parent_account)
+            entry["parent_product"]  = str(parent_product or "NRML")
         attached.append(entry)
     return attached
 
@@ -658,7 +690,7 @@ async def _fire_template_attach_on_fill(
                 except Exception as _na:
                     logger.warning("partial GTT ntfy alert failed: %s", _na)
 
-            attached = _opp_build_attach_entries(result, fill_price, parent_side)
+            attached = _opp_build_attach_entries(result, fill_price, parent_side, parent_product)
             if attached:
                 # If placement was partial, flag it in the JSON so the UI
                 # can surface a warning chip on the order card.

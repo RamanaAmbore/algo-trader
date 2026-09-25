@@ -273,6 +273,68 @@ class TestScaleOutLotRounding:
         # Just assert the function runs cleanly
         assert isinstance(notes, list)
 
+    def test_scale_out_never_over_allocates_c5_regression(self):
+        """C5 regression — 1-lot NIFTY (75) with scales [40,40,20] must
+        NEVER produce a negative last-scale allocation or over-allocate
+        past parent_qty.
+
+        Pre-fix: rounding every scale UP let scale 0 (30 raw -> 75) and
+        scale 1 (30 raw -> 75) both round to a full lot BEFORE the last
+        scale ran, driving `used` to 150 against parent_qty=75. The last
+        scale then computed `75 - 150 = -75`, which slipped through
+        `min(_rounded, parent_qty - used)` as a negative allocation,
+        silently dropped by `if q <= 0: continue` — leaving TWO live
+        75-qty TP GTTs against a single 75-share position (the first
+        fully exits; the second later fires against a flat position and
+        opens a new opposite position).
+
+        Post-fix: every scale (including the last) is floored to a lot
+        multiple, so allocations can never sum past parent_qty and the
+        last scale can never go negative. For this exact scenario only
+        the last scale gets an allocation (75); the first two scales
+        floor to 0 and are skipped — exactly ONE TP GTT is created,
+        sized correctly at 75.
+        """
+        from backend.api.algo.template_attach import _build_scale_out_gtts
+
+        tp_scales = [
+            {"at_pct": 5.0,  "close_pct": 40.0},
+            {"at_pct": 10.0, "close_pct": 40.0},
+            {"at_pct": 15.0, "close_pct": 20.0},
+        ]
+        gtts, notes = _build_scale_out_gtts(
+            tp_scales=tp_scales,
+            parent_side="BUY",
+            parent_fill_price=100.0,
+            parent_qty=75,
+            exit_side="SELL",
+            parent_product="NRML",
+            tp_order_type="LIMIT",
+            sl_trig=None,
+            sl_trail_pct=None,
+            lot_size=75,
+            parent_exchange="NFO",
+        )
+
+        # Exactly one GTT created (scales 0 and 1 floor to 0 qty and are
+        # dropped by the `if q <= 0: continue` guard).
+        assert len(gtts) == 1, (
+            f"Expected exactly 1 scale GTT (only the last scale allocates "
+            f"a non-zero qty), got {len(gtts)}: {[g.label for g in gtts]}"
+        )
+        total_qty = sum(int(leg["quantity"]) for g in gtts for leg in g.orders)
+        assert total_qty == 75, (
+            f"Total allocated qty must equal parent_qty=75, got {total_qty} "
+            f"(over-allocation would mean live GTTs exceed the position size)"
+        )
+        for g in gtts:
+            for leg in g.orders:
+                q = int(leg["quantity"])
+                assert q > 0, f"No allocation may be zero/negative, got {q}"
+                assert q % 75 == 0, f"qty {q} not a multiple of lot_size=75"
+        # No allocation ever exceeds parent_qty, individually or summed.
+        assert total_qty <= 75
+
 
 # ─── #6: wing_skipped_reason ─────────────────────────────────────────────────
 
