@@ -1042,3 +1042,181 @@ class TestSnapshotRowRealisedUnrealisedSplit:
         assert row.realised == 0.0
         # pnl is also 0 here, so the SSOT fallback is a harmless no-op.
         assert row.pnl == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _apply_account_mask / _apply_trader_scope — stale_accounts masking/scoping
+#
+# P0-adjacent gap: both functions masked/scoped rows[].account and
+# summary[].account but never touched PositionsResponse.stale_accounts,
+# leaking raw unmasked account codes to non-admin/trader sessions and
+# silently degrading the frontend's per-root position-freshness trust
+# check (pageLoad.js intersects staleAccounts against relevant accounts —
+# for a masked/scoped session the codes never matched, so trust silently
+# fell back to recency-only).
+# ---------------------------------------------------------------------------
+
+def _make_positions_response(rows=None, summary=None, stale_accounts=None):
+    from backend.api.schemas import PositionsResponse
+    return PositionsResponse(
+        rows=rows or [],
+        summary=summary or [],
+        refreshed_at="2026-09-26T00:00:00Z",
+        stale_accounts=list(stale_accounts or []),
+    )
+
+
+class TestApplyAccountMaskStaleAccounts:
+    """_apply_account_mask must mask stale_accounts the same way it
+    masks rows[].account / summary[].account."""
+
+    def test_stale_accounts_are_masked(self):
+        from backend.api.routes.positions_helpers import _apply_account_mask
+        from backend.shared.helpers.utils import mask_account
+
+        resp = _make_positions_response(stale_accounts=["ZG0790", "DH6847"])
+        out = _apply_account_mask(resp)
+
+        assert set(out.stale_accounts) == {
+            mask_account("ZG0790"), mask_account("DH6847"),
+        }
+        # None of the raw codes leak through unmasked.
+        assert "ZG0790" not in out.stale_accounts
+        assert "DH6847" not in out.stale_accounts
+
+    def test_stale_accounts_empty_stays_empty(self):
+        from backend.api.routes.positions_helpers import _apply_account_mask
+
+        resp = _make_positions_response(stale_accounts=[])
+        out = _apply_account_mask(resp)
+        assert out.stale_accounts == []
+
+    def test_same_prefix_collision_is_documented_conservative_behavior(
+        self, monkeypatch,
+    ):
+        """mask_account's UNREGISTERED fallback (_scalar_mask — used
+        whenever register_accounts() hasn't disambiguated this pair in
+        the current process, e.g. a fresh boot mid-registration-refresh)
+        collides same-prefix accounts (DH6847 and DH3747 both ->
+        DH####). Masking stale_accounts the same way means a masked
+        session can distinguish "some DH#### is stale" but not WHICH
+        raw account — this makes trust MORE conservative (may distrust
+        a root it didn't strictly need to), never less safe. Force the
+        unregistered path deterministically (module-level _REGISTRY can
+        otherwise carry ordinal disambiguation left over from another
+        test in the same session, e.g. test_mask_account_in_text.py's
+        register_accounts(["DH3747", "DH6847", ...]) call, which would
+        make this test order-dependent)."""
+        import backend.shared.helpers.utils as _utils_mod
+        from backend.api.routes.positions_helpers import _apply_account_mask
+        from backend.shared.helpers.utils import mask_account
+
+        monkeypatch.setattr(_utils_mod, "_REGISTRY", {})
+
+        assert mask_account("DH6847") == mask_account("DH3747") == "DH####", (
+            "test assumption: unregistered same-prefix accounts collide "
+            "under the _scalar_mask fallback"
+        )
+        resp = _make_positions_response(stale_accounts=["DH6847", "DH3747"])
+        out = _apply_account_mask(resp)
+        assert out.stale_accounts == ["DH####"]
+
+    def test_rows_and_summary_still_masked_alongside_stale_accounts(self):
+        """Regression guard — the existing masking behavior for
+        rows/summary must be unaffected by the stale_accounts fix."""
+        from backend.api.routes.positions_helpers import _apply_account_mask
+        from backend.api.schemas import PositionRow, PositionsSummaryRow
+        from backend.shared.helpers.utils import mask_account
+
+        row = PositionRow(
+            account="ZG0790", tradingsymbol="RELIANCE", exchange="NSE",
+            product="CNC", quantity=10, average_price=100.0, pnl=50.0,
+        )
+        summary_row = PositionsSummaryRow(account="ZG0790", pnl=50.0)
+        resp = _make_positions_response(
+            rows=[row], summary=[summary_row], stale_accounts=["ZG0790"],
+        )
+        out = _apply_account_mask(resp)
+
+        assert out.rows[0].account == mask_account("ZG0790")
+        assert out.summary[0].account == mask_account("ZG0790")
+        assert out.stale_accounts == [mask_account("ZG0790")]
+
+
+class TestApplyTraderScopeStaleAccounts:
+    """_apply_trader_scope must narrow stale_accounts to the trader's
+    allowed account set, same as rows/summary."""
+
+    @pytest.mark.asyncio
+    async def test_stale_accounts_scoped_to_allowed_set(self, monkeypatch):
+        from backend.api.routes import positions_helpers
+
+        async def _fake_scope(request):
+            return (["ZG0790"], [1])
+
+        monkeypatch.setattr(
+            positions_helpers, "user_scope_for_connection", _fake_scope,
+        )
+
+        resp = _make_positions_response(
+            stale_accounts=["ZG0790", "DH6847"],
+        )
+        out = await positions_helpers._apply_trader_scope(resp, request=object())
+
+        assert out.stale_accounts == ["ZG0790"]
+        assert "DH6847" not in out.stale_accounts
+
+    @pytest.mark.asyncio
+    async def test_stale_accounts_empty_when_none_allowed(self, monkeypatch):
+        from backend.api.routes import positions_helpers
+
+        async def _fake_scope(request):
+            return ([], [])
+
+        monkeypatch.setattr(
+            positions_helpers, "user_scope_for_connection", _fake_scope,
+        )
+
+        resp = _make_positions_response(stale_accounts=["ZG0790"])
+        out = await positions_helpers._apply_trader_scope(resp, request=object())
+
+        assert out.stale_accounts == []
+
+    @pytest.mark.asyncio
+    async def test_rows_and_summary_still_scoped_alongside_stale_accounts(
+        self, monkeypatch,
+    ):
+        """Regression guard — existing rows/summary scoping behavior is
+        unaffected by the stale_accounts fix."""
+        from backend.api.routes import positions_helpers
+        from backend.api.schemas import PositionRow, PositionsSummaryRow
+
+        async def _fake_scope(request):
+            return (["ZG0790"], [1])
+
+        monkeypatch.setattr(
+            positions_helpers, "user_scope_for_connection", _fake_scope,
+        )
+
+        allowed_row = PositionRow(
+            account="ZG0790", tradingsymbol="RELIANCE", exchange="NSE",
+            product="CNC", quantity=10, average_price=100.0, pnl=50.0,
+        )
+        other_row = PositionRow(
+            account="DH6847", tradingsymbol="TCS", exchange="NSE",
+            product="CNC", quantity=5, average_price=200.0, pnl=10.0,
+        )
+        resp = _make_positions_response(
+            rows=[allowed_row, other_row],
+            summary=[
+                PositionsSummaryRow(account="ZG0790", pnl=50.0),
+                PositionsSummaryRow(account="DH6847", pnl=10.0),
+                PositionsSummaryRow(account="TOTAL", pnl=60.0),
+            ],
+            stale_accounts=["ZG0790", "DH6847"],
+        )
+        out = await positions_helpers._apply_trader_scope(resp, request=object())
+
+        assert [r.account for r in out.rows] == ["ZG0790"]
+        assert {s.account for s in out.summary} == {"ZG0790", "TOTAL"}
+        assert out.stale_accounts == ["ZG0790"]

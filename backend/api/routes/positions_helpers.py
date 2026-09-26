@@ -590,6 +590,15 @@ async def _apply_trader_scope(
                  if str(getattr(s, "account", "")).upper() in allowed_set
                  or str(getattr(s, "account", "")).upper() == "TOTAL"],
         symbol_summary=build_symbol_summary_from_rows(scoped_rows),  # type: ignore[arg-type]
+        # stale_accounts carries raw account codes — must be scoped the
+        # same way as rows/summary, or a trader-scoped session leaks
+        # unmasked codes for accounts it can't otherwise see (and the
+        # frontend's per-root freshness trust check in pageLoad.js
+        # intersects staleAccounts against the caller's own relevant
+        # accounts — an out-of-scope code there is pure leakage, not
+        # useful signal).
+        stale_accounts=[a for a in resp.stale_accounts
+                         if str(a).upper() in allowed_set],
     )
 
 
@@ -602,6 +611,15 @@ def _apply_account_mask(resp: PositionsResponse) -> PositionsResponse:
         resp,
         rows=[_mask(r) for r in resp.rows],
         summary=[_mask(s) for s in resp.summary],
+        # Mask stale_accounts too — same rows/summary treatment.
+        # `mask_account` collides by design on same-prefix accounts
+        # (e.g. DH6847 / DH3747 both -> "DH####"), so a masked session
+        # can't always tell WHICH of two same-prefix accounts is stale,
+        # only that one of them is. This is intentionally conservative
+        # (a masked session may distrust a root it didn't strictly need
+        # to) rather than a safety regression — documented here so it's
+        # not a surprise later.
+        stale_accounts=sorted({mask_account(a) for a in resp.stale_accounts}),
     )
 
 
