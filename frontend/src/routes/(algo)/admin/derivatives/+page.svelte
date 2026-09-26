@@ -4239,7 +4239,10 @@
     // fetch this call just triggered, threaded through the store's own
     // SWR/degraded freeze) instead of independently re-deriving from
     // positionsStore.value / a page-local pulse-store fallback here.
-    positions = buildPagePositionRows(portfolioStore.positions.rows, simRows);
+    // Also capture `.fresh` alongside `.rows` (R5 fix, below) — same
+    // destructuring the book-poller propagation effect above already uses.
+    const { rows: _posStoreRows, fresh: _posStoreFresh } = portfolioStore.positions;
+    positions = buildPagePositionRows(_posStoreRows, simRows);
     // Seed underlying spot prices immediately after positions land —
     // avoids blank payoff chart on cold load (before the first interval fires).
     loadUnderlyingQuotes();
@@ -4259,7 +4262,14 @@
     holdings = simActive ? [] : buildPageHoldingRows(portfolioStore.holdings.rows);
 
     _positionsLoaded   = true;
-    _positionsRefreshedAt = Date.now();
+    // R5 post-ship audit fix: was unconditional — a degraded/stale read
+    // (positionsStore.error set, or portfolioStore's SWR guard serving a
+    // frozen last-good snapshot) could still stamp _positionsRefreshedAt,
+    // making a degraded mount/bookChanged/account-change read masquerade as
+    // "confirmed fresh" for loadStrategy()'s equity-only-synth strategy-wipe
+    // gate (see the book-poller propagation effect above, which already
+    // gates its own stamp on `storeFresh` for the same reason).
+    if (_posStoreFresh) _positionsRefreshedAt = Date.now();
     if (!positionsStore.error) lastRefreshAt.set(Date.now());
 
     // Do NOT include enabledSymbols in the positions-poll snapshot —
