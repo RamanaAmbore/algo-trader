@@ -173,7 +173,14 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
     expect(src).toMatch(/const posFresh\s*=\s*_posAgg\s*&&\s*!posDegraded;/);
     expect(src).toMatch(/const holdFresh\s*=\s*_holdAgg\s*&&\s*!holdDegraded;/);
     expect(src).toMatch(/const fundsFresh\s*=\s*_fundsAgg\s*&&\s*!fundsDegraded;/);
-    expect(src).toMatch(/if \(!posFresh && !holdFresh && !fundsFresh\) return _last;/);
+    // 2026-09 Commit 2 completion: the early-return body now also forces
+    // `positions.fresh` to false before returning `_last` — this is the
+    // simultaneous-outage path (all three degraded at once), so a stale
+    // `fresh: true` baked in during the last live cycle must not leak
+    // through untouched.
+    expect(src).toMatch(/if \(!posFresh && !holdFresh && !fundsFresh\) \{/);
+    expect(src).toMatch(/if \(_last\?\.positions\?\.fresh\) \{/);
+    expect(src).toMatch(/_last = \{ \.\.\._last, positions: \{ \.\.\._last\.positions, fresh: false \} \};/);
   });
 
   it('each slice\'s degraded flag is sourced from its own store\'s reactive .meta.degraded', () => {
@@ -183,7 +190,14 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
   });
 
   it('positions/holdings/funds each independently fall back to their own last-known or empty slice when not fresh', () => {
-    expect(src).toMatch(/positions: posFresh \? \{/);
+    // 2026-09 Commit 2 completion: `positions` is now always an object
+    // (never the bare ternary) so a `fresh` flag can be attached on top,
+    // reflecting THIS cycle's posFresh regardless of which branch supplied
+    // the rest of the fields — spreading the fresh-computed slice OR the
+    // frozen one, per-field fallback unchanged underneath.
+    expect(src).toMatch(/\.\.\.\(posFresh \? \{/);
+    expect(src).toMatch(/\} : \(_last\?\.positions \?\? _EMPTY_POSITIONS\)\)/);
+    expect(src).toMatch(/fresh:\s*posFresh,/);
     expect(src).toMatch(/holdings: holdFresh\s*\? _holdAgg\s*: \(_last\?\.holdings \?\? _EMPTY_HOLDINGS\)/);
     expect(src).toMatch(/funds:\s*fundsFresh \? _fundsAgg\s*: \(_last\?\.funds\s*\?\? _EMPTY_FUNDS\)/);
   });

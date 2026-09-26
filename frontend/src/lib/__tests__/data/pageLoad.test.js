@@ -23,6 +23,7 @@ import {
   splitClosedReopened, buildPositionRowFromBroker,
   didUnderlyingChange, synthEquityOnlyStrategy, synthCacheKey,
   buildCandidatePositions, buildCleanLegs,
+  buildPagePositionRows, buildSimPositionRows,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
@@ -576,5 +577,146 @@ describe('buildPositionRowFromBroker — exchange passthrough (2026-09 fix)', ()
   it('defaults to null when absent (not dropped/undefined silently)', () => {
     const row = buildPositionRowFromBroker({ tradingsymbol: 'NIFTY25SEP24000CE', quantity: 1 }, 'live');
     expect(row.exchange).toBeNull();
+  });
+});
+
+// ============================================================================
+// buildPagePositionRows / buildSimPositionRows — single row-source
+// unification (2026-09, Commit 2 completion). The derivatives page's own
+// `positions` $state is now built by these two functions instead of
+// independently re-deriving from positionsStore.value / pulsePositionsStore
+// fallback inline in +page.svelte.
+// ============================================================================
+
+describe('buildPagePositionRows', () => {
+  it('filters to F&O only, splits each row via splitClosedReopened, and appends simRows verbatim', () => {
+    const storeRows = [
+      { tradingsymbol: 'GOLDM24SEP150000CE', account: 'ACC1', quantity: 5, average_price: 100, last_price: 120, exchange: 'MCX' },
+      { tradingsymbol: 'RELIANCE', account: 'ACC1', quantity: 10, average_price: 2500, last_price: 2600, exchange: 'NSE' }, // equity — excluded
+    ];
+    const simRows = [{ symbol: 'GOLDM24SEP150000CE', account: 'SIM1', qty: 1, source: 'sim' }];
+    const rows = buildPagePositionRows(storeRows, simRows);
+    expect(rows.length).toBe(2); // one F&O live row (split into 1 piece, no day activity) + one sim row verbatim
+    expect(rows.some(r => r.symbol === 'RELIANCE')).toBe(false);
+    expect(rows.some(r => r.source === 'sim' && r.account === 'SIM1')).toBe(true);
+  });
+
+  it('splits a row with same-day partial close into two display rows', () => {
+    const storeRows = [{
+      tradingsymbol: 'NIFTY25SEP24000CE', account: 'ACC1', quantity: 5,
+      overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+      average_price: 200, prev_close: 210, pnl: 150, exchange: 'NFO',
+    }];
+    const rows = buildPagePositionRows(storeRows);
+    expect(rows.length).toBe(2);
+    expect(rows.map(r => r._splitTag).sort()).toEqual(['closed', 'open']);
+  });
+
+  it('defaults simRows to empty array when omitted', () => {
+    expect(buildPagePositionRows([])).toEqual([]);
+  });
+
+  it('skips a row with no symbol at all', () => {
+    const rows = buildPagePositionRows([{ account: 'ACC1', quantity: 5 }]);
+    expect(rows).toEqual([]);
+  });
+});
+
+describe('buildSimPositionRows', () => {
+  it('filters to F&O only and splits each sim position, tagging source:"sim"', () => {
+    const simPositions = [
+      { symbol: 'GOLDM24SEP150000CE', account: 'SIM1', quantity: 2, average_price: 100 },
+      { symbol: 'RELIANCE', account: 'SIM1', quantity: 10, average_price: 2500 }, // equity — excluded
+    ];
+    const rows = buildSimPositionRows(simPositions);
+    expect(rows.length).toBe(1);
+    expect(rows[0].source).toBe('sim');
+    expect(rows[0].symbol).toBe('GOLDM24SEP150000CE');
+  });
+
+  it('returns [] for an empty/undefined input', () => {
+    expect(buildSimPositionRows([])).toEqual([]);
+    expect(buildSimPositionRows(undefined)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// Row-source parity — portfolioStore.positions.rows vs candidatePositions
+// (2026-09, Commit 2 completion). The derivatives page's `positions` $state
+// (now built by buildPagePositionRows off the SAME raw broker rows
+// portfolioStore.svelte.js's `_posTier3`/`rows` export reflects) must agree
+// with buildCandidatePositions on which (account, symbol) pairs exist for a
+// given underlying — including a held-but-expired (GOLDM regression) row.
+//
+// NOT a row-count comparison: buildPagePositionRows may split a single
+// broker-consolidated row into two display rows (closed + open) for the
+// SAME (account, symbol) key, so row counts between the two pipelines can
+// legitimately differ even when they agree on coverage. Compare distinct
+// (account, symbol) keys instead.
+//
+// Deliberately uses GOLDM/NIFTY (letters-only roots) rather than a
+// digit-bearing root like NIFTYNXT50 — portfolioStore.svelte.js's OWN root
+// grouping (_posTier3's `_root`, via decomposeSymbol().root) and
+// candidatePositions' `^target\d` prefix-regex root match are a SEPARATE,
+// documented, un-unified divergence (the plan's "adopt rootOf.js" item,
+// skipped as a wrong-tool-for-the-job — see the 76998fbd commit message)
+// that would fail a parity test on such a root for a reason unrelated to
+// this change. Not fixed here — flagged as a known, pre-existing gap.
+// ============================================================================
+
+describe('row-source parity — buildPagePositionRows output agrees with buildCandidatePositions on (account, symbol) coverage', () => {
+  function acctSymKeys(rows) {
+    return new Set(rows.map(r => `${String(r.account || '').toUpperCase()}|${String(r.symbol || '').toUpperCase()}`));
+  }
+
+  it('two accounts, one held-and-expired GOLDM leg, one same-day-partial-close GOLDM leg (splits into 2 display rows): candidatePositions keys match the RAW store rows keys (post F&O filter) — NOT a row-count match — and every candidate\'s ltp matches its raw store row\'s last_price', () => {
+    const storeRows = [
+      { tradingsymbol: 'GOLDM24SEP150000CE', account: 'ACC1', quantity: 5, average_price: 100, last_price: 120, exchange: 'MCX' },
+      // Same-day partial close: overnight 10, sold 5 today, 5 remaining —
+      // splitClosedReopened produces TWO display rows (closed + open) for
+      // this SAME (account, symbol) key. Row-count parity would fail here
+      // by construction; key-set parity must still hold.
+      {
+        tradingsymbol: 'GOLDM24SEP150000CE', account: 'ACC2', quantity: 5,
+        overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+        average_price: 200, prev_close: 210, pnl: 150, last_price: 120, exchange: 'MCX',
+      },
+      // Held-but-expired: nonzero qty, symbol absent from the mocked instruments master.
+      { tradingsymbol: 'GOLDM24AUG140000PE', account: 'ACC1', quantity: 2, average_price: 50, last_price: 60, exchange: 'MCX' },
+    ];
+    const pageRows = buildPagePositionRows(storeRows, []);
+    // Sanity: the partial-close row really did split into 2 pieces (proves
+    // the row-count-vs-key-set distinction this test is guarding is real).
+    expect(pageRows.filter(r => r.account === 'ACC2' && r.symbol === 'GOLDM24SEP150000CE').length).toBe(2);
+
+    const getInstrument = (sym) => (sym === 'GOLDM24SEP150000CE' ? { x: '2099-01-01' } : null);
+    const candidates = buildCandidatePositions({
+      positions: pageRows,
+      holdings: [],
+      drafts: [],
+      target: 'GOLDM',
+      selectedExpiries: [],   // empty = no filter, per advisor's guidance
+      selectedAccounts: [],   // empty = no filter
+      simActive: false,
+      proxiesForTarget: () => [],
+      getInstrument,
+    });
+
+    // Expected key set derived from the RAW store rows directly (post F&O
+    // filter) — the store-side SSOT, not the page's own intermediate output.
+    const expectedKeys = acctSymKeys(storeRows.map(r => ({ account: r.account, symbol: r.tradingsymbol })));
+    const candKeys = acctSymKeys(candidates);
+    expect(candKeys).toEqual(expectedKeys);
+    // The held-but-expired leg must be present (tagged), not dropped.
+    expect(candidates.some(c => c.symbol === 'GOLDM24AUG140000PE' && c._expired === true)).toBe(true);
+
+    // Per-leg LTP agreement: every candidate row's ltp matches its RAW
+    // store row's last_price for the same (account,symbol) key (not the
+    // page's own intermediate `ltp` field, which would be tautological).
+    const storeLtpByKey = new Map(storeRows.map(r => [`${r.account.toUpperCase()}|${r.tradingsymbol.toUpperCase()}`, r.last_price]));
+    for (const c of candidates) {
+      const key = `${String(c.account).toUpperCase()}|${String(c.symbol).toUpperCase()}`;
+      expect(c.ltp).toBe(storeLtpByKey.get(key));
+    }
   });
 });

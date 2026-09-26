@@ -294,7 +294,14 @@ const _posAgg = $derived.by(() => {
   }
 
   posByAccount['TOTAL'] = posTotal.day_pnl;
-  return { posTotal, posByKey, posByAccount, byRoot, byRootPos, expiryByAcct, expPnlRows };
+  // `rows` (2026-09 Commit 2 completion): the raw, UNSPLIT per-position
+  // array (_posTier3) — one row per broker-consolidated position, NOT one
+  // per closed/open display piece (that split is a page-level display
+  // concern, done by derivatives/pageLoad.js's splitClosedReopened, not
+  // here). Exposed so +page.svelte's own `positions` array can be rebuilt
+  // from this single source instead of independently re-deriving from
+  // positionsStore.value — see buildPagePositionRows (pageLoad.js).
+  return { posTotal, posByKey, posByAccount, byRoot, byRootPos, expiryByAcct, expPnlRows, rows: _posTier3 };
 });
 
 // ── Holdings tiers ────────────────────────────────────────────────────────────
@@ -426,6 +433,8 @@ const _EMPTY_POSITIONS = {
   byRoot:         {},
   expiryByAcct:   new Map(),
   expPnlRows:     [],
+  rows:           [],
+  fresh:          false,
 };
 const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {} };
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
@@ -456,18 +465,55 @@ const _portfolio = $derived.by(() => {
   const posFresh   = _posAgg   && !posDegraded;
   const holdFresh  = _holdAgg  && !holdDegraded;
   const fundsFresh = _fundsAgg && !fundsDegraded;
-  if (!posFresh && !holdFresh && !fundsFresh) return _last;
+  if (!posFresh && !holdFresh && !fundsFresh) {
+    // 2026-09 Commit 2 completion (advisor-reviewed fix): this is the
+    // simultaneous-outage path (all three degraded at once — the common
+    // case when the conn-service itself goes down, not a rare edge case)
+    // — `_last` is returned WITHOUT a rebuild, so `_last.positions.fresh`
+    // would otherwise still carry whatever `true` was baked in during the
+    // last live cycle, forever, since this branch never touches it again.
+    // `fresh` is documented public API (portfolioStore.positions.fresh)
+    // that consumers gate real decisions on (+page.svelte's
+    // `_positionsRefreshedAt` stamp) — it must never report stale-true on
+    // a confirmed-degraded read. Force it false here explicitly rather
+    // than relying on some earlier cycle having already done so.
+    if (_last?.positions?.fresh) {
+      _last = { ..._last, positions: { ..._last.positions, fresh: false } };
+    }
+    return _last;
+  }
   _last = {
-    positions: posFresh ? {
-      total:           _posAgg.posTotal,
-      byKey:           _posAgg.posByKey,
-      byAccount:       _posAgg.posByAccount,
-      byRoot:          _posAgg.byRoot,
-      byRootPositions: _posAgg.byRootPos,
-      byRootHoldings:  _byRootHoldings,
-      expiryByAcct:    _posAgg.expiryByAcct,
-      expPnlRows:      _posAgg.expPnlRows,
-    } : (_last?.positions ?? _EMPTY_POSITIONS),
+    positions: {
+      // Spread either the freshly-recomputed slice OR the previous frozen
+      // one — either way `fresh` below is overwritten to reflect THIS
+      // cycle's actual posFresh, never whatever was baked in when the
+      // frozen object was last (re)built. Baking `fresh` INSIDE the
+      // freshly-computed branch only (the first version of this fix) was
+      // itself a bug: the frozen copy would keep echoing `fresh: true`
+      // from its last live cycle forever, since it's never rebuilt while
+      // frozen.
+      ...(posFresh ? {
+        total:           _posAgg.posTotal,
+        byKey:           _posAgg.posByKey,
+        byAccount:       _posAgg.posByAccount,
+        byRoot:          _posAgg.byRoot,
+        byRootPositions: _posAgg.byRootPos,
+        byRootHoldings:  _byRootHoldings,
+        expiryByAcct:    _posAgg.expiryByAcct,
+        expPnlRows:      _posAgg.expPnlRows,
+        rows:            _posAgg.rows,
+      } : (_last?.positions ?? _EMPTY_POSITIONS)),
+      // `fresh` (2026-09 Commit 2 completion): true only on the cycle that
+      // actually recomputed `rows` from a live, non-degraded fetch — false
+      // on every frozen (degraded / not-yet-landed) cycle, even though
+      // `rows` itself still returns the last-known-good array. +page.svelte's
+      // book-poller propagation effect gates its `_positionsRefreshedAt`
+      // stamp on this flag (NOT on `rows` being non-empty) so a frozen
+      // read is never mistaken for "confirmed fresh" — the exact hazard
+      // the page's own now-removed `_hasLiveRows`/masked-empty guard used
+      // to cover locally.
+      fresh: posFresh,
+    },
     holdings: holdFresh  ? _holdAgg   : (_last?.holdings ?? _EMPTY_HOLDINGS),
     funds:    fundsFresh ? _fundsAgg  : (_last?.funds    ?? _EMPTY_FUNDS),
   };
@@ -484,7 +530,7 @@ const _portfolio = $derived.by(() => {
 export const portfolioStore = {
   // ── Positions ────────────────────────────────────────────────────────────
   /**
-   * { total: {day_pnl,exp_pnl,extrinsic,prev_mv,chg_pct}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct, expPnlRows }
+   * { total: {day_pnl,exp_pnl,extrinsic,prev_mv,chg_pct}, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct, expPnlRows, rows, fresh }
    *
    * `expPnlRows` (2026-09 SSOT fix): one entry per LIVE F&O position row —
    * { account, symbol, root, source:'live', exp_pnl, extrinsic } — each
@@ -498,6 +544,26 @@ export const portfolioStore = {
    * Sim positions are NOT included (this store only reflects the live
    * broker book) — sim-mode consumers must compute their own via the same
    * `positionExpPnl` pure function.
+   *
+   * `rows` (2026-09 Commit 2 completion — single row-source unification):
+   * the raw, UNSPLIT per-position array (spread of the raw broker fields
+   * PLUS portfolioStore's own `_`-prefixed derived fields) — one row per
+   * broker-consolidated position, F&O AND equity mixed, NOT one per
+   * closed/open display piece. This is the SSOT the derivatives page's own
+   * `positions` $state is now built from (via
+   * `derivatives/pageLoad.js:buildPagePositionRows`, which applies the
+   * F&O filter + `splitClosedReopened` display-split on top), replacing
+   * the page's former independent `positionsStore.value` +
+   * `pulsePositionsStore` fallback.
+   *
+   * `fresh` — true only on a cycle that actually recomputed `rows`/`total`/
+   * etc. from a live, non-degraded fetch; false on every frozen
+   * (degraded / not-yet-landed) cycle, even though every other field above
+   * still returns the last-known-good snapshot rather than collapsing to
+   * empty. Consumers that need to distinguish "these rows are frozen, do
+   * not treat this poll as confirmed-fresh" (e.g. a `_positionsRefreshedAt`
+   * stamp gating a strategy-wipe decision) should read this flag instead
+   * of inferring freshness from `rows.length`.
    */
   get positions() { return _portfolio?.positions ?? _EMPTY_POSITIONS; },
 

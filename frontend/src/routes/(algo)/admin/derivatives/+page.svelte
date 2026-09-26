@@ -79,7 +79,7 @@
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
     buildPositionRowFromBroker, buildHoldingRowFromBroker,
-    splitClosedReopened,
+    splitClosedReopened, buildPagePositionRows, buildSimPositionRows,
     buildCleanLegs, computeLegsKey, didUnderlyingChange,
     synthCacheKey, synthEquityOnlyStrategy,
   } from '$lib/derivatives/pageLoad.js';
@@ -3690,12 +3690,19 @@
   // Position lists for the picker. Carries avg_cost + ltp so that
   // the strategy leg-builder can ship them inline (sim legs need this
   // because the backend can't fetch their ltp from the broker).
+  //
+  // 2026-09 Commit 2 completion (single row-source unification): seeded
+  // synchronously from `portfolioStore.positions.rows` at component-init
+  // time (not `$state([])`) — positionsStore's Tier-2 localStorage cache
+  // is hydrated synchronously at MODULE-EVALUATION time (dataStore.svelte.js
+  // `_initFromCache()`, well before this component mounts), so this already
+  // paints real data on a cold tab reopen without needing the page's own
+  // sessionStorage restore of `positions` (see _loadCache() below, which no
+  // longer restores this field). buildPagePositionRows/buildSimPositionRows
+  // (pageLoad.js) are the single shared transform used here, in the
+  // book-poller propagation effect below, and in loadPositions().
   /** @type {Array<{symbol:string, account:string, qty:number, source:string, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number, overnight_quantity:number, realised:number, day_buy_quantity:number, day_sell_quantity:number, day_buy_value:number, day_sell_value:number, prev_settlement_pnl?:number|null}>} */
-  let positions = $state([]);
-  // Last-known pulse positions — used as fallback in loadPositions() when
-  // positionsStore.value has no rows. Plain let (not $state) since it is
-  // only read inside the async loadPositions() function, not in $derived.
-  let _lastDervPulsePos = /** @type {any[]} */ ([]);
+  let positions = $state(buildPagePositionRows(portfolioStore.positions.rows, []));
 
   /** Per-row "EV" column value (§5 EV fix) — real merged EV for the
    *  currently-selected underlying when a strategy is loaded (matches the
@@ -3741,12 +3748,16 @@
   // Last-known holdings from holdingsStore — used in loadPositions() right after
   // await holdingsStore.load() as a guard against a transient null value.
   let _lastDervHold = /** @type {any[]} */ ([]);
-  // Track last-known values from pulse/holdings stores for use in the
-  // async loadPositions() function (plain $effects, not $derived).
-  $effect(() => {
-    const v = pulsePositionsStore.value;
-    if (v != null) _lastDervPulsePos = v;
-  });
+  // Track last-known values from the holdings store for use in the
+  // async loadPositions() function (plain $effect, not $derived).
+  // `_lastDervPulsePos` (the equivalent tracker for positions) was removed
+  // (2026-09 Commit 2 completion): loadPositions()/the propagation effect
+  // now read `portfolioStore.positions.rows`/`.fresh`, which already
+  // freezes at the last-known-good value via portfolioStore's own SWR/
+  // degraded guard — a separate page-local pulse-store fallback is no
+  // longer needed. `pulsePositionsStore` itself is still imported/read
+  // directly by the auto-select check further down — only this specific
+  // tracking effect + variable are gone.
   $effect(() => {
     const v = holdingsStore.value;
     if (v != null) _lastDervHold = v;
@@ -3918,67 +3929,53 @@
   // way to re-trigger the one-time promote.
   let _autoSelectDone = $state(false);
 
-  // Propagate book-poller updates (positionsStore.value refreshes every 5s)
-  // into the local `positions` $state without requiring a full loadPositions()
-  // call. The effect reads positionsStore.value as the reactive dependency and
-  // uses untrack() for all writes so it doesn't create a circular dependency.
+  // Propagate book-poller updates into the local `positions` $state without
+  // requiring a full loadPositions() call. 2026-09 Commit 2 completion:
+  // the WRITE side reads `portfolioStore.positions.rows`/`.fresh` (the
+  // single row-source, threaded through portfolioStore's own SWR/
+  // degraded-freeze guard) instead of re-deriving from `positionsStore.
+  // value` directly — the page no longer needs its own `_hasLiveRows`/
+  // masked-empty guard, since a degraded or masked-failure read is already
+  // frozen at last-known-good before it reaches `rows` (see
+  // portfolioStore.svelte.js's `_portfolio` / `posFresh`).
+  //
+  // The TRIGGER (reactive dependency) is deliberately still
+  // `positionsStore.value` itself, read OUTSIDE untrack, not
+  // `portfolioStore.positions` — portfolioStore's positions slice
+  // recomputes at ~4Hz during market hours (`_rootSpotCache`'s `void
+  // _tick`, `_posTier2`'s `liveSnap()` calls for futures), not just at
+  // book-poll cadence. Depending on it directly would re-run this effect
+  // (and stamp `_positionsRefreshedAt`) on every tick instead of every
+  // poll, defeating the whole point of that stamp (see the §5 comment
+  // below — it exists specifically to distinguish a genuine poll from an
+  // SSE tick on tab-hibernation-return). `portfolioStore.positions` is
+  // read INSIDE untrack, right after the poll-cadence trigger fires, so it
+  // still reflects the current (post-recompute) rows/fresh values — Svelte
+  // deriveds are pull-based, not stale, when read this way.
   // Skips until _positionsLoaded is true (first full load sets the baseline).
-  // Sim rows (source === 'sim') are preserved from the current positions array
-  // since positionsStore only holds live broker rows.
+  // Sim rows (source === 'sim') are preserved from the current positions
+  // array since portfolioStore only reflects the live broker book.
   $effect(() => {
-    const rawPos = positionsStore.value;
+    const rawPos = positionsStore.value; // poll-cadence trigger, unchanged from before
     if (!rawPos || !_positionsLoaded) return;
     untrack(() => {
-      // Shared-root fallback (0-vs-last-known-good fix, frontend half):
-      // the conn-service can mask a genuine fetch failure as an HTTP 200
-      // with `accounts: []`, which arrives here as `rawPos = []` —
-      // indistinguishable, at this layer, from "operator genuinely
-      // closed every F&O position." `loadPositions()` elsewhere in this
-      // file falls back to `_lastDervPulsePos` for exactly this reason,
-      // but that store is fed by a DIFFERENT poll (pulsePositionsStore)
-      // that can be degraded by the SAME masked-failure window at the
-      // same moment — an unconditional fallback to it wouldn't actually
-      // guarantee real data. Safer: when this cycle's read is empty AND
-      // we're currently showing live (non-sim) rows, treat it as a
-      // suspected degraded read and skip the write entirely — freeze
-      // `positions` at its last-known-good value rather than overwriting
-      // with a false empty. Deliberately does NOT stamp
-      // `_positionsRefreshedAt` on this path either — a suspected-
-      // degraded read must not count as "confirmed fresh" for the
-      // _positionsFresh gate that governs the equity-only-synth
-      // strategy-wipe branch (see the §5 comment above): wiping the
-      // payoff strategy on a masked failure would reproduce the exact
-      // flat-line-at-0 bug this fix removes. A genuinely empty book
-      // (operator closed everything) is NOT permanently stuck — the
-      // very next confirmed-non-empty OR the periodic `loadPositions()`
-      // full-load path (5s cadence) will resolve it; this is a narrow,
-      // known trade-off documented here rather than solved locally —
-      // the proper disambiguation (backend degraded/stale_accounts tag)
-      // is being threaded through by the parallel NavStrip-data-layer fix.
-      const _hasLiveRows = positions.some(r => r.source !== 'sim');
-      if (rawPos.length === 0 && _hasLiveRows) return;
-      const merged = [];
-      for (const p of rawPos) {
-        const sym = p?.tradingsymbol || p?.symbol;
-        if (!sym) continue;
-        if (!isFOSymbol(sym)) continue;
-        const baseRow = buildPositionRowFromBroker(p, 'live');
-        for (const row of splitClosedReopened(baseRow)) merged.push(row);
-      }
+      const { rows: storeRows, fresh: storeFresh } = portfolioStore.positions;
       const simRows = positions.filter(r => r.source === 'sim');
-      positions = [...merged, ...simRows];
+      positions = buildPagePositionRows(storeRows, simRows);
       // §5: this propagation path also refreshes positions data (every 5s
-      // via positionsStore.value's book-poller cadence) — it must stamp
-      // _positionsRefreshedAt too, not just loadPositions(). Without this,
-      // switching to a position-less root can permanently stick the
-      // Payoff card in "loading": loadStrategy()'s equity-only-synth
-      // branch gates the strategy-wipe on _positionsFresh (< 30s since
+      // via the book-poller cadence) — it must stamp _positionsRefreshedAt
+      // too, not just loadPositions(). Without this, switching to a
+      // position-less root can permanently stick the Payoff card in
+      // "loading": loadStrategy()'s equity-only-synth branch gates the
+      // strategy-wipe on _positionsFresh (< 30s since
       // _positionsRefreshedAt), and if this propagation effect is the
       // ONLY thing keeping positions current (loadPositions() not
       // re-invoked), _positionsRefreshedAt goes stale, _positionsFresh
       // stays false forever, strategy never nulls out for the new root,
       // and _strategyStale (strategy.underlying mismatch) never clears.
-      _positionsRefreshedAt = Date.now();
+      // Gated on `storeFresh` (not unconditional) so a frozen/degraded
+      // read is never mistaken for "confirmed fresh."
+      if (storeFresh) _positionsRefreshedAt = Date.now();
     });
   });
 
@@ -3986,22 +3983,21 @@
   // (moved for cc reduction; see pageLoad.js for the full implementation + docs)
 
   async function loadPositions({ fresh = false } = {}) {
-    /** @type {Array<any>} */
-    const merged = [];
-
     // Live broker positions — route through positionsStore so NavStrip and
     // this page share one SSOT fetch. Independent fetchPositions() calls
     // caused symbolStore to be written twice per poll (once by positionsStore
     // parse, once by publishPulseQuotes here), which oscillated liveLtp for
     // MCX futures that appear as both a position and an underlying anchor.
     await positionsStore.load({ fresh });
-    // Stale-while-error: always process positionsStore.value even when
-    // an error is set — the store retains the last-good broker snapshot,
-    // so the dropdown and legs populate from cached data while a retry
-    // is pending rather than going blank. Mirror the _stratFails pattern:
-    // show the banner only after 2+ consecutive failures so a single
-    // transient hiccup (deploy window, book-poller race) doesn't flash
-    // a misleading red banner when the connection chip is green.
+    // Stale-while-error: always process portfolioStore.positions.rows even
+    // when an error is set — portfolioStore's own SWR/degraded guard
+    // already retains the last-good broker snapshot (see
+    // portfolioStore.svelte.js's `_portfolio`), so the dropdown and legs
+    // populate from cached data while a retry is pending rather than going
+    // blank. Mirror the _stratFails pattern: show the banner only after 2+
+    // consecutive failures so a single transient hiccup (deploy window,
+    // book-poller race) doesn't flash a misleading red banner when the
+    // connection chip is green.
     if (positionsStore.error) {
       _posLoadFails++;
       positionsLoadErr = _posLoadFails >= 2 ? positionsStore.error : '';
@@ -4009,30 +4005,22 @@
       _posLoadFails = 0;
       positionsLoadErr = '';
     }
-    const _posSource = positionsStore.value?.length
-      ? positionsStore.value
-      : _lastDervPulsePos;
-    for (const p of _posSource) {
-      const sym = p?.tradingsymbol || p?.symbol;
-      if (!sym) continue;
-      if (!isFOSymbol(sym)) continue; // Equity intraday — excluded from F&O panel
-      const baseRow = buildPositionRowFromBroker(p, 'live');
-      for (const row of splitClosedReopened(baseRow)) merged.push(row);
-    }
 
     // Sim positions — inline ltp so strategy endpoint can compute
     // analytics without an extra broker round-trip.
+    /** @type {any[]} */
+    let simRows = [];
     try {
       const s = await fetchSimStatus();
-      for (const p of (s?.positions || [])) {
-        const sym = p?.symbol;
-        if (!sym || !isFOSymbol(sym)) continue;
-        const baseRow = buildPositionRowFromBroker(p, 'sim');
-        for (const row of splitClosedReopened(baseRow)) merged.push(row);
-      }
+      simRows = buildSimPositionRows(s?.positions || []);
     } catch (_) { /* ignore */ }
 
-    positions = merged;
+    // Single row-source (2026-09 Commit 2 completion): read
+    // portfolioStore.positions.rows (backed by the SAME positionsStore
+    // fetch this call just triggered, threaded through the store's own
+    // SWR/degraded freeze) instead of independently re-deriving from
+    // positionsStore.value / a page-local pulse-store fallback here.
+    positions = buildPagePositionRows(portfolioStore.positions.rows, simRows);
     // Seed underlying spot prices immediately after positions land —
     // avoids blank payoff chart on cold load (before the first interval fires).
     loadUnderlyingQuotes();
@@ -4300,10 +4288,17 @@
   function _saveCache(opts = { includeSelections: true }) {
     if (typeof sessionStorage === 'undefined') return;
     try {
+      // `positions` deliberately NOT persisted here (2026-09 Commit 2
+      // completion) — it's now seeded synchronously from
+      // portfolioStore.positions.rows (backed by positionsStore's own
+      // Tier-2 localStorage cache, hydrated at module-eval time, well
+      // before this component's sessionStorage restore would run) on both
+      // cold load and every book-poller cycle, so a page-local copy here
+      // would just be redundant, write-only, and could drift stale.
       /** @type {Record<string, any>} */
       const payload = {
         ts: Date.now(),
-        positions, strategy, drafts,
+        strategy, drafts,
         selectedAccounts, selectedUnderlying, selectedExpiries,
         _includeHoldings,
       };
@@ -4321,8 +4316,8 @@
       const d = JSON.parse(raw);
       if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return false;
       // Restore data first, then selections — derived state (candidates,
-      // legs) recomputes off the restored positions + drafts.
-      if (Array.isArray(d.positions)) positions = d.positions;
+      // legs) recomputes off the restored drafts + the store-seeded
+      // `positions` (no longer restored from this cache — see _saveCache).
       if (d.strategy) {
         strategy  = d.strategy;
         debugLog('payoff:strategy', 'loaded', {

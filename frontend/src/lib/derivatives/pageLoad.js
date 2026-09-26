@@ -12,14 +12,15 @@
  */
 
 import { todayIST } from '$lib/dateFormat.js';
-import { buildAcctMatcher } from '$lib/data/derivativesMath.js';
+import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
+import { buildPositionRowFromBroker, splitClosedReopened } from '$lib/data/expiryPnl.js';
 
 // splitClosedReopened + buildPositionRowFromBroker moved to
 // $lib/data/expiryPnl.js (2026-09 SSOT fix) so portfolioStore.svelte.js can
 // reuse the same precise partial/full-close realised-P&L derivation without
 // a derivatives-page dependency. Re-exported here unchanged so existing
 // call sites (+page.svelte, pageLoad.test.js) are unaffected.
-export { buildPositionRowFromBroker, splitClosedReopened } from '$lib/data/expiryPnl.js';
+export { buildPositionRowFromBroker, splitClosedReopened };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared predicates
@@ -31,7 +32,7 @@ export { buildPositionRowFromBroker, splitClosedReopened } from '$lib/data/expir
 // BFO}` (which could exclude a Groww-sourced F&O row whose adapter passes
 // `exchange` through unchanged). Re-exported here unchanged so existing
 // call sites (+page.svelte) are unaffected.
-export { isFOSymbol } from '$lib/data/derivativesMath.js';
+export { isFOSymbol };
 
 /**
  * Build an expiry-match predicate.
@@ -99,6 +100,71 @@ export function bumpExcluded(excluded, acct, delta) {
   excluded[a].pos_day  += Number(delta.pos_day  || 0);
   excluded[a].hold_pnl += Number(delta.hold_pnl || 0);
   excluded[a].hold_day += Number(delta.hold_day || 0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Single row-source unification (2026-09, Commit 2 completion)
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Build the derivatives page's own per-row F&O position rows from raw
+ * broker/store position rows, splitting each into closed/open display
+ * pieces. Consolidates the identical `isFOSymbol` filter +
+ * `buildPositionRowFromBroker` + `splitClosedReopened` loop that used to be
+ * duplicated in BOTH the book-poller propagation `$effect` and
+ * `loadPositions()` in +page.svelte.
+ *
+ * `storeRows` is expected to be `portfolioStore.positions.rows` — the SAME
+ * unsplit per-row F&O+equity array the Snapshot grid's `expPnlRows`/`byKey`
+ * rollups are built from (portfolioStore.svelte.js's `_posTier3`), already
+ * threaded through the store's own SWR/degraded-freeze guard. Rows carry
+ * both the raw broker field names (`tradingsymbol`, `quantity`,
+ * `average_price`, ...) AND portfolioStore's derived `_`-prefixed fields
+ * (spread, not replaced) — `buildPositionRowFromBroker` only reads the raw
+ * fields, so it works unchanged on either a raw `positionsStore.value` row
+ * or a `portfolioStore.positions.rows` row.
+ *
+ * `simRows` are passed through VERBATIM (already built + split by the
+ * caller, e.g. via `buildSimPositionRows` below) — sim positions aren't
+ * part of `storeRows` (portfolioStore only reflects the live broker book).
+ *
+ * @param {any[]} storeRows  - live broker rows (raw fields required: tradingsymbol/symbol, quantity, ...)
+ * @param {any[]} [simRows]  - already-built + split sim rows (source:'sim'), appended as-is
+ * @returns {any[]}
+ */
+export function buildPagePositionRows(storeRows, simRows = []) {
+  const merged = [];
+  for (const p of storeRows || []) {
+    const sym = p?.tradingsymbol || p?.symbol;
+    if (!sym) continue;
+    if (!isFOSymbol(sym)) continue; // Equity intraday — excluded from F&O panel
+    const baseRow = buildPositionRowFromBroker(p, 'live');
+    for (const row of splitClosedReopened(baseRow)) merged.push(row);
+  }
+  return [...merged, ...simRows];
+}
+
+/**
+ * Build + split sim-mode position rows from the simulator's raw position
+ * list (`fetchSimStatus()`'s `.positions` array) — same per-row transform
+ * as `buildPagePositionRows`' live loop, tagged `source:'sim'`. Kept as a
+ * separate function (not folded into `buildPagePositionRows`) because the
+ * two inputs need genuinely different treatment at their call sites: fresh
+ * raw sim positions here vs. already-split sim rows reused verbatim from
+ * the page's current `positions` state in the book-poller propagation path.
+ *
+ * @param {any[]} simPositions  - raw sim position rows (symbol, quantity/qty, ...)
+ * @returns {any[]}
+ */
+export function buildSimPositionRows(simPositions) {
+  const merged = [];
+  for (const p of (simPositions || [])) {
+    const sym = p?.symbol;
+    if (!sym || !isFOSymbol(sym)) continue;
+    const baseRow = buildPositionRowFromBroker(p, 'sim');
+    for (const row of splitClosedReopened(baseRow)) merged.push(row);
+  }
+  return merged;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
