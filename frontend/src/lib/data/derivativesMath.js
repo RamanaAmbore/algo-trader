@@ -578,15 +578,27 @@ export function isFOSymbol(sym) {
 }
 
 /**
- * Legs-grid per-row lifetime P&L cell (2026-09 fix). Row-own fields ONLY —
- * NEVER positionsDerivedStore, whose `.byKey[symbol].pnl` sums across every
+ * Legs-grid per-row lifetime P&L cell (2026-09 fix, revised). Row-own
+ * fields ONLY for the common (non-residual) case — NEVER
+ * positionsDerivedStore, whose `.byKey[symbol].pnl` sums across every
  * account holding that symbol AND across a closed/open split's two display
  * rows, so a per-row cell reading it double- (or N-account-) counted
  * whenever more than one account held the symbol, or a CLOSED/OPEN split
- * existed for it (CandidateLegRow.svelte's old `pnl` $derived). Matches the
- * pattern the Day P&L cell and the Legs TOTAL row already used (row-own
- * `c.pnl`/`baseDayPnlForPosition(c)`, summed directly) — this makes the
- * per-row CELL agree with the TOTAL it's a part of, by construction.
+ * existed for it (CandidateLegRow.svelte's old `pnl` $derived).
+ *
+ * The FIRST attempt at this fix (since corrected) removed the residual/
+ * non-residual branch entirely and always preferred the live-price formula
+ * — but the Legs TOTAL row (legPnlTotal below / `_legsTotalsBase.reduce(...,
+ * Number(c.pnl ?? 0), 0)`) sums `c.pnl` directly (poll-time), so a cell that
+ * always ticks live would diverge from its own TOTAL on every tick, and
+ * also on Kite's documented `realised: 0`-alongside-`pnl` settlement rows.
+ * Restored: non-residual rows read `c.pnl` directly (matching the TOTAL by
+ * construction, same pattern as the Day P&L cell's `baseDayPnlForPosition`).
+ * `_residualQty`-carrying rows (Expiry-tab MCX netting-pass synthetic rows,
+ * rollupByUnderlying/netMcxGroup — NOT part of candidatePositions/the
+ * ordinary Legs tab) keep the ORIGINAL live-price-formula-first behavior,
+ * unchanged from before this whole fix — those rows have no reliable
+ * standalone `pnl` field of their own to prefer.
  *
  * @param {{ pnl?: number|string|null, realised?: number|string|null }} c
  * @param {number|null|undefined} ltp        live/poll LTP for the row's own symbol
@@ -594,13 +606,31 @@ export function isFOSymbol(sym) {
  * @param {number} displayQty                the row's own displayed qty (post-split/residual)
  * @param {boolean} [ltpFromFallback=false]  true when ltp is itself synthesised from avg_cost
  *   (no real market price yet) — formula would be tautologically ~realised, so prefer c.pnl.
+ * @param {boolean} [isResidual=false]       true when `c._residualQty != null`
+ *   (Expiry-tab MCX netting rows) — keeps the pre-fix live-formula-first path.
  * @returns {number|null}
  */
-export function legPnlDisplay(c, ltp, cost, displayQty, ltpFromFallback = false) {
+export function legPnlDisplay(c, ltp, cost, displayQty, ltpFromFallback = false, isResidual = false) {
+  if (!isResidual && c?.pnl != null) return Number(c.pnl);
   if (ltp != null && cost != null && !ltpFromFallback) {
     return (Number(ltp) - Number(cost)) * Number(displayQty || 0) + Number(c?.realised || 0);
   }
   return c?.pnl != null ? Number(c.pnl) : null;
+}
+
+/**
+ * Legs TOTAL row — same row-own `c.pnl` sum the cell now agrees with by
+ * construction (legPnlDisplay above, non-residual path). Pulled into a
+ * named, shared function (2026-09) instead of the previously-inline
+ * `_legsTotalsBase.filter(...).reduce((s, c) => s + Number(c.pnl ?? 0), 0)`
+ * expression in +page.svelte, so a test can assert Σ(cell) === TOTAL for
+ * the same row set rather than each being tested against itself.
+ *
+ * @param {Array<{ pnl?: number|string|null }>} rows
+ * @returns {number}
+ */
+export function legPnlTotal(rows) {
+  return rows.reduce((s, c) => s + Number(c?.pnl ?? 0), 0);
 }
 
 export function interpAt(arr, x, key) {

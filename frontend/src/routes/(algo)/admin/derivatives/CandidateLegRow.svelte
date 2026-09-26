@@ -117,7 +117,7 @@
   // (_legsTotalsBase.reduce(... + Number(c.pnl ?? 0), 0)), which already
   // summed the per-row field directly — this fix makes the CELL agree
   // with the TOTAL it's part of, instead of silently diverging from it.
-  const pnl = $derived(legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback));
+  const pnl = $derived(legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null));
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');

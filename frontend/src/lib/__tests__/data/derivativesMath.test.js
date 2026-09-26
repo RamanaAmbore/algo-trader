@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, isFOSymbol } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -480,58 +480,107 @@ describe('interpAt', () => {
 });
 
 // ============================================================================
-// legPnlDisplay — Legs-grid per-row lifetime P&L cell (2026-09 fix, Commit 3).
+// legPnlDisplay / legPnlTotal — Legs-grid per-row lifetime P&L cell + TOTAL
+// (2026-09 fix, Commit 3, REVISED after an advisor review caught a second
+// bug in the first attempt).
+//
 // CandidateLegRow.svelte's old `pnl` $derived preferred
 // positionsDerivedStore.get(c.symbol).pnl (summed across EVERY account
 // holding that symbol AND across a closed/open split's two rows) whenever
 // available — a per-row cell reading a cross-account/cross-split aggregate
 // diverges from the Legs TOTAL row, which sums row-own `c.pnl` directly.
+//
+// The FIRST fix attempt over-corrected: it made the CELL always compute a
+// live-price formula, which ticks on every price update while the TOTAL
+// still sums the poll-time `c.pnl` field — the two would diverge on every
+// tick. The revised fix: non-residual rows read `c.pnl` directly (matching
+// the TOTAL by construction); ONLY `_residualQty`-carrying rows (Expiry-tab
+// MCX netting-pass synthetic rows) keep the original live-formula-first
+// behavior, since those never had a reliable standalone `pnl` to prefer.
 // ============================================================================
 
-describe('legPnlDisplay — row-own P&L, not a cross-account/cross-split aggregate', () => {
-  it('two accounts holding the SAME symbol: each row computes its OWN pnl from its own ltp/cost/qty, not a shared aggregate', () => {
-    // Two rows for the same symbol, different accounts, different qty/cost —
-    // the old store-first behavior would have both rows read the SAME
-    // summed-across-accounts value; the fix must make them differ.
-    const rowA = { pnl: 999, realised: 0 }; // realised irrelevant once ltp/cost path is taken
-    const rowB = { pnl: 999, realised: 0 };
+describe('legPnlDisplay — non-residual rows read c.pnl directly (agrees with legPnlTotal by construction)', () => {
+  it('two accounts holding the SAME symbol: each row reads its OWN c.pnl (already the correct per-row/per-account value from splitClosedReopened), never a shared cross-account aggregate', () => {
+    // Two rows for the same symbol, different accounts — each carries its
+    // OWN distinct `pnl` (as produced by buildCandidatePositions/
+    // splitClosedReopened, already per-row/per-account correct). The old
+    // store-first behavior would have both rows read the SAME
+    // summed-across-accounts value instead; the fix must keep them distinct.
+    const rowA = { pnl: 100 };
+    const rowB = { pnl: 250 };
     const pnlA = legPnlDisplay(rowA, /* ltp */ 110, /* cost */ 100, /* displayQty */ 10);
     const pnlB = legPnlDisplay(rowB, /* ltp */ 110, /* cost */ 100, /* displayQty */ 25);
-    expect(pnlA).toBe(100);   // (110-100)*10 + 0
-    expect(pnlB).toBe(250);   // (110-100)*25 + 0
+    expect(pnlA).toBe(100);
+    expect(pnlB).toBe(250);
     expect(pnlA).not.toBe(pnlB);
-    // TOTAL (sum of per-row values) must equal the sum of the two distinct
-    // values, never a multiple of one shared aggregate.
-    expect(pnlA + pnlB).toBe(350);
+    expect(pnlA + pnlB).toBe(legPnlTotal([rowA, rowB]));
   });
 
-  it('closed/open split rows for the same symbol: each split piece computes its own pnl from its own displayQty/realised, not the pre-split aggregate', () => {
-    const closedRow = { pnl: 500, realised: 500 }; // qty=0 piece — no ltp/cost path taken (displayQty=0 anyway)
-    const openRow   = { pnl: 200, realised: 0 };
-    const closedPnl = legPnlDisplay(closedRow, null, null, 0); // no live price path — falls back to row's own pnl
+  it('closed/open split rows for the same symbol: each split piece reads its own pnl (post-split, already correctly sized), matching legPnlTotal', () => {
+    const closedRow = { pnl: 500 };
+    const openRow   = { pnl: 200 };
+    const closedPnl = legPnlDisplay(closedRow, null, null, 0);
     const openPnl   = legPnlDisplay(openRow, 130, 100, 5);
     expect(closedPnl).toBe(500);
-    expect(openPnl).toBe(150); // (130-100)*5 + 0
-    expect(closedPnl + openPnl).toBe(650);
+    expect(openPnl).toBe(200); // reads c.pnl directly — the live formula is NOT used for non-residual rows
+    expect(closedPnl + openPnl).toBe(legPnlTotal([closedRow, openRow]));
   });
 
-  it('uses (ltp - cost) * displayQty + realised when ltp/cost are both available and not a fallback price', () => {
-    const c = { pnl: 999, realised: 20 };
-    expect(legPnlDisplay(c, 110, 100, 10, false)).toBe(120); // (10*10) + 20
+  it('non-residual row: c.pnl wins even when ltp/cost/displayQty would produce a DIFFERENT live-formula number', () => {
+    // Deliberately mismatched inputs to prove the live formula is NOT taken
+    // for a non-residual row, even when it's fully computable.
+    const c = { pnl: 42, realised: 999 };
+    expect(legPnlDisplay(c, 110, 100, 10)).toBe(42);
   });
 
-  it('falls back to c.pnl when ltp is a synthesised avg_cost fallback (no real market price yet)', () => {
+  it('falls back to the live-price formula only when c.pnl is null/absent (non-residual row with no pnl field at all)', () => {
+    const c = { realised: 20 };
+    expect(legPnlDisplay(c, 110, 100, 10)).toBe(120); // (110-100)*10 + 20
+  });
+
+  it('returns null when c.pnl is absent AND the live-price formula is unusable (ltp/cost null)', () => {
+    expect(legPnlDisplay({}, null, null, 0)).toBeNull();
+  });
+});
+
+describe('legPnlDisplay — residual rows (Expiry-tab MCX netting pass) keep the ORIGINAL live-formula-first behavior, unchanged', () => {
+  it('uses (ltp - cost) * displayQty + realised even when c.pnl is present, for a residual row', () => {
+    const c = { pnl: 999, realised: 20 }; // pnl deliberately wrong/stale — must be ignored for residual rows
+    expect(legPnlDisplay(c, 110, 100, 10, false, /* isResidual */ true)).toBe(120); // (10*10) + 20
+  });
+
+  it('falls back to c.pnl when ltp is a synthesised avg_cost fallback price (no real market price yet)', () => {
     const c = { pnl: 42, realised: 20 };
-    expect(legPnlDisplay(c, 100, 100, 10, /* ltpFromFallback */ true)).toBe(42);
+    expect(legPnlDisplay(c, 100, 100, 10, /* ltpFromFallback */ true, /* isResidual */ true)).toBe(42);
   });
 
   it('falls back to c.pnl when ltp or cost is null', () => {
-    expect(legPnlDisplay({ pnl: 42 }, null, 100, 10)).toBe(42);
-    expect(legPnlDisplay({ pnl: 42 }, 100, null, 10)).toBe(42);
+    expect(legPnlDisplay({ pnl: 42 }, null, 100, 10, false, true)).toBe(42);
+    expect(legPnlDisplay({ pnl: 42 }, 100, null, 10, false, true)).toBe(42);
   });
 
   it('returns null when neither the live-price formula nor c.pnl is usable', () => {
-    expect(legPnlDisplay({}, null, null, 0)).toBeNull();
+    expect(legPnlDisplay({}, null, null, 0, false, true)).toBeNull();
+  });
+});
+
+describe('legPnlTotal', () => {
+  it('sums row-own c.pnl across rows, treating missing pnl as 0', () => {
+    expect(legPnlTotal([{ pnl: 100 }, { pnl: 250 }, {}])).toBe(350);
+  });
+
+  it('matches Σ(legPnlDisplay(row)) for a mixed set of non-residual rows — the cell and TOTAL agree by construction', () => {
+    const rows = [
+      { pnl: 100 },
+      { pnl: -50 },
+      { pnl: 0 },
+    ];
+    const sumOfCells = rows.reduce((s, r) => s + legPnlDisplay(r, null, null, 0), 0);
+    expect(sumOfCells).toBe(legPnlTotal(rows));
+  });
+
+  it('returns 0 for an empty array', () => {
+    expect(legPnlTotal([])).toBe(0);
   });
 });
 

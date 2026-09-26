@@ -74,7 +74,7 @@
   import {
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
-    rollupByUnderlying, perRootReduce, interpAt,
+    rollupByUnderlying, perRootReduce, interpAt, legPnlTotal,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -5273,7 +5273,7 @@
                  search box moved P&L TOTAL while Day/Exp TOTAL stayed
                  fixed, and P&L TOTAL no longer equalled the sum of the
                  rows actually visible in the grid either. -->
-            {@const _totalPnl = _legsTotalsBase.filter(c => _isLegEnabled(c)).reduce((s, c) => s + Number(c.pnl ?? 0), 0)}
+            {@const _totalPnl = legPnlTotal(_legsTotalsBase.filter(c => _isLegEnabled(c)))}
             {@const _tg = _mergedGreeks ?? strategy?.aggregate_greeks ?? { delta: 0, gamma: 0, theta: 0, vega: 0, rho: 0 }}
             <div class="cand-row cand-row-total">
               <span></span>
