@@ -143,6 +143,31 @@ export function resolveUnderlyingTradingsymbol(root, findNearestFut) {
   return resolveUnderlying(root, findNearestFut)?.tradingsymbol ?? String(root || '').toUpperCase();
 }
 
+/**
+ * Pure tier-order spot-picker — the CLAUDE.md-documented SSOT fallback
+ * chain for underlying spot resolution (resolved front-month tradingsymbol
+ * tick → bare-root tick → batchQuote cache). Extracted (2026-09, Commit 4)
+ * from underlyingSpotStore.svelte.js's `getUnderlyingSpot` so it's testable
+ * under plain Vitest (that file is a `.svelte.js` runes module and can't be
+ * imported directly into the test harness).
+ *
+ * Callers inject `resolveTs` (usually `resolveUnderlyingTradingsymbol`),
+ * `getSnap` (usually `getSnapshot` from symbolStore.svelte.js — a raw,
+ * non-reactive Map lookup), and `quotes` (the batchQuote cache map, e.g.
+ * underlyingSpotStore's `_quotes` or +page.svelte's `_underlyingQuotes`).
+ *
+ * @param {string} root - e.g. "CRUDEOIL", "NIFTY", "GOLD"
+ * @param {(root: string, findNearestFut?: any) => string} resolveTs
+ * @param {(sym: string) => { ltp?: number } | undefined | null} getSnap
+ * @param {Record<string, { ltp?: number }>} quotes
+ * @param {((u:string) => any) | null | undefined} [findNearestFut]
+ * @returns {number}
+ */
+export function pickUnderlyingSpot(root, resolveTs, getSnap, quotes, findNearestFut) {
+  const ts = resolveTs(root, findNearestFut);
+  return getSnap(ts)?.ltp || getSnap(root)?.ltp || quotes?.[root]?.ltp || 0;
+}
+
 // Mirrors the backend `derivatives.underlying_ltp_key` index map.
 export const INDEX_LTP_KEY = {
   NIFTY:      { tradingsymbol: 'NIFTY 50',         exchange: 'NSE' },

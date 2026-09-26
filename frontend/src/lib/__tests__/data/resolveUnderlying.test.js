@@ -23,6 +23,7 @@ import {
   resolveUnderlying,
   resolveAnchorToTradeable,
   resolveUnderlyingTradingsymbol,
+  pickUnderlyingSpot,
 } from '$lib/data/resolveUnderlying.js';
 import { seedRootMap } from '$lib/data/rootOf.js';
 
@@ -408,5 +409,52 @@ describe('resolveUnderlyingTradingsymbol — front-month resolution', () => {
 
   it('empty string falls back to empty string, not null/undefined', () => {
     expect(resolveUnderlyingTradingsymbol('', null)).toBe('');
+  });
+});
+
+// ============================================================================
+// pickUnderlyingSpot — the single shared tier-order spot resolver
+// (2026-09, Commit 4). Extracted from underlyingSpotStore.svelte.js's
+// getUnderlyingSpot so the tier order is testable under plain Vitest.
+// ============================================================================
+
+describe('pickUnderlyingSpot', () => {
+  it('NIFTY resolves through the ts mapper (bare root never has a live tick under its own key)', () => {
+    const snaps = { 'NIFTY 50': { ltp: 24500 } };
+    const getSnap = (sym) => snaps[sym];
+    const v = pickUnderlyingSpot('NIFTY', resolveUnderlyingTradingsymbol, getSnap, {}, null);
+    expect(v).toBe(24500);
+  });
+
+  it('cold start: no tick on the resolved tradingsymbol but a bare-root snapshot exists → bare-root value', () => {
+    // e.g. a cold instruments cache resolves an MCX root to its own bare-
+    // root stub (kind: 'mcx'), which never ticks under its own name — but
+    // some OTHER path (e.g. a direct root-keyed publish) may still have
+    // populated a bare-root snapshot.
+    const snaps = { GOLDM: { ltp: 150736 } };
+    const getSnap = (sym) => snaps[sym];
+    const v = pickUnderlyingSpot('GOLDM', () => 'GOLDM26JUNFUT', getSnap, {}, null);
+    expect(v).toBe(150736);
+  });
+
+  it('only a batchQuote-cache entry exists (no live tick on either key) → quote value', () => {
+    const getSnap = () => undefined;
+    const quotes = { CRUDEOIL: { ltp: 5788 } };
+    const v = pickUnderlyingSpot('CRUDEOIL', () => 'CRUDEOIL26JUNFUT', getSnap, quotes, null);
+    expect(v).toBe(5788);
+  });
+
+  it('nothing resolvable anywhere → 0, not null/undefined/NaN', () => {
+    const getSnap = () => undefined;
+    const v = pickUnderlyingSpot('UNKNOWNROOT', () => 'UNKNOWNROOT', getSnap, {}, null);
+    expect(v).toBe(0);
+  });
+
+  it('resolved-tradingsymbol tick takes priority over both the bare-root tick and the quote cache', () => {
+    const snaps = { 'CRUDEOIL26JUNFUT': { ltp: 5900 }, CRUDEOIL: { ltp: 1 } };
+    const getSnap = (sym) => snaps[sym];
+    const quotes = { CRUDEOIL: { ltp: 5788 } };
+    const v = pickUnderlyingSpot('CRUDEOIL', () => 'CRUDEOIL26JUNFUT', getSnap, quotes, null);
+    expect(v).toBe(5900);
   });
 });

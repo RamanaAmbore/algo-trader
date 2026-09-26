@@ -86,10 +86,21 @@ export function annotateOptionCandidates({
     const expiry = String(inst.x || '');
     const segment = mcxUnderlyings.has(underlying) ? 'commodity' : 'equity';
     const candSpot = resolveSpot(underlying);
-    const isITM = optType === 'CE' ? candSpot > strike : candSpot < strike;
+    // Spot-unavailable guard (2026-09 Commit 4): without a real spot, a
+    // naive `candSpot < strike` / `candSpot > strike` comparison against
+    // candSpot=0 (or NaN coerced to 0) FALSELY classifies every PE as ITM
+    // (0 < any positive strike is always true) — a dangerous false
+    // positive, since ITM drives the "close before expiry" action band.
+    // Never mark a row ITM without a real, positive, finite spot; the row
+    // still lands in the existing 'otm' band (no new band value — see
+    // computeExpiryBands below) with a "Spot unavailable" reason instead
+    // of a numeric OTM distance computed against a fabricated 0.
+    const hasSpot = Number.isFinite(candSpot) && candSpot > 0;
+    const isITM = hasSpot && (optType === 'CE' ? candSpot > strike : candSpot < strike);
     const lg = legAnalytics[c.symbol];
     const theta = Number(lg?.greeks?.theta ?? 0) || 0;
-    const otmDist = isITM ? 0
+    const otmDist = !hasSpot ? null
+      : isITM ? 0
       : (optType === 'CE' ? strike - candSpot : candSpot - strike);
     annotated.push({
       ...c,
@@ -100,6 +111,7 @@ export function annotateOptionCandidates({
       _segment: segment,
       _isITM: isITM,
       _spot: candSpot,
+      _spotUnavailable: !hasSpot,
       _qty: qty,
       _theta: theta,
       _otmDist: otmDist,
@@ -295,7 +307,12 @@ export function computeExpiryBands({ annotated }) {
       result.equity.push({
         ...r,
         _band: 'otm',
-        _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
+        // Spot-unavailable guard (2026-09 Commit 4): r._otmDist is null
+        // when the spot resolver couldn't produce a real value — never
+        // compute a distance off a fabricated 0.
+        _reason: r._spotUnavailable
+          ? 'Spot unavailable'
+          : `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
       });
     }
   }
@@ -306,7 +323,9 @@ export function computeExpiryBands({ annotated }) {
     result.commodity.push({
       ...r,
       _band: 'otm',
-      _reason: `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
+      _reason: r._spotUnavailable
+        ? 'Spot unavailable'
+        : `OTM by ₹${Math.round(r._otmDist).toLocaleString('en-IN')}`,
     });
   }
 

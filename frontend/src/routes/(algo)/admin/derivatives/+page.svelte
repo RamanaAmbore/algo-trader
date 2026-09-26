@@ -574,24 +574,26 @@
     // since the only way bands flip is positions adding/closing.
     const cps = candidatePositions;
     const expFilter = selectedExpiries;
-    // Per-underlying spot resolver — reads SSE snapshot → batchQuote → 0.
-    // Wrapped in untrack() so this derived re-fires only when candidatePositions
-    // changes, not on every SSE tick. Full-book expiry analysis needs a spot
-    // for every underlying in the book, not just selectedUnderlying.
-    const uq = untrack(() => _underlyingQuotes);
     const legA = untrack(() => legAnalyticsBySymbol);
     void expFilter;
     const empty = /** @type {{equity:any[], commodity:any[]}} */ ({ equity: [], commodity: [] });
     if (!cps.length) return empty;
 
-    const spotResolver = (/** @type {string} */ underlying) => {
-      const key = String(underlying || '').toUpperCase();
-      const v = Number(untrack(() => getSnapshot(key)?.ltp));
-      if (Number.isFinite(v) && v > 0) return v;
-      const bq = Number(uq[key]?.ltp);
-      if (Number.isFinite(bq) && bq > 0) return bq;
-      return 0;
-    };
+    // Per-underlying spot resolver (2026-09 Commit 4, single spot resolver)
+    // — delegates to getUnderlyingSpot (underlyingSpotStore.svelte.js), the
+    // SAME shared resolution chain NavStrip/portfolioStore's root-spot
+    // cache use, instead of an independently-maintained bare-key chain.
+    // Fixes a real bug the old inline resolver had: `getSnapshot(key)`
+    // looked up the BARE uppercased underlying name directly (e.g.
+    // "NIFTY"), which never matches Kite's actual index tick key
+    // ("NIFTY 50") — every index root silently skipped straight to the
+    // (correctly-keyed) batchQuote-cache tier, never getting true live-tick
+    // freshness. getUnderlyingSpot resolves NIFTY→"NIFTY 50" (via
+    // resolveUnderlyingTradingsymbol) before checking the tick map.
+    // Wrapped in untrack() so this derived re-fires only when
+    // candidatePositions changes, not on every SSE tick.
+    const spotResolver = (/** @type {string} */ underlying) =>
+      untrack(() => getUnderlyingSpot(underlying));
 
     // annotateOptionCandidates + computeExpiryBands are pure helpers in
     // derivativesMath.js. The spotResolver function is called per-row so
@@ -972,14 +974,16 @@
   /** @type {Record<string, { ltp: number, day_pct: number | null, prev_close: number }>} */
   let _underlyingQuotes = $derived(underlyingSpotStore.value);
   /** Monotonic counter incremented each time _underlyingQuotes is replaced.
-   *  Used as a reactive dependency in liveSpot and _clientPayoffStub when
-   *  the market is closed — guarantees those derived values re-run after
-   *  every batchQuote refresh off-market (where _throttledTick is frozen). */
+   *  Used as a reactive dependency in _undLive (transitively, liveSpot) and
+   *  _clientPayoffStub when the market is closed — guarantees those derived
+   *  values re-run after every batchQuote refresh off-market (where
+   *  _throttledTick is frozen).
+   *  2026-09 Commit 4: `_activeQuoteLtp` (the old direct
+   *  `_underlyingQuotes[selectedUnderlying]?.ltp` reflector, formerly
+   *  liveSpot's own Tier 2) was removed — _undLive's Tier 1 now folds the
+   *  same batchQuote-cache fallback in per-root, so liveSpot's dependency
+   *  on this counter is transitive via _undLive rather than direct. */
   let _quoteGeneration = $state(0);
-  /** Reactive LTP of the currently selected underlying from underlyingSpotStore.
-   *  Updates when patchUnderlyingSpot patches _quotes on each anchor/Path-3 tick,
-   *  so liveSpot re-derives per-tick instead of waiting for the 30s _quoteGeneration bump. */
-  const _activeQuoteLtp = $derived(_underlyingQuotes[selectedUnderlying]?.ltp ?? 0);
 
   /** Map every Snapshot underlying → { root, quoteKey } via
    *  resolveUnderlying. Indices land on the spot tradingsymbol
@@ -1871,17 +1875,26 @@
 
   // liveSpot — spot price for the payoff diagram and Greeks.
   //
-  // Only SSE-tick sources are trusted (ltp_ts is live). Tiers 3-5 were
-  // removed: underlying_ltp (backend-polled, stale), strategy.spot
-  // (backend 5s poll, stale), and getSnapshot(root) (bare commodity root
-  // like "GOLDM" never matches a tick key in symbolStore). If no SSE tick
-  // is available yet, show blank rather than masking with a stale value.
+  // 2026-09 Commit 4 (single spot resolver): the old Tier 2
+  // (_activeQuoteLtp) and Tier 3b (bare strategy-underlying liveSnap) are
+  // REMOVED — _undLive's Tier 1 now folds in the exact same batchQuote-
+  // cache fallback getUnderlyingSpot()/_activeQuoteLtp read (see _undLive's
+  // own comment above), and getUnderlyingSpot's chain already checks both
+  // the resolved-tradingsymbol tick AND the bare-root tick, superseding
+  // 3b. Precondition verified before removing: loadUnderlyingQuotes() (the
+  // call that fills the batchQuote-cache tier) runs immediately after
+  // positions land on cold start (loadPositions()) AND again explicitly
+  // for _clientPayoffStub's cold-start seed — the quote tier is not empty
+  // by the time this derived is first read in practice.
+  //
+  // Tier 3a (anchor-contract SSE tick) is KEPT — it is a genuinely
+  // different contract than _undLive's front-month resolution for MCX
+  // options (the strategy's own matching-expiry future), not something
+  // _undLive's per-root fallback can produce.
   //
   // Tiers (SSOT: same sources as snapshot rows so overlay and table stay in sync):
-  //   1  — _undLive[selectedUnderlying]?.ltp  (liveSnap of resolved tradingsymbol, per-root map)
-  //   2  — _activeQuoteLtp                  (underlyingSpotStore: batchQuote + tickBus patches)
-  //   3a — strategy anchor contract SSE tick (cold-start fallback when store not yet populated)
-  //   3b — strategy underlying SSE tick
+  //   1  — _undLive[selectedUnderlying]?.ltp  (live tick OR batchQuote-cache fallback, resolved tradingsymbol)
+  //   2  — strategy anchor contract SSE tick (cold-start fallback for MCX options, when store not yet populated)
   const liveSpot = $derived.by(() => {
     // Tier 1: per-root map — exact same derivation as snapshot rows (_undLive[g.underlying])
     const _selLtp = _undLive[selectedUnderlying]?.ltp;
@@ -1890,27 +1903,16 @@
       return _selLtp;
     }
 
-    // Tier 2: underlyingSpotStore (batchQuote + tickBus Path 3 patches at WebSocket speed)
-    if (_activeQuoteLtp > 0) {
-      untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-activeQuoteLtp', value: _activeQuoteLtp }));
-      return _activeQuoteLtp;
-    }
-
-    // Tier 3: strategy anchor / underlying SSE ticks — cold-start only, before store is warm
+    // Tier 2: strategy anchor contract SSE tick — cold-start only, before _undLive is warm
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     if (stratUnd && stratUnd === selectedUnderlying) {
       const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
       if (anchor) {
         const v = liveSnap(anchor)?.ltp;
         if (v > 0) {
-          untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3a-anchor', anchor, value: v }));
+          untrack(() => debugLog('payoff:spot', 'resolved', { tier: '2-anchor', anchor, value: v }));
           return v;
         }
-      }
-      const v = liveSnap(stratUnd)?.ltp;
-      if (v > 0) {
-        untrack(() => debugLog('payoff:spot', 'resolved', { tier: '3b-stratUnd', sym: stratUnd, value: v }));
-        return v;
       }
     }
 
@@ -1983,6 +1985,13 @@
   // (operator-confirmed: always front-month, never the strategy's
   // pricing anchor when they differ).
   const _undLive = $derived.by(() => {
+    // Gap B (Commit 4, mirrors _clientPayoffStub's own Gap B): always
+    // track _quoteGeneration so a batchQuote landing (loadUnderlyingQuotes)
+    // re-derives this map even when no live tick arrives for a root in the
+    // meantime — without this, a cold-start root with no SSE tick yet
+    // would stay permanently absent from `m` even after its batchQuote
+    // value lands, until some UNRELATED tick happened to touch this derived.
+    void _quoteGeneration;
     const m = /** @type {Record<string, {ltp: number, close: number|null}>} */ ({});
     for (const { root } of _underlyingQuoteKeys) {
       const ts = resolveUnderlyingTradingsymbol(root, findNearestFuture);
@@ -1991,6 +2000,19 @@
       if (v > 0) {
         const c = snap?.close;
         m[root] = { ltp: v, close: c > 0 ? c : null };
+      } else {
+        // Cold-start fallback (2026-09 Commit 4, single spot resolver):
+        // fold in the SAME tier-3 (batchQuote cache) getUnderlyingSpot()
+        // falls back to, instead of omitting the root entirely until the
+        // first live tick lands — this closes the exact "9 independent
+        // spot chains disagree on cold start" divergence between _undLive
+        // and getUnderlyingSpot (portfolioStore's own root-spot cache,
+        // NavStrip) the plan describes. `close` stays null here (no
+        // batchQuote-sourced close is plumbed through getUnderlyingSpot)
+        // — Snapshot's P.Close fallback is a separate, Commit-8-scoped
+        // concern, not touched here.
+        const cached = untrack(() => getUnderlyingSpot(root));
+        if (cached > 0) m[root] = { ltp: cached, close: null };
       }
     }
     return m;
@@ -2759,27 +2781,28 @@
       return true;
     });
 
-    // Spot resolution — strategy is null at this point; read the same
-    // sources that liveSpot's tiers 3+4 use.
+    // Spot resolution — strategy is null at this point.
+    // 2026-09 Commit 4 (single spot resolver): reads `_undLive` — the SAME
+    // per-root live-tick-or-batchQuote-cache map every other Snapshot/
+    // Payoff/liveSpot consumer reads — instead of independently
+    // re-deriving via a third, separately-maintained batchQuote-cache +
+    // getSnapshot() chain. `_undLive` itself already folds in the
+    // batchQuote-cache fallback (its own Gap-B-equivalent `void
+    // _quoteGeneration` read), so this stub picks up cold-start values the
+    // same way _undLive does.
     // Gap A: capture selectedUnderlying BEFORE any untrack() so a symbol
-    //        switch always triggers re-derive — if the bqLtp early-return
-    //        fires, selectedUnderlying would otherwise be inside untrack
-    //        and never tracked.
+    //        switch always triggers re-derive — if the lookup were inside
+    //        untrack, selectedUnderlying would never be tracked.
     // Gap B: always track _quoteGeneration regardless of market state so
     //        batchQuote updates (MCX pre-open, post-open) re-trigger this
-    //        derived even when _throttledTick is sparse.
+    //        derived even when _throttledTick is sparse. Kept here too
+    //        (in addition to _undLive's own) since `legs`/`activeLegs`
+    //        above are the derived's OTHER reactive dependency and this
+    //        preserves the exact prior re-derive cadence.
     const spot = (() => {
       void _quoteGeneration;            // Gap B: always track
       const _sel = selectedUnderlying;  // Gap A: capture before untrack
-      const bqLtp = untrack(() => _underlyingQuotes[_sel]?.ltp);
-      if (bqLtp != null && Number.isFinite(bqLtp) && bqLtp > 0) return bqLtp;
-      if (_sel) {
-        const _resolvedSym = untrack(() => resolveUnderlying(String(_sel).toUpperCase(), findNearestFuture)?.tradingsymbol);
-        const _lookupSym = _resolvedSym || String(_sel).toUpperCase();
-        const v = untrack(() => Number(getSnapshot(_lookupSym)?.ltp));
-        if (Number.isFinite(v) && v > 0) return v;
-      }
-      return 0;
+      return untrack(() => Number(_undLive[_sel]?.ltp)) || 0;
     })();
     untrack(() => debugLog('payoff:stub', 'spot', { spot, legs: activeLegs?.length ?? 0, selectedUnderlying }));
     if (spot <= 0) return [];
@@ -4571,7 +4594,7 @@
     _lastQuoteSig = sig;
     // Prune roots this page stopped tracking (§5) — a previously-selected,
     // now-deselected root's stale entry can otherwise linger indefinitely
-    // and be silently served by _activeQuoteLtp / _clientPayoffStub. Only
+    // and be silently served by _undLive / _clientPayoffStub. Only
     // roots THIS page dropped are removed — pruneUnderlyingSpotRoots never
     // touches roots another page (e.g. PositionStrip) still tracks under a
     // different subscription cycle; any accidental cross-page removal is

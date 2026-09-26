@@ -17,7 +17,7 @@ import { batchQuote } from '$lib/api.js';
 import { publishPulseQuotes } from '$lib/data/marketDataStores.svelte.js';
 import { applyUnderlyingTickLtp, buildUnderlyingQuoteUpdate } from '$lib/data/underlyingQuoteUtils.js';
 import { getSnapshot } from '$lib/data/symbolStore.svelte.js';
-import { resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying.js';
+import { resolveUnderlyingTradingsymbol, pickUnderlyingSpot } from '$lib/data/resolveUnderlying.js';
 import { findNearestFuture } from '$lib/data/instruments.js';
 
 /**
@@ -55,8 +55,7 @@ let _quotes = $state({});
  * @returns {number}
  */
 export function getUnderlyingSpot(root) {
-  const ts = resolveUnderlyingTradingsymbol(root, findNearestFuture);
-  return getSnapshot(ts)?.ltp || getSnapshot(root)?.ltp || _quotes[root]?.ltp || 0;
+  return pickUnderlyingSpot(root, resolveUnderlyingTradingsymbol, getSnapshot, _quotes, findNearestFuture);
 }
 
 /**

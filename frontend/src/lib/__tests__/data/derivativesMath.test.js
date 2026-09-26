@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -148,6 +148,121 @@ describe('annotateOptionCandidates — qty=0 guard', () => {
     });
     expect(result).toHaveLength(1);
     expect(result[0].symbol).toBe('NIFTY26AUG750PE');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// annotateOptionCandidates / computeExpiryBands — spot-unavailable guard
+// (2026-09, Commit 4). Without this guard, a naive `candSpot < strike`
+// comparison against a fabricated 0 spot classifies EVERY PE as ITM (0 is
+// always less than a positive strike) — a dangerous false positive, since
+// ITM drives the "close before expiry" action band (real broker-settlement
+// risk messaging shown to the operator).
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('annotateOptionCandidates — spot-unavailable guard', () => {
+  it('a PE with an unresolvable spot (resolver returns 0) is NEVER classified ITM', () => {
+    const getInstrument = (sym) =>
+      sym === 'NIFTY26AUG800PE' ? makeInst('PE', 800, 'NIFTY') : null;
+    const candidates = [makeCand('NIFTY26AUG800PE', 50)];
+    const result = annotateOptionCandidates({
+      candidates,
+      spot: () => 0, // unresolvable
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]._isITM).toBe(false);
+    expect(result[0]._spotUnavailable).toBe(true);
+    expect(result[0]._otmDist).toBeNull();
+  });
+
+  it('a CE with an unresolvable spot (resolver returns NaN) is also never ITM', () => {
+    const getInstrument = (sym) =>
+      sym === 'NIFTY26AUG800CE' ? makeInst('CE', 800, 'NIFTY') : null;
+    const candidates = [makeCand('NIFTY26AUG800CE', 50)];
+    const result = annotateOptionCandidates({
+      candidates,
+      spot: () => NaN,
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    expect(result[0]._isITM).toBe(false);
+    expect(result[0]._spotUnavailable).toBe(true);
+  });
+
+  it('a resolvable spot (unaffected by the guard) still classifies ITM/OTM normally', () => {
+    const getInstrument = (sym) =>
+      sym === 'NIFTY26AUG800PE' ? makeInst('PE', 800, 'NIFTY') : null;
+    const candidates = [makeCand('NIFTY26AUG800PE', 50)];
+    const result = annotateOptionCandidates({
+      candidates,
+      spot: SPOT_800, // 800 == strike, PE ITM requires spot < strike, so OTM here
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    expect(result[0]._spotUnavailable).toBe(false);
+    expect(result[0]._otmDist).not.toBeNull();
+  });
+});
+
+describe('computeExpiryBands — spot-unavailable rows land in the existing "otm" band with a "Spot unavailable" reason, never a new band value', () => {
+  it('equity: a spot-unavailable row is banded "otm" (not "close"), reason "Spot unavailable"', () => {
+    const getInstrument = (sym) =>
+      sym === 'RELIANCE26AUG2500PE' ? makeInst('PE', 2500, 'RELIANCE') : null;
+    const candidates = [makeCand('RELIANCE26AUG2500PE', 10)];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: () => 0,
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    const bands = computeExpiryBands({ annotated });
+    expect(bands.equity).toHaveLength(1);
+    expect(bands.equity[0]._band).toBe('otm');
+    expect(bands.equity[0]._reason).toBe('Spot unavailable');
+  });
+
+  it('commodity: a spot-unavailable row is banded "otm", never entering the ITM netting/close path', () => {
+    const getInstrument = (sym) =>
+      sym === 'CRUDEOIL26OCT5800PE' ? makeInst('PE', 5800, 'CRUDEOIL') : null;
+    const candidates = [makeCand('CRUDEOIL26OCT5800PE', 1)];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: () => 0,
+      expFilter: [],
+      mcxUnderlyings: new Set(['CRUDEOIL']),
+      legAnalytics: {},
+      getInstrument,
+    });
+    const bands = computeExpiryBands({ annotated });
+    expect(bands.commodity).toHaveLength(1);
+    expect(bands.commodity[0]._band).toBe('otm');
+    expect(bands.commodity[0]._reason).toBe('Spot unavailable');
+  });
+
+  it('a normally-resolvable OTM row keeps the numeric "OTM by ₹X" reason, unaffected by the guard', () => {
+    const getInstrument = (sym) =>
+      sym === 'NIFTY26AUG800PE' ? makeInst('PE', 800, 'NIFTY') : null;
+    const candidates = [makeCand('NIFTY26AUG800PE', 50)];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: SPOT_800,
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    const bands = computeExpiryBands({ annotated });
+    expect(bands.equity[0]._reason).toMatch(/^OTM by ₹/);
   });
 });
 
