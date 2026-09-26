@@ -10,8 +10,17 @@
  *   .expiryTotal     → number (= total.exp_pnl)
  *   .byKey           → { [sym]: { day_pnl, exp_pnl, extrinsic, pnl, prev_mv, chg_pct } }
  *   .expiryByAcct    → Map<account, expiry P&L>
- *   .byRootPositions → { [root]: { day_pnl, exp_pnl, extrinsic, pnl } }
- *   .byRootHoldings  → { [root]: { day_pnl, exp_pnl, extrinsic, pnl } }  (cross-hedge map)
+ *
+ * `.byRootPositions`/`.byRootHoldings`/`.getByRoot()` removed (2026-09
+ * Commit 9) — grepped every consumer across `frontend/src`; none existed
+ * beyond this shim's own definitions and stale comments describing WHERE
+ * they used to be read from (already superseded by other SSOT reads —
+ * e.g. Snapshot's Exp P&L reduction now goes through
+ * `portfolioStore.positions.expPnlRows`, not this map). The underlying
+ * `portfolioStore.positions.byRootPositions`/`.byRootHoldings` fields
+ * themselves are left in place (out of this cleanup's scope — no proof
+ * they're unreachable from portfolioStore's OWN internals, only that
+ * this shim's re-export of them had no external readers).
  */
 
 import { portfolioStore } from './portfolioStore.svelte.js';
@@ -25,15 +34,6 @@ export const positionsDerivedStore = {
   get byKey()           { return portfolioStore.positions.byKey;              },
   /** Map<account, expiry P&L> — for NavBreakdown P slot */
   get expiryByAcct()    { return portfolioStore.positions.expiryByAcct;       },
-  /** { [root]: { day_pnl, exp_pnl, extrinsic, pnl } } — for Snapshot */
-  get byRootPositions() { return portfolioStore.positions.byRootPositions;    },
-  /**
-   * { [root]: { exp_pnl, pnl, ... } } — cross-hedge attribution map.
-   * Built from the holdings loop in _computeDerived; used by the Snapshot
-   * Hold toggle in /admin/derivatives. Shape: { [target_root]: { day_pnl,
-   * exp_pnl, extrinsic, pnl } } — NOT the same as holdings.byKey scalars.
-   */
-  get byRootHoldings()  { return portfolioStore.positions.byRootHoldings;    },
 
   /**
    * Get derived position by symbol.
@@ -43,25 +43,6 @@ export const positionsDerivedStore = {
    */
   get(sym, fallback = null) {
     const r = this.byKey[String(sym || '').toUpperCase()];
-    if (!r) return { day_pnl: fallback, pnl: fallback, exp_pnl: fallback, extrinsic: fallback, prev_mv: fallback, chg_pct: fallback };
-    return {
-      day_pnl:   r.day_pnl   ?? fallback,
-      pnl:       r.pnl       ?? fallback,
-      exp_pnl:   r.exp_pnl   ?? fallback,
-      extrinsic: r.extrinsic ?? fallback,
-      prev_mv:   r.prev_mv   ?? fallback,
-      chg_pct:   r.chg_pct   ?? fallback,
-    };
-  },
-
-  /**
-   * Get derived position by root symbol (F&O underlying).
-   * @param {string} root
-   * @param {number|null} [fallback=null] value used for each absent/null field
-   * @returns {{ day_pnl: number|null, pnl: number|null, exp_pnl: number|null, extrinsic: number|null, prev_mv: number|null, chg_pct: number|null }}
-   */
-  getByRoot(root, fallback = null) {
-    const r = this.byRootPositions[String(root || '').toUpperCase()];
     if (!r) return { day_pnl: fallback, pnl: fallback, exp_pnl: fallback, extrinsic: fallback, prev_mv: fallback, chg_pct: fallback };
     return {
       day_pnl:   r.day_pnl   ?? fallback,

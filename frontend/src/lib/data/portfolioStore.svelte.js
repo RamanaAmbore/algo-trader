@@ -10,10 +10,9 @@
  * known snapshot is returned instead of computing with empty arrays.
  *
  * Exports:
- *   portfolioStore.positions  — { total, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct }
- *   portfolioStore.holdings   — { total, byKey, byAccount }  (pulse-overridable)
+ *   portfolioStore.positions  — { total, byKey, byRootPositions, byRootHoldings, byRoot, expiryByAcct, rows, fresh }
+ *   portfolioStore.holdings   — { total, byKey, byAccount, rows, fresh }
  *   portfolioStore.funds      — { total, byAccount }
- *   portfolioStore.setHoldingsFromPulse(byKey, total) — pulse override for MarketPulse
  */
 
 import { browser } from '$app/environment';
@@ -41,12 +40,6 @@ if (browser) {
     _tickTimer = setTimeout(() => { _tickTimer = null; _tick++; }, 250);
   });
 }
-
-// ── Pulse override state (holdings only) ────────────────────────────────────
-// MarketPulse calls setHoldingsFromPulse() after each buildUnified pass so
-// NavStrip H reads the cq-accurate per-symbol values from the grid.
-let _pulseHoldingsTotal = $state(/** @type {number|null} */ (null));
-let _pulseHoldingsByKey = $state(/** @type {Record<string,number>|null} */ (null));
 
 // ── SWR last-known snapshot ──────────────────────────────────────────────────
 /** @type {{ positions: any, holdings: any, funds: any }|null} */
@@ -597,57 +590,32 @@ export const portfolioStore = {
    */
   get positions() { return _portfolio?.positions ?? _EMPTY_POSITIONS; },
 
-  // ── Holdings (pulse-overridable) ─────────────────────────────────────────
+  // ── Holdings ──────────────────────────────────────────────────────────────
   /**
    * { total: number, byKey: Record<string,number>, byAccount: Record<string,number>, chg_pct: number|null, chgPctByKey: Record<string,number|null>, rows, fresh }
-   *
-   * MarketPulse calls setHoldingsFromPulse() after each buildUnified pass so
-   * NavStrip H reflects cq-accurate filter-aware values from the grid.
-   * byAccount per-account keys always come from the base computation; only
-   * TOTAL + byKey are overridden when a pulse value is active.
    *
    * `rows` (2026-09 Commit 6): the raw per-holding array (`_holdTier3`),
    * one entry per holding, already carrying the canonical per-holding Day
    * P&L formula ((ltp − prev_close) × qty, `_dcv` fallback when
    * prev_close is unusable) as `_day_pnl` — the SSOT
    * derivatives/pageLoad.js's page-level equity/proxy Day P&L consumers
-   * now read directly instead of reimplementing the formula. UNAFFECTED
-   * by the pulse override above (which only replaces TOTAL/byKey).
+   * read directly instead of reimplementing the formula.
    * `fresh` — same freeze semantics as `positions.fresh`: true only on a
    * cycle that recomputed from a live, non-degraded fetch.
+   *
+   * 2026-09 Commit 9: the pulse-override mechanism (`setHoldingsFromPulse`,
+   * called by MarketPulse after each buildUnified pass) was removed — grep
+   * confirmed MarketPulse.svelte had ALREADY stopped calling it in an
+   * earlier session ("setFromPulse() override is removed — NavStrip P
+   * reads the store directly" — its own comment), leaving the override
+   * state permanently null/dead weight here. NavStrip now always reads
+   * this base computation directly, unconditionally.
    */
-  get holdings() {
-    const base = _portfolio?.holdings ?? _EMPTY_HOLDINGS;
-    if (_pulseHoldingsTotal === null) return base;
-    return {
-      total:       _pulseHoldingsTotal,
-      byKey:       _pulseHoldingsByKey ?? base.byKey,
-      byAccount:   { ...base.byAccount, TOTAL: _pulseHoldingsTotal },
-      chg_pct:     base.chg_pct,
-      chgPctByKey: base.chgPctByKey,
-      // rows/fresh (2026-09 Commit 6) — the pulse override only replaces
-      // TOTAL/byKey (a cq-accurate filtered aggregate from MarketPulse's
-      // own grid); the raw per-holding rows array and its freshness flag
-      // are unaffected by it and must still pass through.
-      rows:        base.rows,
-      fresh:       base.fresh,
-    };
-  },
+  get holdings() { return _portfolio?.holdings ?? _EMPTY_HOLDINGS; },
 
   // ── Funds ─────────────────────────────────────────────────────────────────
   /** { total: {live_cash,avail_margin,used_margin,...}, byAccount: Record<string,{...}> } */
   get funds() { return _portfolio?.funds ?? _EMPTY_FUNDS; },
-
-  /**
-   * Called by MarketPulse after each buildUnified with cq-accurate per-symbol
-   * and aggregate values. Mirrors holdingsDayPnlStore.setFromPulse.
-   * @param {Record<string,number>} byKey
-   * @param {number} total
-   */
-  setHoldingsFromPulse(byKey, total) {
-    _pulseHoldingsByKey  = byKey;
-    _pulseHoldingsTotal  = total;
-  },
 };
 
 // ── Cross-page portfolio aggregates (moved from PositionStrip) ────────────────

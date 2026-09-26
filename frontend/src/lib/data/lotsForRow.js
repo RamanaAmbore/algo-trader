@@ -49,6 +49,19 @@ function _normalizeQtys(row, itype) {
  * warm — the backend now returns `quantity` as contracts uniformly, so
  * contracts / lot_size = lot count.
  *
+ * 2026-09 Commit 9 investigation: `backend/api/schemas.py`'s `PositionRow`
+ * (the live `/api/positions` response struct) does NOT have a `lots`
+ * field — the `lots`/`lot_size` DB columns added by an earlier commit
+ * ("add lots/lot_size fields") live on the internal `daily_book` table for
+ * settlement bookkeeping, not on the response schema this fast path reads.
+ * So `row?.lots` is never populated for a real broker position/holding row
+ * — BUT `derivatives/pageLoad.js:buildCandidatePositions` DOES set
+ * `.lots` on provisional (post-fill, pre-broker-refresh) and draft-store
+ * rows, sourced from the LOCAL order-fill event Maps
+ * (`getProvisionalPositions()`/`getDraftPositions()`), a genuinely
+ * different pipeline than `/api/positions`. NOT removed — this fast path
+ * is reachable for that narrower row set, just not for a live broker row.
+ *
  * @param {string} sym
  * @param {string|undefined|null} itype
  * @param {number} qPos

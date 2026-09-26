@@ -651,15 +651,12 @@
       const q = _filterLegs.toUpperCase();
       rows = rows.filter(c => String(c.symbol || '').toUpperCase().includes(q));
     }
-    // Pair-group sort (legs tab only — expiry tab preserves its band ordering).
-    // P1 cluster → P2 → … → orphan / ungrouped last. Stable within each group.
-    if (legsTab !== 'expiry') {
-      rows = rows.slice().sort((a, b) => {
-        const ka = a.pair_group_key ?? 'ZZZZ_orphan';
-        const kb = b.pair_group_key ?? 'ZZZZ_orphan';
-        return ka < kb ? -1 : ka > kb ? 1 : 0;
-      });
-    }
+    // Pair-group sort removed (2026-09 Commit 9) — dead code: candidate
+    // rows built by buildCandidatePositions never carry `pair_group_key`
+    // (that field is a MarketPulse/PerformancePage-specific enrichment,
+    // not something this page's pipeline ever attaches), so `ka`/`kb`
+    // were ALWAYS both 'ZZZZ_orphan' — a guaranteed-stable no-op sort on
+    // every recompute.
     return rows;
   });
 
@@ -1170,7 +1167,10 @@
     if (p.source !== wantedSource) return false;
     if (!matchAccount(p.account)) return false;
     const sym = String(p.symbol || p.tradingsymbol || '').toUpperCase();
-    if (!/FUT$|(CE|PE)$/i.test(sym)) return false;
+    // 2026-09 Commit 9 fix: was a bare `/FUT$|(CE|PE)$/i` regex — matched
+    // "ACE" (a real NSE equity) as F&O, the same bug Commit 7 fixed
+    // everywhere else via the shared isFOSymbol predicate but missed here.
+    if (!isFOSymbol(sym)) return false;
     const qty = Number(p.quantity ?? p.qty) || 0;
     const pnl = Number(p.pnl) || 0;
     // SSOT: baseDayPnlForPosition uses daily_book settlement as base; keeps TOTAL in sync with NavStrip P1.
@@ -1182,8 +1182,18 @@
     return true;
   }
 
-  /** TOTAL row — sums F&O positions only so the rollup matches the
-   *  NavStrip P1 slot exactly. */
+  /** TOTAL row — sums F&O positions only, optionally account-filtered.
+   *  2026-09 Commit 9 correction: does NOT match the NavStrip P1 slot
+   *  "exactly" as an earlier version of this docstring claimed — verified
+   *  by reading PositionStrip.svelte's own P1/P2 computation
+   *  (`portfolioAggregates.livePositionsPnl` / `positionsDayPnlStore`):
+   *  P1 deliberately sums ALL positions with NO exchange filter (equity
+   *  intraday INCLUDED alongside F&O, "matching the MarketPulse positions
+   *  TOTAL row" per PositionStrip's own comment) and NO account filter.
+   *  This rollup only reconciles with NavStrip P1 when BOTH (a) no account
+   *  filter is active here, AND (b) there are no equity-intraday positions
+   *  in the book — otherwise this F&O-only, optionally-filtered total is a
+   *  DIFFERENT, narrower number by design. */
   const _byUnderlyingTotal = $derived.by(() => {
     const wantedSource = simActive ? 'sim' : 'live';
     const matchAccount = buildAcctMatcher(selectedAccounts);
@@ -2209,10 +2219,26 @@
   // snapshot and legs, show the profit/loss for each on expiration day
   // and updated total for the column".
   /** True when the candidate's expiry date is today (IST) or earlier.
-   *  Reads expiry from instruments cache (`inst.x`) → falls back to the
-   *  symbol parser's last-Thursday inference for rows without an
-   *  instruments entry. Returns false for futures / equity / undated
-   *  rows — those have no expiry-promotion concept.
+   *  Reads expiry from instruments cache (`inst.x`) only — returns false
+   *  (not expired) when the instrument can't be resolved at all (no
+   *  fallback symbol-parser inference is actually implemented here,
+   *  despite an earlier version of this docstring claiming one; corrected
+   *  2026-09 Commit 9). Returns false for futures / equity / undated rows
+   *  — those have no expiry-promotion concept.
+   *
+   *  Deliberately uses `<=` (today counts as expired), NOT the `<` cutoff
+   *  buildCandidatePositions/buildCleanLegs use to decide whether a
+   *  contract is "expired and should be tagged/excluded from the request
+   *  payload" (2026-09 Commit 9 investigation — grepped both, checked
+   *  they're NOT meant to agree): this function answers "is TODAY this
+   *  leg's settlement/last-trading day" (drives the "Day P&L promoted to
+   *  Exp P&L on expiry day" tooltip in CandidateLegRow.svelte — a contract
+   *  is still very much live and tradeable ON its own expiry day). The `<`
+   *  cutoff answers a different question — "has this contract's expiry
+   *  date already fully passed" (a contract expiring today is NOT yet
+   *  excluded/tagged by that check). Unifying the two would break one or
+   *  the other's correct semantics; left as two intentionally different
+   *  comparisons.
    *  @param {any} c */
   function _isLegExpired(c) {
     if (c.kind !== 'opt') return false;

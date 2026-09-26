@@ -6,12 +6,15 @@
  * without changes.
  *
  * Consumers read:
- *   .total     → number  (pulse-overridable)
- *   .byKey     → { [tradingsymbol]: number }  (pulse-overridable)
- *   .byAccount → { [account]: number, TOTAL: number }  (TOTAL is pulse-aware)
+ *   .total     → number
+ *   .byKey     → { [tradingsymbol]: number }
+ *   .byAccount → { [account]: number, TOTAL: number }
  *
- * setFromPulse(byKey, total) delegates to portfolioStore.setHoldingsFromPulse()
- * so MarketPulse keeps writing to a single SSOT.
+ * setFromPulse(byKey, total) is a no-op (2026-09 Commit 9) — the pulse-
+ * override mechanism it used to delegate to
+ * (portfolioStore.setHoldingsFromPulse) was removed: MarketPulse had
+ * already stopped calling it in an earlier session; NavStrip now always
+ * reads portfolioStore.holdings directly, unconditionally.
  */
 
 import { portfolioStore } from './portfolioStore.svelte.js';
