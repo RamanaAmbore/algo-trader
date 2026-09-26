@@ -55,19 +55,28 @@ _UNAVAILABLE = "Market report is temporarily unavailable. Please try again short
 
 
 def fetch_fresh() -> MarketResponse | None:
-    """Call Gemini for a fresh market update. None if Gemini returned empty/failed."""
+    """Call Gemini for a fresh market update. None if Gemini returned empty/failed.
+
+    `get_cycle_date(hours=0, mins=0)` — a midnight IST cutoff, not the
+    function's 8am default. The proactive daily refresh now runs from a
+    05:30 IST wake-up (2026-09 scheduling redesign); with the old 8am
+    default a report generated at 05:30 would mislabel itself as
+    YESTERDAY's cycle (`now < today_cutoff` at 05:30 < 08:00), even
+    though it represents the session about to open."""
     content = genai_api.get_market_update(strict=True)
     if content is None:
         return None
     return MarketResponse(
         content=content,
-        cycle_date=str(get_cycle_date()),
+        cycle_date=str(get_cycle_date(hours=0, mins=0)),
         refreshed_at=timestamp_display(),
     )
 
 
 async def _db_or_gemini() -> MarketResponse:
-    """Try DB row (<24h old). Else call Gemini inline and persist on success."""
+    """Serve the DB row regardless of its age (see `_load_market_from_db`
+    docstring); fall through to a live, blocking Gemini call ONLY when
+    literally no row exists at all (first-ever boot, empty DB)."""
     from backend.api.background import _load_market_from_db, _save_market_to_db
 
     cached = await _load_market_from_db()
@@ -79,7 +88,7 @@ async def _db_or_gemini() -> MarketResponse:
     if result is None:
         return MarketResponse(
             content=_UNAVAILABLE,
-            cycle_date=str(get_cycle_date()),
+            cycle_date=str(get_cycle_date(hours=0, mins=0)),
             refreshed_at=timestamp_display(),
         )
     await _save_market_to_db(result)

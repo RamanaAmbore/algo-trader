@@ -59,7 +59,10 @@ deploy_branch: main
 #   alerts.rate_window_min, alerts.baseline_offset_min, alerts.cooldown_minutes,
 #     alerts.suppress_delta_abs, alerts.suppress_delta_pct
 #   performance.refresh_interval, performance.open_summary_offset_min,
-#     performance.close_summary_offset_min, performance.market_refresh_time
+#     performance.close_summary_offset_min
+#   (performance.market_refresh_time retired 2026-09 — market refresh now
+#     runs from the shared 05:30 IST holiday_refresh_time wake-up, see
+#     background.py's _daily_content_refresh_cycle)
 #   connections.retry_count, auth.enforce_password_standard,
 #     genai.thinking_budget
 #   algo.chase_interval_seconds, algo.aggression_step, algo.max_attempts,

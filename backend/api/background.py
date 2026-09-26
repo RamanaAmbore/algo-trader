@@ -8,7 +8,12 @@ never stall the async event loop.
 Two tasks are started on Litestar startup:
   1. _task_performance — refresh holdings/positions/funds every N minutes during market hours,
                          send open/close summaries (via _perf_run_close_check), fire loss alerts.
-  2. _task_market      — warm market cache at startup; re-warm daily at 08:30 IST.
+  2. _task_market      — hydrate market cache from DB at startup (whatever
+                         row exists, regardless of age — never blocks a
+                         visitor on a live Gemini call). The daily proactive
+                         refresh itself no longer runs on its own clock —
+                         see _daily_content_refresh_cycle, spawned from the
+                         same 05:30 IST wake-up as _task_holiday_refresh.
 
 All tasks are cancelled cleanly on Litestar shutdown.
 """
@@ -598,7 +603,23 @@ async def _run(fn, *args):
 # ---------------------------------------------------------------------------
 
 async def _load_market_from_db():
-    """Return MarketResponse if a DB row exists and is <24h old, else None.
+    """Return MarketResponse if a DB row exists at all, else None.
+
+    2026-09 scheduling fix: this function is called by BOTH the live
+    request path (`market._db_or_gemini`) and the background startup
+    hydration path (`_task_market`) — it must serve whatever row exists
+    REGARDLESS OF AGE. A calendar-day-aware "is this stale" check belongs
+    ONLY in `_market_needs_refresh_today()` (background/startup-catchup
+    path). Putting an age gate here (the pre-fix behaviour: None once the
+    row turned 24h old) meant every cold-cache click between IST midnight
+    and whenever the proactive refresh actually completed fell through to
+    a live, BLOCKING Gemini call from `_db_or_gemini` — reproducing the
+    exact multi-second page-load delay this scheduling redesign exists to
+    eliminate, just shifted to a different time window. None is returned
+    ONLY when literally no row exists at all (first-ever boot, empty DB)
+    — `_db_or_gemini` falls through to a live inline Gemini call in that
+    one case, by design.
+
     The `refreshed_at` field is derived FROM `generated_at` (the Postgres
     timestamp of when the content was actually written to the DB), not
     from the persisted `refreshed_at` string. Both values come from the
@@ -607,7 +628,6 @@ async def _load_market_from_db():
     is exactly when this content was last updated, even if a future
     code path (e.g. a background re-formatter) updates the string field
     independently."""
-    from datetime import datetime, timezone
     from backend.api.database import async_session
     from backend.api.models import MarketReport
     from backend.api.schemas import MarketResponse
@@ -618,9 +638,6 @@ async def _load_market_from_db():
             row = await s.get(MarketReport, 1)
         if not row:
             return None
-        age = (datetime.now(timezone.utc) - row.generated_at).total_seconds()
-        if age >= 86400:
-            return None
         return MarketResponse(
             content=row.content,
             cycle_date=row.cycle_date,
@@ -629,6 +646,29 @@ async def _load_market_from_db():
     except Exception as e:
         logger.error(f"Background: market DB load failed: {e}")
         return None
+
+
+async def _market_needs_refresh_today() -> bool:
+    """True when no MarketReport row exists yet, or its `generated_at`
+    (converted to an IST calendar date) isn't today.
+
+    Used ONLY by the background scheduled/startup-catchup path
+    (`_daily_content_refresh_cycle` / `_task_market`'s startup check) —
+    never by the live request path. See `_load_market_from_db` docstring
+    for why the two checks must stay separate."""
+    from backend.api.database import async_session
+    from backend.api.models import MarketReport
+    from backend.shared.helpers.date_time_utils import INDIAN_TIMEZONE
+
+    try:
+        async with async_session() as s:
+            row = await s.get(MarketReport, 1)
+        if not row:
+            return True
+        return row.generated_at.astimezone(INDIAN_TIMEZONE).date() != timestamp_indian().date()
+    except Exception as e:
+        logger.warning(f"[DAILY-CONTENT] market freshness check failed (assume stale): {e}")
+        return True
 
 
 async def _save_market_to_db(resp) -> None:
@@ -659,67 +699,133 @@ async def _save_market_to_db(resp) -> None:
 
 async def _task_market(state: dict) -> None:
     """
-    Startup: hydrate cache from DB if <24h old, else call Gemini + save.
-    Then daily at 07:00 IST: call Gemini + save.
+    Startup only: hydrate the in-process cache from whatever MarketReport
+    DB row exists (regardless of age — a stale row is still infinitely
+    better than blocking the first visitor on a live Gemini call), then
+    kick the shared daily content-refresh cycle in case today's report
+    is missing (`_spawn_daily_content_refresh` — a no-op if that cycle
+    is already running, e.g. this startup races the 05:30 wake-up).
+
+    2026-09 scheduling redesign: the OLD independent daily while-loop
+    (re-warmed on its own `performance.market_refresh_time` clock,
+    default 08:30 IST) is retired — a double scheduler would generate
+    the Gemini report twice a day, with the later run overwriting the
+    morning's content for no reason. Market now refreshes ONLY from
+    `_daily_content_refresh_cycle`, spawned once from the SAME 05:30 IST
+    wake-up `_task_holiday_refresh` already uses (one shared clock, not
+    two independent ones).
     """
-    from backend.api.routes.market import fetch_fresh
     from backend.api.cache import _store
     import time as _time
 
-    def _hydrate(resp):
-        _store["market"] = (_time.monotonic() + 86400, resp)
-
     cached = await _load_market_from_db()
     if cached:
-        _hydrate(cached)
+        _store["market"] = (_time.monotonic() + 86400, cached)
         logger.info(f"Background: market cache hydrated from DB (cycle {cached.cycle_date})")
     else:
-        try:
-            result = await _run(fetch_fresh)
-            if result is None:
-                logger.warning("Background: Gemini empty at startup — leaving cache/DB untouched")
-            else:
-                _hydrate(result)
-                await _save_market_to_db(result)
-                logger.info(f"Background: market generated at startup (cycle {get_cycle_date()})")
-        except Exception as e:
-            logger.error(f"Background: market startup warm failed: {e}")
+        logger.info("Background: no market report in DB yet (first-ever boot)")
 
+    _spawn_daily_content_refresh()
+
+
+# ═════════════════════════════════════════════════════════════════════════
+#  Shared daily content-refresh cycle (2026-09) — market + news
+# ═════════════════════════════════════════════════════════════════════════
+#
+# ONE shared wake-up trigger, spawned from _task_holiday_refresh's existing
+# 05:30 IST wake-up (no trading-day gate, same as holiday refresh itself)
+# AND from _task_market's startup path (catch-up — fires at ANY hour if
+# today's refresh hasn't happened yet). `_DAILY_CONTENT_TASK` is a
+# module-level handle so a startup race against the 05:30 wake-up (or the
+# wake-up firing twice) never spawns a second concurrent cycle — Gemini's
+# free-tier budget doesn't want two runs a day, and news's truncate+reload
+# must never overlap itself.
+#
+# The spawned task is fire-and-forget (asyncio.create_task, NOT awaited) —
+# a hung Gemini/RSS call inside this cycle must never stall
+# _task_holiday_refresh's own retry-until-08:00 loop for the holiday
+# calendar, and vice versa. Not wrapped in `_supervised` (that wrapper
+# loops forever; this cycle is meant to finish once per day), so its own
+# body is wrapped in try/except here so a crash is logged, not silent.
+
+_DAILY_CONTENT_TASK: "asyncio.Task | None" = None
+
+
+def _spawn_daily_content_refresh() -> None:
+    """Fire-and-forget spawn of `_daily_content_refresh_cycle`, guarded
+    against double-spawn."""
+    global _DAILY_CONTENT_TASK
+    if _DAILY_CONTENT_TASK is not None and not _DAILY_CONTENT_TASK.done():
+        logger.info("[DAILY-CONTENT] refresh already in flight — skip spawn")
+        return
+
+    async def _guarded() -> None:
+        try:
+            await _daily_content_refresh_cycle()
+        except Exception as e:
+            logger.error(f"[DAILY-CONTENT] cycle crashed: {e}")
+
+    _DAILY_CONTENT_TASK = asyncio.create_task(_guarded())
+
+
+async def _perform_market_refresh_once() -> bool:
+    """One market-refresh attempt: Gemini fetch (offloaded to executor) +
+    DB save + cache invalidate. Returns True on success, False to signal
+    the caller should retry.
+
+    Invalidates rather than primes the cache (unlike news) — the next
+    request's `_db_or_gemini` reads the DB first, which is cheap, before
+    ever falling back to a live Gemini call, so invalidate-and-let-the-
+    next-request-reload-from-DB is correct and simpler here."""
+    from backend.api.routes.market import fetch_fresh
+    from backend.api import cache as _cache_mod
+
+    try:
+        result = await _run(fetch_fresh)
+    except Exception as e:
+        logger.error(f"[DAILY-CONTENT] market fetch raised: {e}")
+        return False
+    if result is None:
+        logger.warning("[DAILY-CONTENT] market: Gemini returned empty — will retry")
+        return False
+    try:
+        await _save_market_to_db(result)
+    except Exception as e:
+        logger.error(f"[DAILY-CONTENT] market DB save failed: {e}")
+        return False
+
+    _cache_mod.invalidate("market")
+    logger.info(f"[DAILY-CONTENT] market refreshed for cycle {get_cycle_date(hours=0, mins=0)}")
+    try:
+        from backend.api.routes.ws import broadcast
+        import json
+        broadcast(json.dumps({"event": "market_updated", "refreshed_at": timestamp_display()}))
+    except Exception as e:
+        logger.error(f"[DAILY-CONTENT] market WS broadcast failed: {e}")
+    return True
+
+
+async def _daily_content_refresh_cycle() -> None:
+    """Retry-every-30-min loop, hard stop at 08:00 IST — attempts whatever
+    (market / news) hasn't succeeded yet each pass. Runs every calendar
+    day, no trading-day gate (same shape as `_task_holiday_refresh`'s own
+    retry loop)."""
     while True:
-        # `performance.market_refresh_time` is HH:MM in IST. Live-tunable
-        # from /admin/settings; YAML `market_refresh_time` is the boot
-        # fallback.
-        from backend.shared.helpers.settings import get_string
-        hhmm = get_string(
-            "performance.market_refresh_time",
-            str(config.get("market_refresh_time", "08:30")),
-        )
-        try:
-            hour, minute = (int(x) for x in str(hhmm).split(":", 1))
-        except Exception:
-            hour, minute = 7, 0
-        now = timestamp_indian()
-        next_warm = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
-        if now >= next_warm:
-            next_warm += timedelta(days=1)
-        sleep_s = (next_warm - now).total_seconds()
-        logger.info(f"Background: market task sleeping {sleep_s/3600:.1f}h until next warm at {hhmm} IST")
-        await asyncio.sleep(sleep_s)
+        market_done = not await _market_needs_refresh_today()
+        if not market_done:
+            market_done = await _perform_market_refresh_once()
 
-        try:
-            result = await _run(fetch_fresh)
-            if result is None:
-                logger.warning("Background: Gemini empty on daily refresh — keeping previous report")
-                continue
-            _hydrate(result)
-            await _save_market_to_db(result)
-            logger.info(f"Background: market cache warmed for cycle {get_cycle_date()}")
+        if market_done:
+            logger.info("[DAILY-CONTENT] cycle complete for today")
+            return
 
-            from backend.api.routes.ws import broadcast
-            import json
-            broadcast(json.dumps({"event": "market_updated", "refreshed_at": timestamp_display()}))
-        except Exception as e:
-            logger.error(f"Background: market warm failed: {e}")
+        now_ist = timestamp_indian()
+        if now_ist.hour >= 8:
+            logger.warning(
+                f"[DAILY-CONTENT] give-up after 08:00 IST — market_done={market_done}"
+            )
+            return
+        await asyncio.sleep(30 * 60)
 
 
 
@@ -3099,6 +3205,16 @@ async def _task_holiday_refresh() -> None:
             await asyncio.sleep(sleep_s)
         except asyncio.CancelledError:
             raise
+
+        # Shared-clock spawn (2026-09 scheduling redesign) — fire the
+        # market/news daily content refresh from this SAME wake-up, as its
+        # own independent fire-and-forget task. Deliberately BEFORE
+        # `_do_all()` (which has its own retry-until-08:00 loop that can
+        # take hours to return) so a slow holiday-calendar retry can never
+        # delay spawning market/news, and vice versa — the only thing
+        # shared is this wake-up moment, not either task's outcome.
+        _spawn_daily_content_refresh()
+
         try:
             await exchange_clock.load_today_open_time()
             logger.info("Background: 05:30 IST — NSE session open time loaded: %s",

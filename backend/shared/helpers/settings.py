@@ -461,11 +461,6 @@ SEEDS: list[tuple] = [
     ("auth",        "auth.enforce_password_standard", "bool", False,
      "Reject weak passwords on registration / password change.", None, None),
 
-    # ── Performance / market refresh ─────────────────────────────────────
-    ("performance", "performance.market_refresh_time", "string", "08:30",
-     "IST clock time for the daily Gemini market-update warm "
-     "(HH:MM, 24-hour).", None, None),
-
     # ── Algo (chase + expiry) ────────────────────────────────────────────
     ("algo",        "algo.chase_interval_seconds",  "int", 20,
      "Seconds between price adjustments while chasing an open order.",
