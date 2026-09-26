@@ -56,9 +56,20 @@ _V2_LAST_RESET_DATE = None
 _V2_LATCH_HYDRATED = False
 
 
-def _maybe_reset_v2_state(today):
-    """Wipe v2 latch state once per new trading day."""
+def _maybe_reset_v2_state(today, *, live: bool = True):
+    """Wipe v2 latch state once per new trading day.
+
+    `live=False` (sim/replay cycles) makes this a complete no-op — a
+    sim/replay run passes its OWN simulated/historical `now.date()`
+    (e.g. a historical backtest date, or a scenario date far from
+    today), which would otherwise compare unequal to the real
+    `_V2_LAST_RESET_DATE` set by `_v2_hydrate_latch()` and wipe the
+    just-hydrated LIVE latch on the very next sim/replay tick. Only a
+    real live cycle may mutate `_V2_LAST_RESET_DATE` / clear
+    `_V2_LATCH`."""
     global _V2_LAST_RESET_DATE
+    if not live:
+        return
     if _V2_LAST_RESET_DATE != today:
         _V2_LAST_RESET_DATE = today
         _V2_LATCH.clear()
@@ -252,18 +263,36 @@ async def _v2_hydrate_latch() -> None:
     if _V2_LATCH_HYDRATED:
         return
     _V2_LATCH_HYDRATED = True
+    global _V2_LAST_RESET_DATE
     try:
         from backend.api.models import AgentEvent
         from backend.shared.helpers.date_time_utils import timestamp_indian
+        today = timestamp_indian().date()
         async with async_session() as session:
             result = await session.execute(
                 select(Agent.slug, AgentEvent.detail, AgentEvent.timestamp)
                 .join(AgentEvent, AgentEvent.agent_id == Agent.id)
                 .where(AgentEvent.event_type.in_(('triggered', 'triggered_suppressed')))
+                # sim/replay fires must never hydrate the LIVE latch — a
+                # sim run that happened to fire the same (agent, metric,
+                # scope, account) key would otherwise poison the real
+                # latch on the next live restart.
+                .where(AgentEvent.sim_mode.is_(False))
                 .order_by(AgentEvent.timestamp.asc())
             )
             rows = result.all()
-        _hydrate_latch_from_rows(rows, today=timestamp_indian().date())
+        _hydrate_latch_from_rows(rows, today=today)
+        # Set the reset-date tracker HERE, at the point hydration
+        # completes — not left at its None default. _maybe_reset_v2_state
+        # runs unconditionally on every live cycle's first agent
+        # (_V2_LAST_RESET_DATE starts None), and without this line it
+        # would see today != None on the very first post-hydration tick
+        # and immediately wipe the _V2_LATCH we just restored, silently
+        # undoing the entire deploy-survival fix. Stays correct across a
+        # midnight rollover during a long-running process too — the
+        # normal _maybe_reset_v2_state day-boundary check still fires
+        # tomorrow off this same tracker.
+        _V2_LAST_RESET_DATE = today
         logger.info(f"Agent engine: v2 latch hydrated from agent_events — {len(_V2_LATCH)} keys")
     except Exception as e:
         logger.warning(f"Agent engine: v2 latch hydration failed (starting cold): {e}")
@@ -2124,7 +2153,16 @@ async def _cycle_process_agent(
 
     alert_state = context.get("alert_state") or {}
     sim_mode = bool(alert_state.get("sim_mode") or context.get("sim_mode"))
-    _maybe_reset_v2_state(now.date() if hasattr(now, 'date') else None)
+    # replay driver sets alert_state={"replay_mode": True} + context
+    # sim_mode=False (deliberately distinct from sim_mode) — a replay
+    # cycle's `now` is a historical/scenario timestamp, so it must be
+    # excluded from the live-only day-rollover reset the same way
+    # sim_mode is (see _maybe_reset_v2_state docstring).
+    replay_mode = bool(alert_state.get("replay_mode") or context.get("replay_mode"))
+    _maybe_reset_v2_state(
+        now.date() if hasattr(now, 'date') else None,
+        live=not (sim_mode or replay_mode),
+    )
 
     # Fix #6a — the whole-agent "pure rate metric" baseline gate is gone;
     # _cycle_evaluate_agent now computes `baseline_live` once per agent
@@ -2249,6 +2287,7 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     agent      = entry['agent']
     result     = entry['result']
     sim_mode_p = entry['sim_mode']
+    matches_   = entry.get('matches') or []
     supp_by    = suppressed_ids[agent.id]
     topic      = getattr(agent, 'topic', 'general')
     detail_text = (
@@ -2258,7 +2297,15 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
         await log_event(
             agent, 'triggered_suppressed',
             f"{result.condition_text} — {detail_text}",
-            detail={'suppressed_by': supp_by,
+            # 'matches' is required here for the SAME reason the
+            # 'triggered' path (_v2_build_evalresult) writes it:
+            # _hydrate_latch_from_rows reads detail['matches'] to
+            # reconstruct _V2_LATCH on process restart. Without it every
+            # suppressed fire hydrates as an empty latch — a standing
+            # breach that was suppressed (not silenced by recovery) would
+            # incorrectly appear "never fired" after a deploy.
+            detail={'matches': matches_,
+                    'suppressed_by': supp_by,
                     'topic': topic,
                     'tier':  getattr(agent, 'tier', 'medium')},
             sim_mode=sim_mode_p,

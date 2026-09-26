@@ -35,7 +35,9 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 import json
 import pytest
+from unittest.mock import AsyncMock, MagicMock, patch
 
+from backend.api.algo import agent_engine
 from backend.api.algo.agent_engine import (
     _latch_key,
     _v2_leaf_should_fire,
@@ -47,6 +49,8 @@ from backend.api.algo.agent_engine import (
     _ae_suppressed_in_group,
     _compute_topic_suppression,
     _hydrate_latch_from_rows,
+    _maybe_reset_v2_state,
+    _ae_dispatch_suppressed_entry,
 )
 
 
@@ -360,3 +364,143 @@ class TestLatchHydration:
         rows = [("agent", None, ts), ("agent", "not json", ts), ("agent", "{}", ts)]
         _hydrate_latch_from_rows(rows, today=ts.date())  # must not raise
         assert agent_engine._V2_LATCH == {}
+
+    # ── Reset-after-hydrate bug (fix: set _V2_LAST_RESET_DATE inside
+    #    _v2_hydrate_latch itself, at the point hydration completes) ──────
+
+    @pytest.mark.asyncio
+    async def test_hydrate_sets_reset_date_so_same_day_reset_does_not_wipe(self):
+        """Pre-fix: _V2_LAST_RESET_DATE started None, so the very next
+        _maybe_reset_v2_state call on the same day (today != None) wiped
+        the latch _v2_hydrate_latch had just restored — the documented
+        deploy-survival fix never actually took effect. Post-fix:
+        hydration itself sets _V2_LAST_RESET_DATE = today, so a same-day
+        reset call is a no-op."""
+        agent_engine._V2_LATCH.clear()
+        agent_engine._V2_LATCH_HYDRATED = False
+        agent_engine._V2_LAST_RESET_DATE = None
+        try:
+            from backend.shared.helpers.date_time_utils import timestamp_indian
+            today_ist = timestamp_indian().date()
+            # A row timestamped "now" (UTC) so its IST date == today_ist.
+            ts = datetime.now(timezone.utc)
+            detail = json.dumps(
+                {'matches': [_m(metric="day_val", account="ZD1234", value=-31000)]}
+            )
+            fake_result = MagicMock()
+            fake_result.all = MagicMock(
+                return_value=[("loss-positions-acct", detail, ts)]
+            )
+            fake_session = AsyncMock()
+            fake_session.execute = AsyncMock(return_value=fake_result)
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=fake_session)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+
+            with patch.object(agent_engine, "async_session", side_effect=lambda: ctx):
+                await agent_engine._v2_hydrate_latch()
+
+            key = _latch_key(
+                "loss-positions-acct",
+                _m(metric="day_val", account="ZD1234"),
+            )
+            assert key in agent_engine._V2_LATCH, (
+                "Hydration must have populated the latch from the mocked row"
+            )
+
+            # The bug: this call, on the SAME day hydration just ran,
+            # must NOT wipe the latch it just restored.
+            _maybe_reset_v2_state(today_ist)
+            assert key in agent_engine._V2_LATCH, (
+                "_maybe_reset_v2_state on the SAME day as hydration must be "
+                "a no-op — pre-fix this line wiped the just-hydrated latch"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+            agent_engine._V2_LATCH_HYDRATED = False
+            agent_engine._V2_LAST_RESET_DATE = None
+
+    @pytest.mark.asyncio
+    async def test_hydration_query_excludes_sim_mode_true_rows(self):
+        """The hydration SELECT must filter AgentEvent.sim_mode == False —
+        without it, a sim/replay run's fires would poison the live latch
+        on the next restart."""
+        agent_engine._V2_LATCH.clear()
+        agent_engine._V2_LATCH_HYDRATED = False
+        try:
+            fake_result = MagicMock()
+            fake_result.all = MagicMock(return_value=[])
+            fake_session = AsyncMock()
+            fake_session.execute = AsyncMock(return_value=fake_result)
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=fake_session)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+
+            with patch.object(agent_engine, "async_session", side_effect=lambda: ctx):
+                await agent_engine._v2_hydrate_latch()
+
+            assert fake_session.execute.await_count == 1
+            executed_query = fake_session.execute.await_args.args[0]
+            compiled = str(executed_query.compile(
+                compile_kwargs={"literal_binds": True},
+            ))
+            assert "sim_mode" in compiled and "false" in compiled.lower(), (
+                f"Expected the hydration query to filter sim_mode=False, got: "
+                f"{compiled}"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+            agent_engine._V2_LATCH_HYDRATED = False
+
+    @pytest.mark.asyncio
+    async def test_suppressed_dispatch_writes_matches_into_detail(self):
+        """_ae_dispatch_suppressed_entry must include the same 'matches'
+        the triggered path writes — without it, _hydrate_latch_from_rows
+        hydrates every triggered_suppressed row as empty (fix #7's
+        'suppressed fires also record a latch' never actually reaches
+        the hydration path)."""
+        agent = _Agent(id=7, slug="loss-suppressed-acct", tier="low", topic="pnl_loss")
+        matches = [_m(metric="day_val", account="ZD5555", value=-40000)]
+        entry = {
+            'agent': agent,
+            'matches': matches,
+            'result': MagicMock(condition_text="day_val <= -30000"),
+            'sim_mode': False,
+        }
+        captured = {}
+
+        async def _fake_log_event(agent_, event_type, text, detail=None, sim_mode=False):
+            captured['detail'] = detail
+
+        with patch.object(agent_engine, "log_event", new=_fake_log_event):
+            await _ae_dispatch_suppressed_entry(entry, {7: "loss-critical-acct"}, None)
+
+        assert captured.get('detail', {}).get('matches') == matches, (
+            f"Expected suppressed-dispatch detail to carry 'matches', got: "
+            f"{captured.get('detail')}"
+        )
+
+    # ── Sim/replay must never mutate the live reset-date tracker ─────────
+
+    def test_maybe_reset_v2_state_live_false_is_noop(self):
+        """A sim/replay cycle passes live=False — its own simulated/
+        historical `today` must never clear _V2_LATCH nor move
+        _V2_LAST_RESET_DATE, regardless of how different it is from the
+        real live tracker (which _v2_hydrate_latch sets on process boot)."""
+        agent_engine._V2_LATCH.clear()
+        key = _latch_key("loss-positions-acct", _m(metric="day_val", account="ZD1234"))
+        agent_engine._V2_LATCH[key] = {'ts': _now(), 'val': -31000}
+        agent_engine._V2_LAST_RESET_DATE = datetime(2026, 9, 20).date()
+        try:
+            # A wildly different "today" (e.g. a historical replay date)
+            # must have zero effect when live=False.
+            _maybe_reset_v2_state(datetime(2020, 1, 1).date(), live=False)
+            assert key in agent_engine._V2_LATCH, (
+                "live=False must never clear the live latch"
+            )
+            assert agent_engine._V2_LAST_RESET_DATE == datetime(2026, 9, 20).date(), (
+                "live=False must never move the live reset-date tracker"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+            agent_engine._V2_LAST_RESET_DATE = None
