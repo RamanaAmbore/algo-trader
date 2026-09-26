@@ -652,6 +652,65 @@ export function legPnlTotal(rows) {
   return rows.reduce((s, c) => s + Number(c?.pnl ?? 0), 0);
 }
 
+/**
+ * Effective (qty, cost) for one equity/proxy-hedge leg, after beta-scaling
+ * a proxy ETF leg (e.g. GOLDBEES) into the hedged root's own price space
+ * (e.g. GOLDM) — 2026-09 fix, deferred out of Commit 4, landed alongside
+ * Commit 5's Exp P&L work since it's the same eq branch.
+ *
+ * `targetSpot` is the ONE basis this function scales against — the caller
+ * MUST pass the SAME spot it intends to VALUE the returned {qty,cost} at
+ * (i.e. `(spot - cost) * qty` downstream), not a different one. The old
+ * code baked `effQty`/`effCost` at a FIXED `strategy.spot` (the backend's
+ * anchor-priced value, refreshed only every 5s) regardless of which spot
+ * basis the DOWNSTREAM valuation actually used (liveSpot for the Legs
+ * TOTAL, payoffSpot for the chart) — mixing the anchor price with a
+ * different valuation spot silently inflated/deflated a proxy leg's Exp
+ * P&L on any contango/backwardation MCX root where strategy.spot and
+ * liveSpot/payoffSpot meaningfully diverge.
+ *
+ * When basis matches (targetSpot === the spot the caller values at), the
+ * math collapses to a spot-INDEPENDENT identity:
+ *   effQty  = (beta × rawQty × proxyLtp) / targetSpot
+ *   effCost = (rawQty × cost) / effQty
+ *   (targetSpot − effCost) × effQty
+ *     = targetSpot·effQty − effCost·effQty
+ *     = targetSpot·effQty − (rawQty × cost)      [effCost·effQty ≡ investmentValue by construction]
+ *     = beta × rawQty × proxyLtp − rawQty × cost
+ * — i.e. "beta-scaled market value minus cost basis," independent of
+ * targetSpot's actual value. This is WHY passing the caller's own spot as
+ * `targetSpot` (instead of a fixed strategy.spot) fixes the bug: the
+ * result becomes basis-consistent by construction, not just numerically
+ * coincidentally correct when the two happened to agree.
+ *
+ * Non-proxy legs (plain equity holdings, no `proxy_for`) are NOT
+ * beta-scaled at all — `targetSpot` is irrelevant to them; they pass
+ * through at their own raw (qty, cost) unchanged, same as before.
+ *
+ * @param {{ qty?:number|string, opening_qty?:number|string, avg_cost?:number|string, proxy_for?:string, symbol?:string, ltp?:number|string }} eq
+ * @param {number} targetSpot - the SAME spot basis the caller will value the result at
+ * @param {(proxySymbol:string, targetRoot:string) => {beta?:number}|null} getProxyRow
+ * @returns {{qty:number, cost:number}|null} null when the leg is unusable
+ *   (no cost, zero qty, or — for a proxy leg only — no proxy LTP/target spot yet)
+ */
+export function equityLinearLeg(eq, targetSpot, getProxyRow) {
+  const cost = Number(eq?.avg_cost);
+  if (!Number.isFinite(cost)) return null;
+  const rawQty = Number(eq?.qty) || Number(eq?.opening_qty) || 0;
+  if (rawQty === 0) return null;
+  if (!eq?.proxy_for) return { qty: rawQty, cost };
+  const proxyLtp = Number(eq.ltp);
+  if (!(proxyLtp > 0) || !(targetSpot > 0)) return null;
+  const row = getProxyRow(eq.symbol, eq.proxy_for);
+  const beta = row?.beta != null ? Number(row.beta) : 1.0;
+  const marketValue = rawQty * proxyLtp;
+  const investmentValue = rawQty * cost;
+  const effQty = (beta * marketValue) / targetSpot;
+  if (effQty === 0) return null;
+  const effCost = investmentValue / effQty;
+  return { qty: effQty, cost: effCost };
+}
+
 export function interpAt(arr, x, key) {
   if (!arr || arr.length === 0 || x == null || !Number.isFinite(x)) return null;
   if (arr.length === 1) {

@@ -75,6 +75,7 @@
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
     rollupByUnderlying, perRootReduce, interpAt, legPnlTotal,
+    equityLinearLeg,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -2201,9 +2202,17 @@
    * the legs grid and _legsExpPnlTotal so sum(rows) == TOTAL by construction.
    * - Open F&O: intrinsic at expiry + partial-close realised
    * - Closed F&O (qty=0): locked-in realised || pnl (Kite settled-option fallback)
-   * - Equity / proxy hedge: beta-adjusted linear P&L via
-   *   _equityLinearLegsByKey, valued at the PASSED-IN `spot` (D3 fix,
-   *   2026-09 — previously hardwired to liveSpot regardless of caller)
+   * - Equity / proxy hedge: beta-adjusted linear P&L via the shared
+   *   `equityLinearLeg` pure function (derivativesMath.js), called FRESH
+   *   with the PASSED-IN `spot` as its OWN scaling basis (2026-09 basis-
+   *   consistency fix — previously read `_equityLinearLegsByKey`, pre-
+   *   baked at a FIXED `strategy.spot` regardless of which spot THIS
+   *   caller passed, mixing the anchor price with a different valuation
+   *   spot on any contango/backwardation MCX root). See
+   *   `equityLinearLeg`'s own docstring for why passing the SAME spot as
+   *   both the scaling AND valuation basis makes the result
+   *   spot-independent (β·MV − investment) instead of merely
+   *   coincidentally correct when the two happened to agree.
    * - No spot or unparseable option: null (shows '—')
    * @param {any} c
    * @param {number|null} spot
@@ -2212,7 +2221,7 @@
   function _legExpPnlDisplay(c, spot) {
     if (c.kind === 'eq') {
       if (spot == null) return null;
-      const leg = _equityLinearLegsByKey[enKey(c)];
+      const leg = equityLinearLeg(c, spot, getProxyRow);
       return leg ? (spot - leg.cost) * leg.qty : null;
     }
     // Futures value at THEIR OWN contract's live price, not the shared
@@ -2677,47 +2686,31 @@
     /** @type {Array<{qty:number,cost:number,key:string}>} */
     const out = [];
     if (!eqs.length) return out;
+    // Curve consumers (_mergedPayoff/Greeks/Risk below) keep scaling at
+    // strategy.spot, unchanged — a payoff CURVE's shape/slope is a
+    // property of the strategy's own anchor basis, not of any particular
+    // downstream valuation spot. Delegates the per-leg math to the shared
+    // pure `equityLinearLeg` (derivativesMath.js) — see _legExpPnlDisplay's
+    // eq branch below for the OTHER consumer, which passes ITS OWN spot
+    // instead of this fixed one (the 2026-09 basis-consistency fix).
     const targetSpot = Number(strategy?.spot) || 0;
     for (const eq of eqs) {
-      const cost = Number(eq.avg_cost);
-      if (!Number.isFinite(cost)) continue;
-      const rawQty = Number(eq.qty) || Number(eq.opening_qty) || 0;
-      if (rawQty === 0) continue;
-      let effQty = rawQty;
-      let effCost = cost;
-      if (eq.proxy_for) {
-        const proxyLtp = Number(eq.ltp);
-        if (proxyLtp <= 0 || targetSpot <= 0) continue;
-        const row = getProxyRow(eq.symbol, eq.proxy_for);
-        const beta = row?.beta != null ? Number(row.beta) : 1.0;
-        const marketValue = rawQty * proxyLtp;
-        const investmentValue = rawQty * cost;
-        effQty = (beta * marketValue) / targetSpot;
-        if (effQty === 0) continue;
-        effCost = investmentValue / effQty;
-      }
-      out.push({ qty: effQty, cost: effCost, key: enKey(eq) });
+      const leg = equityLinearLeg(eq, targetSpot, getProxyRow);
+      if (leg) out.push({ ...leg, key: enKey(eq) });
     }
     return out;
   });
 
-  /** `_equityLinearLegs` re-keyed for O(1) per-candidate lookup (D3 fix,
-   *  2026-09) — `_legExpPnlDisplay`'s eq/proxy branch values a leg's
-   *  effective (qty, cost) at whatever `spot` basis ITS CALLER passed in
-   *  (liveSpot for the Legs-grid TOTAL, payoffSpot for the chart's own
-   *  on-chart readout — the C1 anchor-basis decision), instead of always
-   *  valuing at `liveSpot` regardless of argument (the latent
-   *  `_eqExpPnlByKey` issue found alongside D1/D2 — didn't corrupt the
-   *  GOLDM incident's numbers since payoffSpot and liveSpot coincidentally
-   *  agreed there, but would silently diverge the chart from the grid on
-   *  any root whose anchor contract differs from front-month while a
-   *  proxy leg is present). */
-  const _equityLinearLegsByKey = $derived.by(() => {
-    /** @type {Record<string, {qty:number, cost:number}>} */
-    const m = {};
-    for (const l of _equityLinearLegs) m[l.key] = { qty: l.qty, cost: l.cost };
-    return m;
-  });
+  // _equityLinearLegsByKey removed (2026-09, basis-consistency fix): it
+  // pre-baked each leg's effective (qty, cost) at a FIXED `strategy.spot`
+  // (D3's own fix — an improvement over the even older hardwired-liveSpot
+  // bug — but still not basis-consistent with whatever spot the CALLER
+  // actually valued at). `_legExpPnlDisplay`'s eq branch now calls
+  // `equityLinearLeg(c, spot, getProxyRow)` FRESH with its OWN `spot`
+  // argument instead of reading a pre-baked map — see that function's
+  // docstring (derivativesMath.js) for why passing the SAME spot as both
+  // the scaling and valuation basis is what actually fixes the mixed-basis
+  // bug, not just where the lookup happens.
 
   /** Payoff chart's "leg composition" identity — the signal OptionsPayoff
    *  uses to distinguish "same strategy, new data landed on the routine
@@ -2747,10 +2740,9 @@
     return `${selectedUnderlying}|${optLegs}|${eqLegs}|H${_includeHoldings ? 1 : 0}|D${showDraftInPayoff ? 1 : 0}`;
   });
 
-  // _eqExpPnlByKey removed (D3 fix, 2026-09) — replaced by
-  // _equityLinearLegsByKey above, valued at each caller's OWN passed
-  // `spot` inside _legExpPnlDisplay instead of being pre-baked at
-  // liveSpot regardless of caller.
+  // _eqExpPnlByKey / _equityLinearLegsByKey both removed (see the
+  // basis-consistency fix comment above) — `_legExpPnlDisplay`'s eq
+  // branch now calls `equityLinearLeg` fresh with its own passed `spot`.
   const _mergedPayoff = $derived.by(() => {
     const base = strategy?.payoff;
     if (!Array.isArray(base) || base.length === 0) {

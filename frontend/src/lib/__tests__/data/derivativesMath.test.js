@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -738,5 +738,76 @@ describe('isFOSymbol', () => {
   it('is case-insensitive', () => {
     expect(isFOSymbol('niftym24sepfut')).toBe(true);
     expect(isFOSymbol('nifty25sep24000ce')).toBe(true);
+  });
+});
+
+// ============================================================================
+// equityLinearLeg — proxy-hedge basis-consistency fix (2026-09, deferred out
+// of Commit 4, landed alongside Commit 5). The old code baked effQty/effCost
+// at a FIXED strategy.spot regardless of which spot the caller ultimately
+// valued the leg at (liveSpot for the Legs TOTAL, payoffSpot for the chart)
+// — mixing the anchor price with a different valuation spot on contango MCX
+// roots. The fix: `targetSpot` must be the SAME spot the caller values at.
+// ============================================================================
+
+describe('equityLinearLeg', () => {
+  const getProxyRow = () => ({ beta: 1.5 });
+
+  it('proxy leg: (targetSpot − cost) × qty is INDEPENDENT of targetSpot\'s actual value when the caller values at the SAME targetSpot (basis-consistency property)', () => {
+    const eq = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 124.43 };
+    const beta = 1.5;
+    const expected = beta * 500 * 124.43 - 500 * 60; // β·MV − investment
+
+    for (const targetSpot of [150736, 148000, 160000]) {
+      const leg = equityLinearLeg(eq, targetSpot, getProxyRow);
+      expect(leg).not.toBeNull();
+      const valuedAtSameSpot = (targetSpot - leg.cost) * leg.qty;
+      expect(valuedAtSameSpot).toBeCloseTo(expected, 4);
+    }
+  });
+
+  it('regression: valuing at a DIFFERENT spot than the one effQty/effCost were scaled at produces the WRONG (basis-mismatched) number — this is the bug the fix closes', () => {
+    const eq = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 124.43 };
+    const scaledAt = 150736; // e.g. strategy.spot (anchor future)
+    const valuedAt = 160000; // e.g. liveSpot (front-month) on a contango root — deliberately different
+    const leg = equityLinearLeg(eq, scaledAt, getProxyRow);
+    const mismatchedValue = (valuedAt - leg.cost) * leg.qty;
+    const correctValue = equityLinearLeg(eq, valuedAt, getProxyRow);
+    const correctValuedAtOwnSpot = (valuedAt - correctValue.cost) * correctValue.qty;
+    expect(mismatchedValue).not.toBeCloseTo(correctValuedAtOwnSpot, 0);
+  });
+
+  it('beta defaults to 1.0 when the proxy table has no row for this pair', () => {
+    const eq = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 124.43 };
+    const leg = equityLinearLeg(eq, 150736, () => null);
+    const expectedQty = (1.0 * 500 * 124.43) / 150736;
+    expect(leg.qty).toBeCloseTo(expectedQty, 6);
+  });
+
+  it('non-proxy equity leg passes through at its own raw (qty, cost) — targetSpot irrelevant', () => {
+    const eq = { symbol: 'RELIANCE', qty: 10, avg_cost: 2500 };
+    const leg = equityLinearLeg(eq, 0, getProxyRow); // targetSpot=0 would fail a proxy leg, but this isn't one
+    expect(leg).toEqual({ qty: 10, cost: 2500 });
+  });
+
+  it('returns null when cost is unusable', () => {
+    expect(equityLinearLeg({ qty: 10 }, 100, getProxyRow)).toBeNull();
+  });
+
+  it('returns null when qty is zero (both qty and opening_qty)', () => {
+    expect(equityLinearLeg({ qty: 0, opening_qty: 0, avg_cost: 100 }, 100, getProxyRow)).toBeNull();
+  });
+
+  it('proxy leg returns null when proxyLtp or targetSpot is unusable (cold start)', () => {
+    const eq = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 0 };
+    expect(equityLinearLeg(eq, 150736, getProxyRow)).toBeNull();
+    const eq2 = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 124.43 };
+    expect(equityLinearLeg(eq2, 0, getProxyRow)).toBeNull();
+  });
+
+  it('opening_qty fallback when qty is absent (sold-today display quantity)', () => {
+    const eq = { symbol: 'RELIANCE', opening_qty: 10, avg_cost: 2500 };
+    const leg = equityLinearLeg(eq, 0, getProxyRow);
+    expect(leg).toEqual({ qty: 10, cost: 2500 });
   });
 });
