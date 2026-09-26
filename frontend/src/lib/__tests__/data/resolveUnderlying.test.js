@@ -25,6 +25,7 @@ import {
   resolveUnderlyingTradingsymbol,
   pickUnderlyingSpot,
   resolveUnderlyingPrevClose,
+  buildUndLiveFallbackEntry,
 } from '$lib/data/resolveUnderlying.js';
 import { seedRootMap } from '$lib/data/rootOf.js';
 
@@ -510,5 +511,39 @@ describe('resolveUnderlyingPrevClose', () => {
     const rows = [{ symbol: 'goldm24sepfut', prev_close: 150000 }];
     const result = resolveUnderlyingPrevClose(rows, 'GOLDM24SEPFUT', 149000);
     expect(result).toEqual({ value: 150000, source: 'held' });
+  });
+});
+
+// ============================================================================
+// buildUndLiveFallbackEntry — _undLive cold-start fallback (2026-09
+// post-ship audit fix, D1). Regression guard: the ORIGINAL bug wrote
+// `{ ltp, close: null }` unconditionally, making every downstream
+// `_live ? _live.close : (_q ? _q.prev_close : null)` consumer permanently
+// unable to reach its OWN prev_close fallback — P.Close/Chg% showed "—"
+// for any root with no live tick yet, instead of the batchQuote-cached
+// value.
+// ============================================================================
+
+describe('buildUndLiveFallbackEntry', () => {
+  it('fills close from the batchQuote-cached prev_close when usable (the D1 fix)', () => {
+    const entry = buildUndLiveFallbackEntry(24500, 24300);
+    expect(entry).toEqual({ ltp: 24500, close: 24300 });
+    // Regression guard: close must NOT be null when a real cached value exists.
+    expect(entry.close).not.toBeNull();
+  });
+
+  it('close is null (not 0/NaN) when the cached prev_close is unusable (0/null/undefined)', () => {
+    expect(buildUndLiveFallbackEntry(24500, 0)).toEqual({ ltp: 24500, close: null });
+    expect(buildUndLiveFallbackEntry(24500, null)).toEqual({ ltp: 24500, close: null });
+    expect(buildUndLiveFallbackEntry(24500, undefined)).toEqual({ ltp: 24500, close: null });
+  });
+
+  it('coerces a string-typed cached close to a number', () => {
+    const entry = buildUndLiveFallbackEntry(24500, '24300');
+    expect(entry.close).toBe(24300);
+  });
+
+  it('ltp passes through unchanged (caller only invokes this when ltp > 0)', () => {
+    expect(buildUndLiveFallbackEntry(150736, 148500).ltp).toBe(150736);
   });
 });

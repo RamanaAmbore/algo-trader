@@ -44,7 +44,7 @@
     listFutures, getInstrument, getOptionUnderlyingLot,
     findNearestFuture,
   } from '$lib/data/instruments';
-  import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
@@ -2035,12 +2035,28 @@
         // first live tick lands — this closes the exact "9 independent
         // spot chains disagree on cold start" divergence between _undLive
         // and getUnderlyingSpot (portfolioStore's own root-spot cache,
-        // NavStrip) the plan describes. `close` stays null here (no
-        // batchQuote-sourced close is plumbed through getUnderlyingSpot)
-        // — Snapshot's P.Close fallback is a separate, Commit-8-scoped
-        // concern, not touched here.
+        // NavStrip) the plan describes.
+        //
+        // Post-ship audit fix (D1): `close` must ALSO be filled from the
+        // batchQuote cache here, not left null. Every downstream consumer
+        // of this map (Snapshot row, CSV export) uses a `_live ? _live.close
+        // : (_q ? _q.prev_close : null)` pattern that branches on whether
+        // `m[root]` EXISTS at all, not on whether `.close` itself is
+        // usable — leaving `close: null` here made `_live` truthy while
+        // `.close` stayed null, permanently blocking those consumers from
+        // ever reaching their OWN `_q.prev_close` fallback for any root
+        // with no live tick yet (e.g. an options-only NIFTY/BANKNIFTY root,
+        // especially during closed hours) — P.Close/Chg% showed "—"
+        // instead of the batchQuote-cached value, violating the market-
+        // close-snapshot "never blank" rule. Fixing it AT THE SOURCE here
+        // (rather than patching each downstream truthy-check individually)
+        // means every consumer of `_undLive` gets a correct, non-null
+        // `close` whenever the batchQuote cache has one, cold-tick or not.
         const cached = untrack(() => getUnderlyingSpot(root));
-        if (cached > 0) m[root] = { ltp: cached, close: null };
+        if (cached > 0) {
+          const cachedClose = untrack(() => _underlyingQuotes[root]?.prev_close);
+          m[root] = buildUndLiveFallbackEntry(cached, cachedClose);
+        }
       }
     }
     return m;
@@ -4264,6 +4280,7 @@
         // hibernation exit the marketAwareInterval edge fires loadStrategy
         // before the book poller has refreshed — stale qty=0 legs must not
         // blank the chart until the next poll tick delivers real data.
+        //
         const _hasEnabledLegs = legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0);
         const _positionsFresh = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
         if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady && _positionsFresh) strategy = null;

@@ -217,6 +217,38 @@ export function pickUnderlyingSpot(root, resolveTs, getSnap, quotes, findNearest
   return getSnap(ts)?.ltp || getSnap(root)?.ltp || quotes?.[root]?.ltp || 0;
 }
 
+/**
+ * Build a `{ ltp, close }` entry for the derivatives page's `_undLive`
+ * cold-start fallback (2026-09 post-ship audit fix, D1) — extracted so the
+ * fix is unit-testable (`_undLive` itself is a Svelte `$derived.by` and
+ * can't be imported into plain Vitest).
+ *
+ * Bug this closes: the ORIGINAL cold-start fallback wrote `{ ltp: cachedLtp,
+ * close: null }` unconditionally whenever a batchQuote-cached LTP existed
+ * but no live tick had arrived yet. Every downstream consumer of `_undLive`
+ * (Snapshot P.Close/Chg% row, its CSV export) branches on whether the
+ * per-root MAP ENTRY exists at all (`_live ? _live.close : (_q ?
+ * _q.prev_close : null)`), not on whether `.close` itself is usable — so a
+ * non-null entry with `close: null` permanently blocked those consumers
+ * from ever reaching their OWN `_q.prev_close` fallback, showing "—" for
+ * P.Close/Chg% on any root with no live tick yet (e.g. an options-only
+ * NIFTY/BANKNIFTY root, especially during closed hours) — violating the
+ * market-close-snapshot "never blank" rule. Fix: fill `close` from the
+ * SAME batchQuote cache the `ltp` came from, right here at the source,
+ * instead of leaving every downstream truthy-check to patch around a null
+ * it can no longer see past.
+ *
+ * @param {number} cachedLtp - getUnderlyingSpot()'s resolved value; caller
+ *   only invokes this when `cachedLtp > 0`
+ * @param {number|string|null|undefined} cachedClose - the SAME root's
+ *   batchQuote-cached prev_close (e.g. `_underlyingQuotes[root]?.prev_close`)
+ * @returns {{ ltp: number, close: number|null }}
+ */
+export function buildUndLiveFallbackEntry(cachedLtp, cachedClose) {
+  const c = Number(cachedClose);
+  return { ltp: cachedLtp, close: (c > 0) ? c : null };
+}
+
 // Mirrors the backend `derivatives.underlying_ltp_key` index map.
 export const INDEX_LTP_KEY = {
   NIFTY:      { tradingsymbol: 'NIFTY 50',         exchange: 'NSE' },
