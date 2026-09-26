@@ -25,6 +25,61 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
 import { isFOSymbol } from '$lib/data/derivativesMath.js';
+// Vite `?raw` import — reads the source as a plain string without Node's
+// `fs`/`path` (not available under this project's Vitest node types config;
+// same established convention as portfolioAggregatesTriggers.test.js /
+// marketDataStoresMeta.test.js).
+// @ts-ignore — Vite raw-import suffix has no TS module declaration here.
+import portfolioStoreSrc from '$lib/data/portfolioStore.svelte.js?raw';
+
+// ── R4a source-grep guard ─────────────────────────────────────────────────
+//
+// portfolioStore.svelte.js's top-level $derived.by(...) calls execute at
+// MODULE EVALUATION time (e.g. `const _rootSpotCache = $derived.by(() =>
+// {...})` at top scope, not deferred inside a function the way
+// dataStore.svelte.js's $state calls are inside createDataStore's body) —
+// importing this file directly throws (`$derived is not defined`) without
+// the svelte/vite-plugin-svelte compiler registered in vitest.config.js
+// (confirmed: no `plugins` entry there). The mirror-function tests below
+// exercise a hand-copied re-implementation instead (see
+// _computePortfolioPositions) — this block additionally greps the REAL
+// shipped source directly so a regression in the actual file (not just
+// the mirror) is caught, without needing to import/execute it.
+describe('portfolioStore.svelte.js — R4a source-grep guard (real file, not the mirror)', () => {
+  const src = portfolioStoreSrc;
+
+  it('_rootSpotCache gates on the shared isFOSymbol predicate', () => {
+    const idx = src.indexOf('const _rootSpotCache = $derived.by(() => {');
+    expect(idx, '_rootSpotCache must exist').toBeGreaterThan(0);
+    const blockEnd = src.indexOf('\n});', idx);
+    const block = src.slice(idx, blockEnd);
+    expect(
+      block.includes('if (!isFOSymbol(sym) || !sym) continue;'),
+      'R4a: _rootSpotCache must gate on isFOSymbol(sym), not an exchange-set check'
+    ).toBe(true);
+  });
+
+  it('FO_EXCHS (the old exchange-set gate) is no longer declared or used as a live identifier', () => {
+    // A historical mention inside an explanatory comment (e.g. "was
+    // `FO_EXCHS.has(exch)`") is fine and expected — this only checks that
+    // the actual declaration/usage is gone, not every string occurrence.
+    expect(
+      src.includes('const FO_EXCHS ='),
+      'R4a: FO_EXCHS must no longer be declared'
+    ).toBe(false);
+    expect(
+      /(?<!`)FO_EXCHS\.has\(/.test(src),
+      'R4a: FO_EXCHS.has(...) must no longer be called as live code (only referenced in backtick-quoted comment prose)'
+    ).toBe(false);
+  });
+
+  it('_posTier2 also uses isFOSymbol (Commit 7 — both gates in this file agree)', () => {
+    expect(
+      src.includes('const isFO = isFOSymbol(p._sym);'),
+      'R4a: _posTier2 must classify via isFOSymbol, matching _rootSpotCache'
+    ).toBe(true);
+  });
+});
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

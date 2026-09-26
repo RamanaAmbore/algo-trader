@@ -1281,6 +1281,53 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
     ).toBe(true);
   });
 
+  // ── R1: holdings cold-start race (commit d4361c08) ────────────────────────────────
+  //
+  // loadPositions() reads portfolioStore.holdings.rows synchronously, ONE
+  // TIME, without awaiting pulseHoldingsStore's own fetch (loaded
+  // independently by PositionStrip.svelte's poll cadence). On a cold-start
+  // race — this page's onMount → loadPositions() running BEFORE
+  // PositionStrip's own pulseHoldingsStore.load() resolves —
+  // portfolioStore.holdings.rows was still empty at that ONE read, and
+  // nothing ever re-derived `holdings` afterward, so it stayed `[]` for the
+  // rest of the session (equity/proxy legs silently missing from
+  // candidatePositions). Fix: a dedicated $effect mirrors the positions
+  // propagation effect, re-deriving `holdings` whenever a late/refreshed
+  // holdings fetch lands.
+  test('R1 — holdings propagation effect reads pulseHoldingsStore.value as its trigger and rebuilds from portfolioStore.holdings.rows (source audit)', async () => {
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // The effect must read pulseHoldingsStore.value OUTSIDE untrack — this
+    // is the reactive trigger that re-runs the effect on every poll-cadence
+    // holdings fetch (including a late-arriving one after cold start).
+    const triggerIdx = src.indexOf('const rawHold = pulseHoldingsStore.value;');
+    expect(triggerIdx, 'R1: effect must read pulseHoldingsStore.value as its trigger').toBeGreaterThan(0);
+
+    // untrack() must come AFTER the trigger read, not wrap it — reading
+    // pulseHoldingsStore.value INSIDE untrack would never re-run the effect
+    // when a late holdings fetch lands, reintroducing the exact cold-start
+    // race this fix closes.
+    const untrackIdx = src.indexOf('untrack(() => {', triggerIdx);
+    expect(untrackIdx, 'R1: untrack() must exist after the trigger read').toBeGreaterThan(triggerIdx);
+
+    // Inside that untrack block, `holdings` must be reassigned from
+    // portfolioStore.holdings.rows (the single-holdings-source SSOT, not an
+    // independent fetch this page owns).
+    const blockEnd = src.indexOf('});', untrackIdx);
+    const effectBlock = src.slice(triggerIdx, blockEnd);
+    expect(
+      effectBlock.includes('holdings = simActive ? [] : buildPageHoldingRows(portfolioStore.holdings.rows);'),
+      'R1: the effect must rebuild `holdings` from portfolioStore.holdings.rows via buildPageHoldingRows'
+    ).toBe(true);
+
+    // Guarded on _positionsLoaded (first full load sets the baseline) —
+    // matches the positions propagation effect's own gate.
+    expect(
+      effectBlock.includes('if (!rawHold || !_positionsLoaded) return;'),
+      'R1: the effect must skip until _positionsLoaded is true'
+    ).toBe(true);
+  });
+
   // ── Combined: browser smoke ──────────────────────────────────────────────────────
   test('Bug 1+4 — after symbol switch, payoff chart becomes non-blank within 8s (browser smoke)', async ({ page }) => {
     // Verifies the full observable effect of Bugs 1 and 4:
