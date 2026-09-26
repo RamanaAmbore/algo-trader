@@ -201,11 +201,15 @@ class TestMcxG1SkipForClose:
 # Test 2: ntfy priority=None fallback (no "None" string in header)
 # =============================================================================
 
+@pytest.mark.alert_transport
 class TestNtfyPriorityNoneFallback:
     """
     When send_ntfy_alert is called with priority=None (from loss/expiry agents),
     the function should NOT include "None" string in the X-Priority header.
     Instead, it should use a fallback like "default" or clock-based "urgent"/"high".
+
+    Marked `alert_transport` — every test here calls the REAL
+    send_ntfy_alert() (with only urllib.request.urlopen mocked).
     """
 
     def test_ntfy_priority_none_uses_clock_based_default(self):

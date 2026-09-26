@@ -19,6 +19,11 @@ from datetime import datetime
 from unittest.mock import patch, MagicMock
 from zoneinfo import ZoneInfo
 
+# Every test in this module calls the REAL send_ntfy_alert() (with only
+# urllib.request.urlopen mocked) — opt in to the PYTEST_RUNNING transport
+# guard (see pytest_alert_transport_blocked() / conftest.py).
+pytestmark = pytest.mark.alert_transport
+
 
 BASE_SECRETS = {
     "ntfy_topic": "ramboq_alerts",

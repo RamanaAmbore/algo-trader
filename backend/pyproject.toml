@@ -24,6 +24,7 @@ markers = [
   "integration: marks tests as integration tests (use -m 'not integration' to skip)",
   "unit: marks tests as unit tests",
   "asyncio: marks tests as async (handled by pytest-asyncio)",
+  "alert_transport: opt in to exercising the real Telegram/ntfy/email leaf transport function under test (with the transport call itself — requests.post / urllib.request.urlopen / SMTP — mocked). Without this marker, pytest_alert_transport_blocked() short-circuits every alert leaf function so a test run never sends a live message even if a DB-backed capability setting reads as enabled.",
 ]
 addopts = "-v --tb=short --strict-markers"
 norecursedirs = [".git", ".venv", "venv", "node_modules", "__pycache__", ".pytest_cache"]

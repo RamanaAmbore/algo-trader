@@ -21,6 +21,17 @@ from backend.shared.helpers.singleton_base import SingletonBase
 os.environ['PYTEST_RUNNING'] = '1'
 
 
+@pytest.fixture(autouse=True)
+def _alert_transport_opt_in(request, monkeypatch):
+    """Set RAMBOQ_ALERT_TRANSPORT_OK=1 only for tests explicitly marked
+    `@pytest.mark.alert_transport` — the escape hatch for
+    pytest_alert_transport_blocked(). Uses monkeypatch (not a direct
+    os.environ assignment) so the override is undone after each test
+    and can never leak into later tests in the same session."""
+    if request.node.get_closest_marker("alert_transport") is not None:
+        monkeypatch.setenv("RAMBOQ_ALERT_TRANSPORT_OK", "1")
+
+
 @pytest_asyncio.fixture
 async def app(request):
     """Get the Litestar app instance for testing.

@@ -20,7 +20,7 @@ class _IPv4SMTP(smtplib.SMTP):
             return sock
         raise OSError(f"Could not connect to {host}:{port} via IPv4")
 
-from backend.shared.helpers.utils import secrets, is_enabled
+from backend.shared.helpers.utils import secrets, is_enabled, pytest_alert_transport_blocked
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
@@ -171,6 +171,13 @@ def send_email(name, email_id, subject, html_body, attachments=None):
     a header/envelope mismatch. Use `secrets.mail_skip_bcc_brand: True`
     to suppress the Bcc when the operator doesn't want a copy.
     """
+    # PYTEST_RUNNING guard — last line of defense against a real SMTP
+    # send during a test run. See pytest_alert_transport_blocked() for
+    # rationale (DB-backed is_enabled() precedence + no test-DB isolation).
+    if pytest_alert_transport_blocked():
+        logger.info("Email skipped — PYTEST_RUNNING guard (no alert_transport opt-in)")
+        return True, "Email skipped — PYTEST_RUNNING guard"
+
     # Dev-idle suppression — same contract as _send_telegram. When
     # dev's engine is idle, no operator-facing alerts fire. Contact-form
     # submissions DO still send (they go via send_email but only from

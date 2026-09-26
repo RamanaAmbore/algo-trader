@@ -98,6 +98,7 @@ def _mock_smtp_context():
     return cls, ctx, server
 
 
+@pytest.mark.alert_transport
 class TestSendEmailEnvelope:
     def _patches(self, secrets=None):
         """Common patch set used by every test in this class."""

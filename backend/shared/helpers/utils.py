@@ -1,3 +1,4 @@
+import os
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_DOWN
@@ -96,6 +97,33 @@ def is_engine_idle() -> bool:
         return not _settings.get_bool("execution.dev_active", False)
     except Exception:
         return True   # safest default — stay idle if we can't read
+
+
+def pytest_alert_transport_blocked() -> bool:
+    """True when running under pytest and this call has not been
+    explicitly opted in (via env var ``RAMBOQ_ALERT_TRANSPORT_OK``) to
+    exercising the real leaf transport (Telegram / ntfy / SMTP).
+
+    Production-safety guard: ``backend/tests/conftest.py`` sets
+    ``PYTEST_RUNNING=1`` at import time but does NOT point the DB
+    session at an isolated test database. ``is_enabled()`` above checks
+    a DB setting (``notifications.<cap>_enabled``) before falling back
+    to YAML branch defaults — so if a test run's process ever queries
+    a real deployment's DB (e.g. a previous test populated
+    ``backend.shared.helpers.settings._CACHE`` from a real DB), a
+    disabled-by-YAML-default capability can read as enabled and this
+    guard is the last line of defense against actually reaching
+    Telegram / ntfy.sh / SMTP for real.
+
+    Tests that deliberately exercise the real transport function (with
+    the transport call itself mocked, e.g. ``requests.post`` or
+    ``urllib.request.urlopen``) opt in via the ``alert_transport``
+    pytest marker — see the autouse fixture in ``backend/tests/conftest.py``
+    that sets ``RAMBOQ_ALERT_TRANSPORT_OK=1`` for marked tests only.
+    """
+    if not os.environ.get('PYTEST_RUNNING'):
+        return False
+    return os.environ.get('RAMBOQ_ALERT_TRANSPORT_OK') != '1'
 
 
 def is_enabled(cap: str) -> bool:

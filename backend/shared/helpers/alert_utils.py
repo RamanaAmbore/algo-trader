@@ -43,7 +43,7 @@ import requests
 
 from backend.shared.helpers.mail_utils import send_email
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import secrets, config, is_enabled
+from backend.shared.helpers.utils import secrets, config, is_enabled, pytest_alert_transport_blocked
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -218,6 +218,9 @@ _MSG_TYPES = {
 def _send_telegram(message: str, parse_mode: str = "HTML"):
     import logging
     _log = logging.getLogger('backend.api.background')
+    if pytest_alert_transport_blocked():
+        _log.info("Telegram skipped — PYTEST_RUNNING guard (no alert_transport opt-in)")
+        return
     # Dev-idle suppression — when dev's engine is idle (no operator
     # picked a mode), no market alerts should fire. Deploy notifications
     # are sent by webhook/notify_deploy.py which doesn't go through this
@@ -261,6 +264,9 @@ def _send_telegram_info(message: str):
     """
     import logging
     _log = logging.getLogger('backend.api.background')
+    if pytest_alert_transport_blocked():
+        _log.info("Telegram info skipped — PYTEST_RUNNING guard (no alert_transport opt-in)")
+        return
     try:
         from backend.shared.helpers.utils import is_engine_idle
         if is_engine_idle():
@@ -992,6 +998,10 @@ def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> No
     """
     import zoneinfo
     from datetime import datetime
+
+    if pytest_alert_transport_blocked():
+        logger.info("ntfy skipped — PYTEST_RUNNING guard (no alert_transport opt-in)")
+        return
 
     topic = secrets.get("ntfy_topic")
     if not topic:

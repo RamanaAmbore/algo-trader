@@ -238,6 +238,7 @@ class TestSendNtfyAlertIntegration:
         assert 'priority' in params, \
             f"send_ntfy_alert should have 'priority' parameter, got {params}"
 
+    @pytest.mark.alert_transport
     def test_send_ntfy_alert_with_urgent_priority(self):
         """send_ntfy_alert can be called with priority='urgent' (sends 3x for redundancy)."""
         with patch('backend.shared.helpers.alert_utils.secrets', {'ntfy_topic': 'test'}), \
@@ -252,6 +253,7 @@ class TestSendNtfyAlertIntegration:
             assert mock_urlopen.call_count == 3, \
                 f"Expected 3 calls for urgent priority, got {mock_urlopen.call_count}"
 
+    @pytest.mark.alert_transport
     def test_send_ntfy_alert_with_high_priority(self):
         """send_ntfy_alert can be called with priority='high' (sends 1x)."""
         with patch('backend.shared.helpers.alert_utils.secrets', {'ntfy_topic': 'test'}), \

@@ -28,7 +28,18 @@ def _load_secrets() -> dict:
 
 
 @pytest.fixture(scope="module")
-def ntfy_cfg():
+def ntfy_cfg(request):
+    # This test sends a REAL ntfy.sh notification (see class docstring +
+    # module docstring: "Run explicitly: -m integration"). Without this
+    # gate it would run — and fire live — on every plain `pytest
+    # backend/tests/` invocation on any machine whose secrets.yaml
+    # happens to carry an ntfy_topic (e.g. a deployed server), which is
+    # exactly the alert-leak class of bug this module's `alert_transport`
+    # marker exists to guard against elsewhere. Only proceed when the
+    # caller explicitly selected the `integration` marker.
+    markexpr = request.config.getoption("markexpr", default="") or ""
+    if "integration" not in markexpr:
+        pytest.skip("live ntfy test — run explicitly with -m integration")
     sec = _load_secrets()
     topic = sec.get("ntfy_topic")
     if not topic:
@@ -53,6 +64,7 @@ def _poll_ntfy(cfg: dict, since_seconds: int = 30) -> list[dict]:
 
 
 @pytest.mark.integration
+@pytest.mark.alert_transport
 class TestNtfyLiveAlertReceive:
     """Send real alerts and verify receipt via ntfy polling API."""
 

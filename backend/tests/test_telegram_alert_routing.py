@@ -14,6 +14,11 @@ Covers:
 import pytest
 from unittest.mock import patch, MagicMock
 
+# Every test in this module calls the REAL _send_telegram_info() (with
+# only requests.post mocked) — opt in to the PYTEST_RUNNING transport
+# guard (see pytest_alert_transport_blocked() / conftest.py).
+pytestmark = pytest.mark.alert_transport
+
 
 class TestSendTelegramInfoUsesRamboquantKey:
     """Primary key must be telegram_chat_id_ramboquant, not telegram_chat_id_deploy."""

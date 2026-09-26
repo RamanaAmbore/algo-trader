@@ -26,6 +26,7 @@ from backend.api.algo.template_attach import (
     WingSpec,
     apply_plan_live,
     resolve_template_plan,
+    _fire_wing_unprotected_alert,
 )
 
 
@@ -299,3 +300,70 @@ async def test_apply_template_to_order_resolves_lot_size_bfo_cds(
         f"Expected parent_lot_size={lot_size} for {exchange}/{symbol}, "
         f"got {result.plan.parent_lot_size}"
     )
+
+
+# ── _fire_wing_unprotected_alert — alert-leak guard coverage ─────────────
+#
+# P0: _fire_wing_unprotected_alert calls send_ntfy_alert() DIRECTLY,
+# bypassing _alert_route entirely — a PYTEST_RUNNING guard on the router
+# alone would miss this path. Confirms the guard lives in send_ntfy_alert
+# itself (backend/shared/helpers/alert_utils.py) and is reached from this
+# call site too.
+
+def _make_attach_result_with_gtts() -> AttachResult:
+    plan = TemplatePlan(
+        template_id=None,
+        template_name="ad-hoc",
+        template_slug=None,
+        parent_account="ZG0790",
+        parent_symbol="NIFTY24SEPFUT",
+        parent_side="BUY",
+        parent_qty=75,
+        parent_exchange="NFO",
+        parent_fill_price=100.0,
+        parent_lot_size=75,
+    )
+    return AttachResult(plan=plan, gtt_ids=["gtt-1", "gtt-2"])
+
+
+class TestFireWingUnprotectedAlertGuard:
+    """_fire_wing_unprotected_alert -> send_ntfy_alert(...) direct call."""
+
+    def test_guard_blocks_urlopen_by_default(self):
+        """Negative control — no alert_transport marker on this test.
+        Even with ntfy fully configured, PYTEST_RUNNING must stop the
+        real network call."""
+        with patch(
+            "backend.shared.helpers.alert_utils.secrets",
+            {"ntfy_topic": "ramboq_alerts", "ntfy_url": "https://ntfy.sh"},
+        ), patch("urllib.request.urlopen") as mock_urlopen:
+            _fire_wing_unprotected_alert(
+                wing_skipped_reason="no candidate found",
+                result=_make_attach_result_with_gtts(),
+                parent_order_id=12345,
+                parent_symbol="NIFTY24SEPFUT",
+                parent_exchange="NFO",
+            )
+            mock_urlopen.assert_not_called()
+
+    @pytest.mark.alert_transport
+    def test_opted_in_test_reaches_real_transport(self):
+        """Positive control — proves the negative control above is
+        actually exercising the guard (send_ntfy_alert really is on the
+        call path from _fire_wing_unprotected_alert), not some unrelated
+        no-op."""
+        with patch(
+            "backend.shared.helpers.alert_utils.secrets",
+            {"ntfy_topic": "ramboq_alerts", "ntfy_url": "https://ntfy.sh"},
+        ), patch("urllib.request.urlopen") as mock_urlopen:
+            _fire_wing_unprotected_alert(
+                wing_skipped_reason="no candidate found",
+                result=_make_attach_result_with_gtts(),
+                parent_order_id=12345,
+                parent_symbol="NIFTY24SEPFUT",
+                parent_exchange="NFO",
+            )
+            # priority="urgent" sends 3x for redundancy (see send_ntfy_alert).
+            assert mock_urlopen.call_count == 3, (
+                f"Expected 3 urgent-priority sends, got {mock_urlopen.call_count}"
+            )
