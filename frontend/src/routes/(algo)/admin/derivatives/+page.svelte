@@ -44,7 +44,7 @@
     listFutures, getInstrument, getOptionUnderlyingLot,
     findNearestFuture,
   } from '$lib/data/instruments';
-  import { resolveUnderlying, resolveUnderlyingTradingsymbol } from '$lib/data/resolveUnderlying';
+  import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
@@ -2091,20 +2091,38 @@
   const _prevClose = $derived.by(() => {
     void _throttledTick;
     const sel = selectedUnderlying; // tracked — real reactive dependency
+    // Tier 0 (2026-09 Commit 8, operator-confirmed held-instruments-only
+    // basis): when the underlying itself is HELD (a position or holding
+    // whose OWN resolved front-month tradingsymbol matches), its row's
+    // `prev_close` is ALREADY the backend-corrected `daily_book.ltp` value
+    // (CLAUDE.md's close_price/ltp invariant) — strictly more authoritative
+    // than any of the Kite-tick/batchQuote/anchor tiers below, which are
+    // all ultimately sourced from Kite's own stale `ohlc.close`/
+    // `quote.prev_close` (documented stale overnight). Falls through to
+    // those EXPLICIT, clearly-labeled tiers (kiteClose) unchanged when the
+    // underlying isn't held — no attempt to synthesize a daily_book row
+    // for a pure index / unheld future in this pass.
+    const _resolvedTs = untrack(() => resolveUnderlyingTradingsymbol(sel, findNearestFuture));
     // Tier 1: front-month live close (same source as Snapshot's P.Close column).
     const _liveClose = _undLive[sel]?.close;
-    if (_liveClose != null && _liveClose > 0) return _liveClose;
     // Tier 2: front-month batchQuote-cached close.
     const _qClose = untrack(() => _underlyingQuotes[sel]?.prev_close);
-    if (_qClose != null && _qClose > 0) return _qClose;
     // Tier 3: backend-resolved anchor close — only when strategy is current
     // for this underlying (avoids leaking a stale root's close during a
     // root-switch window).
     const _stratUnd = String(strategy?.underlying || '').toUpperCase();
-    if (_stratUnd === String(sel).toUpperCase() && (strategy?.spot_prev_close ?? 0) > 0) {
-      return strategy.spot_prev_close;
-    }
-    return null;
+    const _stratClose = _stratUnd === String(sel).toUpperCase() ? (strategy?.spot_prev_close ?? 0) : 0;
+    const kiteClose = (_liveClose != null && _liveClose > 0) ? _liveClose
+      : (_qClose != null && _qClose > 0) ? _qClose
+      : (_stratClose > 0) ? _stratClose
+      : null;
+    // `positions`/`holdings` are read as TRACKED dependencies (they're
+    // page-level $state, not raw Map/getSnapshot-style reads) so this
+    // derived re-fires the moment either array lands/updates — a held
+    // underlying's daily_book-sourced P.Close must appear as soon as its
+    // position/holding row does, not wait for the next unrelated tick.
+    const { value } = resolveUnderlyingPrevClose([...positions, ...holdings], _resolvedTs, kiteClose);
+    return value;
   });
 
   // payoffPrevClose — matches payoffSpot's contract basis (the strategy's
@@ -5396,15 +5414,16 @@
     onDownload={() => {
       const rows = _byUnderlyingTotals.map(g => {
         // Same LTP/Chg%/Close source as the on-screen row (_undLive first,
-        // _underlyingQuotes fallback) — CSV export must match the display,
-        // not read a different (batch-cache-only) source (§6).
+        // _underlyingQuotes fallback, THEN the held-instruments-only P.Close
+        // override — 2026-09 Commit 8) — CSV export must match the display,
+        // not read a different (batch-cache-only, pre-Commit-8) source (§6).
         const _q    = _underlyingQuotes[g.underlying];
         const _live = _undLive[g.underlying];
         const _ltp   = _live ? _live.ltp   : (_q ? Number(_q.ltp) : null);
-        const _close = _live ? _live.close : (_q ? Number(_q.prev_close) : null);
-        const _pct   = _live
-          ? (_close != null && _close > 0 ? ((_ltp - _close) / _close) * 100 : null)
-          : (_q?.day_pct ?? null);
+        const _kiteClose = _live ? _live.close : (_q ? Number(_q.prev_close) : null);
+        const _resolvedUndTs = resolveUnderlyingTradingsymbol(g.underlying, findNearestFuture);
+        const _close = resolveUnderlyingPrevClose([...positions, ...holdings], _resolvedUndTs, _kiteClose).value;
+        const _pct   = (_ltp != null && _close != null && _close > 0) ? ((_ltp - _close) / _close) * 100 : null;
         // Day P&L / lifetime P&L already filtered by matchAccount/matchStrategy
         // on the _byUnderlyingTotals row; Exp P&L via _rowExpPnlFor — the
         // SAME function the on-screen row calls, so the export can never
@@ -5453,7 +5472,7 @@
           <span>Underlying</span>
           <span class="num" title="Live underlying LTP. Indices use the spot price; MCX commodities use the nearest-future LTP (no tradeable spot).">LTP</span>
           <span class="num" title="Underlying day-change %, signed (+/-). Computed from broker `change_percent`, else (LTP - prev_close) / prev_close.">Chg %</span>
-          <span class="num" title="Underlying previous-session close (broker `ohlc.close`).">P.Close</span>
+          <span class="num" title="Underlying previous-session close — daily_book.ltp settlement basis when the underlying itself is held (position/holding), else broker ohlc.close.">P.Close</span>
           <span class="num" title="Today's Day P&L for the underlying — matches the payoff overlay value for this symbol.">Day P&amp;L</span>
           <span class="num" title="Total P&L from F&O legs only. Sum of the rows shown below — matches NavStrip P slot 2 only when no account/strategy/search filter is active.">P&amp;L</span>
           <span class="num" title="F&O-only expiry P&L for this group. Sum of the rows shown below — matches NavStrip P slot 3 only when no account/strategy/search filter is active.">Exp P&amp;L</span>
@@ -5486,10 +5505,21 @@
                close/day_pct — that reintroduces the exact
                internally-inconsistent-row bug this fix closes. -->
           {@const _ltp   = _live ? _live.ltp   : (_q ? Number(_q.ltp) : null)}
-          {@const _close = _live ? _live.close : (_q ? Number(_q.prev_close) : null)}
-          {@const _pct   = _live
-              ? (_close != null && _close > 0 ? ((_ltp - _close) / _close) * 100 : null)
-              : (_q?.day_pct ?? null)}
+          {@const _kiteClose = _live ? _live.close : (_q ? Number(_q.prev_close) : null)}
+          <!-- Held-instruments-only P.Close basis (2026-09 Commit 8):
+               prefers the matching position/holding row's own prev_close
+               (already backend-corrected to daily_book.ltp — CLAUDE.md's
+               close_price/ltp invariant) over the Kite-sourced tiers
+               above, falling back to them explicitly when this root isn't
+               held. Chg% is ALWAYS derived from (_ltp, _close) by formula
+               now — the old `_q?.day_pct` fallback (Kite's OWN change%,
+               computed against ITS OWN close) is removed, since it could
+               silently disagree with a now-held-instrument-sourced
+               P.Close; LTP / Chg% / P.Close must stay one consistent
+               triple. -->
+          {@const _resolvedUndTs = resolveUnderlyingTradingsymbol(g.underlying, findNearestFuture)}
+          {@const _close = resolveUnderlyingPrevClose([...positions, ...holdings], _resolvedUndTs, _kiteClose).value}
+          {@const _pct   = (_ltp != null && _close != null && _close > 0) ? ((_ltp - _close) / _close) * 100 : null}
           <!-- Filter consistency (§5, tightened item-3 round 4): Day P&L /
                lifetime P&L come from THIS row's own g.day_without /
                g.pnl_without — already filtered by the same

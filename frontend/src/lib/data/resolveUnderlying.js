@@ -144,6 +144,55 @@ export function resolveUnderlyingTradingsymbol(root, findNearestFut) {
 }
 
 /**
+ * Held-instruments-only P.Close basis (2026-09, Commit 8) — operator-
+ * confirmed scope during planning. Per CLAUDE.md's "close_price / ltp
+ * invariant," a position/holding row's own `prev_close` is ALREADY the
+ * backend-corrected `daily_book.ltp` value (the most recent settlement
+ * snapshot — see `_override_stale_close_from_snapshot`/
+ * `_override_stale_close_for_holdings`, commit 93689676) — the frontend
+ * does not need to re-derive settlement data itself. This function only
+ * needs to FIND the held row (if any) whose resolved tradingsymbol matches
+ * the underlying's OWN front-month resolution, and prefer its already-
+ * correct `prev_close` over Kite's `ohlc.close`/`quote.prev_close` (BHAV-
+ * copy-sourced, documented stale overnight — see CLAUDE.md's "Kite
+ * close_price stale overnight").
+ *
+ * Scope (operator-confirmed): held-instruments-only. When the underlying
+ * itself is NOT held as a position or holding (a pure index, or an unheld
+ * front-month future), there is no `daily_book` row for it and this
+ * function does NOT attempt to derive one — it falls back to the
+ * EXPLICIT, clearly-labeled `kiteClose` argument (whatever the existing
+ * Kite-tick/batchQuote/anchor tier chain already resolved), tagging the
+ * source so callers/tests can tell which basis was actually used.
+ *
+ * @param {Array<{symbol?:string, tradingsymbol?:string, prev_close?:number|string|null}>} rows
+ *   combined positions + holdings rows (already normalised — e.g.
+ *   `buildPositionRowFromBroker`/`buildHoldingRowFromBroker` output, whose
+ *   `prev_close` is the backend-corrected value)
+ * @param {string} resolvedTs - the underlying's OWN resolved front-month
+ *   tradingsymbol (e.g. `resolveUnderlyingTradingsymbol(root, findNearestFut)`)
+ * @param {number|null|undefined} kiteClose - the explicit Kite-sourced
+ *   fallback (whatever the caller's own live-tick/batchQuote/anchor tier
+ *   chain already produced) — used, clearly labeled, only when no held row
+ *   matches
+ * @returns {{ value: number|null, source: 'held'|'kite'|'none' }}
+ */
+export function resolveUnderlyingPrevClose(rows, resolvedTs, kiteClose) {
+  const ts = String(resolvedTs || '').toUpperCase();
+  if (ts) {
+    for (const r of rows || []) {
+      const sym = String(r?.symbol || r?.tradingsymbol || '').toUpperCase();
+      if (sym !== ts) continue;
+      const pc = Number(r?.prev_close);
+      if (pc > 0) return { value: pc, source: 'held' };
+    }
+  }
+  const kc = Number(kiteClose);
+  if (kc > 0) return { value: kc, source: 'kite' };
+  return { value: null, source: 'none' };
+}
+
+/**
  * Pure tier-order spot-picker — the CLAUDE.md-documented SSOT fallback
  * chain for underlying spot resolution (resolved front-month tradingsymbol
  * tick → bare-root tick → batchQuote cache). Extracted (2026-09, Commit 4)

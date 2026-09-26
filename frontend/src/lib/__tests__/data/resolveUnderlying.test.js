@@ -24,6 +24,7 @@ import {
   resolveAnchorToTradeable,
   resolveUnderlyingTradingsymbol,
   pickUnderlyingSpot,
+  resolveUnderlyingPrevClose,
 } from '$lib/data/resolveUnderlying.js';
 import { seedRootMap } from '$lib/data/rootOf.js';
 
@@ -456,5 +457,58 @@ describe('pickUnderlyingSpot', () => {
     const quotes = { CRUDEOIL: { ltp: 5788 } };
     const v = pickUnderlyingSpot('CRUDEOIL', () => 'CRUDEOIL26JUNFUT', getSnap, quotes, null);
     expect(v).toBe(5900);
+  });
+});
+
+// ============================================================================
+// resolveUnderlyingPrevClose — held-instruments-only P.Close basis
+// (2026-09, Commit 8, operator-confirmed scope). A held position/holding
+// row's own `prev_close` is ALREADY the backend-corrected daily_book.ltp
+// value (per CLAUDE.md's close_price/ltp invariant) — this function only
+// finds the held row matching the underlying's own resolved tradingsymbol
+// and prefers it over the explicit, clearly-labeled Kite-sourced fallback.
+// ============================================================================
+
+describe('resolveUnderlyingPrevClose', () => {
+  it('held future-as-underlying: uses the matching position row\'s own prev_close (already daily_book.ltp-sourced), tagged source:"held"', () => {
+    const rows = [
+      { symbol: 'GOLDM24SEPFUT', prev_close: 150000 },
+      { symbol: 'GOLDM24SEP150000CE', prev_close: 200 }, // different symbol — not a match
+    ];
+    const result = resolveUnderlyingPrevClose(rows, 'GOLDM24SEPFUT', 149000 /* kiteClose, deliberately different */);
+    expect(result).toEqual({ value: 150000, source: 'held' });
+  });
+
+  it('pure/unheld index case: no matching held row → falls back to the explicit kiteClose, tagged source:"kite"', () => {
+    const rows = [{ symbol: 'RELIANCE', prev_close: 2500 }]; // unrelated holding
+    const result = resolveUnderlyingPrevClose(rows, 'NIFTY 50', 24800);
+    expect(result).toEqual({ value: 24800, source: 'kite' });
+  });
+
+  it('empty rows array: falls back to kiteClose', () => {
+    expect(resolveUnderlyingPrevClose([], 'NIFTY 50', 24800)).toEqual({ value: 24800, source: 'kite' });
+  });
+
+  it('a held row matches by symbol but its own prev_close is unusable (0/null) — falls through to kiteClose, not the bad held value', () => {
+    const rows = [{ symbol: 'GOLDM24SEPFUT', prev_close: 0 }];
+    const result = resolveUnderlyingPrevClose(rows, 'GOLDM24SEPFUT', 149000);
+    expect(result).toEqual({ value: 149000, source: 'kite' });
+  });
+
+  it('neither a held row nor a usable kiteClose: returns null, tagged source:"none"', () => {
+    expect(resolveUnderlyingPrevClose([], 'NIFTY 50', 0)).toEqual({ value: null, source: 'none' });
+    expect(resolveUnderlyingPrevClose([], 'NIFTY 50', null)).toEqual({ value: null, source: 'none' });
+  });
+
+  it('matches by tradingsymbol field as well as symbol (position rows carry tradingsymbol, holding rows carry symbol)', () => {
+    const rows = [{ tradingsymbol: 'GOLDM24SEPFUT', prev_close: 150000 }];
+    const result = resolveUnderlyingPrevClose(rows, 'GOLDM24SEPFUT', 149000);
+    expect(result).toEqual({ value: 150000, source: 'held' });
+  });
+
+  it('symbol match is case-insensitive', () => {
+    const rows = [{ symbol: 'goldm24sepfut', prev_close: 150000 }];
+    const result = resolveUnderlyingPrevClose(rows, 'GOLDM24SEPFUT', 149000);
+    expect(result).toEqual({ value: 150000, source: 'held' });
   });
 });
