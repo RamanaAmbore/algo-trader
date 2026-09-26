@@ -26,6 +26,7 @@ import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl } from '$lib/d
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
+import { isFOSymbol } from '$lib/data/derivativesMath.js';
 
 const FO_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
 
@@ -96,7 +97,14 @@ const _posTier1 = $derived.by(() => {
 const _posTier2 = $derived.by(() => {
   if (!_posTier1) return null;
   return _posTier1.map(p => {
-    const isFO = FO_EXCHS.has(p._exch);
+    // 2026-09 Commit 7 fix: exchange-independent symbol predicate, shared
+    // with derivatives/pageLoad.js's page-level gate — a Groww-sourced F&O
+    // row whose adapter passes `exchange` through unchanged (e.g. reporting
+    // 'NSE' for an NFO contract) used to be excluded here while the page's
+    // own regex-based gate still included it. FO_EXCHS/`_exch` remains used
+    // by _rootSpotCache above (a different, unrelated concern — deciding
+    // which rows contribute to the root-spot cache) — left untouched.
+    const isFO = isFOSymbol(p._sym);
     // Poll-only — no live-tick delta (§1: positions Day P&L is purely
     // poll-driven; see baseDayPnlForPosition's baseline-diff formula).
     const day_pnl = baseDayPnlForPosition(p);

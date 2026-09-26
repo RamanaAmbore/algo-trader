@@ -24,6 +24,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { expiryPnl } from '$lib/data/expiryPnl.js';
+import { isFOSymbol } from '$lib/data/derivativesMath.js';
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -78,8 +79,14 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
 
     const day_pnl = livePosDay(p, ltp, { marketOpen });
 
-    const exch = String(p?.exchange || '').toUpperCase();
-    const isFO = FO_EXCHS.has(exch);
+    // 2026-09 Commit 7 fix: exchange-independent classification, imported
+    // from the REAL shared module (not a local re-implementation) — this
+    // mirror function exercises the actual fixed predicate the real
+    // portfolioStore.svelte.js now calls, so a regression here fails this
+    // test too. FO_EXCHS/`exch` above (root-spot cache section) is a
+    // separate, unrelated concern and is left untouched, matching the real
+    // store.
+    const isFO = isFOSymbol(sym);
 
     let exp_pnl   = null;
     let extrinsic = null;
@@ -344,6 +351,44 @@ describe('portfolioStore — positions aggregation via _computePortfolioPosition
     const result = _computePortfolioPositions([pos], []);
     expect(result.byKey['NIFTY25JAN24500CE']).toBeDefined();
     expect(result.byKey['NIFTY25JAN24500CE'].day_pnl).toBeGreaterThan(0);
+  });
+
+  // 2026-09 Commit 7 fix: a Groww-sourced F&O row whose adapter passes
+  // `exchange` through unchanged (e.g. reporting 'NSE' for what is
+  // actually an NFO option contract) must still be classified as F&O —
+  // the old exchange-based gate (`exchange ∈ {NFO,MCX,CDS,BFO}`) would
+  // have excluded it (exp_pnl/extrinsic staying null) while the
+  // derivatives page's own symbol-regex gate still included it.
+  it('classifies a Groww-sourced F&O row with exchange:"NSE" as F&O via the shared symbol predicate, not the exchange field', () => {
+    const growwRow = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      quantity: 1,
+      previous_close: 50,
+      last_price: 150,
+      average_price: 100,
+      exchange: 'NSE', // Groww adapter passthrough — NOT one of FO_EXCHS
+    });
+    const result = _computePortfolioPositions([growwRow], []);
+    expect(isFOSymbol(growwRow.tradingsymbol)).toBe(true);
+    expect(result.byKey['NIFTY25JAN24500CE'].exp_pnl).not.toBeNull();
+  });
+
+  it('does not classify a real equity symbol ending in "CE"/"PE"/"FUT"-like letters as F&O (ACE regression guard)', () => {
+    // "ACE" is a real NSE equity tradingsymbol that matched the OLD bare
+    // `/(CE|PE|FUT)$/` suffix regex — the new predicate requires a digit
+    // immediately before CE/PE (or a YY+MON tail before FUT), so a plain
+    // equity symbol is correctly excluded regardless of its exchange field.
+    const aceRow = makePosition({
+      tradingsymbol: 'ACE',
+      quantity: 10,
+      previous_close: 500,
+      last_price: 520,
+      average_price: 480,
+      exchange: 'NSE',
+    });
+    const result = _computePortfolioPositions([aceRow], []);
+    expect(isFOSymbol('ACE')).toBe(false);
+    expect(result.byKey['ACE'].exp_pnl).toBeNull();
   });
 });
 

@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, isFOSymbol } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -532,5 +532,47 @@ describe('legPnlDisplay — row-own P&L, not a cross-account/cross-split aggrega
 
   it('returns null when neither the live-price formula nor c.pnl is usable', () => {
     expect(legPnlDisplay({}, null, null, 0)).toBeNull();
+  });
+});
+
+// ============================================================================
+// isFOSymbol — single shared F&O classification predicate (Commit 7, 2026-09).
+// Exchange-independent (unlike portfolioStore's old `exchange ∈ {NFO,MCX,
+// CDS,BFO}` gate) so a Groww-sourced row whose adapter passes `exchange`
+// through unchanged can't be excluded while the page's own gate includes it.
+// ============================================================================
+
+describe('isFOSymbol', () => {
+  it('matches monthly and weekly option symbols (digit immediately before CE/PE)', () => {
+    expect(isFOSymbol('NIFTY25SEP24000CE')).toBe(true);
+    expect(isFOSymbol('NIFTY2592324000PE')).toBe(true);
+    expect(isFOSymbol('SENSEX2591281000CE')).toBe(true);
+  });
+
+  it('matches futures (YY+3-letter-month tail immediately before FUT)', () => {
+    expect(isFOSymbol('GOLDM24SEPFUT')).toBe(true);
+    expect(isFOSymbol('CRUDEOIL25OCTFUT')).toBe(true);
+    expect(isFOSymbol('NIFTY25SEPFUT')).toBe(true);
+  });
+
+  it('rejects "ACE" — a real NSE equity that matched the old bare /(CE|PE|FUT)$/ suffix regex', () => {
+    expect(isFOSymbol('ACE')).toBe(false);
+  });
+
+  it('rejects other plain equity symbols', () => {
+    expect(isFOSymbol('RELIANCE')).toBe(false);
+    expect(isFOSymbol('TCS')).toBe(false);
+    expect(isFOSymbol('IDFCFIRSTB')).toBe(false);
+  });
+
+  it('rejects null/undefined/empty input', () => {
+    expect(isFOSymbol(null)).toBe(false);
+    expect(isFOSymbol(undefined)).toBe(false);
+    expect(isFOSymbol('')).toBe(false);
+  });
+
+  it('is case-insensitive', () => {
+    expect(isFOSymbol('niftym24sepfut')).toBe(true);
+    expect(isFOSymbol('nifty25sep24000ce')).toBe(true);
   });
 });

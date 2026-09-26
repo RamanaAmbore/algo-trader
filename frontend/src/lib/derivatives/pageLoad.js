@@ -25,16 +25,13 @@ export { buildPositionRowFromBroker, splitClosedReopened } from '$lib/data/expir
 // Shared predicates
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * Returns true when the trading symbol belongs to F&O (options / futures).
- * Cash equities, ETFs etc. return false.
- *
- * @param {string|null|undefined} sym
- * @returns {boolean}
- */
-export function isFOSymbol(sym) {
-  return /(CE|PE|FUT)$/i.test(String(sym || ''));
-}
+// isFOSymbol moved to $lib/data/derivativesMath.js (2026-09 Commit 7 fix)
+// so portfolioStore.svelte.js can share the SAME exchange-independent
+// classification predicate instead of gating on `exchange ∈ {NFO,MCX,CDS,
+// BFO}` (which could exclude a Groww-sourced F&O row whose adapter passes
+// `exchange` through unchanged). Re-exported here unchanged so existing
+// call sites (+page.svelte) are unaffected.
+export { isFOSymbol } from '$lib/data/derivativesMath.js';
 
 /**
  * Build an expiry-match predicate.

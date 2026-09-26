@@ -549,6 +549,34 @@ export function perRootReduce({
  *   the bracketing points don't both carry a real value for `key` (e.g.
  *   the client-side stub's today_value:null before real BS pricing lands).
  */
+// Options: a digit must sit immediately before the CE/PE suffix (the
+// strike's last digit) — this rules out a plain equity tradingsymbol that
+// merely happens to END in the letters "CE"/"PE" (e.g. ACE, a real NSE
+// stock, matched the old bare `/(CE|PE|FUT)$/` suffix regex). Futures:
+// Kite's FUT contracts always carry a YY+3-letter-month tail immediately
+// before FUT (e.g. GOLDM24SEPFUT) — requiring that shape similarly excludes
+// any equity symbol that happened to end in the literal "FUT".
+const _FO_SYMBOL_RE = /(\d(?:CE|PE)|\d{2}[A-Z]{3}FUT)$/i;
+
+/**
+ * Single shared F&O classification predicate (2026-09 fix) — replaces two
+ * independently-drifting gates: portfolioStore.svelte.js used to gate on
+ * `exchange ∈ {NFO,MCX,CDS,BFO}` while derivatives/pageLoad.js's
+ * `isFOSymbol` gated on a bare `/(CE|PE|FUT)$/` symbol suffix (matched
+ * "ACE", a real NSE equity). A Groww-sourced F&O row whose adapter passes
+ * `exchange` through unchanged (e.g. reporting 'NSE' for an NFO contract)
+ * could be excluded by the store's gate while the page's regex still
+ * included it. Removing the exchange dependency entirely and requiring a
+ * digit/expiry segment immediately before the CE/PE/FUT suffix makes both
+ * classifications agree on any input, for any broker.
+ *
+ * @param {string|null|undefined} sym
+ * @returns {boolean}
+ */
+export function isFOSymbol(sym) {
+  return _FO_SYMBOL_RE.test(String(sym || ''));
+}
+
 /**
  * Legs-grid per-row lifetime P&L cell (2026-09 fix). Row-own fields ONLY —
  * NEVER positionsDerivedStore, whose `.byKey[symbol].pnl` sums across every
