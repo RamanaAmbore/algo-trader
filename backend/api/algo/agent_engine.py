@@ -2059,14 +2059,18 @@ def _cycle_compute_post_fire_status(agent, *, bypass_schedule: bool) -> tuple[st
 
 def _ae_cycle_pre_gates_pass(agent, now, *, any_market_open: bool,
                              bypass_schedule: bool) -> bool:
-    """Return True when the agent clears all pre-evaluation timing gates.
+    """Return True when the agent clears all pre-EVALUATION timing gates.
 
-    Checks schedule, cooldown, fire_at_time, and blackout windows.
-    Extracted from _cycle_process_agent to reduce CC there."""
+    Checks schedule, fire_at_time, and blackout windows — gates that mean
+    "don't even evaluate this tick". Deliberately does NOT include agent-
+    level cooldown (`_cycle_in_cooldown`): cooldown must block RE-FIRING
+    only, not the recovery pass, which needs to run every tick regardless
+    (see `_ae_cycle_eval_and_buffer`'s `in_cooldown` handling) — a
+    recovered latch must clear immediately, not sit stuck until the
+    cooldown window itself elapses. Extracted from _cycle_process_agent
+    to reduce CC there."""
     if _cycle_should_skip_schedule(agent, any_market_open=any_market_open,
                                    bypass_schedule=bypass_schedule):
-        return False
-    if _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule):
         return False
     if _cycle_outside_fire_at(agent, now, bypass_schedule=bypass_schedule):
         return False
@@ -2080,6 +2084,7 @@ async def _ae_cycle_eval_and_buffer(
     *, alert_state: dict, sim_mode: bool,
     bypass_schedule: bool, bypass_suppression: bool,
     broadcast_fn, pending_dispatches: list,
+    in_cooldown: bool = False,
 ) -> None:
     """Evaluate condition tree, apply debounce/lifespan gates, buffer fires.
 
@@ -2096,9 +2101,21 @@ async def _ae_cycle_eval_and_buffer(
     # the case whose latches need clearing). Skipped entirely in sim mode
     # bypass_suppression runs (isolated single-agent "run in simulator"),
     # which don't use the latch at all.
+    #
+    # Runs even when the agent is in agent-level cooldown (`in_cooldown`)
+    # — cooldown must block RE-FIRING only. Pre-fix, `_cycle_in_cooldown`
+    # sat inside `_ae_cycle_pre_gates_pass` and returned early BEFORE this
+    # function (and therefore this recovery pass) ever ran, so a agent
+    # stuck in cooldown never cleared a recovered latch until the
+    # cooldown window itself elapsed.
     if not bypass_suppression:
         store = alert_state.setdefault('_sim_latch', {}) if sim_mode else None
         _v2_apply_recovery(agent, observations, store=store)
+
+    if in_cooldown:
+        # Re-fire/escalation stays gated — only the recovery pass above
+        # is exempt from agent-level cooldown.
+        return
 
     matches, debounce_new_first_true_at, debounce_first_true_changed = (
         _cycle_apply_debounce(agent, matches, now, sim_mode=sim_mode)
@@ -2164,6 +2181,13 @@ async def _cycle_process_agent(
         live=not (sim_mode or replay_mode),
     )
 
+    # Agent-level cooldown (Agent.status=="cooldown" + last_triggered_at +
+    # cooldown_minutes) is evaluated HERE, separately from
+    # _ae_cycle_pre_gates_pass — it must not prevent evaluation, only
+    # gate re-firing, so it's threaded into _ae_cycle_eval_and_buffer as
+    # a flag rather than blocking the call entirely.
+    in_cooldown = _cycle_in_cooldown(agent, bypass_schedule=bypass_schedule)
+
     # Fix #6a — the whole-agent "pure rate metric" baseline gate is gone;
     # _cycle_evaluate_agent now computes `baseline_live` once per agent
     # and threads it onto the Context so each rate LEAF self-gates
@@ -2174,6 +2198,7 @@ async def _cycle_process_agent(
         alert_state=alert_state, sim_mode=sim_mode,
         bypass_schedule=bypass_schedule, bypass_suppression=bypass_suppression,
         broadcast_fn=broadcast_fn, pending_dispatches=pending_dispatches,
+        in_cooldown=in_cooldown,
     )
 
 

@@ -345,12 +345,17 @@ async def test_agent_schedule_market_hours_skipped_when_closed():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_cooldown_agent_skipped_before_expiry():
+async def test_cooldown_agent_still_evaluated_but_does_not_refire():
     """
     When agent.status='cooldown' and last_triggered_at is recent
-    (< cooldown_minutes ago) → agent is skipped. The code uses wall-clock
-    datetime.now(timezone.utc), so we need to set last_triggered_at to
-    actual recent wall-clock time.
+    (< cooldown_minutes ago) → the agent's condition tree IS still
+    evaluated (2026-09 fix: agent-level cooldown must gate RE-FIRING
+    only, not the recovery pass — a recovered latch must clear
+    immediately, not sit stuck until the cooldown window elapses).
+    Pre-fix this test asserted v2_evaluate was NEVER called for a
+    cooldown agent; that assertion encoded the bug this fix closes.
+    The code uses wall-clock datetime.now(timezone.utc), so we need to
+    set last_triggered_at to actual recent wall-clock time.
     """
     from backend.api.algo import agent_engine
 
@@ -383,13 +388,20 @@ async def test_cooldown_agent_skipped_before_expiry():
         patch.object(agent_engine, "async_session", side_effect=lambda: _make_session(agents_list)),
         patch.object(agent_engine, "_build_context", return_value={"nse_open": True, "mcx_open": False}),
         patch.object(agent_engine, "v2_evaluate", side_effect=_track_eval),
+        patch.object(agent_engine, "_cycle_apply_debounce") as mock_debounce,
+        patch.object(agent_engine, "_cycle_maybe_buffer_fire") as mock_buffer_fire,
     ):
         await agent_engine.run_cycle(context=context, bypass_schedule=False)
 
-    # v2_evaluate should NOT have been called
-    assert len(eval_calls) == 0, (
-        "cooldown agents with elapsed < cooldown_minutes must be skipped"
+    # v2_evaluate MUST be called — the recovery pass needs this tick's
+    # observations even while the agent is in cooldown.
+    assert len(eval_calls) == 1, (
+        "cooldown agents must still be evaluated so recovery can run"
     )
+    # But re-firing stays fully gated — debounce/buffer-fire (the only
+    # path that can lead to a DB write / dispatch) must never run.
+    mock_debounce.assert_not_called()
+    mock_buffer_fire.assert_not_called()
 
 
 @pytest.mark.asyncio

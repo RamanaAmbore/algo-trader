@@ -504,3 +504,98 @@ class TestLatchHydration:
         finally:
             agent_engine._V2_LATCH.clear()
             agent_engine._V2_LAST_RESET_DATE = None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Cooldown must gate re-firing only, not recovery (item 4)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestCooldownDoesNotBlockRecovery:
+    """Pre-fix: _cycle_in_cooldown lived inside _ae_cycle_pre_gates_pass,
+    which returned early BEFORE _ae_cycle_eval_and_buffer (and therefore
+    _v2_apply_recovery) ever ran — an agent stuck in agent-level cooldown
+    never cleared a recovered latch until the cooldown window itself
+    elapsed. Fix: cooldown is now threaded through as an `in_cooldown`
+    flag; recovery always runs, only re-fire/buffering is gated."""
+
+    @pytest.mark.asyncio
+    async def test_recovery_clears_latch_during_agent_level_cooldown(self):
+        agent_engine._V2_LATCH.clear()
+        agent = _Agent(id=9, slug="loss-cooldown-acct", tier="medium", topic="pnl_loss")
+
+        # A latch entry for a leaf that has now recovered past the re-arm
+        # band (op '<=', threshold -30000, current value -1000 — well
+        # past the 80%-of-threshold hysteresis band).
+        recovered_obs = _m(
+            metric="day_val", account="ZD1234", op="<=",
+            threshold=-30000, value=-1000,
+        )
+        recovered_obs["fired"] = False
+        key = _latch_key(agent.slug, recovered_obs)
+        agent_engine._V2_LATCH[key] = {"ts": _now(), "val": -31000}
+
+        pending_dispatches: list = []
+        try:
+            with patch.object(
+                agent_engine, "_cycle_evaluate_agent",
+                return_value=([], [recovered_obs]),
+            ), patch.object(
+                agent_engine, "_cycle_apply_debounce",
+            ) as mock_debounce, patch.object(
+                agent_engine, "_cycle_maybe_buffer_fire",
+            ) as mock_buffer_fire:
+                await agent_engine._ae_cycle_eval_and_buffer(
+                    agent, context={}, cfg={"baseline_offset_min": 15},
+                    now=_now(),
+                    alert_state={}, sim_mode=False,
+                    bypass_schedule=False, bypass_suppression=False,
+                    broadcast_fn=None, pending_dispatches=pending_dispatches,
+                    in_cooldown=True,
+                )
+
+            assert key not in agent_engine._V2_LATCH, (
+                "Recovery must clear the latch even while the agent is in "
+                "agent-level cooldown"
+            )
+            mock_debounce.assert_not_called()
+            mock_buffer_fire.assert_not_called()
+            assert pending_dispatches == [], (
+                "In cooldown, no re-fire should be buffered for dispatch"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+
+    @pytest.mark.asyncio
+    async def test_not_in_cooldown_still_buffers_fire_as_before(self):
+        """Regression guard — in_cooldown=False (the normal case) must
+        still reach debounce + buffer-fire exactly as before this change."""
+        agent_engine._V2_LATCH.clear()
+        agent = _Agent(id=10, slug="loss-normal-acct", tier="medium", topic="pnl_loss")
+        matches = [_m(metric="day_val", account="ZD1234", value=-40000)]
+
+        try:
+            with patch.object(
+                agent_engine, "_cycle_evaluate_agent",
+                return_value=(matches, []),
+            ), patch.object(
+                agent_engine, "_cycle_apply_debounce",
+                return_value=(matches, None, False),
+            ) as mock_debounce, patch.object(
+                agent_engine, "_cycle_maybe_buffer_fire", return_value=False,
+            ) as mock_buffer_fire, patch.object(
+                agent_engine, "_cycle_persist_untriggered_state",
+                new=AsyncMock(),
+            ):
+                await agent_engine._ae_cycle_eval_and_buffer(
+                    agent, context={}, cfg={"baseline_offset_min": 15},
+                    now=_now(),
+                    alert_state={}, sim_mode=False,
+                    bypass_schedule=False, bypass_suppression=False,
+                    broadcast_fn=None, pending_dispatches=[],
+                    in_cooldown=False,
+                )
+
+            mock_debounce.assert_called_once()
+            mock_buffer_fire.assert_called_once()
+        finally:
+            agent_engine._V2_LATCH.clear()
