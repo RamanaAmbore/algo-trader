@@ -75,7 +75,7 @@
     buildAcctMatcher, buildStrategyMatcher,
     annotateOptionCandidates, computeExpiryBands,
     rollupByUnderlying, perRootReduce, interpAt, legPnlTotal,
-    equityLinearLeg,
+    equityLinearLeg, curveBasisEqValue,
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
@@ -501,7 +501,7 @@
   // (live or sim, depending on simActive) plus drafts that match the
   // selected underlying, intersected with the operator's checked rows
   // in the Candidates panel.
-  /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string, kind?:string}>} */
+  /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string, kind?:string, _expired?:boolean}>} */
   let legs = $state([]);
 
   // Timestamp (ms) set each time loadPositions successfully completes.
@@ -1769,6 +1769,13 @@
       // shifted by the broker P&L of holdings the chart isn't
       // actually showing.
       if (!_includeHoldings && c.kind === 'eq') continue;
+      // D4(a) post-ship audit fix: `_expired`-tagged legs excluded — this
+      // feeds `chartPnlOffset`, which vertically shifts the CURVE to match
+      // "current spot P&L". The curve structurally excludes `_expired`
+      // legs' contribution (buildCleanLegs never sends them to the
+      // backend), so including their pnl here would over/under-shift the
+      // curve relative to what it actually represents.
+      if (c._expired) continue;
       s += Number(c.pnl || 0);
     }
     return s;
@@ -2463,8 +2470,34 @@
    *  here. Feeds ONLY the OptionsPayoff `legsExpPnlAtSpot` prop — the
    *  separate Legs-grid TOTAL row keeps reading `_legsExpPnlTotal`
    *  (store-first, liveSpot fallback), a deliberately different,
-   *  correctly-scoped consumer per the operator's decision (see plan C1). */
-  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => _legExpPnlDisplay(c, payoffSpot ?? null)));
+   *  correctly-scoped consumer per the operator's decision (see plan C1).
+   *
+   *  Post-ship audit fix (D4), two parts, both required for the C1
+   *  invariant ("chart marker position = chart number"):
+   *  (a) `_expired`-tagged legs return null here (excluded from the
+   *      chart), matching the backend curve (`buildCleanLegs` already
+   *      excludes them from the /strategy-analytics request) — this
+   *      total must agree with what the CURVE actually represents.
+   *      `_legsTotalsBase`/`_legsExpPnlTotal`/`_legsDayPnlTotal` are
+   *      DELIBERATELY UNCHANGED — those are Legs-GRID totals, which must
+   *      still count expired-but-held legs per Commit 2's whole point.
+   *  (b) eq/proxy legs route through `curveBasisEqValue` instead of
+   *      `_legExpPnlDisplay`'s eq branch — the CURVE (`_mergedPayoff`)
+   *      scales each eq leg's effective (qty,cost) at `strategy.spot`
+   *      (S0) via `_equityLinearLegs`, then values at every grid point;
+   *      the on-chart readout must use that SAME S0-scaled basis, valued
+   *      at `payoffSpot`, not re-derive a spot-independent value scaled
+   *      AND valued both at payoffSpot (`_legExpPnlDisplay`'s own,
+   *      correct-for-ITS-OWN-purpose behavior for the Legs grid). Using
+   *      the wrong pairing reintroduces a real gap
+   *      (`β·MV·(payoffSpot−S0)/S0`) whenever the two spots diverge. */
+  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => {
+    if (c._expired) return null;
+    if (c.kind === 'eq') {
+      return curveBasisEqValue(c, Number(strategy?.spot) || 0, payoffSpot ?? null, getProxyRow);
+    }
+    return _legExpPnlDisplay(c, payoffSpot ?? null);
+  }));
 
   /** Legs-tab TOTAL row Extrinsic — same enabled/draft gate as
    *  `_legsExpPnlTotal` above, so sum(visible leg rows' Extrinsic) equals
@@ -2503,10 +2536,15 @@
   // Reads _legsTotalsBase (unaffected by the Legs search box — see its
   // own comment) so the curve's offset stays stable while the operator
   // types in the search box (§5).
+  // D4(a) post-ship audit fix: `_expired`-tagged legs excluded — this
+  // offset shifts the EXPIRY CURVE itself, which structurally excludes
+  // `_expired` legs (buildCleanLegs never sends them to the backend); a
+  // locked-in-gain offset from a leg the curve doesn't represent would
+  // shift the curve away from what it actually depicts.
   const _expiryPnlOffset = $derived.by(() =>
     _legsTotalsBase
       .filter(c => {
-        if (!_isLegEnabled(c) || c.kind === 'eq') return false;
+        if (!_isLegEnabled(c) || c.kind === 'eq' || c._expired) return false;
         if (!showDraftInPayoff &&
             (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
         return true;
@@ -2912,7 +2950,15 @@
   const _clientPayoffStub = $derived.by(() => {
     void _throttledTick;
     // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
+    // D4(a) post-ship audit fix: `_expired`-tagged legs excluded here too —
+    // this client-side stub curve is the fallback rendering path for the
+    // exact all-expired-legs scenario D2 fixed (strategy correctly wipes
+    // to null, so this stub takes over) — it must agree with the backend
+    // curve (buildCleanLegs already excludes `_expired` legs) and with the
+    // chart's own Exp P&L readout (_chartExpPnlAtSpot, same exclusion),
+    // or the marker/curve/number triple disagrees, breaking C1.
     const activeLegs = legs.filter(l => {
+      if (l._expired) return false;
       if (l.kind === 'eq') return _includeHoldings;
       return true;
     });

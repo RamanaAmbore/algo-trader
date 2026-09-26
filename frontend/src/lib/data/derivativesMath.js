@@ -711,6 +711,41 @@ export function equityLinearLeg(eq, targetSpot, getProxyRow) {
   return { qty: effQty, cost: effCost };
 }
 
+/**
+ * Value an equity/proxy leg using the PAYOFF CURVE's own scaling basis
+ * (`curveSpot`), but VALUED at a potentially different spot (`valueSpot`)
+ * — 2026-09 D4(b) post-ship audit fix (the C1 invariant: "chart marker
+ * position = chart number").
+ *
+ * `_mergedPayoff` (+page.svelte) scales every eq/proxy leg's effective
+ * (qty, cost) at `strategy.spot` (S0, the curve's own anchor basis) via
+ * `_equityLinearLegs`, then adds `(pt.spot − leg.cost) × leg.qty` at every
+ * grid point — so the curve's value AT `pt.spot === payoffSpot` is
+ * mathematically `(payoffSpot − leg.cost) × leg.qty` where `leg` was
+ * computed with `targetSpot = S0`. The on-chart Exp P&L READOUT must use
+ * this SAME (S0-scaled, payoffSpot-valued) formula, not
+ * `equityLinearLeg(eq, payoffSpot)` (scale-and-value both at payoffSpot —
+ * `_legExpPnlDisplay`'s existing, CORRECT-for-ITS-OWN-purpose behavior for
+ * the Legs grid, which deliberately uses liveSpot as both bases). Using
+ * the wrong pairing here reintroduces a real gap between the curve and the
+ * readout — `β·MV·(payoffSpot−S0)/S0` — whenever the two spots diverge
+ * (e.g. a contango MCX root where the anchor future and front-month price
+ * meaningfully differ), breaking C1: the marker's on-chart NUMBER would
+ * disagree with what the CURVE itself draws at that same spot.
+ *
+ * @param {any} eq
+ * @param {number} curveSpot - the SAME spot `_equityLinearLegs`/`_mergedPayoff` scaled the leg at (strategy.spot / S0)
+ * @param {number|null} valueSpot - the spot to VALUE the leg at (payoffSpot)
+ * @param {(proxySymbol:string, targetRoot:string) => {beta?:number}|null} getProxyRow
+ * @returns {number|null}
+ */
+export function curveBasisEqValue(eq, curveSpot, valueSpot, getProxyRow) {
+  if (valueSpot == null) return null;
+  const leg = equityLinearLeg(eq, curveSpot, getProxyRow);
+  if (!leg) return null;
+  return (valueSpot - leg.cost) * leg.qty;
+}
+
 export function interpAt(arr, x, key) {
   if (!arr || arr.length === 0 || x == null || !Number.isFinite(x)) return null;
   if (arr.length === 1) {

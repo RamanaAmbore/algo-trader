@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, computeExpiryBands, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay, legPnlTotal, isFOSymbol, equityLinearLeg, curveBasisEqValue } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -809,5 +809,56 @@ describe('equityLinearLeg', () => {
     const eq = { symbol: 'RELIANCE', opening_qty: 10, avg_cost: 2500 };
     const leg = equityLinearLeg(eq, 0, getProxyRow);
     expect(leg).toEqual({ qty: 10, cost: 2500 });
+  });
+});
+
+// ============================================================================
+// curveBasisEqValue — D4(b) post-ship audit fix (C1 invariant: "chart
+// marker position = chart number"). The on-chart Exp P&L readout for a
+// proxy/equity leg must use the SAME (S0-scaled, payoffSpot-valued) basis
+// _mergedPayoff's own curve uses, not re-derive a spot-independent value
+// scaled and valued both at payoffSpot.
+// ============================================================================
+
+describe('curveBasisEqValue', () => {
+  const getProxyRow = () => ({ beta: 1.5 });
+  const eq = { symbol: 'GOLDBEES', proxy_for: 'GOLDM', qty: 500, avg_cost: 60, ltp: 124.43 };
+
+  it('equals the _mergedPayoff curve formula at payoffSpot in a contango case: (payoffSpot − leg.cost) × leg.qty, where leg is scaled at S0 (strategy.spot)', () => {
+    const S0 = 150736;        // strategy.spot — the curve's own anchor basis
+    const payoffSpot = 160000; // deliberately different (contango root)
+    const result = curveBasisEqValue(eq, S0, payoffSpot, getProxyRow);
+
+    // Reproduce _mergedPayoff's OWN formula exactly, independently:
+    // leg = equityLinearLeg(eq, S0, getProxyRow); add = (pt.spot − leg.cost) × leg.qty at pt.spot=payoffSpot.
+    const leg = equityLinearLeg(eq, S0, getProxyRow);
+    const curveFormula = (payoffSpot - leg.cost) * leg.qty;
+    expect(result).toBeCloseTo(curveFormula, 6);
+  });
+
+  it('is NOT equal to the spot-independent value (equityLinearLeg scaled AND valued at payoffSpot) when S0 and payoffSpot diverge — this is the gap D4(b) closes', () => {
+    const S0 = 150736;
+    const payoffSpot = 160000;
+    const result = curveBasisEqValue(eq, S0, payoffSpot, getProxyRow);
+
+    const spotIndependentLeg = equityLinearLeg(eq, payoffSpot, getProxyRow);
+    const spotIndependentValue = (payoffSpot - spotIndependentLeg.cost) * spotIndependentLeg.qty;
+    expect(result).not.toBeCloseTo(spotIndependentValue, 0);
+  });
+
+  it('when S0 === payoffSpot (no divergence), the curve-basis value and the spot-independent value coincide', () => {
+    const spot = 150736;
+    const curveBasis = curveBasisEqValue(eq, spot, spot, getProxyRow);
+    const leg = equityLinearLeg(eq, spot, getProxyRow);
+    const spotIndependent = (spot - leg.cost) * leg.qty;
+    expect(curveBasis).toBeCloseTo(spotIndependent, 6);
+  });
+
+  it('returns null when valueSpot is null (no payoff spot resolved yet)', () => {
+    expect(curveBasisEqValue(eq, 150736, null, getProxyRow)).toBeNull();
+  });
+
+  it('returns null when the leg itself is unusable at curveSpot (e.g. curveSpot <= 0, cold start)', () => {
+    expect(curveBasisEqValue(eq, 0, 160000, getProxyRow)).toBeNull();
   });
 });
