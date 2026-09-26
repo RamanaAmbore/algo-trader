@@ -22,7 +22,7 @@
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
-  import { positionsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, pulsePositionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
@@ -4174,6 +4174,27 @@
       // Gated on `storeFresh` (not unconditional) so a frozen/degraded
       // read is never mistaken for "confirmed fresh."
       if (storeFresh) _positionsRefreshedAt = Date.now();
+    });
+  });
+
+  // Propagate a late-arriving/refreshed holdings fetch into the local
+  // `holdings` $state (post-ship audit fix, R1) — mirrors the positions
+  // propagation effect immediately above. `loadPositions()` reads
+  // `portfolioStore.holdings.rows` synchronously, ONE TIME, without
+  // awaiting `pulseHoldingsStore`'s own fetch (that store is loaded
+  // independently by PositionStrip.svelte's poll cadence, per Commit 6's
+  // single-holdings-source design). On a cold-start race — this page's
+  // `onMount` → `loadPositions()` running BEFORE PositionStrip's own
+  // pulseHoldingsStore.load() has resolved — `portfolioStore.holdings
+  // .rows` was still empty at that ONE read, and nothing ever re-derived
+  // `holdings` afterward: `loadPositions()` isn't re-invoked just because
+  // holdings later arrived, so `holdings` stayed `[]` for the rest of the
+  // session (equity/proxy legs silently missing from candidatePositions).
+  $effect(() => {
+    const rawHold = pulseHoldingsStore.value; // poll-cadence trigger
+    if (!rawHold || !_positionsLoaded) return;
+    untrack(() => {
+      holdings = simActive ? [] : buildPageHoldingRows(portfolioStore.holdings.rows);
     });
   });
 
