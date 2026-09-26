@@ -412,7 +412,13 @@
   // triggering OptionsPayoff to invalidate downstream $derived caches
   // even when nothing about the chart actually changed.
   function _flipHoldings() {
-    includeHoldings.set(!_includeHoldings);
+    // `.update()` (not `.set(!_includeHoldings)`) — computing the next
+    // value off the store's OWN current value, not the local `_includeHoldings`
+    // mirror, so the toggle can never get stuck: `writable.set()` no-ops
+    // when the computed value already equals the store's current value,
+    // which happens whenever the mirror has diverged from the store (see
+    // the sessionStorage-cache fix in _saveCache/_loadCache above).
+    includeHoldings.update(v => !v);
   }
   /** Whether provisional (~) and draft-store (D) legs are included in the
    *  payoff curve. Both non-confirmed sources are gated by one toggle so
@@ -4617,12 +4623,23 @@
       // before this component's sessionStorage restore would run) on both
       // cold load and every book-poller cycle, so a page-local copy here
       // would just be redundant, write-only, and could drift stale.
+      // `_includeHoldings` is ALSO deliberately NOT persisted here (fixed
+      // 2026-09, same divergence bug as `positions` above but for the
+      // canonical `includeHoldings` writable store): this sessionStorage
+      // snapshot used to restore its own copy of the flag independently of
+      // the store's localStorage persistence, so the two could diverge —
+      // `_flipHoldings` computes off the local `_includeHoldings` mirror,
+      // so a stale sessionStorage restore could make the toggle appear
+      // stuck (writable.set() no-ops when the computed value already
+      // equals the store's current value) or silently revert on remount.
+      // The store's own localStorage persistence (`opt.includeHoldings`)
+      // is the single source of truth; the `$effect` at its declaration
+      // keeps `_includeHoldings` mirrored from it.
       /** @type {Record<string, any>} */
       const payload = {
         ts: Date.now(),
         strategy, drafts,
         selectedAccounts, selectedUnderlying, selectedExpiries,
-        _includeHoldings,
       };
       if (opts.includeSelections !== false) {
         payload.enabledSymbols = enabledSymbols;
@@ -4659,9 +4676,10 @@
       if (d.enabledSymbols && typeof d.enabledSymbols === 'object') {
         enabledSymbols = d.enabledSymbols;
       }
-      if (typeof d._includeHoldings === 'boolean') {
-        _includeHoldings = d._includeHoldings;
-      }
+      // `_includeHoldings` deliberately NOT restored from this cache — see
+      // the comment in `_saveCache` above. Restoring a stale cached value
+      // here (even without writing new ones) would still stomp the
+      // store-mirrored value on a cache hit within the 5-min TTL.
       return true;
     } catch (_) { return false; }
   }
