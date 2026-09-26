@@ -194,3 +194,114 @@ for (const vp of VIEWPORTS) {
     });
   });
 }
+
+// ── Pinned TOTAL row bypasses symbol search/filter (2026-09 fix) ──────────
+//
+// ag-Grid's pinnedBottomRowData is immune to its own quick filter by
+// design. Both MarketPulse.svelte and PerformancePage.svelte used to push
+// the TOTAL row unconditionally, so a TOTAL computed from the FULL
+// (unfiltered) row set kept showing even while the symbol search box had
+// hidden every visible body row — a TOTAL that silently disagreed with
+// what was on screen. Fix: hide the pinned TOTAL row entirely whenever
+// `gridApi.isAnyFilterPresent()` is true (quick filter, column filter, or
+// floating filter), re-applied via a grid-level `onFilterChanged`
+// listener so it reacts immediately, not just on the next data poll.
+
+test.describe('MarketPulse — pinned TOTAL row hides while a symbol filter is active', () => {
+  test.setTimeout(90_000);
+
+  test('Positions bucket: typing in the symbol search hides the pinned TOTAL row; clearing restores it', async ({ page }) => {
+    let authOk = false;
+    for (const creds of [
+      { user: process.env.PLAYWRIGHT_USER || 'ambore', pass: process.env.PLAYWRIGHT_PASS || 'admin1234' },
+      { user: 'rambo', pass: 'admin1234' },
+    ]) {
+      try { await loginAsAdmin(page, creds); authOk = true; break; } catch (_) { /* try next */ }
+    }
+    if (!authOk) { test.skip(true, 'No valid credentials'); return; }
+
+    // Relative goto (not the ${BASE} absolute-URL convention used by the
+    // test above) — this test must exercise whatever build is under the
+    // playwright config's own baseURL (local dev server by default), not
+    // a separately-deployed dev.ramboq.com that may lag behind local edits.
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const positionsSection = page.locator('.mp-bucket-positions');
+    await positionsSection.waitFor({ state: 'attached', timeout: 25_000 }).catch(() => {});
+    // Wait for the grid's body rows to actually paint before checking the
+    // pinned TOTAL — ag-Grid populates asynchronously after the poll lands.
+    await positionsSection.locator('.ag-row').first().waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {});
+
+    const pinnedRows = positionsSection.locator('.ag-floating-bottom .ag-row');
+    const initialCount = await pinnedRows.count().catch(() => 0);
+    if (initialCount === 0) {
+      test.skip(true, 'No positions/TOTAL row in the active book — nothing to filter');
+      return;
+    }
+    expect(initialCount, 'pinned TOTAL row must be visible before any filter is applied').toBeGreaterThan(0);
+
+    // Open the Positions card's inline symbol search and type a filter.
+    const searchBtn = positionsSection.locator('button.grid-search-btn[aria-label="Toggle Positions symbol filter"]').first();
+    await searchBtn.click();
+    const searchInput = positionsSection.locator('input.grid-search-input').first();
+    await searchInput.waitFor({ state: 'visible', timeout: 5_000 });
+    await searchInput.fill('ZZZZ-NO-MATCH');
+
+    await expect(pinnedRows, 'pinned TOTAL row must disappear while a symbol filter is active')
+      .toHaveCount(0, { timeout: 5_000 });
+
+    // Clear the filter — TOTAL must reappear.
+    await searchInput.fill('');
+    await expect(pinnedRows, 'pinned TOTAL row must reappear once the filter is cleared')
+      .toHaveCount(initialCount, { timeout: 5_000 });
+  });
+});
+
+// PerformancePage.svelte — static SSOT test, not a live-UI interaction.
+//
+// The ONLY mount point for PerformancePage.svelte is the public
+// `/performance` route, and that route passes `showGridControls={false}`
+// (src/routes/(public)/performance/+page.svelte), which hides the custom
+// GridSearchButton entirely — so a live test driving the header search box
+// (as written for MarketPulse above) would always skip, vacuously.
+//
+// The bug is still live-reachable today, though: `defaultColDef` sets
+// `filter: true` on every column regardless of `showGridControls`, and
+// ag-Grid renders its own column-filter funnel icon
+// (`.ag-header-cell-filter-button`, confirmed present on the deployed
+// public page) independent of that prop. A public visitor opening a
+// column filter would hit the exact same "pinned TOTAL ignores the
+// active filter" bug. Driving that ag-Grid v33 filter popup reliably
+// from Playwright proved too brittle to land here, so this is a static
+// source-code guard instead — it asserts the fix's wiring is present on
+// both grids, matching the SSOT-test style already used at the top of
+// this file.
+test.describe('PerformancePage — pinned TOTAL row wiring (static SSOT guard)', () => {
+  const PERF_SRC = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/lib/PerformancePage.svelte'),
+    'utf-8'
+  );
+
+  test('positionsAllGrid registers onFilterChanged -> _applyPinnedTotal', () => {
+    expect(PERF_SRC).toMatch(
+      /positionsAllGrid\s*=\s*makeGrid\([\s\S]{0,300}?onFilterChanged:\s*\(\)\s*=>\s*_applyPinnedTotal\(positionsAllGrid,\s*_lastPositionsTotal\)/
+    );
+  });
+
+  test('holdingsAllGrid registers onFilterChanged -> _applyPinnedTotal', () => {
+    expect(PERF_SRC).toMatch(
+      /holdingsAllGrid\s*=\s*makeGrid\([\s\S]{0,300}?onFilterChanged:\s*\(\)\s*=>\s*_applyPinnedTotal\(holdingsAllGrid,\s*_lastHoldingsTotal\)/
+    );
+  });
+
+  test('_applyPinnedTotal hides the TOTAL row whenever isAnyFilterPresent() is true', () => {
+    expect(PERF_SRC).toContain(
+      "gridApi.setGridOption('pinnedBottomRowData', gridApi.isAnyFilterPresent() ? [] : totalRows);"
+    );
+  });
+
+  test('neither grid still writes pinnedBottomRowData directly, bypassing the filter guard', () => {
+    expect(PERF_SRC).not.toMatch(/holdingsAllGrid\.setGridOption\('pinnedBottomRowData'/);
+    expect(PERF_SRC).not.toMatch(/positionsAllGrid\.setGridOption\('pinnedBottomRowData'/);
+  });
+});

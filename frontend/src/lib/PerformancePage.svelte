@@ -295,6 +295,28 @@
   let positionsSummaryGrid = null;
   let positionsAllGrid     = null;
 
+  // Pinned TOTAL row bypass fix (2026-09) — last-known TOTAL row for
+  // positionsAllGrid/holdingsAllGrid, tracked outside the reactive graph
+  // (plain `let`, not $state) so the grid-level `onFilterChanged`
+  // listener (registered once at grid creation, fires on quick-filter
+  // AND column/floating-filter changes) can re-apply the pinned row
+  // without needing its own reactive dependency.
+  let _lastPositionsTotal = /** @type {any[]} */ ([]);
+  let _lastHoldingsTotal  = /** @type {any[]} */ ([]);
+  /** Apply pinnedBottomRowData, hiding the TOTAL row entirely whenever
+   *  ANY grid filter is active (quick filter, column filter, or floating
+   *  filter) — ag-Grid's pinned rows are immune to its own filtering by
+   *  design, so a TOTAL computed from the full unfiltered row set would
+   *  silently disagree with the visibly-filtered body rows otherwise.
+   *  @param {any} gridApi
+   *  @param {any[]} totalRows */
+  function _applyPinnedTotal(gridApi, totalRows) {
+    if (!gridApi) return;
+    try {
+      gridApi.setGridOption('pinnedBottomRowData', gridApi.isAnyFilterPresent() ? [] : totalRows);
+    } catch (_) { /* grid destroyed mid-transition */ }
+  }
+
   // NAV and Funds card — NAV (per-account wealth) is the default tab;
   // Funds flips to the existing per-account margin/cash grid.
   let fundsNavTab = $state(/** @type {'nav' | 'funds'} */ ('nav'));
@@ -1052,12 +1074,14 @@
     // false flashes on identical values.
     _seedFlash(hRows, pRows);
     updateGrid(holdingsAllGrid, hRows);
-    holdingsAllGrid.setGridOption('pinnedBottomRowData', hTotals ? [hTotals] : []);
+    _lastHoldingsTotal = hTotals ? [hTotals] : [];
+    _applyPinnedTotal(holdingsAllGrid, _lastHoldingsTotal);
     // refreshCells so pnlClsFlash callbacks pick up the new flash state.
     _refreshFlashCells(holdingsAllGrid);
     _enrichPositionRows(pRows);
     updateGrid(positionsAllGrid, pRows);
-    positionsAllGrid.setGridOption('pinnedBottomRowData', pTotals ? [pTotals] : []);
+    _lastPositionsTotal = pTotals ? [pTotals] : [];
+    _applyPinnedTotal(positionsAllGrid, _lastPositionsTotal);
     _refreshFlashCells(positionsAllGrid);
     updateGrid(fundsGrid, fSplit.body);
     fundsGrid.setGridOption('pinnedBottomRowData', fSplit.total);
@@ -1183,10 +1207,16 @@
     await tick();
 
     holdingsSummaryGrid  = makeGrid(holdingsSummaryEl,  holdingsSummaryCols);
-    holdingsAllGrid      = makeGrid(holdingsAllEl,      holdingsCols, [], (r) => openOrderTicket(r, 'holdings'));
+    holdingsAllGrid      = makeGrid(holdingsAllEl,      holdingsCols, [], (r) => openOrderTicket(r, 'holdings'), {
+      // Pinned TOTAL row bypass fix — re-apply on every filter change
+      // (quick filter via the header symbol search, or a column/floating
+      // filter), not just on the next data poll.
+      onFilterChanged: () => _applyPinnedTotal(holdingsAllGrid, _lastHoldingsTotal),
+    });
     positionsSummaryGrid = makeGrid(positionsSummaryEl, positionsSummaryCols);
     positionsAllGrid     = makeGrid(positionsAllEl,     positionsCols, [], (r) => openOrderTicket(r, 'positions'), {
       postSortRows: (params) => { pairGroupSort(params.nodes); postSortGroups2Level(params); },
+      onFilterChanged: () => _applyPinnedTotal(positionsAllGrid, _lastPositionsTotal),
     });
     fundsGrid            = makeGrid(fundsEl,             fundsCols);
     navGrid              = makeGrid(navEl,               navCols);

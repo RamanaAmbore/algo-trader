@@ -1151,6 +1151,28 @@
   let positionsSummaryGrid;
   let holdingsSummaryGrid;
   let fundsGrid;
+  // Pinned TOTAL row bypass fix (2026-09) — last-known totals for the
+  // positions/holdings buckets, tracked outside the reactive graph
+  // (plain `let`, not $state) so the grid-level `onFilterChanged`
+  // listener (registered once at grid creation, fires on quick-filter
+  // AND column/floating-filter changes) can re-apply the pinned row
+  // using the most recent totals without needing its own reactive
+  // dependency on `positionsTotalRows`/`holdingsTotalRows`.
+  let _lastPositionsTotalRows = /** @type {any[]} */ ([]);
+  let _lastHoldingsTotalRows  = /** @type {any[]} */ ([]);
+  /** Apply pinnedBottomRowData, hiding the TOTAL row entirely whenever
+   *  ANY grid filter is active (quick filter, column filter, or floating
+   *  filter) — ag-Grid's pinned rows are immune to its own filtering by
+   *  design, so a TOTAL computed from the full unfiltered row set would
+   *  silently disagree with the visibly-filtered body rows otherwise.
+   *  @param {any} gridApi
+   *  @param {any[]} totalRows */
+  function _applyPinnedTotal(gridApi, totalRows) {
+    if (!gridApi) return;
+    try {
+      gridApi.setGridOption('pinnedBottomRowData', gridApi.isAnyFilterPresent() ? [] : totalRows);
+    } catch (_) { /* grid destroyed mid-transition */ }
+  }
   // Sentinel flags flip true once each createGrid runs so the $effect
   // that pushes filtered row data into the grid is gated on both
   // (a) the grid being mounted and (b) the derived row set having
@@ -2173,7 +2195,8 @@
         if (r.day_pnl_pct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(r.day_pnl_pct));
       }
       gridPositions.setGridOption('rowData', pRows);
-      gridPositions.setGridOption('pinnedBottomRowData', pTotalRows);
+      _lastPositionsTotalRows = pTotalRows;
+      _applyPinnedTotal(gridPositions, pTotalRows);
       // Force a refreshCells pass so cellClass callbacks re-evaluate the
       // flash state set above. Deferred 0ms so ag-Grid's own row-data
       // transaction finishes first; second refresh at +400ms clears flash.
@@ -2199,7 +2222,8 @@
         if (dpPct != null) _mpFlash.update(`${sym}:day_pnl_pct`, Number(dpPct));
       }
       gridHoldings.setGridOption('rowData', hRows);
-      gridHoldings.setGridOption('pinnedBottomRowData', hTotalRows);
+      _lastHoldingsTotalRows = hTotalRows;
+      _applyPinnedTotal(gridHoldings, hTotalRows);
       try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
       setTimeout(() => {
         try { gridHoldings.refreshCells({ columns: ['day_pnl', 'pnl', 'day_pnl_pct'], force: true }); } catch (_) {}
@@ -3735,12 +3759,20 @@
     );
     if (gridPositionsEl) {
       gridPositions = makeBucketGrid(gridPositionsEl, positionsColDefs,
-        'No positions in the active book.', [], { postSortRows: _pairGroupPostSort });
+        'No positions in the active book.', [], {
+          postSortRows: _pairGroupPostSort,
+          // Pinned TOTAL row bypass fix — re-apply on every filter change
+          // (quick filter via the symbol search box, or a column/floating
+          // filter), not just on the next row-data poll.
+          onFilterChanged: () => _applyPinnedTotal(gridPositions, _lastPositionsTotalRows),
+        });
       gridPositionsReady = true;
     }
     if (gridHoldingsEl) {
       gridHoldings = makeBucketGrid(gridHoldingsEl, holdingsColDefs,
-        'No holdings in the active book.');
+        'No holdings in the active book.', [], {
+          onFilterChanged: () => _applyPinnedTotal(gridHoldings, _lastHoldingsTotalRows),
+        });
       gridHoldingsReady = true;
     }
     }  // end main symbols grid block
