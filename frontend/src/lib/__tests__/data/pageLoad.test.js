@@ -25,7 +25,7 @@ import {
   buildCandidatePositions, buildCleanLegs, hasEnabledFOLegs,
   buildPagePositionRows, buildSimPositionRows,
   buildHoldingRowFromBroker, buildPageHoldingRows,
-  storeRowKey, liveStoreExpPnl,
+  storeRowKey, liveStoreExpPnl, isRootPositionsTrusted,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
@@ -611,6 +611,111 @@ describe('hasEnabledFOLegs', () => {
   it('returns false for an empty or undefined legs array', () => {
     expect(hasEnabledFOLegs([])).toBe(false);
     expect(hasEnabledFOLegs(undefined)).toBe(false);
+  });
+});
+
+// ============================================================================
+// isRootPositionsTrusted — R5 per-root freshness redesign (2026-09, operator
+// audit follow-up). Replaces a whole-book `portfolioStore.positions.fresh`
+// gate (too broad — one unrelated degraded account could permanently block
+// the strategy-wipe decision for every OTHER root) with a check scoped to
+// only the accounts relevant to the currently selected underlying.
+// ============================================================================
+
+describe('isRootPositionsTrusted', () => {
+  it('trusts a healthy book (no stale accounts, no fetch failure)', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: ['ZG0790'],
+      staleAccounts: [],
+      fetchFailed: false,
+    })).toBe(true);
+  });
+
+  it('trusts the root when the ONLY stale account is unrelated to it (the operator-reported regression)', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: ['ZG0790'],       // this root's own account, healthy
+      staleAccounts: ['DH3747'],           // an unrelated account's Dhan outage
+      fetchFailed: false,
+    })).toBe(true);
+  });
+
+  it('does NOT trust the root when a stale account actually holds it', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: ['ZG0790'],
+      staleAccounts: ['ZG0790'],
+      fetchFailed: false,
+    })).toBe(false);
+  });
+
+  it('does NOT trust the root on a whole-read fetch failure, even with a non-empty relevant set and no matching staleAccounts', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: ['ZG0790'],
+      staleAccounts: [],                  // unrelated/empty — irrelevant once fetchFailed is true
+      fetchFailed: true,
+    })).toBe(false);
+  });
+
+  it('does NOT trust an empty relevant set on a fetch failure when no fresh snapshot has EVER landed this session (Bug 1 cold-start guard)', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [],
+      staleAccounts: [],
+      fetchFailed: true,
+      hasHadFreshSnapshot: false,
+    })).toBe(false);
+  });
+
+  it('trusts an empty relevant set on a fetch failure WHEN a fresh snapshot landed earlier this session (verified-empty, frozen by portfolioStore SWR)', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [],
+      staleAccounts: ['DH3747'],
+      fetchFailed: true,
+      hasHadFreshSnapshot: true,
+    })).toBe(true);
+  });
+
+  it('does NOT trust an empty relevant set with no fetch failure but no fresh snapshot has ever landed either (still unverified)', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [],
+      staleAccounts: [],
+      fetchFailed: false,
+      hasHadFreshSnapshot: false,
+    })).toBe(false);
+  });
+
+  it('uses the active account filter as the relevant set, settling an empty candidate set directly (no dependence on hasHadFreshSnapshot)', () => {
+    // Operator has filtered to ZG0790, which currently holds nothing for
+    // this root (candidateAccounts empty) — the filter itself tells us
+    // exactly which account to check, no ambiguity.
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [],
+      selectedAccountFilter: ['ZG0790'],
+      staleAccounts: ['ZG0790'],
+      fetchFailed: false,
+      hasHadFreshSnapshot: false,
+    })).toBe(false);
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [],
+      selectedAccountFilter: ['ZG0790'],
+      staleAccounts: ['DH3747'],
+      fetchFailed: false,
+      hasHadFreshSnapshot: false,
+    })).toBe(true);
+  });
+
+  it('normalizes account codes (case/whitespace) before matching', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: [' zg0790 '],
+      staleAccounts: ['ZG0790'],
+      fetchFailed: false,
+    })).toBe(false);
+  });
+
+  it('ignores falsy/blank account codes (e.g. local drafts with account="") when building the relevant set', () => {
+    expect(isRootPositionsTrusted({
+      candidateAccounts: ['', null, undefined, 'ZG0790'],
+      staleAccounts: ['DH3747'],
+      fetchFailed: false,
+    })).toBe(true);
   });
 });
 

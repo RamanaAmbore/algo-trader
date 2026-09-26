@@ -83,7 +83,7 @@
     splitClosedReopened, buildPagePositionRows, buildSimPositionRows,
     buildPageHoldingRows, storeRowKey, liveStoreExpPnl,
     buildCleanLegs, computeLegsKey, didUnderlyingChange, hasEnabledFOLegs,
-    synthCacheKey, synthEquityOnlyStrategy,
+    synthCacheKey, synthEquityOnlyStrategy, isRootPositionsTrusted,
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
@@ -504,12 +504,36 @@
   /** @type {Array<{symbol:string, qty:any, avg_cost:any, ltp:any, source:string, kind?:string, _expired?:boolean}>} */
   let legs = $state([]);
 
-  // Timestamp (ms) set each time loadPositions successfully completes.
-  // Used to guard the strategy-wipe in loadStrategy: if positions data
-  // is stale (loaded >30s ago, e.g. on hibernation exit before the book
-  // poller has refreshed), we do NOT wipe the strategy — doing so would
-  // show a blank chart until the next poll tick.
+  // Timestamp (ms) set each time a positions poll/propagation cycle runs
+  // (recency signal only, decoupled from data quality — see
+  // _hasHadFreshPositionsSnapshot below for the trust signal). Used to
+  // guard the strategy-wipe in loadStrategy: if positions data is stale
+  // (no poll in >30s, e.g. on hibernation exit before the book poller has
+  // refreshed), we do NOT wipe the strategy — doing so would show a blank
+  // chart until the next poll tick. Stamped UNCONDITIONALLY (2026-09 R5
+  // per-root redesign) — a poll cycle running at all, even one that turns
+  // out degraded, is still evidence "we are actively polling, not
+  // hibernating." Whether the DATA from that cycle is trustworthy enough
+  // to act on is now a SEPARATE, root-scoped question — see
+  // isRootPositionsTrusted (pageLoad.js) and its use at the strategy-wipe
+  // gate below.
   let _positionsRefreshedAt = 0;
+  // Latches `true` the first time `portfolioStore.positions.fresh` is
+  // observed true this session — never reset back to `false`. Used by
+  // isRootPositionsTrusted to resolve the ambiguous case where NO account
+  // filter is active and the current root has zero candidate positions:
+  // portfolioStore's SWR guard freezes `positions.rows` to the last truly
+  // fresh full read on any subsequent degraded read, so an empty
+  // candidate set is only a VERIFIED "nobody holds this root" fact once
+  // at least one fresh read has actually landed — before that (e.g. a
+  // cold start whose very first fetch fails) empty means unknown, not
+  // verified-empty, and must not be trusted (prevents a cached
+  // sessionStorage strategy from being wiped by a first-fetch failure
+  // with no legs to even attribute the failure to). Plain `let` (not
+  // $state) — same as _positionsRefreshedAt above: only read/written from
+  // plain functions/effects, never depended on by Svelte's fine-grained
+  // reactivity graph directly.
+  let _hasHadFreshPositionsSnapshot = false;
 
   // Legs panel collapsed/expanded — operator may want to fold it
   // away once they've vetted the basket so the chart + cards have
@@ -4171,9 +4195,28 @@
       // re-invoked), _positionsRefreshedAt goes stale, _positionsFresh
       // stays false forever, strategy never nulls out for the new root,
       // and _strategyStale (strategy.underlying mismatch) never clears.
-      // Gated on `storeFresh` (not unconditional) so a frozen/degraded
-      // read is never mistaken for "confirmed fresh."
-      if (storeFresh) _positionsRefreshedAt = Date.now();
+      //
+      // R5 per-root redesign (2026-09, operator audit follow-up): stamped
+      // UNCONDITIONALLY now — this is a pure RECENCY signal ("did a poll
+      // cycle just run"), not a trust signal. The original gate here
+      // (`if (storeFresh) ...`) conflated the two: gating recency itself
+      // on the WHOLE BOOK being non-degraded meant a sustained partial
+      // outage on ONE unrelated account (e.g. a Dhan circuit breaker)
+      // could stop this stamp from ever advancing again, re-sticking the
+      // Payoff card in "loading" for every OTHER root once >30s elapsed,
+      // not just the affected account's own root. Trust is now a
+      // SEPARATE, root-scoped question — see isRootPositionsTrusted
+      // (pageLoad.js) at the strategy-wipe gate below, which intersects
+      // ONLY the accounts relevant to the currently selected underlying
+      // against positionsStore.meta.staleAccounts/fetchFailed.
+      _positionsRefreshedAt = Date.now();
+      // Latch (never un-set) the moment we've seen a genuinely fresh,
+      // non-degraded full read — this is the legitimate remaining use of
+      // the whole-book `storeFresh` signal: isRootPositionsTrusted needs
+      // it to resolve the case where the current root has ZERO candidate
+      // positions and no account filter is active (ambiguous otherwise —
+      // "verified empty" vs "never successfully fetched").
+      if (storeFresh) _hasHadFreshPositionsSnapshot = true;
     });
   });
 
@@ -4262,14 +4305,17 @@
     holdings = simActive ? [] : buildPageHoldingRows(portfolioStore.holdings.rows);
 
     _positionsLoaded   = true;
-    // R5 post-ship audit fix: was unconditional — a degraded/stale read
-    // (positionsStore.error set, or portfolioStore's SWR guard serving a
-    // frozen last-good snapshot) could still stamp _positionsRefreshedAt,
-    // making a degraded mount/bookChanged/account-change read masquerade as
-    // "confirmed fresh" for loadStrategy()'s equity-only-synth strategy-wipe
-    // gate (see the book-poller propagation effect above, which already
-    // gates its own stamp on `storeFresh` for the same reason).
-    if (_posStoreFresh) _positionsRefreshedAt = Date.now();
+    // R5 per-root redesign (2026-09, operator audit follow-up): stamped
+    // UNCONDITIONALLY — pure recency signal, mirrors the book-poller
+    // propagation effect above (see its comment for the full rationale:
+    // gating recency itself on the whole book's degraded state was too
+    // broad, letting one unrelated account's outage permanently block
+    // every OTHER root's strategy-wipe decision). Trust is now decided
+    // separately, per-root, by isRootPositionsTrusted at the wipe gate.
+    _positionsRefreshedAt = Date.now();
+    // Latch (never un-set) — same legitimate remaining use of the
+    // whole-book `fresh` signal as the propagation effect above.
+    if (_posStoreFresh) _hasHadFreshPositionsSnapshot = true;
     if (!positionsStore.error) lastRefreshAt.set(Date.now());
 
     // Do NOT include enabledSymbols in the positions-poll snapshot —
@@ -4404,7 +4450,41 @@
         // 4's fix), which renders a real, non-blank curve from `legs`
         // directly regardless of the `_expired` tag.
         const _hasEnabledLegs = hasEnabledFOLegs(legs);
-        const _positionsFresh = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
+        const _recentEnough = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
+        // R5 per-root redesign (2026-09, operator audit follow-up):
+        // recency (_recentEnough, above) and trust (_rootTrusted, below)
+        // are now two SEPARATE checks, ANDed together — see
+        // _positionsRefreshedAt's declaration comment and
+        // isRootPositionsTrusted's doc (pageLoad.js) for the full
+        // rationale. `candidatePositions` is already scoped to
+        // `selectedUnderlying` (+ `selectedAccounts` when a filter is
+        // active) via buildCandidatePositions, so its own `.account`
+        // values ARE the "accounts relevant to this root" set. Filtered to
+        // `source === 'live'` (excludes eq/holdings rows, sim rows, AND
+        // provisional/draft_store rows — the latter carry real account
+        // codes but don't come from positionsStore, so they'd add a
+        // spurious "relevant account" the trust check has no data for).
+        //
+        // Sim short-circuit: positionsStore/portfolioStore only ever
+        // reflect the LIVE broker book (buildSimPositionRows is a wholly
+        // separate path — see loadPositions' own comment on simRows above).
+        // In sim mode the trust check's inputs (staleAccounts/fetchFailed)
+        // say nothing about sim legs, and operators often run sim
+        // specifically WHILE the broker is degraded/down — if the live
+        // book's fetch never lands a fresh read in that window,
+        // isRootPositionsTrusted would stay false forever and reintroduce
+        // D2's stuck-loading bug via sim mode. `simActive` bypasses the
+        // whole check (recency still applies).
+        const _rootTrusted = simActive || isRootPositionsTrusted({
+          candidateAccounts: candidatePositions
+            .filter(c => c.kind !== 'eq' && c.source === 'live')
+            .map(c => c.account),
+          selectedAccountFilter: selectedAccounts,
+          staleAccounts: positionsStore.meta?.staleAccounts ?? [],
+          fetchFailed: !!positionsStore.meta?.fetchFailed,
+          hasHadFreshSnapshot: _hasHadFreshPositionsSnapshot,
+        });
+        const _positionsFresh = _recentEnough && _rootTrusted;
         if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady && _positionsFresh) strategy = null;
         _synthCache = null;
       }

@@ -555,6 +555,108 @@ export function hasEnabledFOLegs(legs) {
   return (legs || []).some(l => l.kind !== 'eq' && Number(l.qty) !== 0 && !l._expired);
 }
 
+function _normAcct(a) {
+  return String(a || '').trim().toUpperCase();
+}
+
+/**
+ * Root-scoped positions TRUST check (2026-09 R5 redesign — replaces a
+ * WHOLE-BOOK freshness gate that was too broad). "Trusted" here means
+ * "none of the accounts relevant to this root is the one currently
+ * degraded" — NOT "this root's rows are guaranteed current." Note the
+ * distinction: portfolioStore.svelte.js's SWR guard freezes the ENTIRE
+ * positions slice (every account's rows, not just the degraded one's)
+ * whenever ANY account is degraded — so during a partial outage, even a
+ * perfectly healthy account's rows are frozen at whatever they were just
+ * before the outage started, same as the degraded account's. This
+ * function only answers "is it safe to ACT on that frozen data for this
+ * root" (i.e. wipe the strategy), not "is that data fresher than it
+ * looks." Keeping healthy accounts' rows genuinely live during a partial
+ * outage would require per-account (not whole-slice) freezing in
+ * portfolioStore — a separate, larger change, not done here.
+ *
+ * Original R5 fix gated the strategy-wipe decision on
+ * `portfolioStore.positions.fresh` — a single aggregate flag that is
+ * `false` whenever ANY account anywhere in the book is degraded, even an
+ * account with zero relationship to the currently selected underlying.
+ * Operator-reported regression: a sustained partial outage on one
+ * account (e.g. a Dhan circuit breaker) could permanently block the
+ * strategy-wipe gate for every OTHER root, re-sticking the Payoff card
+ * in "loading" for symbols that have nothing to do with the degraded
+ * account.
+ *
+ * This function narrows the check to only the accounts relevant to the
+ * CURRENTLY SELECTED root:
+ *
+ *  - Account filter active (`selectedAccountFilter` non-empty): the
+ *    relevant set IS the filter — the operator has explicitly scoped to
+ *    those accounts, so we can answer definitively even if
+ *    `candidateAccounts` is empty (e.g. the filtered accounts happen to
+ *    hold nothing for this root right now).
+ *  - No filter, `candidateAccounts` non-empty: intersect those accounts
+ *    against `staleAccounts` (from `positionsStore.meta.staleAccounts`).
+ *    A `fetchFailed` (whole-read exception, see markFetchFailedMeta in
+ *    dataStore.svelte.js) makes every relevant account untrustworthy
+ *    unconditionally — a thrown exception isn't attributable to specific
+ *    accounts the way a partial `stale_accounts` substitution is.
+ *  - No filter, `candidateAccounts` EMPTY (no account anywhere currently
+ *    shows a position for this root): this is ambiguous on its own — it
+ *    could mean "verified: nobody holds this root" OR "we've never
+ *    successfully fetched the book this session, so we don't actually
+ *    know." Resolved by `hasHadFreshSnapshot` — the frozen SWR guard in
+ *    portfolioStore.svelte.js means `candidatePositions` reflects
+ *    whatever the LAST truly fresh (non-degraded) full read produced,
+ *    held frozen through any subsequent degraded reads. If a fresh
+ *    snapshot has landed at least once this session, an empty relevant
+ *    set was VERIFIED empty as of that read and stays trustworthy even
+ *    if the CURRENT read is degraded/failed — a subsequent failure
+ *    doesn't retroactively invalidate a fact already established. If no
+ *    fresh snapshot has EVER landed (e.g. a cold start whose first fetch
+ *    throws), empty means unknown, not verified-empty — untrusted. This
+ *    specifically prevents a cold-start regression: a strategy cached in
+ *    sessionStorage getting wiped to null because the very first
+ *    positions fetch happened to fail, with no legs by which to even
+ *    guess an account.
+ *
+ * @param {{
+ *   candidateAccounts: Array<string|null|undefined>,
+ *   selectedAccountFilter?: Array<string|null|undefined>,
+ *   staleAccounts?: Array<string|null|undefined>,
+ *   fetchFailed?: boolean,
+ *   hasHadFreshSnapshot?: boolean,
+ * }} args
+ * @returns {boolean}
+ */
+export function isRootPositionsTrusted({
+  candidateAccounts,
+  selectedAccountFilter = [],
+  staleAccounts = [],
+  fetchFailed = false,
+  hasHadFreshSnapshot = false,
+}) {
+  const filterActive = Array.isArray(selectedAccountFilter) && selectedAccountFilter.length > 0;
+  const relevantSource = filterActive ? selectedAccountFilter : (candidateAccounts || []);
+  const relevant = new Set(relevantSource.map(_normAcct).filter(Boolean));
+
+  if (relevant.size === 0) {
+    // Only reachable when no account filter is active AND no candidate
+    // account was found for this root — see the "EMPTY" branch in the
+    // doc comment above.
+    return !!hasHadFreshSnapshot;
+  }
+
+  // A whole-read exception can't be attributed to specific accounts —
+  // every relevant account is suspect, no exceptions, regardless of
+  // whatever staleAccounts a PRIOR successful fetch happened to report.
+  if (fetchFailed) return false;
+
+  const stale = new Set((staleAccounts || []).map(_normAcct).filter(Boolean));
+  for (const acct of relevant) {
+    if (stale.has(acct)) return false;
+  }
+  return true;
+}
+
 /**
  * Build a stable string key from the cleanLegs array for memoisation.
  * Two calls with identical legs produce identical keys.

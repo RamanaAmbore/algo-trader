@@ -1119,10 +1119,16 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
   test('Bug 4 — strategy-wipe uses _positionsFresh guard (source audit)', async () => {
     const src = fs.readFileSync(SRC, 'utf8');
 
-    // The guarded wipe must include the _positionsFresh check
+    // R5 per-root redesign (2026-09): _positionsFresh is no longer a
+    // single expression computed straight from _positionsRefreshedAt —
+    // it's now recency (_recentEnough) ANDed with a root-scoped trust
+    // check (_rootTrusted, via the shared isRootPositionsTrusted pure
+    // function). See the dedicated "Bug 4 / R5" tests below for the full
+    // decomposition; this test keeps checking the recency half + the
+    // final wipe-condition text, which are unchanged.
     expect(
-      src.includes('const _positionsFresh = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);'),
-      'Bug 4: _positionsFresh must be computed from _positionsRefreshedAt with 30s window'
+      src.includes('const _recentEnough = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);'),
+      'Bug 4: _recentEnough must be computed from _positionsRefreshedAt with 30s window'
     ).toBe(true);
 
     // The strategy = null line must include _positionsFresh
@@ -1135,6 +1141,118 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
     expect(
       !src.includes('if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady) strategy = null;'),
       'Bug 4: old unguarded strategy wipe (without _positionsFresh) must be removed'
+    ).toBe(true);
+  });
+
+  // R5 per-root redesign (2026-09, operator audit follow-up): the ORIGINAL
+  // R5 fix gated _positionsFresh on the WHOLE BOOK's degraded state
+  // (portfolioStore.positions.fresh) — too broad. A sustained partial
+  // outage on ONE unrelated account (e.g. a Dhan circuit breaker) could
+  // permanently block the strategy-wipe decision for every OTHER root.
+  // Redesign: recency (did a poll cycle run recently) and trust (is the
+  // data for THIS root's relevant accounts specifically OK) are now
+  // separate, ANDed checks — see isRootPositionsTrusted (pageLoad.js,
+  // unit-tested directly in pageLoad.test.js) for the root-scoping logic.
+  test('Bug 4 / R5 — the wipe gate ANDs recency with a root-scoped trust check (source audit)', async () => {
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // simActive bypasses the trust check entirely — positionsStore /
+    // portfolioStore only ever reflect the LIVE broker book, so its
+    // staleAccounts/fetchFailed signals say nothing about sim legs.
+    // Without this, a sim-mode root with no enabled F&O legs could never
+    // wipe if the live book's fetch never lands a fresh read during the
+    // sim session (operators often run sim specifically while the broker
+    // is degraded/down) — reintroducing D2's stuck-loading bug via sim
+    // mode.
+    expect(
+      src.includes('const _rootTrusted = simActive || isRootPositionsTrusted({'),
+      'R5 redesign: the wipe gate must bypass the trust check entirely in sim mode'
+    ).toBe(true);
+
+    expect(
+      src.includes('const _positionsFresh = _recentEnough && _rootTrusted;'),
+      'R5 redesign: _positionsFresh must AND recency (_recentEnough) with root-scoped trust (_rootTrusted)'
+    ).toBe(true);
+
+    // candidatePositions is already scoped to selectedUnderlying (+
+    // selectedAccounts when a filter is active) — its own .account values
+    // ARE the "relevant accounts" set passed to the trust check. Filtered
+    // to source==='live' so provisional/draft_store rows (real account
+    // codes, but not sourced from positionsStore) don't pollute the set.
+    expect(
+      src.includes("candidateAccounts: candidatePositions") &&
+      src.includes("c.kind !== 'eq' && c.source === 'live'"),
+      'R5 redesign: candidateAccounts must be derived from candidatePositions, scoped to live F&O rows only'
+    ).toBe(true);
+    expect(
+      src.includes('selectedAccountFilter: selectedAccounts,'),
+      'R5 redesign: the active account filter must be passed through when set'
+    ).toBe(true);
+  });
+
+  // The R5 redesign's recency stamps (_positionsRefreshedAt) are now
+  // UNCONDITIONAL in both places that set them — gating recency itself on
+  // the whole book's degraded state was the exact regression being fixed.
+  // Trust is a SEPARATE per-root check (see the test above), and the
+  // whole-book `fresh`/`storeFresh` signal's only legitimate remaining use
+  // is latching _hasHadFreshPositionsSnapshot (used by
+  // isRootPositionsTrusted to resolve the "empty relevant set" ambiguity).
+  test('Bug 4 / R5 — loadPositions stamps _positionsRefreshedAt unconditionally; only the trust latch is gated', async () => {
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // The OLD guarded form (recency itself gated on the store's fresh
+    // flag) must be gone — this was the exact regression being fixed.
+    expect(
+      src.includes('if (_posStoreFresh) _positionsRefreshedAt = Date.now();'),
+      'R5 redesign: recency stamp must no longer be gated on the store fresh flag'
+    ).toBe(false);
+
+    // Scope the search to loadPositions()'s own body — bounded by CODE
+    // landmarks (function start → the lastRefreshAt.set call a few lines
+    // after the stamp/latch), not a character count. A character-count
+    // window breaks every time a nearby explanatory comment grows or
+    // shrinks (this test's own history: 600 → 900 chars after one edit) —
+    // landmark bounds don't drift with comment length.
+    const loadPosStart = src.indexOf('async function loadPositions(');
+    const lastSetIdx    = src.indexOf('if (!positionsStore.error) lastRefreshAt.set(Date.now())', loadPosStart);
+    expect(loadPosStart, 'loadPositions must exist').toBeGreaterThan(0);
+    expect(lastSetIdx, 'lastRefreshAt.set must exist inside loadPositions').toBeGreaterThan(loadPosStart);
+    const region = src.slice(loadPosStart, lastSetIdx);
+    expect(
+      region.includes('_positionsRefreshedAt = Date.now();'),
+      'R5 redesign: loadPositions must stamp _positionsRefreshedAt unconditionally'
+    ).toBe(true);
+    expect(
+      region.includes('if (_posStoreFresh) _hasHadFreshPositionsSnapshot = true;'),
+      'R5 redesign: loadPositions must latch _hasHadFreshPositionsSnapshot on the store fresh flag'
+    ).toBe(true);
+  });
+
+  test('Bug 4 / R5 — book-poller propagation effect also stamps unconditionally; only its latch is gated', async () => {
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // The OLD guarded form must be gone from the propagation effect too.
+    expect(
+      src.includes('if (storeFresh) _positionsRefreshedAt = Date.now();'),
+      'R5 redesign: propagation effect must no longer gate the recency stamp on storeFresh'
+    ).toBe(false);
+
+    expect(
+      src.includes('if (storeFresh) _hasHadFreshPositionsSnapshot = true;'),
+      'R5 redesign: propagation effect must latch _hasHadFreshPositionsSnapshot on storeFresh'
+    ).toBe(true);
+
+    // Scope to the propagation effect's own region (between the
+    // destructuring site and the latch line) to confirm the bare stamp
+    // lives there too, without brittle line-adjacency matching.
+    const destructureIdx = src.indexOf("const { rows: storeRows, fresh: storeFresh } = portfolioStore.positions;");
+    const latchIdx = src.indexOf('if (storeFresh) _hasHadFreshPositionsSnapshot = true;');
+    expect(destructureIdx, 'destructuring site must exist').toBeGreaterThan(0);
+    expect(latchIdx, 'latch line must exist').toBeGreaterThan(destructureIdx);
+    const region = src.slice(destructureIdx, latchIdx);
+    expect(
+      region.includes('_positionsRefreshedAt = Date.now();'),
+      'R5 redesign: propagation effect must stamp _positionsRefreshedAt unconditionally between the destructuring site and the latch'
     ).toBe(true);
   });
 
@@ -1161,35 +1279,6 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
       loadedIdx < refreshedIdx && refreshedIdx < lastSetIdx,
       'Bug 4: order must be _positionsLoaded → _positionsRefreshedAt → lastRefreshAt.set'
     ).toBe(true);
-  });
-
-  // R5 post-ship audit fix: loadPositions()'s _positionsRefreshedAt stamp
-  // must be gated on portfolioStore.positions.fresh, not unconditional —
-  // otherwise a degraded/stale read (mount/bookChanged/account-change) can
-  // masquerade as confirmed-fresh for the _positionsFresh strategy-wipe
-  // gate this test suite already covers above.
-  test('Bug 4 / R5 — loadPositions stamp is gated on storeFresh, not unconditional (source audit)', async () => {
-    const src = fs.readFileSync(SRC, 'utf8');
-
-    // The loadPositions() stamp must be conditional on the store's own
-    // `fresh` flag captured alongside `.rows` at the same destructuring
-    // site positions are built from — mirrors the book-poller propagation
-    // effect's existing `if (storeFresh) _positionsRefreshedAt = Date.now();`
-    // pattern.
-    expect(
-      src.includes('if (_posStoreFresh) _positionsRefreshedAt = Date.now();'),
-      'R5: loadPositions must gate its _positionsRefreshedAt stamp on the store fresh flag'
-    ).toBe(true);
-
-    // The stamp immediately preceding `lastRefreshAt.set` (i.e. the one
-    // inside loadPositions(), not the earlier book-poller propagation
-    // effect's copy) must be the GUARDED form, not a bare unconditional one.
-    const lastSetIdx2 = src.indexOf('if (!positionsStore.error) lastRefreshAt.set(Date.now())');
-    const precedingLine = src.slice(0, lastSetIdx2).split('\n').filter(l => l.trim()).at(-1);
-    expect(
-      precedingLine.trim(),
-      'R5: the line directly before lastRefreshAt.set must be the guarded stamp, not a bare unconditional one'
-    ).toBe('if (_posStoreFresh) _positionsRefreshedAt = Date.now();');
   });
 
   // ── Combined: browser smoke ──────────────────────────────────────────────────────
