@@ -482,7 +482,6 @@ export function splitClosedReopened(p) {
   if (closed_qty <= 0) return [p];
 
   const exit_price       = _exitPrice(oq, dbq, dsq, dbv, dsv);
-  const closed_day_pnl   = _closedDayPnl(oq, exit_price, close, closed_qty);
 
   const brokerQty        = Math.abs(Number(p.qty || 0));
   const avg_cost         = Number(p.avg_cost || 0);
@@ -490,6 +489,32 @@ export function splitClosedReopened(p) {
     brokerQty, Number(p.pnl || 0), oq, exit_price, avg_cost, closed_qty
   );
 
+  if (brokerQty === 0) {
+    // Fully closed today. Do NOT use _closedDayPnl's (exit − close) ×
+    // closed_qty here — when the position also embeds a same-day round-trip
+    // (dbq>0 stacked on top of the overnight close), day_sell_value/
+    // day_sell_quantity blend the overnight-closing sells with the
+    // round-trip sells into one weighted-average exit price, so multiplying
+    // by closed_qty (correctly SIZED via min(oq,dsq), but priced against a
+    // blended average) still produces a Day P&L that diverges from the
+    // canonical baseline-diff formula (CLAUDE.md "Frontend Day P&L SSOT").
+    // baseDayPnlForPosition(p) computed on the UNSPLIT row is authoritative
+    // regardless of any blending, and sidesteps the `prev_close <= 0`
+    // sentinel problem entirely since it doesn't reference `close` at all —
+    // same fix pattern already used by the oq===0 fully-closed branch above.
+    const wholeDay = baseDayPnlForPosition(p);
+    return [_forceBaseline({
+      ...p,
+      qty: 0,
+      pnl: closed_lifetime_pnl,
+      realised: closed_lifetime_pnl,
+      unrealised: 0,
+      day_change_val: wholeDay,
+      _splitTag: 'closed',
+    }, wholeDay)];
+  }
+
+  const closed_day_pnl   = _closedDayPnl(oq, exit_price, close, closed_qty);
   const open_dcv = baseDayPnlForPosition(p) - closed_day_pnl;
 
   // Forcing realised/unrealised consistent with pnl (closed portion has no
@@ -505,8 +530,6 @@ export function splitClosedReopened(p) {
     day_change_val: closed_day_pnl,
     _splitTag: 'closed',
   }, closed_day_pnl);
-
-  if (brokerQty === 0) return [closedRow];
 
   const openRow = _forceBaseline({
     ...p,

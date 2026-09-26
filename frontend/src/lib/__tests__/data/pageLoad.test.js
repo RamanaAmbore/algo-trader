@@ -84,13 +84,96 @@ describe('splitClosedReopened — overnight (oq!==0) split invariant', () => {
     expect(sumDayPnl(split)).toBeCloseTo(expected, 6);
   });
 
-  it('fully closed overnight position (brokerQty=0) returns a single closed row with base=0', () => {
+  it('fully closed overnight position (brokerQty=0) returns a single closed row whose Day P&L equals baseDayPnlForPosition on the PRE-SPLIT row, not internal self-consistency alone', () => {
     const p = makeOvernightRow({ quantity: 0, day_sell_quantity: 10, day_sell_value: 10 * 220, overnight_quantity: 10, pnl: 200 });
+    const expected = baseDayPnlForPosition(p); // 200 (pnl) - 100 (prev_settlement_pnl) = 100
     const split = splitClosedReopened(p);
     expect(split.length).toBe(1);
     expect(split[0]._splitTag).toBe('closed');
-    // Day P&L for a fully-closed-today row == closed_day_pnl == its lifetime pnl minus prior-session carry.
+    // Asserting against the pre-split baseline (not just split[0]'s own
+    // internally-forced consistency, which is true by construction via
+    // _forceBaseline regardless of whether the fix landed) is what actually
+    // exercises the Commit-1 fix.
+    expect(split[0].day_change_val).toBeCloseTo(expected, 6);
     expect(baseDayPnlForPosition(split[0])).toBeCloseTo(split[0].day_change_val, 6);
+  });
+
+  it('Commit-1 regression: fully closed overnight position WITH an embedded same-day round-trip (dsq > oq, dbq > 0) — old (exit − prev_close) × min(oq,dsq) blends the round-trip sell price into the overnight exit price and diverges from baseDayPnlForPosition; the fix must use the unsplit-row baseline instead', () => {
+    // Overnight long 10 @ avg_cost 200, prev_close 210. Today: buys 6 @ 230
+    // (intraday), then sells 16 total (10 closing the overnight lot @ 220,
+    // 6 round-tripping the fresh buy @ 240) — broker only reports the
+    // AGGREGATE day_sell_value/day_sell_quantity, so the old formula's
+    // exit_price = dsv/dsq = 3640/16 = 227.5 is a blend of both fills.
+    // Old (buggy) closed_day_pnl = (227.5 − 210) × min(10,16) = 175.
+    // baseDayPnlForPosition(p) = pnl(260) − prev_settlement_pnl(100) = 160.
+    // 175 !== 160 — this is the confirmed divergence the plan describes.
+    const p = makeOvernightRow({
+      quantity: 0,
+      overnight_quantity: 10,
+      day_buy_quantity: 6,
+      day_buy_value: 6 * 230,
+      day_sell_quantity: 16,
+      day_sell_value: 10 * 220 + 6 * 240, // 3640
+      average_price: 200,
+      prev_close: 210,
+      pnl: 260,
+      prev_settlement_pnl: 100,
+    });
+    const expected = baseDayPnlForPosition(p);
+    expect(expected).toBeCloseTo(160, 6);
+    const split = splitClosedReopened(p);
+    expect(split.length).toBe(1);
+    expect(split[0].day_change_val).toBeCloseTo(160, 6);
+    expect(split[0].day_change_val).not.toBeCloseTo(175, 6); // old buggy blended value
+  });
+
+  it('Commit-1 regression, short side: fully closed overnight SHORT position (oq<0) with an embedded round-trip exits via dbq — same fix applies symmetrically', () => {
+    // Overnight short 10 @ avg_cost 200, prev_close 210. Today: sells 6 @ 195
+    // (intraday short round-trip), then buys 16 total to fully cover (10
+    // covering the overnight short @ 205, 6 round-tripping the fresh short
+    // @ 190) — dbv/dbq = (10*205 + 6*190)/16 = (2050+1140)/16 = 199.375.
+    // Old closed_day_pnl = (close − exit) × min(|oq|,dbq) = (210-199.375)*10
+    // = 106.25. baseDayPnlForPosition(p) = pnl(120) − prev_settlement_pnl(50)
+    // = 70. These diverge (106.25 !== 70).
+    const p = makeOvernightRow({
+      quantity: 0,
+      overnight_quantity: -10,
+      day_sell_quantity: 6,
+      day_sell_value: 6 * 195,
+      day_buy_quantity: 16,
+      day_buy_value: 10 * 205 + 6 * 190, // 3190
+      average_price: 200,
+      prev_close: 210,
+      pnl: 120,
+      prev_settlement_pnl: 50,
+    });
+    const expected = baseDayPnlForPosition(p);
+    expect(expected).toBeCloseTo(70, 6);
+    const split = splitClosedReopened(p);
+    expect(split.length).toBe(1);
+    expect(split[0].day_change_val).toBeCloseTo(70, 6);
+    expect(split[0].day_change_val).not.toBeCloseTo(106.25, 6); // old buggy blended value
+  });
+
+  it('Commit-1 sentinel: prev_close null/0 no longer matters — the fix does not read `close` at all for the fully-closed branch', () => {
+    // buildPositionRowFromBroker maps a missing/0 prev_close to `null`, and
+    // splitClosedReopened reads it as `Number(p.prev_close ?? 0)` = 0 — the
+    // documented sentinel. The old formula (exit − 0) × closedQty would
+    // silently inflate Day P&L by the full exit price. The fix sidesteps
+    // this entirely since baseDayPnlForPosition never references `close`.
+    const p = makeOvernightRow({
+      quantity: 0,
+      overnight_quantity: 10,
+      day_sell_quantity: 10,
+      day_sell_value: 10 * 220,
+      prev_close: null,
+      pnl: 200,
+      prev_settlement_pnl: 100,
+    });
+    const expected = baseDayPnlForPosition(p); // 200 - 100 = 100, unaffected by prev_close
+    const split = splitClosedReopened(p);
+    expect(split[0].day_change_val).toBeCloseTo(expected, 6);
+    expect(split[0].day_change_val).toBeCloseTo(100, 6);
   });
 });
 
