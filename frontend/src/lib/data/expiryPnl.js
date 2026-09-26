@@ -572,18 +572,45 @@ export function splitClosedReopened(p) {
  * @returns {number|null}
  */
 export function positionExpPnl(rawRow, kind, anchor) {
+  const pieces = positionExpPnlPieces(rawRow, kind, anchor);
+  if (pieces == null) return null;
+  let sum = null;
+  for (const v of pieces) {
+    if (v != null && isFinite(Number(v))) sum = (sum ?? 0) + Number(v);
+  }
+  return sum;
+}
+
+/**
+ * Per-piece variant of positionExpPnl (2026-09, Commit 5) — returns the
+ * array of per-piece Exp P&L values (one entry per `splitClosedReopened`
+ * output piece, IN THE SAME ORDER), instead of the pre-summed total.
+ *
+ * Exists so a page-level consumer that ALSO splits the same raw row via
+ * `splitClosedReopened` (e.g. derivatives/pageLoad.js's
+ * buildPagePositionRows) can zip its own split display rows against these
+ * piece values index-for-index — both the store and the page call the
+ * SAME pure `splitClosedReopened` on the SAME raw row, so piece `i` always
+ * corresponds to the same display row on both sides. Matching by
+ * (account, symbol) instead would be unsafe: Kite can report the same
+ * symbol under the same account across two product types (NRML vs MIS),
+ * which collide on that key but never split the same way.
+ *
+ * @param {any} rawRow
+ * @param {'opt'|'fut'} kind
+ * @param {number|null|undefined} anchor
+ * @returns {Array<number|null>|null} null when kind is neither 'opt' nor
+ *   'fut', or when at least one still-open piece needs an anchor that
+ *   isn't available yet (mirrors positionExpPnl's existing null gate).
+ */
+export function positionExpPnlPieces(rawRow, kind, anchor) {
   if (kind !== 'opt' && kind !== 'fut') return null;
   const normRow = buildPositionRowFromBroker(rawRow, 'live');
   normRow.kind = kind;
   const pieces = splitClosedReopened(normRow);
   const needsAnchor = pieces.some(pc => Number(pc?.qty || 0) !== 0);
   if (needsAnchor && !(Number(anchor) > 0)) return null;
-  let sum = null;
-  for (const piece of pieces) {
-    const v = expiryPnlWithRealised(piece, anchor);
-    if (v != null && isFinite(Number(v))) sum = (sum ?? 0) + Number(v);
-  }
-  return sum;
+  return pieces.map(piece => expiryPnlWithRealised(piece, anchor));
 }
 
 /**

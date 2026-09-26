@@ -26,7 +26,7 @@ import {
   buildPagePositionRows, buildSimPositionRows,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
-import { expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
+import { expiryPnlWithRealised, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 
 function sumDayPnl(rows) {
@@ -619,6 +619,74 @@ describe('buildPagePositionRows', () => {
   it('skips a row with no symbol at all', () => {
     const rows = buildPagePositionRows([{ account: 'ACC1', quantity: 5 }]);
     expect(rows).toEqual([]);
+  });
+
+  // ==========================================================================
+  // _storeExpPnl wiring (2026-09, Commit 5) — portfolioStore.svelte.js's
+  // _posTier2 computes `_exp_pnl_pieces` via positionExpPnlPieces on the SAME
+  // raw row this test simulates; buildPagePositionRows must zip its own
+  // splitClosedReopened output against those pieces BY INDEX.
+  // ==========================================================================
+
+  describe('_storeExpPnl wiring — mixed raw rows (partial close, two accounts, one fully closed)', () => {
+    /** Mimics portfolioStore.svelte.js's _posTier2: stamps `_exp_pnl_pieces`
+     *  (and `_exp_pnl`, for cross-checking) onto a raw row exactly the way
+     *  the real store does, using the SAME anchor for every row. */
+    function stampStoreFields(rawRow, kind, anchor) {
+      return {
+        ...rawRow,
+        _exp_pnl: positionExpPnl(rawRow, kind, anchor),
+        _exp_pnl_pieces: positionExpPnlPieces(rawRow, kind, anchor),
+      };
+    }
+
+    const anchor = 23000; // OTM for a 24000-strike CE
+
+    it('a partial-close row (2 pieces): each split page row carries the matching piece by index, and they sum to positionExpPnl', () => {
+      const raw = {
+        tradingsymbol: 'NIFTY24000CE', account: 'ACC1', quantity: 5,
+        overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+        average_price: 200, prev_close: 210, pnl: 150, exchange: 'NFO',
+      };
+      const stamped = stampStoreFields(raw, 'opt', anchor);
+      const pageRows = buildPagePositionRows([stamped]);
+      expect(pageRows.length).toBe(2);
+      for (const row of pageRows) expect('_storeExpPnl' in row).toBe(true);
+      const sum = pageRows.reduce((s, r) => s + Number(r._storeExpPnl ?? 0), 0);
+      expect(sum).toBe(positionExpPnl(raw, 'opt', anchor));
+    });
+
+    it('a fully-closed row (1 piece): the single page row carries the store value directly', () => {
+      const raw = { tradingsymbol: 'NIFTY24000CE', account: 'ACC2', quantity: 0, realised: 500, pnl: 3000 };
+      const stamped = stampStoreFields(raw, 'opt', anchor);
+      const pageRows = buildPagePositionRows([stamped]);
+      expect(pageRows.length).toBe(1);
+      expect(pageRows[0]._storeExpPnl).toBe(positionExpPnl(raw, 'opt', anchor));
+    });
+
+    it('mixed set (two accounts + a partial close + a fully-closed row): Σ over ALL page rows _storeExpPnl equals Σ positionExpPnl per raw row (Snapshot\'s own value)', () => {
+      const rawA = {
+        tradingsymbol: 'NIFTY24000CE', account: 'ACC1', quantity: 5,
+        overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+        average_price: 200, prev_close: 210, pnl: 150, exchange: 'NFO',
+      };
+      const rawB = { tradingsymbol: 'NIFTY24000CE', account: 'ACC2', quantity: 0, realised: 500, pnl: 3000 };
+      const rawC = { tradingsymbol: 'NIFTY24000CE', account: 'ACC3', quantity: 3, average_price: 150, exchange: 'NFO' };
+      const stampedRows = [rawA, rawB, rawC].map(r => stampStoreFields(r, 'opt', anchor));
+      const pageRows = buildPagePositionRows(stampedRows);
+
+      const pageSum = pageRows.reduce((s, r) => s + Number(r._storeExpPnl ?? 0), 0);
+      const snapshotSum = [rawA, rawB, rawC].reduce((s, r) => s + Number(positionExpPnl(r, 'opt', anchor) ?? 0), 0);
+      expect(pageSum).toBe(snapshotSum);
+    });
+
+    it('a row with no _exp_pnl_pieces (non-F&O-derived source, e.g. drafts) never gets `_storeExpPnl` set — falls through to local compute at the call site', () => {
+      const raw = { tradingsymbol: 'NIFTY24000CE', account: 'ACC1', quantity: 5, average_price: 200, exchange: 'NFO' };
+      // No stampStoreFields() call — no `_exp_pnl_pieces` field at all.
+      const pageRows = buildPagePositionRows([raw]);
+      expect(pageRows.length).toBe(1);
+      expect('_storeExpPnl' in pageRows[0]).toBe(false);
+    });
   });
 });
 

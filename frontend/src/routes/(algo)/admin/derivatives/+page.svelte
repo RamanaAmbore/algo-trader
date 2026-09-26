@@ -1108,14 +1108,17 @@
 
   // Legs per-row: Day P&L, P&L, Exp P&L (keyed by account|symbol).
   $effect(() => {
-    const spot       = untrack(() => liveSpot);
     const candidates = candidatePositions;
     untrack(() => {
+      // 2026-09 Commit 5: _legExpPnlLive reads `liveSpot` internally (same
+      // untracked-read pattern as the removed local `spot` variable below
+      // had before this change — this effect's ONLY tracked dependency
+      // stays `candidatePositions`, unchanged reactivity).
       for (const c of candidates) {
         const k = `${c.account ?? ''}|${c.symbol ?? ''}`;
         flash.update(`leg:${k}:day`, positionsDerivedStore.get(c.symbol).day_pnl);
         flash.update(`leg:${k}:pnl`, c.pnl != null ? Number(c.pnl) : null);
-        flash.update(`leg:${k}:exp`, _legExpPnlDisplay(c, spot ?? null));
+        flash.update(`leg:${k}:exp`, _legExpPnlLive(c));
         flash.update(`leg:${k}:ltp`, c.ltp != null ? Number(c.ltp) : null);
         flash.update(`leg:${k}:chg`, positionsDerivedStore.get(c.symbol).chg_pct);
       }
@@ -2236,6 +2239,36 @@
     return expiryPnlWithRealised(c, effSpot, legAnalyticsBySymbol);
   }
 
+  /**
+   * Live-basis (liveSpot) Exp P&L for one leg — the Legs-grid cell/TOTAL
+   * SSOT (2026-09 Commit 5). Reads the store's own per-piece value
+   * (`c._storeExpPnl`, threaded through by buildPagePositionRows — see
+   * pageLoad.js) when present, instead of independently recomputing via
+   * `_legExpPnlDisplay`. Gated on the FIELD being present, not on
+   * `c.source === 'live'` — buildCandidatePositions also tags equity
+   * holdings and proxy-hedge rows `source:'live', kind:'eq'`, which never
+   * carry `_storeExpPnl` (portfolioStore's expPnlRows are F&O-only), so
+   * those correctly fall through to local compute regardless of source.
+   * Drafts/provisional/sim rows likewise never carry the field (they
+   * don't reach portfolioStore, which only reflects the live broker
+   * book) and fall through the same way.
+   *
+   * Deliberately does NOT fall back to a locally-recomputed value when
+   * the store's own value is present-but-null (e.g. a weekly symbol
+   * shaped like NIFTYNXT50 that portfolioStore can't parse without
+   * legAnalyticsBySymbol, which it doesn't have access to) — falling back
+   * would silently mix two different derivations into one TOTAL again,
+   * the exact Commit-3 class of bug. Such a row shows '—', matching what
+   * Snapshot (which already reads the same store field) already shows for
+   * it — a behavior change from before, not a regression, per the shared
+   * SSOT.
+   * @param {any} c
+   * @returns {number|null}
+   */
+  function _legExpPnlLive(c) {
+    return '_storeExpPnl' in c ? c._storeExpPnl : _legExpPnlDisplay(c, liveSpot ?? null);
+  }
+
   /** Day P&L TOTAL for the currently selected underlying across all enabled
    *  F&O legs — script-level SSOT shared by the Legs TOTAL row AND the
    *  Snapshot row for the selected underlying. Excludes equity (kind === 'eq').
@@ -2274,17 +2307,23 @@
    *  `_throttledTick` — that gate belongs to a different derived further
    *  down in this file), so using it as the sole spot source keeps this
    *  cascade bounded without a separate throttle here. */
-  /** Shared filter+sum used by both _legsExpPnlTotal (liveSpot / front-month
-   *  — the Legs-grid TOTAL row's SSOT) and _chartExpPnlAtSpot (payoffSpot
-   *  / anchor-contract basis — feeds ONLY the payoff chart's own on-chart
-   *  Exp P&L readout next to the expiry marker, C1 fix). Extracted so the
-   *  two spot bases can never drift apart in filter logic — only in which
-   *  `spot` value is passed. See each derived's own docstring for why the
-   *  two consumers intentionally use different bases. */
-  function _sumEnabledLegsExpPnl(/** @type {number|null} */ spot) {
-    // Single pass: _legExpPnlDisplay is the canonical per-candidate formula
-    // so sum(per-leg rows in the grid) == this TOTAL by construction.
-    // Handles open F&O, closed F&O, equity/proxy legs, and null (no-spot) legs uniformly.
+  /** Shared filter+sum used by both _legsExpPnlTotal (the Legs-grid TOTAL
+   *  row's SSOT — store-first via _legExpPnlLive, live/front-month basis)
+   *  and _chartExpPnlAtSpot (payoffSpot / anchor-contract basis — feeds
+   *  ONLY the payoff chart's own on-chart Exp P&L readout next to the
+   *  expiry marker, C1 fix, ALWAYS local compute — the chart's spot basis
+   *  deliberately differs from the store's, so it must never read the
+   *  store's value). Extracted so the two consumers can never drift apart
+   *  in FILTER logic — only in which per-row valuer function is passed.
+   *  2026-09 Commit 5: takes a valuer function instead of a bare spot
+   *  number, so the TOTAL and chart consumers can use genuinely different
+   *  VALUATION STRATEGIES (store-first vs. always-local), not just
+   *  different spot inputs to the same local formula. */
+  function _sumEnabledLegsExpPnl(/** @type {(c:any) => number|null} */ valuer) {
+    // Single pass: `valuer` is the canonical per-candidate formula for
+    // this consumer, so sum(per-leg rows in the grid) == this TOTAL by
+    // construction. Handles open F&O, closed F&O, equity/proxy legs, and
+    // null (no-value) legs uniformly.
     // Reads _legsTotalsBase (unaffected by the Legs search box) so typing
     // in the search box narrows the grid without shifting this total or
     // diverging it from the payoff curve, which is built from the
@@ -2297,21 +2336,24 @@
         return true;
       })
       .reduce((/** @type {number} */ s, c) => {
-        const v = _legExpPnlDisplay(c, spot);
+        const v = valuer(c);
         return v == null ? s : s + v;
       }, 0);
   }
-  const _legsExpPnlTotal = $derived.by(() => _sumEnabledLegsExpPnl(liveSpot ?? null));
+  const _legsExpPnlTotal = $derived.by(() => _sumEnabledLegsExpPnl(_legExpPnlLive));
   /** Chart-only Exp P&L at spot (C1 fix) — evaluated at `payoffSpot`
    *  (anchor-contract basis) instead of `liveSpot` (front-month), so the
    *  number the chart displays next to the expiry marker/dart always
    *  agrees with what the dart visually points at (both already use
    *  payoffSpot — see the LTP row, spot line, CHG%, and marker position).
-   *  Feeds ONLY the OptionsPayoff `legsExpPnlAtSpot` prop — the separate
-   *  Legs-grid TOTAL row keeps reading `_legsExpPnlTotal` (liveSpot),
-   *  a deliberately different, correctly-scoped consumer per the
-   *  operator's decision (see plan C1). */
-  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(payoffSpot ?? null));
+   *  ALWAYS local compute (never the store — see _sumEnabledLegsExpPnl's
+   *  own docstring) so the C1 invariant can never be silently broken by a
+   *  future edit that makes the store's value "look convenient" to reuse
+   *  here. Feeds ONLY the OptionsPayoff `legsExpPnlAtSpot` prop — the
+   *  separate Legs-grid TOTAL row keeps reading `_legsExpPnlTotal`
+   *  (store-first, liveSpot fallback), a deliberately different,
+   *  correctly-scoped consumer per the operator's decision (see plan C1). */
+  const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => _legExpPnlDisplay(c, payoffSpot ?? null)));
 
   /** Legs-tab TOTAL row Extrinsic — same enabled/draft gate as
    *  `_legsExpPnlTotal` above, so sum(visible leg rows' Extrinsic) equals
@@ -5196,7 +5238,7 @@
               pendingQty={$openOrderQtyBySymbol[c.symbol] ?? 0}
               enabled={_isLegEnabled(c)}
               dayPnl={_candDayPnl(c)}
-              expPnl={_legExpPnlDisplay(c, liveSpot ?? null)}
+              expPnl={_legExpPnlLive(c)}
               extrinsic={legExtrinsicDisplay(c, Number(c?.underlying_ltp) || 0)}
               legExpired={_isLegExpired(c)}
               {strategy}

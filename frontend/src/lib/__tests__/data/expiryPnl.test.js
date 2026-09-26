@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl } from '../../data/expiryPnl.js';
+import { expiryPnl, expiryPnlWithRealised, AVG_PRICE_IS_COST_BASIS, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces } from '../../data/expiryPnl.js';
 
 describe('expiryPnl', () => {
   const spot = 100;
@@ -498,6 +498,58 @@ describe('positionExpPnl — split-aware realised derivation (NavStrip/Snapshot 
 
   it('non-FO kind returns null', () => {
     expect(positionExpPnl(rawRow, /** @type {any} */ ('eq'), spot)).toBe(null);
+  });
+});
+
+// ============================================================================
+// positionExpPnlPieces — per-piece variant (2026-09, Commit 5). Returns the
+// array of per-piece values IN splitClosedReopened ORDER, instead of the
+// pre-summed total, so a page-level consumer that splits the SAME raw row
+// via the SAME pure function can zip its own display rows against these
+// values index-for-index (not by account+symbol, which can collide across
+// product types).
+// ============================================================================
+
+describe('positionExpPnlPieces', () => {
+  const rawRow = {
+    tradingsymbol: 'NIFTY24000CE',
+    account: 'ACC1',
+    quantity: -75,
+    average_price: 200,
+    last_price: 10,
+    prev_close: 200,
+    overnight_quantity: -150,
+    day_buy_quantity: 75,
+    day_sell_quantity: 0,
+    day_buy_value: 11250,
+    day_sell_value: 0,
+    pnl: 3750,
+    realised: 0,
+  };
+  const spot = 23000;
+
+  it('returns one piece per splitClosedReopened output, summing to the same total positionExpPnl returns', () => {
+    const pieces = positionExpPnlPieces(rawRow, 'opt', spot);
+    expect(pieces).toHaveLength(2); // closed + open, per the split-invariant tests elsewhere
+    const sum = pieces.reduce((s, v) => (v == null ? s : s + Number(v)), 0);
+    expect(sum).toBe(positionExpPnl(rawRow, 'opt', spot));
+    expect(sum).toBe(18750);
+  });
+
+  it('a row with no today activity (no split) returns a single-element array', () => {
+    const flatRow = { tradingsymbol: 'NIFTY24000CE', quantity: -75, average_price: 200, realised: 500, pnl: 3000 };
+    const pieces = positionExpPnlPieces(flatRow, 'opt', spot);
+    expect(pieces).toHaveLength(1);
+    expect(pieces[0]).toBe(15500);
+  });
+
+  it('returns null (not an array of nulls) when a still-open piece has no anchor yet', () => {
+    expect(positionExpPnlPieces(rawRow, 'opt', null)).toBe(null);
+    expect(positionExpPnlPieces(rawRow, 'opt', 0)).toBe(null);
+  });
+
+  it('non-FO kind returns null', () => {
+    expect(positionExpPnlPieces(rawRow, /** @type {any} */ ('eq'), spot)).toBe(null);
   });
 });
 

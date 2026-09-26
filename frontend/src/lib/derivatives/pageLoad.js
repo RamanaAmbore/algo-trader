@@ -139,7 +139,20 @@ export function buildPagePositionRows(storeRows, simRows = []) {
     if (!sym) continue;
     if (!isFOSymbol(sym)) continue; // Equity intraday — excluded from F&O panel
     const baseRow = buildPositionRowFromBroker(p, 'live');
-    for (const row of splitClosedReopened(baseRow)) merged.push(row);
+    const pieces = splitClosedReopened(baseRow);
+    // Store-side per-piece Exp P&L (2026-09 Commit 5): `p._exp_pnl_pieces`
+    // (portfolioStore.svelte.js's own _posTier2 output) is the SAME
+    // splitClosedReopened applied to the SAME raw row, so piece `i` here
+    // always corresponds to `p._exp_pnl_pieces[i]` — safe to zip by index.
+    // Only set when the source row actually carries the field (it won't
+    // for a non-F&O row, or a row read from a source other than the
+    // store — e.g. a future caller feeding raw sim/draft data through
+    // this same function without going through portfolioStore first).
+    const storePieces = Array.isArray(p?._exp_pnl_pieces) ? p._exp_pnl_pieces : null;
+    pieces.forEach((row, i) => {
+      if (storePieces) row._storeExpPnl = storePieces[i] ?? null;
+      merged.push(row);
+    });
   }
   return [...merged, ...simRows];
 }

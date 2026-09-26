@@ -22,7 +22,7 @@ import { symbolTickCount, getSnapshot, liveSnap } from '$lib/data/symbolStore.sv
 import { positionsStore, pulseHoldingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
-import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl } from '$lib/data/expiryPnl.js';
+import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
@@ -121,6 +121,16 @@ const _posTier2 = $derived.by(() => {
       console.warn('[portfolioStore] prev_mv null:', p._sym, 'prev_close=', p._prev_close, 'oq=', oq);
 
     let exp_pnl = null, extrinsic = null;
+    // Per-piece Exp P&L (2026-09 Commit 5) — parallel to `exp_pnl`
+    // (the pre-summed total), one entry per `splitClosedReopened` output
+    // piece in order. Lets a page-level consumer that splits the SAME raw
+    // row via the SAME pure function (derivatives/pageLoad.js's
+    // buildPagePositionRows) zip its own split display rows against these
+    // values by INDEX, not by (account,symbol) — Kite can report the same
+    // symbol under the same account across two product types (NRML/MIS),
+    // which collide on that key but split differently. null when the row
+    // isn't F&O, or when a still-open piece has no anchor yet.
+    let exp_pnl_pieces = null;
     if (isFO) {
       const decomp = decomposeSymbol(p._sym);
       const root   = (decomp.root || p._sym).toUpperCase();
@@ -158,6 +168,7 @@ const _posTier2 = $derived.by(() => {
           // component independently and could diverge — confirmed audit
           // finding).
           exp_pnl = positionExpPnl(p, kind, anchor);
+          exp_pnl_pieces = positionExpPnlPieces(p, kind, anchor);
           // Extrinsic (§7 + item-2 fix): delegates to the shared
           // legExtrinsicDisplay (expiryPnl.js) — the single implementation
           // also used by derivatives/+page.svelte's Snapshot/Legs Extrinsic
@@ -186,13 +197,14 @@ const _posTier2 = $derived.by(() => {
         // expiryPnl.js:expiryPnlWithRealised) instead of trusting a
         // present-but-zero `realised` field.
         exp_pnl = positionExpPnl(p, kind, null);
+        exp_pnl_pieces = positionExpPnlPieces(p, kind, null);
         // §7: closed futures have no time-value concept either — only
         // closed options settle to a well-defined "no time value left" 0.
         extrinsic = isOpt ? 0 : null;
       }
     }
 
-    return { ...p, _day_pnl: day_pnl, _prev_mv: prev_mv, _isFO: isFO, _exp_pnl: exp_pnl, _extrinsic: extrinsic };
+    return { ...p, _day_pnl: day_pnl, _prev_mv: prev_mv, _isFO: isFO, _exp_pnl: exp_pnl, _exp_pnl_pieces: exp_pnl_pieces, _extrinsic: extrinsic };
   });
 });
 
