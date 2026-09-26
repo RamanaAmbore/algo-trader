@@ -1651,7 +1651,7 @@
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
   // Three sources appear in order: real → provisional (~) → draft store (D).
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean,_expired?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     void instrumentsReady;  // re-derive when instruments cache warms (cold start drops MCX open positions)
@@ -2528,6 +2528,14 @@
           ltp:      c.ltp ?? '',
           source:   c.source,
           kind:     c.kind,
+          // 2026-09 fix: `_expired` (buildCandidatePositions' tag for a
+          // held row unresolvable against the instruments master) MUST
+          // survive this mapping — buildCleanLegs (called on this `legs`
+          // array below) filters on it to keep such a leg out of the
+          // /strategy-analytics REQUEST payload. Without this field the
+          // filter in buildCleanLegs was unreachable dead code — the field
+          // was silently dropped here and never reached buildCleanLegs.
+          _expired: c._expired,
         }));
     });
   });
