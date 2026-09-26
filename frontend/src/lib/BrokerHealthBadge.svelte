@@ -260,7 +260,7 @@
   :global(.bh-dot-inactive) { background: var(--text-faint); }
 
   :global(.bh-row-account) {
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -275,7 +275,7 @@
   :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
   :global(.bh-acct-inactive) { color: var(--text-faint) !important; }
   :global(.bh-acct-active)   { color: var(--c-long) !important; font-weight: 700 !important; }
-  :global(.bh-acct-spare)    { color: #c8d8f0; }
+  :global(.bh-acct-spare)    { color: var(--algo-slate); }
 
   :global(.bh-circuit-chip) {
     font-size: 0.6rem;

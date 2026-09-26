@@ -353,7 +353,7 @@
       </div>
       <div class="flex items-center gap-2">
         <input type="checkbox" bind:checked={form.is_active} id="is_active" />
-        <label for="is_active" class="text-[0.65rem] text-[#c8d8f0]">Active</label>
+        <label for="is_active" class="text-[0.65rem] text-[var(--algo-slate)]">Active</label>
       </div>
     </div>
 
@@ -373,7 +373,7 @@
       class="px-3 py-1 text-xs font-medium border-b-2 transition-colors
         {activeTab === key
           ? 'border-[var(--c-action)] text-[var(--c-action)]'
-          : 'border-transparent text-[#b4c8e6] hover:text-[var(--c-action)]'}">
+          : 'border-transparent text-[var(--algo-slate)] hover:text-[var(--c-action)]'}">
       {label}
       <span class="ml-1 text-[0.55rem] opacity-70">({tokenCount(key)})</span>
     </button>
@@ -408,9 +408,9 @@
               onclick={() => expandedId = expandedId === t.id ? null : t.id}>
             <td class="py-1.5 px-2 text-[var(--c-muted)] font-mono uppercase text-[0.55rem]">{t.token_kind}</td>
             <td class="py-1.5 px-2 font-mono text-[var(--c-action)]">{t.token}</td>
-            <td class="py-1.5 px-2 text-[#c8d8f0]">{t.value_type ?? '—'}</td>
-            <td class="py-1.5 px-2 text-[#c8d8f0]">{t.units ?? '—'}</td>
-            <td class="py-1.5 px-2 text-[#c8d8f0]/80 text-[0.6rem] max-w-[360px] truncate"
+            <td class="py-1.5 px-2 text-[var(--algo-slate)]">{t.value_type ?? '—'}</td>
+            <td class="py-1.5 px-2 text-[var(--algo-slate)]">{t.units ?? '—'}</td>
+            <td class="py-1.5 px-2 text-white/80 text-[0.6rem] max-w-[360px] truncate"
                 title={t.description}>{t.description || '—'}</td>
             <td class="py-1.5 px-2">
               {#if t.is_system}
@@ -441,7 +441,7 @@
           </tr>
           {#if expandedId === t.id}
             <tr class="bg-[var(--algo-bg-elev1)]">
-              <td colspan="7" class="py-2 px-3 text-[0.6rem] text-[#c8d8f0]/80">
+              <td colspan="7" class="py-2 px-3 text-[0.6rem] text-white/80">
                 <div class="grid grid-cols-2 gap-x-6 gap-y-1">
                   {#if t.resolver}
                     <div><span class="text-[var(--c-muted)]">Resolver:</span> <span class="font-mono">{t.resolver}</span></div>

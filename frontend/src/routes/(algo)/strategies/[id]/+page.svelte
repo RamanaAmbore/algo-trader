@@ -453,7 +453,7 @@
   }
   .strat-head-desc {
     margin: 0.4rem 0 0.8rem;
-    font-size: var(--fs-lg); color: #c8d8f0; line-height: 1.45;
+    font-size: var(--fs-lg); color: var(--algo-slate); line-height: 1.45;
   }
   .strat-stats-grid {
     display: grid;
@@ -474,7 +474,7 @@
   .stat-val {
     margin-top: 0.15rem;
     font-size: var(--fs-xl); font-weight: 800;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }
@@ -606,7 +606,7 @@
     margin-top: 0.2rem;
     font-size: var(--fs-xl);
     font-weight: 800;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
   }

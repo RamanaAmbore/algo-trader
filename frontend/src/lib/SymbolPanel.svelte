@@ -3692,7 +3692,7 @@
     border-radius: 3px;
     font-family: monospace;
     font-size: var(--fs-xs);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-basket-tpl-note-arrow { color: #7dd3fc; font-weight: 700; }
   .oes-basket-tpl-note-name  { color: #7dd3fc; font-weight: 700; }
@@ -3935,7 +3935,7 @@
     background: rgba(126, 151, 184, 0.16);
     border: 1px solid rgba(126, 151, 184, 0.40);
     border-radius: 3px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 600;
@@ -4053,7 +4053,7 @@
   .oes-leg-editor-clear:hover:not(:disabled),
   .oes-leg-editor-close:hover {
     background: rgba(126, 151, 184, 0.15);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .oes-leg-editor-close { margin-left: auto; }
   .oes-basket-pill.is-disabled { opacity: 0.55; }

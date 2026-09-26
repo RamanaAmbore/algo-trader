@@ -1144,7 +1144,7 @@
                spanSigmas=2.5 means every whole-σ is a milestone). -->
           <text x={xt.x} y={height - PAD_B + 14}
                 text-anchor="middle"
-                fill="#c8d8f0"
+                fill="#ffffff"
                 font-size="11" font-weight="600"
                 style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
             {Math.round(xt.s).toLocaleString('en-IN')}
@@ -1313,7 +1313,7 @@
         {#if t.y > PAD_T + 8 && t.y < height - PAD_B - 8}
           <text x={PAD_L - 6} y={t.y + 4}
                 text-anchor="end"
-                fill="#c8d8f0"
+                fill="#ffffff"
                 font-size="11" font-weight="600"
                 style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
             {_axisFmt(t.v)}

@@ -323,7 +323,7 @@
     background: rgba(15, 23, 42, 0.50);
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 999px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: var(--fs-md); font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;

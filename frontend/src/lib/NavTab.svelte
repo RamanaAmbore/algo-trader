@@ -353,7 +353,7 @@
   .nav-chip-delta {
     font-size: var(--fs-md);
     font-weight: 700;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .nav-chip-overlay.nav-chip-pos {
     background: var(--c-long-10);

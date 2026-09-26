@@ -177,7 +177,7 @@
       <span style={_txnStyle(order.transaction_type)}>{order.transaction_type}</span>
       <span class={_acctColor(order.account)}>{order.account}</span>
       <!-- svelte-ignore a11y_interactive_supports_focus -->
-      <span class="text-[#c8d8f0] oc-sym-btn"
+      <span class="text-[var(--algo-slate)] oc-sym-btn"
         role="button"
         tabindex="0"
         title="Open {_sym}"

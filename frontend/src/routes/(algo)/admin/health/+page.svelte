@@ -611,7 +611,7 @@
   .ticker-stale-row {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     padding: 0.1rem 0;
   }
 
@@ -639,7 +639,7 @@
   }
   .pm-btn:hover:not(:disabled) {
     background: rgba(148, 163, 184, 0.14);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .pm-btn:disabled { cursor: not-allowed; opacity: 0.55; }
   /* Selected state — each mode adopts its own palette so the operator

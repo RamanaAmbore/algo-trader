@@ -1773,7 +1773,7 @@
         {#each _eqYLabels as lbl}
           <text
             x={PAD_L + INNER_W + 4} y={parseFloat(lbl.y) + 3.5}
-            font-size="11" font-weight="600" fill="#c8d8f0" style="font-family: var(--font-numeric)"
+            font-size="11" font-weight="600" fill="#ffffff" style="font-family: var(--font-numeric)"
             text-anchor="start">{lbl.label}</text>
         {/each}
 

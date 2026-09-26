@@ -188,7 +188,7 @@
   .atst-name {
     font-size: var(--fs-lg);
     font-weight: 700;
-    color: #e5edf7;
+    color: var(--text-hi);
     line-height: 1.25;
     overflow-wrap: anywhere;
   }

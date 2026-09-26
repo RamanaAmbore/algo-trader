@@ -352,6 +352,79 @@ test.describe('algo consistency — Phase 2 palette migration guard', () => {
   });
 });
 
+/* ── Off-white → white text-token guard (2026-09) ────────────────────── *
+ *
+ * `--algo-slate` / `--text-primary` (was #c8d8f0) and `--text-hi`
+ * (was #e6edf7) were whitened to pure #ffffff (algo dark-terminal ONLY —
+ * never public marketing / investor routes, confirmed those trees have
+ * zero usage of these tokens or the literal-bearing components below).
+ * A raw-literal sweep converted every hard-coded occurrence of the old
+ * pale-blue hex (plus drift-duplicate near-misses #e5edf7 / #b4c8e6) to
+ * `var(--algo-slate)` / `var(--text-hi)` (CSS `color:` declarations),
+ * `#ffffff` (bare SVG `fill=` presentation attributes and JS color-string
+ * fallbacks — CSS custom properties don't reliably resolve there), or
+ * Tailwind's own `text-white` / `text-white/NN` utility (arbitrary-value
+ * classes carrying an opacity modifier, since Tailwind can't compute an
+ * alpha-blended arbitrary CSS-var color at build time).
+ *
+ * Deliberately NOT in scope (confirmed intentional, not accidental
+ * off-white — do not add to BANNED_WHITENING_HEX):
+ *   - `--text-sub` (#c4d0e0) and `--algo-blue-tint` (#f1f7ff) — distinct
+ *     deliberate tokens, not part of the --algo-slate/--text-hi family.
+ *   - `--chart-grid-stroke*` (rgba(200, 216, 240, …)) and every other
+ *     rgba(200, 216, 240, alpha) dimmed-text/border/background usage —
+ *     a deliberately dimmed variant of the same hue family, distinct
+ *     from full-opacity primary text; whitening the opaque hex does not
+ *     imply whitening every alpha-blended derivative.
+ * ─────────────────────────────────────────────────────────────────── */
+
+/** Raw hex literals that must not appear (case-insensitive) anywhere in
+ *  the algo surface after the whitening sweep. 6-digit hex only — the
+ *  `(?![0-9a-f])` lookahead in the check below excludes any 8-digit
+ *  (alpha-suffixed) variant, which is a distinct colour. */
+const BANNED_WHITENING_HEX = ['#c8d8f0', '#e6edf7', '#e5edf7', '#b4c8e6'];
+
+/** Strip comments (which may legitimately document the OLD hex value in
+ *  a "was #xxxxxx" migration note) before checking for a live literal. */
+function stripCommentsForWhiteningGuard(src) {
+  return src
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/<!--[\s\S]*?-->/g, '');
+}
+
+test.describe('algo consistency — off-white to white sweep guard (2026-09)', () => {
+  test('no raw pale-blue/drift hex literals remain in algo lib + routes', () => {
+    const files = collectSvelteFiles();
+    const offenders = [];
+    for (const f of files) {
+      const stripped = stripCommentsForWhiteningGuard(fs.readFileSync(f, 'utf-8'));
+      for (const hex of BANNED_WHITENING_HEX) {
+        const rx = new RegExp(hex.replace('#', '#') + '(?![0-9a-f])', 'i');
+        if (rx.test(stripped)) {
+          offenders.push(`${path.relative(process.cwd(), f)}: contains ${hex}`);
+        }
+      }
+    }
+    expect(offenders,
+      `Whitening sweep regression — raw pale-blue/drift hex must route through var(--algo-slate)/var(--text-hi) ` +
+      `(or #ffffff for SVG fill / JS fallback / Tailwind text-white where var() is unreliable):\n${offenders.join('\n')}`
+    ).toEqual([]);
+  });
+
+  test('app.css: --algo-slate is pure white and --text-hi aliases it', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    expect(src, '--algo-slate must be #ffffff post-whitening').toMatch(/--algo-slate:\s*#ffffff;/i);
+    expect(src, '--text-hi must alias --algo-slate (single literal, two semantic names)')
+      .toMatch(/--text-hi:\s*var\(--algo-slate\);/i);
+  });
+
+  test('BrokerHealthBadge.svelte account rows use the whitened token, not a raw literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib', 'BrokerHealthBadge.svelte'), 'utf-8');
+    expect(src).toContain('.bh-row-account');
+    expect(src).not.toMatch(/#c8d8f0|#e5edf7/i);
+  });
+});
+
 /* ── SSOT tokens defined ────────────────────────────────────────────── */
 
 test.describe('algo consistency — token definitions present', () => {

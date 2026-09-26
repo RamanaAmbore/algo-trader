@@ -430,9 +430,9 @@
 
   .audit-ts        { color: #94a3b8; white-space: nowrap; }
   .audit-actor     { color: var(--c-action); font-weight: 700; }
-  .audit-action    { color: #c8d8f0; }
+  .audit-action    { color: var(--algo-slate); }
   .audit-target-type { color: #67e8f9; font-weight: 700; margin-right: 0.3rem; }
-  .audit-target-id   { color: #c8d8f0; }
+  .audit-target-id   { color: var(--algo-slate); }
   .audit-summary   { max-width: 18rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .audit-req-id    { color: var(--c-muted); font-size: var(--fs-sm); }
   .audit-ip        { color: #94a3b8; font-size: var(--fs-sm); white-space: nowrap; }
@@ -456,7 +456,7 @@
     font-weight: 800;
     letter-spacing: 0.04em;
     text-transform: uppercase;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(126, 151, 184, 0.18);
     border: 1px solid rgba(126, 151, 184, 0.32);
   }
@@ -479,7 +479,7 @@
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 999px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
@@ -521,7 +521,7 @@
     cursor: pointer;
     font-family: var(--font-numeric);
   }
-  .audit-quick:hover { background: var(--c-info-08); color: #c8d8f0; }
+  .audit-quick:hover { background: var(--c-info-08); color: var(--algo-slate); }
   .audit-quick.active {
     background: var(--c-info-14);
     border-color: rgba(34, 211, 238, 0.55);
@@ -554,7 +554,7 @@
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.04em;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     background: rgba(126, 151, 184, 0.18);
     border: 1px solid rgba(126, 151, 184, 0.32);
     font-family: var(--font-numeric);
@@ -569,7 +569,7 @@
     display: flex; align-items: center; gap: 0.6rem;
     margin-top: 0.6rem;
     font-size: var(--fs-lg);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .audit-pager-info { margin: 0 auto; font-family: var(--font-numeric); font-variant-numeric: tabular-nums; }
 </style>

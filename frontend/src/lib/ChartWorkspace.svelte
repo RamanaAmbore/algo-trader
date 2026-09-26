@@ -1982,7 +1982,7 @@
                 class="cw-yaxis-label"
                 text-anchor="end" dominant-baseline="middle"
                 transform="rotate(-45 {CPAD_L - 4} {tick.y})"
-                fill="#c8d8f0" font-size="12" font-weight="600" font-family="monospace">
+                fill="#ffffff" font-size="12" font-weight="600" font-family="monospace">
             ₹{priceFmt(tick.v)}
           </text>
         {/each}
@@ -1995,7 +1995,7 @@
           {/if}
           <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
-                fill="#c8d8f0" font-size="12" font-weight="600">
+                fill="#ffffff" font-size="12" font-weight="600">
             {xl.label}
           </text>
         {/each}

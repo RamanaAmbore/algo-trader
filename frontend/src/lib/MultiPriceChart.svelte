@@ -263,14 +263,14 @@
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
               class={v === 0 ? 'chart-grid-zero' : 'chart-grid-line'} />
         <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
-              fill="#c8d8f0" font-size="11" font-weight="600">{pctFmt(v)}</text>
+              fill="#ffffff" font-size="11" font-weight="600">{pctFmt(v)}</text>
       {/each}
 
       <!-- x-axis labels -->
       {#each xLabels as l}
         <line class="chart-grid-line-minor" x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B} />
         <text x={l.x} y={height - PAD_B + 14} text-anchor="middle"
-              fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
+              fill="#ffffff" font-size="11" font-weight="600">{l.label}</text>
       {/each}
 
       <!-- One path per series -->

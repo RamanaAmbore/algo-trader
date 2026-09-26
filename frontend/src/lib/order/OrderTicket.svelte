@@ -4202,7 +4202,7 @@
     border: 1px solid rgba(251, 191, 36, 0.50);
     border-radius: 6px;
     padding: 1.2rem 1.3rem 1rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: ui-sans-serif, system-ui, -apple-system, sans-serif;
   }
   .ot-demo-close {
@@ -4223,7 +4223,7 @@
     margin: 0 0 0.7rem;
     font-size: var(--fs-lg);
     line-height: 1.5;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .ot-demo-body code {
     background: var(--c-info-14);

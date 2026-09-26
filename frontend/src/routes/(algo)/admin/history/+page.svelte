@@ -492,7 +492,7 @@
     background: rgba(15, 23, 42, 0.65);
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 4px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
   }
@@ -510,7 +510,7 @@
     letter-spacing: 0.05em;
     background: rgba(15, 23, 42, 0.55);
     border: 1px solid rgba(126, 151, 184, 0.30);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .hist-pill.st-ok      { background: rgba(74, 222, 128, 0.15);  border-color: rgba(74,222,128,0.5);  color: var(--c-long); }
   .hist-pill.st-err     { background: rgba(248, 113, 113, 0.15); border-color: rgba(248,113,113,0.5); color: #fca5a5; }
@@ -605,6 +605,6 @@
   }
   .hist-pager {
     display: flex; align-items: center; gap: 0.6rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
 </style>

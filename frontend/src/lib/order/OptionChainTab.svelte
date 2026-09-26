@@ -1542,7 +1542,7 @@
   .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
   .chain-basket-leg-type-eq  { border-left-color: var(--c-action); }
   .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
-  .chain-basket-sym { color: var(--algo-slate, #c8d8f0); font-weight: 600; }
+  .chain-basket-sym { color: var(--algo-slate, #ffffff); font-weight: 600; }
   .chain-basket-qty { color: var(--c-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
   .chain-basket-step {
     width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;
@@ -1604,7 +1604,7 @@
     border-radius: 3px;
     font-family: monospace;
     font-size: var(--fs-xs);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     width: 100%;
   }
   .chain-tpl-note-arrow {

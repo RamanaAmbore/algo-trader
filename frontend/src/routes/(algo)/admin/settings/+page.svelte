@@ -420,7 +420,7 @@
   <LoadingSkeleton variant="card" rows={3} />
   <LoadingSkeleton variant="card" rows={5} />
 {:else if !settings.length}
-  <div class="text-[0.65rem] text-[#c8d8f0]/60">No settings seeded yet.</div>
+  <div class="text-[0.65rem] text-white/60">No settings seeded yet.</div>
 {:else}
   <div class="mb-3 flex items-center gap-2 content-fade-in">
     <input type="text"
@@ -434,7 +434,7 @@
     {/if}
   </div>
   {#if !grouped.length}
-    <div class="text-[0.65rem] text-[#c8d8f0]/60">No settings match the filter.</div>
+    <div class="text-[0.65rem] text-white/60">No settings match the filter.</div>
   {/if}
   {#each grouped as [category, rows]}
     <section class="algo-card mb-2" data-status="inactive">
@@ -447,7 +447,7 @@
             <div class="grid grid-cols-[auto_minmax(0,1fr)_110px_auto_auto] gap-2 items-center text-[0.65rem] py-1">
               <InfoHint text={[
                 s.description,
-                `<span class="font-mono text-[#c8d8f0]/80 text-[0.55rem]">default: ${s.default_value}</span>`,
+                `<span class="font-mono text-white/80 text-[0.55rem]">default: ${s.default_value}</span>`,
                 s.schema?.min !== undefined || s.schema?.max !== undefined ? `range: ${s.schema.min ?? '−∞'} … ${s.schema.max ?? '+∞'}` : '',
                 s.schema?.enum ? `choices: ${s.schema.enum.join(' / ')}` : '',
                 s.units ? `units: <span class="font-mono">${s.units}</span>` : '',

@@ -165,7 +165,7 @@
   .es-title {
     font-size: var(--fs-lg);
     font-weight: 600;
-    /* Was #64748b (slate-500) — 2.7:1. --algo-slate = #c8d8f0 gives ~9:1, AAA. */
+    /* Was #64748b (slate-500) — 2.7:1. --algo-slate (whitened 2026-09, now #ffffff) gives ~14:1, AAA. */
     color: var(--algo-slate);
     letter-spacing: 0.02em;
   }

@@ -40,7 +40,7 @@
   --algo-orange-text:  #fed7aa;
   --algo-ai:           #a78bfa;   /* violet — AI-generated content / prompts */
 
-  --algo-slate:        #c8d8f0;   /* primary text on dark surfaces */
+  --algo-slate:        #ffffff;   /* primary text on dark surfaces (whitened 2026-09 — was pale-blue #c8d8f0, off-white → white sweep) */
   --algo-slate-dim:    rgba(148, 163, 184, 0.4); /* dim slate for subtle overlays */
   --algo-muted:        #7e97b8;   /* secondary / label text */
   --algo-dim:          #94a3b8;   /* tertiary text */
@@ -192,7 +192,7 @@
      --algo-dim values are aliased so we do not break any existing
      consumer. Adding semantic aliases makes consumer intent legible
      at the call site. */
-  --text-primary: var(--algo-slate);     /* #c8d8f0 — body text on dark */
+  --text-primary: var(--algo-slate);     /* #ffffff — body text on dark (whitened 2026-09) */
   --text-muted:   var(--algo-muted);     /* #7e97b8 — labels, captions, secondary text */
   --text-faint:   var(--algo-dim);       /* #94a3b8 — tertiary / disabled */
   --text-sub:     #c4d0e0;               /* secondary readable text — above dim, below primary */
@@ -204,13 +204,13 @@
 
   /* WCAG-guaranteed text tier — contrast-checked against --card-bg-elevated
      (#273552 → #1d2a44). Use these on any surface where 4.5:1 is mandatory.
-       --text-hi   #e6edf7  →  12.15:1 on #1d2a44, 10.38:1 on #273552
+       --text-hi   #ffffff (= var(--algo-slate), whitened 2026-09) →  14.32:1 on #1d2a44, 12.23:1 on #273552
        --text-med  #b8c5d9  →   8.20:1 on #1d2a44,  7.00:1 on #273552
        --text-lo   #90a2b2  →   5.45:1 on #1d2a44,  4.66:1 on #273552
      --text-lo is intentionally distinct from --text-muted (#7e97b8, 4.08:1
      on #273552) — use --text-lo when you need a passing label on the elevated
      card surface (chip-tooltip panels, dropdown rows, footer notes). */
-  --text-hi:  #e6edf7;   /* strong body text, dialog content */
+  --text-hi:  var(--algo-slate);   /* strong body text, dialog content — same white as --text-primary (single literal, two semantic names) */
   --text-med: #b8c5d9;   /* row data, secondary labels with full contrast */
   --text-lo:  #90a2b2;   /* muted row secondary (reason, timestamp, footer notes) */
 

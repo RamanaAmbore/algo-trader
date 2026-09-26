@@ -736,7 +736,7 @@
     cursor: pointer;
     background: transparent;
     border: 1px solid transparent;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   /* Renamed from .rf-closed-cancel — this is the ONLY action in the
@@ -747,7 +747,7 @@
   }
   .rf-closed-ok:hover {
     background: rgba(126, 151, 184, 0.14);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   /* (.rf-badge + .rf-badge-* CSS removed in audit-cleanup pass —
      the connection-state digit moved to the navbar broker-chip in

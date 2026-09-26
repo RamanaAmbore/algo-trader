@@ -662,7 +662,7 @@
           <div class="flex items-center justify-between mb-2">
             <div class="flex items-center flex-wrap gap-1.5">
               <span class="font-semibold text-xs text-[var(--c-action)]">{user.display_name}</span>
-              <span class="text-xs text-[#c8d8f0]/70">@{user.username}</span>
+              <span class="text-xs text-white/70">@{user.username}</span>
               {#if isSelf}
                 <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40">You</span>
               {/if}
@@ -774,7 +774,7 @@
 
           {#if editing !== user.username}
             <!-- Read-only summary -->
-            <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs text-[#c8d8f0]/80">
+            <div class="grid grid-cols-2 md:grid-cols-4 gap-x-4 gap-y-1 text-xs text-white/80">
               <div><span class="text-muted">Email:</span> {user.email || '—'}</div>
               <div><span class="text-muted">Phone:</span> {user.phone || '—'}</div>
               <div><span class="text-muted">PAN:</span> {user.pan || '—'}</div>
@@ -983,7 +983,7 @@
           {#each emailEvents as ev}
             {@const hasFail = (ev.failed_count ?? 0) > 0}
             <div class="font-mono text-[0.6rem] flex flex-wrap gap-x-2 gap-y-0.5 leading-relaxed
-              {hasFail ? 'text-red-300' : 'text-[#c8d8f0]/80'}">
+              {hasFail ? 'text-red-300' : 'text-white/80'}">
               <span class="tabular-nums opacity-70">{_relTime(ev.created_at)}</span>
               <span>·</span>
               <span class="text-[var(--c-action)]/80">{ev.actor ?? '—'}</span>
@@ -1379,7 +1379,7 @@
     max-height: 90vh;
     overflow-y: auto;
     padding: 1rem 1.2rem 1.3rem;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     box-shadow: 0 18px 36px rgba(0,0,0,0.45);
   }
   .ip-modal-head {
@@ -1408,7 +1408,7 @@
 
   .ip-modal-x {
     background: transparent; border: 1px solid rgba(126, 151, 184, 0.30);
-    color: #c8d8f0; border-radius: 4px;
+    color: var(--algo-slate); border-radius: 4px;
     width: 1.6rem; height: 1.6rem;
     font-size: 1.1rem; line-height: 1; cursor: pointer;
   }
@@ -1441,7 +1441,7 @@
     background: rgba(15, 23, 42, 0.65);
     border: 1px solid rgba(126, 151, 184, 0.30);
     border-radius: 4px;
-    color: #c8d8f0;
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
   }
@@ -1505,7 +1505,7 @@
   }
   .ip-pill-active  { background: rgba(74, 222, 128, 0.15); color: var(--c-long); border: 1px solid rgba(74,222,128,0.4); }
   .ip-pill-revoked { background: rgba(248, 113, 113, 0.12); color: #fca5a5; border: 1px solid rgba(248,113,113,0.35); }
-  .ip-pill-expired { background: rgba(126, 151, 184, 0.12); color: #c8d8f0; border: 1px solid rgba(126,151,184,0.3); }
+  .ip-pill-expired { background: rgba(126, 151, 184, 0.12); color: var(--algo-slate); border: 1px solid rgba(126,151,184,0.3); }
 
   .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
 </style>

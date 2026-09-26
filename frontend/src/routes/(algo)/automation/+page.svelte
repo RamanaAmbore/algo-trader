@@ -1117,7 +1117,7 @@
                   {/if}
                 </div>
               {:else if agent.description}
-                <div class="text-[0.6rem] text-[#c8d8f0]/60 italic mt-1.5 mb-1">{agent.description}</div>
+                <div class="text-[0.6rem] text-white/60 italic mt-1.5 mb-1">{agent.description}</div>
               {/if}
 
               <!-- Condition tree (always shown; falls back to text summary when parse fails) -->
@@ -1125,10 +1125,10 @@
               {#if agent.conditions && Object.keys(agent.conditions).length}
                 <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
               {:else}
-                <div class="text-[0.6rem] text-[#c8d8f0]/60 italic">no conditions</div>
+                <div class="text-[0.6rem] text-white/60 italic">no conditions</div>
               {/if}
 
-              <div class="text-[0.6rem] text-[#c8d8f0]/75 mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
+              <div class="text-[0.6rem] text-white/75 mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
                 <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
                 {#if agent.tier && agent.tier !== 'medium'}
                   <span class={'tier-badge tier-badge-' + agent.tier}
@@ -1162,7 +1162,7 @@
                   {/each}
                 </div>
               {:else}
-                <div class="text-[0.6rem] text-[#c8d8f0]/60 italic">alert-only (no actions)</div>
+                <div class="text-[0.6rem] text-white/60 italic">alert-only (no actions)</div>
               {/if}
               <div class="flex items-center justify-between text-[0.55rem] text-[var(--c-muted)] mt-2">
                 <span>

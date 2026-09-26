@@ -454,7 +454,7 @@
     if (hovIdx == null || !chartData || hovDate == null) return [];
     return chartData.allSeries.map(s => ({
       symbol: s.symbol,
-      color: s.symbol === 'PORTFOLIO' ? PORTFOLIO_COLOR : (BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0'),
+      color: s.symbol === 'PORTFOLIO' ? PORTFOLIO_COLOR : (BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#ffffff'),
       label: s.symbol === 'PORTFOLIO' ? 'Portfolio' : (BENCHMARKS.find(b => b.id === s.symbol)?.label ?? s.symbol),
       pct: chartData.lookup.get(s.symbol)?.get(hovDate) ?? null,
     }));
@@ -469,7 +469,7 @@
     const bmChips = chartData.visible.map(s => {
       const closes = s.closes;
       const last = closes.length > 0 ? closes[closes.length - 1].pct_change_from_start : null;
-      const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0';
+      const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#ffffff';
       const label = BENCHMARKS.find(b => b.id === s.symbol)?.label ?? s.symbol;
       return { symbol: s.symbol, label, color, pct: last, isPortfolio: false };
     });
@@ -621,7 +621,7 @@
         {#each yGridLines as { pct, y }}
           <line class="chart-grid-line" x1={PAD_L} y1={y.toFixed(1)} x2={W - PAD_R} y2={y.toFixed(1)} />
           <text x={PAD_L - 4} y={(y + 3.5).toFixed(1)}
-                font-size="11" fill="#c8d8f0" font-weight="600" text-anchor="end"
+                font-size="11" fill="#ffffff" font-weight="600" text-anchor="end"
                 style="font-family: var(--font-numeric)">{fmtPct(pct)}</text>
         {/each}
         {#if chartData.yMin < 0 && chartData.yMax > 0}
@@ -633,7 +633,7 @@
                tooltip still surfaces exact date on demand. -->
         {/each}
         {#each chartData.visible as s}
-          {@const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#c8d8f0'}
+          {@const color = BENCHMARKS.find(b => b.id === s.symbol)?.color ?? '#ffffff'}
           <path d={buildLinePath(s.symbol)}
                 fill="none"
                 stroke={color}

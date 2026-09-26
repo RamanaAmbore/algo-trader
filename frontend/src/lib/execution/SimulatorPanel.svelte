@@ -731,7 +731,7 @@
     {/if}
   </div>
   {#if liveSnap}
-    <div class="text-[0.6rem] text-[#c8d8f0]/70 mt-1">
+    <div class="text-[0.6rem] text-white/70 mt-1">
       Live snapshot: {liveSnap?.snapshot_at?.slice(11, 19)} ·
       {liveSnap?.positions_count}P / {liveSnap?.margins_count}M
       · accounts=[{(liveSnap?.accounts ?? []).join(', ')}]
@@ -1393,7 +1393,7 @@
   {#if pickedSlug}
     {@const picked = scenarios.find(s => s.slug === pickedSlug)}
     {#if picked}
-      <div class="text-[0.6rem] text-[#c8d8f0]/60 italic mt-2">{picked.description}</div>
+      <div class="text-[0.6rem] text-white/60 italic mt-2">{picked.description}</div>
       {#if seedMode === 'scripted' && picked.has_initial === false}
         <div class="text-[0.6rem] text-amber-400 mt-2">
           Scenario <b>{picked.slug}</b> has no scripted initial state — price

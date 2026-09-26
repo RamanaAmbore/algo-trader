@@ -845,11 +845,11 @@
   .expiry-band-header-netted .expiry-band-pill {
     background: rgba(125, 145, 184, 0.18);
     border-color: rgba(125, 145, 184, 0.42);
-    color: #c8d8f0;
+    color: var(--algo-slate);
   }
   .expiry-band-header-netted .expiry-band-count {
     background: rgba(125, 145, 184, 0.30);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     border: 1px solid rgba(125, 145, 184, 0.45);
   }
   /* OUT OF THE MONEY — muted pill, lowest visual weight.

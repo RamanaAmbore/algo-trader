@@ -199,7 +199,7 @@
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
               class={Math.abs(v) < 0.001 ? 'chart-grid-zero' : 'chart-grid-line'} />
         <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
-              fill="#c8d8f0"
+              fill="#ffffff"
               font-size="11"
               font-weight={Math.abs(v) < 0.001 ? 700 : 600}>
           {v >= 0 ? '+' : '−'}₹{priceFmt(Math.abs(v))}
@@ -210,7 +210,7 @@
       {#each xLabels as l}
         <line class="chart-grid-line-minor" x1={l.x} x2={l.x} y1={PAD_T} y2={height - PAD_B} />
         <text x={l.x} y={height - PAD_B + 14} text-anchor="middle"
-              fill="#c8d8f0" font-size="11" font-weight="600">{l.label}</text>
+              fill="#ffffff" font-size="11" font-weight="600">{l.label}</text>
       {/each}
 
       <!-- Line -->
@@ -249,7 +249,7 @@
               font-size="10" font-weight="800" font-family="monospace">
           {(hover?.pnl ?? 0) >= 0 ? '+' : ''}₹{priceFmt(hover?.pnl)}
         </text>
-        <text x={_tx + 6} y={_ty + 22} fill="#c8d8f0"
+        <text x={_tx + 6} y={_ty + 22} fill="#ffffff"
               font-size="9" font-family="monospace">
           {hover?.ts?.slice(11, 19)}
         </text>

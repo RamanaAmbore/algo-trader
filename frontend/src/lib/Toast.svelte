@@ -186,7 +186,7 @@
   .rbq-toast-msg {
     font-size: var(--fs-md);
     font-family: var(--font-numeric);
-    color: #c8d8f0;
+    color: var(--algo-slate);
     line-height: 1.35;
     word-break: break-word;
   }

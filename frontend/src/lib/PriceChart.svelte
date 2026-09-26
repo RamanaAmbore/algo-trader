@@ -468,7 +468,7 @@
       {#each yTicks as t}
         <line class="chart-grid-line" x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}/>
         <text x={PAD_L - 4} y={t.y + 3} text-anchor="end"
-              fill="#c8d8f0" font-size="11" font-weight="600" font-family="monospace">
+              fill="#ffffff" font-size="11" font-weight="600" font-family="monospace">
           {priceFmt(t.v)}
         </text>
       {/each}
@@ -482,7 +482,7 @@
         {/if}
         <text x={xt.x} y={height - 6}
               text-anchor={i === 0 ? 'start' : (i === xTicks.length - 1 ? 'end' : 'middle')}
-              fill="#c8d8f0" font-size="11" font-weight="600" font-family="monospace">
+              fill="#ffffff" font-size="11" font-weight="600" font-family="monospace">
           {xt.label}
         </text>
       {/each}
@@ -581,7 +581,7 @@
                 font-size="10" font-weight="700" font-family="monospace">
             {hover?.kind?.toUpperCase()} · {hover?.side}{#if _qty != null} · {_qty}×{/if}
           </text>
-          <text x={tx + 6} y={ty + 28} fill="#c8d8f0"
+          <text x={tx + 6} y={ty + 28} fill="#ffffff"
                 font-size="9" font-family="monospace">
             {fmtPrice(_px)}{#if _total != null} → {fmtPrice(_total)}{/if} @ {fmtTime(hover?.ts)}
           </text>

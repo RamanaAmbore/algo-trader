@@ -7720,7 +7720,7 @@
     padding: 0.45rem 0.65rem 0.4rem;
     box-shadow: 0 6px 18px rgba(0,0,0,0.45);
     font-family: var(--font-numeric);
-    color: #e5edf7;
+    color: var(--text-hi);
     animation: order-toast-in 180ms ease-out;
   }
   @keyframes order-toast-in {
@@ -7781,7 +7781,7 @@
   .order-toast-side-buy  { color: var(--c-long); }
   .order-toast-side-sell { color: var(--c-short); }
   .order-toast-qty { color: var(--c-action); }
-  .order-toast-sym { color: #e5edf7; }
+  .order-toast-sym { color: var(--text-hi); }
   .order-toast-px  { color: var(--algo-slate); opacity: 0.9; }
 
   .order-toast-foot {
