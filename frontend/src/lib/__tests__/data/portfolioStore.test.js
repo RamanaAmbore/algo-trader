@@ -32,8 +32,6 @@ import { isFOSymbol } from '$lib/data/derivativesMath.js';
 // Tests the pure function form exported for backward compat.
 // This is the canonical aggregation logic for positions + holdings + funds.
 
-const FO_EXCHS = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
-
 function _computePortfolioPositions(posRows, holdRows, deps = {}) {
   const {
     getSnap    = sym  => undefined,
@@ -53,12 +51,19 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
   const expiryByAcct = new Map();
 
   // Build root→spot map ONCE before positions loop
+  //
+  // 2026-09 R4 post-ship audit fix: was `FO_EXCHS.has(exch)` — a local
+  // re-implementation of the old exchange-set gate Commit 7 replaced
+  // elsewhere in this mirror (see `isFO` below) with the REAL shared
+  // `isFOSymbol` predicate. A Groww-sourced F&O row whose adapter passes
+  // `exchange` through unchanged (e.g. reporting 'NSE' for an NFO contract)
+  // was excluded from this root-spot cache. Now calls the real predicate
+  // (imported above), matching the real store's `_rootSpotCache` fix, so a
+  // regression in the shared predicate fails this test too.
   const rootSpotCache = {};
   for (const p of posRows) {
     const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
-    if (!sym) continue;
-    const exch = String(p?.exchange || '').toUpperCase();
-    if (!FO_EXCHS.has(exch)) continue;
+    if (!sym || !isFOSymbol(sym)) continue;
     const decomp = decomposeSymbol(sym);
     const root   = (decomp.root || sym).toUpperCase();
     if (root && !(root in rootSpotCache)) {
@@ -79,13 +84,12 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
 
     const day_pnl = livePosDay(p, ltp, { marketOpen });
 
-    // 2026-09 Commit 7 fix: exchange-independent classification, imported
-    // from the REAL shared module (not a local re-implementation) — this
-    // mirror function exercises the actual fixed predicate the real
+    // 2026-09 Commit 7 fix (R4 follow-up completes it — see rootSpotCache
+    // above, now also on isFOSymbol): exchange-independent classification,
+    // imported from the REAL shared module (not a local re-implementation) —
+    // this mirror function exercises the actual fixed predicate the real
     // portfolioStore.svelte.js now calls, so a regression here fails this
-    // test too. FO_EXCHS/`exch` above (root-spot cache section) is a
-    // separate, unrelated concern and is left untouched, matching the real
-    // store.
+    // test too.
     const isFO = isFOSymbol(sym);
 
     let exp_pnl   = null;
@@ -453,6 +457,26 @@ describe('portfolioStore — root decomposition and byRoot aggregation', () => {
     // Should be called once for NIFTY root (cached)
     const niftyCalls = mockGetSpot.mock.calls.filter(c => /** @type {any[]} */ (c)[0] === 'NIFTY');
     expect(niftyCalls.length).toBe(1);
+  });
+
+  // 2026-09 R4 post-ship audit fix: the root-spot cache used to gate on
+  // `FO_EXCHS.has(exch)` (exchange ∈ {NFO,MCX,CDS,BFO}), which excludes a
+  // Groww-sourced F&O row whose adapter passes `exchange` through unchanged
+  // (e.g. reporting 'NSE' for an NFO contract) — that row's root would never
+  // get a cached spot, leaving `byRoot[root].spot` at 0 even though the SAME
+  // row's exp_pnl/extrinsic classification (isFO tier) already correctly
+  // treated it as F&O via `isFOSymbol`. Now both tiers agree.
+  it('sets byRoot spot from root spot cache for a Groww-sourced F&O row with exchange:"NSE"', () => {
+    const growwCe = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      quantity: 1,
+      exchange: 'NSE', // Groww adapter passthrough — not in the old FO_EXCHS set
+      underlying_ltp: 23000,
+    });
+
+    const mockGetSpot = vi.fn(() => 0); // Fallback to underlying_ltp
+    const result = _computePortfolioPositions([growwCe], [], { getSpot: mockGetSpot });
+    expect(result.byRoot['NIFTY'].spot).toBe(23000);
   });
 });
 
