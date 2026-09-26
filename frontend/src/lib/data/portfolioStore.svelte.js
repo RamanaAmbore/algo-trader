@@ -261,8 +261,13 @@ const _posAgg = $derived.by(() => {
         byRootPos[r].prev_mv   += p._prev_mv ?? 0;
 
         if (p._exp_pnl != null) {
-          const acct = String(p?.account || '');
-          if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + p._exp_pnl);
+          // 2026-09 Commit 9 fix: uppercase, matching `_acct` (used two
+          // lines below for posByAccount/expPnlRows) and every other
+          // account key in this file — the raw (unuppercased) `p.account`
+          // here could silently split one account's total across two Map
+          // keys (e.g. "zg0790" vs "ZG0790") if the broker ever returns
+          // mixed casing.
+          if (_acct) expiryByAcct.set(_acct, (expiryByAcct.get(_acct) ?? 0) + p._exp_pnl);
         }
 
         expPnlRows.push({

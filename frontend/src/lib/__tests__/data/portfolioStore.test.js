@@ -153,7 +153,10 @@ function _computePortfolioPositions(posRows, holdRows, deps = {}) {
     if (_acct) posByAccount[_acct] = (posByAccount[_acct] ?? 0) + day_pnl;
 
     if (isFO && expVal != null) {
-      const acct = String(p?.account || '');
+      // 2026-09 Commit 9 fix: uppercase, matching `_acct` above (and the
+      // real portfolioStore.svelte.js source) — mirrors the real fix so a
+      // regression here fails this test too.
+      const acct = _acct;
       if (acct) expiryByAcct.set(acct, (expiryByAcct.get(acct) ?? 0) + expVal);
 
       const decomp = decomposeSymbol(sym);
@@ -848,6 +851,36 @@ describe('portfolioStore — _computePortfolioPositions (exported pure function)
     expect(result.total).toEqual({ day_pnl: 0, exp_pnl: 0, extrinsic: 0 });
     expect(result.byKey).toEqual({});
     expect(result.expiryByAcct).toEqual(new Map());
+  });
+
+  // 2026-09 Commit 9 fix: expiryByAcct used to key on the RAW (unuppercased)
+  // `p.account` while every other account key in this file (`_acct`,
+  // posByAccount) was uppercased — a broker returning mixed-case account
+  // codes for the same account across rows would silently split its total
+  // across two Map keys instead of accumulating into one.
+  it('expiryByAcct keys are uppercased, matching posByAccount — mixed-case account codes for the SAME account accumulate into ONE key', () => {
+    const posLower = makePosition({
+      tradingsymbol: 'NIFTY25JAN24500CE',
+      quantity: 1,
+      average_price: 100,
+      last_price: 150,
+      previous_close: 50,
+      account: 'zg0790',
+      exchange: 'NFO',
+    });
+    const posUpper = makePosition({
+      tradingsymbol: 'NIFTY25JAN24600CE',
+      quantity: 1,
+      average_price: 100,
+      last_price: 150,
+      previous_close: 50,
+      account: 'ZG0790',
+      exchange: 'NFO',
+    });
+    const result = _computePortfolioPositions([posLower, posUpper], []);
+    expect(result.expiryByAcct.size).toBe(1);
+    expect(result.expiryByAcct.has('ZG0790')).toBe(true);
+    expect(result.expiryByAcct.has('zg0790')).toBe(false);
   });
 
   it('computes positions from raw arrays with live LTP override', () => {

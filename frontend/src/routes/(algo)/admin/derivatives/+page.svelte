@@ -78,7 +78,7 @@
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
-    buildPositionRowFromBroker, buildHoldingRowFromBroker, bumpExcluded,
+    buildPositionRowFromBroker, buildHoldingRowFromBroker,
     splitClosedReopened,
     buildCleanLegs, computeLegsKey, didUnderlyingChange,
     synthCacheKey, synthEquityOnlyStrategy,
@@ -3958,18 +3958,10 @@
       const _hasLiveRows = positions.some(r => r.source !== 'sim');
       if (rawPos.length === 0 && _hasLiveRows) return;
       const merged = [];
-      /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
-      const excluded = {};
       for (const p of rawPos) {
         const sym = p?.tradingsymbol || p?.symbol;
         if (!sym) continue;
-        if (!isFOSymbol(sym)) {
-          bumpExcluded(excluded, p?.account, {
-            pos_pnl: Number(p?.pnl || 0),
-            pos_day: baseDayPnlForPosition(p),
-          });
-          continue;
-        }
+        if (!isFOSymbol(sym)) continue;
         const baseRow = buildPositionRowFromBroker(p, 'live');
         for (const row of splitClosedReopened(baseRow)) merged.push(row);
       }
@@ -3996,10 +3988,6 @@
   async function loadPositions({ fresh = false } = {}) {
     /** @type {Array<any>} */
     const merged = [];
-    // Equity intraday positions (excluded from F&O view) are accumulated
-    // here so the Snapshot TOTAL can reconcile with the navbar PositionStrip.
-    /** @type {Record<string, {pos_pnl:number,pos_day:number,hold_pnl:number,hold_day:number}>} */
-    const _excluded = {};
 
     // Live broker positions — route through positionsStore so NavStrip and
     // this page share one SSOT fetch. Independent fetchPositions() calls
@@ -4027,14 +4015,7 @@
     for (const p of _posSource) {
       const sym = p?.tradingsymbol || p?.symbol;
       if (!sym) continue;
-      if (!isFOSymbol(sym)) {
-        // Equity intraday — excluded from F&O panel; capture for TOTAL reconcile
-        bumpExcluded(_excluded, p?.account, {
-          pos_pnl: Number(p?.pnl || 0),
-          pos_day: baseDayPnlForPosition(p),
-        });
-        continue;
-      }
+      if (!isFOSymbol(sym)) continue; // Equity intraday — excluded from F&O panel
       const baseRow = buildPositionRowFromBroker(p, 'live');
       for (const row of splitClosedReopened(baseRow)) merged.push(row);
     }
@@ -4066,15 +4047,7 @@
       for (const h of (holdingsStore.value ?? _lastDervHold)) {
         const sym = h?.tradingsymbol || h?.symbol;
         if (!sym) continue;
-        if (isFOSymbol(sym)) {
-          bumpExcluded(_excluded, h?.account, {
-            hold_pnl: Number(h?.pnl || 0),
-            hold_day: holdingsDayPnlStore.get(
-              String(h?.tradingsymbol || h?.symbol || '').toUpperCase(), 0
-            ).day_pnl,
-          });
-          continue;
-        }
+        if (isFOSymbol(sym)) continue; // F&O holdings picked up by positions, not here
         const row = buildHoldingRowFromBroker(h);
         if (row) rows.push(row);
       }
