@@ -320,6 +320,14 @@ eligible roots.
 - Equity intraday positions are excluded from the F&O analysis but captured
   in `_excludedByAccount` for TOTAL row reconciliation with NavStrip.
 
+**SSOT consolidation (2026-09)**: Legs tab, Payoff chart, Snapshot grid, and NavStrip 
+all now read position data, underlying spot/LTP, prevClose, Day P&L, and Exp P&L from 
+the unified `portfolioStore` source (via `portfolioStore.positions.rows` export) instead 
+of maintaining independent derivation pipelines. Fixes incident where a position showing 
+as "all closed" in the Legs tab after expiry would correctly display open exposure in 
+NavStrip and Snapshot. Data consistency is enforced via shared store subscriptions 
+triggered by broker polling and postback fills.
+
 **Sim positions** (when simulator is active):
 - Fetched via `fetchSimStatus()` alongside broker positions
 - Inline LTP included so strategy endpoint can compute analytics without

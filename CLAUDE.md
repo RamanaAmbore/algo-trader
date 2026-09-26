@@ -445,7 +445,7 @@ making the cutoff immune to whichever calendar day the `date` column happens to 
 Invariant: session boundary is always derived from the batch's own `captured_at`, never 
 the wall-clock `date` column. Test: `backend/tests/test_positions_snapshot_session_anchor.py`.
 
-**Payoff chart Exp P&L basis (C1, 2026-09)** — The displayed Exp P&L value shown ON the Payoff chart next to the expiry marker (dart position) is priced at `payoffSpot` (anchor-contract basis, lines 1891–1920 in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`) instead of `liveSpot` (front-month), so the overlay value and the marker's drawn position are guaranteed to visually agree — both reference the same contract. This is a deliberate, correctly-scoped choice: the separate Legs-grid TOTAL row's Exp P&L continues to read `liveSpot` / front-month (line 2222, `_legsExpPnlTotal`), a different and correct consumer. The chart's value is computed by `_chartExpPnlAtSpot` (line 2232, summing enabled legs at `payoffSpot`) and passed to `OptionsPayoff.svelte` as the `legsExpPnlAtSpot` prop (line 30, used at lines 981–985). NSE underlyings (no anchor future) also live-tick via the Tier-1b fallback (lines 1901–1911, reusing liveSpot's own cash-ticker lookup) so the overlay ticks live every second instead of stepping once per 5s refetch — the C2 fix for overlay-desync on NSE. **Future work MUST NOT revert this to liveSpot** — the visual disagreement between marker and number (if it were to happen) is a user-facing defect. Invariant: chart value = marker position visually, always.
+**Payoff chart Exp P&L basis (C1, 2026-09)** — The displayed Exp P&L value shown ON the Payoff chart next to the expiry marker (dart position) is priced at `payoffSpot` (anchor-contract basis, lines 1891–1920 in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`) instead of `liveSpot` (front-month), so the overlay value and the marker's drawn position are guaranteed to visually agree — both reference the same contract. This is a deliberate, correctly-scoped choice: the separate Legs-grid TOTAL row's Exp P&L continues to read `liveSpot` / front-month (line 2222, `_legsExpPnlTotal`), a different and correct consumer. The chart's value is computed by `_chartExpPnlAtSpot` (line 2232, summing enabled legs at `payoffSpot`) and passed to `OptionsPayoff.svelte` as the `legsExpPnlAtSpot` prop (line 30, used at lines 981–985). NSE underlyings (no anchor future) also live-tick via the Tier-1b fallback (lines 1901–1911, reusing liveSpot's own cash-ticker lookup) so the overlay ticks live every second instead of stepping once per 5s refetch — the C2 fix for overlay-desync on NSE. A broader cross-surface SSOT consolidation landed in the same timeframe, consolidating spot/LTP, prevClose, Day P&L, and position existence onto `portfolioStore` — `payoffSpot`'s anchor-contract tier remains the one deliberate exception to the single-spot-resolver rule and was not affected by this consolidation. **Future work MUST NOT revert this to liveSpot** — the visual disagreement between marker and number (if it were to happen) is a user-facing defect. Invariant: chart value = marker position visually, always.
 
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
@@ -453,6 +453,16 @@ the wall-clock `date` column. Test: `backend/tests/test_positions_snapshot_sessi
 **Canonical source**: `daily_book.ltp` from the most recent settlement snapshot (`captured_at < 08:00 IST`, DESC per account+symbol). **NOT** Kite's `positions.close_price` (BHAV copy, lags ~8AM next day). **NOT** `COALESCE(daily_book.previous_close, ltp)` — `previous_close` is populated from the same stale Kite API.
 
 Code paths: `_override_stale_close_from_snapshot` (positions.py) and `_override_stale_close_for_holdings` (holdings.py) — both must query `daily_book.ltp` directly (COALESCE→ltp fix completed 2026-09, commit 93689676). Do NOT revert to COALESCE. Full rationale: memory `project_prev_close_architecture`.
+
+**Underlying P.Close/Chg% display scope (2026-09)** — The underlying's own P.Close 
+(previous close) and Chg% values displayed in Snapshot header and Payoff chart now use 
+the `daily_book.ltp` settlement-snapshot basis, but **ONLY when the underlying itself 
+is a held position or futures contract** (a `daily_book` row exists for it). For pure 
+indices or unheld front-month futures lacking a `daily_book` entry, the display falls 
+back to Kite's `ohlc.close` / `quote.prev_close` explicitly. This scoped decision was 
+intentional: `daily_book` is account-keyed per held instrument, so it has no row for 
+instruments not in the portfolio. Invariant: never use a held position's `daily_book.ltp` 
+for an unrelated underlying that lacks its own position entry.
 
 **Day P&L reference price by row type** (SUPERSEDED 2026-09, commit 93689676)
 
