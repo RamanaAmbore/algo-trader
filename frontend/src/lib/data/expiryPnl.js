@@ -243,6 +243,11 @@ export function buildPositionRowFromBroker(p, source) {
   return {
     symbol:   sym,
     account:  String(p?.account || ''),
+    // Preserved as-is (2026-09 fix) — previously dropped, so any downstream
+    // consumer that needs to distinguish e.g. NFO vs MCX vs BFO vs CDS per
+    // row (F&O predicate, GTT routing, exchange-specific lot handling) had
+    // no way to read it back off a normalised row.
+    exchange: p?.exchange != null ? String(p.exchange) : null,
     qty:      Number(p?.quantity || 0),
     // lots / lot_size — new backend fields (quantity is now always contracts).
     // lots = integer lot count for display; lot_size = contracts per lot.

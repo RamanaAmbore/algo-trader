@@ -12,6 +12,7 @@
  */
 
 import { todayIST } from '$lib/dateFormat.js';
+import { buildAcctMatcher } from '$lib/data/derivativesMath.js';
 
 // splitClosedReopened + buildPositionRowFromBroker moved to
 // $lib/data/expiryPnl.js (2026-09 SSOT fix) so portfolioStore.svelte.js can
@@ -145,12 +146,15 @@ export function buildCandidatePositions({
   const wantedSource = simActive ? 'sim' : 'live';
   const matchExpiry  = buildExpiryMatcher(selectedExpiries, getInstrument);
 
-  // buildAcctMatcher from derivativesMath handles empty = fail-open
-  // but is not imported here to keep this module self-contained.
-  // Inline equivalent (same semantics — account values are always uppercase).
-  const matchAccount = selectedAccounts.length === 0
-    ? () => true
-    : (acct) => selectedAccounts.includes(String(acct || ''));
+  // 2026-09 fix: the old inline matcher compared the raw row account
+  // against `selectedAccounts` with NO normalisation on either side
+  // (exact match only) — any case/whitespace difference between the
+  // operator's selection and the broker-reported account code silently
+  // never matched. buildAcctMatcher (derivativesMath.js) trim+uppercases
+  // BOTH sides and is the same matcher every other $derived.by in
+  // +page.svelte already uses (lines 705/821/870/1180/1695 there) — this
+  // closes the last divergent copy.
+  const matchAccount = buildAcctMatcher(selectedAccounts);
 
   /** @type {any[]} */
   const real = [];
@@ -168,13 +172,31 @@ export function buildCandidatePositions({
     const isFut = /FUT$/i.test(sym);
     const isOpt = /(CE|PE)$/i.test(sym);
     if (!isFut && !isOpt) continue;
-    if (Number(p?.qty || 0) !== 0 && !matchExpiry(sym)) continue;
-    // Skip instruments no longer in master (expired and removed by Kite).
+    const qty = Number(p?.qty || 0);
     const _inst = getInstrument(sym);
-    if (!_inst && Number(p?.qty || 0) !== 0) continue;
-    // Skip contracts where the expiry date has already passed.
-    if (_inst?.x && _inst.x < todayIST() && Number(p?.qty || 0) !== 0) continue;
-    real.push({ ...p, kind: isFut ? 'fut' : 'opt' });
+    // A HELD row (qty!==0) whose contract can't be resolved against the
+    // live instruments master — either missing entirely (expired and
+    // removed by Kite) or carrying an `x` (expiry) date that's already
+    // passed — is tagged `_expired: true` and stays VISIBLE and counted,
+    // instead of being silently dropped (2026-09 GOLDM regression: a
+    // fully-held expired contract vanished from the Legs/Payoff/candidates
+    // pipeline the day after expiry, while Snapshot — whose portfolioStore
+    // pipeline has no such exclusion — kept showing 17 legs / real P&L for
+    // the same underlying). See buildCleanLegs below for why this row is
+    // still excluded from the /strategy-analytics REQUEST payload only.
+    const isUnresolvable = qty !== 0 && (!_inst || (_inst.x && _inst.x < todayIST()));
+    // The operator's expiry SELECTOR (selectedExpiries) is a genuine UI
+    // filter for KNOWN, unexpired contracts that simply aren't in the
+    // chosen selection — it must still apply to those. Only bypass it for
+    // a row we can't resolve at all (isUnresolvable) or a flat (qty=0)
+    // historical row (matchExpiry itself already no-ops on those via the
+    // qty!==0 guard below, preserved from the original code).
+    if (!isUnresolvable && qty !== 0 && !matchExpiry(sym)) continue;
+    real.push({
+      ...p,
+      kind: isFut ? 'fut' : 'opt',
+      ...(isUnresolvable ? { _expired: true } : {}),
+    });
   }
 
   // Direct equity holdings of the underlying
@@ -299,6 +321,18 @@ export function buildCandidatePositions({
  * Equity (kind='eq') legs are excluded — the backend only accepts F&O.
  * Ltp is inlined only for sim / draft sources.
  *
+ * `_expired`-tagged legs (buildCandidatePositions above, 2026-09 GOLDM fix)
+ * are excluded here too — but ONLY from this REQUEST payload, not from the
+ * Legs grid / candidates list / Day-Exp-P&L totals, which all read
+ * candidatePositions directly and still show the row. Confirmed by reading
+ * backend/api/routes/options.py:_strategy_collect_leg_metadata — it raises
+ * HTTPException(400) for the WHOLE `/strategy-analytics` request the moment
+ * any single leg fails to parse/resolve an expiry, which would 500 the
+ * payoff curve for every OTHER live leg too if an unresolvable expired leg
+ * were sent through. The payoff curve itself legitimately has no forward
+ * shape for an expired contract anyway — its current MTM/Exp P&L still
+ * counts in the totals shown alongside the chart, computed client-side.
+ *
  * @param {any[]} legs
  * @param {(sym: string) => {x?: string} | null} getInstrument
  * @returns {{symbol:string, qty:number, avg_cost:number|null, ltp:number|null, expiry:string|null}[]}
@@ -306,6 +340,7 @@ export function buildCandidatePositions({
 export function buildCleanLegs(legs, getInstrument) {
   return legs
     .filter(l => l.kind !== 'eq')
+    .filter(l => !l._expired)
     .map(l => {
       const sym    = String(l.symbol || '').trim().toUpperCase();
       const inst   = sym ? getInstrument(sym) : null;

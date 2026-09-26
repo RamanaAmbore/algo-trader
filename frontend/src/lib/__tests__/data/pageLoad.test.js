@@ -22,6 +22,7 @@ import { describe, it, expect } from 'vitest';
 import {
   splitClosedReopened, buildPositionRowFromBroker,
   didUnderlyingChange, synthEquityOnlyStrategy, synthCacheKey,
+  buildCandidatePositions, buildCleanLegs,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
@@ -466,5 +467,114 @@ describe('synthCacheKey — includes target spot/prev-close (D1 fix, 2026-09)', 
     const k1 = synthCacheKey('GOLDM', [eqLeg], 150736, 148500);
     const k2 = synthCacheKey('GOLDM', [eqLeg], 150736, 148500);
     expect(k1).toBe(k2);
+  });
+});
+
+// ============================================================================
+// buildCandidatePositions / buildCleanLegs — 2026-09 GOLDM regression fix.
+// A held (qty!==0) F&O row whose contract has expired and/or dropped out of
+// the live instruments master must stay VISIBLE and counted (tagged
+// `_expired`), not silently dropped — Snapshot's portfolioStore pipeline has
+// no such exclusion, so the old drop behavior made Legs/Payoff disagree with
+// Snapshot for the same underlying the day after expiry.
+// ============================================================================
+
+describe('buildCandidatePositions — expired/unresolvable contracts are tagged, not dropped (GOLDM regression)', () => {
+  function baseParams(overrides = {}) {
+    return {
+      positions: [],
+      holdings: [],
+      drafts: [],
+      target: 'GOLDM',
+      selectedExpiries: [],
+      selectedAccounts: [],
+      simActive: false,
+      proxiesForTarget: () => [],
+      getInstrument: () => null,
+      ...overrides,
+    };
+  }
+
+  it('a held position whose symbol is ABSENT from the instruments master is tagged `_expired: true` and included, not dropped', () => {
+    const p = { source: 'live', account: 'ACC1', symbol: 'GOLDM24SEP150000CE', qty: 5, avg_cost: 100 };
+    const result = buildCandidatePositions(baseParams({
+      positions: [p],
+      getInstrument: () => null, // symbol not found — expired/removed by Kite
+    }));
+    expect(result.length).toBe(1);
+    expect(result[0]._expired).toBe(true);
+    expect(result[0].symbol).toBe('GOLDM24SEP150000CE');
+  });
+
+  it('a held position whose instrument IS in the master but its expiry date has already passed is also tagged `_expired: true` and included', () => {
+    const p = { source: 'live', account: 'ACC1', symbol: 'GOLDM24SEP150000CE', qty: 5, avg_cost: 100 };
+    const result = buildCandidatePositions(baseParams({
+      positions: [p],
+      getInstrument: () => ({ x: '2020-01-01' }), // long-past expiry
+    }));
+    expect(result.length).toBe(1);
+    expect(result[0]._expired).toBe(true);
+  });
+
+  it('a resolvable, unexpired contract that simply is not in the operator\'s selectedExpiries selection is still filtered out (the expiry SELECTOR remains a real UI filter, not bypassed)', () => {
+    const p = { source: 'live', account: 'ACC1', symbol: 'GOLDM25DEC150000CE', qty: 5, avg_cost: 100 };
+    const result = buildCandidatePositions(baseParams({
+      positions: [p],
+      selectedExpiries: ['2099-02-01'], // active filter, doesn't include the row's real expiry
+      getInstrument: () => ({ x: '2099-01-01' }), // known + future
+    }));
+    expect(result.length).toBe(0);
+  });
+
+  it('a flat (qty=0) historical row is always included regardless of instrument resolvability, matching pre-fix behavior', () => {
+    const p = { source: 'live', account: 'ACC1', symbol: 'GOLDM24SEP150000CE', qty: 0, avg_cost: 100 };
+    const result = buildCandidatePositions(baseParams({
+      positions: [p],
+      getInstrument: () => null,
+    }));
+    expect(result.length).toBe(1);
+    expect(result[0]._expired).toBeUndefined();
+  });
+
+  it('account matcher now normalises BOTH sides (case/whitespace) — the old exact-match comparison silently dropped this row', () => {
+    const p = { source: 'live', account: ' acc1 ', symbol: 'GOLDM24SEP150000FUT', qty: 5, avg_cost: 100 };
+    const result = buildCandidatePositions(baseParams({
+      positions: [p],
+      selectedAccounts: ['ACC1'], // operator's selection, already uppercase — row's own value isn't
+      getInstrument: () => ({ x: '2099-01-01' }),
+    }));
+    expect(result.length).toBe(1);
+  });
+});
+
+describe('buildCleanLegs — `_expired`-tagged legs excluded from the backend request payload only', () => {
+  it('drops a leg tagged `_expired` even though its (null) expiry would otherwise pass the existing expiry filter', () => {
+    const legs = [
+      { symbol: 'GOLDM24SEP150000CE', kind: 'opt', qty: 5, avg_cost: 100, source: 'live', _expired: true },
+      { symbol: 'GOLDM25DEC150000CE', kind: 'opt', qty: 3, avg_cost: 120, source: 'live' },
+    ];
+    const getInstrument = (sym) => sym === 'GOLDM25DEC150000CE' ? { x: '2099-01-01' } : null;
+    const clean = buildCleanLegs(legs, getInstrument);
+    expect(clean.length).toBe(1);
+    expect(clean[0].symbol).toBe('GOLDM25DEC150000CE');
+  });
+
+  it('a non-expired leg is unaffected by the new filter', () => {
+    const legs = [{ symbol: 'GOLDM25DEC150000CE', kind: 'opt', qty: 3, avg_cost: 120, source: 'live' }];
+    const getInstrument = () => ({ x: '2099-01-01' });
+    const clean = buildCleanLegs(legs, getInstrument);
+    expect(clean.length).toBe(1);
+  });
+});
+
+describe('buildPositionRowFromBroker — exchange passthrough (2026-09 fix)', () => {
+  it('carries exchange through when present on the broker row', () => {
+    const row = buildPositionRowFromBroker({ tradingsymbol: 'GOLDM24SEPFUT', quantity: 1, exchange: 'MCX' }, 'live');
+    expect(row.exchange).toBe('MCX');
+  });
+
+  it('defaults to null when absent (not dropped/undefined silently)', () => {
+    const row = buildPositionRowFromBroker({ tradingsymbol: 'NIFTY25SEP24000CE', quantity: 1 }, 'live');
+    expect(row.exchange).toBeNull();
   });
 });

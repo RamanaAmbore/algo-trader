@@ -54,23 +54,35 @@ const BASE_PARAMS = {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('buildCandidatePositions — expired-contract filtering', () => {
-  it('excludes a position whose instrument expiry is before today (yesterday)', () => {
+  // 2026-09 GOLDM regression fix: a HELD (qty!==0) row whose contract has
+  // expired must stay VISIBLE and counted (tagged `_expired: true`), not be
+  // dropped — Snapshot's portfolioStore pipeline has no such exclusion, so
+  // silently dropping the row here made Legs/Payoff disagree with Snapshot
+  // for the same underlying the day after expiry. These three tests used to
+  // assert the row was excluded entirely; updated to assert it's tagged and
+  // included instead (see buildCleanLegs below for the REQUEST-payload-only
+  // exclusion that still applies).
+  it('tags (does not exclude) a position whose instrument expiry is before today (yesterday)', () => {
     const getInstrument = makeGetInst({
       'IDFCFIRSTB25JUL500CE': '2026-07-24',  // last Thursday, before 2026-07-27
     });
     const positions = [makePos('IDFCFIRSTB25JUL500CE')];
     const result = buildCandidatePositions({ ...BASE_PARAMS, positions, getInstrument });
-    expect(result.filter(r => r.kind === 'opt' || r.kind === 'fut')).toHaveLength(0);
+    const rows = result.filter(r => r.kind === 'opt' || r.kind === 'fut');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._expired).toBe(true);
   });
 
-  it('excludes a position whose instrument expiry is today minus one day', () => {
+  it('tags (does not exclude) a position whose instrument expiry is today minus one day', () => {
     // 2026-07-26 < 2026-07-27 → expired
     const getInstrument = makeGetInst({
       'IDFCFIRSTB25JUL500PE': '2026-07-26',
     });
     const positions = [makePos('IDFCFIRSTB25JUL500PE')];
     const result = buildCandidatePositions({ ...BASE_PARAMS, positions, getInstrument });
-    expect(result.filter(r => r.kind === 'opt')).toHaveLength(0);
+    const rows = result.filter(r => r.kind === 'opt');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._expired).toBe(true);
   });
 
   it('includes a position whose instrument expiry is today (expiry day still valid)', () => {
@@ -92,12 +104,16 @@ describe('buildCandidatePositions — expired-contract filtering', () => {
     expect(result.filter(r => r.kind === 'opt')).toHaveLength(1);
   });
 
-  it('excludes a position when instrument is not in master (removed by Kite after expiry)', () => {
-    // When getInstrument returns null the instrument has been removed from the
-    // master (Kite removes it after settlement). The position must be excluded.
+  it('tags (does not exclude) a position when instrument is not in master (removed by Kite after expiry)', () => {
+    // When getInstrument returns null the instrument has been removed from
+    // the master (Kite removes it after settlement) — the row is tagged
+    // `_expired: true` and stays visible/counted (2026-09 GOLDM fix), not
+    // silently excluded.
     const positions = [makePos('IDFCFIRSTB26AUG500CE')];
     const result = buildCandidatePositions({ ...BASE_PARAMS, positions, getInstrument: () => null });
-    expect(result.filter(r => r.kind === 'opt')).toHaveLength(0);
+    const rows = result.filter(r => r.kind === 'opt');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._expired).toBe(true);
   });
 
   it('excludes an F&O draft when instrument is not in master (removed by Kite)', () => {
@@ -286,19 +302,23 @@ describe('buildCandidatePositions — MCX futures warm vs cold instruments cache
     expect(result[0].symbol).toBe('CRUDEOIL26SEPFUT');
   });
 
-  it('drops open MCX futures position when instrument is NOT in cache (cold cache)', () => {
+  it('tags (does not drop) open MCX futures position when instrument is NOT in cache (cold cache)', () => {
     // Simulates the state on page-load before instrumentsReady flips.
-    // Without `void instrumentsReady` in the derived, this would be the
-    // permanent state and the payoff chart would show a flat line at 0.
+    // 2026-09 GOLDM fix: an unresolvable row is now tagged `_expired: true`
+    // and stays visible immediately (rather than showing a flat/empty
+    // payoff until the cache warms) — `void instrumentsReady` in the
+    // derived still re-derives once the cache warms, which un-tags it.
     const result = buildCandidatePositions({
       ...MCX_PARAMS,
       positions: [MCX_FUT_POS],
       getInstrument: () => null,
     });
-    expect(result.filter(r => r.kind === 'fut')).toHaveLength(0);
+    const rows = result.filter(r => r.kind === 'fut');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]._expired).toBe(true);
   });
 
-  it('GOLDM FUT included when warm, dropped when cold', () => {
+  it('GOLDM FUT included when warm (untagged), tagged `_expired` (still included) when cold', () => {
     const goldPos = { ...MCX_FUT_POS, symbol: 'GOLDM26OCTFUT' };
     const warm = buildCandidatePositions({
       ...MCX_PARAMS,
@@ -306,7 +326,9 @@ describe('buildCandidatePositions — MCX futures warm vs cold instruments cache
       positions: [goldPos],
       getInstrument: makeGetInst({ 'GOLDM26OCTFUT': '2026-10-30' }),
     });
-    expect(warm.filter(r => r.kind === 'fut')).toHaveLength(1);
+    const warmRows = warm.filter(r => r.kind === 'fut');
+    expect(warmRows).toHaveLength(1);
+    expect(warmRows[0]._expired).toBeUndefined();
 
     const cold = buildCandidatePositions({
       ...MCX_PARAMS,
@@ -314,7 +336,9 @@ describe('buildCandidatePositions — MCX futures warm vs cold instruments cache
       positions: [goldPos],
       getInstrument: () => null,
     });
-    expect(cold.filter(r => r.kind === 'fut')).toHaveLength(0);
+    const coldRows = cold.filter(r => r.kind === 'fut');
+    expect(coldRows).toHaveLength(1);
+    expect(coldRows[0]._expired).toBe(true);
   });
 
   it('closed MCX futures position (qty=0) passes through regardless of cache state', () => {
