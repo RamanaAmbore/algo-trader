@@ -249,4 +249,58 @@ test.describe('broker-chip color + popup broker names', () => {
       await expect(chip, `chip must not be unknown when health=${state}`).not.toHaveClass(/broker-chip-unknown/);
     }
   });
+
+  // ── 6. UX: account left-bar — .bh-row-account border-left resolves the
+  //         per-account --bh-acct-color (same pattern as NavBreakdown.svelte /
+  //         PerformancePage.svelte's --acct-stripe border-left) ─────────────
+
+  test('.bh-row-account border-left resolves --bh-acct-color at 3px width', async () => {
+    await mockHealthEndpoint(P, 'green');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    const rows = modal.locator('.bh-row-account');
+    const count = await rows.count();
+    if (count === 0) {
+      test.info().annotations.push({ type: 'skip', description: 'No account rows' });
+      return;
+    }
+
+    for (let i = 0; i < count; i++) {
+      const row = rows.nth(i);
+      const result = await row.evaluate((el) => {
+        const cs = getComputedStyle(el);
+        const acctVar = cs.getPropertyValue('--bh-acct-color').trim();
+        // Resolve the raw --bh-acct-color value to its computed rgb form via
+        // a scratch element, so a hex-vs-rgb string mismatch never false-fails.
+        const scratch = document.createElement('span');
+        scratch.style.color = acctVar || 'transparent';
+        document.body.appendChild(scratch);
+        const resolvedAcctColor = getComputedStyle(scratch).color;
+        document.body.removeChild(scratch);
+        return {
+          borderLeftWidth: cs.borderLeftWidth,
+          borderLeftColor: cs.borderLeftColor,
+          resolvedAcctColor,
+          acctVarRaw: acctVar,
+        };
+      });
+
+      expect(result.borderLeftWidth, `row ${i} border-left-width must be 3px`).toBe('3px');
+      // Only assert color equality when the account actually carries a
+      // resolved --bh-acct-color (spare/no-account rows fall back to
+      // transparent, which is a legitimate no-stripe state).
+      if (result.acctVarRaw && result.acctVarRaw !== 'transparent') {
+        expect(result.borderLeftColor, `row ${i} border-left-color must equal resolved --bh-acct-color`)
+          .toBe(result.resolvedAcctColor);
+      }
+    }
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
 });

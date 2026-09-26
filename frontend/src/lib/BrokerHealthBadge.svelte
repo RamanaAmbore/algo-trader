@@ -270,6 +270,11 @@
     gap: 0.35rem;
     width: 100%;
     background-color: color-mix(in srgb, var(--bh-acct-color, transparent) 14%, transparent);
+    /* Account left-bar — same pattern as NavBreakdown.svelte / PerformancePage.svelte
+       (border-left: 3px solid var(--acct-stripe, transparent) !important), reusing the
+       per-account color already computed into --bh-acct-color for the background tint
+       above (acctColor() via account.js) — no new color logic needed. */
+    border-left: 3px solid var(--bh-acct-color, transparent) !important;
   }
   :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
   :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
