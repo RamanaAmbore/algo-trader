@@ -410,6 +410,17 @@ def _scope_positions_total(ctx):
     df = ctx.sum_positions
     if df is None or df.empty:
         return []
+    # Partial-outage guard (2026-09 alerts audit item 5): when
+    # `background._fetch_positions_direct` detected that some (not all)
+    # accounts failed to fetch this tick, `df`'s TOTAL row silently omits
+    # the failed account(s)' contribution — pd.concat just drops what
+    # never arrived. Returning [] here means the evaluator records NO
+    # observation for any positions.total leaf this tick (fix #5's
+    # "absent from observations = untouched, never treated as
+    # recovered" contract), rather than firing/clearing latches off a
+    # P&L total that's silently missing money.
+    if (getattr(df, 'attrs', {}) or {}).get('partial_outage'):
+        return []
     mask = df['account'].astype(str) == 'TOTAL'
     return [r.to_dict() for _, r in df[mask].iterrows()]
 

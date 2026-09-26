@@ -245,8 +245,17 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
     worker (which runs before the baseline is available) unaffected;
     only this post-override rebuild is upgraded.
     """
+    # Captured up front — `.attrs` is a plain dict on the DataFrame
+    # instance and generally survives `.copy()`/in-place mutation, but
+    # this function is the single choke point _perf_fetch_all_broker_data
+    # relies on to rebuild `sum_positions` post-override, so the
+    # propagation is made explicit here rather than assumed.
+    _partial_outage = getattr(raw, 'attrs', {}).get('partial_outage')
     if raw.empty or 'account' not in raw.columns:
-        return pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
+        empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
+        if _partial_outage:
+            empty.attrs['partial_outage'] = _partial_outage
+        return empty
     if {'realised', 'unrealised'}.issubset(raw.columns):
         from backend.api.algo.pnl_math import (
             baseline_diff_day_pnl_series, baseline_diff_day_pnl_series_with_fallback,
@@ -295,7 +304,10 @@ def _rebuild_positions_summary(raw: "pd.DataFrame") -> "pd.DataFrame":
         ).where(open_val != 0, 0)
     else:
         summary['day_change_percentage'] = 0.0
-    return summary.drop(columns=['_prev_val'])
+    result = summary.drop(columns=['_prev_val'])
+    if _partial_outage:
+        result.attrs['partial_outage'] = _partial_outage
+    return result
 
 
 def _account_margin_base(df_margins: "pd.DataFrame", account) -> float | None:
@@ -389,6 +401,7 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     from backend.api.algo.pnl_math import apply_day_change_backstop
     from backend.api.routes.positions import (
         _override_stale_ltp_from_ticker, _is_positions_outage,
+        _positions_partial_outage_accounts,
     )
     per_acct = broker_apis.fetch_positions()
     # Outage detection — reuses positions.py's `_is_positions_outage` (A2,
@@ -402,9 +415,8 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     # through the `raw.empty` guard below as a fake "no positions" result —
     # this worker feeds `_perf_fetch_all_broker_data` (background poller:
     # intraday-equity curve, open/close summaries, the loss-* agent engine's
-    # sum_positions) AND `_compute_firm_nav` (NavCard `/api/auth/firm-nav`,
-    # `/api/auth/me/nav`) directly, so a masked outage silently reported
-    # P&L=0 through every one of those surfaces instead of erroring loudly.
+    # sum_positions) directly, so a masked outage silently reported P&L=0
+    # through every one of those surfaces instead of erroring loudly.
     # Shape (2) previously raised an opaque `ValueError: No objects to
     # concatenate` from `pd.concat([])` — same end result (exception
     # propagates to the caller's broad except) but with a confusing message;
@@ -414,9 +426,22 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
             "Broker (Kite) returned no positions data — upstream Bad Gateway / "
             "outage (background._fetch_positions_direct)"
         )
+    # PARTIAL outage (some, not all, accounts fetch_failed) — must be
+    # detected BEFORE pd.concat (attrs are dropped after concat). Carried
+    # forward as a `.attrs['partial_outage']` flag on both returned frames
+    # (never as a tuple-shape change — other callers depend on the plain
+    # (raw, summary) contract) so the agent engine's total-scope leaf
+    # (grammar._scope_positions_total) and _update_pnl_history's TOTAL
+    # pnl_history sample can both skip/freeze this tick instead of
+    # silently evaluating/recording a P&L total that's missing one
+    # account's contribution.
+    _partial_outage_accts = _positions_partial_outage_accounts(per_acct)
     raw = pd.concat(per_acct, ignore_index=True) if per_acct else pd.DataFrame()
     if raw.empty or 'account' not in raw.columns:
         empty = pd.DataFrame(columns=['account', 'pnl', 'day_change_val', 'day_change_percentage'])
+        if _partial_outage_accts:
+            raw.attrs['partial_outage'] = _partial_outage_accts
+            empty.attrs['partial_outage'] = _partial_outage_accts
         return raw, empty
     # Mirror the ordering of _patch_raw_positions in positions.py:
     #   1. _override_stale_ltp_from_ticker — patch last_price + day_change_val
@@ -475,6 +500,9 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     else:
         summary['day_change_percentage'] = 0.0
     summary = summary.drop(columns=['_prev_val'])
+    if _partial_outage_accts:
+        raw.attrs['partial_outage'] = _partial_outage_accts
+        summary.attrs['partial_outage'] = _partial_outage_accts
     return raw, summary
 
 

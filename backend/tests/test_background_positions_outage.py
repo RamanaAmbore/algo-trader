@@ -109,6 +109,81 @@ class TestFetchPositionsDirectOutageGuard:
         assert 'ACCT_A' in set(raw['account'])
         assert not summary.empty
 
+    def test_partial_failure_sets_partial_outage_attrs(self):
+        """2026-09 item 5 fix: a partial failure (one account fetch_failed,
+        one healthy) must flag BOTH returned frames' `.attrs['partial_outage']`
+        with the failed account code — the caller (agent engine total-scope
+        leaf + pnl_history sampler) checks this attr to skip/freeze the
+        distorted TOTAL for this tick instead of silently summing over the
+        missing account's contribution as if it were zero."""
+        from backend.api.background import _fetch_positions_direct
+
+        failed = pd.DataFrame()
+        failed.attrs['fetch_failed'] = True
+        failed.attrs['account'] = 'ACCT_FAILED'
+        healthy = pd.DataFrame([{'account': 'ACCT_A', 'pnl': 1234.0}])
+
+        with patch('backend.brokers.broker_apis.fetch_positions', return_value=[failed, healthy]):
+            raw, summary = _fetch_positions_direct()
+
+        assert raw.attrs.get('partial_outage') == ['ACCT_FAILED'], (
+            f"Expected raw.attrs['partial_outage'] == ['ACCT_FAILED'], got {raw.attrs.get('partial_outage')}"
+        )
+        assert summary.attrs.get('partial_outage') == ['ACCT_FAILED'], (
+            f"Expected summary.attrs['partial_outage'] == ['ACCT_FAILED'], got {summary.attrs.get('partial_outage')}"
+        )
+
+    def test_partial_failure_unresolvable_account_code_still_flagged(self):
+        """A fetch_failed frame with NO resolvable account code (the common
+        real-world shape — zero rows means the `df['account'].iloc[0]`
+        fallback can never fire) must still be counted, as '?' — never
+        silently dropped from the partial-outage flag."""
+        from backend.api.background import _fetch_positions_direct
+
+        failed = pd.DataFrame()
+        failed.attrs['fetch_failed'] = True
+        # No attrs['account'] set — mirrors _stale_substitute_frame's
+        # no-LKG branch when even the account param resolution failed.
+        healthy = pd.DataFrame([{'account': 'ACCT_A', 'pnl': 1234.0}])
+
+        with patch('backend.brokers.broker_apis.fetch_positions', return_value=[failed, healthy]):
+            raw, summary = _fetch_positions_direct()
+
+        assert raw.attrs.get('partial_outage') == ['?']
+        assert summary.attrs.get('partial_outage') == ['?']
+
+    def test_all_healthy_no_partial_outage_attr(self):
+        """Clean case — no partial_outage attr should appear at all (not
+        even an empty list) when every account fetched successfully."""
+        from backend.api.background import _fetch_positions_direct
+
+        healthy_a = pd.DataFrame([{'account': 'ACCT_A', 'pnl': 1234.0}])
+        healthy_b = pd.DataFrame([{'account': 'ACCT_B', 'pnl': -500.0}])
+
+        with patch('backend.brokers.broker_apis.fetch_positions', return_value=[healthy_a, healthy_b]):
+            raw, summary = _fetch_positions_direct()
+
+        assert not raw.attrs.get('partial_outage')
+        assert not summary.attrs.get('partial_outage')
+
+    def test_rebuild_positions_summary_propagates_partial_outage_attr(self):
+        """_rebuild_positions_summary (the post-override rebuild
+        `_perf_fetch_all_broker_data` actually uses to overwrite
+        `sum_positions`) must carry the partial_outage attr from its
+        `raw` input onto the summary object it returns — this is the
+        object that reaches `context['sum_positions']` and therefore the
+        agent engine."""
+        from backend.api.background import _rebuild_positions_summary
+
+        raw = pd.DataFrame([
+            {'account': 'ACCT_A', 'pnl': 1000.0, 'day_change_val': 500.0},
+        ])
+        raw.attrs['partial_outage'] = ['ACCT_FAILED']
+
+        summary = _rebuild_positions_summary(raw)
+
+        assert summary.attrs.get('partial_outage') == ['ACCT_FAILED']
+
     def test_genuine_empty_successful_book_does_not_raise(self):
         """A successful fetch with zero rows and no fetch_failed attr is a
         legitimate empty book — must not be misclassified as an outage."""

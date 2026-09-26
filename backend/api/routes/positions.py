@@ -651,6 +651,51 @@ def _is_positions_outage(per_acct: list) -> bool:
     return bool(_loaded_accounts())
 
 
+def _positions_partial_outage_accounts(per_acct: list) -> list[str]:
+    """Account codes whose per-account frame is `fetch_failed=True` (zero
+    rows, no last-known-good substitute available) while NOT every
+    account failed this way — the "partial outage" shape.
+
+    `pd.concat(per_acct, ...)` silently drops a `fetch_failed` frame's
+    (non-)contribution from the resulting `raw`/`summary` totals — the
+    account just vanishes from any per-account or TOTAL sum, as if it
+    never existed, rather than being flagged as missing. Distinct from:
+      - `_is_positions_outage` — ALL accounts failed this way; that case
+        already raises before this helper would even be reached.
+      - `_accounts_flagged_stale` — also covers the `stale`-but-has-rows
+        LKG-substitute shape, which DOES still contribute real
+        (if slightly outdated) data and is not this specific
+        "silently vanishes from the sum" problem.
+
+    Must be called BEFORE `pd.concat` — attrs are dropped after concat,
+    same constraint as `_accounts_flagged_stale`.
+
+    Returns a list (not set) so it's directly usable as a DataFrame
+    `.attrs['partial_outage']` value (JSON/attrs-friendly, order-stable).
+    A failed frame whose account code can't be resolved is still counted
+    (as `'?'`) — never silently dropped, since a zero-row `fetch_failed`
+    frame can never fall back to `df['account'].iloc[0]`.
+    """
+    if not per_acct:
+        return []
+    failed = [
+        df for df in per_acct
+        if (getattr(df, "attrs", {}) or {}).get("fetch_failed")
+    ]
+    if not failed or len(failed) == len(per_acct):
+        # Nothing failed, or full outage (already handled by
+        # _is_positions_outage) — neither is the "partial" shape.
+        return []
+    out: list[str] = []
+    for df in failed:
+        attrs = getattr(df, "attrs", {}) or {}
+        acct = attrs.get("account")
+        if not acct and not df.empty and "account" in df.columns:
+            acct = df["account"].iloc[0]
+        out.append(str(acct) if acct else "?")
+    return out
+
+
 def _accounts_flagged_stale(per_acct: list) -> set[str]:
     """Return account codes for per-account frames marked `stale` or
     `fetch_failed` — covers `_stale_substitute_frame`'s breaker-open path

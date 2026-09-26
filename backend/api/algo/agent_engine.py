@@ -408,9 +408,22 @@ def _update_pnl_history(alert_state: dict, now, sum_positions, sum_holdings,
             return
         if 'account' not in getattr(df, 'columns', []):
             return
+        # Partial-outage guard (2026-09 alerts audit item 5) — when some
+        # (not all) accounts failed to fetch this tick, `df`'s TOTAL row
+        # silently omits the failed account(s)' contribution. Recording
+        # that distorted TOTAL into pnl_history would poison a FUTURE
+        # tick's rate-of-change window (once accounts recover, the ROC
+        # calc would diff against this tick's understated total as if it
+        # were real). Skip ONLY the TOTAL sample this tick — per-account
+        # buckets for accounts that DID fetch successfully are unaffected
+        # and still get their sample (their own history isn't corrupted
+        # by a sibling account's outage).
+        skip_total = bool((getattr(df, 'attrs', {}) or {}).get('partial_outage'))
         for _, row in df.iterrows():
             acct = str(row.get('account', '') or '')
             if not acct:
+                continue
+            if skip_total and acct == 'TOTAL':
                 continue
             # Positions track day P&L velocity; holdings track total unrealized.
             if section == 'positions':

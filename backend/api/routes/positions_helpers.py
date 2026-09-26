@@ -612,13 +612,17 @@ def _apply_account_mask(resp: PositionsResponse) -> PositionsResponse:
         rows=[_mask(r) for r in resp.rows],
         summary=[_mask(s) for s in resp.summary],
         # Mask stale_accounts too — same rows/summary treatment.
-        # `mask_account` collides by design on same-prefix accounts
-        # (e.g. DH6847 / DH3747 both -> "DH####"), so a masked session
-        # can't always tell WHICH of two same-prefix accounts is stale,
-        # only that one of them is. This is intentionally conservative
-        # (a masked session may distrust a root it didn't strictly need
-        # to) rather than a safety regression — documented here so it's
-        # not a surprise later.
+        # `mask_account`'s UNREGISTERED fallback (_scalar_mask — used
+        # whenever register_accounts() hasn't disambiguated a same-
+        # prefix pair yet in this process) collides same-prefix accounts
+        # (e.g. DH6847 / DH3747 both -> "DH####"); once register_accounts
+        # has run, the ordinal disambiguator (D1####/D2####) keeps them
+        # apart. In the collision window a masked session can't always
+        # tell WHICH of two same-prefix accounts is stale, only that one
+        # of them is. This is intentionally conservative (a masked
+        # session may distrust a root it didn't strictly need to) rather
+        # than a safety regression — documented here so it's not a
+        # surprise later.
         stale_accounts=sorted({mask_account(a) for a in resp.stale_accounts}),
     )
 
