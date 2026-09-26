@@ -24,6 +24,7 @@ import {
   didUnderlyingChange, synthEquityOnlyStrategy, synthCacheKey,
   buildCandidatePositions, buildCleanLegs,
   buildPagePositionRows, buildSimPositionRows,
+  buildHoldingRowFromBroker, buildPageHoldingRows,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
@@ -705,6 +706,62 @@ describe('buildSimPositionRows', () => {
   it('returns [] for an empty/undefined input', () => {
     expect(buildSimPositionRows([])).toEqual([]);
     expect(buildSimPositionRows(undefined)).toEqual([]);
+  });
+});
+
+// ============================================================================
+// buildPageHoldingRows — single holdings source (2026-09, Commit 6).
+// portfolioStore.svelte.js's `_holdTier2` computes the canonical per-holding
+// Day P&L formula ((ltp − prev_close) × qty, `_dcv` fallback) as `_day_pnl`
+// on portfolioStore.holdings.rows; buildPageHoldingRows threads it onto the
+// page's own built rows as `_storeDayPnl` instead of the page reimplementing
+// the formula (buildHoldingRowFromBroker carries no realised/unrealised/
+// prev_settlement_pnl, so baseDayPnlForPosition — the F&O-oriented
+// formula — would silently fall back to LIFETIME pnl for a holding row).
+// ============================================================================
+
+describe('buildPageHoldingRows', () => {
+  it('threads the store\'s own _day_pnl onto the built row as _storeDayPnl', () => {
+    const storeRows = [{
+      tradingsymbol: 'RELIANCE', account: 'ACC1', quantity: 10, opening_quantity: 10,
+      average_price: 2500, last_price: 2600, prev_close: 2550,
+      pnl: 1000, day_change_val: 500,
+      _day_pnl: 500, // (2600-2550)*10, portfolioStore's own computation
+    }];
+    const rows = buildPageHoldingRows(storeRows);
+    expect(rows.length).toBe(1);
+    expect(rows[0]._storeDayPnl).toBe(500);
+    // Confirms the bug this fixes: baseDayPnlForPosition on this same row
+    // (no realised/unrealised/prev_settlement_pnl) would return the
+    // LIFETIME pnl (1000), not the real Day P&L (500).
+    expect(baseDayPnlForPosition(buildHoldingRowFromBroker(storeRows[0]))).toBe(1000);
+    expect(rows[0]._storeDayPnl).not.toBe(1000);
+  });
+
+  it('skips a row buildHoldingRowFromBroker itself rejects (no symbol, or qty=0 and opening_qty=0)', () => {
+    expect(buildPageHoldingRows([{ account: 'ACC1', quantity: 10, _day_pnl: 100 }])).toEqual([]);
+    expect(buildPageHoldingRows([{ tradingsymbol: 'RELIANCE', account: 'ACC1', quantity: 0, opening_quantity: 0, _day_pnl: 100 }])).toEqual([]);
+  });
+
+  it('does not set _storeDayPnl when the store row carries no _day_pnl field at all', () => {
+    const storeRows = [{ tradingsymbol: 'RELIANCE', account: 'ACC1', quantity: 10, opening_quantity: 10, average_price: 2500 }];
+    const rows = buildPageHoldingRows(storeRows);
+    expect('_storeDayPnl' in rows[0]).toBe(false);
+  });
+
+  it('returns [] for an empty/undefined input', () => {
+    expect(buildPageHoldingRows([])).toEqual([]);
+    expect(buildPageHoldingRows(undefined)).toEqual([]);
+  });
+
+  it('multiple holdings: each carries its OWN _day_pnl, not a shared/aggregated value', () => {
+    const storeRows = [
+      { tradingsymbol: 'RELIANCE', account: 'ACC1', quantity: 10, opening_quantity: 10, average_price: 2500, _day_pnl: 500 },
+      { tradingsymbol: 'TCS', account: 'ACC1', quantity: 5, opening_quantity: 5, average_price: 3200, _day_pnl: -150 },
+    ];
+    const rows = buildPageHoldingRows(storeRows);
+    expect(rows.find(r => r.symbol === 'RELIANCE')._storeDayPnl).toBe(500);
+    expect(rows.find(r => r.symbol === 'TCS')._storeDayPnl).toBe(-150);
   });
 });
 

@@ -173,14 +173,15 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
     expect(src).toMatch(/const posFresh\s*=\s*_posAgg\s*&&\s*!posDegraded;/);
     expect(src).toMatch(/const holdFresh\s*=\s*_holdAgg\s*&&\s*!holdDegraded;/);
     expect(src).toMatch(/const fundsFresh\s*=\s*_fundsAgg\s*&&\s*!fundsDegraded;/);
-    // 2026-09 Commit 2 completion: the early-return body now also forces
-    // `positions.fresh` to false before returning `_last` — this is the
-    // simultaneous-outage path (all three degraded at once), so a stale
-    // `fresh: true` baked in during the last live cycle must not leak
-    // through untouched.
+    // 2026-09 Commit 2 completion (+ Commit 6 for holdings): the
+    // early-return body now also forces `positions.fresh`/`holdings.fresh`
+    // to false before returning `_last` — this is the simultaneous-outage
+    // path (all three degraded at once), so a stale `fresh: true` baked
+    // in during the last live cycle must not leak through untouched.
     expect(src).toMatch(/if \(!posFresh && !holdFresh && !fundsFresh\) \{/);
-    expect(src).toMatch(/if \(_last\?\.positions\?\.fresh\) \{/);
-    expect(src).toMatch(/_last = \{ \.\.\._last, positions: \{ \.\.\._last\.positions, fresh: false \} \};/);
+    expect(src).toMatch(/if \(_last\?\.positions\?\.fresh \|\| _last\?\.holdings\?\.fresh\) \{/);
+    expect(src).toMatch(/positions: _last\.positions \? \{ \.\.\._last\.positions, fresh: false \} : _last\.positions,/);
+    expect(src).toMatch(/holdings:\s*_last\.holdings\s*\? \{ \.\.\._last\.holdings,\s*fresh: false \} : _last\.holdings,/);
   });
 
   it('each slice\'s degraded flag is sourced from its own store\'s reactive .meta.degraded', () => {
@@ -198,7 +199,11 @@ describe('portfolioAggregates — _portfolio partial fallback (§2)', () => {
     expect(src).toMatch(/\.\.\.\(posFresh \? \{/);
     expect(src).toMatch(/\} : \(_last\?\.positions \?\? _EMPTY_POSITIONS\)\)/);
     expect(src).toMatch(/fresh:\s*posFresh,/);
-    expect(src).toMatch(/holdings: holdFresh\s*\? _holdAgg\s*: \(_last\?\.holdings \?\? _EMPTY_HOLDINGS\)/);
+    // 2026-09 Commit 6: holdings now uses the SAME spread + explicit
+    // `fresh` override pattern as positions (rows/fresh added).
+    expect(src).toMatch(/holdings: \{/);
+    expect(src).toMatch(/\.\.\.\(holdFresh \? _holdAgg : \(_last\?\.holdings \?\? _EMPTY_HOLDINGS\)\),/);
+    expect(src).toMatch(/fresh: holdFresh,/);
     expect(src).toMatch(/funds:\s*fundsFresh \? _fundsAgg\s*: \(_last\?\.funds\s*\?\? _EMPTY_FUNDS\)/);
   });
 });

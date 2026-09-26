@@ -22,7 +22,7 @@
     placeTicketOrder, fetchLiveStatus,
     fetchWatchlists, fetchWatchlist, addWatchlistItem,
   } from '$lib/api';
-  import { positionsStore, holdingsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
+  import { positionsStore, pulsePositionsStore } from '$lib/data/marketDataStores.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
@@ -79,8 +79,9 @@
   } from '$lib/data/derivativesMath.js';
   import {
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
-    buildPositionRowFromBroker, buildHoldingRowFromBroker,
+    buildPositionRowFromBroker,
     splitClosedReopened, buildPagePositionRows, buildSimPositionRows,
+    buildPageHoldingRows,
     buildCleanLegs, computeLegsKey, didUnderlyingChange,
     synthCacheKey, synthEquityOnlyStrategy,
   } from '$lib/derivatives/pageLoad.js';
@@ -1202,8 +1203,21 @@
    *  (e.g. CRUDEOIL26AUGPE5400 in two accounts → byKey returns 2×).
    *  Fix: apply baseDayPnlForPosition directly using each candidate's own
    *  fields, which is exactly what the store does per-row before aggregating.
-   */
-  const _candDayPnl = (c) => baseDayPnlForPosition(c);
+   *
+   *  Equity/proxy holdings (kind==='eq') are a DIFFERENT case (2026-09
+   *  Commit 6): `buildHoldingRowFromBroker` carries no
+   *  `realised`/`unrealised`/`prev_settlement_pnl`, so
+   *  `baseDayPnlForPosition` on an eq row silently falls back to LIFETIME
+   *  `pnl` instead of a real Day P&L (confirmed bug). Reads the store's
+   *  own `_storeDayPnl` (threaded onto the row by
+   *  `buildPageHoldingRows` — portfolioStore.svelte.js's `_holdTier2`
+   *  canonical `(ltp − prev_close) × qty` formula) instead, gated on the
+   *  FIELD being present so a residual/synthetic eq-ish row without it
+   *  still falls through to the F&O-oriented formula rather than
+   *  silently reading `undefined`. */
+  const _candDayPnl = (c) => (
+    c?.kind === 'eq' && '_storeDayPnl' in c ? c._storeDayPnl : baseDayPnlForPosition(c)
+  );
 
   /** Lookup map: symbol → backend leg analytics (greeks, iv, …) from
    *  the latest strategy response. Lets the Candidates panel show
@@ -3799,26 +3813,19 @@
   /** Raw broker holdings keyed by symbol. When the operator picks an
    *  underlying that they ALSO hold the cash equity for, the holding
    *  appears as a long-equity leg in candidatePositions so the payoff
-   *  curve reflects covered calls / hedges correctly. */
+   *  curve reflects covered calls / hedges correctly.
+   *
+   *  2026-09 Commit 6 (single holdings source): seeded synchronously from
+   *  `portfolioStore.holdings.rows` at component-init, same pattern as
+   *  `positions` (Commit 2 completion) — positionsStore/pulseHoldingsStore's
+   *  Tier-2 localStorage cache hydrates at module-eval time, before mount,
+   *  so this already paints real data on a cold tab reopen. `_lastDervHold`
+   *  (the page's own last-known-good tracker for a direct holdingsStore
+   *  fetch) and its tracking effect were removed for the same reason
+   *  `_lastDervPulsePos` was removed from `positions` — portfolioStore's
+   *  own SWR/degraded freeze already covers it. */
   /** @type {Array<{symbol:string, account:string, qty:number, avg_cost:number|null, ltp:number|null, prev_close:number|null, pnl:number, day_change_val:number}>} */
-  let holdings = $state([]);
-  // Last-known holdings from holdingsStore — used in loadPositions() right after
-  // await holdingsStore.load() as a guard against a transient null value.
-  let _lastDervHold = /** @type {any[]} */ ([]);
-  // Track last-known values from the holdings store for use in the
-  // async loadPositions() function (plain $effect, not $derived).
-  // `_lastDervPulsePos` (the equivalent tracker for positions) was removed
-  // (2026-09 Commit 2 completion): loadPositions()/the propagation effect
-  // now read `portfolioStore.positions.rows`/`.fresh`, which already
-  // freezes at the last-known-good value via portfolioStore's own SWR/
-  // degraded guard — a separate page-local pulse-store fallback is no
-  // longer needed. `pulsePositionsStore` itself is still imported/read
-  // directly by the auto-select check further down — only this specific
-  // tracking effect + variable are gone.
-  $effect(() => {
-    const v = holdingsStore.value;
-    if (v != null) _lastDervHold = v;
-  });
+  let holdings = $state(buildPageHoldingRows(portfolioStore.holdings.rows));
   /** Per-account totals of the rows the page FILTERS OUT of `positions`
    *  (equity intraday) and `holdings` (derivative-looking). The
    *  navbar PositionStrip sums every row from /api/positions +
@@ -4084,22 +4091,17 @@
 
     // Cash-equity holdings — skipped in sim (sim doesn't model equity book).
     // Only EQ rows are kept; derivative holdings are picked up by positions.
-    if (!simActive) {
-      await holdingsStore.load();
-      const rows = [];
-      // Use holdingsStore.value directly (set by load() above) with _lastDervHold
-      // as a last-known-good fallback in case the store value is transiently null.
-      for (const h of (holdingsStore.value ?? _lastDervHold)) {
-        const sym = h?.tradingsymbol || h?.symbol;
-        if (!sym) continue;
-        if (isFOSymbol(sym)) continue; // F&O holdings picked up by positions, not here
-        const row = buildHoldingRowFromBroker(h);
-        if (row) rows.push(row);
-      }
-      holdings = rows;
-    } else {
-      holdings = [];
-    }
+    // 2026-09 Commit 6 (single holdings source): reads
+    // portfolioStore.holdings.rows instead of the page's own independent
+    // holdingsStore fetch — portfolioStore's `_holdTier1` already reads
+    // pulseHoldingsStore.value, and the navbar's PositionStrip.svelte
+    // (mounted in the persistent (algo)/+layout.svelte, so it's live on
+    // every algo page including this one) already calls
+    // pulseHoldingsStore.load()/holdingsStore.load() on its own poll
+    // cadence — this page no longer needs its own fetch to keep the data
+    // warm. `buildPageHoldingRows` threads the store's own per-holding
+    // Day P&L onto each row as `_storeDayPnl` (see pageLoad.js).
+    holdings = simActive ? [] : buildPageHoldingRows(portfolioStore.holdings.rows);
 
     _positionsLoaded   = true;
     _positionsRefreshedAt = Date.now();

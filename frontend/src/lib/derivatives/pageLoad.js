@@ -83,6 +83,43 @@ export function buildHoldingRowFromBroker(h) {
 }
 
 /**
+ * Build the derivatives page's own equity-holding rows from
+ * `portfolioStore.holdings.rows` (2026-09 Commit 6 — single holdings
+ * source). Threads the store's own per-holding Day P&L (`h._day_pnl`,
+ * portfolioStore.svelte.js's `_holdTier2` — the canonical `(ltp −
+ * prev_close) × qty` formula, `_dcv` fallback when prev_close is
+ * unusable) onto each built row as `_storeDayPnl`, so the page never has
+ * to reimplement the formula: `buildHoldingRowFromBroker` carries no
+ * `realised`/`unrealised`/`prev_settlement_pnl`, so
+ * `baseDayPnlForPosition(holdingRow)` — the F&O-oriented formula — would
+ * silently fall back to lifetime `pnl` instead of a real Day P&L for a
+ * holding row (confirmed bug this fixes).
+ *
+ * @param {any[]} storeRows - portfolioStore.holdings.rows (raw broker
+ *   fields spread + portfolioStore's own `_`-prefixed derived fields,
+ *   including `_day_pnl`)
+ * @returns {any[]}
+ */
+export function buildPageHoldingRows(storeRows) {
+  const rows = [];
+  for (const h of (storeRows || [])) {
+    const sym = h?.tradingsymbol || h?.symbol;
+    // F&O-shaped rows are picked up by positions, not here — same
+    // exclusion the page's own pre-Commit-6 holdings loop applied
+    // (portfolioStore.holdings.rows itself is not F&O-filtered: it's a
+    // raw reflection of pulseHoldingsStore.value).
+    if (sym && isFOSymbol(sym)) continue;
+    const row = buildHoldingRowFromBroker(h);
+    if (!row) continue;
+    if (h?._day_pnl != null && isFinite(Number(h._day_pnl))) {
+      row._storeDayPnl = Number(h._day_pnl);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
+/**
  * Increment the excluded-account P&L totals map in-place.
  * Equity intraday positions / derivative holdings are excluded from the
  * F&O panel but must still reconcile against the navbar PositionStrip.

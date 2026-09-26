@@ -370,7 +370,13 @@ const _holdAgg = $derived.by(() => {
     if (acct) byAccount[acct] = (byAccount[acct] ?? 0) + (h._day_pnl ?? 0);
   }
   byAccount['TOTAL'] = total;
-  return { total, prev_mv, chg_pct: prev_mv > 0 ? dayChangePct(total, prev_mv) : null, byKey, chgPctByKey, byAccount };
+  // `rows` (2026-09 Commit 6): the raw per-holding array (_holdTier3),
+  // already carrying the canonical per-holding Day P&L formula
+  // ((ltp − prev_close) × qty, falling back to the broker's own
+  // day_change_val when prev_close is unusable — see _holdTier2) — the
+  // SSOT +page.svelte's own equity/proxy Day P&L cell now reads directly
+  // instead of reimplementing the same formula independently.
+  return { total, prev_mv, chg_pct: prev_mv > 0 ? dayChangePct(total, prev_mv) : null, byKey, chgPctByKey, byAccount, rows: _holdTier3 };
 });
 
 // ── Cross-hedge byRootHoldings ─────────────────────────────────────────────
@@ -448,7 +454,7 @@ const _EMPTY_POSITIONS = {
   rows:           [],
   fresh:          false,
 };
-const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {} };
+const _EMPTY_HOLDINGS = { total: 0, byKey: {}, byAccount: {}, chg_pct: null, chgPctByKey: {}, rows: [], fresh: false };
 const _EMPTY_FUNDS    = { total: { live_cash: 0, avail_margin: 0, used_margin: 0, totalMargin: 0, utilPct: 0, collateral: 0 }, byAccount: {} };
 
 // ── Final collector ────────────────────────────────────────────────────────
@@ -489,8 +495,13 @@ const _portfolio = $derived.by(() => {
     // `_positionsRefreshedAt` stamp) — it must never report stale-true on
     // a confirmed-degraded read. Force it false here explicitly rather
     // than relying on some earlier cycle having already done so.
-    if (_last?.positions?.fresh) {
-      _last = { ..._last, positions: { ..._last.positions, fresh: false } };
+    // (2026-09 Commit 6): holdings.fresh gets the identical treatment.
+    if (_last?.positions?.fresh || _last?.holdings?.fresh) {
+      _last = {
+        ..._last,
+        positions: _last.positions ? { ..._last.positions, fresh: false } : _last.positions,
+        holdings:  _last.holdings  ? { ..._last.holdings,  fresh: false } : _last.holdings,
+      };
     }
     return _last;
   }
@@ -526,7 +537,14 @@ const _portfolio = $derived.by(() => {
       // to cover locally.
       fresh: posFresh,
     },
-    holdings: holdFresh  ? _holdAgg   : (_last?.holdings ?? _EMPTY_HOLDINGS),
+    // holdings.fresh (2026-09 Commit 6): same spread + explicit-override
+    // pattern as positions.fresh above, for the identical reason — a
+    // frozen (degraded) holdings read must never echo a stale `fresh:
+    // true` from its last live cycle.
+    holdings: {
+      ...(holdFresh ? _holdAgg : (_last?.holdings ?? _EMPTY_HOLDINGS)),
+      fresh: holdFresh,
+    },
     funds:    fundsFresh ? _fundsAgg  : (_last?.funds    ?? _EMPTY_FUNDS),
   };
   return _last;
@@ -581,12 +599,22 @@ export const portfolioStore = {
 
   // ── Holdings (pulse-overridable) ─────────────────────────────────────────
   /**
-   * { total: number, byKey: Record<string,number>, byAccount: Record<string,number>, chg_pct: number|null, chgPctByKey: Record<string,number|null> }
+   * { total: number, byKey: Record<string,number>, byAccount: Record<string,number>, chg_pct: number|null, chgPctByKey: Record<string,number|null>, rows, fresh }
    *
    * MarketPulse calls setHoldingsFromPulse() after each buildUnified pass so
    * NavStrip H reflects cq-accurate filter-aware values from the grid.
    * byAccount per-account keys always come from the base computation; only
    * TOTAL + byKey are overridden when a pulse value is active.
+   *
+   * `rows` (2026-09 Commit 6): the raw per-holding array (`_holdTier3`),
+   * one entry per holding, already carrying the canonical per-holding Day
+   * P&L formula ((ltp − prev_close) × qty, `_dcv` fallback when
+   * prev_close is unusable) as `_day_pnl` — the SSOT
+   * derivatives/pageLoad.js's page-level equity/proxy Day P&L consumers
+   * now read directly instead of reimplementing the formula. UNAFFECTED
+   * by the pulse override above (which only replaces TOTAL/byKey).
+   * `fresh` — same freeze semantics as `positions.fresh`: true only on a
+   * cycle that recomputed from a live, non-degraded fetch.
    */
   get holdings() {
     const base = _portfolio?.holdings ?? _EMPTY_HOLDINGS;
@@ -597,6 +625,12 @@ export const portfolioStore = {
       byAccount:   { ...base.byAccount, TOTAL: _pulseHoldingsTotal },
       chg_pct:     base.chg_pct,
       chgPctByKey: base.chgPctByKey,
+      // rows/fresh (2026-09 Commit 6) — the pulse override only replaces
+      // TOTAL/byKey (a cq-accurate filtered aggregate from MarketPulse's
+      // own grid); the raw per-holding rows array and its freshness flag
+      // are unaffected by it and must still pass through.
+      rows:        base.rows,
+      fresh:       base.fresh,
     };
   },
 
