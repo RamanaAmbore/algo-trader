@@ -1163,6 +1163,35 @@ test.describe('SPEC 8: Reactive-tracking bug fixes', () => {
     ).toBe(true);
   });
 
+  // R5 post-ship audit fix: loadPositions()'s _positionsRefreshedAt stamp
+  // must be gated on portfolioStore.positions.fresh, not unconditional —
+  // otherwise a degraded/stale read (mount/bookChanged/account-change) can
+  // masquerade as confirmed-fresh for the _positionsFresh strategy-wipe
+  // gate this test suite already covers above.
+  test('Bug 4 / R5 — loadPositions stamp is gated on storeFresh, not unconditional (source audit)', async () => {
+    const src = fs.readFileSync(SRC, 'utf8');
+
+    // The loadPositions() stamp must be conditional on the store's own
+    // `fresh` flag captured alongside `.rows` at the same destructuring
+    // site positions are built from — mirrors the book-poller propagation
+    // effect's existing `if (storeFresh) _positionsRefreshedAt = Date.now();`
+    // pattern.
+    expect(
+      src.includes('if (_posStoreFresh) _positionsRefreshedAt = Date.now();'),
+      'R5: loadPositions must gate its _positionsRefreshedAt stamp on the store fresh flag'
+    ).toBe(true);
+
+    // The stamp immediately preceding `lastRefreshAt.set` (i.e. the one
+    // inside loadPositions(), not the earlier book-poller propagation
+    // effect's copy) must be the GUARDED form, not a bare unconditional one.
+    const lastSetIdx2 = src.indexOf('if (!positionsStore.error) lastRefreshAt.set(Date.now())');
+    const precedingLine = src.slice(0, lastSetIdx2).split('\n').filter(l => l.trim()).at(-1);
+    expect(
+      precedingLine.trim(),
+      'R5: the line directly before lastRefreshAt.set must be the guarded stamp, not a bare unconditional one'
+    ).toBe('if (_posStoreFresh) _positionsRefreshedAt = Date.now();');
+  });
+
   // ── Combined: browser smoke ──────────────────────────────────────────────────────
   test('Bug 1+4 — after symbol switch, payoff chart becomes non-blank within 8s (browser smoke)', async ({ page }) => {
     // Verifies the full observable effect of Bugs 1 and 4:
