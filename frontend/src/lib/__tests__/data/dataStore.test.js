@@ -5,13 +5,14 @@
  * dataStore.svelte.js uses Svelte 5 runes ($state) inside createDataStore()
  * and can't be exercised end-to-end in this harness (no svelte-compiler
  * plugin registered in vitest.config.js — see portfolioStore.test.js's
- * established local-mirror precedent). Two of the new exports —
- * isEmptyValue() and extractStaleMeta() — are plain functions with NO
- * rune usage (hoisted to module scope specifically so they're directly
- * importable/testable here); this file exercises those directly, plus a
- * pure-function mirror of the degraded/empty guard predicate
- * (_applyRaw's `dropEmpty` condition) for the parts that DO depend on
- * $state (`_value`, `keepStaleOnEmpty`, `staleMeta.degraded`).
+ * established local-mirror precedent). Three of the exports —
+ * isEmptyValue(), extractStaleMeta(), and markFetchFailedMeta() — are
+ * plain functions with NO rune usage (hoisted to module scope
+ * specifically so they're directly importable/testable here); this file
+ * exercises those directly, plus a pure-function mirror of the
+ * degraded/empty guard predicate (_applyRaw's `dropEmpty` condition) for
+ * the parts that DO depend on $state (`_value`, `keepStaleOnEmpty`,
+ * `staleMeta.degraded`).
  *
  * Five quality dimensions:
  *  1. SSOT   — isEmptyValue/extractStaleMeta imported directly from the
@@ -28,7 +29,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isEmptyValue, extractStaleMeta } from '$lib/data/dataStore.svelte.js';
+import { isEmptyValue, extractStaleMeta, markFetchFailedMeta } from '$lib/data/dataStore.svelte.js';
 
 // ── isEmptyValue ─────────────────────────────────────────────────────────
 
@@ -68,7 +69,7 @@ describe('isEmptyValue', () => {
 describe('extractStaleMeta', () => {
   it('returns degraded=false when no metaFn is supplied (default, non-book stores)', () => {
     const meta = extractStaleMeta({ rows: [], stale_accounts: ['ZG0790'] }, undefined);
-    expect(meta).toEqual({ degraded: false, staleAccounts: [], asOf: null });
+    expect(meta).toEqual({ degraded: false, staleAccounts: [], asOf: null, fetchFailed: false });
   });
 
   it('returns degraded=false when metaFn reports an empty stale_accounts list', () => {
@@ -113,7 +114,53 @@ describe('extractStaleMeta', () => {
   it('defensively handles metaFn returning null/undefined', () => {
     const metaFn = () => null;
     const meta = extractStaleMeta({}, metaFn);
-    expect(meta).toEqual({ degraded: false, staleAccounts: [], asOf: null });
+    expect(meta).toEqual({ degraded: false, staleAccounts: [], asOf: null, fetchFailed: false });
+  });
+
+  it('always sets fetchFailed=false — only markFetchFailedMeta sets it true', () => {
+    const metaFn = (r) => ({ staleAccounts: r?.stale_accounts ?? [], asOf: null });
+    const meta = extractStaleMeta({ stale_accounts: ['ZG0790'] }, metaFn);
+    expect(meta.fetchFailed).toBe(false);
+  });
+});
+
+// ── markFetchFailedMeta ──────────────────────────────────────────────────
+//
+// 2026-09 error-path gap fix: _fetch()'s catch handler used to leave
+// `_meta` untouched, so `meta.degraded` could stay `false` (whatever the
+// LAST SUCCESSFUL fetch reported) even while a fetch was actively
+// throwing. markFetchFailedMeta is the pure merge helper the catch
+// handler now calls — see dataStore.svelte.js's doc comment for why a
+// thrown exception must flip `degraded` unconditionally (not attributable
+// to specific accounts the way a partial stale_accounts substitution is).
+
+describe('markFetchFailedMeta', () => {
+  it('flips degraded=true even when the previous meta was healthy', () => {
+    const prev = { degraded: false, staleAccounts: [], asOf: null, fetchFailed: false };
+    const next = markFetchFailedMeta(prev);
+    expect(next.degraded).toBe(true);
+  });
+
+  it('sets fetchFailed=true to distinguish a whole-read failure from a partial substitution', () => {
+    const prev = { degraded: false, staleAccounts: [], asOf: null, fetchFailed: false };
+    const next = markFetchFailedMeta(prev);
+    expect(next.fetchFailed).toBe(true);
+  });
+
+  it('preserves the previous staleAccounts/asOf — does not fabricate account attribution', () => {
+    const prev = { degraded: true, staleAccounts: ['ZG0790'], asOf: '2026-09-25T02:30:00+00:00', fetchFailed: false };
+    const next = markFetchFailedMeta(prev);
+    expect(next.staleAccounts).toEqual(['ZG0790']);
+    expect(next.asOf).toBe('2026-09-25T02:30:00+00:00');
+  });
+
+  it('defensively handles a null/undefined previous meta (first-ever fetch throws)', () => {
+    expect(markFetchFailedMeta(null)).toEqual({
+      degraded: true, staleAccounts: [], asOf: null, fetchFailed: true,
+    });
+    expect(markFetchFailedMeta(undefined)).toEqual({
+      degraded: true, staleAccounts: [], asOf: null, fetchFailed: true,
+    });
   });
 });
 

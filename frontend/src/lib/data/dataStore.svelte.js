@@ -30,8 +30,9 @@
  *   store.loading     — boolean ($state)
  *   store.error       — string | null ($state)
  *   store.lastFetch   — epoch-ms of last successful (non-degraded-empty) fetch
- *   store.meta        — { degraded, staleAccounts, asOf } ($state) — see
- *                        extractStaleMeta / the `meta` option below
+ *   store.meta        — { degraded, staleAccounts, asOf, fetchFailed } ($state)
+ *                        — see extractStaleMeta / markFetchFailedMeta / the
+ *                        `meta` option below
  *   store.load(opts)  — trigger fetch; opts.force=true skips dedup window
  *   store.invalidate()— wipe Tier 1 + localStorage; next load() re-fetches
  *   store.softInvalidate() — mark stale (lastFetch=0) but KEEP the value
@@ -83,15 +84,62 @@ export function isEmptyValue(v) {
  * across positions/holdings/funds response shapes rather than hard-
  * coding `stale_accounts`/`as_of` field names here.
  *
+ * `fetchFailed` is always `false` here — this function only ever runs on
+ * a response that actually arrived (see `markFetchFailedMeta` below for
+ * the thrown-exception counterpart, which is the only place `fetchFailed`
+ * becomes `true`). Explicitly present (not omitted) so the returned shape
+ * is stable for every consumer, whether or not this cycle involved a
+ * prior failure.
+ *
  * @param {any} raw
  * @param {((raw: any) => { staleAccounts?: string[], asOf?: string|null }) | undefined} metaFn
- * @returns {{ degraded: boolean, staleAccounts: string[], asOf: string|null }}
+ * @returns {{ degraded: boolean, staleAccounts: string[], asOf: string|null, fetchFailed: boolean }}
  */
 export function extractStaleMeta(raw, metaFn) {
   const m = typeof metaFn === 'function' ? (metaFn(raw) || {}) : null;
   const staleAccounts = Array.isArray(m?.staleAccounts) ? m.staleAccounts : [];
   const asOf = m?.asOf ?? null;
-  return { degraded: staleAccounts.length > 0, staleAccounts, asOf };
+  return { degraded: staleAccounts.length > 0, staleAccounts, asOf, fetchFailed: false };
+}
+
+/**
+ * Merge the "this fetch attempt threw" signal into a store's existing
+ * meta (2026-09 fix — the error-path gap).
+ *
+ * Previously `_fetch`'s catch handler set `_error` but never touched
+ * `_meta`, so a thrown exception (network failure, non-2xx, JSON parse
+ * error, etc.) left `meta.degraded` at whatever the LAST SUCCESSFUL
+ * fetch reported — often `false` — even though this cycle produced no
+ * usable data at all. Any consumer gating a "is this trustworthy right
+ * now" decision on `meta.degraded` alone (portfolioStore's `posFresh` /
+ * `holdFresh`, and the derivatives page's root-scoped freshness check)
+ * could see `degraded: false` while a fetch was actively failing.
+ *
+ * A thrown exception is NOT attributable to specific accounts the way a
+ * backend-tagged `stale_accounts` substitution is — the entire response
+ * is unusable, so `degraded` flips `true` UNCONDITIONALLY here,
+ * regardless of whatever `staleAccounts` the previous successful fetch
+ * happened to report. `fetchFailed: true` additionally distinguishes
+ * this "the whole read failed, nothing came back" case from a partial
+ * per-account substitution — a root-scoped consumer that only intersects
+ * `staleAccounts` against its own relevant-account set would otherwise
+ * see an unrelated (or empty) `staleAccounts` list and wrongly conclude
+ * the read was fine.
+ *
+ * Self-clearing: `_applyRaw` rebuilds `_meta` fresh from
+ * `extractStaleMeta()` on the NEXT successful fetch, which always sets
+ * `fetchFailed: false` — no explicit reset needed here or in `invalidate()`.
+ *
+ * @param {{ degraded?: boolean, staleAccounts?: string[], asOf?: string|null, fetchFailed?: boolean } | null | undefined} prevMeta
+ * @returns {{ degraded: boolean, staleAccounts: string[], asOf: string|null, fetchFailed: boolean }}
+ */
+export function markFetchFailedMeta(prevMeta) {
+  return {
+    degraded:      true,
+    staleAccounts: Array.isArray(prevMeta?.staleAccounts) ? prevMeta.staleAccounts : [],
+    asOf:          prevMeta?.asOf ?? null,
+    fetchFailed:   true,
+  };
 }
 
 /**
@@ -146,8 +194,8 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   // Defaults to non-degraded so stores that don't pass `meta` behave
   // exactly as before (keepStaleOnEmpty is the only guard in play).
   let _meta = $state(
-    /** @type {{ degraded: boolean, staleAccounts: string[], asOf: string|null }} */
-    ({ degraded: false, staleAccounts: [], asOf: null })
+    /** @type {{ degraded: boolean, staleAccounts: string[], asOf: string|null, fetchFailed: boolean }} */
+    ({ degraded: false, staleAccounts: [], asOf: null, fetchFailed: false })
   );
 
   // ── In-flight dedup ───────────────────────────────────────────────
@@ -241,6 +289,13 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
       _error = (e && typeof e === 'object' && 'message' in e)
         ? String(/** @type {any} */ (e).message).slice(0, 120)
         : 'Fetch failed';
+      // Error-path gap fix (2026-09): this used to leave `_meta` at
+      // whatever the LAST SUCCESSFUL fetch reported (often
+      // `degraded: false`), so `meta.degraded` could stay false while a
+      // fetch was actively failing — see markFetchFailedMeta's doc for
+      // why this is a hard, whole-response failure (not attributable to
+      // specific accounts) rather than a partial substitution.
+      _meta = markFetchFailedMeta(_meta);
       // Leave _value at last-good — stale-while-error semantics.
     } finally {
       _loading         = false;
@@ -300,7 +355,7 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
     _value   = null;
     _last    = 0;
     _error   = null;
-    _meta    = { degraded: false, staleAccounts: [], asOf: null };
+    _meta    = { degraded: false, staleAccounts: [], asOf: null, fetchFailed: false };
     cachedDelete(key);
   }
 
@@ -363,7 +418,9 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
     get loading()  { return _loading; },
     get error()    { return _error;   },
     get lastFetch(){ return _last;    },
-    /** { degraded, staleAccounts, asOf } — see extractStaleMeta doc. */
+    /** { degraded, staleAccounts, asOf, fetchFailed } — see extractStaleMeta /
+     *  markFetchFailedMeta docs. `fetchFailed` is true only immediately
+     *  after a thrown fetch exception, cleared on the next success. */
     get meta()     { return _meta;    },
     load,
     invalidate,
