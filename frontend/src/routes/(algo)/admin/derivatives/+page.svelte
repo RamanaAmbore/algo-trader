@@ -81,7 +81,7 @@
     isFOSymbol, buildExpiryMatcher, buildCandidatePositions,
     buildPositionRowFromBroker,
     splitClosedReopened, buildPagePositionRows, buildSimPositionRows,
-    buildPageHoldingRows,
+    buildPageHoldingRows, storeRowKey, liveStoreExpPnl,
     buildCleanLegs, computeLegsKey, didUnderlyingChange, hasEnabledFOLegs,
     synthCacheKey, synthEquityOnlyStrategy,
   } from '$lib/derivatives/pageLoad.js';
@@ -2348,8 +2348,36 @@
    * @param {any} c
    * @returns {number|null}
    */
+  /** Live per-piece Exp P&L map, keyed by `storeRowKey` (2026-09 D3
+   *  post-ship audit fix) — re-derived from the CURRENT
+   *  `portfolioStore.positions.rows` every time the store recomputes
+   *  (~4Hz via `_rootSpotCache`/`_tick`), not baked once at the page's
+   *  ~5s poll rebuild. `_legExpPnlLive` reads THIS map instead of the
+   *  frozen `c._storeExpPnl` value `buildPagePositionRows` bakes onto
+   *  each row at build time — closing the Legs-vs-Snapshot mismatch
+   *  between polls (Snapshot already reads `portfolioStore.positions
+   *  .expPnlRows` directly, so it was never frozen).
+   *  Collision guard: if two raw rows somehow produce the SAME key
+   *  (shouldn't happen — `storeRowKey` includes product, closing the
+   *  NRML/MIS collision Commit 5 found — but defensively), the map
+   *  stores `null` for that key rather than letting one silently
+   *  overwrite the other. */
+  const _storeExpPiecesByKey = $derived.by(() => {
+    /** @type {Record<string, any[]|null>} */
+    const m = {};
+    const seen = new Set();
+    for (const r of portfolioStore.positions.rows) {
+      const key = storeRowKey(r);
+      if (seen.has(key)) { m[key] = null; continue; }
+      seen.add(key);
+      m[key] = Array.isArray(r._exp_pnl_pieces) ? r._exp_pnl_pieces : null;
+    }
+    return m;
+  });
   function _legExpPnlLive(c) {
-    return '_storeExpPnl' in c ? c._storeExpPnl : _legExpPnlDisplay(c, liveSpot ?? null);
+    return '_storeExpPnl' in c
+      ? liveStoreExpPnl(c, _storeExpPiecesByKey)
+      : _legExpPnlDisplay(c, liveSpot ?? null);
   }
 
   /** Day P&L TOTAL for the currently selected underlying across all enabled

@@ -25,6 +25,7 @@ import {
   buildCandidatePositions, buildCleanLegs, hasEnabledFOLegs,
   buildPagePositionRows, buildSimPositionRows,
   buildHoldingRowFromBroker, buildPageHoldingRows,
+  storeRowKey, liveStoreExpPnl,
 } from '$lib/derivatives/pageLoad.js';
 import { baseDayPnlForPosition } from '$lib/data/nav.js';
 import { expiryPnlWithRealised, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
@@ -701,6 +702,23 @@ describe('buildPagePositionRows', () => {
       expect(sum).toBe(positionExpPnl(raw, 'opt', anchor));
     });
 
+    it('stamps _storeKey/_pieceIndex/_pieceCount on each split piece (D3 post-ship audit fix — enables a live re-lookup instead of freezing at build time)', () => {
+      const raw = {
+        tradingsymbol: 'NIFTY24000CE', account: 'ACC1', exchange: 'NFO', product: 'NRML', quantity: 5,
+        overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+        average_price: 200, prev_close: 210, pnl: 150,
+      };
+      const stamped = stampStoreFields(raw, 'opt', anchor);
+      const pageRows = buildPagePositionRows([stamped]);
+      expect(pageRows.length).toBe(2);
+      const expectedKey = storeRowKey(raw);
+      for (const row of pageRows) {
+        expect(row._storeKey).toBe(expectedKey);
+        expect(row._pieceCount).toBe(2);
+      }
+      expect(pageRows.map(r => r._pieceIndex).sort()).toEqual([0, 1]);
+    });
+
     it('a fully-closed row (1 piece): the single page row carries the store value directly', () => {
       const raw = { tradingsymbol: 'NIFTY24000CE', account: 'ACC2', quantity: 0, realised: 500, pnl: 3000 };
       const stamped = stampStoreFields(raw, 'opt', anchor);
@@ -732,6 +750,74 @@ describe('buildPagePositionRows', () => {
       expect(pageRows.length).toBe(1);
       expect('_storeExpPnl' in pageRows[0]).toBe(false);
     });
+  });
+});
+
+// ============================================================================
+// storeRowKey / liveStoreExpPnl — D3 post-ship audit fix. The Legs Exp P&L
+// cell/TOTAL must track the store's own ~4Hz recompute cadence instead of
+// freezing at the page's ~5s poll rebuild — read the CURRENT
+// portfolioStore.positions.rows via a stable key, not an index baked once
+// at build time.
+// ============================================================================
+
+describe('storeRowKey', () => {
+  it('includes product so the SAME (account,symbol) under NRML vs MIS gets DISTINCT keys (Commit 5\'s collision case)', () => {
+    const nrml = { account: 'ACC1', exchange: 'NFO', tradingsymbol: 'NIFTY24000CE', product: 'NRML' };
+    const mis  = { account: 'ACC1', exchange: 'NFO', tradingsymbol: 'NIFTY24000CE', product: 'MIS' };
+    expect(storeRowKey(nrml)).not.toBe(storeRowKey(mis));
+  });
+
+  it('is case-insensitive and matches on symbol OR tradingsymbol', () => {
+    const a = { account: 'acc1', exchange: 'nfo', tradingsymbol: 'nifty24000ce', product: 'nrml' };
+    const b = { account: 'ACC1', exchange: 'NFO', symbol: 'NIFTY24000CE', product: 'NRML' };
+    expect(storeRowKey(a)).toBe(storeRowKey(b));
+  });
+
+  it('produces distinct keys for different accounts holding the same symbol', () => {
+    const a = { account: 'ACC1', exchange: 'NFO', tradingsymbol: 'NIFTY24000CE', product: 'NRML' };
+    const b = { account: 'ACC2', exchange: 'NFO', tradingsymbol: 'NIFTY24000CE', product: 'NRML' };
+    expect(storeRowKey(a)).not.toBe(storeRowKey(b));
+  });
+});
+
+describe('liveStoreExpPnl', () => {
+  it('reads the LIVE piece from piecesByKey (not a frozen baked value) when the piece count still matches', () => {
+    const c = { _storeKey: 'K1', _pieceIndex: 1, _pieceCount: 2, _storeExpPnl: 999 /* stale baked value */ };
+    const piecesByKey = { K1: [100, 250] }; // fresh store recompute
+    expect(liveStoreExpPnl(c, piecesByKey)).toBe(250);
+  });
+
+  it('proves nothing is baked: changing ONLY the map (not the row) changes the returned value', () => {
+    const c = { _storeKey: 'K1', _pieceIndex: 0, _pieceCount: 1, _storeExpPnl: 100 };
+    expect(liveStoreExpPnl(c, { K1: [100] })).toBe(100);
+    expect(liveStoreExpPnl(c, { K1: [175] })).toBe(175); // same `c`, new map value
+  });
+
+  it('falls back to the baked _storeExpPnl when the live pieces length no longer matches _pieceCount (a split just changed, page hasn\'t rebuilt yet)', () => {
+    const c = { _storeKey: 'K1', _pieceIndex: 1, _pieceCount: 2, _storeExpPnl: 42 };
+    const piecesByKey = { K1: [100] }; // now fully closed — only 1 piece
+    expect(liveStoreExpPnl(c, piecesByKey)).toBe(42);
+  });
+
+  it('falls back to the baked value when the key is absent from the map entirely (e.g. a collision-guarded null)', () => {
+    const c = { _storeKey: 'K1', _pieceIndex: 0, _pieceCount: 1, _storeExpPnl: 42 };
+    expect(liveStoreExpPnl(c, { K1: null })).toBe(42);
+    expect(liveStoreExpPnl(c, {})).toBe(42);
+  });
+
+  it('sum over page rows via the live lookup equals Σ positionExpPnl per raw row (matches Snapshot)', () => {
+    const rawA = {
+      tradingsymbol: 'NIFTY24000CE', account: 'ACC1', exchange: 'NFO', product: 'NRML', quantity: 5,
+      overnight_quantity: 10, day_sell_quantity: 5, day_sell_value: 5 * 220,
+      average_price: 200, prev_close: 210, pnl: 150,
+    };
+    const anchor = 23000;
+    const stamped = { ...rawA, _exp_pnl_pieces: positionExpPnlPieces(rawA, 'opt', anchor) };
+    const pageRows = buildPagePositionRows([stamped]);
+    const piecesByKey = { [storeRowKey(rawA)]: stamped._exp_pnl_pieces };
+    const sum = pageRows.reduce((s, r) => s + Number(liveStoreExpPnl(r, piecesByKey) ?? 0), 0);
+    expect(sum).toBe(positionExpPnl(rawA, 'opt', anchor));
   });
 });
 

@@ -144,6 +144,57 @@ export function bumpExcluded(excluded, acct, delta) {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * Stable per-raw-row identity key (2026-09, D3 post-ship audit fix) —
+ * `ACCOUNT|EXCHANGE|TRADINGSYMBOL|PRODUCT`. Kite reports the SAME
+ * (account, symbol) pair under two different `product` codes (NRML vs
+ * MIS) as genuinely distinct rows — (account, symbol) alone is NOT unique
+ * (the same collision Commit 5 already ruled out for a different reason).
+ * Including `product` (a real `PositionRow` field) closes that gap.
+ *
+ * Used to re-look-up a display row's SOURCE raw row inside
+ * `portfolioStore.positions.rows` at RENDER time (not baked at build
+ * time), so a per-piece value read through it tracks the store's own ~4Hz
+ * recompute cadence instead of freezing at the page's ~5s poll rebuild.
+ *
+ * @param {{account?:string, exchange?:string, tradingsymbol?:string, symbol?:string, product?:string}} p
+ * @returns {string}
+ */
+export function storeRowKey(p) {
+  const account  = String(p?.account || '').toUpperCase();
+  const exchange = String(p?.exchange || '').toUpperCase();
+  const sym      = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+  const product  = String(p?.product || '').toUpperCase();
+  return `${account}|${exchange}|${sym}|${product}`;
+}
+
+/**
+ * Live per-piece Exp P&L lookup (2026-09, D3 post-ship audit fix) — reads
+ * `piecesByKey[c._storeKey]` (a live, render-time map built from the
+ * CURRENT `portfolioStore.positions.rows`, e.g. by the caller's own
+ * `$derived.by`) instead of the value `buildPagePositionRows` baked onto
+ * the row at its last (~5s poll cadence) build.
+ *
+ * Falls back to `c._storeExpPnl` (the baked value) when the live pieces
+ * array is missing, or its length no longer matches `c._pieceCount` — this
+ * covers the one render frame where the store has already recomputed
+ * (e.g. a same-day partial-close event just landed, changing the split)
+ * but the page's own `positions` rebuild (which re-derives `_pieceCount`
+ * to match) hasn't run yet; using a piece index against a
+ * differently-shaped pieces array would silently read the wrong piece.
+ *
+ * @param {{_storeKey?:string, _pieceIndex?:number, _pieceCount?:number, _storeExpPnl?:number|null}} c
+ * @param {Record<string, Array<number|null>|null>} piecesByKey
+ * @returns {number|null}
+ */
+export function liveStoreExpPnl(c, piecesByKey) {
+  const pieces = piecesByKey?.[c?._storeKey];
+  if (Array.isArray(pieces) && pieces.length === c?._pieceCount) {
+    return pieces[c._pieceIndex] ?? null;
+  }
+  return c?._storeExpPnl ?? null;
+}
+
+/**
  * Build the derivatives page's own per-row F&O position rows from raw
  * broker/store position rows, splitting each into closed/open display
  * pieces. Consolidates the identical `isFOSymbol` filter +
@@ -177,17 +228,26 @@ export function buildPagePositionRows(storeRows, simRows = []) {
     if (!isFOSymbol(sym)) continue; // Equity intraday — excluded from F&O panel
     const baseRow = buildPositionRowFromBroker(p, 'live');
     const pieces = splitClosedReopened(baseRow);
-    // Store-side per-piece Exp P&L (2026-09 Commit 5): `p._exp_pnl_pieces`
-    // (portfolioStore.svelte.js's own _posTier2 output) is the SAME
-    // splitClosedReopened applied to the SAME raw row, so piece `i` here
-    // always corresponds to `p._exp_pnl_pieces[i]` — safe to zip by index.
-    // Only set when the source row actually carries the field (it won't
-    // for a non-F&O row, or a row read from a source other than the
-    // store — e.g. a future caller feeding raw sim/draft data through
-    // this same function without going through portfolioStore first).
+    // Store-side per-piece Exp P&L (2026-09 Commit 5, revised D3 post-ship
+    // audit fix): `p._exp_pnl_pieces` (portfolioStore.svelte.js's own
+    // _posTier2 output) is the SAME splitClosedReopened applied to the
+    // SAME raw row, so piece `i` here always corresponds to
+    // `p._exp_pnl_pieces[i]`. `_storeExpPnl` (baked at THIS build) is kept
+    // as a fallback value only — the primary read path is now a LIVE
+    // lookup (`liveStoreExpPnl`, below) via `_storeKey`/`_pieceIndex`/
+    // `_pieceCount`, re-resolved against the CURRENT
+    // `portfolioStore.positions.rows` at render time instead of frozen at
+    // this (~5s poll cadence) build. Without this, the Legs Exp P&L cell
+    // was frozen at poll cadence while the store itself (and Snapshot,
+    // which reads it directly) recomputes at ~4Hz via `_rootSpotCache`/
+    // `_tick` — a visible Legs-vs-Snapshot mismatch between polls.
     const storePieces = Array.isArray(p?._exp_pnl_pieces) ? p._exp_pnl_pieces : null;
+    const key = storeRowKey(p);
     pieces.forEach((row, i) => {
       if (storePieces) row._storeExpPnl = storePieces[i] ?? null;
+      row._storeKey     = key;
+      row._pieceIndex   = i;
+      row._pieceCount   = pieces.length;
       merged.push(row);
     });
   }
