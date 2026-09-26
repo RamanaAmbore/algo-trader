@@ -22,7 +22,7 @@ import { describe, it, expect } from 'vitest';
 import {
   splitClosedReopened, buildPositionRowFromBroker,
   didUnderlyingChange, synthEquityOnlyStrategy, synthCacheKey,
-  buildCandidatePositions, buildCleanLegs,
+  buildCandidatePositions, buildCleanLegs, hasEnabledFOLegs,
   buildPagePositionRows, buildSimPositionRows,
   buildHoldingRowFromBroker, buildPageHoldingRows,
 } from '$lib/derivatives/pageLoad.js';
@@ -566,6 +566,50 @@ describe('buildCleanLegs — `_expired`-tagged legs excluded from the backend re
     const getInstrument = () => ({ x: '2099-01-01' });
     const clean = buildCleanLegs(legs, getInstrument);
     expect(clean.length).toBe(1);
+  });
+});
+
+// ============================================================================
+// hasEnabledFOLegs — D2 post-ship audit fix. GOLDM regression: a root whose
+// ENTIRE F&O book is expired-but-held (nonzero qty, `_expired`-tagged, no eq
+// legs) must NOT be treated as "no enabled legs" — that used to wipe
+// `strategy` to null incorrectly... no wait, the opposite: it must correctly
+// report `false` here (no USABLE legs) so loadStrategy's equity-only-shell
+// branch DOES wipe `strategy`, letting the Payoff card fall through to
+// _clientPayoffStub instead of getting stuck showing a stale/loading state
+// forever for the previous underlying.
+// ============================================================================
+
+describe('hasEnabledFOLegs', () => {
+  it('returns false when every non-eq leg is `_expired`-tagged, even with nonzero qty (the GOLDM regression)', () => {
+    const legs = [
+      { symbol: 'GOLDM24SEP150000CE', kind: 'opt', qty: 5, _expired: true },
+      { symbol: 'GOLDM24AUG140000PE', kind: 'opt', qty: 2, _expired: true },
+    ];
+    expect(hasEnabledFOLegs(legs)).toBe(false);
+  });
+
+  it('returns true when at least one non-eq leg has nonzero qty and is NOT expired', () => {
+    const legs = [
+      { symbol: 'GOLDM24SEP150000CE', kind: 'opt', qty: 5, _expired: true },
+      { symbol: 'GOLDM25DEC150000CE', kind: 'opt', qty: 3 }, // not expired
+    ];
+    expect(hasEnabledFOLegs(legs)).toBe(true);
+  });
+
+  it('returns false when all non-eq legs are flat (qty=0), matching the pre-existing closed-position-only behavior', () => {
+    const legs = [{ symbol: 'GOLDM25DEC150000CE', kind: 'opt', qty: 0 }];
+    expect(hasEnabledFOLegs(legs)).toBe(false);
+  });
+
+  it('ignores eq-kind legs entirely, regardless of qty/_expired', () => {
+    const legs = [{ symbol: 'RELIANCE', kind: 'eq', qty: 10 }];
+    expect(hasEnabledFOLegs(legs)).toBe(false);
+  });
+
+  it('returns false for an empty or undefined legs array', () => {
+    expect(hasEnabledFOLegs([])).toBe(false);
+    expect(hasEnabledFOLegs(undefined)).toBe(false);
   });
 });
 

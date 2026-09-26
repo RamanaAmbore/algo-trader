@@ -82,7 +82,7 @@
     buildPositionRowFromBroker,
     splitClosedReopened, buildPagePositionRows, buildSimPositionRows,
     buildPageHoldingRows,
-    buildCleanLegs, computeLegsKey, didUnderlyingChange,
+    buildCleanLegs, computeLegsKey, didUnderlyingChange, hasEnabledFOLegs,
     synthCacheKey, synthEquityOnlyStrategy,
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
@@ -4281,7 +4281,24 @@
         // before the book poller has refreshed — stale qty=0 legs must not
         // blank the chart until the next poll tick delivers real data.
         //
-        const _hasEnabledLegs = legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0);
+        // Post-ship audit fix (D2): also exclude `_expired`-tagged legs
+        // (buildCandidatePositions' tag for a held row unresolvable against
+        // the instruments master — Commit 2's GOLDM fix). `legs` is the
+        // PRE-filter array (still includes `_expired` rows with real
+        // nonzero qty), unlike `cleanLegs` (which excludes them from the
+        // backend payload). Without excluding them here, a root whose
+        // ENTIRE F&O book is expired-but-held (cleanLegs.length===0, no eq
+        // legs) read `_hasEnabledLegs === true` from the still-nonzero-qty
+        // expired rows, so `strategy` was NEVER wiped to null,
+        // `_strategyStale` stayed true forever (strategy.underlying never
+        // matches the new selectedUnderlying), and the Payoff card got
+        // stuck showing its loading/placeholder state permanently — in
+        // the EXACT scenario (GOLDM, all legs expired) this whole plan
+        // exists to fix. Once `strategy` correctly wipes to null here,
+        // rendering falls through cleanly to `_clientPayoffStub` (Commit
+        // 4's fix), which renders a real, non-blank curve from `legs`
+        // directly regardless of the `_expired` tag.
+        const _hasEnabledLegs = hasEnabledFOLegs(legs);
         const _positionsFresh = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
         if (!_hasEnabledLegs && strategy !== null && _positionsLoaded && instrumentsReady && _positionsFresh) strategy = null;
         _synthCache = null;

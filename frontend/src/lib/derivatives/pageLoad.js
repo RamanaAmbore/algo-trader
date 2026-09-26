@@ -473,6 +473,29 @@ export function buildCleanLegs(legs, getInstrument) {
 }
 
 /**
+ * True when at least one non-equity leg is held (nonzero qty) AND
+ * resolvable (not `_expired`-tagged) — 2026-09 post-ship audit fix (D2).
+ *
+ * `loadStrategy`'s equity-only-shell branch (+page.svelte) wipes `strategy`
+ * to null when this is false, so the Payoff card falls through to
+ * `_clientPayoffStub` instead of leaking a stale/previous root's chart.
+ * The naive check (`legs.some(l => l.kind !== 'eq' && Number(l.qty) !== 0)`)
+ * reads the PRE-filter `legs` array, which still includes `_expired`-
+ * tagged rows with real nonzero qty (Commit 2's GOLDM fix keeps them
+ * visible) — so a root whose ENTIRE F&O book is expired-but-held (no eq
+ * legs either) read `true` from those still-nonzero-qty expired rows,
+ * `strategy` was never wiped, and the Payoff card got stuck in its
+ * loading/placeholder state forever — the exact scenario this whole plan
+ * exists to fix.
+ *
+ * @param {any[]} legs
+ * @returns {boolean}
+ */
+export function hasEnabledFOLegs(legs) {
+  return (legs || []).some(l => l.kind !== 'eq' && Number(l.qty) !== 0 && !l._expired);
+}
+
+/**
  * Build a stable string key from the cleanLegs array for memoisation.
  * Two calls with identical legs produce identical keys.
  *
