@@ -225,25 +225,40 @@ describe('positionsPnlFiltered', () => {
     expect(typeof positionsPnlFiltered).toBe('function');
   });
 
-  it('sums pnl + dayTotal for F&O exchanges only (NFO, BFO, MCX, CDS)', () => {
+  it('sums pnl + dayTotal for F&O symbols only (option/future shape, any exchange)', () => {
     const positions = [
-      { exchange: 'NFO', pnl: 3000, prev_settlement_pnl: 1000 }, // dayTotal = 3000 - 1000 = 2000
-      { exchange: 'MCX', pnl: 1500, prev_settlement_pnl: 500 },  // dayTotal = 1500 - 500 = 1000
-      { exchange: 'NSE', pnl: 999,  prev_settlement_pnl: 0 },    // excluded (equity)
+      { tradingsymbol: 'NIFTY25JAN24500CE', exchange: 'NFO', pnl: 3000, prev_settlement_pnl: 1000 }, // dayTotal = 3000 - 1000 = 2000
+      { tradingsymbol: 'CRUDEOIL24SEPFUT',  exchange: 'MCX', pnl: 1500, prev_settlement_pnl: 500 },  // dayTotal = 1500 - 500 = 1000
+      { tradingsymbol: 'RELIANCE', exchange: 'NSE', pnl: 999, prev_settlement_pnl: 0 },              // excluded (equity)
     ];
     const { pnlTotal, dayTotal } = positionsPnlFiltered(positions);
     expect(pnlTotal).toBe(4500);  // 3000 + 1500
     expect(dayTotal).toBe(3000);  // 2000 + 1000
   });
 
-  it('excludes NSE/BSE (equity) exchanges entirely', () => {
+  it('excludes equity symbols regardless of exchange field', () => {
     const positions = [
-      { exchange: 'NSE', pnl: 10000, prev_settlement_pnl: 0 },
-      { exchange: 'BSE', pnl: 5000,  prev_settlement_pnl: 0 },
+      { tradingsymbol: 'RELIANCE', exchange: 'NSE', pnl: 10000, prev_settlement_pnl: 0 },
+      { tradingsymbol: 'TATASTEEL', exchange: 'BSE', pnl: 5000,  prev_settlement_pnl: 0 },
     ];
     const { pnlTotal, dayTotal } = positionsPnlFiltered(positions);
     expect(pnlTotal).toBe(0);
     expect(dayTotal).toBe(0);
+  });
+
+  // 2026-09 R4 post-ship audit fix: classification switched from the
+  // exchange-set gate FO_EXCHANGES={NFO,MCX,CDS,BFO} to the shared
+  // isFOSymbol predicate — a Groww-sourced F&O row whose adapter passes
+  // `exchange` through unchanged (e.g. reporting 'NSE' for an actual NFO
+  // option contract) must still be included, matching every other
+  // F&O-classification site in the app (Commit 7).
+  it('includes a Groww-sourced F&O row with exchange:"NSE" via the shared symbol predicate', () => {
+    const positions = [
+      { tradingsymbol: 'NIFTY25JAN24500CE', exchange: 'NSE', pnl: 2000, prev_settlement_pnl: 500 },
+    ];
+    const { pnlTotal, dayTotal } = positionsPnlFiltered(positions);
+    expect(pnlTotal).toBe(2000);
+    expect(dayTotal).toBe(1500);
   });
 
   it('null / undefined positions → zeros', () => {

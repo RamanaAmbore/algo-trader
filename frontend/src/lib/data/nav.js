@@ -13,6 +13,8 @@
 // `option_premium` replaces the v3 `used_margin` term to eliminate the
 // double-count of futures SPAN already inside position.unrealised.
 
+import { isFOSymbol } from '$lib/data/derivativesMath.js';
+
 /**
  * Compute the NAV breakdown row for a single account.
  * @param {string} acct
@@ -58,13 +60,17 @@ export function navByAccount(accounts, funds, positions, holdings) {
   return (accounts ?? []).map(a => navRowForAccount(a, funds, positions, holdings));
 }
 
-// Exchanges that carry derivatives positions (F&O, commodity, currency).
-// Equity CNC/MIS positions (exchange = "NSE" / "BSE") are excluded so the
+// positionsPnlFiltered (below) excludes equity CNC/MIS positions so the
 // P pill doesn't double-count with the H pill which covers holdings day MTM.
 // Note: MIS-only equity intraday positions (bought+squared, never in holdings)
 // are also excluded under this filter — acceptable for an F&O-primary book.
-/** Exchanges that carry F&O/derivative positions. Used by P-pill filter in PositionStrip. */
-export const FO_EXCHANGES = new Set(['NFO', 'MCX', 'CDS', 'BFO']);
+//
+// 2026-09 R4 post-ship audit fix: classification used to be the exchange-set
+// gate `FO_EXCHANGES = {NFO,MCX,CDS,BFO}` (removed — see git history if the
+// exchange-based set is ever needed again), which silently excluded a
+// Groww-sourced F&O row reporting `exchange:'NSE'` for an actual NFO
+// contract. Now uses the shared `isFOSymbol` predicate (import above),
+// same as every other F&O-classification site (Commit 7).
 
 /**
  * Current total profit for a position row — `realised + unrealised` when
@@ -134,15 +140,22 @@ export function aggregateDayPnlForPositions(rows) {
  * with the derivatives Snapshot / Legs / Exp Close / Payoff overlay surfaces,
  * which compute their own per-leg Day P&L via the same helper.
  *
- * @param {Array<{exchange?: string, pnl?: number, realised?: number|null, unrealised?: number|null, prev_settlement_pnl?: number|null}>} positions
+ * Classification uses the shared `isFOSymbol` predicate (2026-09 R4 fix),
+ * not the `exchange` field — a Groww-sourced F&O row whose adapter passes
+ * `exchange` through unchanged (e.g. reporting 'NSE' for an actual NFO
+ * contract) would have been silently excluded by the old `FO_EXCHANGES`
+ * gate even though every other F&O-classification site in the app (Commit 7)
+ * already agreed it's F&O.
+ *
+ * @param {Array<{exchange?: string, tradingsymbol?: string|null, symbol?: string|null, pnl?: number, realised?: number|null, unrealised?: number|null, prev_settlement_pnl?: number|null}>} positions
  * @returns {{ pnlTotal: number, dayTotal: number }}
  */
 export function positionsPnlFiltered(positions) {
   let pnlTotal = 0;
   let dayTotal  = 0;
   for (const p of (positions ?? [])) {
-    const exch = String(p?.exchange || '').toUpperCase();
-    if (!FO_EXCHANGES.has(exch)) continue;
+    const sym = p?.tradingsymbol || p?.symbol;
+    if (!isFOSymbol(sym)) continue;
     pnlTotal += Number(p?.pnl || 0);
     dayTotal  += baseDayPnlForPosition(p);
   }
