@@ -25,7 +25,6 @@
   //   onContextMenu(c, ev)  — parent sets _ctxMenu from right-click / long-press
 
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
-  import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
   import { decomposeSymbol }        from '$lib/data/decomposeSymbol';
@@ -35,6 +34,7 @@
   import { getProxyRow }            from '$lib/data/hedgeProxies';
   import { priceFmt, pctFmt, aggCompact, ltpDayClass, qtyFmt } from '$lib/format';
   import { longPress }              from '$lib/actions/longPress.js';
+  import { legPnlDisplay }          from '$lib/data/derivativesMath.js';
 
   const BAND_LABELS = { close: 'ITM ON EXPIRY', netted: 'NETTED', otm: 'OUT OF THE MONEY' };
 
@@ -106,16 +106,18 @@
   );
 
   const _ltpFromFallback = $derived(!!(lg && lg.ltp_source === 'avg_cost'));
-  // pnl: store-first for real positions; formula-only for residual splits (not in store).
-  const pnl = $derived.by(() => {
-    if (c._residualQty == null) {
-      const stored = positionsDerivedStore.get(c.symbol).pnl;
-      if (stored != null) return stored;
-    }
-    if (ltp != null && cost != null && !_ltpFromFallback)
-      return (ltp - cost) * displayQty + Number(c.realised || 0);
-    return c.pnl != null ? Number(c.pnl) : null;
-  });
+  // pnl: row-own fields, NEVER positionsDerivedStore (2026-09 fix). The
+  // store's `.byKey[symbol].pnl` is summed across EVERY account holding
+  // that symbol AND across a closed/open split's two display rows — a
+  // per-row cell reading it double- (or N-account-) counted whenever more
+  // than one account held the symbol, or a CLOSED/OPEN split existed for
+  // it, since both rows for the same symbol read the identical aggregate.
+  // Matches the Day P&L cell's existing pattern (_candDayPnl(c) /
+  // baseDayPnlForPosition(c) in +page.svelte) and the Legs TOTAL row
+  // (_legsTotalsBase.reduce(... + Number(c.pnl ?? 0), 0)), which already
+  // summed the per-row field directly — this fix makes the CELL agree
+  // with the TOTAL it's part of, instead of silently diverging from it.
+  const pnl = $derived(legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback));
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');

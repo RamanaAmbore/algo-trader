@@ -549,6 +549,32 @@ export function perRootReduce({
  *   the bracketing points don't both carry a real value for `key` (e.g.
  *   the client-side stub's today_value:null before real BS pricing lands).
  */
+/**
+ * Legs-grid per-row lifetime P&L cell (2026-09 fix). Row-own fields ONLY —
+ * NEVER positionsDerivedStore, whose `.byKey[symbol].pnl` sums across every
+ * account holding that symbol AND across a closed/open split's two display
+ * rows, so a per-row cell reading it double- (or N-account-) counted
+ * whenever more than one account held the symbol, or a CLOSED/OPEN split
+ * existed for it (CandidateLegRow.svelte's old `pnl` $derived). Matches the
+ * pattern the Day P&L cell and the Legs TOTAL row already used (row-own
+ * `c.pnl`/`baseDayPnlForPosition(c)`, summed directly) — this makes the
+ * per-row CELL agree with the TOTAL it's a part of, by construction.
+ *
+ * @param {{ pnl?: number|string|null, realised?: number|string|null }} c
+ * @param {number|null|undefined} ltp        live/poll LTP for the row's own symbol
+ * @param {number|null|undefined} cost       avg_cost / leg-analytics avg_cost
+ * @param {number} displayQty                the row's own displayed qty (post-split/residual)
+ * @param {boolean} [ltpFromFallback=false]  true when ltp is itself synthesised from avg_cost
+ *   (no real market price yet) — formula would be tautologically ~realised, so prefer c.pnl.
+ * @returns {number|null}
+ */
+export function legPnlDisplay(c, ltp, cost, displayQty, ltpFromFallback = false) {
+  if (ltp != null && cost != null && !ltpFromFallback) {
+    return (Number(ltp) - Number(cost)) * Number(displayQty || 0) + Number(c?.realised || 0);
+  }
+  return c?.pnl != null ? Number(c.pnl) : null;
+}
+
 export function interpAt(arr, x, key) {
   if (!arr || arr.length === 0 || x == null || !Number.isFinite(x)) return null;
   if (arr.length === 1) {

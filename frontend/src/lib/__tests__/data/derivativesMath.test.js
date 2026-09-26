@@ -11,7 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt } from '$lib/data/derivativesMath.js';
+import { annotateOptionCandidates, rollupByUnderlying, perRootReduce, buildStrategyMatcher, interpAt, legPnlDisplay } from '$lib/data/derivativesMath.js';
 import { legExtrinsicDisplay } from '$lib/data/expiryPnl.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -476,5 +476,61 @@ describe('interpAt', () => {
     for (const p of grid) {
       expect(interpAt(grid, p.spot, 'today_value')).toBe(p.today_value);
     }
+  });
+});
+
+// ============================================================================
+// legPnlDisplay — Legs-grid per-row lifetime P&L cell (2026-09 fix, Commit 3).
+// CandidateLegRow.svelte's old `pnl` $derived preferred
+// positionsDerivedStore.get(c.symbol).pnl (summed across EVERY account
+// holding that symbol AND across a closed/open split's two rows) whenever
+// available — a per-row cell reading a cross-account/cross-split aggregate
+// diverges from the Legs TOTAL row, which sums row-own `c.pnl` directly.
+// ============================================================================
+
+describe('legPnlDisplay — row-own P&L, not a cross-account/cross-split aggregate', () => {
+  it('two accounts holding the SAME symbol: each row computes its OWN pnl from its own ltp/cost/qty, not a shared aggregate', () => {
+    // Two rows for the same symbol, different accounts, different qty/cost —
+    // the old store-first behavior would have both rows read the SAME
+    // summed-across-accounts value; the fix must make them differ.
+    const rowA = { pnl: 999, realised: 0 }; // realised irrelevant once ltp/cost path is taken
+    const rowB = { pnl: 999, realised: 0 };
+    const pnlA = legPnlDisplay(rowA, /* ltp */ 110, /* cost */ 100, /* displayQty */ 10);
+    const pnlB = legPnlDisplay(rowB, /* ltp */ 110, /* cost */ 100, /* displayQty */ 25);
+    expect(pnlA).toBe(100);   // (110-100)*10 + 0
+    expect(pnlB).toBe(250);   // (110-100)*25 + 0
+    expect(pnlA).not.toBe(pnlB);
+    // TOTAL (sum of per-row values) must equal the sum of the two distinct
+    // values, never a multiple of one shared aggregate.
+    expect(pnlA + pnlB).toBe(350);
+  });
+
+  it('closed/open split rows for the same symbol: each split piece computes its own pnl from its own displayQty/realised, not the pre-split aggregate', () => {
+    const closedRow = { pnl: 500, realised: 500 }; // qty=0 piece — no ltp/cost path taken (displayQty=0 anyway)
+    const openRow   = { pnl: 200, realised: 0 };
+    const closedPnl = legPnlDisplay(closedRow, null, null, 0); // no live price path — falls back to row's own pnl
+    const openPnl   = legPnlDisplay(openRow, 130, 100, 5);
+    expect(closedPnl).toBe(500);
+    expect(openPnl).toBe(150); // (130-100)*5 + 0
+    expect(closedPnl + openPnl).toBe(650);
+  });
+
+  it('uses (ltp - cost) * displayQty + realised when ltp/cost are both available and not a fallback price', () => {
+    const c = { pnl: 999, realised: 20 };
+    expect(legPnlDisplay(c, 110, 100, 10, false)).toBe(120); // (10*10) + 20
+  });
+
+  it('falls back to c.pnl when ltp is a synthesised avg_cost fallback (no real market price yet)', () => {
+    const c = { pnl: 42, realised: 20 };
+    expect(legPnlDisplay(c, 100, 100, 10, /* ltpFromFallback */ true)).toBe(42);
+  });
+
+  it('falls back to c.pnl when ltp or cost is null', () => {
+    expect(legPnlDisplay({ pnl: 42 }, null, 100, 10)).toBe(42);
+    expect(legPnlDisplay({ pnl: 42 }, 100, null, 10)).toBe(42);
+  });
+
+  it('returns null when neither the live-price formula nor c.pnl is usable', () => {
+    expect(legPnlDisplay({}, null, null, 0)).toBeNull();
   });
 });
