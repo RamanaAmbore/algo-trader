@@ -172,6 +172,7 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
       whether to arm exits manually.
     """
     import asyncio as _asyncio
+    import html as _html
     from datetime import datetime, timezone, timedelta
 
     # Format IST timestamp inline (no dependency on the heavier
@@ -188,15 +189,34 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
         f"Reason: {reason}. Parent order is filled; EXITS NOT ATTACHED."
     )
 
+    # Escape dynamic fields BEFORE embedding in the HTML message — this
+    # string reaches ntfy via _html_to_plain(), whose tag-strip regex
+    # (`<[^>]+>`) treats any unescaped literal '<' in the data as a tag
+    # boundary and deletes everything up to the NEXT '>' anywhere later
+    # in the string (e.g. a guard reason like "qty < lot_size" would eat
+    # the rest of the message). Matches the one call site (_dispatch's
+    # tg_table) that already escapes correctly (2026-09-27 council audit,
+    # Bug 2).
+    # str() first — these are typed `str` in the signature but a caller
+    # can pass None in practice (e.g. `template.get("slug")` on a DB row
+    # with slug=NULL is `None`, not the dict-default "?" — .get()'s
+    # default only applies when the KEY is absent). html.escape(None)
+    # raises AttributeError on this fire-and-forget alert path
+    # (documented "never blocks the fill pipeline"); str(None) == "None"
+    # matches the pre-fix f-string rendering exactly.
+    reason_html        = _html.escape(str(reason))
+    applies_to_html    = _html.escape(str(applies_to))
+    template_slug_html = _html.escape(str(template_slug))
+
     tg_msg = (
         f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
         f"<code>"
         f"order #{parent_order_id}\n"
         f"{parent_side} {parent_qty} {parent_symbol}\n"
         f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
-        f"template:    {template_slug}\n"
-        f"applies_to:  {applies_to}\n"
-        f"reason:      {reason}\n\n"
+        f"template:    {template_slug_html}\n"
+        f"applies_to:  {applies_to_html}\n"
+        f"reason:      {reason_html}\n\n"
         f"Parent order FILLED. Exits NOT attached.\n"
         f"Arm exits manually if needed.\n\n"
         f"Fix: at /admin/templates, change this template's "
@@ -321,6 +341,7 @@ def _fire_attach_fail_alert(
     guard_alert_fired is False.
     """
     import asyncio as _asyncio
+    import html as _html
     from datetime import datetime, timezone, timedelta
 
     now_utc = datetime.now(timezone.utc)
@@ -328,6 +349,11 @@ def _fire_attach_fail_alert(
     ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
 
     err_summary = "; ".join((str(e) for e in errors[:2]))
+    # Escape before embedding — see _fire_guard_alert's comment above for
+    # the exact ntfy _html_to_plain() regression this guards against
+    # (2026-09-27 council audit, Bug 2). err_summary is raw broker/guard
+    # error text and may contain a literal '<' (e.g. "qty < lot_size").
+    err_summary_html = _html.escape(err_summary)
 
     tg_msg = (
         f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
@@ -335,7 +361,7 @@ def _fire_attach_fail_alert(
         f"order #{order_id}\n"
         f"symbol:   {symbol}\n"
         f"account:  {account}\n\n"
-        f"errors:   {err_summary}\n\n"
+        f"errors:   {err_summary_html}\n\n"
         f"Parent order FILLED. Exits NOT attached.\n"
         f"Arm exits manually if needed.</code>"
     )

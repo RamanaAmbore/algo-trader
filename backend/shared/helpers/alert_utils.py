@@ -912,12 +912,20 @@ def _send_order_failure_messages(
     mode_tag    = f"[{mode.upper()}]" if mode else ""
     sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
     error_short = error[:160].strip()
+    # Raw broker rejection text can contain a literal '<' (e.g. guard
+    # comparison text like "qty < lot_size") with no matching '>' before
+    # this message's own closing </code> tag — _html_to_plain's tag-strip
+    # regex (`<[^>]+>`) would then eat everything in between, silently
+    # deleting real alert text on the ntfy path. Escape BEFORE embedding,
+    # matching the one call site (_dispatch's tg_table) that already does
+    # this correctly (2026-09-27 council audit, Bug 2).
+    error_short_html = html.escape(error_short)
 
     tg_body = (
         f"<b>&#10060; Order rejected</b>  {mode_tag}{sup_note}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
         f"source: {source}\n"
-        f"<code>{error_short}</code>"
+        f"<code>{error_short_html}</code>"
     )
 
     rows_html = _html_table(
