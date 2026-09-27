@@ -841,7 +841,23 @@
       // that our CSS picks up — no override needed.
       overlayNoRowsTemplate: '<span style="font-size: var(--fs-md);color:var(--c-muted)">—</span>',
       domLayout: 'autoHeight',
-      rowHeight: _isMobile ? 36 : 28,
+      // rowHeight must stay in sync with the theme's own --ag-row-height
+      // (app.css), which ag-Grid's legacy-theme cell CSS derives its
+      // line-height from for vertical centering. ag-theme-ramboq's font
+      // is 0.625rem/10px — its var is 22px (the theme's original,
+      // proportionate value). ag-theme-algo's font is larger and its var
+      // is 28px. A prior fix (7ccb2e50) hardcoded 28px here for every
+      // theme, which happened to match ag-theme-algo but silently
+      // orphaned ag-theme-ramboq's 22px var, producing an oversized row
+      // with top-biased (not centered) cell text. Setting the CSS var
+      // inline here — rather than leaving it static in app.css — keeps
+      // JS rowHeight and the var that drives centering as one source of
+      // truth, for both breakpoints, without a media query.
+      rowHeight: (() => {
+        const rowH = isDark ? (_isMobile ? 36 : 28) : (_isMobile ? 36 : 22);
+        el.style.setProperty('--ag-row-height', `${rowH}px`);
+        return rowH;
+      })(),
       getRowClass,
       pinnedBottomRowData: [],
       ...(onRowClick ? { onRowClicked: (e) => onRowClick(e.data) } : {}),
