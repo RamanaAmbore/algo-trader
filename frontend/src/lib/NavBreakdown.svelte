@@ -350,14 +350,22 @@
     return acctStyleVars(p.data?.account);
   }
 
-  // A6 (2026-09 audit): Day P&L / Lifetime P&L columns need red-for-
-  // negative (matches PositionStrip's .ps-neg), not the agDirCellText
-  // default amber. Module-level so cellClass stays a stable function
-  // reference (not recreated per render) — same convention as
-  // _acctCellStyle above. Expiry P&L keeps plain agDirCellText
-  // untouched — PositionStrip's own Expiry pill (.ps-exp) is flat amber
-  // regardless of sign, and that column's call-site was explicitly left
-  // alone in this pass.
+  // A6 (2026-09 audit, extended to the H slot in a follow-up commit):
+  // genuine P&L columns need red-for-negative (matches PositionStrip's
+  // .ps-neg/.ps-neg-dim), not the agDirCellText default amber. Module-
+  // level so cellClass stays a stable function reference (not recreated
+  // per render) — same convention as _acctCellStyle above. Used by:
+  //   P slot — day_pnl, lifetime (Expiry P&L excluded — PositionStrip's
+  //            own Expiry pill, .ps-exp, is flat amber regardless of
+  //            sign; that column's call-site is left on plain agDirCellText)
+  //   H slot — todayMtm, lifetime (value excluded — PositionStrip's own
+  //            Value slot, .ps-cash, is a non-directional magnitude with
+  //            no loss semantic; same "flat exception" role as Expiry,
+  //            left on plain agDirCellText)
+  // M slot (margin) and C slot (cash) are NOT included — investigated
+  // during A6 but out of scope; PositionStrip's own M/C pills also use
+  // .ps-neg for negative, so the same inconsistency likely exists there
+  // too, flagged for a future pass pending explicit operator sign-off.
   const _pnlLossRed = mkDirCellText({ lossRed: true });
 
 
@@ -429,13 +437,19 @@
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'todayMtm',  headerName: 'Today MTM',   minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: _pnlLossRed, valueFormatter: agAggFmt },
+    // 'value' (broker-reported current market value) is PositionStrip's H
+    // slot 2 — rendered with the fixed non-directional `.ps-cash` sky-blue
+    // class there (_liveHoldingsValue), NOT ps-pos/ps-neg. It's a
+    // magnitude, not a P&L, so it has no "loss" semantic to correct —
+    // this is the H-slot's equivalent of the P-slot's Expiry exception;
+    // left on plain agDirCellText, untouched (A6 follow-up, 2026-09).
     { field: 'value',     headerName: 'Value',        minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },
     { field: 'lifetime',  headerName: 'P&L',          minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: _pnlLossRed, valueFormatter: agAggFmt },
   ];
 
   // Grid creation — lazy, one per slot.

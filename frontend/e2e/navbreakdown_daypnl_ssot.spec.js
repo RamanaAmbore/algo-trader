@@ -153,6 +153,40 @@ test.describe('NavBreakdown P&L sign colour (A6)', () => {
     console.log('[navbreakdown_daypnl_ssot] A6 red-for-negative Day/Lifetime P&L verified');
   });
 
+  test('H-slot Today MTM / Lifetime columns also use the red-for-negative variant; Value untouched', () => {
+    let source = '';
+    try {
+      source = readFileSync(NAV_BREAKDOWN_PATH, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read NavBreakdown.svelte: ${e.message}`);
+      return;
+    }
+
+    // Extract the _hCols array block specifically — both P slot and H
+    // slot declare a `field: 'lifetime', headerName: 'P&L'` column, so a
+    // bare field-name regex would ambiguously match whichever comes
+    // first in the file (P slot). Scope to _hCols's own block first.
+    const hColsBlock = source.match(/const\s+_hCols\s*=\s*\[[\s\S]*?\n\s*\];/)?.[0] ?? '';
+    expect(hColsBlock, '_hCols array block not found').not.toBe('');
+
+    const todayMtmCol = hColsBlock.match(/\{\s*field:\s*'todayMtm'[\s\S]*?\}/)?.[0] ?? '';
+    const valueCol = hColsBlock.match(/\{\s*field:\s*'value'[\s\S]*?\}/)?.[0] ?? '';
+    const hLifetimeCol = hColsBlock.match(/\{\s*field:\s*'lifetime'[\s\S]*?\}/)?.[0] ?? '';
+
+    expect(todayMtmCol, 'todayMtm column def not found in _hCols').not.toBe('');
+    expect(valueCol, 'value column def not found in _hCols').not.toBe('');
+    expect(hLifetimeCol, 'lifetime column def not found in _hCols').not.toBe('');
+
+    expect(todayMtmCol, 'H-slot Today MTM column must use _pnlLossRed (red-for-negative)').toContain('cellClass: _pnlLossRed');
+    expect(hLifetimeCol, 'H-slot Lifetime column must use _pnlLossRed (red-for-negative)').toContain('cellClass: _pnlLossRed');
+    // Value is a magnitude (broker-reported current market value), not a
+    // P&L — PositionStrip's own Value slot (.ps-cash) is non-directional,
+    // the H-slot's equivalent of the P-slot's Expiry exception.
+    expect(valueCol, 'H-slot Value column call-site must be left untouched (agDirCellText)').toContain('cellClass: agDirCellText');
+
+    console.log('[navbreakdown_daypnl_ssot] A6 H-slot red-for-negative Today MTM/Lifetime verified');
+  });
+
   test('the misleading "matches NavStrip pill values" colour-convention comment is corrected', () => {
     const path = '/Users/ramanambore/projects/ramboq/frontend/src/lib/data/algoGridUtils.js';
     let source = '';
