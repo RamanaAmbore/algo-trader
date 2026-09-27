@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy } from 'svelte';
+  import { browser } from '$app/environment';
   import CardHeader from '$lib/CardHeader.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
 
@@ -95,7 +96,12 @@
     document.body.style.overflow = '';
   }
 
-  onDestroy(() => { document.body.style.overflow = ''; });
+  // Svelte's onDestroy runs during SSR too (server has no real "destroy"
+  // event, so the callback fires immediately after render to mimic
+  // teardown) — unlike onMount, which is client-only. `document` doesn't
+  // exist server-side, so this must be browser-guarded or every non-JS
+  // request to /faq 500s with "document is not defined".
+  onDestroy(() => { if (browser) document.body.style.overflow = ''; });
 
   onMount(async () => {
     /** @type {any} */
