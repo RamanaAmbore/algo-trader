@@ -104,16 +104,23 @@ async def _dev_final_fallback() -> MarketResponse:
     shared-generation migration, however stale), and NEVER calls Gemini
     (dev must never generate). Falls through to the same static
     `_UNAVAILABLE` string `_db_or_gemini` uses for its own cold-boot case
-    only when even that DB row doesn't exist."""
+    only when even that DB row doesn't exist.
+
+    Always marks `stale=True, source="snapshot-fallback"` — this branch is
+    only reached when the live proxy to prod has already failed AND no
+    frozen proxy copy exists either, so whatever is served here is by
+    definition not live."""
     from backend.api.background import _load_market_from_db
 
     cached = await _load_market_from_db()
     if cached:
-        return cached
+        return msgspec.structs.replace(cached, stale=True, source="snapshot-fallback")
     return MarketResponse(
         content=_UNAVAILABLE,
         cycle_date=str(get_cycle_date(hours=0, mins=0)),
         refreshed_at=timestamp_display(),
+        stale=True,
+        source="snapshot-fallback",
     )
 
 

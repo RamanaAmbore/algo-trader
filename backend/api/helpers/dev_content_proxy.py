@@ -103,7 +103,17 @@ async def fetch_from_prod(path: str, response_type, is_valid=_always_valid):
     validated payload for this path if one exists (logged loudly, but
     the return path is otherwise a normal success — never blank, never
     the static YAML placeholder). Raises `ProdProxyUnavailable` only when
-    no last-known-good payload exists yet for this path."""
+    no last-known-good payload exists yet for this path.
+
+    The returned payload's `stale`/`source` fields (present on both
+    `MarketResponse` and `NewsResponse`) are ALWAYS overridden here based
+    on THIS call's own outcome — `stale=False, source="live"` on a fresh
+    successful fetch, `stale=True, source="snapshot-fallback"` on the
+    frozen path — regardless of whatever those fields already said in the
+    decoded payload (prod's own values describe prod's staleness, which
+    is a different question from "did dev's loopback call to prod just
+    succeed"). `response_type` must carry these two fields; every caller
+    in this codebase (MarketResponse, NewsResponse) does."""
     now = time.monotonic()
 
     def _degrade(reason: str):
@@ -114,7 +124,8 @@ async def fetch_from_prod(path: str, response_type, is_valid=_always_valid):
                 f"[DEV-CONTENT-PROXY] {path} degraded ({reason}) — serving "
                 f"last-known-good payload captured ~{age_s}s ago"
             )
-            return msgspec.json.decode(good[1], type=response_type)
+            frozen = msgspec.json.decode(good[1], type=response_type)
+            return msgspec.structs.replace(frozen, stale=True, source="snapshot-fallback")
         logger.error(
             f"[DEV-CONTENT-PROXY] {path} degraded ({reason}) — no "
             f"last-known-good payload captured yet this process"
@@ -134,4 +145,4 @@ async def fetch_from_prod(path: str, response_type, is_valid=_always_valid):
         return _degrade("prod returned a degraded/empty payload (200 masking a failure)")
 
     _last_good[path] = (now, raw)
-    return payload
+    return msgspec.structs.replace(payload, stale=False, source="live")

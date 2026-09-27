@@ -32,6 +32,7 @@ import urllib3.util.connection as _urllib3_conn
 _urllib3_conn.HAS_IPV6 = False
 
 import requests
+import msgspec
 
 from litestar import Controller, get
 from litestar.exceptions import HTTPException
@@ -550,7 +551,10 @@ async def _dev_news_content(sentiment: bool = False) -> NewsResponse:
 
     Falls back to dev's own accumulated `news_headlines` rows (never a
     fresh RSS fetch, never Gemini) only when the proxy has no
-    last-known-good payload yet for this process."""
+    last-known-good payload yet for this process. That fallback always
+    marks `stale=True, source="snapshot-fallback"` — reached only when
+    the live proxy has already failed AND no frozen proxy copy exists
+    either."""
     from backend.api.helpers.dev_content_proxy import (
         ProdProxyUnavailable,
         fetch_from_prod,
@@ -564,7 +568,8 @@ async def _dev_news_content(sentiment: bool = False) -> NewsResponse:
             f"News: prod proxy unavailable for {path!r}, no last-known-good "
             f"yet — falling back to dev's own accumulated DB rows"
         )
-        return await _build_news_response_from_db()
+        resp = await _build_news_response_from_db()
+        return msgspec.structs.replace(resp, stale=True, source="snapshot-fallback")
 
 
 class NewsController(Controller):

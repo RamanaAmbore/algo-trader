@@ -311,6 +311,18 @@ class MarketResponse(msgspec.Struct):
     content: str
     cycle_date: str
     refreshed_at: str
+    # Staleness-freeze indicator (2026-09 shared dev/prod generation design
+    # — see backend/api/helpers/dev_content_proxy.py). Reuses the same
+    # source-tag vocabulary `closed_hours_or_broker()` already returns for
+    # positions/holdings (CLAUDE.md "Closed-hours route gate"): 'live' =
+    # freshly generated (prod) or freshly proxied (dev); 'snapshot-fallback'
+    # = serving a frozen last-known-good copy after a failed proxy fetch to
+    # prod, or dev's own historical DB row when even that doesn't exist.
+    # Prod's own direct (non-proxied) responses are always 'live'/False —
+    # this route has no market-hours-driven "deliberate snapshot" state, so
+    # the tri-state's middle value ('snapshot') is not reachable here.
+    stale: bool = False
+    source: str = "live"
 
 
 # ---------------------------------------------------------------------------
@@ -331,6 +343,12 @@ class NewsItem(msgspec.Struct):
 class NewsResponse(msgspec.Struct):
     items: list[NewsItem]
     refreshed_at: str
+    # Same staleness-freeze indicator as MarketResponse — see its
+    # docstring. NOT to be confused with NewsItem.source above (a
+    # headline's publisher domain, e.g. "moneycontrol.com") — this is a
+    # top-level field on the response envelope itself.
+    stale: bool = False
+    source: str = "live"
 
 
 # ---------------------------------------------------------------------------

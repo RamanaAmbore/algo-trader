@@ -305,6 +305,137 @@ async def test_dev_news_content_falls_back_to_db_when_proxy_unavailable(monkeypa
 
 
 # ---------------------------------------------------------------------------
+# (d) stale/source staleness-marker field — fresh / frozen / prod-direct
+# ---------------------------------------------------------------------------
+
+def test_market_response_defaults_to_live():
+    """Any response constructed without explicit stale/source (i.e. every
+    prod-direct construction site: _db_or_gemini, fetch_fresh, the dry-run
+    endpoint) reports the healthy state by default."""
+    resp = MarketResponse(content="x", cycle_date="d", refreshed_at="r")
+    assert resp.stale is False
+    assert resp.source == "live"
+
+
+def test_news_response_defaults_to_live():
+    resp = NewsResponse(items=[], refreshed_at="r")
+    assert resp.stale is False
+    assert resp.source == "live"
+
+
+@pytest.mark.asyncio
+async def test_fetch_from_prod_success_marks_live(monkeypatch):
+    market = MarketResponse(content="Hello market", cycle_date="d", refreshed_at="now")
+
+    def handler(request):
+        return httpx.Response(200, content=msgspec.json.encode(market))
+
+    monkeypatch.setattr(dev_content_proxy.httpx, "AsyncClient", _mock_async_client_factory(handler))
+
+    result = await dev_content_proxy.fetch_from_prod("/api/market", MarketResponse)
+    assert result.stale is False
+    assert result.source == "live"
+
+
+@pytest.mark.asyncio
+async def test_fetch_from_prod_freeze_marks_snapshot_fallback(monkeypatch):
+    good = MarketResponse(content="Good content", cycle_date="d", refreshed_at="now")
+
+    def ok_handler(request):
+        return httpx.Response(200, content=msgspec.json.encode(good))
+
+    monkeypatch.setattr(dev_content_proxy.httpx, "AsyncClient", _mock_async_client_factory(ok_handler))
+    first = await dev_content_proxy.fetch_from_prod("/api/market", MarketResponse)
+    assert first.stale is False
+    assert first.source == "live"
+
+    def fail_handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(dev_content_proxy.httpx, "AsyncClient", _mock_async_client_factory(fail_handler))
+    frozen = await dev_content_proxy.fetch_from_prod("/api/market", MarketResponse)
+    assert frozen.content == "Good content"
+    assert frozen.stale is True
+    assert frozen.source == "snapshot-fallback"
+
+
+@pytest.mark.asyncio
+async def test_fetch_from_prod_freeze_overrides_baked_in_live_flag(monkeypatch):
+    """The cached last-good bytes were captured back when the fetch
+    succeeded (stale=False, source='live' baked into the JSON at that
+    time) — the CURRENT call's outcome (a failure) must override those
+    baked-in values, not just pass them through verbatim."""
+    good = MarketResponse(content="Good content", cycle_date="d", refreshed_at="now",
+                           stale=False, source="live")
+
+    def ok_handler(request):
+        return httpx.Response(200, content=msgspec.json.encode(good))
+
+    monkeypatch.setattr(dev_content_proxy.httpx, "AsyncClient", _mock_async_client_factory(ok_handler))
+    await dev_content_proxy.fetch_from_prod("/api/market", MarketResponse)
+
+    def fail_handler(request):
+        raise httpx.ConnectError("connection refused", request=request)
+
+    monkeypatch.setattr(dev_content_proxy.httpx, "AsyncClient", _mock_async_client_factory(fail_handler))
+    frozen = await dev_content_proxy.fetch_from_prod("/api/market", MarketResponse)
+    assert frozen.stale is True
+    assert frozen.source == "snapshot-fallback"
+
+
+@pytest.mark.asyncio
+async def test_dev_final_fallback_marks_snapshot_fallback_with_db_row(monkeypatch):
+    import backend.api.routes.market as market_mod
+    import backend.api.background as background_mod
+
+    async def _fake_load_from_db():
+        return MarketResponse(content="dev's own stale row", cycle_date="d", refreshed_at="old")
+
+    monkeypatch.setattr(background_mod, "_load_market_from_db", _fake_load_from_db)
+
+    result = await market_mod._dev_final_fallback()
+    assert result.stale is True
+    assert result.source == "snapshot-fallback"
+
+
+@pytest.mark.asyncio
+async def test_dev_final_fallback_marks_snapshot_fallback_without_db_row(monkeypatch):
+    """Absolute cold-boot case (no proxy copy, no DB row either) must
+    still carry the staleness marker on the static placeholder."""
+    import backend.api.routes.market as market_mod
+    import backend.api.background as background_mod
+
+    async def _no_db_row():
+        return None
+
+    monkeypatch.setattr(background_mod, "_load_market_from_db", _no_db_row)
+
+    result = await market_mod._dev_final_fallback()
+    assert result.content == market_mod._UNAVAILABLE
+    assert result.stale is True
+    assert result.source == "snapshot-fallback"
+
+
+@pytest.mark.asyncio
+async def test_dev_news_content_fallback_marks_snapshot_fallback(monkeypatch):
+    import backend.api.routes.news as news_mod
+
+    async def _unavailable(*_a, **_kw):
+        raise dev_content_proxy.ProdProxyUnavailable("no last good")
+
+    monkeypatch.setattr(dev_content_proxy, "fetch_from_prod", _unavailable)
+
+    async def _fake_build():
+        return NewsResponse(items=[], refreshed_at="now")
+
+    monkeypatch.setattr(news_mod, "_build_news_response_from_db", _fake_build)
+
+    result = await news_mod._dev_news_content()
+    assert result.stale is True
+    assert result.source == "snapshot-fallback"
+
+
+# ---------------------------------------------------------------------------
 # (c) admin-only dry-run endpoint — mocked Gemini, asserts no DB/cache write
 # ---------------------------------------------------------------------------
 
