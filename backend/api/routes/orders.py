@@ -887,6 +887,73 @@ def _rco_parse_groww_postback_body(body: dict) -> "tuple[str, str, str, str, obj
     return order_id, kite_status, symbol, txn, qty, price, exchange, status_msg
 
 
+# Module-level, process-lifetime "already warned" set — see
+# _pb_verify_shared_token's docstring. One entry per broker_id, so the
+# CRITICAL log fires once per process start (not once per postback,
+# which could arrive frequently under active trading) if a broker's
+# secret is genuinely unconfigured.
+_PB_TOKEN_WARNED: set[str] = set()
+
+
+def _pb_verify_shared_token(request: Request, broker_id: str) -> bool:
+    """Verify a shared-secret token query param for brokers with no native
+    webhook signature scheme (Dhan, Groww) — see orders_postback.py's
+    _pb_verify_signature for the HMAC-based equivalent Kite gets, since
+    Kite's postback carries a real per-message checksum and Dhan/Groww's
+    do not.
+
+    2026-09 council audit fix (risk + architect council members
+    independently found this): /dhan_postback and /groww_postback had
+    guards=[] with NO authentication at all — any POST to these public,
+    internet-reachable endpoints was trusted. For Groww specifically
+    (account is always "" — Groww's payload carries no account
+    identifier), the fallback order-matching path in
+    _pb_fallback_lookup_row needs no order_id and no account, just a
+    guessed symbol+side+qty within a 60s window matched across EVERY
+    account on the platform. A forged "COMPLETE" fill flows straight
+    into template-attach, which places real GTT/wing orders at the
+    broker sized off the attacker-supplied fill price.
+
+    Reads a per-broker shared secret from secrets.yaml (key
+    "<broker_id>_postback_token", e.g. "dhan_postback_token") that the
+    operator generates once and appends as a query string to the webhook
+    URL configured in that broker's own partner dashboard — e.g.
+    https://ramboq.com/api/orders/dhan_postback?token=<secret>. Dhan and
+    Groww don't sign their webhook payloads, so there's no per-message
+    HMAC to verify (unlike Kite); a static shared secret in the URL is
+    the standard fallback for a webhook sender that doesn't support
+    request signing.
+
+    TRANSITIONAL fail-open: if no secret is configured yet for this
+    broker (key absent/empty in secrets.yaml — true for every existing
+    deployment until the operator configures it), returns True so
+    deploying this fix doesn't immediately break existing Dhan/Groww
+    webhook processing that was already relying on the unauthenticated
+    endpoint. Logs a CRITICAL line once per process so the gap can never
+    be silently missed — configure the secret (and update the broker's
+    dashboard URL to include it) to actually close it.
+    """
+    import hmac as _hmac
+    from backend.shared.helpers.utils import secrets as _secrets
+
+    key = f"{broker_id}_postback_token"
+    expected = str(_secrets.get(key) or "").strip()
+    if not expected:
+        if broker_id not in _PB_TOKEN_WARNED:
+            _PB_TOKEN_WARNED.add(broker_id)
+            logger.critical(
+                "[POSTBACK-AUTH] %s: no '%s' configured in secrets.yaml — "
+                "this webhook endpoint is UNAUTHENTICATED and internet-"
+                "reachable. Generate a secret, add '%s: <secret>' to "
+                "secrets.yaml, and append '?token=<secret>' to the webhook "
+                "URL configured in %s's partner dashboard to close this gap.",
+                broker_id, key, key, broker_id,
+            )
+        return True
+    supplied = request.query_params.get("token", "")
+    return _hmac.compare_digest(expected, str(supplied))
+
+
 async def _rco_run_template_attach(row) -> "tuple | None":
     """Run apply_template_to_order for *row* and persist attached_gtts_json.
 
@@ -1789,10 +1856,17 @@ class OrdersController(Controller):
 
         Best-effort: never 5xx (Dhan retries on non-2xx and will
         rapidly back-pressure us). Always returns 200 OK; failures
-        log + drop. No HMAC validation yet — Dhan's signature scheme
-        differs from Kite's and the operator hasn't surfaced their
-        test payload yet.
+        log + drop. No per-message HMAC — Dhan doesn't sign its webhook
+        payloads, so authentication is a shared-secret query-string
+        token instead (`_pb_verify_shared_token`); see that function's
+        docstring for the 2026-09 council audit fix this closes.
         """
+        if not _pb_verify_shared_token(request, "dhan"):
+            logger.critical(
+                "[POSTBACK-AUTH] rejected dhan postback — missing/invalid "
+                "'token' query param."
+            )
+            raise HTTPException(status_code=401, detail="Invalid postback token.")
         try:
             body = await request.json()
         except Exception as e:
@@ -1860,7 +1934,21 @@ class OrdersController(Controller):
         Groww's postback support is uncertain (per the audit
         broker-API parity matrix). Route exists so we capture
         whatever Groww sends if/when the webhook is configured.
+
+        No per-message signature — Groww doesn't sign its webhook
+        payloads (and its payload carries no account identifier at
+        all), so authentication is a shared-secret query-string token
+        (`_pb_verify_shared_token`); see that function's docstring for
+        the 2026-09 council audit fix this closes. This endpoint's
+        account="" fallback-matching gap made it the more exploitable
+        of the two brokers' postback routes.
         """
+        if not _pb_verify_shared_token(request, "groww"):
+            logger.critical(
+                "[POSTBACK-AUTH] rejected groww postback — missing/invalid "
+                "'token' query param."
+            )
+            raise HTTPException(status_code=401, detail="Invalid postback token.")
         try:
             body = await request.json()
         except Exception as e:

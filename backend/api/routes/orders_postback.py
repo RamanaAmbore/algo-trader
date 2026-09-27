@@ -208,6 +208,7 @@ async def _sync_algo_order_rows(
                 txn=txn,
                 qty=qty,
                 account=account,
+                broker_id=broker_id,
             )
             if _fallback is not None:
                 # M2(b): CRITICAL so the race condition is surfaced in logs.
@@ -349,7 +350,8 @@ _KITE_STATUS_MAP = {
 
 
 async def _pb_fallback_lookup_row(
-    _s, *, order_id: str, tradingsymbol: str, txn: str, qty, account: str
+    _s, *, order_id: str, tradingsymbol: str, txn: str, qty, account: str,
+    broker_id: str = "",
 ):
     """Broker webhook may fire before we recorded broker_order_id.
 
@@ -357,6 +359,19 @@ async def _pb_fallback_lookup_row(
     last 60s that are still OPEN with no broker_order_id yet. Sets
     broker_order_id on the match so subsequent postbacks resolve
     directly.
+
+    2026-09 council audit hardening: when the postback carries no
+    account at all (Groww's payload never includes one — `account`
+    arrives as ""), this match previously spanned EVERY account on the
+    platform, regardless of broker. `broker_id` (the claimed sender —
+    "dhan" or "groww") now narrows candidates to only accounts that
+    resolve to that SAME broker via `_broker_id_for()`, so a Groww
+    postback can no longer match a pending Kite or Dhan order just
+    because the account column couldn't be filtered directly. This is
+    defense-in-depth alongside `_pb_verify_shared_token` (the primary
+    fix) — it reduces blast radius even for a token-authenticated
+    request from the CORRECT broker, since that broker's own payload
+    may still omit account (Groww) or misreport it.
     """
     from sqlalchemy import select as _sql_select
     from datetime import datetime, timezone, timedelta
@@ -374,6 +389,19 @@ async def _pb_fallback_lookup_row(
     _pb_account = str(account or "").strip() if account else ""
     if _pb_account:
         _fallback_where.append(_AlgoOrder.account == _pb_account)
+    elif broker_id:
+        try:
+            from backend.brokers.registry import _loaded_accounts, _broker_id_for
+            _same_broker_accounts = [
+                a for a in _loaded_accounts() if _broker_id_for(a) == broker_id
+            ]
+            if _same_broker_accounts:
+                _fallback_where.append(_AlgoOrder.account.in_(_same_broker_accounts))
+        except Exception as _reg_exc:
+            logger.warning(
+                "[%s-POSTBACK] broker-account narrowing failed, falling back "
+                "to unnarrowed match: %s", broker_id.upper(), _reg_exc,
+            )
     try:
         _pb_qty = int(qty or 0)
     except (TypeError, ValueError):
@@ -656,7 +684,7 @@ async def _pb_event_kite(
                 _fallback = await _pb_fallback_lookup_row(
                     _s,
                     order_id=order_id, tradingsymbol=tradingsymbol,
-                    txn=txn, qty=qty, account=account,
+                    txn=txn, qty=qty, account=account, broker_id="kite",
                 )
                 if _fallback is not None:
                     _rows = [_fallback]
