@@ -1856,7 +1856,7 @@
     width: 1.4rem;
     height: 1.4rem;
     padding: 0;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: var(--c-short);
@@ -1865,7 +1865,7 @@
     flex-shrink: 0;
     transition: background 0.1s;
   }
-  .lp-close-btn:hover { background: rgba(248, 113, 113, 0.15); }
+  .lp-close-btn:hover { background: var(--close-btn-danger-bg-hover); }
 
   /* Account multi-select (legacy inline filter — retained for existing
      mounts that pass hideInlineAccountFilter=false). Width clamped so it

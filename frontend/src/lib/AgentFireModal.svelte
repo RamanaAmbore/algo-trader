@@ -196,12 +196,12 @@
     color: var(--c-short);
     font-size: var(--fs-xl);
     line-height: 1;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     cursor: pointer;
     transition: background 0.1s;
     flex-shrink: 0;
   }
-  .afm-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .afm-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   .afm-section {
     margin-bottom: 0.6rem;

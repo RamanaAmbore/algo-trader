@@ -1275,3 +1275,174 @@ test.describe.serial('algo consistency — whisper cell hairline (live)', () => 
     expect(color, `.ag-theme-ramboq cell border-right-color: ${color}`).toBe('rgb(209, 213, 219)');
   });
 });
+
+/* ── Close/dismiss icon-button rest-state fill (2026-09) ──────────────
+ * Operator complaint: every modal/drawer/popup "×" close button rendered
+ * as a bare bordered (or borderless) box at REST, only gaining a
+ * background tint on :hover — reads as broken/unfinished. Fix: filled
+ * at rest, stepping to a stronger tint on hover, via the shared
+ * --close-btn-danger/-info/-neutral-bg(-hover) token pairs (app.css).
+ * Each `*-close` button keeps its OWN accent colour (danger red /
+ * info cyan / neutral slate) — only the "has a fill at rest" property
+ * is standardised, not the colour itself.
+ * ─────────────────────────────────────────────────────────────────── */
+
+const CLOSE_BTN_SITES = [
+  { file: 'src/lib/BrokerHealthBadge.svelte', cls: '.bh-close', family: 'danger' },
+  { file: 'src/lib/PositionStrip.svelte', cls: '.ps-bd-close', family: 'danger' },
+  { file: 'src/lib/AgentFireModal.svelte', cls: '.afm-close', family: 'danger' },
+  { file: 'src/lib/SymbolPanel.svelte', cls: '.oes-close', family: 'danger' },
+  { file: 'src/lib/order/OrderPairModal.svelte', cls: '.opm-close', family: 'danger' },
+  { file: 'src/lib/ChartModal.svelte', cls: '.cm-close', family: 'danger' },
+  { file: 'src/lib/TourModal.svelte', cls: '.tour-close', family: 'danger' },
+  { file: 'src/lib/LogPanel.svelte', cls: '.lp-close-btn', family: 'danger' },
+  { file: 'src/lib/MarketPulse.svelte', cls: ':global(.search-close)', family: 'danger' },
+  { file: 'src/lib/order/OrderTicket.svelte', cls: '.ot-close', family: 'info' },
+  { file: 'src/lib/order/OrderTicket.svelte', cls: '.ot-demo-close', family: 'neutral' },
+  { file: 'src/routes/(algo)/admin/+page.svelte', cls: '.ip-modal-x', family: 'neutral' },
+  { file: 'src/routes/(algo)/admin/metrics/+page.svelte', cls: '.metrics-modal-close', family: 'neutral' },
+  { file: 'src/lib/DayPnlBreakup.svelte', cls: '.dpb-close', family: 'neutral' },
+  { file: 'src/lib/PnlAnalysis.svelte', cls: '.modal-x', family: 'neutral' },
+  { file: 'src/lib/order/OrderTimelineDrawer.svelte', cls: '.otd-close', family: 'neutral' },
+  { file: 'src/lib/ShortcutCheatsheet.svelte', cls: '.sc-close', family: 'neutral' },
+];
+
+test.describe('algo consistency — close-button rest-state fill (source)', () => {
+  test('app.css defines the three close-btn token pairs', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    for (const t of [
+      '--close-btn-danger-bg', '--close-btn-danger-bg-hover',
+      '--close-btn-info-bg', '--close-btn-info-bg-hover',
+      '--close-btn-neutral-bg', '--close-btn-neutral-bg-hover',
+    ]) {
+      expect(src, `${t} must be declared in app.css`).toContain(t + ':');
+    }
+  });
+
+  test('every close-button site fills its rest state via a --close-btn-* token (no bare transparent/none)', () => {
+    const offenders = [];
+    for (const site of CLOSE_BTN_SITES) {
+      const abs = path.join(process.cwd(), site.file);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { offenders.push(`${site.file}: file not found`); continue; }
+      // Isolate the rule body for this exact class (first match — the
+      // component-scoped declaration, not any :hover companion rule).
+      const escaped = site.cls.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const ruleRx = new RegExp(escaped + '\\s*\\{([^}]*)\\}');
+      const m = src.match(ruleRx);
+      if (!m) { offenders.push(`${site.file}: rule ${site.cls} not found`); continue; }
+      const body = m[1];
+      if (/background:\s*(transparent|none)\s*;/.test(body)) {
+        offenders.push(`${site.file} ${site.cls}: still declares background: transparent/none at rest`);
+      }
+      if (!new RegExp(`var\\(--close-btn-${site.family}-bg\\)`).test(body)) {
+        offenders.push(`${site.file} ${site.cls}: rest state must use var(--close-btn-${site.family}-bg)`);
+      }
+    }
+    expect(offenders, `Close-button rest-fill regression:\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  test('every close-button hover rule steps up to the matching -hover token', () => {
+    // .ip-modal-x is a deliberate exception: its rest fill is the neutral
+    // (slate) token, but its :hover deliberately KEEPS the pre-existing
+    // literal red tint (rgba(248,113,113,0.12) + #fca5a5 text) — a
+    // "close = danger on hover" affordance distinct from its neutral rest
+    // identity. Operator instruction: fix the missing rest fill only,
+    // leave this button's hover behaviour untouched.
+    const HOVER_EXCEPTIONS = new Set(['.ip-modal-x']);
+    const offenders = [];
+    for (const site of CLOSE_BTN_SITES) {
+      if (HOVER_EXCEPTIONS.has(site.cls)) continue;
+      const abs = path.join(process.cwd(), site.file);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      if (!new RegExp(`var\\(--close-btn-${site.family}-bg-hover\\)`).test(src)) {
+        offenders.push(`${site.file} ${site.cls}: :hover must reference var(--close-btn-${site.family}-bg-hover)`);
+      }
+    }
+    expect(offenders, `Close-button hover-step regression:\n${offenders.join('\n')}`).toEqual([]);
+  });
+});
+
+test.describe.serial('algo consistency — close-button rest-state fill (live)', () => {
+  test.setTimeout(60_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  /** Parses `rgba(r, g, b, a)` (or opaque `rgb(...)`) and returns the alpha
+   *  channel (1 when omitted). */
+  function alphaOf(rgbaStr) {
+    const m = /rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(?:,\s*([\d.]+))?\)/.exec(rgbaStr || '');
+    if (!m) return null;
+    return m[1] == null ? 1 : Number.parseFloat(m[1]);
+  }
+
+  test('BrokerHealthBadge close button: rest-state background has non-zero alpha, hover steps up', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    const chip = p.locator('.broker-chip');
+    await chip.first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    if (!(await chip.count())) { test.skip(true, 'broker-chip not present on this session'); return; }
+    await chip.first().click();
+    const closeBtn = p.locator('.bh-close');
+    await closeBtn.first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
+    if (!(await closeBtn.count())) { test.skip(true, '.bh-close not rendered'); return; }
+
+    // Move the mouse off the button before sampling rest state.
+    await p.mouse.move(0, 0);
+    const restBg = await closeBtn.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    const restAlpha = alphaOf(restBg);
+    expect(restAlpha, `.bh-close rest background: ${restBg}`).not.toBeNull();
+    expect(restAlpha, `.bh-close rest background alpha must be > 0 (filled, not transparent): ${restBg}`).toBeGreaterThan(0);
+
+    await closeBtn.first().hover();
+    await p.waitForTimeout(200); // past the 120ms background transition
+    const hoverBg = await closeBtn.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    const hoverAlpha = alphaOf(hoverBg);
+    expect(hoverAlpha, `.bh-close hover background: ${hoverBg}`).not.toBeNull();
+    expect(hoverAlpha, `.bh-close hover alpha (${hoverAlpha}) must exceed rest alpha (${restAlpha})`).toBeGreaterThan(restAlpha);
+  });
+
+  test('ShortcutCheatsheet close button ("?"): rest-state background has non-zero alpha, hover steps up', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    await p.locator('body').click({ position: { x: 5, y: 5 } }).catch(() => {});
+    await p.keyboard.press('?');
+    const closeBtn = p.locator('.sc-close');
+    await closeBtn.first().waitFor({ state: 'visible', timeout: 10_000 }).catch(() => {});
+    if (!(await closeBtn.count())) { test.skip(true, 'cheatsheet did not open'); return; }
+
+    await p.mouse.move(0, 0);
+    const restBg = await closeBtn.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    const restAlpha = alphaOf(restBg);
+    expect(restAlpha, `.sc-close rest background: ${restBg}`).not.toBeNull();
+    expect(restAlpha, `.sc-close rest background alpha must be > 0 (filled, not transparent): ${restBg}`).toBeGreaterThan(0);
+
+    await closeBtn.first().hover();
+    await p.waitForTimeout(200);
+    const hoverBg = await closeBtn.first().evaluate((el) => getComputedStyle(el).backgroundColor);
+    const hoverAlpha = alphaOf(hoverBg);
+    expect(hoverAlpha, `.sc-close hover alpha (${hoverAlpha}) must exceed rest alpha (${restAlpha})`).toBeGreaterThan(restAlpha);
+  });
+});

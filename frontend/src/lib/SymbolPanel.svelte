@@ -3416,7 +3416,7 @@
     /* Standard close button — square 1.4rem matches ChartModal's
        refresh + close buttons; glyph 0.95rem is proportional to the
        0.72rem header title text. */
-    background: none;
+    background: var(--close-btn-danger-bg);
     border: 1px solid rgba(248, 113, 113, 0.35);
     color: var(--c-short);
     width: 1.4rem;
@@ -3436,7 +3436,7 @@
     justify-content: center;
     transition: background 0.1s;
   }
-  .oes-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .oes-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   /* Tab strip wrapper — padding + flex-shrink only; AlgoTabs renders the
      button row via the global .algo-tab rules in app.css. */

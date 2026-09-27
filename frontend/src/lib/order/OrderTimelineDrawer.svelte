@@ -250,18 +250,20 @@
     text-transform: uppercase;
   }
   .otd-close {
-    background: transparent;
+    /* Was borderless/transparent at rest — operator complaint (2026-09):
+       close icons should carry a fill at rest, not just on hover. */
+    background: var(--close-btn-neutral-bg);
     border: none;
     cursor: pointer;
     color: rgba(180, 200, 230, 0.7);
     padding: 0.15rem;
-    border-radius: 0.15rem;
+    border-radius: 3px;
     display: flex;
     align-items: center;
-    transition: color 0.08s;
+    transition: color 0.08s, background 0.08s;
     outline: none;
   }
-  .otd-close:hover { color: var(--c-short); }
+  .otd-close:hover { color: var(--c-short); background: var(--close-btn-neutral-bg-hover); }
 
   /* Scrollable body */
   .otd-body {

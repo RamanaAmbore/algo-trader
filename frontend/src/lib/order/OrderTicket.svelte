@@ -3315,7 +3315,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
+    background: var(--close-btn-info-bg);
     border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
     color: var(--c-info, #22d3ee);
@@ -3327,7 +3327,7 @@
     transition: background 0.08s, border-color 0.08s;
   }
   .ot-close:hover {
-    background: rgba(34,211,238,0.14);
+    background: var(--close-btn-info-bg-hover);
     border-color: rgba(34,211,238,0.65);
   }
 
@@ -4209,11 +4209,12 @@
   .ot-demo-close {
     position: absolute; top: 0.55rem; right: 0.7rem;
     width: 1.5rem; height: 1.5rem;
-    border: none; background: transparent;
+    border: none; background: var(--close-btn-neutral-bg);
     color: #94a3b8; font-size: 1.2rem; cursor: pointer; line-height: 1;
     border-radius: 3px;
+    transition: background 0.1s, color 0.1s;
   }
-  .ot-demo-close:hover { background: rgba(255,255,255,0.10); color: var(--c-action); }
+  .ot-demo-close:hover { background: var(--close-btn-neutral-bg-hover); color: var(--c-action); }
   .ot-demo-title {
     margin: 0 0 0.55rem;
     font-size: var(--fs-xl);

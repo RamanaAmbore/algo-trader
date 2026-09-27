@@ -143,7 +143,9 @@
     color: var(--algo-amber);
   }
   .sc-close {
-    background: none;
+    /* Was borderless/transparent at rest — operator complaint (2026-09):
+       close icons should carry a fill at rest, not just on hover. */
+    background: var(--close-btn-neutral-bg);
     border: none;
     color: var(--algo-muted);
     font-size: 1.1rem;
@@ -151,8 +153,9 @@
     padding: 0 0.25rem;
     cursor: pointer;
     border-radius: 3px;
+    transition: background 0.1s, color 0.1s;
   }
-  .sc-close:hover { color: var(--algo-slate); background: rgba(255,255,255,0.06); }
+  .sc-close:hover { color: var(--algo-slate); background: var(--close-btn-neutral-bg-hover); }
 
   .sc-grid {
     display: grid;
