@@ -45,7 +45,7 @@
     findNearestFuture,
   } from '$lib/data/instruments';
   import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
-  import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay } from '$lib/data/expiryPnl';
+  import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay, expiredLegFrozenPnl } from '$lib/data/expiryPnl';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
@@ -1799,13 +1799,19 @@
       // shifted by the broker P&L of holdings the chart isn't
       // actually showing.
       if (!_includeHoldings && c.kind === 'eq') continue;
-      // D4(a) post-ship audit fix: `_expired`-tagged legs excluded — this
-      // feeds `chartPnlOffset`, which vertically shifts the CURVE to match
-      // "current spot P&L". The curve structurally excludes `_expired`
-      // legs' contribution (buildCleanLegs never sends them to the
-      // backend), so including their pnl here would over/under-shift the
-      // curve relative to what it actually represents.
-      if (c._expired) continue;
+      // 2026-09 GOLD/GOLDM fix (supersedes the D4(a) exclusion that used
+      // to live here): `_expired`-tagged legs are NO LONGER excluded.
+      // This total feeds `chartPnlOffset`, which vertically shifts the
+      // TODAY curve to match "current spot P&L" — the curve (`_mergedPayoff`
+      // / `chartTheoreticalAtSpot`) structurally has ZERO contribution from
+      // an `_expired` leg (`buildCleanLegs` never sends it to the backend),
+      // so this total MUST include that leg's value, or the offset under-
+      // shifts the curve by exactly the amount this leg is worth. `c.pnl`
+      // already IS the frozen/current value for an expired-but-held leg
+      // (the contract stopped trading, so its last-known pnl is its
+      // settled outcome) — no special-casing needed at this specific site,
+      // unlike the other three `_expired` sites below, which explicitly
+      // valued (or excluded) it and now use `expiredLegFrozenPnl`.
       s += Number(c.pnl || 0);
     }
     return s;
@@ -2504,10 +2510,17 @@
    *
    *  Post-ship audit fix (D4), two parts, both required for the C1
    *  invariant ("chart marker position = chart number"):
-   *  (a) `_expired`-tagged legs return null here (excluded from the
-   *      chart), matching the backend curve (`buildCleanLegs` already
-   *      excludes them from the /strategy-analytics request) — this
-   *      total must agree with what the CURVE actually represents.
+   *  (a) `_expired`-tagged legs (2026-09 GOLD/GOLDM fix, supersedes the
+   *      original D4(a) exclusion) now return `expiredLegFrozenPnl(c)` —
+   *      the frozen settlement value — instead of being excluded. The
+   *      curve (`buildCleanLegs` excludes them from the /strategy-analytics
+   *      request, so the backend curve has zero contribution from them)
+   *      picks up the SAME value via `_expiryPnlOffset`'s matching fix, so
+   *      this total still agrees with what the curve+offset actually
+   *      represents — it just no longer silently reads 0 for a root whose
+   *      ENTIRE F&O book is expired-but-held (the GOLD/GOLDM regression:
+   *      previously this returned null for every leg, summing to 0, while
+   *      Snapshot — which has no such exclusion — showed the real number).
    *      `_legsTotalsBase`/`_legsExpPnlTotal`/`_legsDayPnlTotal` are
    *      DELIBERATELY UNCHANGED — those are Legs-GRID totals, which must
    *      still count expired-but-held legs per Commit 2's whole point.
@@ -2522,7 +2535,7 @@
    *      the wrong pairing reintroduces a real gap
    *      (`β·MV·(payoffSpot−S0)/S0`) whenever the two spots diverge. */
   const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => {
-    if (c._expired) return null;
+    if (c._expired) return expiredLegFrozenPnl(c);
     if (c.kind === 'eq') {
       return curveBasisEqValue(c, Number(strategy?.spot) || 0, payoffSpot ?? null, getProxyRow);
     }
@@ -2566,23 +2579,35 @@
   // Reads _legsTotalsBase (unaffected by the Legs search box — see its
   // own comment) so the curve's offset stays stable while the operator
   // types in the search box (§5).
-  // D4(a) post-ship audit fix: `_expired`-tagged legs excluded — this
-  // offset shifts the EXPIRY CURVE itself, which structurally excludes
-  // `_expired` legs (buildCleanLegs never sends them to the backend); a
-  // locked-in-gain offset from a leg the curve doesn't represent would
-  // shift the curve away from what it actually depicts.
-  const _expiryPnlOffset = $derived.by(() =>
-    _legsTotalsBase
-      .filter(c => {
-        if (!_isLegEnabled(c) || c.kind === 'eq' || c._expired) return false;
-        if (!showDraftInPayoff &&
-            (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-        return true;
-      })
-      .reduce((s, c) => s + (Number(c.qty || 0) === 0
+  // 2026-09 GOLD/GOLDM fix (supersedes the D4(a) exclusion that used to
+  // live here): `_expired`-tagged legs are no longer excluded from this
+  // offset — they get their OWN branch below, added via
+  // `expiredLegFrozenPnl` (the FULL frozen value, not just `c.realised`).
+  // This offset shifts the EXPIRY CURVE itself, which structurally
+  // excludes `_expired` legs (`buildCleanLegs` never sends them to the
+  // backend) — the curve's contribution from such a leg is exactly zero
+  // at every spot, so the offset must supply its WHOLE value, not just a
+  // "realised/locked-in" component. That distinction (realised-only for
+  // still-open legs) exists because "BS drift has no meaning at expiry"
+  // for a leg the curve DOES represent — an expired-and-settled leg has
+  // no more BS drift concept at all (nothing left to mark), so its entire
+  // frozen value belongs in the offset.
+  const _expiryPnlOffset = $derived.by(() => {
+    let s = 0;
+    for (const c of _legsTotalsBase) {
+      if (!_isLegEnabled(c) || c.kind === 'eq') continue;
+      if (!showDraftInPayoff &&
+          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) continue;
+      if (c._expired) {
+        s += expiredLegFrozenPnl(c);
+        continue;
+      }
+      s += Number(c.qty || 0) === 0
         ? Number(c.realised || c.pnl || 0)
-        : Number(c.realised || 0)), 0)
-  );
+        : Number(c.realised || 0);
+    }
+    return s;
+  });
 
   // Master "select all" plumbing for the Legs panel header checkbox.
   // allCandidatesOn = true when every candidate is enabled in the
@@ -2980,18 +3005,27 @@
   const _clientPayoffStub = $derived.by(() => {
     void _throttledTick;
     // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
-    // D4(a) post-ship audit fix: `_expired`-tagged legs excluded here too —
-    // this client-side stub curve is the fallback rendering path for the
-    // exact all-expired-legs scenario D2 fixed (strategy correctly wipes
-    // to null, so this stub takes over) — it must agree with the backend
-    // curve (buildCleanLegs already excludes `_expired` legs) and with the
-    // chart's own Exp P&L readout (_chartExpPnlAtSpot, same exclusion),
-    // or the marker/curve/number triple disagrees, breaking C1.
+    // `_expired`-tagged legs are excluded from the SPOT-DEPENDENT part of
+    // the curve (they have no forward BS/intrinsic shape — the contract is
+    // already settled), same as before. 2026-09 GOLD/GOLDM fix (supersedes
+    // the D4(a) design that used to live here): their frozen value is no
+    // longer dropped entirely — it's summed separately below
+    // (`_expiredConstant`) and folded into EVERY grid point as a constant
+    // shift, so a root whose ENTIRE F&O book is expired-but-held (this
+    // stub IS the active render path for that exact scenario — `strategy`
+    // correctly wipes to null via D2's fix, and `_chartExpPnlAtSpot`'s
+    // `legsExpPnlAtSpot` prop is `undefined` in that case, so OptionsPayoff
+    // reads its readout number directly off THIS curve's `expiry_value` at
+    // the marker — see OptionsPayoff.svelte's `_expDisplayVal` fallback)
+    // shows its real, non-zero exposure instead of a flat 0 line.
     const activeLegs = legs.filter(l => {
       if (l._expired) return false;
       if (l.kind === 'eq') return _includeHoldings;
       return true;
     });
+    const _expiredConstant = legs
+      .filter(l => l._expired)
+      .reduce((s, l) => s + expiredLegFrozenPnl(l), 0);
 
     // Spot resolution — strategy is null at this point.
     // 2026-09 Commit 4 (single spot resolver): reads `_undLive` — the SAME
@@ -3027,20 +3061,25 @@
     /** @type {Array<{spot: number, today_value: number|null, expiry_value: number}>} */
     const out = [];
 
-    // Empty legs → flat line at y=0. Valid + useful display: axes + spot
-    // marker + zero-P&L line. Once legs land the derived recomputes into
-    // the intrinsic curve without a card unmount.
+    // Empty legs → flat line at y=0 (or at `_expiredConstant`, when this
+    // root's ENTIRE F&O book is expired-but-held — the GOLD/GOLDM case;
+    // legs.length>0 but activeLegs.length===0). Valid + useful display:
+    // axes + spot marker + P&L line at the real value. Once live legs
+    // land the derived recomputes into the intrinsic curve without a
+    // card unmount. `today_value` also carries `_expiredConstant` (not
+    // just `expiry_value`) — an expired-and-settled contract has no more
+    // time decay, so "today" and "at expiry" are the SAME frozen number.
     if (activeLegs.length === 0) {
       for (let i = 0; i < n; i++) {
-        out.push({ spot: lo + i * step, today_value: 0, expiry_value: 0 });
+        out.push({ spot: lo + i * step, today_value: _expiredConstant, expiry_value: _expiredConstant });
       }
       return out;
     }
 
     for (let i = 0; i < n; i++) {
       const s = lo + i * step;
-      let sum = 0;
-      let anyValid = false;
+      let sum = _expiredConstant;
+      let anyValid = _expiredConstant !== 0;
       for (const l of activeLegs) {
         const v = expiryPnl({ ...l, kind: l.kind ?? 'fut' }, s);
         if (v != null) { sum += v; anyValid = true; }
@@ -4453,8 +4492,17 @@
         // the EXACT scenario (GOLDM, all legs expired) this whole plan
         // exists to fix. Once `strategy` correctly wipes to null here,
         // rendering falls through cleanly to `_clientPayoffStub` (Commit
-        // 4's fix), which renders a real, non-blank curve from `legs`
-        // directly regardless of the `_expired` tag.
+        // 4's fix). Stale-comment correction (2026-09 GOLD/GOLDM chart-vs-
+        // Snapshot divergence fix): the claim that this "renders a real,
+        // non-blank curve from `legs` directly regardless of the
+        // `_expired` tag" stopped being true the moment a later post-ship
+        // audit fix (D4(a)) made `_clientPayoffStub` EXCLUDE `_expired`
+        // legs from its spot-dependent computation too — which collapsed
+        // an all-expired-legs root's curve back to a flat 0 line (the
+        // exact regression this comment claims was already fixed). Fixed
+        // again: `_clientPayoffStub` now sums `_expired` legs' frozen
+        // value (`expiredLegFrozenPnl`) into a constant folded into every
+        // grid point, so the curve is flat AT that real value, not 0.
         const _hasEnabledLegs = hasEnabledFOLegs(legs);
         const _recentEnough = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
         // R5 per-root redesign (2026-09, operator audit follow-up):
