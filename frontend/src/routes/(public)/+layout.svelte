@@ -133,9 +133,9 @@
             <span class="pub-brand-tagline">INVEST · GROW · COMPOUND</span>
           </div>
         </a>
-        <div class="flex items-center gap-2">
+        <div class="pub-mobile-right-group flex items-center gap-2">
           {#if $authStore.user}
-            <span class="pub-user-pill text-[0.6rem]">
+            <span class="pub-user-pill pub-user-pill-mobile text-[0.6rem]">
               {$authStore.user.username}
               {#if $authStore.user.role === 'designated'}
                 <span class="pub-user-role pub-user-role-designated">designated</span>
@@ -445,6 +445,16 @@
   /* B2: same 0.7rem floor on mobile — no smaller exception. Verified
      (mobile_typography_floor.spec.js) no horizontal overflow at 360px. */
   .pub-brand-mobile .pub-brand-tagline { font-size: 0.7rem; }
+  /* B9 (2026-09): mobile brand block must never flex-shrink below its
+     natural content width — when logged in, the .pub-user-pill sitting
+     in the same row (space-between) was eating into the brand block's
+     width via default flex-shrink:1, squeezing .pub-brand-text until
+     the tagline's own words wrapped to 2-3 lines. The pill (and its
+     wrapper below) give up the space instead; the brand block does not
+     shrink. margin-right:0 overrides the shared .pub-brand rule (not
+     needed here since the row is space-between, not flex-1). */
+  .pub-brand-mobile { flex-shrink: 0; margin-right: 0; }
+  .pub-brand-tagline { white-space: nowrap; }
 
   /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
      Contact get the prominent treatment; the right-side context-switch
@@ -574,8 +584,40 @@
     outline: none !important;
     min-width: 2.75rem;
     min-height: 2.75rem;
+    /* B9: never shrink — the tap target must stay full-size; the pill
+       gives way instead (see .pub-mobile-right-group / .pub-user-pill-mobile). */
+    flex-shrink: 0;
   }
   .pub-hamburger:hover { background: rgba(255,255,255,0.10); }
+
+  /* B9: right-side mobile-bar group (user pill + hamburger). min-width:0
+     overrides the flex default (min-width:auto) so this group — and the
+     pill inside it — is allowed to shrink below its own content's natural
+     width instead of forcing the pinned brand block (flex-shrink:0 above)
+     or the hamburger (flex-shrink:0 above) to give up space first. */
+  .pub-mobile-right-group {
+    min-width: 0;
+    /* Tighter than the markup's gap-2 (0.5rem) — reclaims a few more
+       px at the 360px floor so "ambore"-length usernames render in
+       full rather than ellipsizing by a couple of px. */
+    gap: 0.3rem;
+  }
+  .pub-user-pill-mobile {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    padding: 0.18rem 0.4rem;
+  }
+  /* Below ~480px (every real phone width the bug was observed at —
+     360/390/412/414/428) the role badge ("DESIGNATED"/"ADMIN") is the
+     single biggest reclaimable chunk once the username itself is down
+     to its own min-content. Hidden here rather than shrunk further —
+     .pub-user-role is already exempt from the 0.7rem legibility floor
+     (public_typography_floor.spec.js), so hiding it (not shrinking any
+     font) stays inside that contract. */
+  @media (max-width: 480px) {
+    .pub-user-pill-mobile .pub-user-role { display: none; }
+  }
 
   /* Mobile dropdown */
   .pub-mobile-dropdown {
