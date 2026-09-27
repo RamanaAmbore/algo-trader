@@ -91,7 +91,7 @@ CAPS: dict[str, frozenset[str]] = {
     "view_all_books":           frozenset({"designated", "trader", "risk", "admin", "demo"}),  # demo with masked accts
     "view_derivatives":         frozenset({"designated", "trader", "risk", "demo"}),
     "view_strategies_catalog":  frozenset({"designated", "trader", "risk", "partner", "demo"}),
-    "view_agents_catalog":      frozenset({"designated", "trader", "risk", "demo"}),
+    "view_agents_catalog":      frozenset({"designated", "trader", "risk", "admin", "demo"}),
     "view_settings_readonly":   frozenset({"designated", "risk", "admin", "demo"}),
     "view_audit":               frozenset({"designated", "risk", "admin"}),
     "view_users":               frozenset({"designated"}),

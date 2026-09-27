@@ -26,6 +26,15 @@ class TestRBACAdminCapabilities:
             "Admin role must have 'view_hedge_proxies' capability"
         )
 
+    def test_admin_has_view_agents_catalog(self):
+        """Admin must be able to view the Agents catalog (read-only) —
+        fixed 2026-09-27, was an oversight excluding admin while every
+        other comparable read cap (view_all_books, view_settings_readonly,
+        view_audit, view_brokers) already includes it."""
+        assert has_cap("admin", "view_agents_catalog") is True, (
+            "Admin role must have 'view_agents_catalog' capability"
+        )
+
     def test_admin_lacks_place_order(self):
         """Admin should not have trading rights — regression guard against
         capability matrix drift."""
@@ -83,6 +92,12 @@ class TestRBACMatrixStructure:
         """'admin' must be in the 'view_hedge_proxies' frozenset."""
         assert "admin" in CAPS["view_hedge_proxies"], (
             "CAPS['view_hedge_proxies'] must include 'admin'"
+        )
+
+    def test_admin_in_agents_catalog_cap(self):
+        """'admin' must be in the 'view_agents_catalog' frozenset."""
+        assert "admin" in CAPS["view_agents_catalog"], (
+            "CAPS['view_agents_catalog'] must include 'admin'"
         )
 
     def test_simulator_is_frozenset(self):

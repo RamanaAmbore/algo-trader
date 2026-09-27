@@ -150,6 +150,15 @@ function _friendlyError(/** @type {number|null} */ status,
     return 'Session expired.';
   }
   if (status === 403) {
+    // cap_guard() (backend/api/rbac.py) raises the raw internal capability
+    // name verbatim, e.g. "Capability 'view_agents_catalog' required" —
+    // meaningless to an operator and was leaking straight into the UI
+    // banner. Recognize that specific shape and show a role-gate message
+    // instead; any other 403 detail (broker/order rejections etc.) still
+    // passes through unchanged.
+    if (detail && /^Capability '.+' required$/i.test(detail)) {
+      return 'Not available for your account role.';
+    }
     if (detail) return _trimDetail(detail);
     return 'Not allowed.';
   }

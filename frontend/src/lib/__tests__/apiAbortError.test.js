@@ -31,7 +31,7 @@ vi.mock('$lib/stores', () => ({
 // AbortController branch. fetchChainExpiries accepts a caller signal → exercises
 // the caller-abort branch. placeTicketOrder opts into `throwOnTimeout` (D3 fix,
 // 2026-09) → exercises the new TimeoutError-throwing branch.
-import { fetchWhoami, fetchChainExpiries, placeTicketOrder } from '$lib/api';
+import { fetchWhoami, fetchChainExpiries, placeTicketOrder, fetchAgents } from '$lib/api';
 import { authStore } from '$lib/stores';
 
 // ── Fetch mock helpers ────────────────────────────────────────────────────────
@@ -230,5 +230,49 @@ describe('_request — err.fullMessage (R6)', () => {
     }
     expect(caught.message).toBe('Pick an account');
     expect(caught.fullMessage).toBe('Pick an account');
+  });
+});
+
+// ── cap_guard() 403 detail is humanized, not leaked verbatim (2026-09) ───────
+// backend/api/rbac.py's cap_guard() raises "Capability '<name>' required" —
+// an internal capability identifier with no meaning to an operator. This was
+// rendering raw in the UI banner (e.g. on /automation's Agents tab). Only
+// that specific shape gets the friendlier message; any other 403 detail
+// (order/broker rejections etc.) must still pass through unchanged.
+describe('_request — 403 capability-guard detail is humanized', () => {
+  beforeEach(() => {
+    vi.mocked(authStore.getToken).mockReturnValue('fake-jwt-token');
+  });
+  afterEach(() => {
+    vi.mocked(authStore.getToken).mockReturnValue(null);
+  });
+
+  it('maps "Capability \'X\' required" to a readable role-gate message', async () => {
+    fetchSpy.mockResolvedValue(
+      makeFetchResponse({ detail: "Capability 'view_agents_catalog' required" }, 403)
+    );
+
+    let caught = null;
+    try {
+      await fetchAgents();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).not.toBeNull();
+    expect(caught.message).toBe('Not available for your account role.');
+    // The raw internal capability name must not leak into the short banner.
+    expect(caught.message).not.toContain('view_agents_catalog');
+  });
+
+  it('leaves other 403 details untouched (not over-matched)', async () => {
+    fetchSpy.mockResolvedValue(makeFetchResponse({ detail: 'Order blocked for this account' }, 403));
+
+    let caught = null;
+    try {
+      await fetchAgents();
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught.message).toBe('Order blocked for this account');
   });
 });
