@@ -21,7 +21,7 @@ import { symbolTickCount, getSnapshot, liveSnap } from '$lib/data/symbolStore.sv
 import { positionsStore, pulseHoldingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
 import { baseDayPnlForPosition, dayChangePct } from '$lib/data/nav.js';
 import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
-import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces } from '$lib/data/expiryPnl.js';
+import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, isExpiredHeldContract, expiredPositionExpPnl, expiredPositionExpPnlPieces } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument } from '$lib/data/instruments';
@@ -142,6 +142,25 @@ const _posTier2 = $derived.by(() => {
       const isOpt  = isCE || isPE;
       const kind   = isOpt ? 'opt' : 'fut';
       if (p._qty !== 0) {
+        // Expired-but-held check FIRST (2026-09 GOLD/GOLDM fix) — a
+        // contract whose expiry has already passed (or has vanished from
+        // the instruments master entirely) but the broker hasn't squared
+        // it off yet must NOT be valued against `spot` (_rootSpotCache[root]
+        // rolls FORWARD to the CURRENT front-month contract via
+        // findNearestFuture — an economically unrelated instrument for an
+        // MCX root like GOLD/GOLDM). Its fate is already sealed at
+        // whatever it actually settled at; use the frozen basis instead.
+        // Same condition derivatives/pageLoad.js's buildCandidatePositions
+        // tags `_expired: true` for — this store carries no such tag of
+        // its own, so it re-derives the identical condition via the SAME
+        // shared predicate (expiryPnl.js) rather than a parallel check
+        // that could silently drift from the page's.
+        if (isExpiredHeldContract(p._sym, p._qty)) {
+          exp_pnl = expiredPositionExpPnl(p);
+          exp_pnl_pieces = expiredPositionExpPnlPieces(p);
+          // No time value remains on an expired-and-settled contract.
+          extrinsic = isOpt ? 0 : null;
+        } else {
         // Options value at the front-month root spot (matches the Exp P&L
         // column tooltip / Snapshot / Legs TOTAL). Futures value at THEIR
         // OWN contract's live price — a future's Exp P&L only equals the
@@ -186,6 +205,7 @@ const _posTier2 = $derived.by(() => {
           const cRow = { symbol: p._sym, qty: p._qty, avg_cost: p._avg, ltp: p._ltp, kind };
           const pollAnchor = isOpt ? (Number(p?.underlying_ltp || 0) || 0) : 0;
           extrinsic = legExtrinsicDisplay(cRow, pollAnchor);
+        }
         }
       } else {
         // Fully closed (no remaining qty) — positionExpPnl still runs the

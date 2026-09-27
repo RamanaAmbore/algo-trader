@@ -1,5 +1,7 @@
 import { decomposeSymbol } from './decomposeSymbol.js';
 import { baseDayPnlForPosition, currentTotalProfit } from './nav.js';
+import { getInstrument as _getInstrumentDefault, isInstrumentsCacheLoaded as _isInstrumentsCacheLoadedDefault } from './instruments.js';
+import { todayIST } from '../dateFormat.js';
 
 // Structural tail regexes mirroring decomposeSymbol's own _OPT_MONTHLY /
 // _OPT_WEEKLY shapes (YY+MON+strike+CE/PE, or YY+month-code+DD+strike+
@@ -637,6 +639,110 @@ export function resolveExpiryAnchor({ isOpt, rootSpot, ownLiveLtp = 0, ownPolled
   if (ownLiveLtp > 0) return ownLiveLtp;
   if (ownPolledLtp > 0) return ownPolledLtp;
   return rootSpot;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Expired-but-held leg valuation (2026-09, GOLD/GOLDM chart-vs-Snapshot
+// divergence fix). See derivatives/pageLoad.js's buildCandidatePositions for
+// the `_expired: true` tag this predicate mirrors, and portfolioStore.svelte.js's
+// _posTier2 for the Snapshot-side consumer.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * True when a held (qty!==0) F&O contract has already expired / been
+ * delisted from the live instruments master — the SAME condition
+ * `derivatives/pageLoad.js`'s `buildCandidatePositions` checks inline to
+ * tag a row `_expired: true` (2026-09 GOLDM fix: a held row whose contract
+ * can't be resolved — either missing entirely, or carrying an expiry date
+ * that's already passed — stays visible/counted instead of being dropped).
+ *
+ * Extracted here, PARAMETERIZED on the instrument lookup (defaults to the
+ * real `getInstrument`), so `portfolioStore.svelte.js`'s Snapshot pipeline
+ * — which carries no `_expired` tag of its own (that's a page-level
+ * annotation `pageLoad.js` derives independently) — can detect the
+ * IDENTICAL condition without re-deriving a parallel, potentially-drifting
+ * version. NOT wired into `pageLoad.js`'s own inline check in this pass
+ * (that file's existing logic + its `pageLoad_expired.test.js` suite are
+ * left untouched — lower blast radius; a future SSOT consolidation could
+ * unify both call sites onto this one function).
+ *
+ * Gated on the instruments cache actually being loaded — before the first
+ * `loadInstruments()` resolves, EVERY F&O symbol lookup returns null, which
+ * would otherwise misclassify every held F&O row across the WHOLE app
+ * (NavStrip, Pulse, Snapshot — not just derivatives) as "expired" during
+ * that brief window, silently switching every position onto the frozen
+ * (wrong-during-cold-start) valuation basis below.
+ *
+ * @param {string} sym
+ * @param {number} qty
+ * @param {(sym: string) => {x?: string}|null} [getInstrumentFn]
+ * @returns {boolean}
+ */
+export function isExpiredHeldContract(sym, qty, getInstrumentFn = _getInstrumentDefault) {
+  if (!qty) return false;
+  if (!_isInstrumentsCacheLoadedDefault()) return false;
+  const inst = getInstrumentFn(sym);
+  return !inst || !!(inst.x && inst.x < todayIST());
+}
+
+/**
+ * Frozen Exp P&L for an expired-but-still-held F&O leg (contract expired/
+ * delisted from the instruments master but the broker hasn't squared this
+ * position off yet). Its economic fate is sealed at whatever price it
+ * actually settled at — re-deriving intrinsic value against a rolled-
+ * FORWARD root spot (e.g. `_rootSpotCache[root]`, which resolves to the
+ * CURRENT front-month future via `findNearestFuture` for MCX/CDS roots)
+ * values it against an unrelated, still-moving contract instead of the
+ * frozen settlement outcome.
+ *
+ * Uses `currentTotalProfit()` (nav.js) — the SAME canonical "current total
+ * profit" primitive already used throughout this file (`_forceBaseline`)
+ * and `nav.js`'s own Day P&L SSOT — rather than a raw broker `pnl` field
+ * directly, per CLAUDE.md's Day P&L SSOT convention (raw `pnl` alone isn't
+ * reliable across every broker; `currentTotalProfit` prefers
+ * realised+unrealised and only falls back to `pnl` when both are exactly
+ * zero/absent). A settled position's current total profit IS its final,
+ * frozen economic outcome — nothing left to mark against any spot.
+ *
+ * @param {any} c row carrying (a subset of) pnl/realised/unrealised —
+ *   loosely typed since callers pass several different row shapes
+ *   (candidate/leg rows, raw broker rows, split pieces).
+ * @returns {number}
+ */
+export function expiredLegFrozenPnl(c) {
+  return currentTotalProfit(c);
+}
+
+/**
+ * Per-piece Exp P&L for an expired-but-held raw broker row — mirrors
+ * `positionExpPnlPieces`' split-then-value shape exactly (same
+ * `splitClosedReopened` piece boundaries, so a page-level consumer that
+ * splits the SAME raw row can still zip its own display rows against
+ * these values index-for-index), but values each piece via
+ * `expiredLegFrozenPnl` instead of `expiryPnlWithRealised(piece, anchor)`
+ * — an expired contract has no live anchor to value against.
+ * @param {any} rawRow
+ * @returns {number[]}
+ */
+export function expiredPositionExpPnlPieces(rawRow) {
+  const normRow = buildPositionRowFromBroker(rawRow, 'live');
+  const pieces = splitClosedReopened(normRow);
+  return pieces.map(piece => expiredLegFrozenPnl(piece));
+}
+
+/**
+ * Sum of `expiredPositionExpPnlPieces` — the pre-summed total, mirroring
+ * `positionExpPnl`'s relationship to `positionExpPnlPieces`.
+ * @param {any} rawRow
+ * @returns {number|null}
+ */
+export function expiredPositionExpPnl(rawRow) {
+  const pieces = expiredPositionExpPnlPieces(rawRow);
+  let sum = null;
+  for (const v of pieces) {
+    if (v != null && isFinite(Number(v))) sum = (sum ?? 0) + Number(v);
+  }
+  return sum;
 }
 
 /**

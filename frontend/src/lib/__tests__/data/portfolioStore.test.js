@@ -81,6 +81,51 @@ describe('portfolioStore.svelte.js — R4a source-grep guard (real file, not the
   });
 });
 
+// ── 2026-09 GOLD/GOLDM fix — expired-but-held valuation source-grep guard ───
+//
+// portfolioStore.svelte.js can't be imported directly (see file-header note
+// above) — the real functional behaviour of isExpiredHeldContract /
+// expiredPositionExpPnl / expiredPositionExpPnlPieces is covered directly
+// (they're plain importable functions) in expiryPnl_expired.test.js. This
+// block only guards that _posTier2 actually WIRES UP that fix — i.e. checks
+// the expired-held branch BEFORE falling through to the rolled-forward-spot
+// (_rootSpotCache) valuation that caused the original bug.
+describe('portfolioStore.svelte.js — 2026-09 expired-but-held valuation guard (real file, not the mirror)', () => {
+  const src = portfolioStoreSrc;
+
+  it('imports the shared expired-detection + frozen-valuation helpers from expiryPnl.js', () => {
+    expect(src).toContain('isExpiredHeldContract');
+    expect(src).toContain('expiredPositionExpPnl');
+    expect(src).toContain('expiredPositionExpPnlPieces');
+    expect(src).toMatch(/from\s+['"]\$lib\/data\/expiryPnl\.js['"]/);
+  });
+
+  it('_posTier2 checks isExpiredHeldContract BEFORE resolving/using the rolled-forward root spot anchor', () => {
+    const qtyBlockStart = src.indexOf('if (p._qty !== 0) {');
+    expect(qtyBlockStart, 'p._qty !== 0 branch not found').toBeGreaterThan(0);
+    const expiredCheckIdx = src.indexOf('isExpiredHeldContract(p._sym, p._qty)', qtyBlockStart);
+    const anchorIdx = src.indexOf('resolveExpiryAnchor(', qtyBlockStart);
+    expect(expiredCheckIdx, 'isExpiredHeldContract(p._sym, p._qty) call not found').toBeGreaterThan(qtyBlockStart);
+    expect(anchorIdx, 'resolveExpiryAnchor(...) call not found').toBeGreaterThan(qtyBlockStart);
+    expect(
+      expiredCheckIdx < anchorIdx,
+      'isExpiredHeldContract must be checked BEFORE resolveExpiryAnchor — otherwise an expired-but-held leg still gets valued against the rolled-forward root spot'
+    ).toBe(true);
+  });
+
+  it('the expired branch does NOT call resolveExpiryAnchor / positionExpPnl (no spot-based recompute for a settled contract)', () => {
+    const expiredIdx = src.indexOf('if (isExpiredHeldContract(p._sym, p._qty)) {');
+    expect(expiredIdx, 'expired-held branch not found').toBeGreaterThan(0);
+    const branchEnd = src.indexOf('} else {', expiredIdx);
+    expect(branchEnd, 'expired-held branch close not found').toBeGreaterThan(expiredIdx);
+    const branch = src.slice(expiredIdx, branchEnd);
+    expect(branch).toContain('expiredPositionExpPnl(p)');
+    expect(branch).toContain('expiredPositionExpPnlPieces(p)');
+    expect(branch).not.toContain('resolveExpiryAnchor(');
+    expect(branch).not.toContain('positionExpPnl(p,');
+  });
+});
+
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 // Local mirror of _computeDerived from portfolioStore.svelte.js
