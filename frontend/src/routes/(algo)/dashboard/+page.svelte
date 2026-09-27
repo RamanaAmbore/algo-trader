@@ -1784,9 +1784,13 @@
 
         <!-- Hover crosshair -->
         {#if _hoverPt != null}
+          <!-- A3 (2026-09 audit) — stale rgba(200,216,240,α) in an SVG
+               stroke= presentation attribute; verified live that var()/
+               color-mix() resolve here once stylesheets are loaded
+               (same finding as PnlAnalysis.svelte's equivalent site). -->
           <line
             x1={_hoverX} y1={PAD_T} x2={_hoverX} y2={PAD_T + INNER_H}
-            stroke="rgba(200,216,240,0.55)" stroke-width="1"
+            stroke="color-mix(in srgb, var(--algo-slate) 55%, transparent)" stroke-width="1"
             stroke-dasharray="3 2" />
           <circle cx={_hoverX} cy={_hoverY} r="3"
             fill={_eqLineColor ?? 'var(--algo-sky)'} stroke="#0a1428" stroke-width="1.5" />
@@ -2122,7 +2126,9 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 600;
-    color: rgba(200, 216, 240, 0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
     cursor: pointer;
     line-height: 1;
     white-space: nowrap;
@@ -2232,7 +2238,8 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: rgba(200, 216, 240, 0.6);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 60%, transparent);
     margin-bottom: 0.18rem;
   }
   .eq-stat-v {
@@ -2243,10 +2250,13 @@
   }
   .eq-stat-v.hero-pnl-up   { color: var(--c-long); }
   .eq-stat-v.hero-pnl-down { color: var(--c-short); }
-  .eq-stat-v.hero-pnl-neutral { color: rgba(200, 216, 240, 0.6); }
+  /* Numeric P&L-neutral state at its OWN 0.6 alpha — distinct from the
+     0.55 "muted" tier, preserved rather than forced onto the token. */
+  .eq-stat-v.hero-pnl-neutral { color: color-mix(in srgb, var(--algo-slate) 60%, transparent); }
   .eq-stat-scope {
     font-size: var(--fs-2xs);
-    color: rgba(200,216,240,0.45);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 45%, transparent);
     margin-top: 0.12rem;
     font-variant-numeric: tabular-nums;
     white-space: nowrap;

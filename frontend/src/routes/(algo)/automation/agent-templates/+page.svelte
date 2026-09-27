@@ -421,7 +421,8 @@
     padding: 0.5rem 0.85rem;
     background: transparent;
     border: none;
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     cursor: pointer;
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
@@ -489,7 +490,8 @@
     font-weight: 600;
     border-radius: 3px;
     padding: 0.25rem 0.7rem;
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(180,200,230,0.2);
     cursor: pointer;

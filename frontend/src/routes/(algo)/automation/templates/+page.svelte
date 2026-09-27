@@ -704,7 +704,8 @@
     font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.05em;
-    color: rgba(200, 216, 240, 0.70);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
     text-transform: uppercase;
   }
   .tpl-matrix-cell-on .tpl-matrix-scope {
@@ -715,7 +716,8 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 600;
-    color: #f8fafc;
+    /* A3 (2026-09 audit) — was flat hex #f8fafc; now var(--algo-slate). */
+    color: var(--algo-slate);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -751,7 +753,9 @@
     color: rgba(251, 191, 36, 0.75);
   }
   .tpl-matrix-cell-both .tpl-matrix-tpl {
-    color: rgba(200, 216, 240, 0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as
+       the .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
     font-style: italic;
   }
   /* #27 — info chip row above the matrix */
@@ -907,7 +911,8 @@
   }
   .tpl-desc {
     font-size: var(--fs-lg);
-    color: rgba(200,216,240,0.8);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 80%, transparent);
     line-height: 1.45;
     margin-bottom: 0.6rem;
   }
@@ -967,7 +972,8 @@
     align-items: center;
     gap: 0.45rem;
     font-size: var(--fs-lg);
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     cursor: pointer;
   }
 
@@ -995,7 +1001,8 @@
     font-weight: 600;
     border-radius: 3px;
     padding: 0.25rem 0.7rem;
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(180,200,230,0.2);
     cursor: pointer;

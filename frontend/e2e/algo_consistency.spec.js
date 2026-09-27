@@ -175,19 +175,19 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
     // 4/N): all verified algo-only (no public/investor mount) and no
     // canvas/SVG sites, straightforward color-mix()/named-token
     // conversions.
+    // admin/alerts, admin/derivatives/+page.svelte (fully clean now —
+    // the .byund-row .cell-muted fix from commit 1/N was only ONE of
+    // its 4 sites), admin/derivatives/CandidateLegRow.svelte,
+    // admin/research, automation/agent-templates, automation/templates,
+    // dashboard/+page.svelte — swept (commit 5/N). dashboard's one SVG
+    // stroke= hover-crosshair site converted using the same
+    // now-confirmed-viable pattern as PnlAnalysis.svelte (commit 3/N).
     'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs — verify per-site
     'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
     'src/lib/MultiPriceChart.svelte',          // canvas colour consumer — verify before converting
     'src/lib/OptionsPayoff.svelte',            // hand-rolled SVG — verify before converting
-    'src/routes/(algo)/admin/alerts/+page.svelte',
-    'src/routes/(algo)/admin/derivatives/+page.svelte', // .byund-row .cell-muted done; other sites remain
-    'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte',
     'src/routes/(algo)/admin/metrics/+page.svelte',      // likely canvas/chart consumer — verify
     'src/routes/(algo)/admin/perf/+page.svelte',         // likely canvas/chart consumer — verify
-    'src/routes/(algo)/admin/research/+page.svelte',
-    'src/routes/(algo)/automation/agent-templates/+page.svelte',
-    'src/routes/(algo)/automation/templates/+page.svelte',
-    'src/routes/(algo)/dashboard/+page.svelte',
     'src/routes/(algo)/showcase/+page.svelte',           // may be documentation swatches — verify
   ];
 

@@ -392,7 +392,10 @@
   .ev-pill-active.chip-green  { background: rgba(74,222,128,0.14); border-color: rgba(74,222,128,0.5); color: var(--c-long); }
   .ev-pill-active.chip-red    { background: rgba(248,113,113,0.14); border-color: rgba(248,113,113,0.5); color: var(--c-short); }
   .ev-pill-active.chip-grey   { background: rgba(148,163,184,0.14); border-color: rgba(148,163,184,0.4); color: #94a3b8; }
-  .ev-pill-active:not([class*="chip-"]) { background: rgba(200,216,240,0.12); border-color: rgba(200,216,240,0.35); color: var(--algo-slate); }
+  /* A3 (2026-09 audit) — background/border-color were stale
+     rgba(200,216,240,α); alpha preserved. `color` already used
+     var(--algo-slate) — consistent precedent for this conversion. */
+  .ev-pill-active:not([class*="chip-"]) { background: color-mix(in srgb, var(--algo-slate) 12%, transparent); border-color: color-mix(in srgb, var(--algo-slate) 35%, transparent); color: var(--algo-slate); }
 
   /* Sim toggle */
   .toggle-btn {

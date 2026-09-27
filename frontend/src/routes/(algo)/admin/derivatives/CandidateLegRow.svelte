@@ -789,7 +789,8 @@
     gap: 0.55rem;
     padding: 0.55rem 0.45rem 0.4rem;
     margin-top: 0.6rem;
-    border-bottom: 1px solid rgba(200, 216, 240, 0.08);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    border-bottom: 1px solid color-mix(in srgb, var(--algo-slate) 8%, transparent);
   }
   .expiry-band-header:first-of-type,
   .expiry-band-header-close:first-child {

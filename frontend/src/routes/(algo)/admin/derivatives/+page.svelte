@@ -6941,7 +6941,8 @@
     display: inline-block;
     width: 1px;
     height: 1.1rem;
-    background: rgba(200, 216, 240, 0.25);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    background: color-mix(in srgb, var(--algo-slate) 25%, transparent);
     margin: 0 0.25rem;
     flex-shrink: 0;
   }
@@ -7772,7 +7773,8 @@
     width: 1.2rem; height: 1.2rem;
     background: transparent;
     border: 0;
-    color: rgba(200,216,240,0.7);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
     cursor: pointer;
     font-size: var(--fs-xl);
     line-height: 1;
@@ -7795,7 +7797,9 @@
   .order-toast-foot {
     margin-top: 0.2rem;
     font-size: var(--fs-xs);
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
   }
   .order-toast-oid { font-family: var(--font-numeric); }
   @media (prefers-reduced-motion: reduce) {
