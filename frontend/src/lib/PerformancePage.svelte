@@ -853,8 +853,14 @@
       // inline here — rather than leaving it static in app.css — keeps
       // JS rowHeight and the var that drives centering as one source of
       // truth, for both breakpoints, without a media query.
+      // ag-theme-ramboq's mobile touch-target row was 36px (df43e278);
+      // operator feedback found that still slightly tall for the 10px
+      // font on real phones, so it's tuned down to 32px here — still a
+      // comfortable touch target, just less padding above/below the text.
+      // ag-theme-algo's (admin, dark) mobile row is untouched at 36px —
+      // this page's public ag-theme-ramboq surface only.
       rowHeight: (() => {
-        const rowH = isDark ? (_isMobile ? 36 : 28) : (_isMobile ? 36 : 22);
+        const rowH = isDark ? (_isMobile ? 36 : 28) : (_isMobile ? 32 : 22);
         el.style.setProperty('--ag-row-height', `${rowH}px`);
         return rowH;
       })(),

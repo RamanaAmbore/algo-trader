@@ -13,8 +13,9 @@
  * --ag-row-height via el.style.setProperty, so the JS rowHeight and the
  * CSS var that drives line-height centering can never drift apart again.
  *
- * This spec checks both desktop (22px rows) and mobile (36px rows,
- * unchanged touch-target convention) actually center cell text within
+ * This spec checks both desktop (22px rows) and mobile (32px rows —
+ * tuned down from the initial 36px per operator feedback that 36px was
+ * still slightly tall on real phones) actually center cell text within
  * their row, and that the desktop row height is proportionate to the
  * theme's 10px font rather than oversized.
  */
@@ -95,7 +96,7 @@ test.describe('Public /performance page — ag-Grid row height + centering', () 
   test.describe('mobile-portrait', () => {
     test.use({ viewport: { width: 360, height: 800 } });
 
-    test('mobile: 36px touch-target row still centers text', async ({ page }) => {
+    test('mobile: 32px touch-target row still centers text', async ({ page }) => {
       await page.goto('/performance');
       await page.locator('.ag-theme-ramboq').first().waitFor({ state: 'attached', timeout: 15_000 });
 
@@ -105,9 +106,9 @@ test.describe('Public /performance page — ag-Grid row height + centering', () 
         return m;
       }, { timeout: 20_000, intervals: [250, 500, 1000] }).not.toBeNull();
 
-      // Mobile row height convention is unchanged (36px touch target).
-      expect(m.rowHeight).toBeGreaterThanOrEqual(34);
-      expect(m.rowHeight).toBeLessThanOrEqual(38);
+      // Mobile row height tuned down to a 32px touch target (from 36px).
+      expect(m.rowHeight).toBeGreaterThanOrEqual(30);
+      expect(m.rowHeight).toBeLessThanOrEqual(34);
 
       expect(m.cellLineHeight).toBeGreaterThanOrEqual(m.rowHeight - 5);
       expect(m.cellLineHeight).toBeLessThanOrEqual(m.rowHeight - 1);
