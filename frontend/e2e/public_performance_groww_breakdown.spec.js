@@ -11,8 +11,10 @@
 // Groww holding as a bad-token payload and dropped it from
 // daily_book. Public /performance reads from daily_book during
 // closed hours, so Groww disappeared entirely (holdings row absent,
-// NAV grid row absent because navByAccount derives from union of
-// funds+positions+holdings and Groww funds are similarly patchy).
+// NAV grid row absent because GET /api/nav/by-account's backend
+// breakdown — compute_firm_nav()["by_account"] — is itself built from
+// the union of funds+positions+holdings phases, and Groww funds are
+// similarly patchy).
 //
 // Five quality dimensions:
 //   1. SSOT — the /api/holdings response is the SOURCE for the

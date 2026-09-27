@@ -4,10 +4,17 @@ import {
   baseDayPnlForPosition,
   aggregateDayPnlForPositions,
   navTotalRow,
-  navByAccount,
   positionsPnlFiltered,
   dayChangePct,
 } from '$lib/data/nav.js';
+// navByAccount/navRowForAccount removed 2026-09 (NAV SSOT consolidation) —
+// the per-account NAV formula they duplicated now lives ONLY in
+// backend/api/algo/nav.py:compute_firm_nav(), served via
+// GET /api/nav/by-account. Coverage for that formula moved to
+// backend/tests/test_nav_by_account.py. navTotalRow (below) is the only
+// nav.js function that ever touched per-account rows and it remains —
+// it's pure row summation over already-server-computed data, not a
+// formula.
 
 // ── currentTotalProfit ───────────────────────────────────────────────────────
 
@@ -187,34 +194,6 @@ describe('navTotalRow', () => {
     const rows = [{ account: 'X', cash: 1000, pos_m2m: 200, holdings_mtm: 300, nav: 1500 }];
     const total = navTotalRow(rows);
     expect(total.nav).toBe(1500);
-  });
-});
-
-// ── navByAccount ─────────────────────────────────────────────────────────────
-
-describe('navByAccount', () => {
-  it('computes nav for each account from funds/positions/holdings', () => {
-    const funds = [{ account: 'AA', cash: 100000, option_premium: 5000 }];
-    const positions = [{ account: 'AA', unrealised: 8000 }];
-    const holdings = [{ account: 'AA', cur_val: 20000 }];
-    const rows = navByAccount(['AA'], funds, positions, holdings);
-    expect(rows).toHaveLength(1);
-    const r = rows[0];
-    expect(r.account).toBe('AA');
-    expect(r.cash).toBe(105000);        // 100000 + 5000
-    expect(r.pos_m2m).toBe(8000);
-    expect(r.holdings_mtm).toBe(20000);
-    expect(r.nav).toBe(133000);
-  });
-
-  it('empty accounts array → empty rows', () => {
-    expect(navByAccount([], [], [], [])).toEqual([]);
-  });
-
-  it('missing funds row → cash = 0', () => {
-    const rows = navByAccount(['ZZ'], [], [], []);
-    expect(rows[0].cash).toBe(0);
-    expect(rows[0].nav).toBe(0);
   });
 });
 

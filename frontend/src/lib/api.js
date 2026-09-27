@@ -450,6 +450,14 @@ export const fetchNavHistory = ({ days = 90, signal = undefined } = {}) =>
   _get(`/nav/?days=${Number(days) || 90}`, { auth: _hasToken(), signal });
 export const fetchNavLatest  = () =>
   _get('/nav/latest', { auth: _hasToken() });
+/** GET /api/nav/by-account — LIVE per-account NAV breakdown (same
+ *  compute_firm_nav() v4 formula as the firm total). SSOT for
+ *  PerformancePage's NAV grid — replaces the removed client-side
+ *  navRowForAccount/navByAccount formula in data/nav.js. Unauthenticated
+ *  callers get masked account codes (same pattern as /funds, /positions,
+ *  /holdings), so no explicit auth flag is required. */
+export const fetchNavByAccount = () =>
+  _get('/nav/by-account', { auth: _hasToken() });
 export const triggerNavCompute = () =>
   _post('/nav/compute', {}, { auth: true });
 /** Per-investor NAV slice (slice 7k). Requires authenticated user. */

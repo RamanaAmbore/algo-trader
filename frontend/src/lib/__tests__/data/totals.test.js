@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
   navTotalRow,
-  navByAccount,
   aggregateDayPnlForPositions,
   baseDayPnlForPosition,
 } from '$lib/data/nav.js';
+// navByAccount removed 2026-09 (NAV SSOT consolidation) — see
+// backend/tests/test_nav_by_account.py for the equivalent per-account
+// formula coverage, now backend-only.
 
 // ── navTotalRow ──────────────────────────────────────────────────────────────
 
@@ -111,64 +113,6 @@ describe('navTotalRow — three accounts cross-check', () => {
     ];
     const total = navTotalRow(rows);
     expect(total.cash + total.pos_m2m + total.holdings_mtm).toBeCloseTo(total.nav, 2);
-  });
-});
-
-// ── navByAccount ─────────────────────────────────────────────────────────────
-
-describe('navByAccount — grouping', () => {
-  it('two accounts with 2 positions each: each account pos_m2m = sum of its unrealised', () => {
-    const funds = [
-      { account: 'AA', cash: 0, option_premium: 0 },
-      { account: 'BB', cash: 0, option_premium: 0 },
-    ];
-    const positions = [
-      { account: 'AA', unrealised: 3000 },
-      { account: 'AA', unrealised: 2000 },
-      { account: 'BB', unrealised: 1000 },
-      { account: 'BB', unrealised:  500 },
-    ];
-    const holdings = [];
-    const rows = navByAccount(['AA', 'BB'], funds, positions, holdings);
-    const aa = rows.find(r => r.account === 'AA');
-    const bb = rows.find(r => r.account === 'BB');
-    expect(aa.pos_m2m).toBe(5000);
-    expect(bb.pos_m2m).toBe(1500);
-  });
-
-  it('account with no positions: pos_m2m === 0, holdings_mtm still populated', () => {
-    const funds = [{ account: 'AA', cash: 0, option_premium: 0 }];
-    const positions = [];
-    const holdings = [{ account: 'AA', cur_val: 12000 }];
-    const rows = navByAccount(['AA'], funds, positions, holdings);
-    expect(rows[0].pos_m2m).toBe(0);
-    expect(rows[0].holdings_mtm).toBe(12000);
-  });
-
-  it('account filter: passing [\'AA\'] returns only AA row', () => {
-    const funds = [
-      { account: 'AA', cash: 1000, option_premium: 0 },
-      { account: 'BB', cash: 2000, option_premium: 0 },
-    ];
-    const positions = [
-      { account: 'AA', unrealised: 500 },
-      { account: 'BB', unrealised: 700 },
-    ];
-    const holdings = [];
-    const rows = navByAccount(['AA'], funds, positions, holdings);
-    expect(rows).toHaveLength(1);
-    expect(rows[0].account).toBe('AA');
-    expect(rows[0].cash).toBe(1000);
-    expect(rows[0].pos_m2m).toBe(500);
-  });
-
-  it('two accounts produce two entries in result array', () => {
-    const funds = [
-      { account: 'AA', cash: 10000, option_premium: 0 },
-      { account: 'BB', cash: 20000, option_premium: 0 },
-    ];
-    const rows = navByAccount(['AA', 'BB'], funds, [], []);
-    expect(rows).toHaveLength(2);
   });
 });
 

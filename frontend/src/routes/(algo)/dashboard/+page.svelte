@@ -13,7 +13,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
-  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct } from '$lib/stores';
+  import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct, formatDualTz } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
   import StrategyPicker from '$lib/StrategyPicker.svelte';
@@ -27,7 +27,7 @@
     fetchRecentAgentEvents,
     fetchIntradayEquity,
     batchQuote,
-    fetchNavLatest,
+    fetchFirmNavPublic,
   } from '$lib/api';
   import { positionsStore, holdingsStore, fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
@@ -154,6 +154,8 @@
   let _paperOpen    = $state(0);
   let _heroLoadedAt = $state(/** @type {string|null} */ (null));
   let _heroTeardown;
+  /** @type {() => void} */
+  let _navTeardown = () => {};
 
   // Operator-facing log declutter: default to agent_fire ONLY so the
   // expanded log is a thin chronological list of "what fired".
@@ -342,7 +344,8 @@
   // over time?" glance and must lead the chart card. Intraday is the
   // live "what's the book doing right now?" view; Performance is the
   // historical drill-down. NavTab trails the daily snapshot landing at
-  // 16:00 IST + manual recomputes. The sidebar right card keeps its
+  // MCX's close-settled moment (≈23:45 IST, 2026-09 fix — see
+  // background.py:_run_nav_compute_once) + manual recomputes. The sidebar right card keeps its
   // own NAV tab (NavBreakdown — per-account decomposition) so both
   // glances (curve + per-account table) are surfaced without a click.
   let _chartTab = $state(/** @type {'nav'|'intraday'|'performance'} */ ('nav'));
@@ -1153,10 +1156,23 @@
   /** @type {'all'|'error'|'warning'|'info'} */
   let _actLevelFilter       = $state('all');
 
-  // NAV header chip — last computed firm NAV + day delta. Gated by
-  // view_nav so demo / observer see the chip too; recompute is a
-  // separate cap and lives on /nav. Failing fetch leaves _nav at the
-  // last-good or null; chip self-hides when null.
+  // NAV header chip — LIVE firm NAV + day delta (2026-09 NAV SSOT fix).
+  // Previously read GET /api/nav/latest — the once-per-day 16:00 IST
+  // NavDaily snapshot — fetched ONCE with no polling, so the chip froze
+  // at yesterday's (or this morning's) figure for the rest of the
+  // session while /performance's NavCard showed a live-moving number.
+  // Now reads the SAME live endpoint NavCard uses for its FIRM NAV panel
+  // (`GET /api/auth/firm-nav`, backed by `compute_firm_nav()`, 30s-memoized
+  // server-side) and polls on the same 60s cadence NavCard uses, so the
+  // two surfaces can no longer show different NAV figures mid-session.
+  // `/api/auth/firm-nav` is deliberately chosen over the role-restricted
+  // `/api/auth/me/nav`: view_nav admits designated/trader/risk/admin/
+  // partner/demo, but `/me/nav` only returns the `firm_nav` field for
+  // admin/designated — using it here would blank the chip for the other
+  // four roles. `/api/nav/latest` + `NavDaily` remain the SSOT for the
+  // NAV history curve below (`fetchNavHistory` inside NavTab) — that's a
+  // legitimate separate purpose (a multi-day chart, not a live figure)
+  // and is untouched by this fix.
   /** @type {{nav:number, as_of_date:string}|null} */
   let _navLatest = $state(null);
   let _navDelta     = $state(/** @type {number|null} */ (null));
@@ -1168,15 +1184,20 @@
     if (!_canViewNav) return;
     _navFetchError = null;
     try {
-      const r = await fetchNavLatest();
-      _navLatest   = r?.latest ?? null;
-      _navDelta    = r?.day_delta ?? null;
-      _navDeltaPct = r?.day_delta_pct ?? null;
+      const r = await fetchFirmNavPublic();
+      const nav = Number(r?.firm_nav);
+      const dayPnl = Number(r?.firm_day_pnl);
+      _navLatest = Number.isFinite(nav)
+        ? { nav, as_of_date: r?.as_of ? formatDualTz(new Date(r.as_of)) : '' }
+        : null;
+      _navDelta    = Number.isFinite(dayPnl) ? dayPnl : null;
+      // NavTab renders this via fmtPctFraction (expects a FRACTION, e.g.
+      // 0.012 for +1.2% — NOT ×100 like NavCard's own firmDayPct).
+      _navDeltaPct = (Number.isFinite(dayPnl) && nav > 0) ? dayPnl / nav : null;
     } catch (err) {
       // Surface the error so the operator can act (check broker
-      // connections, re-run /api/nav/recompute, etc.). Leave
-      // _navLatest at last-good so the chip stays populated on
-      // transient failures.
+      // connections, etc). Leave _navLatest at last-good so the chip
+      // stays populated on transient failures.
       _navFetchError = (err && typeof err === 'object' && 'message' in err)
         ? String(/** @type {any} */ (err).message).slice(0, 60)
         : 'NAV fetch failed';
@@ -1321,9 +1342,12 @@
       () => Promise.allSettled([loadHero(), _fetchEquity()]),
       30000, 'throttle:30000',
     );
-    // NAV chip — single fetch, no polling. NAV moves on the 16:00 IST
-    // snapshot + operator recompute; nothing changes minute-to-minute.
+    // NAV chip — LIVE, polled every 60s (same cadence NavCard uses on
+    // /performance for its FIRM NAV panel) since 2026-09; previously a
+    // single fetch against the once-daily 16:00 IST NavDaily snapshot,
+    // which froze the chip for the rest of the session.
     setTimeout(() => { _fetchNav(); }, 0);
+    _navTeardown = visibleInterval(_fetchNav, 60_000);
     // loadMarketMovers retired — the Top Winners / Top Losers cards
     // moved to /pulse (where MarketPulse owns its own movers fetch).
     // Removing the dashboard poll stops the 60s batchQuote round-trip
@@ -1496,6 +1520,7 @@
 
   onDestroy(() => {
     _heroTeardown?.();
+    _navTeardown?.();
     _dashFlash.dispose();
     _unsubDashFlashPct();
     _wlFlashUnsub();
@@ -1645,8 +1670,9 @@
          on the chart card is the firm's net-liq trajectory. -->
     <div class="card-body" hidden={_chartTab !== 'nav' || _colEquityCurve}>
       {#if _navFetchError}
-        <!-- Chip-fetch error strip — shown when /api/nav/latest fails.
-             Small banner above the chart so the curve (if available) still
+        <!-- Chip-fetch error strip — shown when GET /api/auth/firm-nav
+             (the live NAV chip fetch, polled every 60s) fails. Small
+             banner above the chart so the curve (if available) still
              renders and the operator has a clear Retry call-to-action. -->
         <div class="dash-nav-err" role="alert" data-testid="dash-nav-error">
           <span aria-hidden="true">⚠</span>
@@ -1835,14 +1861,27 @@
   </section>
 
   <!-- RIGHT: NAV | Capital | Equity tabbed card (operator-requested
-       shuffle, Jun 2026). NAV is the new default tab — it surfaces
-       the per-account NAV breakdown using the same arithmetic as
-       PerformancePage's NAV grid + backend/api/algo/nav.py:compute_firm_nav
-       so the dashboard's first-glance "what's the firm worth?" can't
-       drift from the canonical /performance view. Capital + Equity
-       sit behind one click each. All three panels stay mounted
-       (hidden, not {#if}) so ag-Grid instances don't orphan when the
-       operator flips tabs. The card uses `flex: 1 1 auto` so its
+       shuffle, Jun 2026).
+       CORRECTION (2026-09 NAV SSOT audit): despite the tab label, the
+       "NAV" panel below mounts <NavBreakdown> WITHOUT an `activeSlot`
+       prop, which defaults to 'P' — it renders Day/Lifetime/Expiry P&L,
+       NOT a NAV total. The prior version of this comment claimed the
+       panel "surfaces the per-account NAV breakdown using the same
+       arithmetic as PerformancePage's NAV grid... so it can't drift from
+       the canonical /performance view" — that was false; NavBreakdown
+       does not import or compute NAV at all, so there was nothing to
+       drift (or agree) with in the first place. Genuine NAV parity now
+       lives elsewhere: the dashboard's NAV chip (NavTab overlay above,
+       fed by `_fetchNav()`) polls the SAME live `GET /api/auth/firm-nav`
+       endpoint NavCard uses on /performance, and PerformancePage's NAV
+       grid reads the server-computed `GET /api/nav/by-account` breakdown
+       (same `compute_firm_nav()` v4 formula, backend/api/algo/nav.py).
+       Whether to wire a real NAV total into this "NAV" tab, or rename the
+       tab to match what it actually shows (P&L), is an operator UI/IA
+       decision — flagged here, not fixed. Capital + Equity tabs are
+       unaffected and sit behind one click each. All three panels stay
+       mounted (hidden, not {#if}) so ag-Grid instances don't orphan when
+       the operator flips tabs. The card uses `flex: 1 1 auto` so its
        height expands / contracts with the chart card on the left —
        no more dead space when Capital tab only has 1 row. -->
   <!-- card-theme-dark is applied at layout level (.algo-viewport) so
@@ -1910,10 +1949,11 @@
       {/if}
     </div>
 
-    <!-- NAV panel — per-account breakdown. Same arithmetic as
-         PerformancePage's `navByAcct`; sourced from the same module-
-         level marketDataStores so a single broker fetch warms both
-         surfaces and they can't drift. -->
+    <!-- NAV panel — mislabeled (see CORRECTION note above the tabbed
+         card): renders NavBreakdown's default 'P' slot (Day/Lifetime/
+         Expiry P&L), not a NAV total. Left as-is pending an operator
+         decision on the tab; do not add NAV math here without explicit
+         instruction. -->
     <div class="card-body" hidden={_capEqTab !== 'nav' || _colNavBd}>
       <NavBreakdown bind:this={_navBdRef} accountFilter={_eqAccounts} />
     </div>
@@ -2657,8 +2697,8 @@
     min-height: 0;
     max-height: none;
   }
-  /* NAV chip fetch-error strip — rendered above <NavTab> when
-     /api/nav/latest returns an error. Red palette matching
+  /* NAV chip fetch-error strip — rendered above <NavTab> when the live
+     GET /api/auth/firm-nav poll (60s) fails. Red palette matching
      PerformancePage .perf-banner-error. Compact (padding-light)
      so it doesn't push the SVG chart out of view. */
   .dash-nav-err {

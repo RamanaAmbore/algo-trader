@@ -111,16 +111,21 @@
     load();
   }
 
-  // Polls on the market-aware interval — same cadence the NavCard
-  // headline uses. NAV doesn't tick frequently so this is cheap.
+  // Polls on the market-aware interval — cheap, since this curve is a
+  // genuinely once-per-trading-day series (see below), not a live feed.
   let _stop = () => {};
   onMount(() => {
     load();
-    // 60s — NAV doesn't tick frequently; the headline NavCard polls
-    // on its own faster cadence, this chart just trails the daily
-    // snapshot landing at 16:00 IST + manual recomputes.
-    // Throttle to 60 s on hidden — NAV data doesn't change frequently;
-    // keeping a slow heartbeat ensures the chart is fresh on tab return.
+    // 60s — this chart plots `nav_daily`, one row per trading day,
+    // written at the MCX close-settled moment (≈23:45 IST — MCX close
+    // 23:30 + 15 min settlement offset; 2026-09 fix, previously an
+    // inaccurate fixed 16:00 IST that predated MCX's own close). The
+    // 60s poll here just picks that single daily write up promptly +
+    // reflects any operator-triggered manual recompute; it does not
+    // make the curve itself "live" — see the EOD label in the markup
+    // below. The overlay CHIP (chipLatest prop, top-left) is a
+    // DIFFERENT, genuinely live figure — see the dashboard's
+    // `_fetchNav()` (polls GET /api/auth/firm-nav every 60s).
     _stop = marketAwareInterval(load, 60_000, 60_000);
   });
   onDestroy(() => {
@@ -180,9 +185,13 @@
     {@const yOf = (v) => _pad.t + innerH - ((v - _min) / _range) * innerH}
     {@const xOf = (i) => _pad.l + (history.length === 1 ? innerW / 2 : (i * innerW) / (history.length - 1))}
     {@const path = history.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.nav)}`).join(' ')}
-    <div class="nav-tab-meta">{history.length} days</div>
+    <div class="nav-tab-meta">
+      {history.length} days
+      <span class="nav-tab-eod-badge"
+            title="One point per trading day, written at end-of-day settlement — not a live-updating curve.">EOD</span>
+    </div>
     <svg class="nav-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
-         aria-label="Firm NAV history">
+         aria-label="Firm NAV history (end-of-day, one point per trading day)">
       {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
         {@const y = _pad.t + innerH * t}
         {@const v = _max - _range * t}
@@ -212,7 +221,7 @@
     <div class="nav-tab-empty" data-testid="nav-tab-loading">Loading NAV history…</div>
   {:else}
     <div class="nav-tab-empty" data-testid="nav-tab-empty">
-      No NAV snapshots yet. First snapshot lands at 16:00 IST.
+      No NAV snapshots yet. First snapshot lands at end-of-day settlement (≈23:45 IST).
     </div>
   {/if}
 </div>
@@ -233,6 +242,20 @@
     color: rgba(155, 176, 208, 0.55);
     text-align: right;
     padding-right: 0.4rem;
+  }
+  /* EOD badge — marks the curve as once-per-trading-day settlement data,
+     distinct from the genuinely live overlay chip (top-left). */
+  .nav-tab-eod-badge {
+    display: inline-block;
+    margin-left: 0.4rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--algo-slate);
+    background: rgba(155, 176, 208, 0.12);
+    border: 1px solid rgba(155, 176, 208, 0.25);
+    cursor: default;
   }
   .nav-svg {
     display: block;

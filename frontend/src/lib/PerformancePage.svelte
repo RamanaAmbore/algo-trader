@@ -13,7 +13,7 @@
   /** True when the viewport is narrow (≤720px) — used for rowHeight. */
   const _isMobile = typeof window !== 'undefined' && window.innerWidth <= 720;
   import ChartModal from '$lib/ChartModal.svelte';
-  import { fetchHoldings, fetchPositions, fetchFunds } from '$lib/api';
+  import { fetchHoldings, fetchPositions, fetchFunds, fetchNavByAccount } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
   import { authStore, ltpFlashPct } from '$lib/stores';
@@ -27,7 +27,7 @@
   import { formatSymbol, decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
-  import { navByAccount, navTotalRow, aggregateDayPnlForPositions, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
+  import { navTotalRow, aggregateDayPnlForPositions, baseDayPnlForPosition, dayChangePct } from '$lib/data/nav';
   import { applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
 
   // Module-scope cache for hyphenated display strings. ag-Grid
@@ -270,6 +270,13 @@
   let rawFunds        = $state([]);
   let rawHoldingsSummary  = $state([]);
   let rawPositionsSummary = $state([]);
+  // Server-computed per-account NAV breakdown (GET /api/nav/by-account) —
+  // SSOT: backend/api/algo/nav.py:compute_firm_nav()["by_account"]. Each
+  // row: { account, cash, pos_m2m, holdings_mtm, nav }. Account codes
+  // arrive pre-masked for non-admin viewers via the same mask_account()
+  // used by rawFunds/rawPositions/rawHoldings, so they line up with the
+  // `accounts` picker list derived from those three arrays.
+  let rawNavByAccount = $state([]);
 
   // Canonical account display order — used when building the account picker.
   let _perfOrderMap = $state(/** @type {Record<string,number>} */ ({}));
@@ -1016,14 +1023,19 @@
 
   /**
    * Compute NAV grid rows and TOTAL pinned row.
-   * Uses the page-wide accounts list so accounts with holdings-only
-   * (no positions/funds that cycle) still surface as a NAV row.
-   * Renames cash → net to match the pre-existing ag-Grid column schema.
+   * Rows come straight from the server (`rawNavByAccount`, fetched via
+   * `GET /api/nav/by-account` — the SAME `compute_firm_nav()` v4 formula
+   * NavCard's FIRM NAV panel and the dashboard NAV chip read). This
+   * function does NO NAV arithmetic itself — it only filters the
+   * already-correct server rows by the account picker and re-sums them
+   * into a TOTAL row via the pure `navTotalRow` helper. Renames
+   * cash → net to match the pre-existing ag-Grid column schema.
    */
   function _buildNavRows() {
-    const navAccts = accounts
-      .filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a));
-    const _navRaw  = navByAccount(navAccts, rawFunds, rawPositions, rawHoldings);
+    const navAcctSet = new Set(
+      accounts.filter(a => selectedAccounts.length === 0 || selectedAccounts.includes(a))
+    );
+    const _navRaw = rawNavByAccount.filter(r => navAcctSet.has(r.account));
     const rows = _navRaw.map(r => ({
       account: r.account, net: r.cash,
       pos_m2m: r.pos_m2m, holdings_mtm: r.holdings_mtm, nav: r.nav,
@@ -1093,7 +1105,7 @@
     }
   }
 
-  function applyData(h, p, f) {
+  function applyData(h, p, f, nb) {
     // Sleep audit Jun 2026: allSettled in loadAll can land null for
     // any of the three fetches (transient broker failure); fall back
     // to previously-stored rows rather than crashing on null.rows.
@@ -1102,6 +1114,10 @@
     rawHoldingsSummary  = h?.summary ?? rawHoldingsSummary ?? [];
     rawPositionsSummary = p?.summary ?? rawPositionsSummary ?? [];
     rawFunds            = f?.rows ?? rawFunds ?? [];
+    // NAV grid source — server-computed per-account breakdown. Falls
+    // back to the previously-fetched rows on transient failure (same
+    // last-good pattern as the three fetches above).
+    rawNavByAccount      = nb?.rows ?? rawNavByAccount ?? [];
     // Account picker scope includes funds-only accounts too — a Dhan
     // account holding cash with zero open positions on a given day
     // was silently disappearing from the picker (operator: "the
@@ -1141,10 +1157,12 @@
         fetchHoldings({ fresh }),
         fetchPositions({ fresh }),
         fetchFunds({ fresh }),
+        fetchNavByAccount(),
       ]);
       const h = results[0].status === 'fulfilled' ? results[0].value : null;
       const p = results[1].status === 'fulfilled' ? results[1].value : null;
       const f = results[2].status === 'fulfilled' ? results[2].value : null;
+      const nb = results[3].status === 'fulfilled' ? results[3].value : null;
       const hFulfilled = results[0].status === 'fulfilled';
       const pFulfilled = results[1].status === 'fulfilled';
       const fFulfilled = results[2].status === 'fulfilled';
@@ -1177,7 +1195,7 @@
       if (hFulfilled) holdingsStore.ingest(h);
       if (pFulfilled) positionsStore.ingest(p);
       if (fFulfilled) fundsStore.ingest(f);
-      applyData(h, p, f);
+      applyData(h, p, f, nb);
     } catch (e) {
       error = e.message || 'Failed to load data';
     } finally { loading = false; }
