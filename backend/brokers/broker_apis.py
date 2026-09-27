@@ -1352,6 +1352,20 @@ _positions_ssot_refresh_at: float = 0.0    # monotonic timestamp; 0 = never fetc
 _HOLDINGS_SSOT_TTL: float = 30.0
 _holdings_ssot_refresh_at: float = 0.0
 
+# Margins have the SAME stale-cache problem as holdings/positions above, but
+# were missed when the TTL guard was added to those two siblings (2026-09
+# investigation: conn_service's first-ever margins fetch can race a Dhan
+# account's poll-priority interval gate / not-yet-established session at
+# process startup — _fetch_margins_local's "no LKG yet" branch then returns
+# an EMPTY per-account frame for that account, and since fetch_margins() had
+# no TTL, ssot_fetch cached that empty-for-Dhan result FOREVER — margins for
+# DH3747/DH6847 stayed permanently empty in the aggregate path until an
+# explicit invalidation event (postback / ?fresh=1), even though a direct
+# per-account broker.margins() call always returned real data). Same 30 s
+# TTL as holdings/positions so a transient startup race self-heals.
+_MARGINS_SSOT_TTL: float = 30.0
+_margins_ssot_refresh_at: float = 0.0
+
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
     """Drop a key (or all keys when key=None). Used by tests + on postback
@@ -2805,15 +2819,27 @@ def _bmd_recompute_derived(df, patched_indices: set) -> None:
                 df.loc[_idx_array, 'pnl_percentage'] = _pp
 
 
-def fetch_margins(*args, **kwargs):
+def fetch_margins(*args, force_refresh: bool = False, **kwargs):
     """Public entry — proxies to conn_service when the cutover flag
     is on, otherwise runs the local @for_all_accounts path.
 
     Zero-arg results are coalesced via ssot_fetch — see fetch_holdings
     docstring for the rationale.
+
+    TTL guard (30 s) — same rationale + mechanism as fetch_holdings /
+    fetch_positions (see _MARGINS_SSOT_TTL above): without this, a
+    margins result cached empty for a Dhan account during a startup
+    race (interval gate + no LKG yet) never self-heals.
     """
+    global _margins_ssot_refresh_at
     if not args and not kwargs:
-        return _fetch_margins_cached()
+        now = _time.monotonic()
+        if not force_refresh and (now - _margins_ssot_refresh_at) > _MARGINS_SSOT_TTL:
+            force_refresh = True
+        result = _fetch_margins_cached(force_refresh=force_refresh)
+        if result is not None:
+            _margins_ssot_refresh_at = _time.monotonic()
+        return result
     return _fetch_margins_local(*args, **kwargs)
 
 
