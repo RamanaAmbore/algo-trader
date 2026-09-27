@@ -7,7 +7,7 @@
   const faqs = [
     {
       q: "What is RamboQuant Analytics LLP?",
-      a: "A Limited Liability Partnership where partners pool capital, managed by Active Partners and a Fund Manager. The LLP invests in growth-oriented equity with covered call and other derivative (F&O) strategies.",
+      a: "A Limited Liability Partnership — individuals join as Partners of the firm under the LLP agreement and contribute capital accordingly, with strategy execution overseen by Active Partners and a Fund Manager. The LLP invests in growth-oriented equity with covered call and other derivative (F&O) strategies.",
     },
     {
       q: "Who can become a partner?",
