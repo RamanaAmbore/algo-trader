@@ -13,7 +13,7 @@
 
 import { todayIST } from '$lib/dateFormat.js';
 import { buildAcctMatcher, isFOSymbol } from '$lib/data/derivativesMath.js';
-import { buildPositionRowFromBroker, splitClosedReopened } from '$lib/data/expiryPnl.js';
+import { buildPositionRowFromBroker, splitClosedReopened, isExpiredHeldContract, expiredLegFrozenPnl, expiryPnlWithRealised } from '$lib/data/expiryPnl.js';
 
 // splitClosedReopened + buildPositionRowFromBroker moved to
 // $lib/data/expiryPnl.js (2026-09 SSOT fix) so portfolioStore.svelte.js can
@@ -303,6 +303,7 @@ export function buildSimPositionRows(simPositions) {
  *   simActive: boolean,
  *   proxiesForTarget: (t: string) => string[],
  *   getInstrument: (sym: string) => {x?: string} | null,
+ *   hasFNO?: (root: string) => boolean,
  *   provisionalPositions?: Map<string, any>,
  *   draftStorePositions?: Map<string, any>,
  * }} params
@@ -311,7 +312,7 @@ export function buildSimPositionRows(simPositions) {
 export function buildCandidatePositions({
   positions, holdings, drafts,
   target, selectedExpiries, selectedAccounts, simActive,
-  proxiesForTarget, getInstrument,
+  proxiesForTarget, getInstrument, hasFNO,
   provisionalPositions,
   draftStorePositions,
 }) {
@@ -358,6 +359,24 @@ export function buildCandidatePositions({
     // the same underlying). See buildCleanLegs below for why this row is
     // still excluded from the /strategy-analytics REQUEST payload only.
     const isUnresolvable = qty !== 0 && (!_inst || (_inst.x && _inst.x < todayIST()));
+    // 2026-09 audit fix (Defect 2 follow-up): `_expired` above stays the
+    // BROAD, cache-resolvability signal — it ONLY gates the
+    // /strategy-analytics REQUEST payload exclusion below (buildCleanLegs),
+    // since an unresolvable-in-cache leg genuinely can't be sent there
+    // regardless of whether it's economically expired. `_expiredFrozen` is
+    // the NARROWER, shared `isExpiredHeldContract` predicate (same one
+    // portfolioStore.svelte.js's Snapshot pipeline calls) — it's what the
+    // four chart VALUATION sites in +page.svelte key on to decide whether
+    // to use the frozen basis. Keeping these as two separate flags (rather
+    // than narrowing `_expired` itself) means a leg that's unresolvable-
+    // but-NOT-confidently-expired (BFO, cold start) still gets excluded
+    // from the backend payload (correct — the backend genuinely can't
+    // price it) while ALSO staying excluded (not frozen, not spot-valued)
+    // from the chart's valuation, matching pre-session (D4(a)) behaviour
+    // for that specific case, and matching the store's own treatment of
+    // the SAME symbol (which won't tag it expired either, from the SAME
+    // predicate) — no NEW divergence between the two surfaces.
+    const isExpiredFrozen = qty !== 0 && isExpiredHeldContract(sym, qty, getInstrument, hasFNO);
     // The operator's expiry SELECTOR (selectedExpiries) is a genuine UI
     // filter for KNOWN, unexpired contracts that simply aren't in the
     // chosen selection — it must still apply to those. Only bypass it for
@@ -369,6 +388,7 @@ export function buildCandidatePositions({
       ...p,
       kind: isFut ? 'fut' : 'opt',
       ...(isUnresolvable ? { _expired: true } : {}),
+      ...(isExpiredFrozen ? { _expiredFrozen: true } : {}),
     });
   }
 
@@ -553,6 +573,87 @@ export function buildCleanLegs(legs, getInstrument) {
  */
 export function hasEnabledFOLegs(legs) {
   return (legs || []).some(l => l.kind !== 'eq' && Number(l.qty) !== 0 && !l._expired);
+}
+
+/**
+ * Build +page.svelte's `legs` array (the `$state` array `_clientPayoffStub`
+ * / `buildCleanLegs` / `hasEnabledFOLegs` all read) from `candidatePositions`.
+ *
+ * Extracted as a pure function (2026-09 audit fix, Defect 1) so it can be
+ * unit-tested directly against real candidate-row shapes — this exact
+ * mapping previously lived only inline inside a Svelte `$effect` in
+ * +page.svelte, where a change that stripped `pnl`/`realised`/`unrealised`
+ * (needed by `expiredLegFrozenPnl`/`currentTotalProfit` to value an
+ * `_expiredFrozen` leg) shipped completely undetected — nothing exercised
+ * this exact mapping in isolation.
+ *
+ * @param {any[]} candidatePositions
+ * @param {(c: any) => boolean} isLegEnabled
+ * @param {boolean} showDraftInPayoff
+ * @returns {any[]}
+ */
+export function buildPageLegs(candidatePositions, isLegEnabled, showDraftInPayoff) {
+  return candidatePositions
+    .filter(c => {
+      if (!isLegEnabled(c)) return false;
+      if (!showDraftInPayoff &&
+          (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
+      return true;
+    })
+    .map(c => ({
+      symbol:   c.symbol,
+      qty:      c.qty,
+      avg_cost: c.avg_cost ?? '',
+      ltp:      c.ltp ?? '',
+      source:   c.source,
+      kind:     c.kind,
+      // `_expired` (buildCleanLegs' payload-exclusion signal) MUST survive
+      // this mapping — see buildCandidatePositions' own comment on why
+      // it's kept separate from `_expiredFrozen` below.
+      _expired: c._expired,
+      // `_expiredFrozen` (2026-09 Defect 1/2 fix) — the NARROWER, shared
+      // isExpiredHeldContract signal the chart valuation sites key on.
+      _expiredFrozen: c._expiredFrozen,
+      // 2026-09 Defect 1 fix: pnl/realised/unrealised MUST survive this
+      // mapping — expiredLegFrozenPnl (currentTotalProfit) reads them to
+      // value an `_expiredFrozen` leg; without them it silently fell back
+      // to 0 (the exact bug this fix closes — the fields were previously
+      // stripped here with nothing to catch it).
+      pnl:        c.pnl,
+      realised:   c.realised,
+      unrealised: c.unrealised,
+    }));
+}
+
+/**
+ * Sum of the frozen Exp P&L contribution from every `_expiredFrozen`-
+ * tagged leg in a `buildPageLegs`-shaped array — the constant
+ * `_clientPayoffStub` (+page.svelte) folds into every grid point for a
+ * root whose ENTIRE F&O book is expired-but-held (GOLD/GOLDM). Also folds
+ * in the realised portion of any TODAY-closed (qty=0) leg via
+ * `expiryPnlWithRealised(l, null)`'s qty=0 branch — without this, a root
+ * mixing an expired-held leg with a leg closed earlier today would still
+ * diverge from Snapshot (which sums both) by the closed leg's realised
+ * amount, since the stub curve has no other path for a qty=0 leg's value.
+ * @param {any[]} legs
+ * @returns {number}
+ */
+export function sumExpiredFrozenLegsPnl(legs) {
+  let s = 0;
+  for (const l of (legs || [])) {
+    if (l._expiredFrozen) {
+      s += expiredLegFrozenPnl(l);
+      continue;
+    }
+    // qty=0 rows never carry _expired/_expiredFrozen (both tags are
+    // gated on qty!==0 in buildCandidatePositions) — a today-closed leg
+    // reaches here untagged; fold in its realised portion too.
+    if (Number(l.qty || 0) === 0) {
+      const v = expiryPnlWithRealised(l, null);
+      if (v != null && isFinite(Number(v))) s += Number(v);
+    }
+  }
+  return s;
 }
 
 function _normAcct(a) {

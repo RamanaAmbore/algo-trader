@@ -24,7 +24,7 @@ import { getUnderlyingSpot } from '$lib/data/underlyingSpotStore.svelte.js';
 import { resolveExpiryAnchor, legExtrinsicDisplay, positionExpPnl, positionExpPnlPieces, isExpiredHeldContract, expiredPositionExpPnl, expiredPositionExpPnlPieces } from '$lib/data/expiryPnl.js';
 import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
-import { getInstrument } from '$lib/data/instruments';
+import { getInstrument, instrumentsCacheVersion } from '$lib/data/instruments';
 import { isFOSymbol } from '$lib/data/derivativesMath.js';
 
 // ── 4 Hz throttle (250ms debounce on symbolTickCount) ───────────────────────
@@ -34,6 +34,23 @@ let _tick = $state(0);
 let _tickTimer = null;
 if (browser) {
   symbolTickCount.subscribe(() => {
+    if (_tickTimer) return;
+    _tickTimer = setTimeout(() => { _tickTimer = null; _tick++; }, 250);
+  });
+}
+
+// 2026-09 audit fix (should-do, Defect 1/2 follow-up): bump `_tick` when
+// the instruments master (re)loads, same as the symbolTickCount subscribe
+// above. Without this, `_posTier2`'s isExpiredHeldContract check only
+// re-evaluates on the NEXT live-tick or 5s book-poll cadence — right after
+// a cold-start cache lands, an expired-but-held leg could read the WRONG
+// (spot-valued, drifting) branch for up to that whole window, while
+// derivatives/+page.svelte's candidatePositions ALREADY re-derives
+// immediately (`void instrumentsReady` in its own $derived). Subscribing
+// here closes that gap so both surfaces re-classify at the same moment
+// the cache actually becomes available, not just eventually.
+if (browser) {
+  instrumentsCacheVersion.subscribe(() => {
     if (_tickTimer) return;
     _tickTimer = setTimeout(() => { _tickTimer = null; _tick++; }, 250);
   });

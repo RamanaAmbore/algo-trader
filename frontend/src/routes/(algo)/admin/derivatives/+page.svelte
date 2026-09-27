@@ -42,7 +42,7 @@
     loadInstruments, suggestUnderlyings,
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument, getOptionUnderlyingLot,
-    findNearestFuture,
+    findNearestFuture, hasFNO,
   } from '$lib/data/instruments';
   import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay, expiredLegFrozenPnl } from '$lib/data/expiryPnl';
@@ -84,6 +84,7 @@
     buildPageHoldingRows, storeRowKey, liveStoreExpPnl,
     buildCleanLegs, computeLegsKey, didUnderlyingChange, hasEnabledFOLegs,
     synthCacheKey, synthEquityOnlyStrategy, isRootPositionsTrusted,
+    buildPageLegs, sumExpiredFrozenLegsPnl,
   } from '$lib/derivatives/pageLoad.js';
   import CandidateLegRow from './CandidateLegRow.svelte';
   import { openOrderQtyBySymbol } from '$lib/data/openOrdersStore.svelte.js';
@@ -1713,7 +1714,7 @@
   // drafts whose symbol matches the underlying prefix. Source is a
   // per-row property (badge in the panel), not a mode-level filter.
   // Three sources appear in order: real → provisional (~) → draft store (D).
-  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean,_expired?:boolean}[]} */
+  /** @type {{symbol:string,account:string,qty:number,opening_qty?:number,avg_cost:number|null,ltp:number|null,prev_close?:number|null,pnl?:number,realised?:number,unrealised?:number,day_change_val?:number,underlying_ltp?:number,source:string,kind:string,exchange?:string,draftId?:number,_expiryStatus?:string,proxy_for?:string,proxy_kind?:string,_provisional?:boolean,_draft_store?:boolean,_expired?:boolean,_expiredFrozen?:boolean}[]} */
   const candidatePositions = $derived.by(() => {
     if (!selectedUnderlying) return [];
     void instrumentsReady;  // re-derive when instruments cache warms (cold start drops MCX open positions)
@@ -1732,6 +1733,7 @@
       simActive,
       proxiesForTarget,
       getInstrument,
+      hasFNO,
       provisionalPositions: getProvisionalPositions(),
       draftStorePositions:  getDraftPositions(),
     });
@@ -1799,20 +1801,27 @@
       // shifted by the broker P&L of holdings the chart isn't
       // actually showing.
       if (!_includeHoldings && c.kind === 'eq') continue;
-      // 2026-09 GOLD/GOLDM fix (supersedes the D4(a) exclusion that used
-      // to live here): `_expired`-tagged legs are NO LONGER excluded.
-      // This total feeds `chartPnlOffset`, which vertically shifts the
-      // TODAY curve to match "current spot P&L" — the curve (`_mergedPayoff`
-      // / `chartTheoreticalAtSpot`) structurally has ZERO contribution from
-      // an `_expired` leg (`buildCleanLegs` never sends it to the backend),
-      // so this total MUST include that leg's value, or the offset under-
-      // shifts the curve by exactly the amount this leg is worth. `c.pnl`
-      // already IS the frozen/current value for an expired-but-held leg
-      // (the contract stopped trading, so its last-known pnl is its
-      // settled outcome) — no special-casing needed at this specific site,
-      // unlike the other three `_expired` sites below, which explicitly
-      // valued (or excluded) it and now use `expiredLegFrozenPnl`.
-      s += Number(c.pnl || 0);
+      // 2026-09 audit fix (Defect 1/2 follow-up) — same three-way rule
+      // used at the other three `_expired` sites below, applied here too
+      // (an earlier draft of this fix used `Number(c.pnl||0)`
+      // unconditionally for every leg here, which is inconsistent with
+      // the other 3 sites' exclusion of an unresolvable-but-NOT-
+      // confidently-expired leg — BFO/cold-start — and diverges from
+      // Dhan/Groww where raw `pnl` isn't reliably realised+unrealised):
+      //   `_expiredFrozen` → expiredLegFrozenPnl(c) (frozen basis)
+      //   `_expired` (but not `_expiredFrozen`) → excluded (pre-session
+      //     D4(a) behaviour — the curve/offset don't represent it, and
+      //     the store won't tag it expired either, so excluding it here
+      //     too keeps this surface and the other 3 sites/the store in
+      //     agreement)
+      //   otherwise → unchanged existing behaviour
+      if (c._expiredFrozen) {
+        s += expiredLegFrozenPnl(c);
+      } else if (c._expired) {
+        continue;
+      } else {
+        s += Number(c.pnl || 0);
+      }
     }
     return s;
   });
@@ -2510,17 +2519,26 @@
    *
    *  Post-ship audit fix (D4), two parts, both required for the C1
    *  invariant ("chart marker position = chart number"):
-   *  (a) `_expired`-tagged legs (2026-09 GOLD/GOLDM fix, supersedes the
-   *      original D4(a) exclusion) now return `expiredLegFrozenPnl(c)` —
-   *      the frozen settlement value — instead of being excluded. The
-   *      curve (`buildCleanLegs` excludes them from the /strategy-analytics
-   *      request, so the backend curve has zero contribution from them)
-   *      picks up the SAME value via `_expiryPnlOffset`'s matching fix, so
-   *      this total still agrees with what the curve+offset actually
-   *      represents — it just no longer silently reads 0 for a root whose
-   *      ENTIRE F&O book is expired-but-held (the GOLD/GOLDM regression:
-   *      previously this returned null for every leg, summing to 0, while
-   *      Snapshot — which has no such exclusion — showed the real number).
+   *  (a) `_expiredFrozen`-tagged legs (2026-09 audit fix, Defect 1/2 —
+   *      supersedes an interim design that keyed on the BROADER
+   *      `_expired` tag) return `expiredLegFrozenPnl(c)` — the frozen
+   *      settlement value. `_expiredFrozen` is the NARROW, shared
+   *      `isExpiredHeldContract` predicate (same one portfolioStore's
+   *      Snapshot pipeline calls) — a leg that's `_expired` (unresolvable
+   *      in cache) but NOT confidently `_expiredFrozen` (BFO, cold start)
+   *      still returns null here (excluded), matching pre-session D4(a)
+   *      behaviour AND the store's own treatment of that same symbol (no
+   *      new divergence for the uncertain case). The curve
+   *      (`buildCleanLegs` excludes ANY `_expired` leg — the broader tag —
+   *      from the /strategy-analytics request, so the backend curve has
+   *      zero contribution from it regardless) picks up the SAME frozen
+   *      value via `_expiryPnlOffset`'s matching fix for the confidently-
+   *      expired case, so this total still agrees with what the
+   *      curve+offset actually represents — it no longer silently reads 0
+   *      for a root whose ENTIRE F&O book is expired-but-held (the
+   *      GOLD/GOLDM regression: previously this returned null for every
+   *      leg, summing to 0, while Snapshot — which has no such exclusion —
+   *      showed a real, though separately wrong, number).
    *      `_legsTotalsBase`/`_legsExpPnlTotal`/`_legsDayPnlTotal` are
    *      DELIBERATELY UNCHANGED — those are Legs-GRID totals, which must
    *      still count expired-but-held legs per Commit 2's whole point.
@@ -2535,7 +2553,8 @@
    *      the wrong pairing reintroduces a real gap
    *      (`β·MV·(payoffSpot−S0)/S0`) whenever the two spots diverge. */
   const _chartExpPnlAtSpot = $derived.by(() => _sumEnabledLegsExpPnl(c => {
-    if (c._expired) return expiredLegFrozenPnl(c);
+    if (c._expiredFrozen) return expiredLegFrozenPnl(c);
+    if (c._expired) return null;
     if (c.kind === 'eq') {
       return curveBasisEqValue(c, Number(strategy?.spot) || 0, payoffSpot ?? null, getProxyRow);
     }
@@ -2579,29 +2598,34 @@
   // Reads _legsTotalsBase (unaffected by the Legs search box — see its
   // own comment) so the curve's offset stays stable while the operator
   // types in the search box (§5).
-  // 2026-09 GOLD/GOLDM fix (supersedes the D4(a) exclusion that used to
-  // live here): `_expired`-tagged legs are no longer excluded from this
-  // offset — they get their OWN branch below, added via
+  // 2026-09 audit fix (Defect 1/2 follow-up — supersedes an interim
+  // design that keyed on the BROADER `_expired` tag): `_expiredFrozen`-
+  // tagged legs get their OWN branch below, added via
   // `expiredLegFrozenPnl` (the FULL frozen value, not just `c.realised`).
-  // This offset shifts the EXPIRY CURVE itself, which structurally
-  // excludes `_expired` legs (`buildCleanLegs` never sends them to the
-  // backend) — the curve's contribution from such a leg is exactly zero
-  // at every spot, so the offset must supply its WHOLE value, not just a
-  // "realised/locked-in" component. That distinction (realised-only for
-  // still-open legs) exists because "BS drift has no meaning at expiry"
-  // for a leg the curve DOES represent — an expired-and-settled leg has
-  // no more BS drift concept at all (nothing left to mark), so its entire
-  // frozen value belongs in the offset.
+  // A leg that's `_expired` (unresolvable in cache) but NOT confidently
+  // `_expiredFrozen` (BFO, cold start) is EXCLUDED here (pre-session
+  // D4(a) behaviour) — same three-way rule as the other 3 `_expired`
+  // sites in this file. This offset shifts the EXPIRY CURVE itself, which
+  // structurally excludes ANY `_expired` leg (`buildCleanLegs` never
+  // sends them to the backend) — the curve's contribution from such a
+  // leg is exactly zero at every spot, so for a CONFIDENTLY expired leg
+  // the offset must supply its WHOLE value, not just a "realised/locked-
+  // in" component. That distinction (realised-only for still-open legs)
+  // exists because "BS drift has no meaning at expiry" for a leg the
+  // curve DOES represent — an expired-and-settled leg has no more BS
+  // drift concept at all (nothing left to mark), so its entire frozen
+  // value belongs in the offset.
   const _expiryPnlOffset = $derived.by(() => {
     let s = 0;
     for (const c of _legsTotalsBase) {
       if (!_isLegEnabled(c) || c.kind === 'eq') continue;
       if (!showDraftInPayoff &&
           (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) continue;
-      if (c._expired) {
+      if (c._expiredFrozen) {
         s += expiredLegFrozenPnl(c);
         continue;
       }
+      if (c._expired) continue;
       s += Number(c.qty || 0) === 0
         ? Number(c.realised || c.pnl || 0)
         : Number(c.realised || 0);
@@ -2782,29 +2806,15 @@
   $effect(() => {
     void candidatePositions; void enabledSymbols; void showDraftInPayoff;
     untrack(() => {
-      legs = candidatePositions
-        .filter(c => {
-          if (!_isLegEnabled(c)) return false;
-          if (!showDraftInPayoff &&
-              (c.source === 'provisional' || c.source === 'draft_store' || c.source === 'draft')) return false;
-          return true;
-        })
-        .map(c => ({
-          symbol:   c.symbol,
-          qty:      c.qty,
-          avg_cost: c.avg_cost ?? '',
-          ltp:      c.ltp ?? '',
-          source:   c.source,
-          kind:     c.kind,
-          // 2026-09 fix: `_expired` (buildCandidatePositions' tag for a
-          // held row unresolvable against the instruments master) MUST
-          // survive this mapping — buildCleanLegs (called on this `legs`
-          // array below) filters on it to keep such a leg out of the
-          // /strategy-analytics REQUEST payload. Without this field the
-          // filter in buildCleanLegs was unreachable dead code — the field
-          // was silently dropped here and never reached buildCleanLegs.
-          _expired: c._expired,
-        }));
+      // 2026-09 audit fix (Defect 1, post-ship): this mapping is now the
+      // SAME pure buildPageLegs (pageLoad.js) exercised directly by
+      // pageLoad_expired.test.js — carries `_expired`/`_expiredFrozen` AND
+      // pnl/realised/unrealised through (the last three were silently
+      // stripped here before, which made expiredLegFrozenPnl always
+      // fall back to 0 for every leg fed through this array — the exact
+      // bug that shipped undetected in commit 07e3198a; see
+      // sumExpiredFrozenLegsPnl's own call-site in _clientPayoffStub).
+      legs = buildPageLegs(candidatePositions, _isLegEnabled, showDraftInPayoff);
     });
   });
 
@@ -3005,27 +3015,32 @@
   const _clientPayoffStub = $derived.by(() => {
     void _throttledTick;
     // Only the non-eq enabled legs (eq contribution needs _includeHoldings).
-    // `_expired`-tagged legs are excluded from the SPOT-DEPENDENT part of
-    // the curve (they have no forward BS/intrinsic shape — the contract is
-    // already settled), same as before. 2026-09 GOLD/GOLDM fix (supersedes
-    // the D4(a) design that used to live here): their frozen value is no
-    // longer dropped entirely — it's summed separately below
-    // (`_expiredConstant`) and folded into EVERY grid point as a constant
-    // shift, so a root whose ENTIRE F&O book is expired-but-held (this
-    // stub IS the active render path for that exact scenario — `strategy`
-    // correctly wipes to null via D2's fix, and `_chartExpPnlAtSpot`'s
-    // `legsExpPnlAtSpot` prop is `undefined` in that case, so OptionsPayoff
-    // reads its readout number directly off THIS curve's `expiry_value` at
-    // the marker — see OptionsPayoff.svelte's `_expDisplayVal` fallback)
-    // shows its real, non-zero exposure instead of a flat 0 line.
+    // `_expired`-tagged legs (the BROADER, cache-resolvability signal —
+    // see buildCandidatePositions' own comment on why it's kept separate
+    // from `_expiredFrozen`) are excluded from the SPOT-DEPENDENT part of
+    // the curve (they have no forward BS/intrinsic shape to compute —
+    // strike/optType can't be resolved), same as before D2/D4(a). 2026-09
+    // audit fix (Defect 1/2 follow-up): the NARROWER `_expiredFrozen`-
+    // tagged legs' frozen value is summed separately via the shared,
+    // directly-tested `sumExpiredFrozenLegsPnl` (pageLoad.js — also folds
+    // in the realised portion of any leg closed earlier today) and folded
+    // into EVERY grid point as a constant shift, so a root whose ENTIRE
+    // F&O book is expired-but-held (this stub IS the active render path
+    // for that exact scenario — `strategy` correctly wipes to null via
+    // D2's fix, and `_chartExpPnlAtSpot`'s `legsExpPnlAtSpot` prop is
+    // `undefined` in that case, so OptionsPayoff reads its readout number
+    // directly off THIS curve's `expiry_value` at the marker — see
+    // OptionsPayoff.svelte's `_expDisplayVal` fallback) shows its real,
+    // non-zero exposure instead of a flat 0 line. A leg that's `_expired`
+    // but NOT `_expiredFrozen` (BFO, cold start) contributes nothing here
+    // either — excluded from BOTH `activeLegs` and the constant, matching
+    // the store's own treatment of that same symbol (no new divergence).
     const activeLegs = legs.filter(l => {
       if (l._expired) return false;
       if (l.kind === 'eq') return _includeHoldings;
       return true;
     });
-    const _expiredConstant = legs
-      .filter(l => l._expired)
-      .reduce((s, l) => s + expiredLegFrozenPnl(l), 0);
+    const _expiredConstant = sumExpiredFrozenLegsPnl(legs);
 
     // Spot resolution — strategy is null at this point.
     // 2026-09 Commit 4 (single spot resolver): reads `_undLive` — the SAME
@@ -4500,9 +4515,16 @@
         // legs from its spot-dependent computation too — which collapsed
         // an all-expired-legs root's curve back to a flat 0 line (the
         // exact regression this comment claims was already fixed). Fixed
-        // again: `_clientPayoffStub` now sums `_expired` legs' frozen
-        // value (`expiredLegFrozenPnl`) into a constant folded into every
-        // grid point, so the curve is flat AT that real value, not 0.
+        // again, and NARROWED further (2026-09 final audit, Defect 1/2):
+        // `_clientPayoffStub` sums `_expiredFrozen` (not the broader
+        // `_expired`) legs' frozen value (`expiredLegFrozenPnl`, via the
+        // directly-tested `sumExpiredFrozenLegsPnl`) into a constant
+        // folded into every grid point, so the curve is flat AT that
+        // real value, not 0 — and the `legs` mapping (`buildPageLegs`,
+        // pageLoad.js) now actually carries pnl/realised/unrealised
+        // through, which an earlier draft of this fix silently dropped,
+        // making the constant always compute to 0 for the exact
+        // all-expired-legs scenario this whole fix targets.
         const _hasEnabledLegs = hasEnabledFOLegs(legs);
         const _recentEnough = _positionsRefreshedAt > 0 && (Date.now() - _positionsRefreshedAt < 30_000);
         // R5 per-root redesign (2026-09, operator audit follow-up):

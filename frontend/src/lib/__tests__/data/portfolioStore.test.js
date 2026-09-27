@@ -124,6 +124,17 @@ describe('portfolioStore.svelte.js — 2026-09 expired-but-held valuation guard 
     expect(branch).not.toContain('resolveExpiryAnchor(');
     expect(branch).not.toContain('positionExpPnl(p,');
   });
+
+  it('subscribes to instrumentsCacheVersion and bumps _tick (2026-09 should-do: re-derive when the instruments cache lands, not just on the next tick/poll)', () => {
+    expect(src).toContain('instrumentsCacheVersion');
+    expect(src).toMatch(/instrumentsCacheVersion\.subscribe\(\(\)\s*=>\s*\{/);
+    // Same debounce-and-bump body shape as the existing symbolTickCount
+    // subscribe above it — verifies it actually increments _tick, not a
+    // no-op subscription.
+    const idx = src.indexOf('instrumentsCacheVersion.subscribe(');
+    const block = src.slice(idx, idx + 200);
+    expect(block).toContain('_tick++');
+  });
 });
 
 // ── Helpers ──────────────────────────────────────────────────────────────────

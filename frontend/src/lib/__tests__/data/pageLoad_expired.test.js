@@ -11,7 +11,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildCandidatePositions, buildCleanLegs, buildPositionRowFromBroker, buildHoldingRowFromBroker } from '$lib/derivatives/pageLoad.js';
+import {
+  buildCandidatePositions, buildCleanLegs, buildPositionRowFromBroker, buildHoldingRowFromBroker,
+  buildPagePositionRows, buildPageLegs, sumExpiredFrozenLegsPnl,
+} from '$lib/derivatives/pageLoad.js';
+import { isExpiredHeldContract, expiredPositionExpPnl } from '$lib/data/expiryPnl.js';
 
 // Pin todayIST to a fixed date so tests are not flaky across calendar days.
 vi.mock('$lib/dateFormat.js', () => ({
@@ -544,5 +548,121 @@ describe('buildHoldingRowFromBroker — prev_close field (canonical post-rename)
       account: 'ZG0790',
     });
     expect(row.prev_close).toBeNull();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Store-vs-page parity — the actual "Snapshot and chart agree" check
+// (2026-09 final audit, Defect 1). Starts from a RAW Kite-shaped position
+// row (tradingsymbol/quantity/average_price/last_price/pnl/realised/
+// unrealised/overnight_quantity/day_*) — NOT a hand-built, fully-populated
+// candidate object — and runs it through BOTH real pipelines:
+//   store path:  isExpiredHeldContract + expiredPositionExpPnl(rawRow)
+//   page path:   buildPagePositionRows -> buildCandidatePositions ->
+//                buildPageLegs -> sumExpiredFrozenLegsPnl
+// This is exactly the shape of test that would have caught the original
+// Defect 1 bug (buildPageLegs' predecessor silently dropped pnl/realised/
+// unrealised) — a synthetic, fully-populated leg object never exercised
+// the real mapping and let the bug ship undetected.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('store-vs-page Exp P&L parity for an expired-but-held leg (GOLD/GOLDM regression shape)', () => {
+  /** Fake getInstrument: GOLDM26SEPFUT itself is missing (delisted), but
+   *  fake hasFNO reports the root has other live contracts — the exact
+   *  root-authoritative branch that correctly classifies it as expired. */
+  const fakeGetInstrument = () => null;
+  const fakeHasFNO = (root) => root === 'GOLDM';
+
+  const RAW_ROW = {
+    tradingsymbol: 'GOLDM26SEPFUT',
+    account: 'ZG0790',
+    quantity: 1,
+    average_price: 68000,
+    last_price: 71500,
+    pnl: 3500,
+    realised: 0,
+    unrealised: 3500,
+    overnight_quantity: 1,
+    day_buy_quantity: 0,
+    day_sell_quantity: 0,
+    day_buy_value: 0,
+    day_sell_value: 0,
+  };
+
+  it('both paths classify the leg as expired-frozen', () => {
+    const storeClassifies = isExpiredHeldContract(
+      RAW_ROW.tradingsymbol, RAW_ROW.quantity, fakeGetInstrument, fakeHasFNO
+    );
+    expect(storeClassifies).toBe(true);
+
+    const positions = buildPagePositionRows([RAW_ROW]);
+    const candidates = buildCandidatePositions({
+      ...BASE_PARAMS,
+      positions,
+      target: 'GOLDM',
+      getInstrument: fakeGetInstrument,
+      hasFNO: fakeHasFNO,
+    });
+    const goldmRow = candidates.find(c => c.symbol === 'GOLDM26SEPFUT');
+    expect(goldmRow, 'GOLDM26SEPFUT candidate row not found').toBeTruthy();
+    expect(goldmRow._expiredFrozen).toBe(true);
+  });
+
+  it('both paths compute the SAME non-zero frozen value', () => {
+    const storeValue = expiredPositionExpPnl(RAW_ROW);
+    expect(storeValue).toBe(3500);
+
+    const positions = buildPagePositionRows([RAW_ROW]);
+    const candidates = buildCandidatePositions({
+      ...BASE_PARAMS,
+      positions,
+      target: 'GOLDM',
+      getInstrument: fakeGetInstrument,
+      hasFNO: fakeHasFNO,
+    });
+    const legs = buildPageLegs(candidates, () => true, true);
+    const pageValue = sumExpiredFrozenLegsPnl(legs);
+
+    expect(pageValue).toBe(storeValue);
+    expect(pageValue).toBe(3500);
+    expect(pageValue).not.toBe(0);
+  });
+
+  it('a same-day partial close on the expired leg still agrees between both paths (per-piece split)', () => {
+    const partialCloseRow = {
+      ...RAW_ROW,
+      quantity: 1,       // 2 bought overnight, 1 sold today -> 1 remains
+      overnight_quantity: 2,
+      day_sell_quantity: 1,
+      day_sell_value: 71000,
+      pnl: 3500,
+    };
+
+    // Store path: expiredPositionExpPnl internally runs the SAME
+    // splitClosedReopened split and sums both pieces.
+    const storeValue = expiredPositionExpPnl(partialCloseRow);
+
+    // Page path: buildPagePositionRows performs the identical split
+    // BEFORE buildCandidatePositions ever sees the row, so `positions`
+    // already contains one row per piece.
+    const positions = buildPagePositionRows([partialCloseRow]);
+    expect(positions.length).toBeGreaterThan(1); // split into >=2 pieces
+    const candidates = buildCandidatePositions({
+      ...BASE_PARAMS,
+      positions,
+      target: 'GOLDM',
+      getInstrument: fakeGetInstrument,
+      hasFNO: fakeHasFNO,
+    });
+    const legs = buildPageLegs(candidates, () => true, true);
+    const pageValue = legs.reduce((s, l) => {
+      // Sum every piece's contribution the same way sumExpiredFrozenLegsPnl
+      // does, but inline here so both the open (_expiredFrozen) and
+      // closed (qty=0) pieces are counted explicitly for this assertion.
+      return s + sumExpiredFrozenLegsPnl([l]);
+    }, 0);
+
+    expect(pageValue).toBe(storeValue);
+    expect(pageValue).not.toBe(0);
   });
 });
