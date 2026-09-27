@@ -218,6 +218,103 @@ _SESSION_ANCHOR_CUTOFF_TS_SQL = (
     " + INTERVAL '8 hours') AT TIME ZONE 'Asia/Kolkata'"
 )
 
+async def _union_and_filter_expiry_frozen_rows(
+    raw_rows: list, now_ist: "object",
+) -> list:
+    """Layer the expiry-day-final freeze onto `_positions_snapshot`'s raw
+    rows. See `backend.api.algo.expiry_freeze` module docstring for the
+    full operator rule and the "why 08:00 IST" precedent this reuses.
+    Two independent operations, both keyed off the SAME per-row
+    classification (`expiry_status`):
+
+      1. UNION IN a row this query's own `latest_batch` join would
+         otherwise mask. That join selects only ONE `captured_at` per
+         ACCOUNT (`db.captured_at = lb.max_at`) — an account holding both
+         a still-actively-traded symbol (fresh batch every day, e.g.
+         CRUDEOIL) and an expired-but-still-frozen symbol (older batch,
+         e.g. GOLD/GOLDM) only ever has the fresher batch selected, so the
+         expired symbol's row is silently hidden every single night even
+         though it still exists in the DB and is still inside its freeze
+         window (2026-09 investigation, account ZG0790). This is a
+         genuine bug independent of whether the market is open or closed
+         — the dedicated `frozen_candidates` lookup below finds each
+         (account, symbol)'s own most-recent row directly, sidestepping
+         the account-level `latest_batch` join entirely.
+
+      2. FILTER OUT a row (from EITHER source) whose freeze window has
+         ALREADY ended (`expiry_status == "refresh_eligible"`). This is a
+         DEFENSIVE BACKSTOP, not the primary refresh mechanism — the
+         primary mechanism is `closed_hours_or_broker` switching back to
+         the live broker fetch the instant any segment reopens, which
+         naturally stops returning an expired contract with zero code
+         here. This backstop only matters for (a) a broker outage DURING
+         market-open hours, which falls back to this same snapshot reader
+         (`source='snapshot-fallback'`) and could otherwise resurface an
+         already-obsolete row, and (b) a delayed/failed daily_snapshot
+         prune run. Excluded outright rather than flagged stale — see
+         CLAUDE.md's "Staleness indicator freeze rule": past its own
+         refresh boundary the correct state is "this position no longer
+         exists", which is different from "degraded data for an existing
+         position" (what `stale_accounts` denotes elsewhere in this
+         route) — marking it stale would wrongly imply the whole ACCOUNT
+         is degraded when only this one already-obsolete row is affected.
+
+    Every row is a 10..16-column tuple matching the main query's SELECT
+    shape (see `_positions_snapshot`'s inline column comment); frozen
+    candidates unioned in here are padded to that same shape with
+    `prev_ltp` / `prev_settlement_pnl` / `prev_settlement_kind` /
+    `prev_settlement_qty` left `None` — this row's own already-frozen
+    `total_pnl` / `day_pnl` / `previous_close` (all captured at expiry)
+    are shown VERBATIM per the operator's "preserve exactly" rule; no
+    baseline-diff re-derivation is meaningful for a contract that can no
+    longer trade.
+    """
+    from backend.api.algo.expiry_freeze import expiry_status
+    from backend.api.database import async_session as _async_session
+    from sqlalchemy import text as _sql_text
+
+    already_seen = {(r[0], r[1]) for r in raw_rows}  # (account, symbol)
+    frozen_candidates: list = []
+    try:
+        async with _async_session() as session:
+            frozen_result = await session.execute(_sql_text("""
+                SELECT DISTINCT ON (account, symbol)
+                       account, symbol, exchange, qty, avg_cost, ltp, day_pnl,
+                       total_pnl, payload_json, captured_at,
+                       prev_close AS previous_close, prev_close_backup
+                FROM daily_book
+                WHERE kind = 'positions'
+                  AND qty != 0
+                  AND ltp IS NOT NULL AND ltp > 0
+                  AND captured_at >= NOW() - INTERVAL '45 days'
+                ORDER BY account, symbol, captured_at DESC
+            """))
+            frozen_candidates = frozen_result.all()
+    except Exception as exc:
+        logger.warning(f"positions snapshot: expiry-freeze candidate query failed: {exc}")
+
+    union_rows = list(raw_rows)
+    for fc in frozen_candidates:
+        f_account, f_symbol, f_exchange = fc[0], fc[1], fc[2]
+        if (f_account, f_symbol) in already_seen:
+            continue
+        status = await expiry_status(f_symbol, fc[9], f_exchange, now_ist)
+        if status == "frozen":
+            union_rows.append((
+                fc[0], fc[1], fc[2], fc[3], fc[4], fc[5], fc[6],
+                fc[7], fc[8], fc[9], fc[10], None, None, fc[11], None, None,
+            ))
+            already_seen.add((f_account, f_symbol))
+
+    filtered_rows = []
+    for r in union_rows:
+        status = await expiry_status(r[1], r[9], r[2], now_ist)
+        if status == "refresh_eligible":
+            continue
+        filtered_rows.append(r)
+    return filtered_rows
+
+
 async def _positions_snapshot() -> Optional[PositionsResponse]:
     """Read the most-recent pre-today daily_book[kind='positions'] snapshot
     and reconstruct a PositionsResponse from it.
@@ -359,6 +456,10 @@ async def _positions_snapshot() -> Optional[PositionsResponse]:
         logger.warning(f"positions snapshot query failed: {exc}")
         return None
 
+    if not raw_rows:
+        return None
+
+    raw_rows = await _union_and_filter_expiry_frozen_rows(raw_rows, _now_ist)
     if not raw_rows:
         return None
 

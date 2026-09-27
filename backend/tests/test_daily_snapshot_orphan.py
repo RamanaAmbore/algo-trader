@@ -29,17 +29,54 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 # Helpers
 # ────────────────────────────────────────────────────────────────────────────
 
-def _make_session_mock(rowcount: int = 0) -> AsyncMock:
+def _make_session_mock(rowcount: int = 0, anchor=None) -> AsyncMock:
     """Build an async_session context-manager mock that reports `rowcount`
-    deleted rows from session.execute()."""
-    mock_result = MagicMock()
-    mock_result.rowcount = rowcount
+    deleted rows from the final DELETE statement.
+
+    Both prune functions now issue an extra SELECT before the DELETE (the
+    frozen-candidate lookup added by the expiry-freeze fix; `_delete_prior_
+    orphan_positions` also issues an anchor SELECT first) — this mock
+    inspects each statement's SQL text so it can answer each of the (up to
+    three) `session.execute()` calls appropriately:
+      - anchor SELECT (`MAX(CAPTURED_AT)`)      → `.scalar()` = *anchor*
+        (defaults to a fixed non-None datetime so the "no anchor yet"
+        early-return path isn't accidentally taken by tests that aren't
+        specifically exercising it).
+      - candidate SELECT (`SELECT SYMBOL, ...`) → `.all()` = [] (no
+        expiry-frozen candidates — preserves this file's pre-existing
+        "nothing is expired" test intent unchanged).
+      - anything else (the DELETE)               → `.rowcount` = *rowcount*.
+    """
+    from datetime import datetime as _dt
+
+    _anchor = anchor if anchor is not None else _dt(2026, 7, 27, 10, 0, 0)
+
+    async def _execute(stmt, *args, **kwargs):
+        sql = str(stmt).upper().strip()
+        result = MagicMock()
+        if sql.startswith("SELECT MAX(CAPTURED_AT)"):
+            result.scalar.return_value = _anchor
+        elif sql.startswith("SELECT SYMBOL"):
+            result.all.return_value = []
+        else:
+            result.rowcount = rowcount
+        return result
 
     mock_session = AsyncMock()
-    mock_session.execute.return_value = mock_result
+    mock_session.execute = AsyncMock(side_effect=_execute)
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
     return mock_session
+
+
+def _last_call(mock_session):
+    """Return (stmt_str, params) for the LAST session.execute() call — the
+    DELETE statement in every test in this file (candidate/anchor SELECTs,
+    if any, always run first)."""
+    call_args = mock_session.execute.call_args_list[-1]
+    stmt_str = str(call_args[0][0])
+    params = call_args[0][1] if len(call_args[0]) > 1 else (call_args.kwargs or {})
+    return stmt_str, params
 
 
 TARGET_DATE = date(2026, 7, 27)
@@ -65,11 +102,11 @@ def test_delete_orphan_positions_removes_stale_rows():
 
     assert pruned == 2, f"Expected 2 rows deleted, got {pruned}"
 
-    # Verify a DELETE statement was executed (not a SELECT or INSERT)
-    mock_session.execute.assert_called_once()
-    executed_stmt = str(mock_session.execute.call_args[0][0])
+    # Verify the FINAL statement executed was a DELETE (a candidate SELECT
+    # for expiry-freeze protection now runs first — see _make_session_mock).
+    executed_stmt, _ = _last_call(mock_session)
     assert "DELETE" in executed_stmt.upper(), (
-        "execute() must be called with a DELETE statement"
+        "Final execute() call must be a DELETE statement"
     )
     # Commit must be called after the delete
     mock_session.commit.assert_awaited_once()
@@ -89,7 +126,6 @@ def test_delete_orphan_positions_noop_when_nothing_stale():
         )
 
     assert pruned == 0, f"Expected 0 deletions when nothing is stale, got {pruned}"
-    mock_session.execute.assert_called_once()
     mock_session.commit.assert_awaited_once()
 
 
@@ -347,15 +383,24 @@ def test_delete_prior_orphan_positions_removes_settled_symbol():
 
     assert pruned == 1, f"Expected 1 row (IDFCFIRST) deleted, got {pruned}"
 
-    mock_session.execute.assert_called_once()
-    stmt_str = str(mock_session.execute.call_args[0][0]).upper()
-    assert "DELETE" in stmt_str, "Must issue a DELETE statement"
-    # Verify the subquery that anchors the prior-snapshot boundary is present.
-    assert "MAX(CAPTURED_AT)" in stmt_str, (
-        "DELETE must use MAX(captured_at) subquery to target prior snapshot batches"
+    # First call resolves the anchor (`_prior_orphan_anchor`) — MAX(captured_at)
+    # over BOTH 'positions' and the confirmed-empty 'positions_empty' sentinel
+    # kind (the fix for failure mode 2 — see _prior_orphan_anchor docstring).
+    first_stmt = str(mock_session.execute.call_args_list[0][0][0]).upper()
+    assert "MAX(CAPTURED_AT)" in first_stmt
+    assert "POSITIONS_EMPTY" in first_stmt, (
+        "Anchor query must also consider the confirmed-empty sentinel kind"
     )
-    # Symbols param must be passed (non-empty branch)
-    params = mock_session.execute.call_args[0][1]
+
+    # Last call is the DELETE itself, now parameterised with :anchor
+    # (resolved by the separate anchor query above) rather than an inline
+    # subquery.
+    stmt_str, params = _last_call(mock_session)
+    stmt_str = stmt_str.upper()
+    assert "DELETE" in stmt_str, "Must issue a DELETE statement"
+    assert ":ANCHOR" in stmt_str, (
+        "DELETE must reference the resolved :anchor bind param"
+    )
     assert "symbols" in params, "Non-empty branch must pass 'symbols' param"
     assert "RELIANCE" in params["symbols"], (
         "current_symbols must be forwarded as the NOT IN exclusion list"
@@ -378,12 +423,14 @@ def test_delete_prior_orphan_positions_empty_set_wipes_prior():
 
     assert pruned == 3, f"Expected 3 rows deleted (full prior wipe), got {pruned}"
 
-    call_args = mock_session.execute.call_args
-    stmt_str = str(call_args[0][0]).upper()
+    stmt_str, params = _last_call(mock_session)
+    stmt_str = stmt_str.upper()
     assert "DELETE" in stmt_str
-    assert "MAX(CAPTURED_AT)" in stmt_str
+    assert ":ANCHOR" in stmt_str, (
+        "DELETE must reference the resolved :anchor bind param "
+        "(anchor now resolved via a dedicated MAX(captured_at) query first)"
+    )
     # Empty branch: params dict must NOT contain 'symbols'
-    params = call_args[0][1]
     assert "symbols" not in params, (
         "Empty-set branch must not pass 'symbols' to avoid a SQL error"
     )

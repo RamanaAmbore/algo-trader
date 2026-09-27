@@ -307,15 +307,39 @@ def _fetch_account_data(broker, account: str, target_date: date) -> dict:
 
     out: dict = {
         "holdings": [], "positions": None, "trades": [], "funds": [],
+        # True only when broker.positions() returned a real dict that
+        # itself carries a 'net' key — i.e. a CONFIRMED response, not a
+        # failure papered over by `or {}` / `.get(..., [])` defaults.
+        # Gates `_write_confirmed_empty_marker` below (missing-vs-zero
+        # convention, CLAUDE.md "Alert evaluation and latching" — a
+        # coerced/defaulted empty must never be treated the same as a
+        # broker-confirmed real empty).
+        "positions_confirmed": False,
     }
 
     out["holdings"] = _safe_fetch(f"[{account}] holdings", broker.holdings) or []
 
     try:
-        raw_pos = broker.positions() or {}
-        # Assign a list on success — leaves None on failure so callers can
-        # distinguish "broker returned nothing" from "broker call failed".
-        out["positions"] = raw_pos.get("net", [])
+        raw_pos = broker.positions()
+        if isinstance(raw_pos, dict) and "net" in raw_pos:
+            # Real, well-shaped response — even an empty `net: []` here is a
+            # CONFIRMED "the broker checked and there are genuinely zero
+            # open positions today", not a fetch failure disguised as empty.
+            out["positions"] = list(raw_pos.get("net") or [])
+            out["positions_confirmed"] = True
+        else:
+            # `broker.positions()` returned None / {} / a dict without a
+            # 'net' key — an ambiguous, non-confirming shape. Preserve the
+            # historical `or {}` / `.get("net", [])` fallback behaviour
+            # (an empty list) so every existing downstream consumer keeps
+            # working unchanged, but leave `positions_confirmed=False` so
+            # the confirmed-empty marker is NEVER written for this
+            # ambiguous case — writing it here would assert "we checked
+            # and there is genuinely nothing" for a response that never
+            # actually confirmed that, reintroducing exactly the kind of
+            # masked-failure-treated-as-empty bug this fix exists to close.
+            raw_pos_dict = raw_pos if isinstance(raw_pos, dict) else {}
+            out["positions"] = list(raw_pos_dict.get("net") or [])
     except Exception as e:
         logger.warning(f"Snapshot [{account}] positions fetch failed: {e}")
 
@@ -918,6 +942,36 @@ async def _upsert_rows(rows: list[dict]) -> int:
     return len(rows)
 
 
+async def _frozen_protected_symbols(
+    candidates: "list[tuple[str, str, datetime]]", current_symbols: set, now_ist: datetime,
+) -> set[str]:
+    """Return the subset of *candidates* (symbol, exchange, captured_at)
+    NOT already in *current_symbols* that are still inside their own
+    expiry-day freeze window (`expiry_freeze.expiry_status(...) ==
+    "frozen"`).
+
+    Shared by both orphan-sweep variants below so the EXPIRED-vs-CLOSED
+    distinction (see `expiry_freeze` module docstring) is applied
+    identically regardless of which sweep is running. A candidate that
+    isn't a parseable F&O contract, or whose own session-of-closure
+    predates its real expiry (an ORDINARY closed position — see
+    `expiry_freeze.expiry_if_closed_on_own_expiry_day`), returns
+    "not_expiry" and is correctly left OUT of the protected set — the
+    existing sweep behaviour for every non-expiry row is completely
+    unchanged by this function's existence.
+    """
+    from backend.api.algo.expiry_freeze import expiry_status
+
+    protected: set[str] = set()
+    for symbol, exchange, captured_at in candidates:
+        if symbol in current_symbols:
+            continue
+        status = await expiry_status(symbol, captured_at, exchange, now_ist)
+        if status == "frozen":
+            protected.add(symbol)
+    return protected
+
+
 async def _delete_orphan_positions(
     target_date: date, account: str, current_symbols: set
 ) -> int:
@@ -925,14 +979,33 @@ async def _delete_orphan_positions(
 
     Called only after a confirmed successful broker positions fetch (even if
     empty). An empty current_symbols set means all positions are closed —
-    deletes all rows for (target_date, account, 'positions').
+    deletes all rows for (target_date, account, 'positions') EXCEPT any
+    symbol still inside its own expiry-day freeze window (see
+    `_frozen_protected_symbols` / `backend.api.algo.expiry_freeze` module
+    docstring for the full operator rule and rationale — in short: a
+    contract that expired keeps its last-minute-of-expiry-day row exactly
+    as captured until the next real market-open session, whereas a
+    position simply closed by normal trading with time still left on the
+    contract is swept immediately, completely unchanged from before this
+    fix).
 
     Returns the number of rows deleted.
     """
     from sqlalchemy import bindparam as _bp
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     async with async_session() as session:
-        if current_symbols:
+        cand_rows = (await session.execute(text(
+            "SELECT symbol, exchange, captured_at FROM daily_book "
+            "WHERE date = :date AND account = :account AND kind = 'positions'"
+        ), {"date": target_date, "account": account})).all()
+
+        protected = await _frozen_protected_symbols(
+            [(s, e, c) for s, e, c in cand_rows], current_symbols, timestamp_indian(),
+        )
+        keep_symbols = set(current_symbols) | protected
+
+        if keep_symbols:
             stmt = text(
                 "DELETE FROM daily_book "
                 "WHERE date = :date AND account = :account AND kind = 'positions' "
@@ -940,10 +1013,12 @@ async def _delete_orphan_positions(
             ).bindparams(_bp("symbols", expanding=True))
             result = await session.execute(
                 stmt,
-                {"date": target_date, "account": account, "symbols": list(current_symbols)},
+                {"date": target_date, "account": account, "symbols": list(keep_symbols)},
             )
         else:
-            # Broker returned no positions — all closed; wipe today's rows.
+            # Broker returned no positions and nothing is frozen — all
+            # closed; wipe today's rows. (Unchanged from pre-fix behaviour
+            # for the common case where nothing is protected.)
             stmt = text(
                 "DELETE FROM daily_book "
                 "WHERE date = :date AND account = :account AND kind = 'positions'"
@@ -955,43 +1030,137 @@ async def _delete_orphan_positions(
         return result.rowcount
 
 
+async def _prior_orphan_anchor(session, account: str) -> "datetime | None":
+    """Return the prune anchor for *account* — the most recent
+    `captured_at` among TODAY's 'positions' rows OR the confirmed-empty
+    'positions_empty' sentinel (see `_write_confirmed_empty_marker`).
+
+    Including 'positions_empty' in this anchor is the fix for failure
+    mode 2 (2026-09 investigation, account ZJ6294/GOLDM): an account that
+    goes fully flat writes ZERO real 'positions' rows that day, so
+    without the sentinel this MAX() stays NULL forever and the sweep
+    below is a permanent no-op — a stale row is then "frozen forever"
+    instead of "frozen until the correct 8AM-next-market-open boundary".
+    The main DELETE below still only ever touches `kind = 'positions'`
+    rows — the sentinel itself is a different `kind` and is never a
+    delete target through this path.
+    """
+    row = await session.execute(text(
+        "SELECT MAX(captured_at) FROM daily_book "
+        "WHERE kind IN ('positions', 'positions_empty') AND account = :account "
+        "AND date >= CURRENT_DATE"
+    ), {"account": account})
+    return row.scalar()
+
+
 async def _delete_prior_orphan_positions(account: str, current_symbols: set) -> int:
     """Delete positions rows from the most-recent prior-day snapshot batch
-    that are no longer returned by the broker (e.g. after overnight settlement).
+    that are no longer returned by the broker (e.g. after overnight settlement),
+    EXCEPT any symbol still inside its own expiry-day freeze window (see
+    `_frozen_protected_symbols`).
 
     _positions_snapshot reads by MAX(captured_at) — without this cleanup,
     settled positions from the prior session persist visible during off-hours
     until the next trading-day snapshot overwrites them.
     """
     from sqlalchemy import bindparam as _bp
+    from backend.shared.helpers.date_time_utils import timestamp_indian
 
     async with async_session() as session:
-        if current_symbols:
+        anchor = await _prior_orphan_anchor(session, account)
+        if anchor is None:
+            # No anchor yet today (no real positions row AND no
+            # confirmed-empty marker written yet) — nothing to prune.
+            # This used to be an implicit no-op via `captured_at < NULL`
+            # inside the DELETE's own WHERE clause; made explicit here so
+            # the "why" is documented at the one place it actually matters.
+            return 0
+
+        cand_rows = (await session.execute(text(
+            "SELECT symbol, exchange, captured_at FROM daily_book "
+            "WHERE kind = 'positions' AND account = :account "
+            "AND captured_at < :anchor AND captured_at >= NOW() - INTERVAL '7 days'"
+        ), {"account": account, "anchor": anchor})).all()
+
+        protected = await _frozen_protected_symbols(
+            [(s, e, c) for s, e, c in cand_rows], current_symbols, timestamp_indian(),
+        )
+        keep_symbols = set(current_symbols) | protected
+
+        if keep_symbols:
             stmt = text(
                 "DELETE FROM daily_book "
                 "WHERE kind = 'positions' AND account = :account "
-                "AND captured_at < (SELECT MAX(captured_at) FROM daily_book "
-                "                   WHERE kind = 'positions' AND account = :account "
-                "                   AND date >= CURRENT_DATE) "
+                "AND captured_at < :anchor "
                 "AND captured_at >= NOW() - INTERVAL '7 days' "
                 "AND symbol NOT IN :symbols"
             ).bindparams(_bp("symbols", expanding=True))
             result = await session.execute(
                 stmt,
-                {"account": account, "symbols": list(current_symbols)},
+                {"account": account, "anchor": anchor, "symbols": list(keep_symbols)},
             )
         else:
             stmt = text(
                 "DELETE FROM daily_book "
                 "WHERE kind = 'positions' AND account = :account "
-                "AND captured_at < (SELECT MAX(captured_at) FROM daily_book "
-                "                   WHERE kind = 'positions' AND account = :account "
-                "                   AND date >= CURRENT_DATE) "
+                "AND captured_at < :anchor "
                 "AND captured_at >= NOW() - INTERVAL '7 days'"
             )
-            result = await session.execute(stmt, {"account": account})
+            result = await session.execute(stmt, {"account": account, "anchor": anchor})
         await session.commit()
         return result.rowcount
+
+
+async def _write_confirmed_empty_marker(account: str, target_date: date, now_ist: datetime) -> None:
+    """Write a `kind='positions_empty'` sentinel row when the broker has
+    CONFIRMED (not merely failed-and-defaulted) that *account* has zero
+    open positions on *target_date*.
+
+    The exact bug this closes (failure mode 2, 2026-09 investigation,
+    account ZJ6294/GOLDM): `_positions_rows` produces zero rows on a
+    genuinely flat day, so `_upsert_rows([])` is a no-op and NOTHING gets
+    written for `kind='positions'` that day. `_delete_prior_orphan_positions`'s
+    anchor (`MAX(captured_at)` for today) then stays NULL forever, so its
+    `captured_at < anchor` predicate is never true, so the sweep never
+    runs for that account again — a stale expired-contract row is then
+    frozen FOREVER instead of frozen only until the operator's correct
+    8AM-next-market-open boundary (`expiry_freeze.next_market_open_ist`).
+    This marker is precisely the difference between "we checked today and
+    there is genuinely nothing" (write it) and "we never successfully
+    checked" (broker call raised, or returned an ambiguous non-confirming
+    payload — do NOT write it). See `_fetch_account_data`'s
+    `positions_confirmed` flag, and CLAUDE.md's "Alert evaluation and
+    latching" missing-vs-zero convention this mirrors.
+
+    Uses a DISTINCT `kind` ('positions_empty', not 'positions') specifically
+    so this marker never collides with any of the many existing
+    `kind='positions'` / `kind IN ('positions','holdings')` readers across
+    the codebase (`_positions_snapshot`'s `latest_batch` CTE — which
+    additionally requires `ltp > 0`, so a NULL-ltp sentinel would never
+    qualify anyway — `_sparkline_universe_symbols`, NAV, symbol_summary,
+    `_preload_snapshot_sentinels` in background.py, etc.). Only
+    `_prior_orphan_anchor` above is taught to also look at this kind.
+    """
+    row = {
+        "date":           target_date,
+        "account":        account,
+        "segment":        "none",
+        "kind":           "positions_empty",
+        "symbol":         "__EMPTY__",
+        "exchange":       None,
+        "qty":            0,
+        "lots":           0,
+        "lot_size":       1,
+        "avg_cost":       None,
+        "ltp":            None,
+        "day_pnl":        None,
+        "total_pnl":      None,
+        "previous_close": None,
+        "payload_json":   json.dumps({
+            "confirmed_empty": True, "captured_at": now_ist.isoformat(),
+        }),
+    }
+    await _upsert_rows([row])
 
 
 async def fix_daily_book_prev_close(
@@ -1283,6 +1452,18 @@ async def snapshot_daily_book(target_date: Optional[date] = None,
                         "[SNAPSHOT] pruned %d stale position row(s) from prior snapshot for %s",
                         _prior_pruned, account,
                     )
+
+                # Confirmed-empty marker — written AFTER the prune calls
+                # above (not before) so it can never be swept by
+                # `_delete_orphan_positions`'s same-day "wipe all" branch;
+                # it only needs to establish an anchor for FUTURE prune
+                # runs (see `_write_confirmed_empty_marker` docstring for
+                # the exact bug this closes). Gated on `positions_confirmed`
+                # — the broker must have returned a real, well-shaped
+                # response (not an ambiguous default) for today to count
+                # as a genuine "checked and confirmed empty" day.
+                if len(_p_syms) == 0 and raw.get("positions_confirmed"):
+                    await _write_confirmed_empty_marker(account, target_date, now_ist)
 
             processed.append(account)
 

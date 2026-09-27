@@ -267,6 +267,33 @@ Configurable in `/admin/settings`:
 **Cleanup**: Background task runs daily at 03:00 IST, deletes records older than
 the retention window.
 
+**daily_book `kind='positions'` orphan sweep — expiry-day-final freeze (2026-09)**:
+Two orphan-sweep functions in `backend/api/algo/daily_snapshot.py`
+(`_delete_orphan_positions` same-day, `_delete_prior_orphan_positions` 7-day
+lookback) delete a position row once its symbol stops appearing in the
+broker's daily fetch. A row is exempted from this sweep — frozen exactly as
+captured — when BOTH are true: (1) the symbol parses as an F&O contract
+(`backend.api.algo.derivatives.parse_tradingsymbol`) whose own real expiry
+date equals the trading SESSION (08:00 IST boundary, not the `date` column)
+the row was last captured in, and (2) the current instant hasn't yet crossed
+the next genuine trading day's 08:00 IST open after that expiry
+(`backend.api.algo.expiry_freeze.next_market_open_ist` — holiday/weekend/
+special-session aware, via `holidays_store` + `market_special_sessions`).
+A position CLOSED by normal trading while its contract still had time left
+is NOT exempted — it is swept immediately by the existing, unmodified logic.
+`positions.py:_positions_snapshot` additionally (a) unions in a frozen row
+that the account's own single-batch `latest_batch` join would otherwise mask
+behind a fresher batch for a different, still-live symbol in the same
+account, and (b) excludes outright any row whose freeze window has already
+ended as a defensive backstop (primary refresh is `closed_hours_or_broker`
+switching back to the live broker fetch once any segment reopens). A
+`kind='positions_empty'` sentinel row (written only when the broker
+CONFIRMS zero positions, never on an ambiguous/failed fetch) gives a fully
+flat account a real prune anchor going forward — without it, an account
+that never writes another 'positions' row has no anchor and its stale rows
+are never swept at all. Full rationale: `backend/api/algo/expiry_freeze.py`
+module docstring.
+
 ---
 
 ## 11. Edge Cases and Self-Healing
