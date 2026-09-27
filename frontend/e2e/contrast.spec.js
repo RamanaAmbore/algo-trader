@@ -47,7 +47,18 @@ function contrastRatio(fg, bg) {
   return (lighter + 0.05) / (darker + 0.05);
 }
 
-// Browser-side helper for live DOM contrast checks
+// Browser-side helper for live DOM contrast checks.
+//
+// effectiveBg() is gradient-aware (fixed 2026-09): .algo-modal's
+// `background: var(--card-bg-gradient)` is a background-image, so its
+// computed backgroundColor stays at the transparent initial value. A
+// backgroundColor-only walk fell straight through .algo-modal to
+// <body>'s Tailwind `bg-bg` class (#f8f9fb, near-white) -- a color never
+// actually visible behind the opaque navy gradient -- and reported a
+// false-positive contrast failure for .bh-footer-note (~2.49:1, exactly
+// --text-lo vs #f8f9fb). The popup's real paint is the gradient's dark
+// stops (~5.4:1+); effectiveBg() now checks backgroundImage for gradient
+// stops before falling back to backgroundColor.
 const WCAG_DOM_HELPERS = `
   window._wcag = window._wcag || (() => {
     function parseColor(s) {
@@ -68,22 +79,45 @@ const WCAG_DOM_HELPERS = `
       const L1=lum(fg), L2=lum(bg);
       return (Math.max(L1,L2)+0.05) / (Math.min(L1,L2)+0.05);
     }
-    // Walk up DOM to find first opaque background (alpha >= 0.15)
+    // Walk up DOM to find the background(s) actually painted behind el.
+    // Returns an array of candidate bg color strings -- normally one, but
+    // multiple when the nearest painted ancestor uses a CSS gradient,
+    // since a gradient paints every one of its color stops somewhere in
+    // the box. A gradient background-image paints on top of
+    // background-color and fully occludes it when opaque -- a shorthand
+    // like background: linear-gradient(...) leaves the computed
+    // backgroundColor at its transparent initial value, so checking
+    // backgroundColor alone walks straight past a gradient ancestor to
+    // whatever solid color sits further up the tree. See the comment
+    // above WCAG_DOM_HELPERS for the concrete BrokerHealthBadge incident
+    // this fixed.
     function effectiveBg(el) {
       let node = el;
       while (node && node !== document.body) {
-        const bg = getComputedStyle(node).backgroundColor;
-        if (alphaOf(bg) >= 0.15) return bg;
+        const cs = getComputedStyle(node);
+        const img = cs.backgroundImage;
+        if (img && img !== 'none' && /gradient\\(/.test(img)) {
+          const stops = img.match(/rgba?\\([^)]+\\)/g);
+          if (stops && stops.length) return stops;
+        }
+        const bg = cs.backgroundColor;
+        if (alphaOf(bg) >= 0.15) return [bg];
         node = node.parentElement;
       }
-      return getComputedStyle(document.body).backgroundColor || 'rgb(255,255,255)';
+      return [getComputedStyle(document.body).backgroundColor || 'rgb(255,255,255)'];
     }
     function check(sel, threshold) {
       const el = document.querySelector(sel);
       if (!el) return { skipped: true, reason: 'not found: ' + sel };
       const fg = getComputedStyle(el).color;
-      const bg = effectiveBg(el);
-      const ratio = cr(fg, bg);
+      const stops = effectiveBg(el);
+      // Worst case across every gradient stop the element could sit on top
+      // of — a single solid bg is just a one-element array here.
+      let bg = null, ratio = null;
+      for (const stop of stops) {
+        const r = cr(fg, stop);
+        if (r !== null && (ratio === null || r < ratio)) { ratio = r; bg = stop; }
+      }
       return { sel, fg, bg, ratio, pass: ratio !== null && ratio >= threshold };
     }
     return { check };
@@ -284,6 +318,70 @@ test('CSS tokens — dark theme on log-panel bg (#152033)', () => {
     const r = contrastRatio(fg, bg);
     expect(r, `${label}: ${r.toFixed(2)} on ${bg}`).toBeGreaterThanOrEqual(4.5);
   }
+});
+
+// ── Computed-style — BrokerHealthBadge popup footer, gradient-aware ───────
+// Operator report: .bh-footer-note measured ~2.49:1 in real rendering.
+// Investigation found the popup's own paint is fine (--text-lo on the
+// .algo-modal navy gradient is ~5.4:1+) — the 2.49 number is exactly
+// text-lo vs #f8f9fb, Tailwind's `bg` color applied to <body class="bg-bg">
+// in app.html. BrokerHealthBadge mounts as a SIBLING before .algo-viewport
+// (see (algo)/+layout.svelte), so nothing between .bh-footer-note and
+// <body> paints a background-color — only .algo-modal's
+// `background: var(--card-bg-gradient)` gradient does, and a gradient
+// shorthand leaves computed `backgroundColor` at its transparent initial
+// value. A background-color-only walk (the class of check this file's own
+// domCheck()/effectiveBg() used to do) walks straight past the opaque
+// gradient to <body>'s near-white bg, which a real user never sees (the
+// gradient fully occludes it). This is a TEST-methodology fix, not a
+// product CSS change — .bh-footer-note's real rendered background was
+// never near-white. effectiveBg() above was made gradient-aware to fix
+// the false positive; this fixture proves it end-to-end against a static
+// reproduction of the real DOM nesting (no backend/auth needed).
+test('computed style — bh-footer-note contrast against its real gradient paint, not the page body', async ({ page }) => {
+  const { readFileSync } = await import('fs');
+  const appCss = readFileSync(new URL('../src/app.css', import.meta.url).pathname, 'utf8');
+  const badgeSrc = readFileSync(
+    new URL('../src/lib/BrokerHealthBadge.svelte', import.meta.url).pathname, 'utf8'
+  );
+  const badgeCss = badgeSrc.match(/<style>([\s\S]*?)<\/style>/)[1];
+
+  // Tailwind utility classes (`bg-bg`, `text-text`) aren't generated in a
+  // static fixture — read the real value straight from tailwind.config.js
+  // (SSOT) so the fixture's body matches production instead of guessing.
+  const twConfig = readFileSync(
+    new URL('../tailwind.config.js', import.meta.url).pathname, 'utf8'
+  );
+  const bodyBg = twConfig.match(/bg:\s*'(#[0-9a-fA-F]{6})'/)[1];
+
+  const html = `<!DOCTYPE html>
+<html><head><style>${appCss}</style><style>${badgeCss}</style>
+<style>body { background-color: ${bodyBg}; }</style>
+</head>
+<body>
+  <!-- Real nesting: BrokerHealthBadge mounts as a sibling BEFORE
+       .algo-viewport, never inside .card-theme-dark. -->
+  <div class="bh-modal algo-modal" id="bh-modal" role="dialog">
+    <div class="bh-modal-header canonical-modal-header"><span class="bh-modal-title">Broker Auth Health</span></div>
+    <div class="bh-modal-body">grid content</div>
+    <div class="bh-modal-footer">
+      <span class="bh-footer-note" id="bh-note">Polls every 30 s · Auth state from broker API calls</span>
+    </div>
+  </div>
+</body></html>`;
+
+  await page.setContent(html, { waitUntil: 'load' });
+  const r = await domCheck(page, '#bh-note');
+
+  expect(r.ratio, `bh-footer-note ${r.ratio?.toFixed(2)} fg=${r.fg} bg=${r.bg}`).toBeGreaterThanOrEqual(4.5);
+  // Regression guard — a future change back to a backgroundColor-only walk
+  // would resolve `bg` to the near-white body color instead of a gradient
+  // stop; fail loudly rather than silently passing on the wrong layer.
+  // (getComputedStyle reports colors as "rgb(r, g, b)" — convert the hex
+  // SSOT value to the same format so the comparison is meaningful, not a
+  // hex-vs-rgb string mismatch that would trivially pass either way.)
+  const bodyBgRgb = `rgb(${hexToRgb(bodyBg).join(', ')})`;
+  expect(r.bg, `bg must resolve to an .algo-modal gradient stop, not body (${bodyBgRgb})`).not.toBe(bodyBgRgb);
 });
 
 // ── Token-driven (SSOT) cream-theme contrast ───────────────────────────────
