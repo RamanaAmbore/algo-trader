@@ -250,6 +250,61 @@ sudo ss -tlnp | grep 9001
 
 ---
 
+## Known gap — webhook delivery is not guaranteed
+
+**Incident (2026-09-27)**: a push to `main` landed on GitHub successfully
+(`git log origin/main` confirmed the commit), but the GitHub webhook
+delivery for that specific push never reached the server. In the same
+~30-second window, `dev` and `workshop` pushes both delivered normally —
+nginx's access log showed `POST /hooks/update` from `GitHub-Hookshot` for
+both, but no corresponding entry existed for `main` at all between them.
+Prod (`/opt/ramboq`) silently stayed on the previous commit for ~4 hours
+until this was caught by manual verification and remediated with:
+
+```bash
+sudo -u www-data /etc/webhook/dispatch.sh refs/heads/main
+```
+
+(this mirrors exactly what the missed webhook delivery would have run).
+
+`webhook/dispatch.sh` and `webhook/deploy.sh` were already established
+earlier this session as not at fault — they run correctly once
+triggered. (A drift check of `hooks.json`'s trigger-rule/secret between
+the repo and the live `/etc/webhook/hooks.json` was flagged as part of
+the audit scope but was not re-run as part of this fix — worth a
+follow-up check if deliveries to one branch keep looking systematically
+less reliable than others.) The gap is upstream of all of that: **nothing
+runs if the webhook delivery from GitHub never arrives in the first
+place**, and GitHub webhooks are at-least-once, not guaranteed — an
+occasional dropped delivery is expected, not a config defect to chase.
+
+**Automated detection**: `_task_deploy_sync_check()` in
+`backend/api/background.py` runs every ~15 min on each environment,
+in-process, comparing local `git rev-parse HEAD` against `git ls-remote
+origin <deploy_branch>`'s HEAD for that environment's own app root (no
+cross-environment SSH — prod checks `main`, dev checks its own branch,
+independently). If the two diverge and the divergence persists past a
+10-minute grace window (to avoid false-positives during a deploy's own
+normal build/restart time), it fires one ntfy alert per divergence
+episode via the existing `send_ntfy_alert()` transport
+(`backend/shared/helpers/alert_utils.py`) — alert-only, it never
+auto-triggers a redeploy (a background task silently re-running
+`dispatch.sh` risks a redeploy loop if the health check itself is what's
+broken).
+
+**Manual fallback** if this alert fires before anyone's watching — run
+the exact command the missed webhook delivery would have run:
+
+```bash
+# Prod:
+sudo -u www-data /etc/webhook/dispatch.sh refs/heads/main
+
+# Dev (substitute the actual dev branch name, e.g. "dev"):
+sudo -u www-data /etc/webhook/dispatch.sh refs/heads/<dev-branch>
+```
+
+---
+
 ## Service Files
 
 All service files are in `webhook/` and installed to `/etc/systemd/system/`.

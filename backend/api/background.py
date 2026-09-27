@@ -6667,6 +6667,221 @@ async def _task_broker_issue_daily() -> None:
 
 
 # ---------------------------------------------------------------------------
+# Deploy-sync reconciliation — detects a dropped GitHub webhook delivery
+# ---------------------------------------------------------------------------
+#
+# Incident (2026-09): a `main` push landed on GitHub but its webhook
+# delivery never reached the server (dev/workshop pushes in the same
+# window delivered fine) — prod silently ran a stale commit for ~4 hours
+# until caught by manual verification. GitHub webhooks are at-least-once,
+# not guaranteed, so there is no way to make delivery itself reliable;
+# this task is the reconciliation safety net that detects a miss and
+# alerts, rather than trying to prevent one. Alert-only by design — it
+# never re-triggers `dispatch.sh` itself (a redeploy loop is a worse
+# failure mode than a late human-remediated alert if the health check
+# that would gate an auto-redeploy is itself what's broken).
+#
+# Manual fallback if this fires: `sudo -u www-data /etc/webhook/dispatch.sh
+# refs/heads/<branch>` — exactly what the missed webhook delivery would
+# have run. See docs/deployment.md "Known gap — webhook delivery is not
+# guaranteed".
+
+_DEPLOY_SYNC_STATE: dict = {}
+_DEPLOY_SYNC_GRACE_SECONDS = 600  # 10 min — normal deploy build/restart headroom
+
+
+def _deploy_sync_repo_root() -> "Path":
+    """Repo root for this running process — three levels up from this file
+    (backend/api/background.py → backend/api → backend → repo root)."""
+    from pathlib import Path
+    return Path(__file__).resolve().parents[2]
+
+
+def _deploy_sync_local_branch(repo_root: "Path") -> str | None:
+    """Currently checked-out branch name, or None on any git failure.
+
+    `deploy.sh` always checks the server out onto a named branch
+    (`git checkout -B "$BRANCH" "origin/$BRANCH"`), never detached HEAD,
+    so this is a plain branch-name read on a real deploy target."""
+    import subprocess
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        return out or None
+    except Exception:
+        return None
+
+
+def _deploy_sync_git_heads(repo_root: "Path", branch: str) -> tuple[str | None, str | None]:
+    """Blocking subprocess pair: local HEAD SHA + origin/<branch> HEAD SHA.
+
+    Either side is None on any failure (git missing, network timeout, no
+    such remote branch, empty output, ...) — callers must never treat a
+    fetch failure as a match (would clear a real divergence) or as a
+    divergence (would false-alarm on a network hiccup)."""
+    import os
+    import subprocess
+
+    env = dict(os.environ, GIT_TERMINAL_PROMPT="0")
+
+    try:
+        local = subprocess.run(
+            ["git", "-C", str(repo_root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, timeout=10, env=env,
+        ).stdout.strip()
+        local_head = local or None
+    except Exception:
+        local_head = None
+
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(repo_root), "ls-remote", "origin", f"refs/heads/{branch}"],
+            capture_output=True, text=True, timeout=10, env=env,
+        ).stdout.strip()
+        remote_head = out.split()[0] if out else None
+    except Exception:
+        remote_head = None
+
+    return local_head, remote_head
+
+
+def _deploy_sync_decision(
+    local_head: str | None,
+    remote_head: str | None,
+    now: datetime,
+    state: dict,
+    grace_seconds: int = _DEPLOY_SYNC_GRACE_SECONDS,
+) -> tuple[bool, dict]:
+    """Pure decision logic — no subprocess, no I/O, fully unit-testable.
+
+    `state` (persisted across ticks by the caller) carries:
+      - diverged_since: datetime | None — when the CURRENT (local, remote)
+        pair first started diverging
+      - diverged_pair: tuple[str, str] | None — the pair currently being
+        timed/alerted
+      - alerted_pair: tuple[str, str] | None — the pair an alert has
+        already fired for (suppresses repeat alerts for the same episode)
+
+    Returns ``(should_alert, new_state)``. Never mutates `state` in place.
+
+    Rules:
+      - Either HEAD is None (git/network failure this tick): no alert,
+        state carried forward UNCHANGED — a fetch failure must never look
+        like a recovery (would clear a real divergence) or a fresh
+        divergence (false alarm).
+      - HEADs match: recovered — state cleared entirely.
+      - New (local, remote) pair (first divergence, or remote moved again
+        while still diverged): start the clock fresh, no alert this tick.
+      - Same pair, still within grace window: no alert yet.
+      - Same pair, past grace window, not yet alerted for this exact pair:
+        alert fires once, pair recorded as alerted.
+      - Same pair, already alerted: suppressed — no repeat spam every
+        15-min tick for the same standing divergence.
+    """
+    if not local_head or not remote_head:
+        return False, dict(state)
+
+    if local_head == remote_head:
+        return False, {"diverged_since": None, "diverged_pair": None, "alerted_pair": None}
+
+    pair = (local_head, remote_head)
+    if state.get("diverged_pair") != pair:
+        return False, {"diverged_since": now, "diverged_pair": pair, "alerted_pair": None}
+
+    diverged_since = state.get("diverged_since") or now
+    elapsed = (now - diverged_since).total_seconds()
+    if elapsed < grace_seconds:
+        return False, {"diverged_since": diverged_since, "diverged_pair": pair,
+                        "alerted_pair": state.get("alerted_pair")}
+
+    if state.get("alerted_pair") == pair:
+        return False, {"diverged_since": diverged_since, "diverged_pair": pair,
+                        "alerted_pair": pair}
+
+    return True, {"diverged_since": diverged_since, "diverged_pair": pair, "alerted_pair": pair}
+
+
+async def _task_deploy_sync_check() -> None:
+    """Every ~15 min: compare local HEAD against origin/<deploy_branch>'s
+    HEAD for this process's OWN app root (no cross-environment SSH — prod
+    checks main, dev checks its own branch, independently, in-process).
+
+    If they diverge and the divergence persists past a 10-min grace window
+    (avoids false-positives during a deploy's own normal build/restart
+    time), fires one ntfy alert per divergence episode via the existing
+    `send_ntfy_alert` path — the same helper used elsewhere for
+    order-failure / unprotected-position alerts. Alert-only; does not
+    auto-redeploy. See module docstring above for the incident this
+    guards against.
+
+    Skips entirely (not just "no alert" — no comparison at all) when the
+    locally checked-out branch doesn't match `deploy_branch` in
+    backend_config.yaml — e.g. a developer running the API locally on
+    `workshop` while the repo's `backend_config.yaml` still says
+    `deploy_branch: main` would otherwise diverge from origin/main by
+    construction and false-page the operator. A real deploy target's
+    checkout always matches its own configured `deploy_branch` (`deploy.sh`
+    writes both from the same `$BRANCH` value)."""
+    from backend.shared.helpers.alert_utils import send_ntfy_alert
+
+    await asyncio.sleep(120)  # startup settle — let the process finish booting
+
+    while True:
+        try:
+            branch = str(config.get("deploy_branch", "main") or "main")
+            repo_root = _deploy_sync_repo_root()
+            loop = asyncio.get_running_loop()
+
+            local_branch = await loop.run_in_executor(
+                None, _deploy_sync_local_branch, repo_root,
+            )
+            if local_branch and local_branch != branch:
+                logger.debug(
+                    f"[DEPLOY-SYNC] local branch={local_branch!r} != "
+                    f"deploy_branch={branch!r} — skipping (not a deploy target)"
+                )
+            else:
+                local_head, remote_head = await loop.run_in_executor(
+                    None, _deploy_sync_git_heads, repo_root, branch,
+                )
+                if not local_head or not remote_head:
+                    logger.warning(
+                        f"[DEPLOY-SYNC] could not resolve HEADs this tick "
+                        f"(local={local_head!r} remote={remote_head!r})"
+                    )
+                else:
+                    should_alert, new_state = _deploy_sync_decision(
+                        local_head, remote_head, timestamp_indian(), _DEPLOY_SYNC_STATE,
+                    )
+                    _DEPLOY_SYNC_STATE.clear()
+                    _DEPLOY_SYNC_STATE.update(new_state)
+
+                    if should_alert:
+                        message = (
+                            f"Local HEAD {local_head[:8]} != origin/{branch} "
+                            f"HEAD {remote_head[:8]} for longer than "
+                            f"{_DEPLOY_SYNC_GRACE_SECONDS // 60} min — webhook "
+                            f"delivery may have been missed. Manual fallback: "
+                            f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}"
+                        )
+                        logger.warning(f"[DEPLOY-SYNC] {message}")
+                        await loop.run_in_executor(
+                            None,
+                            lambda: send_ntfy_alert(
+                                f"Deploy out of sync — {branch}", message, priority="high",
+                            ),
+                        )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.warning(f"[DEPLOY-SYNC] iteration failed: {e}")
+
+        await asyncio.sleep(15 * 60)
+
+
+# ---------------------------------------------------------------------------
 # Post-market cron helpers
 # ---------------------------------------------------------------------------
 
@@ -7101,6 +7316,7 @@ async def on_startup(app) -> None:
         asyncio.create_task(_supervised(_task_perf_snapshot,                   name="bg-perf-snapshot"),   name="bg-perf-snapshot"),
         asyncio.create_task(_supervised(_task_purge_perf_snapshots,            name="bg-purge-perf-snapshots"), name="bg-purge-perf-snapshots"),
         asyncio.create_task(_supervised(_task_broker_issue_daily,               name="bg-broker-daily"),         name="bg-broker-daily"),
+        asyncio.create_task(_supervised(_task_deploy_sync_check,                name="bg-deploy-sync-check"), name="bg-deploy-sync-check"),
     ]
     # Mode 2 (real-data paper) runs on BOTH main and dev branches.
     # The PaperTradeEngine singleton processes its open-order book against
