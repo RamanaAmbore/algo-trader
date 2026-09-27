@@ -894,6 +894,168 @@ class TestCloseOffsetGate:
             )
         assert result is False
 
+    # ── 2026-09 council audit fix: _verify_close_intent (magnitude check) ─────
+    # The devil's-advocate lens found classifyIntent() (frontend) decides
+    # 'close' from SIGN alone with no magnitude check, and the server used to
+    # trust that flag directly to bypass G2's 5-lot fat-finger cap. These
+    # tests cover the new server-side sign+magnitude verification.
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_true_when_qty_within_position(self):
+        """SELL 50 against a held LONG of 50 → magnitude matches exactly, verified True."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=50,
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_false_when_qty_exceeds_position(self):
+        """THE bug this fixes: SELL 500 against a held LONG of only 1 —
+        sign agrees (would classify 'close' client-side) but magnitude
+        vastly exceeds the real position. Must return False so the caller
+        falls back to the full G2 fat-finger cap instead of bypassing it."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 1, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=500,
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_true_when_qty_less_than_position(self):
+        """Partial close — SELL 20 against a held LONG of 50 — is a
+        legitimate close of a subset; magnitude check is <=, not ==."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=20,
+            )
+        assert result is True
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_false_on_sign_mismatch(self):
+        """BUY against a held LONG is not a close at all (same-direction
+        add), regardless of magnitude — must return False."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="BUY",
+                account="ZG0001", contracts=10,
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_false_no_position(self):
+        """No matching position row at all → never verified, fails closed."""
+        import pandas as pd
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        df = pd.DataFrame([{
+            "tradingsymbol": "OTHER_SYMBOL", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[df]):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=1,
+            )
+        assert result is False
+
+    @pytest.mark.asyncio
+    async def test_verify_close_intent_fails_closed_on_fetch_error(self):
+        """Position-fetch error → fails CLOSED (False), unlike
+        _is_offsetting_position's fail-OPEN design — this function gates a
+        safety-cap bypass, so inability to verify must never grant it."""
+        from backend.api.routes.orders_place import _verify_close_intent
+
+        with patch(
+            "backend.brokers.broker_apis.fetch_positions",
+            side_effect=RuntimeError("broker unavailable"),
+        ):
+            result = await _verify_close_intent(
+                sym="NIFTY25JUL24000CE", exchange="NFO", side="SELL",
+                account="ZG0001", contracts=1,
+            )
+        assert result is False
+
+    # ── 2026-09 council audit fix: _ticket_enforce_lot_and_fat_finger no ──────
+    # longer trusts a client-claimed intent='close' directly for the G2
+    # bypass — it must be independently verified via _verify_close_intent.
+
+    @pytest.mark.asyncio
+    async def test_enforce_fat_finger_rejects_unverified_close_claim_over_cap(self):
+        """Client claims intent='close' with 10 lots (>5-lot cap), but the
+        server can't verify it (position fetch says no matching position)
+        — must raise the 400 fat-finger rejection, not bypass it."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        from litestar.exceptions import HTTPException
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+        )
+        empty_df = pd.DataFrame([{
+            "tradingsymbol": "OTHER_SYMBOL", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[empty_df]):
+            with pytest.raises(HTTPException) as exc_info:
+                await _ticket_enforce_lot_and_fat_finger(
+                    data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                    contracts=10 * 50, lot_size=50,  # 10 lots
+                )
+        assert exc_info.value.status_code == 400
+        assert "5-lot safety cap" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_enforce_fat_finger_allows_verified_close_over_cap(self):
+        """Client claims intent='close', server verifies it against a real,
+        sufficiently large position — the >5-lot cap bypass is legitimately
+        granted (this is the correct, intended close-of-large-position case)."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+        )
+        real_df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 500, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[real_df]):
+            # Must not raise — 10 lots (500 contracts) is within the real
+            # 500-contract long position being closed.
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                contracts=10 * 50, lot_size=50,
+            )
+
     # ── Fix C: ticket submit gate clears template_id ──────────────────────────
 
     @pytest.mark.asyncio
@@ -960,8 +1122,15 @@ class TestCloseOffsetGate:
         assert captured["data_at_enforce"].template_id is None
 
     @pytest.mark.asyncio
-    async def test_close_intent_clears_template_without_position_check(self):
-        """intent='close' → template_id cleared without calling _is_offsetting_position."""
+    async def test_close_intent_alone_no_longer_clears_template_without_verification(self):
+        """2026-09 council audit fix: a CLIENT-claimed intent='close' must NOT
+        clear template_id by itself anymore — the template-detach gate now
+        ALWAYS calls _is_offsetting_position to independently verify against
+        the real broker position before clearing, regardless of what the
+        client's intent flag says. This replaces the old test that asserted
+        _is_offsetting_position must NOT be called for intent=close — that
+        was locking in the exact bug the audit found (a client-side flag
+        alone deciding template/GTT state with no server-side check)."""
         from backend.api.schemas import TicketOrderRequest
 
         data = TicketOrderRequest(
@@ -975,7 +1144,7 @@ class TestCloseOffsetGate:
             intent="close",
         )
 
-        captured = {}
+        captured = {"offsetting_called_with": None}
 
         async def _fake_validate(d, req):
             return "SELL", "NIFTY25JUL24000CE", 50, 50
@@ -984,7 +1153,11 @@ class TestCloseOffsetGate:
             return "ZG0001"
 
         async def _fake_offsetting(sym, exchange, side, account):
-            raise AssertionError("_is_offsetting_position should NOT be called for intent=close")
+            # Now expected to be called unconditionally — record the call
+            # and return True (verified real close) so this test still
+            # confirms the downstream template_id-clearing behavior.
+            captured["offsetting_called_with"] = (sym, exchange, side, account)
+            return True
 
         async def _fake_enforce(d, acc, sym, qty, ls):
             captured["data_at_enforce"] = d
@@ -1017,5 +1190,73 @@ class TestCloseOffsetGate:
             from backend.api.routes.orders_place import ticket_order_handler
             await ticket_order_handler(data, MagicMock())
 
-        assert captured.get("data_at_enforce") is not None
-        assert captured["data_at_enforce"].template_id is None
+        assert captured["offsetting_called_with"] == (
+            "NIFTY25JUL24000CE", "NFO", "SELL", "ZG0001",
+        ), "_is_offsetting_position must be called unconditionally to verify the close claim"
+        assert captured["data_at_enforce"].template_id is None, (
+            "template_id must still clear once the close is server-verified"
+        )
+
+    @pytest.mark.asyncio
+    async def test_close_intent_not_verified_keeps_template(self):
+        """A CLIENT-claimed intent='close' that the server CANNOT verify
+        (e.g. no matching position, or sign mismatch) must NOT clear
+        template_id — the claim alone is no longer sufficient."""
+        from backend.api.schemas import TicketOrderRequest
+
+        data = TicketOrderRequest(
+            mode="live",
+            side="SELL",
+            tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1,
+            exchange="NFO",
+            account="ZG0001",
+            template_id=9,
+            intent="close",
+        )
+
+        captured = {}
+
+        async def _fake_validate(d, req):
+            return "SELL", "NIFTY25JUL24000CE", 50, 50
+
+        def _fake_account(d):
+            return "ZG0001"
+
+        async def _fake_offsetting(sym, exchange, side, account):
+            return False  # no matching/real position — claim not verified
+
+        async def _fake_enforce(d, acc, sym, qty, ls):
+            captured["data_at_enforce"] = d
+
+        async def _fake_gate(d, sym):
+            pass
+
+        async def _fake_capacity(*a, **kw):
+            pass
+
+        with patch("backend.api.routes.orders_place._ticket_validate_input",
+                   new=_fake_validate), \
+             patch("backend.api.routes.orders_place._ticket_validate_account",
+                   new=_fake_account), \
+             patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=_fake_offsetting), \
+             patch("backend.api.routes.orders_place._ticket_enforce_lot_and_fat_finger",
+                   new=_fake_enforce), \
+             patch("backend.api.routes.orders_place._ticket_gate_market_hours_and_align_price",
+                   new=_fake_gate), \
+             patch("backend.api.routes.orders_place._enforce_capacity_guard",
+                   new=_fake_capacity), \
+             patch("backend.shared.helpers.settings.get_bool", return_value=False), \
+             patch("backend.shared.helpers.utils.config",
+                   {"deploy_branch": "dev"}), \
+             patch("backend.api.routes.orders_place._ticket_place_live",
+                   new_callable=AsyncMock, return_value=None), \
+             patch("backend.api.routes.orders_place._ticket_place_paper",
+                   new_callable=AsyncMock, return_value=None):
+            from backend.api.routes.orders_place import ticket_order_handler
+            await ticket_order_handler(data, MagicMock())
+
+        assert captured["data_at_enforce"].template_id == 9, (
+            "template_id must NOT clear when the close claim isn't server-verified"
+        )

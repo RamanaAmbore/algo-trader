@@ -380,12 +380,14 @@ def _opl_reconcile_attach_eligible(row) -> bool:
     return bool(row.fill_price)
 
 
-async def _is_offsetting_position(sym: str, exchange: str, side: str, account: str) -> bool:
-    """Return True when placing `side` would reduce/close an existing position.
+async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> float | None:
+    """Return the signed net held quantity for (account, sym), or None when
+    no matching position row exists or the broker fetch fails.
 
-    Uses cached broker positions (30s TTL) — lightweight, no extra broker call typically.
-    BUY against a net SHORT → True. SELL against a net LONG → True.
-    Fails open (returns False) if position fetch fails.
+    Uses cached broker positions (30s TTL) — lightweight, no extra broker
+    call typically. Shared by `_is_offsetting_position` (sign-only check)
+    and `_verify_close_intent` (sign + magnitude check) so both read the
+    same position snapshot rather than each doing their own broker call.
     """
     try:
         from backend.brokers.broker_apis import fetch_positions as _fp
@@ -403,13 +405,69 @@ async def _is_offsetting_position(sym: str, exchange: str, side: str, account: s
             rows = df[mask]
             if rows.empty:
                 continue
-            net_qty = float(rows["quantity"].iloc[0])
-            if side.upper() == "BUY" and net_qty < 0:
-                return True   # BUY closes a SHORT
-            if side.upper() == "SELL" and net_qty > 0:
-                return True   # SELL closes a LONG
+            return float(rows["quantity"].iloc[0])
     except Exception:
-        pass  # fail-open: don't block the order on a position-fetch failure
+        pass
+    return None
+
+
+async def _is_offsetting_position(sym: str, exchange: str, side: str, account: str) -> bool:
+    """Return True when placing `side` would reduce/close an existing position.
+
+    BUY against a net SHORT → True. SELL against a net LONG → True.
+    Fails open (returns False) if position fetch fails — used only to
+    decide whether to detach a template (low-stakes: worst case a
+    template stays attached that should have detached, or vice versa).
+    Do NOT reuse this fail-open sign-only check for anything that grants
+    a safety-cap bypass — see `_verify_close_intent` for that.
+    """
+    net_qty = await _fetch_net_position_qty(sym, exchange, account)
+    if net_qty is None:
+        return False
+    if side.upper() == "BUY" and net_qty < 0:
+        return True   # BUY closes a SHORT
+    if side.upper() == "SELL" and net_qty > 0:
+        return True   # SELL closes a LONG
+    return False
+
+
+async def _verify_close_intent(
+    sym: str, exchange: str, side: str, account: str, contracts: int,
+) -> bool:
+    """Server-side verification that a CLIENT-CLAIMED 'close' intent is
+    real — both sign (the order genuinely offsets the held position) AND
+    magnitude (the order's contract qty does not exceed the actual held
+    qty). 2026-09 council audit fix (devil's-advocate lens): the frontend's
+    `classifyIntent()` (orderTicketSubmit.js) decides 'close' from SIGN
+    alone — long position + SELL is classified 'close' regardless of how
+    large the SELL qty is. `_ticket_enforce_lot_and_fat_finger` used to
+    trust that client-supplied flag directly to bypass the 5-lot
+    fat-finger cap (G2) and, per the G1 close-path exception, the 50-lot
+    adapter ceiling too — so a fat-fingered qty far larger than the real
+    position (e.g. 1 lot held, SELL 500 typed by mistake) sailed through
+    every quantity safety net specifically because the sign happened to
+    match. This function is the missing magnitude check.
+
+    Fails CLOSED (returns False) on any position-fetch error or when no
+    matching position row exists — unlike `_is_offsetting_position`'s
+    fail-open design. That function's False just keeps a template
+    attached (safe default for a low-stakes decision); this function's
+    False forces the caller back onto the FULL G1/G2/ceiling safety path
+    (safe default for a decision that grants a cap bypass) — inability to
+    verify must never grant the bypass.
+
+    @param contracts  the order's contract quantity (already lots × lot_size)
+    @returns True only when `side` genuinely offsets the held position AND
+        `contracts` does not exceed the absolute held quantity.
+    """
+    net_qty = await _fetch_net_position_qty(sym, exchange, account)
+    if net_qty is None:
+        return False
+    side_upper = side.upper()
+    if side_upper == "BUY" and net_qty < 0:
+        return contracts <= abs(net_qty)
+    if side_upper == "SELL" and net_qty > 0:
+        return contracts <= net_qty
     return False
 
 
@@ -1218,17 +1276,44 @@ async def _ticket_enforce_lot_and_fat_finger(
 
     Close intent + MCX/NCO exempt from the fat-finger cap (MCX enforces
     its own 20-lot cap downstream in the live path).
+
+    2026-09 council audit fix (devil's-advocate lens) — a CLIENT-claimed
+    `data.intent == "close"` is no longer trusted directly for the cap
+    bypass. The frontend's `classifyIntent()` decides 'close' from SIGN
+    alone (long position + SELL → 'close'), with no magnitude check — a
+    fat-fingered qty far larger than the real held position (e.g. 1 lot
+    held, SELL 500 typed by mistake) was previously classified 'close'
+    and sailed through this cap, and the G1 close-path exception, and the
+    50-lot adapter ceiling, uncapped. `_verify_close_intent` independently
+    re-derives 'close' server-side from the actual broker position (sign
+    AND magnitude) before the bypass is granted; a claimed-but-unverified
+    close falls back to the full cap below rather than being trusted.
     """
     if data.exchange not in _FO_EXCHANGES:
         return
     if lot_size <= 1:
         return
     _lots = contracts // lot_size
-    _is_close = (getattr(data, "intent", None) or "").lower() == "close"
+    _claimed_close = (getattr(data, "intent", None) or "").lower() == "close"
     _is_mcx = data.exchange in ("MCX", "NCO")
+    _is_close = False
+    if _claimed_close:
+        side_upper = (getattr(data, "side", None) or "").upper()
+        _is_close = await _verify_close_intent(
+            sym=sym, exchange=str(data.exchange), side=side_upper,
+            account=account, contracts=contracts,
+        )
+        if not _is_close:
+            logger.warning(
+                "[FAT-FINGER-GUARD] client claimed close intent but server "
+                "verification failed (sign mismatch or qty exceeds actual "
+                "position) — falling back to full cap: acct=%s sym=%s "
+                "lots=%s exchange=%s",
+                account, sym, _lots, data.exchange,
+            )
     if _is_close and _lots > 5:
         logger.info(
-            "[FAT-FINGER-GUARD] close intent bypasses G2 cap: "
+            "[FAT-FINGER-GUARD] verified close intent bypasses G2 cap: "
             "acct=%s sym=%s lots=%s lot_size=%s exchange=%s",
             account, sym, _lots, lot_size, data.exchange,
         )
@@ -2026,15 +2111,21 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
 
     # Close/offset gate: strip template_id when this order would reduce an
     # existing opposite position (close-intent or net-offsetting).
+    #
+    # 2026-09 council audit fix: previously trusted a CLIENT-claimed
+    # data.intent == "close" directly here, only falling back to the real
+    # `_is_offsetting_position` check when the client hadn't claimed close.
+    # Always run the real, position-backed check instead — it's the same
+    # cost (one cached position fetch) as the fallback path already paid,
+    # and removes reliance on a client-side flag for a decision that
+    # affects live GTT/template state.
     if data.template_id:
-        _is_close = (getattr(data, "intent", None) or "").lower() == "close"
-        if not _is_close:
-            _is_close = await _is_offsetting_position(
-                sym=sym,
-                exchange=str(data.exchange or "NFO"),
-                side=side,
-                account=str(account),
-            )
+        _is_close = await _is_offsetting_position(
+            sym=sym,
+            exchange=str(data.exchange or "NFO"),
+            side=side,
+            account=str(account),
+        )
         if _is_close:
             logger.info(
                 "[TPL-ATTACH] clearing template_id — close/offset order for %s %s",
