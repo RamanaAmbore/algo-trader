@@ -680,6 +680,26 @@ def _build_summary_email(
     return body
 
 
+def _partial_outage_warning_lines(sum_positions) -> "list[str] | None":
+    """Return (tg_line, html_line) when `sum_positions` carries a
+    `.attrs['partial_outage']` flag (2026-09 partial-outage guard — see
+    background._positions_partial_outage_accounts), else None.
+
+    `sum_positions` here is the SAME DataFrame object
+    `background._perf_fetch_all_broker_data` builds — the attr survives
+    `.copy()` / `groupby()` / `pd.concat()` unchanged, so no extra
+    plumbing is needed at the open/close-summary call sites; this reads
+    it directly off the frame already being passed in."""
+    accts = (getattr(sum_positions, 'attrs', {}) or {}).get('partial_outage')
+    if not accts:
+        return None
+    joined = ", ".join(str(a) for a in accts)
+    return [
+        f"⚠ PARTIAL OUTAGE — account(s) {joined} unavailable this cycle; "
+        f"positions TOTAL may be UNDERSTATED",
+    ]
+
+
 def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
                  label: str = "", df_margins=None, df_positions=None):
     """
@@ -702,6 +722,14 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
 
     tg_table       = _build_summary_telegram(segment_label, h_rows, p_rows, f_rows, und_rows)
     email_html     = _build_summary_email(segment_label, h_rows, p_rows, f_rows, und_rows)
+
+    warning_lines = _partial_outage_warning_lines(sum_positions)
+    if warning_lines:
+        tg_table = "\n".join(warning_lines) + "\n\n" + tg_table
+        email_html = (
+            f"<p style='color:{_EMAIL_RED};font-weight:bold'>"
+            f"{warning_lines[0]}</p>" + email_html
+        )
 
     _dispatch(msg_type, ist_display, tg_table, email_html, subject_detail)
     logger.info(f"Background: {msg_type} summary sent")

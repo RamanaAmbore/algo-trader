@@ -420,8 +420,11 @@ def _fetch_positions_direct() -> tuple[pd.DataFrame, pd.DataFrame]:
     # through the `raw.empty` guard below as a fake "no positions" result —
     # this worker feeds `_perf_fetch_all_broker_data` (background poller:
     # intraday-equity curve, open/close summaries, the loss-* agent engine's
-    # sum_positions) directly, so a masked outage silently reported P&L=0
-    # through every one of those surfaces instead of erroring loudly.
+    # sum_positions) AND `_compute_firm_nav` (auth.py — NavCard
+    # `/api/auth/firm-nav`, `/api/auth/me/nav`, redundant direct-fetch
+    # inside its own day/cum P&L fallback path) directly, so a masked
+    # outage silently reported P&L=0 through every one of those surfaces
+    # instead of erroring loudly.
     # Shape (2) previously raised an opaque `ValueError: No objects to
     # concatenate` from `pd.concat([])` — same end result (exception
     # propagates to the caller's broad except) but with a confusing message;
@@ -1026,12 +1029,27 @@ def _perf_append_intraday_equity(
     """Append one point to the intraday equity-curve buffer. Wipes on IST
     date rollover so the chart always reflects the current day only.
     Mutates the module-level `_intraday_equity` deque and
-    `_intraday_equity_date` marker."""
+    `_intraday_equity_date` marker.
+
+    Skips the append entirely (freezes at the last good point) when
+    `all_sum_p` carries a `.attrs['partial_outage']` flag (2026-09
+    partial-outage guard) — this deque feeds `auth._compute_firm_nav`'s
+    `firm_day_pnl`/`firm_cum_pnl` preference path, so recording an
+    understated TOTAL here would show a wrong Day P&L on NavCard via
+    that indirect route, same class of bug the grammar/pnl_history
+    guards close for the agent-engine side."""
     global _intraday_equity, _intraday_equity_date
     try:
         if _intraday_equity_date != today:
             _intraday_equity.clear()
             _intraday_equity_date = today
+
+        if (getattr(all_sum_p, 'attrs', {}) or {}).get('partial_outage'):
+            logger.warning(
+                "[PARTIAL-OUTAGE] intraday-equity append skipped this tick — "
+                f"accounts={all_sum_p.attrs.get('partial_outage')}"
+            )
+            return
 
         h_day, h_pnl, p_pnl, p_day = _perf_extract_total_pnl_fields(
             all_sum_h, all_sum_p,

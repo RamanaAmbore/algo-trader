@@ -35,13 +35,31 @@ def summarise_holdings(seg_holdings, full_sum_holdings, seg_exchanges=None):
 
 
 def summarise_positions(seg_positions):
-    """Re-derive per-account + TOTAL summary from segment-filtered positions rows."""
+    """Re-derive per-account + TOTAL summary from segment-filtered positions rows.
+
+    Explicitly propagates `seg_positions.attrs` onto the returned frame.
+    `pd.concat` only auto-propagates `.attrs` when EVERY input shares
+    identical attrs — `total` here is a brand-new DataFrame built from a
+    plain dict, so its attrs are always `{}`, which differs from
+    `grouped`'s (inherited from `seg_positions`) whenever the caller's
+    `seg_positions` carries anything (e.g. `partial_outage` — 2026-09
+    partial-outage guard) and the concat would otherwise silently wipe
+    it. Manual/dry-run agent-fire paths (routes/agents.py) and the
+    close-summary rebuild (background.py) both call this function
+    specifically because they need the TOTAL row AFTER
+    `_fetch_positions_direct` has already flagged a partial outage on
+    the raw frame — losing the attr here would let those paths evaluate/
+    display an understated TOTAL with no signal it's degraded."""
     if seg_positions.empty:
         return seg_positions
 
     grouped = seg_positions.groupby("account")[["pnl"]].sum().reset_index()
     total = pd.DataFrame([{'account': 'TOTAL', 'pnl': grouped['pnl'].sum()}])
-    return pd.concat([grouped, total], ignore_index=True)
+    result = pd.concat([grouped, total], ignore_index=True)
+    src_attrs = getattr(seg_positions, 'attrs', None)
+    if src_attrs:
+        result.attrs.update(src_attrs)
+    return result
 
 
 def _build_und_buckets(rows, parse_tradingsymbol) -> dict[str, dict]:
