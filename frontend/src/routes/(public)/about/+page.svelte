@@ -75,24 +75,6 @@
     </div>
   </div>
 
-  <!-- Principal profile block — Founder (kept first per operator instruction) -->
-  <div class="principal-block">
-    <div class="principal-name">Haritha Chikile</div>
-    <div class="principal-title">Founder, RamboQuant Analytics LLP</div>
-  </div>
-
-  <!-- Principal profile block — Platform Architect -->
-  <div class="principal-block">
-    <div class="principal-name">Ramana R Ambore</div>
-    <div class="principal-title">Platform Architect &amp; Quantitative Developer, RamboQuant LLP</div>
-    <a
-      href="https://github.com/RamanaAmbore"
-      target="_blank"
-      rel="noopener"
-      class="principal-chip"
-    >GitHub · RamanaAmbore</a>
-  </div>
-
   <!-- Prose -->
   <div class="about-prose">
 
@@ -115,6 +97,13 @@
     <p>Ramana R Ambore is the technical architect and developer behind RamboQuant's platform — he designed, built, and operates the AI-augmented trading system (built with Claude Code) that runs the firm's strategy end-to-end. He brings 30+ years of financial-services engineering experience to that work, including 19 years as a Principal System Analyst at Fidelity Investments, his primary day-to-day role.</p>
 
     <p>His credentials — FRM (GARP, 2022), CFA Level 3 candidate, PGCBM from XLRI, a Master's in Computer Science, Six Sigma Green Belt, IBM Certified DB2 DBA, and Sun Certified Java Programmer — reflect three decades of hands-on systems engineering. He was recognized with the NTT Innovation Award as a top-40 global innovator. The same engineering discipline used on institutional trading floors runs this platform at one-operator scale, so what partners see in their statements is exactly what happened in the market.</p>
+
+    <a
+      href="https://github.com/RamanaAmbore"
+      target="_blank"
+      rel="noopener"
+      class="principal-chip prose-chip"
+    >GitHub · RamanaAmbore</a>
 
   </div>
 
@@ -223,28 +212,9 @@
     .stat-item { padding: 1rem 0; }
   }
 
-  /* ── Principal profile block ───────────────────────────────────────────── */
-  .principal-block {
-    display: flex;
-    align-items: center;
-    flex-wrap: wrap;
-    gap: 0.5rem 1rem;
-    padding: 1rem 1.5rem;
-    background: #fffdf8;
-    border-bottom: 1px solid #e7e0cf;
-  }
-  .principal-name {
-    font-size: 1.05rem;
-    font-weight: 800;
-    color: #1a2744;
-    letter-spacing: -0.01em;
-  }
-  .principal-title {
-    font-size: 0.78rem;
-    font-weight: 600;
-    color: #5a7090;
-    letter-spacing: 0.02em;
-  }
+  /* ── Principal GitHub chip — now lives inline inside the Architect's own
+       prose section (folded in 2026-09 so Ramana appears under exactly one
+       heading instead of a separate top-level block + prose section). ──── */
   .principal-chip {
     display: inline-block;
     font-size: 0.72rem;
@@ -257,14 +227,13 @@
     text-decoration: none;
     letter-spacing: 0.02em;
     transition: background 0.15s, color 0.15s;
-    margin-left: auto;
   }
   .principal-chip:hover {
     background: #f4ead4;
     color: #5a4010;
   }
-  @media (max-width: 480px) {
-    .principal-chip { margin-left: 0; }
+  .prose-chip {
+    margin-top: 0.25rem;
   }
 
   /* ── Prose ─────────────────────────────────────────────────────────────── */

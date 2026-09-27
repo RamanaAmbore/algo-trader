@@ -108,18 +108,18 @@ test.describe('about page copy — source-level guards', () => {
     expect(src).toMatch(/href="\/contact" class="cta-btn cta-btn-primary"/);
   });
 
-  test('about page: Haritha Chikile (Founder) principal block precedes Ramana Ambore (Platform Architect) principal block', () => {
-    // Operator instruction (2026-09): keep Haritha Chikile, Founder, at the
-    // top of the page; Ramana Ambore below it. Guards both the top-level
-    // .principal-block profile band and the prose section-label order so
-    // neither can silently regress back to Ramana-first.
+  test('about page: Haritha Chikile (Founder) section precedes Ramana Ambore (Platform Architect) section, each under exactly one heading', () => {
+    // Operator instructions (2026-09): (1) keep Haritha Chikile, Founder, at
+    // the top of the page, Ramana Ambore below it; (2) Ramana must appear
+    // under exactly ONE heading, not split across a separate top-level
+    // profile block plus his own prose section. Fix folded the GitHub-chip
+    // block into his single "Platform Architect & Quantitative Developer"
+    // prose section and removed the standalone .principal-block entirely.
     const src = aboutSrc();
-    const founderBlockIdx = src.indexOf('Founder, RamboQuant Analytics LLP');
-    const architectBlockIdx = src.indexOf('Platform Architect &amp; Quantitative Developer, RamboQuant LLP');
-    expect(founderBlockIdx, 'Founder principal block must exist').toBeGreaterThan(-1);
-    expect(architectBlockIdx, 'Architect principal block must exist').toBeGreaterThan(-1);
-    expect(founderBlockIdx, 'Founder principal block must precede the Architect principal block')
-      .toBeLessThan(architectBlockIdx);
+
+    // No leftover standalone profile-block markup — proves consolidation,
+    // not just reordering of two duplicate blocks.
+    expect(src, 'standalone .principal-block markup must be removed').not.toMatch(/class="principal-block"/);
 
     const founderLabelIdx = src.indexOf('>Founder<');
     const architectLabelIdx = src.indexOf('>Platform Architect &amp; Quantitative Developer<');
@@ -127,6 +127,23 @@ test.describe('about page copy — source-level guards', () => {
     expect(architectLabelIdx, 'Architect prose section label must exist').toBeGreaterThan(-1);
     expect(founderLabelIdx, 'Founder prose section must precede the Architect prose section')
       .toBeLessThan(architectLabelIdx);
+
+    // Each person's full name appears exactly once in the VISUAL markup —
+    // one heading, one mention, no duplicate top-level block. Scoped to the
+    // body (excludes <svelte:head> JSON-LD, which legitimately names both
+    // as founder/employee — machine metadata, not visual duplication).
+    const body = src.slice(src.indexOf('</svelte:head>'));
+    const haritaMentions = (body.match(/Haritha Chikile/g) || []).length;
+    const ramanaMentions = (body.match(/Ramana R Ambore/g) || []).length;
+    expect(haritaMentions, 'Haritha Chikile must appear exactly once (single section)').toBe(1);
+    expect(ramanaMentions, 'Ramana R Ambore must appear exactly once (single section)').toBe(1);
+
+    // GitHub chip now lives inside the Architect prose section, not a
+    // separate top block.
+    const githubChipIdx = src.indexOf('https://github.com/RamanaAmbore');
+    expect(githubChipIdx, 'GitHub chip must exist').toBeGreaterThan(-1);
+    expect(githubChipIdx, 'GitHub chip must be inside the Architect prose section')
+      .toBeGreaterThan(architectLabelIdx);
   });
 });
 
@@ -140,7 +157,7 @@ test.describe('about page copy — rendered page', () => {
     await page.waitForTimeout(500);
 
     await expect(page.getByText('algorithmically driven investment program', { exact: false })).toBeVisible();
-    await expect(page.getByText('Platform Architect & Quantitative Developer, RamboQuant LLP', { exact: false })).toBeVisible();
+    await expect(page.getByText('Platform Architect & Quantitative Developer', { exact: false }).first()).toBeVisible();
     await expect(page.getByText('FRM (GARP, 2022)', { exact: false })).toBeVisible();
     await expect(page.getByText('NTT Innovation Award', { exact: false })).toBeVisible();
 
@@ -152,17 +169,30 @@ test.describe('about page copy — rendered page', () => {
     expect(meaningfulErrors, `console errors: ${meaningfulErrors.join(' | ')}`).toEqual([]);
   });
 
-  test('rendered principal blocks: Haritha Chikile (Founder) is first, Ramana Ambore second', async ({ page }) => {
+  test('rendered page: Haritha Chikile (Founder) section is first, Ramana Ambore (Architect) section second, each appears once', async ({ page }) => {
     await page.goto('/about', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(500);
 
-    const names = page.locator('.principal-name');
-    await expect(names).toHaveCount(2);
-    await expect(names.nth(0)).toHaveText('Haritha Chikile');
-    await expect(names.nth(1)).toHaveText('Ramana R Ambore');
+    // No leftover standalone profile-block band.
+    await expect(page.locator('.principal-block')).toHaveCount(0);
 
-    const titles = page.locator('.principal-title');
-    await expect(titles.nth(0)).toHaveText('Founder, RamboQuant Analytics LLP');
+    // Each name renders in exactly one place — proves consolidation, not
+    // just a reorder of two duplicate blocks.
+    await expect(page.getByText('Haritha Chikile', { exact: false })).toHaveCount(1);
+    await expect(page.getByText('Ramana R Ambore', { exact: false })).toHaveCount(1);
+
+    // Visual order: Founder section label sits above the Architect one.
+    const founderLabel = page.locator('.prose-section-label', { hasText: 'Founder' });
+    const architectLabel = page.locator('.prose-section-label', { hasText: 'Platform Architect' });
+    const founderBox = await founderLabel.boundingBox();
+    const architectBox = await architectLabel.boundingBox();
+    expect(founderBox.y, 'Founder section must render above the Architect section').toBeLessThan(architectBox.y);
+
+    // GitHub chip lives inside the Architect section, not a separate block.
+    const chip = page.locator('a.principal-chip[href="https://github.com/RamanaAmbore"]');
+    await expect(chip).toBeVisible();
+    const chipBox = await chip.boundingBox();
+    expect(chipBox.y, 'GitHub chip must render below the Architect section label').toBeGreaterThan(architectBox.y);
   });
 
   test('landing page trust-strip no longer reads "Founder credentials"', async ({ page }) => {
