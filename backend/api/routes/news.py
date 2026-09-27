@@ -60,8 +60,13 @@ _CACHE_TTL = 60   # 1-minute route-level coalescing — operator-visible News fe
 # Curated Indian financial RSS feeds — market coverage only.
 _FEEDS = [
     "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
-    "https://www.moneycontrol.com/rss/marketreports.xml",
-    "https://www.moneycontrol.com/rss/business.xml",
+    # Moneycontrol RSS pruned 2026-09-27 (operator-confirmed): every checked
+    # endpoint (marketreports.xml, business.xml, latestnews.xml, results.xml,
+    # economy.xml, buzzingstocks.xml, MCtopnews.xml) returns HTTP 200 but
+    # serves frozen content — all identically dated 23 Apr 2024 (MCtopnews
+    # frozen since 2016) — Moneycontrol has abandoned their RSS
+    # infrastructure site-wide, not a single dead URL. No working
+    # replacement found. Re-add only if Moneycontrol relaunches real RSS.
     "https://www.business-standard.com/rss/markets-106.rss",
     "https://www.livemint.com/rss/markets",
     "https://www.financialexpress.com/market/feed/",

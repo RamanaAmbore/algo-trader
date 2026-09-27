@@ -75,7 +75,13 @@
     </div>
   </div>
 
-  <!-- Principal profile block -->
+  <!-- Principal profile block — Founder (kept first per operator instruction) -->
+  <div class="principal-block">
+    <div class="principal-name">Haritha Chikile</div>
+    <div class="principal-title">Founder, RamboQuant Analytics LLP</div>
+  </div>
+
+  <!-- Principal profile block — Platform Architect -->
   <div class="principal-block">
     <div class="principal-name">Ramana R Ambore</div>
     <div class="principal-title">Platform Architect &amp; Quantitative Developer, RamboQuant LLP</div>

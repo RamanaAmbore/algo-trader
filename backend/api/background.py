@@ -909,7 +909,7 @@ async def _daily_content_refresh_cycle() -> None:
 async def _task_news_keepwarm() -> None:
     """Recurring intraday keep-warm — re-primes the plain "news" cache
     key every 5 minutes so a visitor's request almost never hits a cold
-    RSS fetch (which can take several seconds across 8 feeds).
+    RSS fetch (which can take several seconds across the configured feeds).
 
     Scoped to the plain "news" key ONLY — never "news_scored" (that
     variant calls Gemini per-headline for sentiment tagging; the public

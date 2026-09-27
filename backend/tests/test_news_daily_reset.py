@@ -441,3 +441,33 @@ class TestTaskNewsKeepwarm:
             assert fetcher_calls["n"] == 0
         finally:
             invalidate_all()
+
+
+class TestFeedListPruning:
+    """2026-09-27: Moneycontrol RSS pruned — every checked endpoint
+    (marketreports.xml, business.xml, latestnews.xml, results.xml,
+    economy.xml, buzzingstocks.xml, MCtopnews.xml) returned HTTP 200 but
+    served frozen content (identically dated 23 Apr 2024, one frozen
+    since 2016) — Moneycontrol abandoned their RSS infrastructure
+    site-wide, verified directly against the live endpoints, not
+    assumed. Regression guard: don't silently re-add a moneycontrol.com
+    URL without re-verifying it's actually live again."""
+
+    def test_moneycontrol_not_in_feed_list(self):
+        from backend.api.routes.news import _FEEDS
+
+        assert not any("moneycontrol.com" in url for url in _FEEDS), (
+            "moneycontrol.com RSS endpoints were pruned 2026-09-27 as "
+            "dead (frozen since 23 Apr 2024 across every checked path) — "
+            "verify they're genuinely live again before re-adding"
+        )
+
+    def test_feed_list_still_has_multiple_working_sources(self):
+        """Pruning one dead source must not leave the news feed
+        under-sourced — still expect several independent outlets."""
+        from backend.api.routes.news import _FEEDS
+
+        assert len(_FEEDS) >= 5, (
+            f"Expected at least 5 configured feeds after pruning dead "
+            f"sources, got {len(_FEEDS)}: {_FEEDS}"
+        )

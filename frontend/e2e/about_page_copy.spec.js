@@ -107,6 +107,27 @@ test.describe('about page copy — source-level guards', () => {
     const src = aboutSrc();
     expect(src).toMatch(/href="\/contact" class="cta-btn cta-btn-primary"/);
   });
+
+  test('about page: Haritha Chikile (Founder) principal block precedes Ramana Ambore (Platform Architect) principal block', () => {
+    // Operator instruction (2026-09): keep Haritha Chikile, Founder, at the
+    // top of the page; Ramana Ambore below it. Guards both the top-level
+    // .principal-block profile band and the prose section-label order so
+    // neither can silently regress back to Ramana-first.
+    const src = aboutSrc();
+    const founderBlockIdx = src.indexOf('Founder, RamboQuant Analytics LLP');
+    const architectBlockIdx = src.indexOf('Platform Architect &amp; Quantitative Developer, RamboQuant LLP');
+    expect(founderBlockIdx, 'Founder principal block must exist').toBeGreaterThan(-1);
+    expect(architectBlockIdx, 'Architect principal block must exist').toBeGreaterThan(-1);
+    expect(founderBlockIdx, 'Founder principal block must precede the Architect principal block')
+      .toBeLessThan(architectBlockIdx);
+
+    const founderLabelIdx = src.indexOf('>Founder<');
+    const architectLabelIdx = src.indexOf('>Platform Architect &amp; Quantitative Developer<');
+    expect(founderLabelIdx, 'Founder prose section label must exist').toBeGreaterThan(-1);
+    expect(architectLabelIdx, 'Architect prose section label must exist').toBeGreaterThan(-1);
+    expect(founderLabelIdx, 'Founder prose section must precede the Architect prose section')
+      .toBeLessThan(architectLabelIdx);
+  });
 });
 
 test.describe('about page copy — rendered page', () => {
@@ -129,6 +150,19 @@ test.describe('about page copy — rendered page', () => {
 
     const meaningfulErrors = consoleErrors.filter((e) => !/favicon|ResizeObserver/i.test(e));
     expect(meaningfulErrors, `console errors: ${meaningfulErrors.join(' | ')}`).toEqual([]);
+  });
+
+  test('rendered principal blocks: Haritha Chikile (Founder) is first, Ramana Ambore second', async ({ page }) => {
+    await page.goto('/about', { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(500);
+
+    const names = page.locator('.principal-name');
+    await expect(names).toHaveCount(2);
+    await expect(names.nth(0)).toHaveText('Haritha Chikile');
+    await expect(names.nth(1)).toHaveText('Ramana R Ambore');
+
+    const titles = page.locator('.principal-title');
+    await expect(titles.nth(0)).toHaveText('Founder, RamboQuant Analytics LLP');
   });
 
   test('landing page trust-strip no longer reads "Founder credentials"', async ({ page }) => {
