@@ -104,6 +104,12 @@
       rel="noopener"
       class="principal-chip prose-chip"
     >GitHub · RamanaAmbore</a>
+    <a
+      href="https://ramanaambore.me"
+      target="_blank"
+      rel="noopener"
+      class="principal-chip prose-chip"
+    >ramanaambore.me</a>
 
   </div>
 

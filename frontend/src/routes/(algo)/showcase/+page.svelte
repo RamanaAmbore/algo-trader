@@ -42,7 +42,7 @@
   const CONTACT = {
     github:    'https://github.com/RamanaAmbore/algo-trader',
     linkedin:  'https://www.linkedin.com/in/ambore/',
-    email:     'mailto:ramboquant@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
+    email:     'mailto:ramana.ambore@gmail.com?subject=RamboQuant%20-%20Engineering%20Conversation',
     resume:    'https://ramanaambore.me/resume.pdf',
     portfolio: 'https://ramanaambore.me',
   };
@@ -413,7 +413,7 @@
   <!-- Zone 3 — Simplified footer -->
   <footer class="show-footer">
     <p class="show-footer-line">
-      Merrimack, NH · ramboquant@gmail.com · ramboq.com · ramanaambore.me
+      Merrimack, NH · ramana.ambore@gmail.com · ramanaambore.me
     </p>
   </footer>
 </div>
