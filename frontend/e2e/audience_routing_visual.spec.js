@@ -50,7 +50,11 @@ test.describe('Audience-routing redesign', () => {
     await expect(page.getByText('22%', { exact: false }).first()).toBeVisible();
     await expect(page.getByText('25+', { exact: false }).first()).toBeVisible();
     await expect(page.getByText(/FRM.*CFA|CFA.*XLRI/i).first()).toBeVisible();
-    await expect(page.getByText(/ACU-5195/i).first()).toBeVisible();
+    // B6 (2026-09): "ACU-5195" removed site-wide — not a required legal/
+    // LLPIN disclosure (operator-confirmed). The 4th trust cell now reads
+    // "LLP" alone (no dangling separator/fragment).
+    await expect(page.getByText('LLP', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText(/ACU-5195/i)).toHaveCount(0);
 
     // 1c — Two Y-fork cards
     await expect(page.getByText('Partner with us').first()).toBeVisible();

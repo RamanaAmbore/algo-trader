@@ -34,7 +34,6 @@
       "jobTitle": "Principal Analyst",
       "hasCredential": ["FRM", "CFA Level III", "PGCBM XLRI"]
     },
-    "identifier": "ACU-5195",
     "foundingDate": "1998",
     "areaServed": "IN"
   })}<\/script>`}
@@ -63,7 +62,7 @@
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <div class="stat-creds">LLP · ACU-5195</div>
+      <div class="stat-creds">LLP</div>
       <div class="stat-label">Registered Entity</div>
     </div>
   </div>
