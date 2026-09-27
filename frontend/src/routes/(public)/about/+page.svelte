@@ -28,11 +28,18 @@
     "url": "https://ramboq.com/about",
     "logo": "https://ramboq.com/og-image-thumb.png",
     "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
-    "founder": {
+    "employee": {
       "@type": "Person",
       "name": "Ramana R Ambore",
-      "jobTitle": "Principal Analyst",
-      "hasCredential": ["FRM", "CFA Level III", "PGCBM XLRI"]
+      "jobTitle": "Platform Architect & Quantitative Developer",
+      "hasCredential": [
+        "FRM (GARP, 2022)",
+        "CFA Level 3 (candidate)",
+        "M.S. Computer Science",
+        "Six Sigma Green Belt",
+        "IBM Certified DB2 DBA",
+        "Sun Certified Java Programmer"
+      ]
     },
     "foundingDate": "1998",
     "areaServed": "IN"
@@ -57,7 +64,7 @@
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <div class="stat-creds">FRM · CFA L3 · XLRI</div>
+      <div class="stat-creds">FRM · CFA L3 (cand.)</div>
       <div class="stat-label">Principal Credentials</div>
     </div>
     <div class="stat-divider"></div>
@@ -70,7 +77,7 @@
   <!-- Principal profile block -->
   <div class="principal-block">
     <div class="principal-name">Ramana R Ambore</div>
-    <div class="principal-title">Principal Analyst &amp; Platform Architect</div>
+    <div class="principal-title">Platform Architect &amp; Quantitative Developer, RamboQuant LLP</div>
     <a
       href="https://github.com/RamanaAmbore"
       target="_blank"
@@ -84,9 +91,9 @@
 
     <div class="prose-section-label">Platform</div>
 
-    <p>RamboQuant Analytics LLP is an algorithmically driven investment analytics platform built on production-grade infrastructure. Broker connectivity is isolated as a dedicated UDS service, with shared-memory tick distribution between processes and three-tier persistence caching (memory → PostgreSQL → broker) with self-healing data backfill on under-coverage, closed-hours snapshot continuity (no blank grids), and a responsive activity log surface that shifts to a magazine-style two-column layout on wide viewports.</p>
+    <p>RamboQuant Analytics LLP runs an algorithmically driven investment program: a long-term, high-conviction stock portfolio paired with a disciplined options overlay, executed and monitored around the clock by a purpose-built trading platform. Every position, every fill, and every risk check is logged and auditable — what partners see in their statements reflects exactly what happened in the market, with no manual reconciliation gaps.</p>
 
-    <p>With a long-term portfolio XIRR exceeding 22%, the platform's strategy blends high-conviction stock picks with strategic covered calls and intelligent derivatives positioning. Every move is grounded in deep analytics, rigorous risk management, and an unwavering commitment to the power of compounding.</p>
+    <p>With a long-term portfolio XIRR exceeding 22%, the strategy blends high-conviction stock picks with disciplined covered-call writing and selective derivatives positioning. Every decision is grounded in rigorous risk management and a long-term commitment to compounding.</p>
 
     <div class="closing-statement pub-callout">
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
@@ -94,17 +101,20 @@
 
     <div class="prose-section-label" style="margin-top: 1.5rem;">Principal</div>
 
-    <p>Ramana R Ambore brings 25+ years of proven success in active investing and quantitative research across both U.S. and Indian markets. What started in 1998 as a deep, hands-on exploration of equities and derivatives has evolved into a precision-driven investment powerhouse built on data, discipline, and performance.</p>
+    <p>Ramana R Ambore brings 30+ years of financial-services engineering experience to RamboQuant Analytics, including 19 years as a Principal System Analyst at Fidelity Investments — his primary role. At RamboQuant LLP he serves as Platform Architect &amp; Quantitative Developer, building and operating the AI-augmented trading platform (built with Claude Code) that runs the firm's strategy end-to-end.</p>
 
-    <p>His credentials speak for themselves — FRM Certified, CFA Level III, PGCBM from XLRI, and a Master's in Computer Science — matched with decades of cutting-edge innovation in financial technology for capital markets. The same patterns institutional analytics floors use, executed at one-operator scale — so what you see on the dashboard is what's actually happening on the broker.</p>
+    <p>His credentials — FRM (GARP, 2022), CFA Level 3 candidate, a Master's in Computer Science, Six Sigma Green Belt, IBM Certified DB2 DBA, and Sun Certified Java Programmer — reflect three decades of hands-on systems engineering. He was recognized with the NTT Innovation Award as a top-40 global innovator. The same engineering discipline used on institutional trading floors runs this platform at one-operator scale, so what partners see in their statements is exactly what happened in the market.</p>
 
   </div>
 
   <div class="cta-row">
     <p class="cta-lead">Ready to work with us?</p>
     <div class="cta-btns">
-      <a href="/contact" class="cta-btn">Contact us</a>
-      <a href="/signin" class="cta-btn cta-btn-primary">Sign in</a>
+      <!-- B3: primary cold-visitor CTA points at the existing /contact
+           page (no new lead-capture form — out of scope). Sign in is
+           for existing partners, so it stays secondary. -->
+      <a href="/contact" class="cta-btn cta-btn-primary">Contact us</a>
+      <a href="/signin" class="cta-btn">Sign in</a>
     </div>
   </div>
 </div>
