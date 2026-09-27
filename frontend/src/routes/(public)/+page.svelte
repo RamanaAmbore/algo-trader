@@ -66,7 +66,7 @@
       </div>
       <div class="trust-sep"></div>
       <div class="trust-cell">
-        <div class="trust-creds">FRM · CFA L3 (cand.) · XLRI · M.S. CS</div>
+        <div class="trust-creds">FRM · CFA L3 (cand.) · M.S. CS · XLRI PGCBM</div>
         <div class="trust-lbl">Architect's credentials</div>
       </div>
     </div>
