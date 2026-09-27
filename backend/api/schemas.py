@@ -279,7 +279,9 @@ class FundsRow(msgspec.Struct):
     # surface them) fall through cleanly instead of raising a
     # missing-key construction error in the route's FundsRow(**r)
     # builder.
-    live_cash:        float = 0.0  # avail cash (= live_balance) — decreases on option premium debit
+    live_cash:        float = 0.0  # avail cash (direct funds only, NOT avail.live_balance —
+                                    # Kite's live_balance also includes collateral) — decreases
+                                    # on option premium debit
     option_premium:   float = 0.0  # util option_premium — net cash spent on currently-held long options
                                    # (≈ debits − receipts; positive when net long premium)
     # Derived convenience columns — computed server-side so the frontend

@@ -29,7 +29,9 @@ _IST = ZoneInfo("Asia/Kolkata")
 
 _COL_MAP = {
     'avail opening_balance': 'cash',
-    'avail cash':            'live_cash',       # = avail.live_balance — current cash
+    'avail cash':            'live_cash',       # current cash. NOT the same field as Kite's
+                                                 # avail.live_balance (that includes collateral) —
+                                                 # this reads avail.cash (direct funds) only.
     'net':                   'avail_margin',
     'util debits':           'used_margin',
     'util option_premium':   'option_premium',  # cash spent on currently-held long options

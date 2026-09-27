@@ -768,7 +768,8 @@ const _liveHoldingsValue = $derived.by(() => {
   return s;
 });
 
-// Live cash: Kite avail.cash (= live_balance) summed across all accounts.
+// Live cash: Kite avail.cash (direct funds only — NOT Kite's avail.live_balance,
+// a different field that also includes collateral) summed across all accounts.
 // Falls back to f.cash if live_cash is not yet surfaced by the backend.
 const _liveCashTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
@@ -847,7 +848,7 @@ export const portfolioAggregates = {
   get liveHoldingsTotal()  { return _liveHoldingsTotal;   },
   /** Live holdings market value: ltp × qty (three-tier fallback). */
   get liveHoldingsValue()  { return _liveHoldingsValue;   },
-  /** Available cash across all accounts (Kite live_balance, fallback to cash). */
+  /** Available cash across all accounts (Kite avail.cash, fallback to cash). */
   get liveCashTotal()      { return _liveCashTotal;       },
   /** Cash paid for currently-held long options (avg × qty via lot_size path). */
   get longOptionsCashPaid(){ return _longOptionsCashPaid; },

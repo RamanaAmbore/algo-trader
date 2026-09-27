@@ -526,9 +526,10 @@
     }
     if (!open) return;
   });
-  // Live cash — Kite's `avail.cash` (= live_balance) summed across
-  // accounts. Falls back to `cash` if the backend hasn't surfaced
-  // `live_cash` yet (older deploys).
+  // Live cash — Kite's `avail.cash` (direct funds only — NOT Kite's
+  // `avail.live_balance`, which is a different field that also includes
+  // collateral) summed across accounts. Falls back to `cash` if the
+  // backend hasn't surfaced `live_cash` yet (older deploys).
   // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
   const liveCashTotal = $derived(portfolioAggregates.liveCashTotal);
   // Cash debited on currently-held long options — derived from the
