@@ -6618,7 +6618,7 @@
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   .leg-pair-btn {
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     padding: 0.18rem 0.55rem;
     border-radius: 3px;
     border: 1px solid rgba(190,210,240,0.55);
@@ -6792,7 +6792,7 @@
       minmax(4rem,   0.6fr); /* EV */
     min-width: 1020px;
     font-family: var(--font-numeric);
-    font-size: 0.72rem;              /* match Pulse Positions ~0.625rem */
+    font-size: var(--fs-lg);
   }
   .byund-headrow,
   .byund-row {
@@ -7167,7 +7167,7 @@
     font-variant-numeric: tabular-nums;
   }
   .cand-headrow {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 800;
     color: var(--text-muted);
     text-transform: uppercase;

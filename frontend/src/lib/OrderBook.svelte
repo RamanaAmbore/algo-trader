@@ -426,7 +426,7 @@
   .ob-fs .ob-scroll { flex: 1 1 0; min-height: 0; }
 
   .ob-count {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: rgba(255,255,255,0.3);
     font-variant-numeric: tabular-nums;
     margin-left: 0.25rem;
@@ -536,7 +536,13 @@
     border-color: rgba(126, 151, 184, 0.45);
   }
 
-  /* Count number — bigger + color-coded by status. */
+  /* Count number — bigger + color-coded by status. 2026-09 font-size
+     audit: 1.1rem falls in the gap between --fs-xl (0.85rem/13.6px)
+     and --fs-2xl (1.55rem/24.8px) — no existing token lands within
+     ~4px without a visible resize of this live chase-queue counter.
+     Flagged, not auto-mapped; left as a deliberate literal pending an
+     operator call on either a new "stat" tier token or accepting the
+     nearest existing one. */
   .ob-sc-n {
     font-weight: 800;
     font-size: 1.1rem;

@@ -1596,3 +1596,304 @@ test.describe.serial('algo consistency — Build/Config font-size audit (live)',
     expect(fs_, `.kv-row computed font-size: ${fs_}`).toBe('11.52px'); // 0.72rem @ 16px root
   });
 });
+
+/* ── Monitor nav-group font-size consistency audit (2026-09) ──────────
+ * Follow-up to the Build/Config sweep (f9270635) — this time auditing
+ * the group that SERVED as that pass's baseline reference (Pulse,
+ * Dashboard, Derivatives) plus the remaining Monitor-group pages
+ * (Orders, Charts, Automation, Strategies), verified rather than
+ * assumed clean. `/showcase` ("About") also carries `group: 'monitor'`
+ * in (algo)/+layout.svelte's nav table but is a narrative "Tour" page
+ * (bespoke rgba() literals throughout, not the --fs-* dark-terminal
+ * system — see the A3-sweep comment marking it a documentation
+ * exception) — confirmed out of scope, not silently dropped.
+ *
+ * Pulse and Charts have almost no CSS of their own (thin wrappers) —
+ * auditing only the `+page.svelte` file would be vacuous, so the page
+ * set below includes each page's exclusive rendering component:
+ *   Pulse       -> MarketPulse.svelte, data/pulseColumns.js
+ *   Orders      -> OrderBook.svelte
+ *   Derivatives -> CandidateLegRow.svelte
+ *   Charts      -> ChartWorkspace.svelte
+ *   Automation  -> AutomationTabs.svelte (embedded via <AutomationTabs />)
+ * Shared multi-surface lib components reachable from these pages
+ * (NavBreakdown, NavCard, PnlAnalysis, CardHeader, etc.) are NOT
+ * included — NavBreakdown/NavCard are mid-investigation for a separate
+ * FIRM-NAV-load-latency report and must not be touched here; the
+ * others are cross-cutting SSOT already covered by the Phase-1/2
+ * palette guards above.
+ *
+ * Found and fixed nine literal (non-`var(--fs-*)`) font-size drift
+ * sites:
+ *   - data/pulseColumns.js: STALE@HH:MM badge inline style, 9px
+ *     (nearest --fs-xs/0.55rem=8.8px) -> var(--fs-xs).
+ *   - dashboard: `.fs-card-on .eq-stat-v` (fullscreen hero P&L value)
+ *     hardcoded 1.4rem while its own mobile media-query sibling
+ *     already used var(--fs-xl) -> var(--fs-2xl) (1.55rem, the
+ *     documented headline tier — the nearest-magnitude token for a
+ *     magnified fullscreen stat, +2.4px/~10%).
+ *   - dashboard: `.dash-nav-err` hardcoded 0.72rem (exact --fs-lg
+ *     duplicate) -> var(--fs-lg).
+ *   - dashboard: `.dash-nav-retry` hardcoded 0.68rem (nearest --fs-md/
+ *     0.65rem) -> var(--fs-md).
+ *   - OrderBook.svelte `.ob-count` hardcoded 0.65rem (exact --fs-md
+ *     duplicate) -> var(--fs-md).
+ *   - derivatives `.leg-pair-btn` hardcoded 0.75rem (nearest --fs-lg/
+ *     0.72rem) -> var(--fs-lg).
+ *   - derivatives `.byund-table` hardcoded 0.72rem (exact --fs-lg
+ *     duplicate, with a stale/misleading "match Pulse Positions
+ *     ~0.625rem" comment removed) -> var(--fs-lg).
+ *   - derivatives `.cand-headrow` hardcoded 0.65rem (exact --fs-md
+ *     duplicate) -> var(--fs-md).
+ *   - CandidateLegRow.svelte `.cand-state-cell` hardcoded 9px (nearest
+ *     --fs-xs) -> var(--fs-xs); `.cand-row` hardcoded 0.72rem (exact
+ *     --fs-lg duplicate) -> var(--fs-lg).
+ *   - ChartWorkspace.svelte `.chart-partial-hint` hardcoded 11px
+ *     (nearest --fs-lg/0.72rem=11.52px, +0.52px) -> var(--fs-lg).
+ *
+ * One literal was found, classified, and DELIBERATELY left unfixed:
+ *   - OrderBook.svelte `.ob-sc-n` (chase-queue count number) at 1.1rem
+ *     falls in the real gap between --fs-xl (0.85rem/13.6px, -23%)
+ *     and --fs-2xl (1.55rem/24.8px, +41%) — no existing token lands
+ *     within ~4px without a visible resize of a live trading-surface
+ *     counter. Documented inline at the declaration site; guarded
+ *     below so it can't silently drift further without this test
+ *     noticing.
+ *
+ * Every other file/selector in the audited set (Pulse `+page.svelte`,
+ * MarketPulse.svelte, dashboard's other font-size rules, Orders
+ * `+page.svelte`, derivatives' remaining ~60 font-size sites, Charts
+ * `+page.svelte`, Automation `+page.svelte` + AutomationTabs.svelte,
+ * Strategies `+page.svelte`) already used var(--fs-*) exclusively —
+ * checked-and-clean, no changes needed. Font-weight values across the
+ * whole group remain on the standard 400/500/600/700/800 scale (no
+ * off-scale literal found).
+ *
+ * Automation/Strategies cross-check: `git log f9270635..HEAD` touches
+ * only one file relevant to this tree, `6368bcea` (public hero-title
+ * mobile fix, unrelated route) — confirms the Build/Config audit's
+ * "checked-and-clean" finding for these two pages still holds after
+ * the close-icon + cell-divider fixes that landed in the interim.
+ * ─────────────────────────────────────────────────────────────────── */
+
+const MONITOR_FONT_AUDIT_PAGES = [
+  'src/routes/(algo)/pulse/+page.svelte',
+  'src/lib/MarketPulse.svelte',
+  'src/lib/data/pulseColumns.js',
+  'src/routes/(algo)/dashboard/+page.svelte',
+  'src/routes/(algo)/orders/+page.svelte',
+  'src/lib/OrderBook.svelte',
+  'src/routes/(algo)/admin/derivatives/+page.svelte',
+  'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte',
+  'src/routes/(algo)/charts/+page.svelte',
+  'src/lib/ChartWorkspace.svelte',
+  'src/routes/(algo)/automation/+page.svelte',
+  'src/lib/AutomationTabs.svelte',
+  'src/routes/(algo)/strategies/+page.svelte',
+];
+
+test.describe('algo consistency — Monitor-group font-size audit (source)', () => {
+  test('no literal (non-token) font-size regressions across the audited Monitor page/component set', () => {
+    // Same contract as the Build/Config sweep's guard, scoped to this
+    // page set. .ob-sc-n's 1.1rem is a documented, deliberate exception
+    // (see comment at its declaration) — not a regression.
+    const ALLOWED = new Set([
+      'src/lib/OrderBook.svelte::font-size: 1.1rem;',   // .ob-sc-n — no token fits within ~4px, see inline comment
+    ]);
+    const offenders = [];
+    for (const rel of MONITOR_FONT_AUDIT_PAGES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+      const rx = /font-size\s*:\s*[0-9.]+(?:rem|em|px)\s*;/g;
+      let m;
+      while ((m = rx.exec(stripped))) {
+        const key = `${rel}::${m[0]}`;
+        if (!ALLOWED.has(key)) offenders.push(key);
+      }
+    }
+    expect(offenders, `Literal font-size regression (must use var(--fs-*)):\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  test('data/pulseColumns.js STALE badge uses var(--fs-xs), not the old 9px literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/data/pulseColumns.js'), 'utf-8');
+    expect(src).toContain("font-size:var(--fs-xs)");
+    expect(src).not.toContain('font-size:9px');
+  });
+
+  test('dashboard fullscreen hero P&L value uses var(--fs-2xl), not the old 1.4rem literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/dashboard/+page.svelte'), 'utf-8');
+    const m = src.match(/\.fs-card-on \.eq-stat-v \{ font-size:\s*([^;]+);/);
+    expect(m, '.fs-card-on .eq-stat-v rule not found').not.toBeNull();
+    expect(m[1].trim()).toBe('var(--fs-2xl)');
+  });
+
+  test('dashboard .dash-nav-err / .dash-nav-retry use var(--fs-lg)/var(--fs-md), not the old 0.72rem/0.68rem literals', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/dashboard/+page.svelte'), 'utf-8');
+    const errM = src.match(/\.dash-nav-err\s*\{([^}]*)\}/);
+    const retryM = src.match(/\.dash-nav-retry\s*\{([^}]*)\}/);
+    expect(errM, '.dash-nav-err rule not found').not.toBeNull();
+    expect(retryM, '.dash-nav-retry rule not found').not.toBeNull();
+    expect(errM[1]).toMatch(/font-size:\s*var\(--fs-lg\)/);
+    expect(retryM[1]).toMatch(/font-size:\s*var\(--fs-md\)/);
+  });
+
+  test('OrderBook.svelte .ob-count uses var(--fs-md); .ob-sc-n keeps its documented 1.1rem exception', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/OrderBook.svelte'), 'utf-8');
+    const countM = src.match(/\.ob-count\s*\{([^}]*)\}/);
+    expect(countM, '.ob-count rule not found').not.toBeNull();
+    expect(countM[1]).toMatch(/font-size:\s*var\(--fs-md\)/);
+
+    // The exception must stay documented — if the comment disappears,
+    // a future edit may have silently "fixed" it without re-litigating
+    // the token-gap tradeoff explained there.
+    expect(src, '.ob-sc-n token-gap rationale comment must stay attached')
+      .toMatch(/no existing token lands within[\s\S]{0,20}~4px[\s\S]{0,400}\.ob-sc-n \{[\s\S]{0,60}font-size:\s*1\.1rem;/);
+  });
+
+  test('derivatives .leg-pair-btn / .byund-table / .cand-headrow use var(--fs-*), not the old literals', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/+page.svelte'), 'utf-8');
+    const legPairM = src.match(/\.leg-pair-btn\s*\{([^}]*)\}/);
+    expect(legPairM, '.leg-pair-btn rule not found').not.toBeNull();
+    expect(legPairM[1]).toMatch(/font-size:\s*var\(--fs-lg\)/);
+
+    // .cand-headrow is declared TWICE (layout rule + typography rule —
+    // see the "headrow is scoped here" comment) — the fixed literal
+    // lives in the SECOND block, so scan every `.cand-headrow { … }`
+    // occurrence rather than assuming .match() picks the right one.
+    const candHeadBlocks = [...src.matchAll(/\.cand-headrow\s*\{([^}]*)\}/g)].map(m => m[1]);
+    expect(candHeadBlocks.length, '.cand-headrow rule(s) not found').toBeGreaterThan(0);
+    expect(candHeadBlocks.some(b => /font-size:\s*var\(--fs-md\)/.test(b)),
+      `no .cand-headrow block uses var(--fs-md):\n${candHeadBlocks.join('\n---\n')}`).toBe(true);
+    expect(candHeadBlocks.some(b => /font-size:\s*0\.65rem/.test(b)),
+      'a .cand-headrow block still has the old 0.65rem literal').toBe(false);
+
+    // .byund-table's selector is a multi-line grid-template-columns
+    // block ending in the font-size decl — match on the literal
+    // fragment directly plus the removed stale comment.
+    expect(src).toContain('font-size: var(--fs-lg);\n  }\n  .byund-headrow');
+    expect(src).not.toContain('match Pulse Positions ~0.625rem');
+  });
+
+  test('CandidateLegRow.svelte .cand-state-cell / .cand-row use var(--fs-*), not the old 9px/0.72rem literals', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte'), 'utf-8');
+    const stateM = src.match(/\.cand-state-cell\s*\{([^}]*)\}/);
+    const rowM = src.match(/\.cand-row\s*\{([^}]*)\}/);
+    expect(stateM, '.cand-state-cell rule not found').not.toBeNull();
+    expect(rowM, '.cand-row rule not found').not.toBeNull();
+    expect(stateM[1]).toMatch(/font-size:\s*var\(--fs-xs\)/);
+    expect(rowM[1]).toMatch(/font-size:\s*var\(--fs-lg\)/);
+  });
+
+  test('ChartWorkspace.svelte .chart-partial-hint uses var(--fs-lg), not the old 11px literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/ChartWorkspace.svelte'), 'utf-8');
+    const m = src.match(/\.chart-partial-hint\s*\{([^}]*)\}/);
+    expect(m, '.chart-partial-hint rule not found').not.toBeNull();
+    expect(m[1]).toMatch(/font-size:\s*var\(--fs-lg\)/);
+  });
+
+  test('Automation/Strategies remain clean post Build/Config audit (no font-size regression introduced since f9270635)', () => {
+    const autoSrc = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/automation/+page.svelte'), 'utf-8');
+    const tabsSrc = fs.readFileSync(path.join(process.cwd(), 'src/lib/AutomationTabs.svelte'), 'utf-8');
+    const stratSrc = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/strategies/+page.svelte'), 'utf-8');
+    const rx = /font-size\s*:\s*[0-9.]+(?:rem|em|px)\s*;/;
+    for (const [name, src] of [['automation/+page.svelte', autoSrc], ['AutomationTabs.svelte', tabsSrc], ['strategies/+page.svelte', stratSrc]]) {
+      expect(rx.test(src.replace(/\/\*[\s\S]*?\*\//g, '')), `${name} must have no literal font-size`).toBe(false);
+    }
+  });
+});
+
+test.describe.serial('algo consistency — Monitor-group font-size audit (live)', () => {
+  test.setTimeout(90_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  /**
+   * Proves a REAL rendered element's font-size derives from the named
+   * --fs-* token (not a coincidentally-matching literal). Unlike the
+   * `.cell-muted` derivation test above (which targets a `:global(...)`
+   * rule), the selectors here are Svelte per-component SCOPED styles —
+   * a synthetic element appended to <body> would lack the compiler's
+   * `svelte-xxxxx` scoping attribute and never match the rule at all,
+   * so this reads the token override off the already-rendered element
+   * instead. CSS custom properties inherit through the cascade
+   * regardless of Svelte's attribute-selector scoping, so overriding
+   * at :root reaches every real element on the page.
+   */
+  async function tokenDerivationCheck(locator, tokenName) {
+    return locator.evaluate((el, tokenName) => {
+      document.documentElement.style.setProperty(tokenName, '37px');
+      const resolved = getComputedStyle(el).fontSize;
+      document.documentElement.style.removeProperty(tokenName);
+      return resolved;
+    }, tokenName);
+  }
+
+  test('dashboard .dash-nav-retry font-size tracks --fs-md (not a frozen literal)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    // .dash-nav-retry only renders when the firm-NAV poll is erroring —
+    // not guaranteed on a healthy session. Skip rather than fail when
+    // the strip isn't present.
+    const el = p.locator('.dash-nav-retry').first();
+    await el.waitFor({ state: 'attached', timeout: 5_000 }).catch(() => {});
+    test.skip(await el.count() === 0, '.dash-nav-retry not rendered (no NAV fetch error this session)');
+    const resolved = await tokenDerivationCheck(el, '--fs-md');
+    expect(resolved, `.dash-nav-retry font-size under --fs-md override: ${resolved}`).toBe('37px');
+  });
+
+  test('derivatives .cand-headrow font-size tracks --fs-md (not a frozen literal)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    const el = p.locator('.cand-headrow').first();
+    await el.waitFor({ state: 'attached', timeout: 15_000 }).catch(() => {});
+    test.skip(await el.count() === 0, '.cand-headrow not rendered (Legs/Expiry tab not populated this session)');
+    const resolved = await tokenDerivationCheck(el, '--fs-md');
+    expect(resolved, `.cand-headrow font-size under --fs-md override: ${resolved}`).toBe('37px');
+  });
+
+  test('Charts .chart-partial-hint font-size tracks --fs-lg (not a frozen literal)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/charts', { waitUntil: 'domcontentloaded' });
+    const el = p.locator('.chart-partial-hint').first();
+    await el.waitFor({ state: 'attached', timeout: 10_000 }).catch(() => {});
+    test.skip(await el.count() === 0, '.chart-partial-hint not rendered (no partial-data warning this session)');
+    const resolved = await tokenDerivationCheck(el, '--fs-lg');
+    expect(resolved, `.chart-partial-hint font-size under --fs-lg override: ${resolved}`).toBe('37px');
+  });
+
+  test('OrderBook .ob-sc-n renders at its documented 1.1rem (17.6px), the deliberate token-gap exception', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/orders', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.ob-sc-n', { timeout: 15_000 }).catch(() => {});
+    const el = p.locator('.ob-sc-n').first();
+    const count = await el.count();
+    test.skip(count === 0, 'no .ob-sc-n rendered on /orders (no chase queue active this session)');
+    const fs_ = await el.evaluate((node) => getComputedStyle(node).fontSize);
+    expect(fs_, `.ob-sc-n computed font-size: ${fs_}`).toBe('17.6px'); // 1.1rem @ 16px root
+  });
+});

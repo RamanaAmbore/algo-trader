@@ -3105,7 +3105,7 @@
   .cw-signals-short  { display: none; }
 
   .chart-partial-hint {
-    font-size: 11px;
+    font-size: var(--fs-lg);
     color: var(--text-faint);
     opacity: 0.8;
     white-space: nowrap;

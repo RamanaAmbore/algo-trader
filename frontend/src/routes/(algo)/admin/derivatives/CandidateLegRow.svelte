@@ -400,7 +400,7 @@
 <style>
   /* ── Position state indicator — first column (38px) ─────────────── */
   .cand-state-cell {
-    font-size: 9px;
+    font-size: var(--fs-xs);
     font-weight: 700;
     text-align: center;
     letter-spacing: 0.02em;
@@ -424,7 +424,7 @@
        rows' spacing from the header's. */
     padding: 0;
     align-items: stretch;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-family: monospace;
     font-variant-numeric: tabular-nums;
     border-radius: 3px;

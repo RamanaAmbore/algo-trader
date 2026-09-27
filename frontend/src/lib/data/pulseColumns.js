@@ -420,7 +420,7 @@ export function mkAcctColTrailing({ RA }) {
       name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
       const badge = document.createElement('span');
       badge.textContent = `STALE@${since.replace(' IST', '')}`;
-      badge.style.cssText = 'font-size:9px;color:rgba(148,163,184,0.75);flex-shrink:0;';
+      badge.style.cssText = 'font-size:var(--fs-xs);color:rgba(148,163,184,0.75);flex-shrink:0;';
       badge.title = `Last live data: ${since}`;
       el.appendChild(name);
       el.appendChild(badge);

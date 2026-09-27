@@ -2247,7 +2247,7 @@
     left: 0.7rem;
   }
   .fs-card-on .eq-stat-k { font-size: var(--fs-lg); margin-bottom: 0.32rem; }
-  .fs-card-on .eq-stat-v { font-size: 1.4rem; }
+  .fs-card-on .eq-stat-v { font-size: var(--fs-2xl); }
   @media (max-width: 600px) {
     .fs-card-on .eq-svg {
       height: calc(100vh - 8rem) !important;
@@ -2715,7 +2715,7 @@
     border: 1px solid rgba(248, 113, 113, 0.25);
     border-radius: 4px;
     color: var(--c-short);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   }
   .dash-nav-retry {
@@ -2725,7 +2725,7 @@
     border: 1px solid var(--algo-cyan-border);
     background: var(--algo-cyan-bg);
     color: var(--c-info);
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.04em;
     cursor: pointer;
