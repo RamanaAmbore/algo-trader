@@ -787,13 +787,23 @@ def _spawn_daily_content_refresh() -> None:
 
 async def _perform_market_refresh_once() -> bool:
     """One market-refresh attempt: Gemini fetch (offloaded to executor) +
-    DB save + cache invalidate. Returns True on success, False to signal
-    the caller should retry.
+    cache prime + best-effort DB persist. Returns True on success, False
+    to signal the caller should retry.
 
-    Invalidates rather than primes the cache (unlike news) — the next
-    request's `_db_or_gemini` reads the DB first, which is cheap, before
-    ever falling back to a live Gemini call, so invalidate-and-let-the-
-    next-request-reload-from-DB is correct and simpler here."""
+    2026-09 audit fix: `_save_market_to_db` swallows every exception
+    internally and never signals failure to its caller (defensive — a
+    transient DB hiccup during a background save must not crash this
+    cycle). Pre-fix, this function called `cache.invalidate("market")`
+    after the (unchecked) DB save, so a DB write failure silently
+    discarded the freshly-generated Gemini content: invalidate just
+    clears the key, and the NEXT request's `_db_or_gemini` would then
+    read the OLD (unsaved) DB row instead of the content just paid for
+    with a real Gemini call. Fix: prime the cache DIRECTLY with the
+    fresh result — `cache.put`, not `cache.invalidate` — BEFORE the DB
+    save, so this process serves the fresh content regardless of
+    whether persistence succeeds. `_save_market_to_db` still runs
+    (best-effort persistence for other processes / the next restart);
+    its own failure is logged but no longer discards anything."""
     from backend.api.routes.market import fetch_fresh
     from backend.api import cache as _cache_mod
 
@@ -805,13 +815,17 @@ async def _perform_market_refresh_once() -> bool:
     if result is None:
         logger.warning("[DAILY-CONTENT] market: Gemini returned empty — will retry")
         return False
+
+    _cache_mod.put("market", result, ttl_seconds=86400)
     try:
+        # _save_market_to_db already swallows every exception internally
+        # in production — this outer catch is pure defense-in-depth so a
+        # pathological failure here can never turn "the cache is already
+        # correctly primed" into an incorrectly-signalled retry.
         await _save_market_to_db(result)
     except Exception as e:
-        logger.error(f"[DAILY-CONTENT] market DB save failed: {e}")
-        return False
+        logger.error(f"[DAILY-CONTENT] market DB save raised unexpectedly: {e}")
 
-    _cache_mod.invalidate("market")
     logger.info(f"[DAILY-CONTENT] market refreshed for cycle {get_cycle_date(hours=0, mins=0)}")
     try:
         from backend.api.routes.ws import broadcast

@@ -134,21 +134,49 @@ class TestMarketNeedsRefreshToday:
 
 class TestPerformMarketRefreshOnce:
     @pytest.mark.asyncio
-    async def test_success_saves_invalidates_and_broadcasts(self):
+    async def test_success_primes_cache_saves_and_broadcasts(self):
         from backend.api import background as bg
 
         fake_resp = MagicMock(content="fresh", cycle_date="2026-09-26")
 
         with patch.object(bg, "_run", new=AsyncMock(return_value=fake_resp)), \
              patch.object(bg, "_save_market_to_db", new=AsyncMock()) as mock_save, \
-             patch("backend.api.cache.invalidate") as mock_invalidate, \
+             patch("backend.api.cache.put") as mock_put, \
              patch("backend.api.routes.ws.broadcast") as mock_broadcast:
             ok = await bg._perform_market_refresh_once()
 
         assert ok is True
+        mock_put.assert_called_once_with("market", fake_resp, ttl_seconds=86400)
         mock_save.assert_awaited_once_with(fake_resp)
-        mock_invalidate.assert_called_once_with("market")
         mock_broadcast.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_cache_is_primed_before_db_save_is_even_attempted(self):
+        """Ordering matters: the fresh content must be servable from THIS
+        process even if the DB save that follows fails or hangs —
+        2026-09 audit fix (pre-fix, invalidate-after-save discarded fresh
+        content on a DB write failure)."""
+        from backend.api import background as bg
+
+        call_order: list = []
+        fake_resp = MagicMock(content="fresh", cycle_date="2026-09-26")
+
+        async def _fake_save(_resp):
+            call_order.append("save")
+
+        def _fake_put(key, value, ttl_seconds):
+            call_order.append("put")
+
+        with patch.object(bg, "_run", new=AsyncMock(return_value=fake_resp)), \
+             patch.object(bg, "_save_market_to_db", side_effect=_fake_save), \
+             patch("backend.api.cache.put", side_effect=_fake_put), \
+             patch("backend.api.routes.ws.broadcast"):
+            await bg._perform_market_refresh_once()
+
+        assert call_order == ["put", "save"], (
+            f"cache.put must run BEFORE _save_market_to_db, not after — "
+            f"got order {call_order}"
+        )
 
     @pytest.mark.asyncio
     async def test_gemini_empty_returns_false_no_save(self):
@@ -171,15 +199,25 @@ class TestPerformMarketRefreshOnce:
         assert ok is False
 
     @pytest.mark.asyncio
-    async def test_db_save_exception_returns_false(self):
+    async def test_db_save_failure_still_returns_true_cache_already_primed(self):
+        """2026-09 audit fix: _save_market_to_db swallows its own
+        exceptions in production and never signals failure — but even in
+        the pathological case where it somehow raised anyway, the
+        function must still return True (a retry would be pointless and
+        wasteful: the fresh content is ALREADY correctly cached for this
+        process, since cache.put ran before the DB save was even
+        attempted)."""
         from backend.api import background as bg
 
         fake_resp = MagicMock(content="fresh", cycle_date="2026-09-26")
         with patch.object(bg, "_run", new=AsyncMock(return_value=fake_resp)), \
-             patch.object(bg, "_save_market_to_db", new=AsyncMock(side_effect=RuntimeError("db down"))):
+             patch.object(bg, "_save_market_to_db", new=AsyncMock(side_effect=RuntimeError("db down"))), \
+             patch("backend.api.cache.put") as mock_put, \
+             patch("backend.api.routes.ws.broadcast"):
             ok = await bg._perform_market_refresh_once()
 
-        assert ok is False
+        assert ok is True
+        mock_put.assert_called_once_with("market", fake_resp, ttl_seconds=86400)
 
 
 # ---------------------------------------------------------------------------
