@@ -105,11 +105,16 @@ async def _snapshot_close(exchange: str, event_type: str) -> None:
 # ---------------------------------------------------------------------------
 
 async def _snapshot_nav(exchange: str, event_type: str) -> None:
-    """Write today's NAV row. NSE-only by intent — MCX close lands at
-    23:30 IST and the existing daily 16:00 NAV cron already handles the
-    post-equity-close NAV. We keep this hook so a holiday-shortened
-    session still produces a NAV row immediately at the close moment
-    rather than waiting hours for the 16:00 cron."""
+    """Write today's NAV row. NSE-only by intent — the true end-of-day
+    NAV snapshot is `_run_nav_compute_once()` (background.py), which
+    fires at the MCX EOD settlement moment (≈23:45 IST, close + 15 min —
+    2026-09 fix; previously an inaccurate fixed 16:00 IST that predated
+    MCX's 23:30 close). This NSE-close hook is only an EARLY/interim
+    write so a holiday-shortened session (or a process restart late in
+    the day) still shows a same-day NAV figure immediately rather than
+    an empty chart until the MCX-close snapshot lands — the MCX-anchored
+    write later in the day overwrites it (idempotent upsert on
+    `as_of_date`) with the true full-session figure."""
     try:
         from backend.api.algo.nav import write_nav_snapshot
         snap = await write_nav_snapshot()
@@ -188,9 +193,10 @@ def register_default_handlers() -> None:
         market_lifecycle.register(f"{exch}:close",          _snapshot_close)
         market_lifecycle.register(f"{exch}:close_settled",  _snapshot_close)
 
-    # NAV — fires only on the NSE close. MCX close happens at 23:30 IST
-    # which is outside the LP-facing NAV cadence; the daily 16:00 cron
-    # remains the authoritative late-session NAV path.
+    # NAV — early/interim write on NSE close only. The authoritative
+    # end-of-day NAV write is `_run_nav_compute_once()` (background.py),
+    # anchored to MCX's close_settled moment (≈23:45 IST) since 2026-09 —
+    # see that function's docstring and `_snapshot_nav`'s above.
     market_lifecycle.register("nse:close", _snapshot_nav)
 
     # Movers snapshot — fires only on NSE close. The movers universe is

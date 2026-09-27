@@ -7029,14 +7029,51 @@ async def _run_close_once(state: dict) -> None:
 
 
 async def _run_nav_compute_once(state: dict) -> None:
-    """Write a NAV snapshot at 16:00 IST if not already done today."""
+    """Write a NAV snapshot once per day, at the MCX EOD settlement moment
+    (MCX close + 15 min ≈ 23:45 IST) — not a fixed 16:00 IST.
+
+    2026-09 fix: the previous fixed `dtime(16, 0)` gate fired hours BEFORE
+    MCX's actual close (23:30 IST — MCX trades until then per the Commodity
+    segment hours), so the "daily" NAV snapshot always shipped with that
+    day's commodity P&L still mid-session, never a true end-of-day figure.
+    This reuses the SAME effective-snapshot-time mechanism
+    `_sg_recover_mcx_snapshot` (above) already uses for the MCX EOD
+    `daily_book` write — `exchange_clock._effective_gate_rows("MCX")` +
+    `_effective_snapshot_time(row)` (close_time + `snapshot_time` override,
+    else close_time + 15 min) — rather than a second independent literal,
+    so both consumers move together if the operator ever retunes MCX's
+    close time or a per-day override row.
+
+    `_effective_gate_rows` returns holiday-override rows (open_time=None)
+    too, so `_effective_snapshot_time` naturally returns None on an
+    MCX-specific holiday (and on full non-trading days — weekends,
+    firm-wide holidays) — in that case we fall back to NON-MCX's own
+    effective snapshot time (≈15:45 IST) so a same-day NAV row still lands
+    for LPs on an equity-only session, rather than silently skipping the
+    day; if that too is unavailable (both gates closed), fall back to the
+    old fixed 16:00 IST as a last resort.
+
+    The once-per-day latch (`state["nav_done"] == today`) is unchanged —
+    still resets naturally at IST date rollover and is popped on failure
+    below so the next poll (30s cadence) retries.
+    """
     from backend.api.algo.nav import write_nav_snapshot
+    from backend.api.helpers.exchange_clock import (
+        _effective_gate_rows, _effective_snapshot_time,
+    )
 
     now   = timestamp_indian()
     today = now.date()
     if state.get("nav_done") == today:
         return
-    target = dtime(16, 0)
+
+    mcx_rows = _effective_gate_rows("MCX")
+    target = _effective_snapshot_time(mcx_rows[0]) if mcx_rows else None
+    if target is None:
+        non_mcx_rows = _effective_gate_rows("NON-MCX")
+        target = _effective_snapshot_time(non_mcx_rows[0]) if non_mcx_rows else None
+    if target is None:
+        target = dtime(16, 0)
     if now.time() < target:
         return
     state["nav_done"] = today

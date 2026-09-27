@@ -48,9 +48,11 @@ symbols) → row.last_price. Symbols with no LTP available contribute
 Caller responsibility:
 - Pass an active asyncio session (not running on the chase loop
   thread).
-- The daily background task calls this once at 16:00 IST; the
-  operator can also trigger via the admin endpoint for ad-hoc
-  recompute / backfill.
+- The daily background task (`_run_nav_compute_once`, background.py)
+  calls this once per day at the MCX close-settled moment (≈23:45 IST,
+  2026-09 fix — previously an inaccurate fixed 16:00 IST that predated
+  MCX's own 23:30 close); the operator can also trigger via the admin
+  endpoint for ad-hoc recompute / backfill.
 
 SSOT (2026-09 NAV consolidation): this module is now the ONLY place
 the v4 formula is computed, firm-level AND per-account

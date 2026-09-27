@@ -404,9 +404,10 @@ class NavController(Controller):
     async def compute_now(self) -> NavComputeResponse:
         """Operator-triggered NAV recompute. Re-aggregates funds +
         positions + holdings for today's IST date and upserts into
-        `nav_daily`. Same code path the daily 16:00 IST background
-        task uses; idempotent so repeated triggers within the day
-        just overwrite the row.
+        `nav_daily`. Same code path the daily background task
+        (`_run_nav_compute_once`, fires at MCX's close-settled moment,
+        ≈23:45 IST) uses; idempotent so repeated triggers within the
+        day just overwrite the row.
 
         Use cases:
         - Mid-day check after a position close
