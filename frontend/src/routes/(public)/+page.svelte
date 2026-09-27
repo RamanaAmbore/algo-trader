@@ -11,7 +11,7 @@
 
 <svelte:head>
   <title>Quantitative Investment Analytics for Indian Markets | RamboQuant Analytics</title>
-  <meta name="description" content="RamboQuant Analytics LLP — long-term stock investments paired with algo-executed options strategies (covered calls, cash-secured puts, spreads, and more) using stocks and cash as margin. 25-year track record, 22%+ XIRR, LLP registered. Open platform showcase included." />
+  <meta name="description" content="RamboQuant Analytics LLP — long-term stock investments paired with algo-executed options strategies (covered calls, cash-secured puts, spreads, and more) using stocks and cash as margin. Built on the Founder's 25-year personal investing track record, 22%+ XIRR. LLP registered. Open platform showcase included." />
   <link rel="canonical" href="https://ramboq.com/" />
 
   <!-- Open Graph — HOME variant. Uses og-image-home.png (full-canvas
@@ -19,7 +19,7 @@
        picture and the og:title / og:description text below carry the
        narrative. -->
   <meta property="og:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
-  <meta property="og:description" content="Long-term stock investments paired with a toolkit of algo-executed options strategies — covered calls, cash-secured puts, spreads, and more — using stocks and cash as margin. 25-year track record, 22%+ XIRR." />
+  <meta property="og:description" content="Long-term stock investments paired with a toolkit of algo-executed options strategies — covered calls, cash-secured puts, spreads, and more — using stocks and cash as margin. Built on the Founder's 25-year personal track record, 22%+ XIRR." />
   <meta property="og:url" content="https://ramboq.com/" />
   <meta property="og:type" content="website" />
   <meta property="og:image" content="https://ramboq.com/og-image-home.png?v=2" />
@@ -31,7 +31,7 @@
   <!-- Twitter -->
   <meta name="twitter:card" content="summary_large_image" />
   <meta name="twitter:title" content="RamboQuant Analytics — Quantitative Investment for Indian Markets" />
-  <meta name="twitter:description" content="Systematic, transparent portfolios for partner-investors. 25-year track record, 22%+ XIRR. Open algo trading platform showcase." />
+  <meta name="twitter:description" content="Systematic, transparent portfolios for partner-investors. Founder's 25-year personal track record, 22%+ XIRR. Open algo trading platform showcase." />
   <meta name="twitter:image" content="https://ramboq.com/og-image-home.png?v=2" />
   <meta name="twitter:image:alt" content="RamboQuant Analytics brand mark — teal bull inside a champagne-gold ring on a dark teal background." />
 
@@ -42,7 +42,7 @@
     "name": "RamboQuant Analytics LLP",
     "url": "https://ramboq.com",
     "logo": "https://ramboq.com/og-image-home.png",
-    "description": "Long-term stock investments paired with algo-executed options strategies — covered calls, cash-secured puts, spreads, and more. 25-year track record, 22%+ XIRR, LLP registered.",
+    "description": "Long-term stock investments paired with algo-executed options strategies — covered calls, cash-secured puts, spreads, and more. Built on the Founder's 25-year personal investing track record, 22%+ XIRR. LLP registered.",
     "areaServed": "IN",
     "knowsAbout": ["algorithmic trading", "options strategies", "portfolio management"]
   })}<\/script>`}
@@ -57,17 +57,17 @@
     <div class="trust-strip">
       <div class="trust-cell">
         <div class="trust-num">22%<span class="trust-plus">+</span></div>
-        <div class="trust-lbl">Long-term XIRR</div>
+        <div class="trust-lbl">Founder's XIRR</div>
       </div>
       <div class="trust-sep"></div>
       <div class="trust-cell">
         <div class="trust-num">25<span class="trust-plus">+</span></div>
-        <div class="trust-lbl">Years active</div>
+        <div class="trust-lbl">Founder's Years</div>
       </div>
       <div class="trust-sep"></div>
       <div class="trust-cell">
         <div class="trust-creds">FRM · CFA L3 (cand.) · XLRI</div>
-        <div class="trust-lbl">Principal credentials</div>
+        <div class="trust-lbl">Architect's credentials</div>
       </div>
     </div>
   </section>

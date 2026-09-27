@@ -27,7 +27,7 @@
     "name": "RamboQuant Analytics LLP",
     "url": "https://ramboq.com/about",
     "logo": "https://ramboq.com/og-image-thumb.png",
-    "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
+    "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay, built on the Founder's 25+ years of personal investing experience and 22%+ XIRR track record.",
     "founder": {
       "@type": "Person",
       "name": "Haritha Chikile",
@@ -61,17 +61,17 @@
   <div class="stat-strip">
     <div class="stat-item">
       <div class="stat-num">22%<span class="stat-plus">+</span></div>
-      <div class="stat-label">Long-term Portfolio XIRR</div>
+      <div class="stat-label">Founder's XIRR</div>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
       <div class="stat-num">25<span class="stat-plus">+</span></div>
-      <div class="stat-label">Years Active Investing</div>
+      <div class="stat-label">Founder's Years</div>
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
       <div class="stat-creds">FRM · CFA L3 (cand.) · XLRI</div>
-      <div class="stat-label">Principal Credentials</div>
+      <div class="stat-label">Architect's Credentials</div>
     </div>
   </div>
 
@@ -94,7 +94,7 @@
 
     <p>RamboQuant Analytics LLP runs an algorithmically driven investment program: a long-term, high-conviction stock portfolio paired with a disciplined options overlay, executed and monitored around the clock by a purpose-built trading platform. Every position, every fill, and every risk check is logged and auditable — what partners see in their statements reflects exactly what happened in the market, with no manual reconciliation gaps.</p>
 
-    <p>With a long-term portfolio XIRR exceeding 22%, the strategy blends high-conviction stock picks with disciplined covered-call writing and selective derivatives positioning. Every decision is grounded in rigorous risk management and a long-term commitment to compounding.</p>
+    <p>The strategy is built on the Founder's own investing history: 25+ years of personal investing experience and a long-term portfolio XIRR exceeding 22%. It blends high-conviction stock picks with disciplined covered-call writing and selective derivatives positioning. Every decision is grounded in rigorous risk management and a long-term commitment to compounding.</p>
 
     <div class="closing-statement pub-callout">
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
