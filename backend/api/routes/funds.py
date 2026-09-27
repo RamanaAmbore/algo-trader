@@ -3,6 +3,7 @@
 from datetime import datetime
 from zoneinfo import ZoneInfo
 
+import msgspec
 import pandas as pd
 import polars as pl
 from litestar import Controller, Request, get
@@ -143,6 +144,50 @@ def _fetch() -> FundsResponse:
     )
 
 
+def _funds_scope_trader(resp: FundsResponse, allowed_set: set[str]) -> FundsResponse:
+    """Narrow *resp* to a trader's allowed accounts.
+
+    TOTAL row is always preserved in `rows` so the firm-wide rollup stays
+    meaningful even after a scoped filter (matches holdings/positions
+    trader-scope behavior). `stale_accounts` never contains "TOTAL" (see
+    `_hydrate_row` — the TOTAL row is skipped from `account_stale`
+    tagging, and `_stale_flag_map` only records real per-account codes),
+    so a plain intersection against `allowed_set` is sufficient — same
+    scoping treatment as rows/summary in positions_helpers._apply_trader_scope
+    and holdings._scope_and_mask_holdings.
+    """
+    return msgspec.structs.replace(
+        resp,
+        rows=[r for r in resp.rows
+              if str(getattr(r, "account", "")).upper() in allowed_set
+              or str(getattr(r, "account", "")).upper() == "TOTAL"],
+        stale_accounts=[a for a in resp.stale_accounts
+                        if str(a).upper() in allowed_set],
+    )
+
+
+def _funds_mask_accounts(resp: FundsResponse) -> FundsResponse:
+    """Mask account identifiers for non-admin callers — rows AND
+    stale_accounts (copy-not-mutate so the shared cache doesn't end up
+    holding masked codes — was the demo→signin lag bug).
+
+    mask_account's UNREGISTERED fallback collides same-prefix accounts
+    (e.g. DH6847/DH3747 both -> "DH####") — masking stale_accounts this
+    way is intentionally conservative (a masked session may distrust a
+    root it didn't strictly need to), matching the documented behavior
+    in positions_helpers._apply_account_mask.
+    """
+    def _mask(row):
+        if row.account == 'TOTAL':
+            return row
+        return msgspec.structs.replace(row, account=mask_account(row.account))
+    return msgspec.structs.replace(
+        resp,
+        rows=[_mask(r) for r in resp.rows],
+        stale_accounts=sorted({mask_account(a) for a in resp.stale_accounts}),
+    )
+
+
 class FundsController(Controller):
     path = "/api/funds"
 
@@ -218,28 +263,10 @@ class FundsController(Controller):
             if role == "trader":
                 allowed, _ = await user_scope_for_connection(request)
                 allowed_set = {str(a).upper() for a in (allowed or [])}
-                import msgspec
-                resp = msgspec.structs.replace(
-                    resp,
-                    rows=[r for r in resp.rows
-                          if str(getattr(r, "account", "")).upper() in allowed_set
-                          or str(getattr(r, "account", "")).upper() == "TOTAL"],
-                )
+                resp = _funds_scope_trader(resp, allowed_set)
             # Account-ID masking — admin/designated only see raw codes.
-            # Copy-not-mutate so the shared cache doesn't end up holding
-            # masked codes (was the demo→signin lag bug).
             if not is_admin_request(request):
-                import msgspec
-                def _mask(row):
-                    if row.account == 'TOTAL':
-                        return row
-                    return msgspec.structs.replace(
-                        row, account=mask_account(row.account)
-                    )
-                return msgspec.structs.replace(
-                    resp,
-                    rows=[_mask(r) for r in resp.rows],
-                )
+                return _funds_mask_accounts(resp)
             return resp
         except Exception as e:
             logger.error(f"Funds API error: {e}")

@@ -229,3 +229,125 @@ def test_hydrate_row_no_since_when_stale_but_absent_from_map():
     out = _hydrate_row(dict(r), {"A": True}, {"OTHER": "09:15 IST"})
     assert out["account_stale"] is True
     assert "account_stale_since" not in out
+
+
+# ---------------------------------------------------------------------------
+# stale_accounts masking/scoping — _funds_scope_trader, _funds_mask_accounts
+#
+# Same P0-adjacent gap already found and fixed in
+# positions_helpers._apply_account_mask / _apply_trader_scope
+# (test_positions_helpers.py) and holdings._hold_mask_account_in_resp /
+# _scope_and_mask_holdings / _filter_holdings_by_account
+# (test_holdings_fetch_helpers.py): the funds.py trader filter and
+# account-ID mask previously touched only `rows`, leaving
+# FundsResponse.stale_accounts unmasked/unscoped.
+# ---------------------------------------------------------------------------
+
+def _make_funds_row(account: str):
+    from backend.api.schemas import FundsRow
+    return FundsRow(
+        account=account, cash=1000.0, avail_margin=500.0,
+        used_margin=200.0, collateral=0.0,
+    )
+
+
+def _make_funds_response(rows=None, stale_accounts=None):
+    from backend.api.schemas import FundsResponse
+    return FundsResponse(
+        rows=rows or [],
+        refreshed_at="2026-09-26T00:00:00Z",
+        stale_accounts=list(stale_accounts or []),
+    )
+
+
+class TestFundsScopeTraderStaleAccounts:
+    """_funds_scope_trader must narrow stale_accounts to the trader's
+    allowed account set, same as rows."""
+
+    def test_stale_accounts_scoped_to_allowed_set(self):
+        from backend.api.routes.funds import _funds_scope_trader
+
+        resp = _make_funds_response(
+            rows=[_make_funds_row("ZG0790"), _make_funds_row("DH6847"),
+                  _make_funds_row("TOTAL")],
+            stale_accounts=["ZG0790", "DH6847"],
+        )
+        out = _funds_scope_trader(resp, {"ZG0790"})
+
+        assert out.stale_accounts == ["ZG0790"]
+        assert "DH6847" not in out.stale_accounts
+        # Regression guard — TOTAL row preserved in rows, others filtered.
+        assert {r.account for r in out.rows} == {"ZG0790", "TOTAL"}
+
+    def test_stale_accounts_empty_when_none_allowed(self):
+        from backend.api.routes.funds import _funds_scope_trader
+
+        resp = _make_funds_response(stale_accounts=["ZG0790"])
+        out = _funds_scope_trader(resp, set())
+        assert out.stale_accounts == []
+
+    def test_stale_accounts_empty_stays_empty(self):
+        from backend.api.routes.funds import _funds_scope_trader
+
+        resp = _make_funds_response(stale_accounts=[])
+        out = _funds_scope_trader(resp, {"ZG0790"})
+        assert out.stale_accounts == []
+
+
+class TestFundsMaskAccountsStaleAccounts:
+    """_funds_mask_accounts must mask stale_accounts the same way it
+    masks rows[].account."""
+
+    def test_stale_accounts_are_masked(self):
+        from backend.api.routes.funds import _funds_mask_accounts
+        from backend.shared.helpers.utils import mask_account
+
+        resp = _make_funds_response(stale_accounts=["ZG0790", "DH6847"])
+        out = _funds_mask_accounts(resp)
+
+        assert set(out.stale_accounts) == {
+            mask_account("ZG0790"), mask_account("DH6847"),
+        }
+        assert "ZG0790" not in out.stale_accounts
+        assert "DH6847" not in out.stale_accounts
+
+    def test_stale_accounts_empty_stays_empty(self):
+        from backend.api.routes.funds import _funds_mask_accounts
+
+        resp = _make_funds_response(stale_accounts=[])
+        out = _funds_mask_accounts(resp)
+        assert out.stale_accounts == []
+
+    def test_same_prefix_collision_is_documented_conservative_behavior(
+        self, monkeypatch,
+    ):
+        """mask_account's UNREGISTERED fallback collides same-prefix
+        accounts (DH6847/DH3747 both -> DH####) — masking stale_accounts
+        this way is intentionally conservative, matching the documented
+        behavior in positions_helpers._apply_account_mask."""
+        import backend.shared.helpers.utils as _utils_mod
+        from backend.api.routes.funds import _funds_mask_accounts
+        from backend.shared.helpers.utils import mask_account
+
+        monkeypatch.setattr(_utils_mod, "_REGISTRY", {})
+        assert mask_account("DH6847") == mask_account("DH3747") == "DH####"
+
+        resp = _make_funds_response(stale_accounts=["DH6847", "DH3747"])
+        out = _funds_mask_accounts(resp)
+        assert out.stale_accounts == ["DH####"]
+
+    def test_rows_still_masked_alongside_stale_accounts(self):
+        from backend.api.routes.funds import _funds_mask_accounts
+        from backend.shared.helpers.utils import mask_account
+
+        row = _make_funds_row("ZG0790")
+        total_row = _make_funds_row("TOTAL")
+        resp = _make_funds_response(
+            rows=[row, total_row], stale_accounts=["ZG0790"],
+        )
+        out = _funds_mask_accounts(resp)
+
+        assert out.rows[0].account == mask_account("ZG0790")
+        # TOTAL row is never masked (matches existing rows-masking behavior).
+        assert out.rows[1].account == "TOTAL"
+        assert out.stale_accounts == [mask_account("ZG0790")]
