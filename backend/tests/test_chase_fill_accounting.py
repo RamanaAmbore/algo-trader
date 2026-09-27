@@ -210,7 +210,7 @@ async def test_c2_late_fill_race_before_cancel_is_captured():
         patch("backend.api.algo.chase._run", side_effect=_fake_run),
         patch("backend.api.algo.chase._record_partial_fill", new_callable=AsyncMock),
     ):
-        cumulative, current_order_filled, remaining, avg_price = await _ch_capture_late_fill(
+        cumulative, current_order_filled, remaining, avg_price, cancel_confirmed = await _ch_capture_late_fill(
             account="ACC1", order_id="O1", cfg=cfg, symbol="NIFTY24DECFUT",
             quantity=100, cumulative_filled=40, current_order_filled=40,
             algo_order_id=None,
@@ -219,6 +219,9 @@ async def test_c2_late_fill_race_before_cancel_is_captured():
     assert cumulative == 100, f"late fill (40→100) must be captured, got cumulative={cumulative}"
     assert remaining == 0
     assert avg_price == 101.0
+    assert cancel_confirmed is True, (
+        "status='CANCELLED' in the post-cancel read must be recognized as confirmed"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -115,11 +115,21 @@ async def test_buy_forced_one_tick_higher_on_repeat():
 
     async def _fake_run(fn, *args):
         """Dispatch to correct sync helper based on fn identity."""
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return TIGHT_DEPTH
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -182,11 +192,21 @@ async def test_sell_forced_one_tick_lower_on_repeat():
         return f"order_{len(placed_prices)}"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return TIGHT_DEPTH
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -254,11 +274,21 @@ async def test_buy_forced_clamped_to_best_ask():
         return f"order_{len(placed_prices)}"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return depth
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -321,11 +351,21 @@ async def test_sell_forced_floored_by_best_bid():
         return f"order_{len(placed_prices)}"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return depth
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -386,11 +426,21 @@ async def test_buy_stale_depth_no_clamp_to_zero():
         return f"order_{len(placed_prices)}"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return stale_depth
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -456,12 +506,22 @@ async def test_force_path_uses_same_depth_no_extra_broker_call():
 
     async def _fake_run(fn, *args):
         nonlocal depth_fetch_count
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             depth_fetch_count += 1
             return TIGHT_DEPTH
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -521,11 +581,21 @@ async def test_no_force_on_first_attempt():
         return "order_1"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return TIGHT_DEPTH
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):
@@ -587,11 +657,21 @@ async def test_no_force_when_price_changes_naturally():
         return f"order_{len(placed_prices)}"
 
     async def _fake_run(fn, *args):
-        from backend.api.algo.chase import _get_depth, _place_order
+        from backend.api.algo.chase import _get_depth, _place_order, _order_status
         if fn is _get_depth:
             return TIGHT_DEPTH
         if fn is _place_order:
             return _fake_place(*args)
+        if fn is _order_status:
+            # 2026-09 council audit fix: chase.py's cancel-confirmation
+            # gate (_ch_capture_late_fill) now genuinely calls
+            # _order_status after every cancel to verify it landed
+            # before allowing a replacement order — these min-tick tests
+            # aren't testing that gate, so simulate a clean confirmed
+            # cancel (not the unmocked default of None/empty, which the
+            # real gate correctly treats as unconfirmed and would abort
+            # the chase after only one placement).
+            return {"status": "CANCELLED", "filled_quantity": 0, "average_price": 0}
         return None
 
     async def _fake_poll(*args, **kwargs):

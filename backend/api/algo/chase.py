@@ -1189,16 +1189,53 @@ async def _ch_exhaust_max_attempts(
     account: str, symbol: str, transaction_type: str,
     quantity: int, algo_order_id: "int | None", emit: Callable,
 ) -> "ChaseResult":
-    """Handle max-attempts exhaustion: cancel live order, set FAILED, schedule terminal."""
+    """Handle max-attempts exhaustion: cancel live order, set FAILED, schedule terminal.
+
+    2026-09 council audit fix (risk lens) — this path previously fired
+    NO operator-visible alert at all (only a log line + an internal
+    panel `emit`), unlike its sibling `_chase_abort_on_consecutive_errors`
+    which does call `send_order_failure_alert`. A chase exhausting its
+    max attempts is exactly as actionable as a consecutive-error abort —
+    the operator needs to know a chase gave up AND whether the final
+    cancel attempt (also best-effort/swallowed here) may have left an
+    order resting live with nothing watching it anymore.
+    """
+    _cancel_failed = False
     if current_order_id:
         try:
             await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
-        except Exception:
-            pass
+        except Exception as _cancel_exc:
+            _cancel_failed = True
+            logger.warning(
+                "Chase %s: final cancel of order %s failed at max-attempts "
+                "exhaustion: %s — order may still be resting live.",
+                symbol, current_order_id, _cancel_exc,
+            )
     result.status = ChaseStatus.FAILED
     result.detail = f"Failed after {cfg.max_attempts} attempts"
-    emit("chase_failed", {"attempts": cfg.max_attempts})
+    if _cancel_failed:
+        result.detail += (
+            f" — final cancel of order {current_order_id} may have failed; "
+            f"it could still be resting live."
+        )
+    emit("chase_failed", {"attempts": cfg.max_attempts, "cancel_failed": _cancel_failed})
     logger.error(f"Chase {symbol}: FAILED after {cfg.max_attempts} attempts")
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        _msg = f"Chase failed after {cfg.max_attempts} attempts (no fill)"
+        if _cancel_failed:
+            _msg += (
+                f" — final cancel of order {current_order_id} may ALSO have "
+                f"failed; manually verify the broker's order book."
+            )
+        send_order_failure_alert(
+            account=account, symbol=symbol,
+            exchange=cfg.exchange, side=transaction_type,
+            qty=quantity, mode="live", source="chase",
+            error=_msg,
+        )
+    except Exception as _alert_exc:
+        logger.warning(f"Chase {symbol}: max-attempts alert failed: {_alert_exc}")
     if result.order_id:
         import asyncio as _asyncio
         _asyncio.create_task(_emit_chase_terminal(
@@ -1241,11 +1278,21 @@ async def _ch_cancel_previous(
         logger.warning(f"Chase {symbol}: cancel failed: {e}")
 
 
+# 2026-09 council audit fix (risk lens) — statuses that mean the
+# just-cancelled order is definitively no longer live/resting at the
+# broker, whether or not our own cancel_order call is what put it there.
+# COMPLETE/REJECTED are included alongside CANCELLED/EXPIRED because in
+# either case the order is equally gone — the only status that means
+# "may still be resting" is anything NOT in this set (most commonly
+# OPEN/TRIGGER PENDING, or an empty/unreadable status dict).
+_CH_CONFIRMED_GONE_STATUSES = frozenset({"CANCELLED", "EXPIRED", "COMPLETE", "REJECTED"})
+
+
 async def _ch_capture_late_fill(
     account: str, order_id: str, cfg: "ChaseConfig", symbol: str,
     quantity: int, cumulative_filled: int, current_order_filled: int,
     algo_order_id: "int | None",
-) -> "tuple[int, int, int, float]":
+) -> "tuple[int, int, int, float, bool]":
     """C2 — poll the just-cancelled order's FINAL status and fold any
     fill that happened between the LAST regular poll and the cancel
     into `cumulative_filled`, before the next attempt sizes its
@@ -1260,18 +1307,50 @@ async def _ch_capture_late_fill(
     goal ("a fill racing the cancel isn't lost") more robustly than a
     pre-cancel read would.
 
-    Best-effort — never raises; a failed poll here just means the
-    fill (if any) is picked up by whatever reconciliation already
-    exists downstream (next `_task_performance` sweep).
+    2026-09 council audit fix (risk lens) — this same post-cancel status
+    read is now ALSO used to verify the cancel actually landed, closing
+    a real duplicate-order gap: `_ch_cancel_previous` swallows any
+    `broker.cancel_order` exception with only a warning log, with no
+    signal of whether the order is genuinely gone. Without this check,
+    the caller would proceed to place a FRESH replacement order for the
+    full `remaining_qty` regardless — if the old order was in fact still
+    resting live at the broker (a silently-failed cancel), that produces
+    TWO live orders for the same leg, each capable of filling
+    independently, with the old one never polled or reconciled again
+    once `current_order_id` moves to the new order. `cancel_confirmed`
+    (the new 5th return value) is True only when the post-cancel status
+    is genuinely terminal (`_CH_CONFIRMED_GONE_STATUSES`); False for any
+    other status OR when the status read itself fails — fail-SAFE
+    (assume it might still be resting) rather than fail-open, since a
+    false "confirmed" here is exactly the duplicate-order risk being
+    closed.
 
-    Returns (cumulative_filled, current_order_filled, remaining_qty, avg_price).
+    Best-effort on the fill-capture side — never raises for that part; a
+    failed poll just means the fill (if any) is picked up by whatever
+    reconciliation already exists downstream (next `_task_performance`
+    sweep). The confirmation signal degrades safely to False on the
+    same failure rather than being silently skipped.
+
+    Returns (cumulative_filled, current_order_filled, remaining_qty,
+    avg_price, cancel_confirmed).
     """
     avg_price = 0.0
+    cancel_confirmed = False
     try:
         status = await _run(_order_status, account, order_id)
         _raw = int((status or {}).get("filled_quantity", 0) or 0)
         filled_qty = _ch_reverse_translate_mcx_filled(cfg, symbol, account, _raw)
         avg_price = float((status or {}).get("average_price", 0) or 0)
+        order_status_str = str((status or {}).get("status", "")).upper()
+        cancel_confirmed = order_status_str in _CH_CONFIRMED_GONE_STATUSES
+        if not cancel_confirmed:
+            logger.warning(
+                "Chase %s: cancel NOT confirmed for order %s — broker "
+                "status is %r (not one of %s). Order may still be "
+                "resting live.",
+                symbol, order_id, order_status_str or "<unreadable>",
+                sorted(_CH_CONFIRMED_GONE_STATUSES),
+            )
         if filled_qty > current_order_filled:
             delta = filled_qty - current_order_filled
             cumulative_filled += delta
@@ -1282,9 +1361,14 @@ async def _ch_capture_late_fill(
             )
             await _record_partial_fill(algo_order_id, cumulative_filled, avg_price, quantity)
     except Exception as e:
-        logger.debug(f"Chase {symbol}: late-fill capture failed for order {order_id}: {e}")
+        logger.warning(
+            "Chase %s: late-fill/cancel-confirmation capture failed for "
+            "order %s: %s — treating cancel as UNCONFIRMED (fail-safe)",
+            symbol, order_id, e,
+        )
+        cancel_confirmed = False
     remaining_qty = max(0, quantity - cumulative_filled)
-    return cumulative_filled, current_order_filled, remaining_qty, avg_price
+    return cumulative_filled, current_order_filled, remaining_qty, avg_price, cancel_confirmed
 
 
 def _ch_already_filled_at_start(
@@ -1313,6 +1397,72 @@ def _ch_already_filled_at_start(
     )
 
 
+def _ch_build_cancel_unconfirmed_abort(
+    result: "ChaseResult", symbol: str, account: str, transaction_type: str,
+    quantity: int, remaining_qty: int, attempt: int,
+    current_order_id: "str | None", algo_order_id: "int | None", emit: Callable,
+) -> "ChaseResult":
+    """2026-09 council audit fix (risk lens) — abort path for a cancel
+    that could not be confirmed. Fail-SAFE: never place a replacement
+    order in this state, since the old order may still be live at the
+    broker and a replacement would risk two simultaneous live orders for
+    the same leg (up to 2x the intended position, silently). Fires a
+    CRITICAL ntfy alert — this is exactly the scenario that needs a
+    human to manually check the broker's order book, and prior to this
+    fix neither this path nor its sibling (_chase_abort_on_consecutive_
+    errors, _ch_exhaust_max_attempts) fired any operator-visible alert
+    for a cancel failure.
+    """
+    from backend.shared.helpers.alert_utils import send_ntfy_alert
+    from backend.shared.helpers.utils import mask_account_in_text
+
+    result.status = ChaseStatus.FAILED
+    result.order_id = current_order_id or ""
+    result.detail = (
+        f"Chase ABORTED — cancel not confirmed for order {current_order_id} "
+        f"after attempt {attempt}. It may still be resting live at the "
+        f"broker; no replacement order was placed to avoid a possible "
+        f"duplicate. Manually check {account}'s order book for {symbol}."
+    )
+    logger.critical("Chase %s: %s", symbol, result.detail)
+    emit("chase_cancel_unconfirmed", {
+        "order_id": current_order_id, "attempt": attempt,
+        "remaining_qty": remaining_qty,
+    })
+    try:
+        send_ntfy_alert(
+            "Chase cancel unconfirmed — possible resting duplicate order",
+            mask_account_in_text(
+                f"{transaction_type} {symbol} — cancel of order "
+                f"{current_order_id} on {account} could not be confirmed "
+                f"after attempt {attempt}/{quantity - remaining_qty} filled. "
+                f"The chase has been ABORTED without placing a replacement "
+                f"order. Manually verify the broker's order book — the old "
+                f"order may still be live."
+            ),
+            priority="urgent",
+        )
+    except Exception as _alert_exc:
+        logger.warning(f"Chase {symbol}: cancel-unconfirmed alert failed: {_alert_exc}")
+    if algo_order_id is not None:
+        try:
+            # Reuses the "chase_failed" outcome (not a new value) — the
+            # AlgoOrder-row terminal-status mapping in record_chase_terminal
+            # only recognizes chase_fill/chase_unfilled/chase_failed/
+            # chase_cancelled; this is semantically a failed chase (never
+            # completed), just with a more specific reason captured in
+            # `error` and in the panel-level emit() call above.
+            asyncio.create_task(_emit_chase_terminal(
+                current_order_id or "", "chase_failed",
+                symbol, transaction_type, quantity,
+                attempts=attempt, algo_order_id=algo_order_id,
+                error="cancel_unconfirmed — possible resting duplicate order",
+            ))
+        except Exception:
+            pass
+    return result
+
+
 async def _ch_cancel_and_capture(
     account: str, current_order_id: "str | None", cfg: "ChaseConfig",
     symbol: str, attempt: int, emit: Callable,
@@ -1325,19 +1475,28 @@ async def _ch_cancel_and_capture(
 
     Returns (cumulative_filled, current_order_filled, remaining_qty,
     early_result). `early_result` is non-None when the caller must
-    immediately `return early_result` — the late-fill capture revealed
-    `cumulative_filled` already reached `quantity`, so there's nothing
-    left to place a replacement order for.
+    immediately `return early_result` — either because the late-fill
+    capture revealed `cumulative_filled` already reached `quantity` (so
+    there's nothing left to place a replacement order for), or (2026-09
+    council audit fix) because the cancel itself could not be confirmed
+    and the chase has been safely aborted rather than risk placing a
+    duplicate live order.
     """
     await _ch_cancel_previous(account, current_order_id, cfg, symbol, attempt, emit)
     if not current_order_id:
         return cumulative_filled, current_order_filled, remaining_qty, None
-    cumulative_filled, current_order_filled, remaining_qty, late_avg_price = (
+    cumulative_filled, current_order_filled, remaining_qty, late_avg_price, cancel_confirmed = (
         await _ch_capture_late_fill(
             account, current_order_id, cfg, symbol, quantity,
             cumulative_filled, current_order_filled, algo_order_id,
         )
     )
+    if remaining_qty > 0 and not cancel_confirmed:
+        early = _ch_build_cancel_unconfirmed_abort(
+            result, symbol, account, transaction_type, quantity,
+            remaining_qty, attempt, current_order_id, algo_order_id, emit,
+        )
+        return cumulative_filled, current_order_filled, remaining_qty, early
     if remaining_qty <= 0:
         early = _ch_zero_remaining_fill(
             result, symbol, transaction_type, quantity, attempt,

@@ -475,6 +475,26 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   unit via `_ch_reverse_translate_mcx_filled()` (gated by `_MCX_LOTS_CONVENTION_BROKERS`)
   before subtracting to derive already-filled count. Translating only one side
   would mix units and silently derive wrong fill (C4 fix).
+- **Chase cancel confirmation — never replace an order without verifying the
+  cancel landed (2026-09 orders-page council audit, risk lens)** — `_ch_cancel_previous`
+  swallows any `broker.cancel_order` exception with only a warning log; the
+  caller previously proceeded unconditionally to place a fresh replacement
+  order sized at the full `remaining_qty`, abandoning `current_order_id`
+  entirely. If the cancel had silently failed (old order still resting live),
+  this produced TWO live orders for the same leg — the old one never polled
+  or reconciled again — capable of independently filling for up to 2x the
+  intended position, with no alert. Fixed: `_ch_capture_late_fill` (already
+  doing a post-cancel status read for late-fill capture) now also checks
+  whether that status is genuinely terminal (`_CH_CONFIRMED_GONE_STATUSES`:
+  CANCELLED/EXPIRED/COMPLETE/REJECTED) and returns a `cancel_confirmed` bool
+  — fail-SAFE (False) on any other status or on a status-read failure.
+  `_ch_cancel_and_capture` aborts the chase (no replacement order placed,
+  CRITICAL log, urgent ntfy alert) when `remaining_qty > 0` and the cancel
+  isn't confirmed, instead of blindly proceeding. Separately, `_ch_exhaust_max_attempts`
+  (chase gives up after max_attempts) previously fired NO operator alert at
+  all, unlike its sibling `_chase_abort_on_consecutive_errors` — now alerts
+  consistently and notes explicitly if its own final cancel attempt may have
+  also failed.
 
 **Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
 Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 
