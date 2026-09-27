@@ -3729,6 +3729,23 @@
         // (not in the sortable body).
         postSortRows: postSortGroups,
         rowHeight: 28,
+        // animateRows: false (2026-09 fix) — ag-Grid defaults this to true,
+        // which applies a 0.4s CSS transform transition (app.css's imported
+        // ag-grid.css: `.ag-row-animation .ag-row { transition: transform
+        // 0.4s, top 0.4s, opacity 0.2s }`) whenever the row set/order
+        // changes — e.g. a holding added mid-session, or a poll refresh
+        // that re-sorts. Confirmed live on dev.ramboq.com: clicking a
+        // sortable header (or any row-order change from a poll) produces
+        // up to two dozen row pairs within 3px of each other for ~1s
+        // mid-transition — every cell in that slot shows both rows' values
+        // overlapping. These bucket grids replace `rowData` wholesale on
+        // every poll (`setGridOption('rowData', ...)`), so a legitimate
+        // reorder is routine, not an edge case — the animation must be
+        // off, not merely rare. Root cause predates 2026-09's cell-divider
+        // border / trailing-account-column CSS changes (this factory has
+        // had no animateRows override since the original per-bucket grid
+        // split); those commits are not implicated.
+        animateRows: false,
         onRowClicked: handleRowClick,
         onCellContextMenu: (ev) => {
           if (ev.data) openContextMenu(ev.event, ev.data);
