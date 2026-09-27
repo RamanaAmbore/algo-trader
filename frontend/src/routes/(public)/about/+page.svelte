@@ -28,6 +28,10 @@
     "url": "https://ramboq.com/about",
     "logo": "https://ramboq.com/og-image-thumb.png",
     "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
+    "founder": {
+      "@type": "Person",
+      "name": "Haritha Chikile"
+    },
     "employee": {
       "@type": "Person",
       "name": "Ramana R Ambore",
@@ -35,6 +39,7 @@
       "hasCredential": [
         "FRM (GARP, 2022)",
         "CFA Level 3 (candidate)",
+        "PGCBM (XLRI)",
         "M.S. Computer Science",
         "Six Sigma Green Belt",
         "IBM Certified DB2 DBA",
@@ -64,7 +69,7 @@
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <div class="stat-creds">FRM · CFA L3 (cand.)</div>
+      <div class="stat-creds">FRM · CFA L3 (cand.) · XLRI</div>
       <div class="stat-label">Principal Credentials</div>
     </div>
     <div class="stat-divider"></div>
@@ -99,11 +104,15 @@
       RamboQuant Analytics is not for those content with average, index-like returns. It's built for partners who demand more — smarter strategies, sharper execution, and sustainable wealth creation.
     </div>
 
-    <div class="prose-section-label" style="margin-top: 1.5rem;">Principal</div>
+    <div class="prose-section-label" style="margin-top: 1.5rem;">Founder</div>
 
-    <p>Ramana R Ambore brings 30+ years of financial-services engineering experience to RamboQuant Analytics, including 19 years as a Principal System Analyst at Fidelity Investments — his primary role. At RamboQuant LLP he serves as Platform Architect &amp; Quantitative Developer, building and operating the AI-augmented trading platform (built with Claude Code) that runs the firm's strategy end-to-end.</p>
+    <p>Haritha Chikile — Founder, RamboQuant Analytics LLP.</p>
 
-    <p>His credentials — FRM (GARP, 2022), CFA Level 3 candidate, a Master's in Computer Science, Six Sigma Green Belt, IBM Certified DB2 DBA, and Sun Certified Java Programmer — reflect three decades of hands-on systems engineering. He was recognized with the NTT Innovation Award as a top-40 global innovator. The same engineering discipline used on institutional trading floors runs this platform at one-operator scale, so what partners see in their statements is exactly what happened in the market.</p>
+    <div class="prose-section-label" style="margin-top: 1.5rem;">Platform Architect &amp; Quantitative Developer</div>
+
+    <p>Ramana R Ambore is the technical architect and developer behind RamboQuant's platform — he designed, built, and operates the AI-augmented trading system (built with Claude Code) that runs the firm's strategy end-to-end. He brings 30+ years of financial-services engineering experience to that work, including 19 years as a Principal System Analyst at Fidelity Investments, his primary day-to-day role.</p>
+
+    <p>His credentials — FRM (GARP, 2022), CFA Level 3 candidate, PGCBM from XLRI, a Master's in Computer Science, Six Sigma Green Belt, IBM Certified DB2 DBA, and Sun Certified Java Programmer — reflect three decades of hands-on systems engineering. He was recognized with the NTT Innovation Award as a top-40 global innovator. The same engineering discipline used on institutional trading floors runs this platform at one-operator scale, so what partners see in their statements is exactly what happened in the market.</p>
 
   </div>
 

@@ -23,8 +23,10 @@
 //                hardcoded assumption about what the copy says.
 //   2. Perf    — no login (public pages).
 //   3. Stale   — the "must not contain" assertions ARE the stale-code
-//                guard (old "founder"/"XLRI"/"CFA II"/"CFA Level III"
-//                wording can't silently creep back in).
+//                guard (old "founder"/"CFA II"/"CFA Level III" wording
+//                can't silently creep back in; XLRI/PGCBM is a real,
+//                operator-confirmed credential and is now a "must
+//                contain" assertion instead).
 //   4. Reuse   — same source-grep pattern as acu5195_removed.spec.js.
 //   5. UX      — checks the rendered page (not just source) so a build-
 //                time templating bug can't silently ship stale text.
@@ -47,10 +49,21 @@ test.describe('about page copy — source-level guards', () => {
     }
   });
 
-  test('about + landing: no "founder" wording (AVOID list — conflict of interest with Fidelity role)', () => {
-    for (const src of [aboutSrc(), landingSrc()]) {
-      expect(src, 'must not use "founder" wording').not.toMatch(/founder/i);
+  test('about page: Haritha Chikile is Founder, Ramana is never called "founder" (AVOID list — conflict of interest with Fidelity role)', () => {
+    const src = aboutSrc();
+    expect(src, 'about page must credit Haritha Chikile as Founder').toMatch(/Haritha Chikile/);
+    expect(src, 'about page must use "Founder" for Haritha Chikile').toMatch(/"Founder"|Founder, RamboQuant|"founder"/i);
+    // Ramana must never be described as "founder" — scan every sentence/JSON
+    // value that mentions his name and confirm "founder" isn't in it.
+    const ramanaMentions = src.match(/[^.\n{]*Ramana[^.\n}]*/g) || [];
+    for (const mention of ramanaMentions) {
+      expect(mention, `"founder" must not appear near a Ramana mention: "${mention.trim()}"`)
+        .not.toMatch(/founder/i);
     }
+  });
+
+  test('landing page: no "founder" wording (unchanged — founder mention lives on /about only)', () => {
+    expect(landingSrc(), 'landing page must not use "founder" wording').not.toMatch(/founder/i);
   });
 
   test('about + landing: no personal "active investing"/"hands-on trading" framing', () => {
@@ -69,13 +82,18 @@ test.describe('about page copy — source-level guards', () => {
       expect(src, 'must not say "CFA Level III" (was incorrect — candidate at Level 3, not a completed Level III)')
         .not.toMatch(/CFA Level III/);
       expect(src, 'must not say "CFA II" (was wrong level entirely)').not.toMatch(/CFA II\b/);
-      expect(src, 'must not mention XLRI/PGCBM (not on the canonical credentials list)')
-        .not.toMatch(/XLRI|PGCBM/);
+      // XLRI/PGCBM (Post Graduate Certificate in Business Management) is a
+      // real, operator-confirmed credential — reinstated after an earlier
+      // pass removed it as "not on the canonical list" before the operator
+      // clarified it should be kept.
+      expect(src, 'must mention XLRI (operator-confirmed credential, restored)')
+        .toMatch(/XLRI/);
     }
     const aboutOnly = aboutSrc();
     // Canonical credentials that MUST appear (verbatim per the plan).
     expect(aboutOnly).toMatch(/FRM \(GARP, 2022\)/);
     expect(aboutOnly).toMatch(/CFA Level 3 candidate/);
+    expect(aboutOnly).toMatch(/PGCBM/);
     expect(aboutOnly).toMatch(/Six Sigma Green Belt/);
     expect(aboutOnly).toMatch(/IBM Certified DB2 DBA/);
     expect(aboutOnly).toMatch(/Sun Certified Java Programmer/);
