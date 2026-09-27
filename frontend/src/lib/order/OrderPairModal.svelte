@@ -162,11 +162,11 @@
   .opm-close {
     display: inline-flex; align-items: center; justify-content: center;
     width: 1.4rem; height: 1.4rem;
-    background: transparent; border: 1px solid rgba(248,113,113,0.35);
+    background: var(--close-btn-danger-bg); border: 1px solid rgba(248,113,113,0.35);
     border-radius: 3px; color: var(--c-short); font-size: var(--fs-xl);
     line-height: 1; cursor: pointer; flex-shrink: 0; transition: background 0.1s;
   }
-  .opm-close:hover { background: rgba(248,113,113,0.15); }
+  .opm-close:hover { background: var(--close-btn-danger-bg-hover); }
   .opm-label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: rgba(160,185,220,0.7); }
   .opm-select {
     background: rgba(160,185,220,0.07); border: 1px solid rgba(160,185,220,0.2);

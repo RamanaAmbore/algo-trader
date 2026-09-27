@@ -1407,10 +1407,11 @@
   }
 
   .ip-modal-x {
-    background: transparent; border: 1px solid rgba(126, 151, 184, 0.30);
+    background: var(--close-btn-neutral-bg); border: 1px solid rgba(126, 151, 184, 0.30);
     color: var(--algo-slate); border-radius: 4px;
     width: 1.6rem; height: 1.6rem;
     font-size: 1.1rem; line-height: 1; cursor: pointer;
+    transition: background 0.1s;
   }
   .ip-modal-x:hover { background: rgba(248, 113, 113, 0.12); color: #fca5a5; }
 

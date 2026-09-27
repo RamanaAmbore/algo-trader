@@ -216,13 +216,13 @@
     position: absolute; top: 0.55rem; right: 0.8rem;
     width: 1.4rem; height: 1.4rem;
     display: inline-flex; align-items: center; justify-content: center;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: var(--c-short); font-size: var(--fs-xl); cursor: pointer; line-height: 1;
     transition: background 0.1s;
   }
-  .tour-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .tour-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   .tour-step-meta {
     display: flex; align-items: center; justify-content: space-between;

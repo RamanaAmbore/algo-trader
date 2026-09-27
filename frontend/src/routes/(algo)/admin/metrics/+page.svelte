@@ -535,14 +535,17 @@
   }
   .metrics-modal-ts { font-size: var(--fs-lg); color: var(--text-soft, #94a3b8); font-weight: 400; }
   .metrics-modal-close {
-    background: transparent;
+    background: var(--close-btn-neutral-bg);
     border: none;
+    border-radius: 3px;
     color: var(--text-soft, #94a3b8);
     font-size: 1.4rem;
     cursor: pointer;
     line-height: 1;
     padding: 0 0.4rem;
+    transition: background 0.1s;
   }
+  .metrics-modal-close:hover { background: var(--close-btn-neutral-bg-hover); }
   .metrics-modal-body {
     padding: 0.6rem 0.8rem;
     overflow: auto;

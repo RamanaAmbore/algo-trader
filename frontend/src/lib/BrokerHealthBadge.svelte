@@ -235,11 +235,11 @@
     color: var(--c-short);
     font-size: var(--fs-xl);
     cursor: pointer;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     transition: background 120ms;
     flex-shrink: 0;
   }
-  .bh-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .bh-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   /* ── Modal body — grid drives height via domLayout:autoHeight;
      max-height caps the body so the modal doesn't exceed the viewport ── */

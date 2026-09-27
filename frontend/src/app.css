@@ -104,6 +104,24 @@
   --algo-red-border-soft:  rgba(248, 113, 113, 0.30);
   --algo-red-border:       rgba(248, 113, 113, 0.55);
 
+  /* Close/dismiss icon-button fill — SSOT for the small "×" affordance
+     used by every modal, drawer, and popup close button. Operator
+     complaint (2026-09): the boxed close icons rendered as a bare
+     bordered outline with no fill until hovered, reading as "broken".
+     Fix: filled at REST too, stepping to a stronger tint on hover.
+     Reuses the existing red/cyan alpha ramps (--c-short-14/-22,
+     --algo-cyan-bg/-strong) rather than inventing new alpha values;
+     adds one small neutral ramp for close buttons whose accent
+     identity isn't danger/info (e.g. a slate-bordered utility modal).
+     Consumed by every `*-close` / `.modal-x` / `.algo-close-btn`
+     button — see frontend/e2e/algo_consistency.spec.js close-btn guard. */
+  --close-btn-danger-bg:        var(--c-short-14);          /* rgba(248,113,113,0.14) rest */
+  --close-btn-danger-bg-hover:  var(--c-short-22);          /* rgba(248,113,113,0.22) hover */
+  --close-btn-info-bg:          var(--algo-cyan-bg);        /* rgba(34,211,238,0.14) rest */
+  --close-btn-info-bg-hover:    var(--algo-cyan-bg-strong); /* rgba(34,211,238,0.22) hover */
+  --close-btn-neutral-bg:       rgba(126, 151, 184, 0.12);  /* rest — slate accent */
+  --close-btn-neutral-bg-hover: rgba(126, 151, 184, 0.20);  /* hover */
+
   /* Directional flash alpha variants — used by ltp-flash, tf-pnl, pnl-gain/loss */
   --algo-green-flash:      rgba(74, 222, 128, 0.35);   /* ltp-flash source pulse */
   --algo-green-cascade:    rgba(74, 222, 128, 0.13);   /* tf-pnl cascade pulse */
@@ -3085,7 +3103,9 @@ button:not(:disabled):active,
   width: 0.95rem;
   height: 0.95rem;
   padding: 0;
-  background: none;
+  /* Was borderless/transparent at rest — operator complaint (2026-09):
+     close icons should carry a fill at rest, not just on hover. */
+  background: var(--close-btn-danger-bg);
   border: 0;
   color: rgba(248, 113, 113, 0.85);
   font-family: monospace;
@@ -3096,7 +3116,7 @@ button:not(:disabled):active,
 }
 .chart-tooltip-close:hover {
   color: var(--c-short);
-  background: rgba(248, 113, 113, 0.12);
+  background: var(--close-btn-danger-bg-hover);
 }
 
 /* ── Canonical card button group ──────────────────────────────────────────

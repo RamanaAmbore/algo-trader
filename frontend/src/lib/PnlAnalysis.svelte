@@ -1321,15 +1321,19 @@
     margin: 0;
   }
   .modal-x {
-    background: transparent;
+    /* Was borderless/transparent at rest — operator complaint (2026-09):
+       close icons should carry a fill at rest, not just on hover. */
+    background: var(--close-btn-neutral-bg);
     border: none;
+    border-radius: 3px;
     color: var(--algo-muted);
     font-size: 1.1rem;
     cursor: pointer;
     line-height: 1;
     padding: 0 0.2rem;
+    transition: background 0.1s, color 0.1s;
   }
-  .modal-x:hover { color: var(--c-action); }
+  .modal-x:hover { color: var(--c-action); background: var(--close-btn-neutral-bg-hover); }
 
   .upload-hint {
     font-size: var(--fs-sm);

@@ -976,11 +976,11 @@
     line-height: 1;
     cursor: pointer;
     outline: none;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     transition: background 0.1s;
     flex-shrink: 0;
   }
-  .ps-bd-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .ps-bd-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   .ps-breakdown-overlay {
     position: fixed;

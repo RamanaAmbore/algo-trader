@@ -183,7 +183,7 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: transparent;
+    background: var(--close-btn-danger-bg);
     border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
     color: var(--c-short);
@@ -197,7 +197,7 @@
     z-index: 2;
     flex-shrink: 0;
   }
-  .cm-close:hover { background: rgba(248, 113, 113, 0.15); }
+  .cm-close:hover { background: var(--close-btn-danger-bg-hover); }
 
   .cm-body {
     overflow: hidden;

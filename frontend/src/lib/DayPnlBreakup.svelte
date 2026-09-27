@@ -224,8 +224,11 @@
     font-variant-numeric: tabular-nums;
   }
   .dpb-close {
-    background: transparent;
+    /* Was borderless/transparent at rest — operator complaint (2026-09):
+       close icons should carry a fill at rest, not just on hover. */
+    background: var(--close-btn-neutral-bg);
     border: none;
+    border-radius: 3px;
     /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     cursor: pointer;
@@ -233,8 +236,12 @@
     padding: 0.1rem 0.3rem;
     line-height: 1;
     margin-left: 0.25rem;
+    transition: background 0.1s, color 0.1s;
   }
-  .dpb-close:hover { color: color-mix(in srgb, var(--algo-slate) 90%, transparent); }
+  .dpb-close:hover {
+    background: var(--close-btn-neutral-bg-hover);
+    color: color-mix(in srgb, var(--algo-slate) 90%, transparent);
+  }
   .dpb-scroll {
     overflow: auto;
     flex: 1;
