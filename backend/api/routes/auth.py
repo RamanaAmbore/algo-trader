@@ -333,6 +333,20 @@ class ChangePasswordRequest(msgspec.Struct):
 _NAV_CACHE: dict = {"ts": 0.0, "value": None}
 _NAV_TTL_SEC = 30.0
 
+# Separate from _NAV_CACHE (which is TTL-gated and gets overwritten every
+# poll, success or failure): holds the last result _compute_firm_nav()
+# EVER computed without hitting the outer except block, no expiry. On a
+# hard failure (`_algo_compute_firm_nav()` or the holdings/positions
+# direct-fetch raising something unexpected — NOT the ordinary
+# one-account-degraded case, which `algo.nav.compute_firm_nav()` itself
+# now freezes to LKG and surfaces via `errors`), this is the
+# "last-known-good" value served instead of resetting firm_nav to a bare
+# 0.0 — see CLAUDE.md "Staleness indicator freeze rule". Mirrors
+# positions.py/holdings.py's LKG-substitution pattern at the auth.py
+# layer, which has no broker-level per-account attrs to inspect (this
+# function aggregates ACROSS accounts into one scalar).
+_NAV_LAST_GOOD: dict = {"ts": 0.0, "value": None}
+
 
 def _auth_nav_pnl_from_intraday(intraday_equity: object) -> "tuple[float, float, str]":
     """Extract (day_pnl, cum_pnl, as_of_iso) from the live intraday-equity deque.
@@ -489,8 +503,8 @@ async def _auth_nav_closed_hours_fallback(
         return _auth_nav_pnl_fallback(total_h, total_p, pos_pnl)
 
 
-async def _compute_firm_nav() -> tuple[float, float, float, str]:
-    """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso).
+async def _compute_firm_nav() -> tuple[float, float, float, str, bool]:
+    """Return (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, stale).
 
     Delegates to `backend.api.algo.nav.compute_firm_nav` so the NAV
     number rendered on NavCard stays in sync with the NAV grid TOTAL
@@ -506,6 +520,19 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
     when populated; off-hours falls back to the historical pattern
     (holdings.day_change + positions.pnl) so the NavCard P&L line
     keeps a useful number even when the live ticker is down.
+
+    `stale` (2026-09-27 council audit, Bug 1 live-serving-path
+    extension): True when either (a) `algo.nav.compute_firm_nav()`
+    itself reported per-account `errors` (a degraded-but-frozen leg —
+    the number is real, just partially stale), or (b) this function's
+    own outer try/except caught an unexpected failure, in which case
+    `firm_nav`/`firm_day_pnl`/`firm_cum_pnl` are the LAST successfully
+    computed values (`_NAV_LAST_GOOD`) rather than a fresh 0.0 — a hard
+    failure must never present as "the firm genuinely has ₹0 NAV" with
+    no signal to distinguish the two (CLAUDE.md "Staleness indicator
+    freeze rule"). `_NAV_LAST_GOOD` has no expiry (unlike `_NAV_CACHE`'s
+    30 s TTL) so a prolonged outage keeps serving the last good number,
+    still marked stale, rather than eventually decaying to 0.0.
     """
     import time
     now_ts = time.time()
@@ -527,6 +554,16 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
     firm_day_pnl = 0.0
     firm_cum_pnl = 0.0
     as_of_iso    = datetime.now(timezone.utc).isoformat()
+    nav_errors: list = []
+    # Narrower than nav_errors — only legs with NO last-known-good
+    # available anywhere (the number is actually wrong), not the
+    # broader "something was degraded but still froze to a real value"
+    # signal. See algo/nav.py's `_UNDERSTATED_TAG` docstring. Initialized
+    # here (not just inside the try) so `outer_failed or nav_understated`
+    # below is never at risk of a NameError regardless of exactly where
+    # in the try block a future edit might raise.
+    nav_understated: list = []
+    outer_failed = False
 
     try:
         # Canonical NAV from algo.nav.compute_firm_nav — same code the
@@ -534,6 +571,8 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
         # operator-visible per-account breakdown).
         snap = await _algo_compute_firm_nav()
         firm_nav = float(snap.get("nav") or 0.0)
+        nav_errors = list(snap.get("errors") or [])
+        nav_understated = list(snap.get("understated") or [])
 
         # Day / cum P&L still need the legacy holdings+positions
         # summary path for the fallback shape (the broker's per-row
@@ -596,8 +635,43 @@ async def _compute_firm_nav() -> tuple[float, float, float, str]:
             )
     except Exception as e:
         logger.warning(f"_compute_firm_nav: broker fetch failed: {e}")
+        outer_failed = True
 
-    result = (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso)
+    if outer_failed or nav_understated:
+        # Freeze to the last successfully computed figure instead of
+        # serving THIS call's own number — a hard failure (outer_failed)
+        # must never look like a genuine ₹0 firm NAV, and an understated
+        # compute (nav_understated non-empty — algo.nav.compute_firm_nav
+        # itself found a leg with NO last-known-good available anywhere,
+        # so ITS number is genuinely wrong) must not surface that wrong
+        # number just because this call technically didn't raise
+        # (2026-09-27 council audit follow-up: the common degraded case
+        # goes through algo.nav.compute_firm_nav()'s own internal
+        # per-phase try/except now, so it essentially never raises here
+        # any more — gating freeze on outer_failed alone left this, the
+        # MORE common path, completely unprotected). Cold start (never
+        # succeeded once) has nothing to freeze to; this call's own
+        # number is unavoidable there, but `stale` still signals the
+        # degradation either way.
+        last_good = _NAV_LAST_GOOD.get("value")
+        if last_good is not None:
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _ = last_good
+        stale = True
+    else:
+        stale = bool(nav_errors)
+        # Only remember this as "last good" when nothing is genuinely
+        # understated (2026-09-27 council audit follow-up) — an
+        # understated compute overwriting a better remembered value
+        # would mean a LATER hard failure freezes to the worse number
+        # instead of the true last-known-good one. An LKG-substituted-
+        # but-correct degradation (errors non-empty, understated empty)
+        # is still safe to remember.
+        _NAV_LAST_GOOD.update(
+            ts=now_ts,
+            value=(firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, stale),
+        )
+
+    result = (firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, stale)
     _NAV_CACHE.update(ts=now_ts, value=result)
     return result
 
@@ -1052,13 +1126,21 @@ class AuthController(Controller):
         repeated polls don't hammer the broker. Used by NavCard on the
         public /performance page so investors can see the live firm
         NAV without signing in. Designated/admin operators get the
-        same numbers plus their share via the authenticated /me/nav."""
-        firm_nav, firm_day_pnl, firm_cum_pnl, as_of = await _compute_firm_nav()
+        same numbers plus their share via the authenticated /me/nav.
+
+        `stale=True` signals a degraded computation (broker outage /
+        unexpected failure) — the figures are the last-known-good
+        values, not necessarily this instant's true numbers. Never
+        leak raw account codes on this unauthenticated endpoint; the
+        boolean is the full signal (see CLAUDE.md "Staleness indicator
+        freeze rule")."""
+        firm_nav, firm_day_pnl, firm_cum_pnl, as_of, stale = await _compute_firm_nav()
         return {
             "firm_nav":     round(firm_nav,     2),
             "firm_day_pnl": round(firm_day_pnl, 2),
             "firm_cum_pnl": round(firm_cum_pnl, 2),
             "as_of":        as_of,
+            "stale":        stale,
         }
 
     @get("/me/nav", guards=[jwt_guard])
@@ -1094,7 +1176,7 @@ class AuthController(Controller):
         share_pct: float  = float(row.share_pct or 0.0)
         contribution: float = float(row.contribution or 0.0)
 
-        firm_nav, firm_day_pnl, firm_cum_pnl, as_of = await _compute_firm_nav()
+        firm_nav, firm_day_pnl, firm_cum_pnl, as_of, stale = await _compute_firm_nav()
 
         share_nav     = firm_nav      * share_pct / 100
         share_day_pnl = firm_day_pnl  * share_pct / 100
@@ -1108,6 +1190,7 @@ class AuthController(Controller):
             "share_day_pnl":  round(share_day_pnl, 2),
             "share_cum_pnl":  round(share_cum_pnl, 2),
             "as_of":          as_of,
+            "stale":          stale,
         }
 
         # Designated + admin see firm-level figures + partner count

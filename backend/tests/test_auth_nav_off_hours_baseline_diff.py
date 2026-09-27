@@ -120,7 +120,7 @@ class TestAuthLiveSessionBaselineDiff:
             ) as mock_override_h,
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = asyncio.run(
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()
             )
 
@@ -174,7 +174,7 @@ class TestAuthLiveSessionBaselineDiff:
             ),
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = asyncio.run(
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()
             )
 
@@ -250,7 +250,7 @@ class TestAuthClosedHoursUsesSnapshotNotLiveFetch:
             ) as mock_hold_snap,
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = asyncio.run(
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()
             )
 
@@ -309,7 +309,7 @@ class TestAuthClosedHoursUsesSnapshotNotLiveFetch:
             ),
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = asyncio.run(
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()
             )
 
@@ -347,7 +347,7 @@ class TestAuthClosedHoursUsesSnapshotNotLiveFetch:
             ),
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = asyncio.run(
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = asyncio.run(
                 auth_mod._compute_firm_nav()
             )
 

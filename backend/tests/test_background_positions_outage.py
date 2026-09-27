@@ -269,7 +269,7 @@ class TestComputeFirmNavSurvivesPositionsOutage:
             patch("backend.api.background._intraday_equity", [deque_point]),
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = await auth_mod._compute_firm_nav()
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = await auth_mod._compute_firm_nav()
 
         assert firm_nav == pytest.approx(2_000_000.0)
         assert firm_day_pnl == pytest.approx(12345.0), (
@@ -303,7 +303,7 @@ class TestComputeFirmNavSurvivesPositionsOutage:
             patch("backend.api.routes.holdings._holdings_snapshot", return_value=None),
             patch("backend.api.algo.nav.compute_firm_nav", side_effect=_fake_compute_firm_nav),
         ):
-            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso = await auth_mod._compute_firm_nav()
+            firm_nav, firm_day_pnl, firm_cum_pnl, as_of_iso, _stale = await auth_mod._compute_firm_nav()
 
         # No exception raised — endpoint stays up. NAV itself is unaffected
         # (comes from a separate, already-outage-guarded code path).

@@ -113,6 +113,35 @@ def _reset_preflight_instruments_cache():
     _purge()
 
 
+def _reset_auth_nav_caches_if_loaded() -> None:
+    """Reset auth.py's `_NAV_CACHE` / `_NAV_LAST_GOOD` ONLY when that
+    module is already imported in this process — never imports it
+    ourselves. This autouse fixture runs before/after EVERY test in the
+    suite; unconditionally importing `backend.api.routes.auth` here
+    would force it (and its own import chain) onto every test module's
+    collection, a new import-order dependency this reset doesn't need to
+    introduce (the module-level dicts don't exist to leak until
+    something else has already imported auth.py)."""
+    mod = sys.modules.get("backend.api.routes.auth")
+    if mod is None:
+        return
+    mod._NAV_CACHE.update(ts=0.0, value=None)
+    mod._NAV_LAST_GOOD.update(ts=0.0, value=None)
+
+
+@pytest.fixture(autouse=True)
+def _reset_auth_nav_module_caches():
+    """`auth.py`'s `_NAV_CACHE` / `_NAV_LAST_GOOD` are module-level state
+    (2026-09-27 council audit) — without a global autouse reset, one
+    test's populated `_NAV_LAST_GOOD` can leak into ANY later test in the
+    same pytest process (not just within one test file) and mask a real
+    regression, since freeze-on-understated changes returned VALUES, not
+    only the `stale` flag. Reset before AND after every test."""
+    _reset_auth_nav_caches_if_loaded()
+    yield
+    _reset_auth_nav_caches_if_loaded()
+
+
 @pytest.fixture
 def stub_kite_connection():
     """
