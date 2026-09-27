@@ -41,7 +41,7 @@
         "Sun Certified Java Programmer"
       ]
     },
-    "foundingDate": "1998",
+    "foundingDate": "2024",
     "areaServed": "IN"
   })}<\/script>`}
 </svelte:head>
