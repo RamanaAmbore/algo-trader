@@ -591,9 +591,24 @@ async def compute_firm_nav() -> dict:
     hold_by_acct: dict[str, float] = {}
 
     await _resolve_conn_keys()   # side-effects: ensures registry populated
-    cash_total     = await _fetch_funds_phase(accounts_in, errors, cash_by_acct)
-    positions_mtm  = await _fetch_positions_phase(accounts_in, errors, pos_by_acct)
-    holdings_mtm   = await _fetch_holdings_phase(accounts_in, errors, _ticker, hold_by_acct)
+    # Fire all three broker phases concurrently instead of sequentially —
+    # each phase does its own broker round-trip (funds/positions/holdings),
+    # and running them one-after-another made compute_firm_nav() pay the
+    # SUM of three round-trips on a cold cache, while the frontend's own
+    # separate funds/positions/holdings requests fetch in parallel and
+    # only pay one each. Operator: "loading firm nav takes more time in
+    # performance page. the other grid elements are loaded fast."
+    # Safe to parallelize: each phase mutates its own by-account dict
+    # (cash_by_acct/pos_by_acct/hold_by_acct); accounts_in/errors are
+    # shared lists appended to by all three, but asyncio's single-threaded
+    # cooperative scheduling makes list.append/_merge_accounts's
+    # membership-check-then-append atomic between await points — no true
+    # preemption occurs mid-statement.
+    cash_total, positions_mtm, holdings_mtm = await asyncio.gather(
+        _fetch_funds_phase(accounts_in, errors, cash_by_acct),
+        _fetch_positions_phase(accounts_in, errors, pos_by_acct),
+        _fetch_holdings_phase(accounts_in, errors, _ticker, hold_by_acct),
+    )
 
     nav = cash_total + positions_mtm + holdings_mtm
 

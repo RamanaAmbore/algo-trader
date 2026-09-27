@@ -239,3 +239,72 @@ class TestComputeFirmNavByAccountInvariant:
         assert dh["cash"] == pytest.approx(20000.0, abs=0.01)
         assert dh["pos_m2m"] == pytest.approx(500.0, abs=0.01)
         assert dh["holdings_mtm"] == pytest.approx(0.0, abs=0.01)
+
+
+class TestComputeFirmNavPhasesRunConcurrently:
+    """Regression guard for the 2026-09-27 perf fix: compute_firm_nav()'s
+    three broker phases (funds/positions/holdings) used to run as three
+    sequential `await`s, so a cold cache paid the SUM of three broker
+    round-trips — while the frontend's separate funds/positions/holdings
+    HTTP requests fetch in parallel and each pay only one. Operator:
+    "loading firm nav takes more time in performance page. the other grid
+    elements are loaded fast." Fixed by firing all three via
+    `asyncio.gather()`. This test proves the fix structurally: three
+    phases that each sleep 0.2s must complete in ~0.2s total, not ~0.6s.
+    """
+
+    @pytest.mark.asyncio
+    async def test_three_broker_phases_overlap_not_sum(self):
+        import time
+
+        delay = 0.2
+
+        # These are called via `asyncio.to_thread(fetch_X)` in the real code
+        # (a SYNCHRONOUS callable run in a worker thread), not awaited
+        # directly — so the mocks must be plain sync functions using
+        # time.sleep, not async def + asyncio.sleep. An earlier version of
+        # this test used async mocks, which asyncio.to_thread just wrapped
+        # into an unawaited coroutine object (silently returned as the
+        # "result" without ever sleeping) — the test passed, but for the
+        # wrong reason, since the delay never actually happened.
+        def _slow_margins(*_a, **_kw):
+            time.sleep(delay)
+            return [pd.DataFrame([{"account": "ZG0790", "avail opening_balance": 1000.0, "util option_premium": 0.0}])]
+
+        def _slow_positions(*_a, **_kw):
+            time.sleep(delay)
+            return [pd.DataFrame([{"account": "ZG0790", "symbol": "X", "quantity": 0.0, "unrealised": 0.0, "realised": 0.0}])]
+
+        def _slow_holdings(*_a, **_kw):
+            time.sleep(delay)
+            return [pd.DataFrame([{"account": "ZG0790", "tradingsymbol": "Y", "opening_quantity": 0.0, "cur_val": 0.0}])]
+
+        with patch(
+            "backend.api.algo.nav._resolve_conn_keys", new=AsyncMock(return_value=["ZG0790"]),
+        ), patch(
+            "backend.api.helpers.snapshot_gate._any_segment_open", return_value=True,
+        ), patch(
+            "backend.brokers.broker_apis.fetch_margins", side_effect=_slow_margins,
+        ), patch(
+            "backend.brokers.broker_apis.fetch_positions", side_effect=_slow_positions,
+        ), patch(
+            "backend.api.helpers.snapshot_gate.is_exchange_closed_now", return_value=False,
+        ), patch(
+            "backend.brokers.broker_apis.fetch_holdings", side_effect=_slow_holdings,
+        ), patch(
+            "backend.brokers.kite_ticker.get_ticker", return_value=MagicMock(get_ltp_by_sym=MagicMock(return_value=None)),
+        ):
+            t0 = time.monotonic()
+            await compute_firm_nav()
+            elapsed = time.monotonic() - t0
+
+        # Sequential would take ~3*delay (0.6s); concurrent takes ~1*delay
+        # (0.2s) plus scheduling overhead. Assert well under the halfway
+        # point between the two so this fails loudly if it regresses back
+        # to sequential awaits.
+        assert elapsed < delay * 2, (
+            f"compute_firm_nav() took {elapsed:.3f}s for 3 phases each "
+            f"sleeping {delay}s — expected ~{delay:.3f}s (concurrent), "
+            f"not ~{delay * 3:.3f}s (sequential). Phases may have regressed "
+            f"back to sequential awaits."
+        )
