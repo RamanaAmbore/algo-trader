@@ -698,7 +698,7 @@ If anything looks off in LIVE mode, flip the navbar dropdown back to PAPER. The 
 
 Most settings update on the next agent tick (5-minute cadence). A few are special-cased:
 
-- **`performance.refresh_interval`** / **`performance.market_refresh_time`** — picked up live by the background loop.
+- **`performance.refresh_interval`** — picked up live by the background loop. (`performance.market_refresh_time` is retired as of the 2026-09 market/news refresh rework — the market summary now regenerates from a shared 05:30 IST daily trigger, not an independently configured clock.)
 - **`alerts.*`** — applied next time `run_cycle` fires.
 - **`execution.paper_trading_mode`** / **`execution.shadow_mode`** — applied at the next mode-resolution call (effectively immediately).
 
