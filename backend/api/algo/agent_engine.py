@@ -65,8 +65,17 @@ def _maybe_reset_v2_state(today, *, live: bool = True):
     today), which would otherwise compare unequal to the real
     `_V2_LAST_RESET_DATE` set by `_v2_hydrate_latch()` and wipe the
     just-hydrated LIVE latch on the very next sim/replay tick. Only a
-    real live cycle may mutate `_V2_LAST_RESET_DATE` / clear
-    `_V2_LATCH`."""
+    real live cycle may mutate `_V2_LAST_RESET_DATE` / trigger THIS
+    function's wholesale `_V2_LATCH.clear()`.
+
+    This function is only ONE of two places `_V2_LATCH` can be mutated
+    — the other is the per-key recovery/escalation-gate store selection
+    in `_ae_cycle_eval_and_buffer` / `_cycle_maybe_buffer_fire`, which
+    has its OWN separate `sim_mode or replay_mode` guard (store
+    selection, not this function's `live` flag) routing sim/replay
+    reads+writes to the isolated `alert_state['_sim_latch']` instead.
+    Both guards must hold for "a sim/replay tick never touches the live
+    latch" to actually be true system-wide."""
     global _V2_LAST_RESET_DATE
     if not live:
         return
@@ -222,7 +231,14 @@ def _hydrate_latch_from_rows(rows, today) -> None:
     reset (`_maybe_reset_v2_state`) wipes the latch at day-start, so a
     stale prior-day entry must never survive into hydration. Split out
     from `_v2_hydrate_latch` (the DB-querying wrapper) so this can be
-    unit-tested with plain tuples — no DB session needed."""
+    unit-tested with plain tuples — no DB session needed.
+
+    Rows carrying `detail['replay_mode'] = True` are also skipped — replay
+    ticks are logged with `sim_mode=False` (deliberately distinct from
+    real sim runs), so the SQL-level `AgentEvent.sim_mode.is_(False)`
+    hydration query filter alone does not exclude them; this is the
+    Python-side backstop that does (see `_v2_build_evalresult` /
+    `_ae_dispatch_suppressed_entry`, which stamp the marker at write time)."""
     import json as _json
     from zoneinfo import ZoneInfo
     _ist = ZoneInfo("Asia/Kolkata")
@@ -234,6 +250,8 @@ def _hydrate_latch_from_rows(rows, today) -> None:
         try:
             detail = _json.loads(detail_raw) if isinstance(detail_raw, str) else detail_raw
         except Exception:
+            continue
+        if detail.get('replay_mode'):
             continue
         for m in (detail.get('matches') or []):
             if m.get('value') is None:
@@ -627,10 +645,21 @@ def _v2_baseline_live(alert_state, now, offset_min: float) -> bool:
     return (now - start) >= timedelta(minutes=offset_min)
 
 
-def _v2_build_evalresult(matches, agent_name: str) -> EvalResult:
+def _v2_build_evalresult(matches, agent_name: str, *, replay_mode: bool = False) -> EvalResult:
     """
     Wrap v2 matches into an EvalResult so the existing dispatch() function
     (which renders the Telegram/email body) can consume them unchanged.
+
+    `replay_mode` is stamped into `detail` (not just threaded through
+    `sim_mode`) so `_hydrate_latch_from_rows` can positively identify and
+    skip replay-authored agent_events rows on process restart — replay
+    ticks pass `sim_mode=False` (deliberately distinct from real sim
+    runs, see `_cycle_process_agent`), so the SQL-level
+    `AgentEvent.sim_mode.is_(False)` hydration filter alone does NOT
+    exclude them. Piggybacking on `detail` (JSON, no migration needed)
+    rather than changing what `sim_mode` means for dispatch()/actions —
+    that would also flip replay's alert-banner/action-execution
+    behavior, a materially larger and separate change than this fix.
     """
     # Compact one-liner per match: "scope metric=value (threshold)"
     lines = []
@@ -647,10 +676,13 @@ def _v2_build_evalresult(matches, agent_name: str) -> EvalResult:
     if len(matches) > 10:
         lines.append(f"... +{len(matches) - 10} more")
     condition_text = " | ".join(lines) or agent_name
+    detail: dict = {'matches': matches, 'grammar': 'v2'}
+    if replay_mode:
+        detail['replay_mode'] = True
     return EvalResult(
         triggered=bool(matches),
         condition_text=condition_text,
-        detail={'matches': matches, 'grammar': 'v2'},
+        detail=detail,
     )
 
 
@@ -1902,6 +1934,7 @@ def _cycle_maybe_buffer_fire(
     broadcast_fn,
     debounce_min: int,
     pending_dispatches: list,
+    replay_mode: bool = False,
 ) -> bool:
     """Evaluate the per-key re-alert escalation gate and, when the agent
     fires, buffer a dispatch entry.
@@ -1917,9 +1950,13 @@ def _cycle_maybe_buffer_fire(
 
     `bypass_suppression` means "fire on every match, ignore the latch
     entirely" (isolated single-agent sim runs). Otherwise the escalation
-    gate always applies — sim runs use an ISOLATED per-simulation store
-    (`alert_state['_sim_latch']`) rather than the live module-level
-    `_V2_LATCH`, so a sim/backtest never corrupts real re-alert timing.
+    gate always applies — sim AND replay runs use an ISOLATED
+    per-simulation store (`alert_state['_sim_latch']`) rather than the
+    live module-level `_V2_LATCH`, so neither a sim run nor a replay/
+    backtest tick ever corrupts real re-alert timing. Replay passes
+    `sim_mode=False` (deliberately distinct — see `_cycle_process_agent`)
+    but must still route through the isolated store, hence the separate
+    `replay_mode` flag rather than folding it into `sim_mode` itself.
     """
     if not matches:
         return False
@@ -1927,14 +1964,14 @@ def _cycle_maybe_buffer_fire(
         effective = matches
     else:
         cooldown_min = getattr(agent, 'cooldown_minutes', None) or cfg['cooldown_min']
-        store = alert_state.setdefault('_sim_latch', {}) if sim_mode else None
+        store = alert_state.setdefault('_sim_latch', {}) if (sim_mode or replay_mode) else None
         effective = _v2_apply_escalation_gate(
             agent, matches, now, cooldown_min, store=store,
         )
     if not effective:
         return False
 
-    result = _v2_build_evalresult(matches, agent.name)
+    result = _v2_build_evalresult(matches, agent.name, replay_mode=replay_mode)
     # Only cosmetic-/notify-only tiers get the "Scheduled — HH:MM IST" label.
     # Critical/high/medium fire_at_time agents (e.g. expiry-day auto-close) emit
     # their real condition text so operators know what condition actually fired.
@@ -1951,6 +1988,7 @@ def _cycle_maybe_buffer_fire(
         'matches':         matches,
         'result':          result,
         'sim_mode':        sim_mode,
+        'replay_mode':     replay_mode,
         'alert_state':     alert_state,
         'bypass_schedule': bypass_schedule,
         'new_status':      new_status,
@@ -2098,6 +2136,7 @@ async def _ae_cycle_eval_and_buffer(
     bypass_schedule: bool, bypass_suppression: bool,
     broadcast_fn, pending_dispatches: list,
     in_cooldown: bool = False,
+    replay_mode: bool = False,
 ) -> None:
     """Evaluate condition tree, apply debounce/lifespan gates, buffer fires.
 
@@ -2122,7 +2161,14 @@ async def _ae_cycle_eval_and_buffer(
     # stuck in cooldown never cleared a recovered latch until the
     # cooldown window itself elapsed.
     if not bypass_suppression:
-        store = alert_state.setdefault('_sim_latch', {}) if sim_mode else None
+        # sim OR replay routes through the isolated store — replay
+        # passes sim_mode=False (deliberately distinct, see
+        # _cycle_process_agent), so sim_mode alone under-selects here;
+        # without replay_mode a replay tick would run recovery against
+        # the LIVE _V2_LATCH using historical values, clearing a real
+        # breach's latch (next live tick re-fires as a duplicate) or
+        # wrongly suppressing one.
+        store = alert_state.setdefault('_sim_latch', {}) if (sim_mode or replay_mode) else None
         _v2_apply_recovery(agent, observations, store=store)
 
     if in_cooldown:
@@ -2149,6 +2195,7 @@ async def _ae_cycle_eval_and_buffer(
         broadcast_fn=broadcast_fn,
         debounce_min=debounce_min,
         pending_dispatches=pending_dispatches,
+        replay_mode=replay_mode,
     )
 
     if not bypass_schedule and not triggered:
@@ -2212,6 +2259,7 @@ async def _cycle_process_agent(
         bypass_schedule=bypass_schedule, bypass_suppression=bypass_suppression,
         broadcast_fn=broadcast_fn, pending_dispatches=pending_dispatches,
         in_cooldown=in_cooldown,
+        replay_mode=replay_mode,
     )
 
 
@@ -2322,15 +2370,26 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
 
     No push notification or action execution. Extracted from
     _cycle_dispatch_survivors to reduce CC there."""
-    agent      = entry['agent']
-    result     = entry['result']
-    sim_mode_p = entry['sim_mode']
-    matches_   = entry.get('matches') or []
-    supp_by    = suppressed_ids[agent.id]
-    topic      = getattr(agent, 'topic', 'general')
+    agent        = entry['agent']
+    result       = entry['result']
+    sim_mode_p   = entry['sim_mode']
+    replay_mode_p = entry.get('replay_mode', False)
+    matches_     = entry.get('matches') or []
+    supp_by      = suppressed_ids[agent.id]
+    topic        = getattr(agent, 'topic', 'general')
     detail_text = (
         f"Suppressed by higher-tier agent '{supp_by}' in topic '{topic}'."
     )
+    detail: dict = {'matches': matches_,
+                    'suppressed_by': supp_by,
+                    'topic': topic,
+                    'tier':  getattr(agent, 'tier', 'medium')}
+    if replay_mode_p:
+        # Same marker _v2_build_evalresult stamps for the survivor path
+        # — _hydrate_latch_from_rows checks this to skip replay-authored
+        # rows on restart (replay passes sim_mode=False, so the SQL-level
+        # AgentEvent.sim_mode.is_(False) filter alone does not exclude them).
+        detail['replay_mode'] = True
     try:
         await log_event(
             agent, 'triggered_suppressed',
@@ -2342,10 +2401,7 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
             # suppressed fire hydrates as an empty latch — a standing
             # breach that was suppressed (not silenced by recovery) would
             # incorrectly appear "never fired" after a deploy.
-            detail={'matches': matches_,
-                    'suppressed_by': supp_by,
-                    'topic': topic,
-                    'tier':  getattr(agent, 'tier', 'medium')},
+            detail=detail,
             sim_mode=sim_mode_p,
         )
     except Exception as _le:
@@ -2439,7 +2495,10 @@ async def _cycle_dispatch_survivors(
             # never silently drops a row the operator would otherwise see.
             entry = dict(entry)
             entry['matches'] = list(entry['matches']) + extra
-            entry['result'] = _v2_build_evalresult(entry['matches'], agent.name)
+            entry['result'] = _v2_build_evalresult(
+                entry['matches'], agent.name,
+                replay_mode=entry.get('replay_mode', False),
+            )
         await _ae_dispatch_survivor_entry(entry, now, context, broadcast_fn)
 
 

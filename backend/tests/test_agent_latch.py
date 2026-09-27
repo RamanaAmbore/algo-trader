@@ -58,9 +58,12 @@ class _Agent:
     def __init__(self, id=1, slug="test-agent", tier="medium", topic="general", actions=None):
         self.id = id
         self.slug = slug
+        self.name = slug
         self.tier = tier
         self.topic = topic
         self.actions = actions or []
+        self.status = "active"
+        self.trigger_count = 0
 
 
 def _m(metric="day_val", scope="positions.total", account="TOTAL",
@@ -597,5 +600,183 @@ class TestCooldownDoesNotBlockRecovery:
 
             mock_debounce.assert_called_once()
             mock_buffer_fire.assert_called_once()
+        finally:
+            agent_engine._V2_LATCH.clear()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Replay ticks must never touch the LIVE latch (sim_mode=False,
+#  replay_mode=True combination — the exact untested combination the audit
+#  flagged)
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestReplayModeNeverTouchesLiveLatch:
+    """Replay driver passes sim_mode=False, replay_mode=True (deliberately
+    distinct from a real sim run) — pre-fix, `store = ... if sim_mode
+    else None` under-selected on replay_mode alone being True, so every
+    replay tick ran recovery/escalation directly against the LIVE
+    _V2_LATCH using historical values: it could clear a real breach's
+    latch (next live tick re-fires as a duplicate) or wrongly suppress
+    one. Fix: `sim_mode or replay_mode` at both call sites."""
+
+    @pytest.mark.asyncio
+    async def test_recovery_pass_uses_isolated_store_for_replay(self):
+        """_ae_cycle_eval_and_buffer's recovery pass must route replay
+        ticks to alert_state['_sim_latch'], never _V2_LATCH."""
+        agent_engine._V2_LATCH.clear()
+        agent = _Agent(id=11, slug="loss-replay-acct", tier="medium", topic="pnl_loss")
+
+        recovered_obs = _m(
+            metric="day_val", account="ZD1234", op="<=",
+            threshold=-30000, value=-1000,
+        )
+        recovered_obs["fired"] = False
+        key = _latch_key(agent.slug, recovered_obs)
+        # Seed BOTH the live latch AND an isolated replay store with a
+        # standing breach for the SAME key — proves which one recovery
+        # actually mutates (only the isolated one should clear).
+        agent_engine._V2_LATCH[key] = {"ts": _now(), "val": -31000}
+        alert_state: dict = {
+            "replay_mode": True,
+            "_sim_latch": {key: {"ts": _now(), "val": -31000}},
+        }
+
+        try:
+            with patch.object(
+                agent_engine, "_cycle_evaluate_agent",
+                return_value=([], [recovered_obs]),
+            ), patch.object(
+                agent_engine, "_cycle_apply_debounce",
+                return_value=([], None, False),
+            ), patch.object(
+                agent_engine, "_cycle_maybe_buffer_fire",
+            ):
+                await agent_engine._ae_cycle_eval_and_buffer(
+                    agent, context={}, cfg={"baseline_offset_min": 15},
+                    now=_now(),
+                    alert_state=alert_state, sim_mode=False,
+                    bypass_schedule=True, bypass_suppression=False,
+                    broadcast_fn=None, pending_dispatches=[],
+                    in_cooldown=False,
+                    replay_mode=True,
+                )
+
+            assert key in agent_engine._V2_LATCH, (
+                "A replay tick's recovery pass must NEVER mutate the "
+                "LIVE _V2_LATCH — the real breach's latch must survive "
+                "untouched"
+            )
+            assert key not in alert_state["_sim_latch"], (
+                "Recovery for a replay tick must clear the recovered key "
+                "from the isolated alert_state['_sim_latch'] store, "
+                "proving that store (not _V2_LATCH) was actually used"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+
+    def test_escalation_gate_uses_isolated_store_for_replay(self):
+        """_cycle_maybe_buffer_fire's escalation-gate store selection
+        must also route replay ticks to the isolated store."""
+        agent_engine._V2_LATCH.clear()
+        agent = _Agent(id=12, slug="loss-replay-acct-2", tier="medium", topic="pnl_loss")
+        match = _m(metric="day_val", account="ZD9999", op="<=",
+                   threshold=-30000, value=-45000)
+        alert_state: dict = {"replay_mode": True}
+        pending_dispatches: list = []
+
+        try:
+            fired = agent_engine._cycle_maybe_buffer_fire(
+                agent, [match],
+                now=_now(),
+                bypass_suppression=False,
+                bypass_schedule=True,
+                sim_mode=False,
+                alert_state=alert_state,
+                cfg={"cooldown_min": 30},
+                broadcast_fn=None,
+                debounce_min=0,
+                pending_dispatches=pending_dispatches,
+                replay_mode=True,
+            )
+            assert fired is True
+            key = _latch_key(agent.slug, match)
+            assert key not in agent_engine._V2_LATCH, (
+                "A replay tick's escalation gate must never write into "
+                "the LIVE _V2_LATCH"
+            )
+            assert key in alert_state.get("_sim_latch", {}), (
+                "Escalation gate for a replay tick must write into the "
+                "isolated store instead"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+
+    def test_v2_build_evalresult_stamps_replay_marker(self):
+        matches = [_m(metric="day_val", account="ZD1234", value=-40000)]
+        result = agent_engine._v2_build_evalresult(
+            matches, "loss-replay-acct", replay_mode=True,
+        )
+        assert result.detail.get("replay_mode") is True
+
+    def test_v2_build_evalresult_no_marker_when_not_replay(self):
+        matches = [_m(metric="day_val", account="ZD1234", value=-40000)]
+        result = agent_engine._v2_build_evalresult(matches, "loss-live-acct")
+        assert "replay_mode" not in result.detail
+
+    @pytest.mark.asyncio
+    async def test_suppressed_dispatch_stamps_replay_marker_in_detail(self):
+        agent = _Agent(id=13, slug="loss-replay-suppressed", tier="low", topic="pnl_loss")
+        matches = [_m(metric="day_val", account="ZD5555", value=-40000)]
+        entry = {
+            'agent': agent,
+            'matches': matches,
+            'result': MagicMock(condition_text="day_val <= -30000"),
+            'sim_mode': False,
+            'replay_mode': True,
+        }
+        captured = {}
+
+        async def _fake_log_event(agent_, event_type, text, detail=None, sim_mode=False):
+            captured['detail'] = detail
+
+        with patch.object(agent_engine, "log_event", new=_fake_log_event):
+            await _ae_dispatch_suppressed_entry(entry, {13: "loss-critical-acct"}, None)
+
+        assert captured['detail'].get('replay_mode') is True
+
+    def test_hydrate_skips_rows_marked_replay_mode(self):
+        """The Python-side backstop: even if a replay-authored row somehow
+        reached the hydration query (SQL sim_mode=False filter doesn't
+        exclude it), the detail-level marker must still keep it out of
+        the live latch."""
+        agent_engine._V2_LATCH.clear()
+        ts = datetime(2026, 9, 20, 9, 45, 0, tzinfo=timezone.utc)
+        detail = json.dumps({
+            'matches': [_m(metric="day_val", account="ZD1234", value=-31000)],
+            'replay_mode': True,
+        })
+        try:
+            _hydrate_latch_from_rows([("loss-positions-acct", detail, ts)], today=ts.date())
+            key = _latch_key("loss-positions-acct", _m(metric="day_val", account="ZD1234"))
+            assert key not in agent_engine._V2_LATCH, (
+                "A row carrying detail['replay_mode']=True must be skipped "
+                "during hydration — replay fires log sim_mode=False, so the "
+                "SQL-level filter alone does not exclude them"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+
+    def test_hydrate_still_loads_normal_live_rows(self):
+        """Regression guard — rows without the replay marker are
+        unaffected by this change."""
+        agent_engine._V2_LATCH.clear()
+        ts = datetime(2026, 9, 20, 9, 45, 0, tzinfo=timezone.utc)
+        detail = json.dumps({
+            'matches': [_m(metric="day_val", account="ZD1234", value=-31000)],
+        })
+        try:
+            _hydrate_latch_from_rows([("loss-positions-acct", detail, ts)], today=ts.date())
+            key = _latch_key("loss-positions-acct", _m(metric="day_val", account="ZD1234"))
+            assert key in agent_engine._V2_LATCH
         finally:
             agent_engine._V2_LATCH.clear()
