@@ -1932,6 +1932,12 @@
   }
   @media (max-width: 600px) {
     .pub-page-heading { font-size: 1.1rem; margin-bottom: 1rem; }
+    /* Operator: hero title's clamp(1.3rem, 4vw, 1.75rem) floors flat at
+       1.3rem on phone widths (4vw < 1.3rem below ~520px) — too large
+       relative to the header's compact logo lockup. Match the same
+       1.1rem mobile floor already used by .pub-page-heading, so the
+       two heading tiers scale down consistently together. */
+    .pub-hero-title { font-size: 1.1rem; }
   }
   .pub-section-heading {
     font-size: 1rem;
