@@ -588,7 +588,13 @@
     // row-filter live (per-account view stays meaningful).
     mkWeightPctCol({ RA: '', numericHdr, pctFmtGrid, getTotalCurVal: () => _holdingsTotalCurVal }),
     { field: 'cur_val',               headerName: 'Value',  width: 88, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
-    { field: 'account',               headerName: 'Account',  width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    // Account is the TRAILING column here (operator moved it off the
+    // lead per the "action-first" ordering above) — per the first-
+    // column-only decoration rule (2026-09, operator sign-off), the
+    // per-account stripe/tint (acctFill/ag-col-acct + acctCellStyle's
+    // --acct-stripe) is reserved for grids where Account leads. Renders
+    // as a plain cell here; acctCellRenderer stays for mask logic only.
+    { field: 'account',               headerName: 'Account',  width: 76, cellRenderer: acctCellRenderer },
   ];
 
   // Positions summary — Account leads (operator: "in summary keep the
@@ -731,7 +737,13 @@
     // equity rows from polluting the option column.
     mkDeltaCol({ RA: pnlCls, numericHdr }),
     mkThetaCol({ RA: pnlCls, numericHdr, aggFmtGrid }),
-    { field: 'account',       headerName: 'Account',   width: 76, cellClass: acctFill, headerClass: acctFill, cellRenderer: acctCellRenderer, cellStyle: acctCellStyle },
+    // Account is the TRAILING column here (matches holdingsCols above) —
+    // per the first-column-only decoration rule (2026-09, operator
+    // sign-off), the per-account stripe/tint (acctFill/ag-col-acct +
+    // acctCellStyle's --acct-stripe) is reserved for grids where Account
+    // leads. Renders as a plain cell here; acctCellRenderer stays for
+    // mask logic only.
+    { field: 'account',       headerName: 'Account',   width: 76, cellRenderer: acctCellRenderer },
   ]);
 
   // Order: Net (broker's account value, renamed avail_margin in

@@ -810,6 +810,65 @@ test.describe('algo consistency — first-column-only decoration (source)', () =
     expect(body, 'trailing Account column must not carry ag-col-acct').not.toContain('ag-col-acct');
     expect(body, 'trailing Account column must not inject --acct-color').not.toContain('--acct-color');
   });
+
+  /**
+   * PerformancePage.svelte (public /performance page — cream theme) has
+   * six colDef arrays. Four (holdingsSummaryCols, positionsSummaryCols,
+   * fundsCols, navCols) already carry Account as the FIRST column and
+   * correctly keep the isolated --acct-stripe / :global(.ag-col-acct)
+   * mechanism (PerformancePage.svelte's own scoped <style>, NOT app.css —
+   * distinct from the shared ag-theme-algo .ag-col-acct rule audited
+   * above). The other two (holdingsCols, positionsCols) moved Account to
+   * the TRAILING column per an earlier "action-first" operator request,
+   * yet kept applying the stripe/tint — a confirmed defect, fixed with
+   * operator sign-off (2026-09). Verifies the fix landed on exactly the
+   * two trailing-Account sets and did not regress the four leading ones.
+   */
+  function _extractColsArraySource(src, arrayName, opts = {}) {
+    const { derived = false } = opts;
+    const re = derived
+      ? new RegExp(`const ${arrayName} = \\$derived\\(\\[([\\s\\S]*?)\\n  \\]\\);`)
+      : new RegExp(`const ${arrayName} = \\[([\\s\\S]*?)\\n  \\];`);
+    const m = src.match(re);
+    expect(m, `${arrayName} colDef array not found`).not.toBeNull();
+    return m[1];
+  }
+
+  test('PerformancePage: holdingsCols/positionsCols (Account trailing) carry no stripe/tint', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/PerformancePage.svelte'), 'utf-8');
+
+    for (const [arrayName, derived] of [['holdingsCols', false], ['positionsCols', true]]) {
+      const body = _extractColsArraySource(src, arrayName, { derived });
+      const acctFieldMatch = body.match(/\{\s*field:\s*'account'[\s\S]*?\}/);
+      expect(acctFieldMatch, `${arrayName}: account colDef not found`).not.toBeNull();
+      const acctDef = acctFieldMatch[0];
+      expect(acctDef, `${arrayName}.account must not carry acctFill`).not.toMatch(/cellClass:\s*acctFill/);
+      expect(acctDef, `${arrayName}.account must not carry ag-col-acct`).not.toContain('ag-col-acct');
+      expect(acctDef, `${arrayName}.account must not inject --acct-stripe via acctCellStyle`)
+        .not.toMatch(/cellStyle:\s*acctCellStyle/);
+      // acctCellRenderer stays — it only handles the mask-string passthrough,
+      // not colour identity.
+      expect(acctDef, `${arrayName}.account should keep acctCellRenderer (mask logic)`)
+        .toMatch(/cellRenderer:\s*acctCellRenderer/);
+    }
+  });
+
+  test('PerformancePage: holdingsSummaryCols/positionsSummaryCols/fundsCols/navCols (Account first) keep the stripe', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/PerformancePage.svelte'), 'utf-8');
+
+    for (const arrayName of ['holdingsSummaryCols', 'positionsSummaryCols', 'fundsCols', 'navCols']) {
+      const body = _extractColsArraySource(src, arrayName);
+      // Account must be the first colDef *object* in the array — skip
+      // leading comment lines when finding it.
+      const firstBraceIdx = body.indexOf('{');
+      expect(firstBraceIdx, `${arrayName}: no colDef object found`).toBeGreaterThanOrEqual(0);
+      const firstEntry = body.slice(firstBraceIdx).match(/\{[\s\S]*?\}/)[0];
+      expect(firstEntry, `${arrayName}: first colDef object`).toMatch(/field:\s*'account'/);
+      expect(firstEntry, `${arrayName}.account must keep acctFill`).toMatch(/cellClass:\s*acctFill/);
+      expect(firstEntry, `${arrayName}.account must keep acctCellStyle (--acct-stripe)`)
+        .toMatch(/cellStyle:\s*acctCellStyle/);
+    }
+  });
 });
 
 test.describe.serial('algo consistency — first-column-only decoration (live)', () => {
@@ -967,5 +1026,109 @@ test.describe.serial('algo consistency — first-column-only decoration (live)',
     const hasTintClass = await optionLike.first().evaluate((el) =>
       el.classList.contains('sym-ce') || el.classList.contains('sym-pe'));
     expect(hasTintClass, 'right-grid option symbol must NOT carry sym-ce/sym-pe (not first column)').toBe(false);
+  });
+});
+
+/* ── PerformancePage (public /performance) — first-column-only decoration,
+ * live checks (2026-09 fix, operator sign-off) ────────────────────────
+ * No login required — /performance is the public page. Best-effort: skip
+ * (not fail) when no live row data is present (e.g. idle Sunday session,
+ * empty demo account). The deterministic gate is the source-level test
+ * above; these confirm the computed style actually matches. ───────────── */
+test.describe.serial('algo consistency — PerformancePage account decoration (live)', () => {
+  test.setTimeout(60_000);
+
+  /** Reads border-left-width/-color off a locator's first match. */
+  async function readAcctBorder(locator) {
+    return locator.first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { borderLeftWidth: cs.borderLeftWidth, borderLeftColor: cs.borderLeftColor };
+    });
+  }
+
+  /**
+   * Each tab (positions/holdings) renders TWO visible sections at once —
+   * "Summary" (positionsSummaryCols/holdingsSummaryCols, Account FIRST,
+   * correctly striped) and "Breakdown" (positionsCols/holdingsCols,
+   * Account TRAILING, the fixed defect). A bare `section:not(.hidden)`
+   * selector would match both and blur the two behaviours together, so
+   * scope explicitly to the section whose <h2> reads "Breakdown".
+   */
+  function breakdownSection(page) {
+    return page.locator('section:not(.hidden)')
+      .filter({ has: page.locator('h2.section-heading', { hasText: 'Breakdown' }) });
+  }
+
+  test('positionsCols Breakdown grid (Account trailing): no stripe/tint', async ({ page }) => {
+    await page.goto('/performance', { waitUntil: 'domcontentloaded' });
+    await page.locator('.tabs-row').first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    // Positions tab is the default — Breakdown grid is positionsCols.
+    const section = breakdownSection(page).first();
+    const rows = section.locator('.ag-theme-quartz .ag-row').filter({ hasNotText: 'TOTAL' });
+    const rowCount = await rows.count();
+    test.skip(rowCount === 0, 'no live positions rows rendered');
+
+    // Account is the LAST column — force it into view (pinned symbol
+    // column click, then End) before sampling, same as the MarketPulse
+    // trailing-column checks above.
+    const firstSymCell = rows.first().locator('.ag-cell[col-id="tradingsymbol"]');
+    if (await firstSymCell.count()) {
+      await firstSymCell.click();
+      await page.keyboard.press('End');
+      await page.waitForTimeout(500);
+    }
+
+    const cells = section.locator('.ag-theme-quartz .ag-cell[col-id="account"]').filter({ hasNotText: 'TOTAL' });
+    const count = await cells.count();
+    test.skip(count === 0, 'no non-TOTAL account cells rendered in positions Breakdown grid');
+
+    const style = await readAcctBorder(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`).toBeLessThan(3);
+  });
+
+  test('holdingsCols Breakdown grid (Account trailing): no stripe/tint', async ({ page }) => {
+    await page.goto('/performance', { waitUntil: 'domcontentloaded' });
+    const tabsRow = page.locator('.tabs-row').first();
+    await tabsRow.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    const holdingsTab = tabsRow.locator('button[role="tab"]').nth(1);
+    if (await holdingsTab.count()) await holdingsTab.click();
+    await page.waitForTimeout(500);
+
+    const section = breakdownSection(page).first();
+    const rows = section.locator('.ag-theme-quartz .ag-row').filter({ hasNotText: 'TOTAL' });
+    const rowCount = await rows.count();
+    test.skip(rowCount === 0, 'no live holdings rows rendered');
+
+    const firstSymCell = rows.first().locator('.ag-cell[col-id="tradingsymbol"]');
+    if (await firstSymCell.count()) {
+      await firstSymCell.click();
+      await page.keyboard.press('End');
+      await page.waitForTimeout(500);
+    }
+
+    const cells = section.locator('.ag-theme-quartz .ag-cell[col-id="account"]').filter({ hasNotText: 'TOTAL' });
+    const count = await cells.count();
+    test.skip(count === 0, 'no non-TOTAL account cells rendered in holdings Breakdown grid');
+
+    const style = await readAcctBorder(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`).toBeLessThan(3);
+  });
+
+  test('navCols grid (Account first, unaffected by this fix): keeps stripe/tint', async ({ page }) => {
+    await page.goto('/performance', { waitUntil: 'domcontentloaded' });
+    // fundsNavTab defaults to 'nav' — navEl is the FIRST .ag-theme-quartz
+    // grid in DOM order (rendered above the Positions/Holdings tabs),
+    // so scope to it explicitly rather than matching every grid on the
+    // page (Summary/Breakdown grids for the default 'positions' tab are
+    // also visible at the same time).
+    await page.waitForSelector('.ag-theme-quartz', { timeout: 15_000 }).catch(() => {});
+    const navGrid = page.locator('.ag-theme-quartz').first();
+
+    const cells = navGrid.locator('.ag-cell[col-id="account"]').filter({ hasNotText: 'TOTAL' });
+    const count = await cells.count();
+    test.skip(count === 0, 'no non-TOTAL account cells rendered in NAV grid');
+
+    const style = await readAcctBorder(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`).toBeGreaterThanOrEqual(3);
   });
 });
