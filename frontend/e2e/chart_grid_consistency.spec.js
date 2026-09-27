@@ -115,10 +115,12 @@ test('chart grid consistency: NavTab SVG has .chart-grid-line elements', async (
 
   await assertChartGridCssVars(page, '/dashboard (NavTab)');
 
-  // Ensure NAV tab is active (default).
+  // Ensure the cap-eq-tabbed card's first tab (P&L, formerly mislabeled
+  // "NAV" — see dashboard/+page.svelte's 2026-09-27 NAV SSOT correction)
+  // is active (default).
   const capEq = page.locator('.cap-eq-tabbed');
   await capEq.waitFor({ state: 'attached', timeout: TIMEOUT });
-  await capEq.locator('button', { hasText: 'NAV' }).first().click();
+  await capEq.locator('button', { hasText: 'P&L' }).first().click();
   await page.waitForTimeout(300);
 
   const navSvg = page.locator('.nav-tab-wrap svg.nav-svg');

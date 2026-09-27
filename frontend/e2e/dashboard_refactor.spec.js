@@ -153,24 +153,27 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
       expect(chartBox.x).toBeLessThan(capEqBox.x);
     }
 
-    // ── UX desktop: NAV tab is default-active on the right card,
-    //    no localStorage state needed. The new tab order on cap-eq
-    //    is [NAV, Capital, Equity]. ------------------------------
+    // ── UX desktop: P&L tab is default-active on the right card,
+    //    no localStorage state needed. The tab order on cap-eq is
+    //    [P&L, Capital, Equity] — relabeled from "NAV" 2026-09-27
+    //    (NAV SSOT audit: this panel mounts NavBreakdown's P slot,
+    //    Day/Lifetime/Expiry P&L, never NAV — see dashboard/+page.svelte
+    //    for the full correction). ------------------------------
     const capEqTabs = capEqCard.locator('.algo-tab');
-    await expect(capEqTabs.nth(0)).toContainText('NAV');
+    await expect(capEqTabs.nth(0)).toContainText('P&L');
     await expect(capEqTabs.nth(1)).toContainText('Capital');
     await expect(capEqTabs.nth(2)).toContainText('Equity');
     // Active state — AlgoTabs adds aria-selected=true on the active tab
     const navTab = capEqTabs.nth(0);
     await expect(navTab).toHaveAttribute('aria-selected', 'true');
 
-    // NAV breakdown table renders (or empty-state if stores not warm yet).
+    // NavBreakdown P&L table renders (or empty-state if stores not warm yet).
     const navTable = capEqCard.locator('.nav-bd-table');
     const navEmpty = capEqCard.locator('.nav-bd-empty');
     const navVisible =
       (await navTable.isVisible().catch(() => false)) ||
       (await navEmpty.isVisible().catch(() => false));
-    expect(navVisible, 'NAV breakdown panel renders').toBe(true);
+    expect(navVisible, 'P&L breakdown panel renders').toBe(true);
 
     // ── Chart card has 3 tabs (NAV, Intraday, Performance) with NAV
     //    as the default-active tab. Operator restore (Jun 2026):
@@ -367,66 +370,76 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
     }
   });
 
-  test('NAV tab TOTAL row matches PerformancePage NAV grid TOTAL', async ({ page }) => {
+  test('dashboard live NAV chip matches PerformancePage FIRM NAV (SSOT, 2026-09-27 rewrite)', async ({ page }) => {
+    // Rewritten (2026-09-27, NAV SSOT audit): the old version of this test
+    // compared the dashboard cap-eq card's "NAV" tab TOTAL against
+    // PerformancePage's NAV grid TOTAL — but the cap-eq tab was ALWAYS
+    // NavBreakdown's P slot (Day/Lifetime/Expiry P&L), never NAV, so the
+    // two sides were never the same metric and the assertion was
+    // structurally meaningless (it only ever exercised the vacuous
+    // "not yet populated — skipping" branch, since the P slot has no
+    // `td.nav-bd-nav` cell at all). The cap-eq tab is now correctly
+    // labelled "P&L" — see dashboard/+page.svelte. Genuine NAV parity
+    // lives elsewhere: the dashboard's live NAV chip (NavTab overlay,
+    // `.nav-chip-overlay`) and PerformancePage's NavCard FIRM NAV panel
+    // both poll the same `GET /api/auth/firm-nav` endpoint — this test
+    // now compares THOSE two, with a tolerance for aggCompact()'s
+    // K/L/Cr rounding and the two independent 30-60s polling cycles.
     await page.setViewportSize({ width: 1440, height: 1000 });
     await signIn(page);
 
-    // 1) Capture NAV TOTAL from the dashboard NAV tab.
+    // 1) Capture the dashboard's live NAV chip value (full precision,
+    // parsed from its title attribute — the chip itself only shows a
+    // compact/abbreviated label).
     await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(4000);
-    const capEqCard = page.locator('.cap-eq-tabbed').first();
-    const navTab = capEqCard.locator('.algo-tab', { hasText: 'NAV' });
-    await navTab.click();
-    await page.waitForTimeout(800);
-
-    const dashTotalRow = capEqCard.locator('.nav-bd-total');
-    let dashNavTotal = '';
-    if (await dashTotalRow.isVisible().catch(() => false)) {
-      // Last column = NAV; pluck text from the last `td.nav-num`.
-      dashNavTotal = (await dashTotalRow
-        .locator('td.nav-bd-nav')
-        .last()
-        .textContent()) || '';
-    }
-    console.log('[SSOT] dashboard NAV TOTAL:', dashNavTotal);
-
-    // 2) Capture NAV TOTAL from PerformancePage's NAV grid.
-    await page.goto(perfUrl(), { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(4000);
-    // The NAV grid lives inside a tab toggled by the AlgoTabs strip
-    // labelled 'NAV' — click to make sure it's visible.
-    const perfNavTab = page.locator('.algo-tab', { hasText: 'NAV' }).first();
-    if (await perfNavTab.isVisible().catch(() => false)) {
-      await perfNavTab.click();
-      await page.waitForTimeout(800);
-    }
-    // The pinned-bottom row carries account=TOTAL — read the last cell.
-    let perfNavTotal = '';
-    const perfPinned = page.locator(
-      '.ag-floating-bottom .ag-row',
-    ).first();
-    if (await perfPinned.isVisible().catch(() => false)) {
-      const cells = perfPinned.locator('.ag-cell');
-      const n = await cells.count();
-      if (n > 0) {
-        perfNavTotal = (await cells.nth(n - 1).textContent()) || '';
+    const chip = page.locator('.nav-chip-overlay').first();
+    let dashNav = null;
+    if (await chip.isVisible().catch(() => false)) {
+      const title = (await chip.getAttribute('title')) || '';
+      // title = "NAV ₹12.34L as of 2026-09-27" (or ₹…Cr / ₹…k / bare ₹N)
+      const m = title.match(/₹([\d.]+)(Cr|L|k)?/);
+      if (m) {
+        const raw = parseFloat(m[1]);
+        const mult = { Cr: 1e7, L: 1e5, k: 1e3 }[m[2]] || 1;
+        dashNav = raw * mult;
       }
     }
-    console.log('[SSOT] performance NAV TOTAL:', perfNavTotal);
+    console.log('[SSOT] dashboard live NAV chip:', dashNav, '(raw title parse)');
 
-    if (dashNavTotal && perfNavTotal) {
-      // Compare the numeric values — strip currency / format chrome.
-      const norm = (s) => s.replace(/[^0-9.\-]/g, '').trim();
+    // 2) Capture PerformancePage's FIRM NAV panel value (aggCompact —
+    // K/L/Cr suffix, 2dp within L/Cr).
+    await page.goto(perfUrl(), { waitUntil: 'domcontentloaded' });
+    await page.waitForTimeout(4000);
+    const firmPanel = page.locator('.nav-panel', { hasText: 'FIRM NAV' }).first();
+    let perfNav = null;
+    if (await firmPanel.isVisible().catch(() => false)) {
+      const text = (await firmPanel.locator('.nav-big').first().textContent()) || '';
+      // text = "₹12.34L" / "₹1.23C" / "₹500K" / "₹500"
+      const m = text.match(/₹([\d.]+)(C|L|K)?/);
+      if (m) {
+        const raw = parseFloat(m[1]);
+        const mult = { C: 1e7, L: 1e5, K: 1e3 }[m[2]] || 1;
+        perfNav = raw * mult;
+      }
+    }
+    console.log('[SSOT] performance FIRM NAV panel:', perfNav, '(raw text parse)');
+
+    if (dashNav != null && perfNav != null && perfNav !== 0) {
+      // Both sides round to a compact display and poll independently
+      // (60s / 30s cache), so allow a generous relative tolerance —
+      // this is checking "same live source", not pixel-exact parity.
+      const relDiff = Math.abs(dashNav - perfNav) / Math.abs(perfNav);
       expect(
-        norm(dashNavTotal),
-        'dashboard NAV TOTAL matches PerformancePage NAV grid TOTAL',
-      ).toBe(norm(perfNavTotal));
+        relDiff,
+        `dashboard NAV chip (${dashNav}) should be within 5% of PerformancePage FIRM NAV (${perfNav})`,
+      ).toBeLessThan(0.05);
     } else {
-      console.log('[SSOT] NAV TOTAL not yet populated on either surface — skipping numeric match');
+      console.log('[SSOT] NAV not yet populated on one or both surfaces — skipping numeric match');
     }
   });
 
-  test('mobile: cards stack, NAV tab fits, no horizontal overflow', async ({ page }) => {
+  test('mobile: cards stack, P&L tab fits, no horizontal overflow', async ({ page }) => {
     await page.setViewportSize({ width: 393, height: 851 });
     await signIn(page);
     await page.goto(dashUrl(), { waitUntil: 'domcontentloaded' });
@@ -447,9 +460,9 @@ test.describe('dashboard refactor — news → activity + chart/equity swap + NA
     const activityCard = page.locator('.dash-activity').first();
     await expect(activityCard).toBeVisible();
 
-    // NAV tab on the cap-eq card is reachable + tappable (≥32px tall).
+    // P&L tab on the cap-eq card is reachable + tappable (≥32px tall).
     const capEqCard = page.locator('.cap-eq-tabbed').first();
-    const navTab = capEqCard.locator('.algo-tab', { hasText: 'NAV' });
+    const navTab = capEqCard.locator('.algo-tab', { hasText: 'P&L' });
     await expect(navTab).toBeVisible();
     const navBox = await navTab.boundingBox();
     expect(navBox).not.toBeNull();

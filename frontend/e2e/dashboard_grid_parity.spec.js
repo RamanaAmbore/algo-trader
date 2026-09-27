@@ -1,7 +1,7 @@
 /**
  * dashboard_grid_parity.spec.js
  *
- * Asserts that the NAV, Capital, and Equity tabs on /dashboard have
+ * Asserts that the P&L, Capital, and Equity tabs on /dashboard have
  * visually consistent row height, header font-size, cell padding, and
  * border treatment.
  *
@@ -14,7 +14,7 @@
  *  3. Stale — NavBreakdown does NOT have a class="ag-row" (it's a plain
  *             table, not ag-Grid). The parity is visual, not structural.
  *  4. Reuse — Capital + Equity grids use class="ag-theme-algo" (shared theme).
- *  5. UX    — NAV / Capital / Equity grids share the same computed row
+ *  5. UX    — P&L / Capital / Equity grids share the same computed row
  *             height (26px), header background (#0a1020), and amber
  *             header text (#fbbf24). Desktop + mobile viewports tested.
  *
@@ -32,7 +32,7 @@ const TIMEOUT = 60_000;
 async function openDashboard(page) {
   await loginAsAdmin(page);
   await page.goto('/dashboard', { waitUntil: 'load', timeout: TIMEOUT });
-  // Wait for the tabbed NAV/Capital/Equity card to be present.
+  // Wait for the tabbed P&L/Capital/Equity card to be present.
   await page.locator('.cap-eq-tabbed').waitFor({ state: 'attached', timeout: TIMEOUT });
 }
 
@@ -44,13 +44,13 @@ async function clickCapEqTab(page, label) {
   await page.waitForTimeout(120);
 }
 
-// ── 1. NAV tab: NavBreakdown HTML table row height matches ag-Grid (26px) ───
+// ── 1. P&L tab: NavBreakdown HTML table row height matches ag-Grid (26px) ───
 
-test('dashboard grid parity: NAV tab row height matches Capital/Equity grids', async ({ page }) => {
+test('dashboard grid parity: P&L tab row height matches Capital/Equity grids', async ({ page }) => {
   await openDashboard(page);
 
-  // Ensure we're on the NAV tab (default).
-  await clickCapEqTab(page, 'NAV');
+  // Ensure we're on the P&L tab (default).
+  await clickCapEqTab(page, 'P&L');
 
   // Wait for the NavBreakdown table to render (may need data).
   const table = page.locator('.nav-bd-table');
@@ -59,7 +59,7 @@ test('dashboard grid parity: NAV tab row height matches Capital/Equity grids', a
     // No broker data in test environment — check at least the CSS class structure.
     // The nav-bd-wrap wrapper must be present even in empty state.
     const wrap = page.locator('.nav-bd-wrap, .nav-bd-empty');
-    await expect(wrap.first(), 'NAV panel should render a wrapper').toBeAttached();
+    await expect(wrap.first(), 'P&L panel should render a wrapper').toBeAttached();
     return;
   }
 
@@ -72,18 +72,18 @@ test('dashboard grid parity: NAV tab row height matches Capital/Equity grids', a
   // rounding and mobile-scaled viewports. The SSOT is the _baseGridOpts
   // declaration in dashboard/+page.svelte.
   expect(rowHeight,
-    'NAV tbody row height should match ag-Grid rowHeight: 26 (±2px)'
+    'P&L tbody row height should match ag-Grid rowHeight: 26 (±2px)'
   ).toBeGreaterThanOrEqual(24);
   expect(rowHeight,
-    'NAV tbody row height should not exceed ag-Grid rowHeight: 26 (±2px)'
+    'P&L tbody row height should not exceed ag-Grid rowHeight: 26 (±2px)'
   ).toBeLessThanOrEqual(28);
 });
 
-// ── 2. NAV tab: header matches updated ag-theme-algo (muted slate text) ────────
+// ── 2. P&L tab: header matches updated ag-theme-algo (muted slate text) ────────
 
-test('dashboard grid parity: NAV tab header background + text color', async ({ page }) => {
+test('dashboard grid parity: P&L tab header background + text color', async ({ page }) => {
   await openDashboard(page);
-  await clickCapEqTab(page, 'NAV');
+  await clickCapEqTab(page, 'P&L');
 
   const table = page.locator('.nav-bd-table');
   const hasTable = await table.count();
@@ -151,8 +151,8 @@ test('dashboard grid parity: Equity tab grids have ag-theme-algo class', async (
 test('dashboard grid parity: perf — tab switches complete < 100ms', async ({ page }) => {
   await openDashboard(page);
 
-  // Pre-warm: click to NAV first so Capital/Equity are already mounted.
-  await clickCapEqTab(page, 'NAV');
+  // Pre-warm: click to P&L first so Capital/Equity are already mounted.
+  await clickCapEqTab(page, 'P&L');
   await page.waitForTimeout(200);
 
   // Time Capital tab click-to-panel-visible.
@@ -171,8 +171,8 @@ test('dashboard grid parity: perf — tab switches complete < 100ms', async ({ p
 test('dashboard grid parity: TOTAL row amber tint appears on all panels', async ({ page }) => {
   await openDashboard(page);
 
-  // NAV panel total row.
-  await clickCapEqTab(page, 'NAV');
+  // P&L panel total row.
+  await clickCapEqTab(page, 'P&L');
   const table = page.locator('.nav-bd-table');
   const hasTable = await table.count();
   if (hasTable > 0) {
@@ -181,7 +181,7 @@ test('dashboard grid parity: TOTAL row amber tint appears on all panels', async 
     if (hasTotalRow > 0) {
       const bg = await totalRow.locator('td').first().evaluate(el => getComputedStyle(el).backgroundColor);
       // rgba(251, 191, 36, 0.22) — Chromium rounds to some form of rgba
-      expect(bg, 'NAV TOTAL row should have amber bg').toMatch(/rgba?\(251[, ]+191/);
+      expect(bg, 'P&L TOTAL row should have amber bg').toMatch(/rgba?\(251[, ]+191/);
     }
   }
 

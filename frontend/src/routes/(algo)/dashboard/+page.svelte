@@ -1860,8 +1860,8 @@
     </div>
   </section>
 
-  <!-- RIGHT: NAV | Capital | Equity tabbed card (operator-requested
-       shuffle, Jun 2026).
+  <!-- RIGHT: P&L | Capital | Equity tabbed card (operator-requested
+       shuffle, Jun 2026; NAV tab relabeled to P&L, 2026-09-27 — see below).
        CORRECTION (2026-09 NAV SSOT audit): despite the tab label, the
        "NAV" panel below mounts <NavBreakdown> WITHOUT an `activeSlot`
        prop, which defaults to 'P' — it renders Day/Lifetime/Expiry P&L,
@@ -1876,10 +1876,13 @@
        endpoint NavCard uses on /performance, and PerformancePage's NAV
        grid reads the server-computed `GET /api/nav/by-account` breakdown
        (same `compute_firm_nav()` v4 formula, backend/api/algo/nav.py).
-       Whether to wire a real NAV total into this "NAV" tab, or rename the
-       tab to match what it actually shows (P&L), is an operator UI/IA
-       decision — flagged here, not fixed. Capital + Equity tabs are
-       unaffected and sit behind one click each. All three panels stay
+       Operator decision (2026-09-27): renamed this tab's label to "P&L"
+       to match what it actually shows, rather than wiring in a second,
+       redundant NAV total — the dashboard's live NAV chip above already
+       covers that, and adding another NAV display here would reintroduce
+       the exact duplicate-source risk this audit just eliminated.
+       Capital + Equity tabs are unaffected and sit behind one click each.
+       All three panels stay
        mounted (hidden, not {#if}) so ag-Grid instances don't orphan when
        the operator flips tabs. The card uses `flex: 1 1 auto` so its
        height expands / contracts with the chart card on the left —
@@ -1894,7 +1897,7 @@
     <div class="bucket-header">
       <AlgoTabs
         tabs={[
-          { id: 'nav',     label: 'NAV'     },
+          { id: 'nav',     label: 'P&L'     },
           { id: 'capital', label: 'Capital' },
           { id: 'equity',  label: 'Equity'  },
         ]}
@@ -1914,7 +1917,7 @@
         <CardControls
           bind:isCollapsed={_colNavBd}
           bind:isFullscreen={_fsNavBd}
-          label="NAV"
+          label="P&L"
           onRefresh={_refreshAll}
           bind:refreshLoading={_refreshing}
           showSearch={false}
