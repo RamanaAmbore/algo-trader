@@ -114,6 +114,17 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         f"Condition: {condition_text}",
     ]
     telegram_body = "\n".join(body_lines)
+    # Dedicated ntfy body — kept a separate variable (not just an alias for
+    # telegram_body) even though the content is identical today. ntfy has no
+    # HTML rendering; condition_text is operator/user-authored (e.g.
+    # "pnl < -5000") and must never be run through an HTML-tag-stripping
+    # regex, since a bare comparison operator would be misread as a tag
+    # boundary. Keeping this independent means if telegram_body ever grows
+    # HTML styling (as alert_utils._dispatch's equivalent string did), ntfy
+    # can't silently inherit literal <b>/<code> tags — see
+    # backend/shared/helpers/alert_utils.py:_html_to_plain for the sibling
+    # fix on that path.
+    ntfy_body = "\n".join(body_lines)
     email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
     email_body = _build_dispatch_email_body(
         agent.name, sim_tag, branch, branch_tag, ist_display, condition_text, sim_mode
@@ -136,7 +147,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
             await _dispatch_channel(
                 ch, agent, telegram_body, email_subject, email_body,
                 condition_text, ist_display, eval_result, broadcast_fn,
-                sim_mode, branch, branch_tag,
+                sim_mode, branch, branch_tag, ntfy_body=ntfy_body,
             )
         except Exception as e:
             logger.error(f"Agent event dispatch failed ({ch.get('channel', '')}): {e}")
@@ -150,6 +161,7 @@ async def _dispatch_channel(
     ch: dict, agent, telegram_body: str, email_subject: str,
     email_body: str, condition_text: str, ist_display: str,
     eval_result, broadcast_fn, sim_mode: bool, branch: str, branch_tag: str,
+    ntfy_body: str | None = None,
 ) -> None:
     """Route one channel event. Raises on error — caller wraps in try/except."""
     channel = ch.get("channel", "")
@@ -181,7 +193,13 @@ async def _dispatch_channel(
         import asyncio
         loop = asyncio.get_running_loop()
         ntfy_priority = ch.get("priority")
-        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=telegram_body, priority=ntfy_priority))
+        # Prefer the dedicated ntfy_body (kept independent of telegram_body
+        # so a future HTML-styled telegram_body can never leak literal tags
+        # into ntfy — see the comment at its construction in dispatch()).
+        # Falls back to telegram_body only for legacy direct-call sites
+        # (tests) that don't pass ntfy_body; content is identical today.
+        _ntfy_msg = ntfy_body if ntfy_body is not None else telegram_body
+        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=ntfy_priority))
     elif channel == "log":
         log_sim_tag = "[SIM] " if sim_mode else ""
         logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")

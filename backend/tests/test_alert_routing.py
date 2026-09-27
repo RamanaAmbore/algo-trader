@@ -268,6 +268,178 @@ class TestSendNtfyAlertIntegration:
             mock_urlopen.assert_called_once()
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+# _html_to_plain — Telegram-HTML → plain-text conversion for ntfy
+#
+# Root cause under test: ntfy has no HTML rendering (posts as text/plain).
+# _dispatch() builds ONE Telegram-HTML-formatted string (<b>/<code> tags,
+# html.escape()'d dynamic content) and used to hand it, unconverted, to
+# send_ntfy_alert() — so ntfy clients showed literal "<b>Agent — 14:32:07
+# </b>" text. _html_to_plain() strips the tags then unescapes entities
+# that html.escape() introduced, restoring the original literal
+# characters (e.g. "M&M" survives round-trip, not "M&amp;M").
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestHtmlToPlain:
+    def test_strips_bold_tag(self):
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        assert _html_to_plain("<b>Agent — 14:32:07</b>") == "Agent — 14:32:07"
+
+    def test_strips_code_tag(self):
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        assert _html_to_plain("<code>▸ POS acct1 NIFTY -5230.50</code>") == \
+            "▸ POS acct1 NIFTY -5230.50"
+
+    def test_strips_multiple_and_nested_style_tags(self):
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        s = "<b>Header</b>\n\n<code>line1\nline2</code>"
+        plain = _html_to_plain(s)
+        assert "<b>" not in plain and "</b>" not in plain
+        assert "<code>" not in plain and "</code>" not in plain
+        assert "Header" in plain and "line1" in plain and "line2" in plain
+
+    def test_unescapes_entities_introduced_by_html_escape(self):
+        """Data that went through html.escape() (e.g. a symbol containing
+        '&', or a table with literal '<'/'>') must round-trip back to its
+        original literal form — not be left as '&amp;'/'&lt;'/'&gt;'."""
+        import html as _html
+        from backend.shared.helpers.alert_utils import _html_to_plain
+
+        raw_table = "M&M  qty<100  cap>50"
+        wrapped = f"<code>{_html.escape(raw_table)}</code>"
+        assert _html_to_plain(wrapped) == raw_table
+
+    def test_numeric_entity_decoded(self):
+        """&#128680; (the SIMULATOR-run warning emoji) decodes to the
+        actual character, not left as a numeric entity."""
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        plain = _html_to_plain("&#128680; <b>SIMULATOR RUN</b> — fabricated market data")
+        assert "<b>" not in plain and "</b>" not in plain
+        assert "🚨" in plain
+
+    def test_plain_text_with_no_tags_passes_through_unchanged(self):
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        s = "No tags here, just plain text with numbers 123 and a % sign."
+        assert _html_to_plain(s) == s
+
+    def test_empty_string_passes_through(self):
+        from backend.shared.helpers.alert_utils import _html_to_plain
+        assert _html_to_plain("") == ""
+
+    def test_realistic_dispatch_shaped_loss_alert_input(self):
+        """Matches exactly what _dispatch()'s telegram_msg construction
+        produces for a loss/rate-of-change agent fire."""
+        import html as _html
+        from backend.shared.helpers.alert_utils import _html_to_plain
+
+        tg_table = "ACCT      SYMBOL           PNL\nacct1     NIFTY24SEPFUT   -5230.50"
+        telegram_msg = (
+            "<b>Agent — 14:32:07 IST</b>\n\n"
+            f"<code>{_html.escape(tg_table)}</code>"
+        )
+        plain = _html_to_plain(telegram_msg)
+        assert "<b>" not in plain and "</b>" not in plain
+        assert "<code>" not in plain and "</code>" not in plain
+        assert "Agent — 14:32:07 IST" in plain
+        assert tg_table in plain
+
+    def test_sim_and_branch_warning_block_has_no_leftover_tags(self):
+        """_build_tg_warning_block()'s output — embedded ahead of tg_table
+        in telegram_msg — must also come out clean."""
+        from backend.shared.helpers.alert_utils import _build_tg_warning_block, _html_to_plain
+
+        block = _build_tg_warning_block(sim_mode=True, branch='workshop')
+        plain = _html_to_plain(block)
+        assert "<b>" not in plain and "</b>" not in plain
+        assert "SIMULATOR RUN" in plain
+        assert "Branch: workshop" in plain
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# _alert_route → send_ntfy_alert never receives literal HTML tags
+#
+# Realistic agent-alert dispatch shape (mirrors what agent_engine's rich
+# alert path feeds into _dispatch()): a loss-agent fire with a Telegram
+# table body. Mocks send_ntfy_alert directly — never hits a real endpoint.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestAlertRouteNtfyPlainText:
+    def test_dispatch_alert_ntfy_body_has_no_html_tags(self):
+        """_dispatch('alert', ...) → _alert_route → send_ntfy_alert must
+        receive a plain-text body, while _send_telegram keeps receiving
+        the original HTML-tagged string (parse_mode=HTML relies on it)."""
+        _cfg = {
+            'deploy_branch': 'main',
+            'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': 'urgent', 'email': False}},
+        }
+        tg_table = "ACCT   SYMBOL          PNL\nacct1  NIFTY24SEPFUT  -5230.50"
+
+        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
+             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
+             patch('backend.shared.helpers.alert_utils.config', _cfg):
+
+            from backend.shared.helpers.alert_utils import _dispatch
+
+            _dispatch('alert', '14:22 IST', tg_table, '<html>email</html>', 'Loss threshold hit')
+
+            # Telegram still gets the HTML-tagged body.
+            mock_tg.assert_called_once()
+            tg_body = mock_tg.call_args[0][0]
+            assert "<b>" in tg_body and "<code>" in tg_body
+            assert tg_table in tg_body
+
+            # ntfy must never see literal tags.
+            mock_ntfy.assert_called_once()
+            ntfy_args = mock_ntfy.call_args[0]
+            ntfy_title, ntfy_body = ntfy_args[0], ntfy_args[1]
+            assert "<b>" not in ntfy_body and "</b>" not in ntfy_body
+            assert "<code>" not in ntfy_body and "</code>" not in ntfy_body
+            assert tg_table in ntfy_body, "underlying table content must survive the conversion"
+            # title was never HTML-tagged by any _alert_route caller —
+            # still assert it stays clean as a regression guard.
+            assert "<b>" not in ntfy_title and "<code>" not in ntfy_title
+
+    def test_dispatch_alert_sim_mode_ntfy_body_has_no_html_tags(self):
+        """sim_mode=True adds the warning block (also HTML-tagged) — must
+        also come out clean on the ntfy leg."""
+        _cfg = {
+            'deploy_branch': 'main',
+            'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': 'urgent', 'email': False}},
+        }
+        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
+             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
+             patch('backend.shared.helpers.alert_utils.config', _cfg):
+
+            from backend.shared.helpers.alert_utils import _dispatch
+
+            _dispatch('alert', '14:22 IST', 'table', '<html>email</html>', 'detail', sim_mode=True)
+
+            mock_ntfy.assert_called_once()
+            ntfy_body = mock_ntfy.call_args[0][1]
+            assert "<b>" not in ntfy_body and "</b>" not in ntfy_body
+            assert "SIMULATOR RUN" in ntfy_body
+
+    def test_dispatch_market_open_ntfy_body_has_no_html_tags(self):
+        """Open/close summaries route through the same _alert_route ntfy
+        leg — must also be converted."""
+        _cfg = {
+            'deploy_branch': 'main',
+            'alert_routing': {'market_open': {'telegram': 'info', 'ntfy': 'high', 'email': False}},
+        }
+        with patch('backend.shared.helpers.alert_utils._send_telegram_info') as mock_tg, \
+             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
+             patch('backend.shared.helpers.alert_utils.config', _cfg):
+
+            from backend.shared.helpers.alert_utils import _dispatch
+
+            _dispatch('open', '09:15 IST', 'Holdings data', '<html>table</html>', 'Open Summary')
+
+            mock_ntfy.assert_called_once()
+            ntfy_body = mock_ntfy.call_args[0][1]
+            assert "<b>" not in ntfy_body and "<code>" not in ntfy_body
+            assert "Holdings data" in ntfy_body
+
+
 class TestAlertRoutingConfigStructure:
     """Test the alert_routing config table structure for future implementation."""
 

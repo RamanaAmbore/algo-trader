@@ -34,6 +34,7 @@ Message type prefixes
 import atexit
 import hashlib
 import html
+import re
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from threading import Lock
@@ -297,6 +298,33 @@ def _send_telegram_info(message: str):
         _log.error(f"Telegram info error: {e}")
 
 
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _html_to_plain(s: str) -> str:
+    """Convert a Telegram-HTML-formatted string (``<b>``, ``<code>`` tags,
+    plus any ``html.escape()``-introduced entities) into plain text suitable
+    for channels with no HTML rendering (ntfy).
+
+    Order matters: strip tags FIRST, then unescape entities. The strings
+    this is meant for (``_dispatch``'s ``telegram_msg`` and friends) run
+    their dynamic content through ``html.escape()`` before embedding it —
+    so any literal ``<``/``>``/``&`` that belongs to the DATA survives as
+    ``&lt;``/``&gt;``/``&amp;`` and is untouched by the tag-stripping regex;
+    unescaping afterwards restores it correctly. Unescaping first would turn
+    that ``&lt;`` back into ``<`` before the regex runs, risking corruption.
+
+    Only intended for strings built as HTML by this module's own message
+    builders (where the docstring/contract says "HTML-safe"). Do NOT run
+    this over arbitrary user/operator-authored text (e.g. agent condition
+    strings like ``pnl < -5000``) — those were never escaped, so a bare
+    comparison operator would be misread as a tag boundary.
+    """
+    if not s:
+        return s
+    return html.unescape(_HTML_TAG_RE.sub("", s))
+
+
 def _alert_route(
     event_key: str,
     title: str,
@@ -330,7 +358,12 @@ def _alert_route(
 
     ntfy_priority = route.get('ntfy', False)
     if ntfy_priority:
-        send_ntfy_alert(title, body, priority=str(ntfy_priority))
+        # ntfy has no HTML rendering — `body` is Telegram-HTML (<b>/<code>
+        # tags, html.escape()'d dynamic content); convert to plain text so
+        # ntfy clients don't show literal tags. `title` is never HTML-tagged
+        # by any caller of _alert_route (checked 2026-09-27), so it's passed
+        # through unchanged.
+        send_ntfy_alert(title, _html_to_plain(body), priority=str(ntfy_priority))
 
     send_email_flag = route.get('email', False)
     if send_email_flag and email_fn is not None:

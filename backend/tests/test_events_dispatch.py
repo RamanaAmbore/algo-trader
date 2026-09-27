@@ -1093,3 +1093,107 @@ async def test_dispatch_channel_log_includes_agent_slug_and_condition():
         assert "my-test-agent" in log_message
         assert condition_text in log_message
         assert "My Test Agent" in log_message
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ntfy_body — dedicated ntfy body kept independent of telegram_body
+#  (see comment at construction site in dispatch()). This is a defensive
+#  hardening test: telegram_body has no HTML today, but condition_text is
+#  operator-authored and can legitimately contain comparison operators like
+#  "pnl < -5000" — an HTML-tag-stripping pass over that text would corrupt
+#  it. ntfy_body must reach send_ntfy_alert byte-for-byte intact, and stay
+#  wired that way even if telegram_body later grows HTML styling.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_dispatch_ntfy_receives_condition_text_with_comparison_operators_intact():
+    """Full dispatch() round-trip: a condition string containing bare `<`/`>`
+    comparison operators must reach send_ntfy_alert() completely unmangled —
+    this is the exact shape of text a loss/rate-of-change agent condition
+    produces, and the case that would break under a naive HTML-tag-stripping
+    approach applied to this (non-HTML) path."""
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Loss Guard"
+    agent.slug = "loss-guard"
+    agent.events = [{"channel": "ntfy", "enabled": True, "priority": "urgent"}]
+
+    condition_text = "pnl < -5000 AND pnl_rate_abs > 1000"
+    eval_result = EvalResult(triggered=True, condition_text=condition_text, detail={})
+
+    with patch('backend.api.algo.events.is_enabled', return_value=True), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy:
+        await dispatch(agent, eval_result)
+
+    mock_ntfy.assert_called_once()
+    _, kwargs = mock_ntfy.call_args
+    sent_message = kwargs["message"]
+    assert condition_text in sent_message, (
+        f"condition text corrupted in ntfy body: {sent_message!r}"
+    )
+    assert "<" not in sent_message.replace(condition_text, ""), (
+        "stray tag-stripping artifact found outside the condition text"
+    )
+
+
+@pytest.mark.asyncio
+async def test_dispatch_channel_ntfy_body_independent_of_telegram_body():
+    """_dispatch_channel's ntfy branch uses the dedicated ntfy_body kwarg
+    when supplied, not telegram_body — proving the two are wired
+    independently rather than aliased."""
+    from backend.api.algo.events import _dispatch_channel
+
+    ch = {"channel": "ntfy", "enabled": True, "priority": "high"}
+    agent = MagicMock()
+    agent.name = "Test"
+
+    with patch('backend.api.algo.events.is_enabled', return_value=True), \
+         patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_send:
+        import asyncio
+        loop = asyncio.get_running_loop()
+
+        async def _run_inline(_executor, fn):
+            return fn()
+
+        with patch.object(loop, 'run_in_executor', side_effect=_run_inline):
+            await _dispatch_channel(
+                ch, agent, "telegram-only text", "", "", "test", "2026-07-26", None,
+                None, False, "main", "", ntfy_body="ntfy-only text",
+            )
+
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs["message"] == "ntfy-only text"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_channel_ntfy_falls_back_to_telegram_body_when_ntfy_body_omitted():
+    """Legacy direct-call sites (older tests / callers) that don't pass
+    ntfy_body keep working — falls back to telegram_body."""
+    from backend.api.algo.events import _dispatch_channel
+
+    ch = {"channel": "ntfy", "enabled": True, "priority": "high"}
+    agent = MagicMock()
+    agent.name = "Test"
+
+    with patch('backend.api.algo.events.is_enabled', return_value=True), \
+         patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_send:
+        import asyncio
+        loop = asyncio.get_running_loop()
+
+        async def _run_inline(_executor, fn):
+            return fn()
+
+        with patch.object(loop, 'run_in_executor', side_effect=_run_inline):
+            await _dispatch_channel(
+                ch, agent, "fallback text", "", "", "test", "2026-07-26", None,
+                None, False, "main", "",
+            )
+
+    mock_send.assert_called_once()
+    _, kwargs = mock_send.call_args
+    assert kwargs["message"] == "fallback text"
