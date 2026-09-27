@@ -440,8 +440,19 @@
     padding-top: 0;
     margin-top: 0.12rem;
   }
-  .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; }
-  .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
+  /* Operator (2026-09-27): "RAMBO QUANT / ANALYTICS LLP" text-stroke read
+     blurry/muddy on mobile — the base 0.8px/0.7px stroke (lines 412/425)
+     is drawn centred on the glyph outline, so roughly half of it eats
+     into the letter interior. At this breakpoint's small sizes
+     (0.66rem/0.5rem) the stems are only ~1-1.5px wide, so that stroke
+     covers most of the stem and reads as a dark smudge instead of a
+     crisp gold letter with a thin outline. Thinned to 0.4px here
+     (mobile only — desktop's larger size renders the original fine,
+     confirmed via zoomed chromium+webkit screenshots at DPR 3). Keeps
+     the outlined brand look the operator wants (vs. dropping the
+     stroke entirely) while reading crisp. */
+  .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; -webkit-text-stroke: 0.4px rgba(200,140,20,0.9); }
+  .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; -webkit-text-stroke: 0.4px rgba(200,140,20,0.9); }
   /* Operator (2026-09): shrunk from B2's 0.7rem floor specifically on
      this mobile brand lockup, to balance the tagline's visual height
      against the compact header logo's icon height at this one narrow

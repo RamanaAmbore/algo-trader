@@ -120,6 +120,45 @@ test('mobile (360px) — brand tagline renders at the 0.52rem exempt size, singl
   expect(metrics.lineCount, 'tagline must render on a single line, not wrap').toBe(1);
 });
 
+test('mobile (360px) — brand name/sub text-stroke thinned to 0.4px, desktop untouched', async ({ page }) => {
+  // Operator (2026-09-27): the base 0.8px/0.7px -webkit-text-stroke read
+  // blurry/muddy at the mobile lockup's small sizes (0.66rem/0.5rem) —
+  // the stroke is drawn centred on the glyph outline and ate into
+  // narrow stems. Thinned to 0.4px, mobile only. See the comment above
+  // .pub-brand-mobile .pub-brand-name in +layout.svelte for the full
+  // rationale; verified visually via zoomed chromium+webkit screenshots.
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  const mobile = await page.evaluate(() => {
+    const g = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? getComputedStyle(el).getPropertyValue('-webkit-text-stroke-width') : null;
+    };
+    return {
+      name: g('.pub-brand-mobile .pub-brand-name'),
+      sub: g('.pub-brand-mobile .pub-brand-sub'),
+    };
+  });
+  expect(mobile.name, '.pub-brand-mobile .pub-brand-name stroke width').toBe('0.4px');
+  expect(mobile.sub, '.pub-brand-mobile .pub-brand-sub stroke width').toBe('0.4px');
+
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.waitForTimeout(200);
+  const desktop = await page.evaluate(() => {
+    const g = (sel) => {
+      const el = document.querySelector(sel);
+      return el ? getComputedStyle(el).getPropertyValue('-webkit-text-stroke-width') : null;
+    };
+    return {
+      name: g('.pub-brand:not(.pub-brand-mobile) .pub-brand-name'),
+      sub: g('.pub-brand:not(.pub-brand-mobile) .pub-brand-sub'),
+    };
+  });
+  expect(desktop.name, 'desktop .pub-brand-name stroke width must stay 0.8px').toBe('0.8px');
+  expect(desktop.sub, 'desktop .pub-brand-sub stroke width must stay 0.7px').toBe('0.7px');
+});
+
 test('mobile (390px) — /about and /faq also fit without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   for (const path of ['/about', '/faq']) {
