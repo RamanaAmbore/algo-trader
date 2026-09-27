@@ -42,6 +42,15 @@
 
   --algo-slate:        #ffffff;   /* primary text on dark surfaces (whitened 2026-09 — was pale-blue #c8d8f0, off-white → white sweep) */
   --algo-slate-dim:    rgba(148, 163, 184, 0.4); /* dim slate for subtle overlays */
+  /* A3 (2026-09 audit) — muted variant of the SAME hue as the primary/
+     white numeric text beside it (e.g. Pulse grid .cell-muted). NOT
+     related to --text-muted/--text-faint/--text-sub below (an
+     intentional, independent blue-gray label/caption family) — this is
+     specifically "--algo-slate, dimmed", the fixed-alpha companion to
+     the ~90 ad-hoc rgba(200,216,240,α) sites (the OLD pre-whitening-
+     sweep value of --algo-slate) being migrated onto var(--algo-slate)
+     + per-site color-mix() alpha across the codebase. */
+  --algo-slate-muted:  color-mix(in srgb, var(--algo-slate) 55%, transparent);
   --algo-muted:        #7e97b8;   /* secondary / label text */
   --algo-dim:          #94a3b8;   /* tertiary text */
 
@@ -2523,7 +2532,11 @@
 .oes-common-chase-toggle.is-disabled { cursor: not-allowed; opacity: 0.45; }
 .oes-common-chase-toggle.is-disabled input { cursor: not-allowed; }
 .oes-common-chase-label {
-  color: rgba(200,216,240,0.70);
+  /* A3 (2026-09 audit) — was a stale rgba(200,216,240,α) literal (OLD
+     pre-whitening --algo-slate value); this class is consumed ONLY by
+     SymbolPanel.svelte (algo-only, verified via grep), so converting
+     here is safe despite app.css being shared with public pages. */
+  color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
   font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.06em;
@@ -2538,7 +2551,8 @@
 .oes-common-chase-agg-pill {
   padding: 0.14rem 0.4rem;
   background: transparent;
-  color: rgba(200,216,240,0.65);
+  /* A3 (2026-09 audit) — same as .oes-common-chase-label above. */
+  color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
   border: 0;
   border-right: 1px solid rgba(251,191,36,0.20);
   font-family: ui-monospace, monospace;

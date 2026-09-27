@@ -4778,7 +4778,10 @@
   :global(.ag-theme-algo .cell-pos)  { color: var(--c-long) !important; }
   :global(.ag-theme-algo .cell-neg)  { color: var(--c-short) !important; }
   :global(.ag-theme-algo .cell-flat) { color: var(--algo-dim) !important; }
-  :global(.ag-theme-algo .cell-muted){ color: rgba(200,216,240,0.55) !important; }
+  /* A3 (2026-09 audit) — was a hardcoded rgba(200,216,240,0.55) (the OLD
+     pre-whitening --algo-slate value); now derives from the SAME hue as
+     the primary numeric text beside it via the named token. */
+  :global(.ag-theme-algo .cell-muted){ color: var(--algo-slate-muted) !important; }
   /* Alternating row background for all Pulse grids — mirrors legs grid rhythm */
   :global(.ag-theme-algo .ag-body-viewport .ag-row-odd:not(.mp-total-row)) {
     background-color: var(--row-tint-odd-bg);

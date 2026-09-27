@@ -6775,7 +6775,15 @@
   .byund-row > .cell-pos { color: var(--c-long); }
   .byund-row > .cell-neg { color: var(--c-short); }
   .byund-row > .cell-flat { color: var(--c-muted); }
-  .byund-row > .cell-muted { color: rgba(200,216,240,0.65); }
+  /* A3 (2026-09 audit) — same root cause + fix as MarketPulse's
+     .cell-muted (a stale rgba(200,216,240,α) literal from the OLD
+     pre-whitening --algo-slate value); folded into the same named-token
+     sweep since this is also numeric text in a .cell-muted role. This
+     dims the by-underlying row from its old 0.65 alpha to the shared
+     token's 0.55 — a deliberate, minor visual tightening for
+     consistency across both .cell-muted surfaces (report item, not
+     independently significant). */
+  .byund-row > .cell-muted { color: var(--algo-slate-muted); }
 
   /* Tick-flash animation — transient background pulse when a tracked
      numeric cell changes. Subtle alpha so the flash reads as ambient

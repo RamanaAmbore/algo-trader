@@ -105,6 +105,147 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
       `Offenders:\n${offenders.join('\n')}`).toEqual([]);
   });
 
+  /* ── A3 (2026-09 audit) — stale pale-blue literal sweep, RATCHET ──────
+   * ~90 sites of `rgba(200,216,240,α)` (the OLD pre-whitening-sweep
+   * value of --algo-slate, #c8d8f0) plus flat hex near-equivalents
+   * (#e2e8f0, #cbd5e1, #f8fafc) never got migrated when --algo-slate
+   * became white. Conversion rule (NOT a collapse to one value):
+   *   - muted NUMERIC TEXT roles named `.cell-muted` → var(--algo-slate-muted)
+   *   - every other role (borders, backgrounds, non-numeric dimmed
+   *     text) → color-mix(in srgb, var(--algo-slate) <site's own
+   *     original alpha>%, transparent) — alpha preserved per-site.
+   *
+   * This is a RATCHET, not a one-shot pass: ALLOWLIST below is the
+   * honest, current record of files not yet swept (batched by
+   * directory/component group across several commits). Each batch
+   * removes the files it fully converts; shrinking this array (never
+   * growing it) is the progress signal. Empty array = sweep complete.
+   *
+   * Explicitly and permanently OUT of scope (not part of the ratchet,
+   * documented here rather than silently ignored):
+   *   - app.css's --chart-grid-stroke (+ -minor / -zero) fallback values —
+   *     app.css is shared with public/investor pages; these are
+   *     fallback values inside an existing var(...) reference (already
+   *     tokenised at the call site), lower risk/priority than a bare
+   *     literal.
+   *   - Any file confirmed to mount on a public/investor route with a
+   *     LIGHT/cream background (a converted var(--algo-slate) — white —
+   *     would be invisible there) — verified per-file before removal
+   *     from the allowlist, not assumed safe.
+   *   - SVG presentation attributes (`stroke="…"` in ChartWorkspace) and
+   *     canvas/JS colour-string consumers (getContext/strokeStyle/
+   *     fillStyle, or colour strings passed into JS config objects) —
+   *     var()/color-mix() don't resolve there; needs either
+   *     getComputedStyle-based JS resolution or a documented allowlist
+   *     entry, not a blind text substitution.
+   */
+  const A3_MUTED_LITERAL_ALLOWLIST = [
+    'src/lib/AgentFireModal.svelte',
+    'src/lib/AgentToast.svelte',
+    'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs
+    'src/lib/ConfirmModal.svelte',
+    'src/lib/DayPnlBreakup.svelte',
+    'src/lib/LogPanel.svelte',
+    'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
+    'src/lib/MultiPriceChart.svelte',          // canvas colour consumer — verify before converting
+    'src/lib/OptionsPayoff.svelte',            // hand-rolled SVG — verify before converting
+    'src/lib/PnlAnalysis.svelte',
+    'src/lib/SymbolPanel.svelte',
+    'src/lib/TemplateBar.svelte',
+    'src/lib/Toast.svelte',
+    'src/lib/execution/RecordingsPanel.svelte',
+    'src/lib/execution/SimulatorPanel.svelte',
+    'src/lib/order/ChaseAggPicker.svelte',
+    'src/lib/order/OptionChainTab.svelte',
+    'src/lib/order/OrderTicket.svelte',
+    'src/lib/order/OrderTimelineDrawer.svelte',
+    'src/lib/order/QtyInput.svelte',
+    'src/lib/order/SideToggle.svelte',
+    'src/routes/(algo)/admin/alerts/+page.svelte',
+    'src/routes/(algo)/admin/derivatives/+page.svelte', // .byund-row .cell-muted done; other sites remain
+    'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte',
+    'src/routes/(algo)/admin/metrics/+page.svelte',      // likely canvas/chart consumer — verify
+    'src/routes/(algo)/admin/perf/+page.svelte',         // likely canvas/chart consumer — verify
+    'src/routes/(algo)/admin/research/+page.svelte',
+    'src/routes/(algo)/automation/agent-templates/+page.svelte',
+    'src/routes/(algo)/automation/templates/+page.svelte',
+    'src/routes/(algo)/dashboard/+page.svelte',
+    'src/routes/(algo)/showcase/+page.svelte',           // may be documentation swatches — verify
+  ];
+
+  test('A3 ratchet — stale pale-blue literals only in the allowlisted (not-yet-swept) files', () => {
+    const files = collectSvelteFiles();
+    const rx = /rgba\(\s*200\s*,\s*216\s*,\s*240\s*,|#(e2e8f0|cbd5e1|f8fafc)/i;
+    const offenders = [];
+    for (const f of files) {
+      const rel = path.relative(process.cwd(), f).split(path.sep).join('/');
+      let src = fs.readFileSync(f, 'utf-8');
+      // Strip comments so documentation examples (like the ones in this
+      // very guard, or migration-note comments in swept files) don't
+      // trip the guard.
+      src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+      if (rx.test(src)) offenders.push(rel);
+    }
+
+    const allowSet = new Set(A3_MUTED_LITERAL_ALLOWLIST);
+    // 1. No NEW offenders outside the allowlist (regression fence).
+    const newOffenders = offenders.filter(f => !allowSet.has(f));
+    expect(newOffenders, `New stale pale-blue literal sites outside the A3 allowlist ` +
+      `(must migrate to var(--algo-slate-muted) or color-mix(...var(--algo-slate)...)):\n${newOffenders.join('\n')}`
+    ).toEqual([]);
+
+    // 2. Allowlist entries that are ALREADY clean must be removed (the
+    // ratchet only shrinks — stops a stale allowlist entry from masking
+    // future regressions in a file that's already been swept).
+    const staleAllowlistEntries = A3_MUTED_LITERAL_ALLOWLIST.filter(f => !offenders.includes(f));
+    expect(staleAllowlistEntries, `These allowlist entries are already clean — remove them from ` +
+      `A3_MUTED_LITERAL_ALLOWLIST (ratchet must shrink, never carry dead entries):\n${staleAllowlistEntries.join('\n')}`
+    ).toEqual([]);
+  });
+
+  test('.cell-muted derives from var(--algo-slate-muted) (computed-style, not source-grep)', async ({ page }) => {
+    // Guards against a hardcoded literal that happens to render the same
+    // colour as the CURRENT --algo-slate-muted value (which would pass a
+    // naive `color === rgba(255,255,255,0.55)` check and silently
+    // regress the next time the token's value changes) — override
+    // --algo-slate-muted to a distinctive colour on a scratch container
+    // and assert `.cell-muted` tracks it, proving real derivation via
+    // the token rather than a coincidentally-matching literal.
+    //
+    // Note: overriding the UPSTREAM --algo-slate (rather than
+    // --algo-slate-muted directly) on a descendant does NOT work here —
+    // CSS custom properties are substituted into their computed value at
+    // the element where they are SPECIFIED (only :root specifies
+    // --algo-slate-muted), so --algo-slate-muted's own var(--algo-slate)
+    // reference resolves against :root's cascade and that fully-resolved
+    // value is what descendants inherit, regardless of a descendant's
+    // own --algo-slate override (verified empirically). Overriding
+    // --algo-slate-muted itself is both the correct test and a more
+    // direct proof that `.cell-muted` reads through the token.
+    await loginAsAdmin(page);
+    await page.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    // Wait for MarketPulse's stylesheet chunk (carrying the :global(.cell-muted)
+    // rule) to be loaded — any ag-theme-algo element proves the chunk is live.
+    await page.waitForSelector('.ag-theme-algo', { timeout: 20_000 }).catch(() => {});
+
+    const result = await page.evaluate(() => {
+      const container = document.createElement('div');
+      container.className = 'ag-theme-algo';
+      // Distinctive override — nothing in the real palette is pure red.
+      container.style.setProperty('--algo-slate-muted', 'rgba(255, 0, 0, 0.9)');
+      const span = document.createElement('span');
+      span.className = 'cell-muted';
+      container.appendChild(span);
+      document.body.appendChild(container);
+      const resolved = getComputedStyle(span).color;
+      document.body.removeChild(container);
+      return resolved;
+    });
+
+    expect(result, `.cell-muted did not track a --algo-slate-muted override — got ${result}`)
+      .toBe('rgba(255, 0, 0, 0.9)');
+  });
+
   test('no literal card-bg gradient outside app.css', () => {
     const files = collectSvelteFiles();
     const offenders = [];
