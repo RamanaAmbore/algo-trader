@@ -707,6 +707,12 @@
 .ag-theme-algo .ag-cell.dir-gain { color: var(--algo-green) !important; }
 .ag-theme-algo .ag-cell.dir-loss { color: var(--algo-amber) !important; }
 .ag-theme-algo .ag-cell.dir-flat { color: var(--algo-slate) !important; }
+/* A6 (2026-09 audit) — genuine P&L loss (red, matches PositionStrip's
+   .ps-neg convention), distinct from dir-loss's amber (kept for margin/
+   cash/holdings-value columns + NavBreakdown's Expiry P&L, which is
+   flat-amber regardless of sign on PositionStrip's own .ps-exp pill).
+   Used via algoGridUtils.js's mkDirCellText({ lossRed: true }). */
+.ag-theme-algo .ag-cell.dir-loss-red { color: var(--c-short) !important; }
 
 /* Long vs short positions — distinct colour family from loss/gain so
    the operator doesn't conflate "side of the book" with "in profit".

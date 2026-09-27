@@ -24,7 +24,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
-  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
+  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCellText, mkDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
@@ -350,6 +350,16 @@
     return acctStyleVars(p.data?.account);
   }
 
+  // A6 (2026-09 audit): Day P&L / Lifetime P&L columns need red-for-
+  // negative (matches PositionStrip's .ps-neg), not the agDirCellText
+  // default amber. Module-level so cellClass stays a stable function
+  // reference (not recreated per render) — same convention as
+  // _acctCellStyle above. Expiry P&L keeps plain agDirCellText
+  // untouched — PositionStrip's own Expiry pill (.ps-exp) is flat amber
+  // regardless of sign, and that column's call-site was explicitly left
+  // alone in this pass.
+  const _pnlLossRed = mkDirCellText({ lossRed: true });
+
 
   // ── ag-Grid containers and instances ─────────────────────────────────
   /** @type {HTMLElement|null} */
@@ -374,10 +384,10 @@
       cellClass: 'ag-col-fill ag-col-acct', cellStyle: _acctCellStyle },
     { field: 'day_pnl',  headerName: 'Day P&L',   minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: _pnlLossRed, valueFormatter: agAggFmt },
     { field: 'lifetime', headerName: 'P&L',         minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
-      cellClass: agDirCellText, valueFormatter: agAggFmt },
+      cellClass: _pnlLossRed, valueFormatter: agAggFmt },
     { field: 'expiry',   headerName: 'Expiry P&L', minWidth: 64, flex: 1,
       type: 'numericColumn', headerClass: NUMERIC_HDR,
       cellClass: agDirCellText, valueFormatter: agAggFmt },

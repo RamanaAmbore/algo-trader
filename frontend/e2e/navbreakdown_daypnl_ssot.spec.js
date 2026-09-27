@@ -110,3 +110,62 @@ test.describe('NavBreakdown TOTAL day P&L SSOT', () => {
     console.log('[navbreakdown_daypnl_ssot] stale reduce pattern absent from _pTotal verified');
   });
 });
+
+// ── A6 (2026-09 audit): Day P&L / Lifetime P&L red-for-negative ──────────
+// NavBreakdown's Day P&L / Lifetime P&L columns previously used
+// agDirCellText's amber-for-negative default (a misapplied carryover of
+// the Expiry P&L column's genuinely-flat-amber-regardless-of-sign
+// exception) — should be red, matching PositionStrip's .ps-neg
+// convention. Source-grep (not live-render) so this doesn't depend on
+// the book carrying a negative P&L row at test time.
+
+test.describe('NavBreakdown P&L sign colour (A6)', () => {
+  test('Day P&L / Lifetime P&L columns use the red-for-negative variant; Expiry untouched', () => {
+    let source = '';
+    try {
+      source = readFileSync(NAV_BREAKDOWN_PATH, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read NavBreakdown.svelte: ${e.message}`);
+      return;
+    }
+
+    // mkDirCellText({ lossRed: true }) imported + assigned once at
+    // module level (not recreated inline per column-def, per the file's
+    // existing memoisation convention for cellStyle/cellClass helpers).
+    expect(source).toContain('mkDirCellText');
+    expect(source).toMatch(/const\s+_pnlLossRed\s*=\s*mkDirCellText\(\s*\{\s*lossRed:\s*true\s*\}\s*\)/);
+
+    // day_pnl and lifetime column defs (P slot, _pCols) use the red variant.
+    const dayPnlCol = source.match(/\{\s*field:\s*'day_pnl'[\s\S]*?\}/)?.[0] ?? '';
+    const lifetimeCol = source.match(/\{\s*field:\s*'lifetime',\s*headerName:\s*'P&L'[\s\S]*?\}/)?.[0] ?? '';
+    const expiryCol = source.match(/\{\s*field:\s*'expiry'[\s\S]*?\}/)?.[0] ?? '';
+
+    expect(dayPnlCol, 'day_pnl column def not found').not.toBe('');
+    expect(lifetimeCol, 'lifetime (P&L) column def not found').not.toBe('');
+    expect(expiryCol, 'expiry column def not found').not.toBe('');
+
+    expect(dayPnlCol, 'Day P&L column must use _pnlLossRed (red-for-negative)').toContain('cellClass: _pnlLossRed');
+    expect(lifetimeCol, 'Lifetime P&L column must use _pnlLossRed (red-for-negative)').toContain('cellClass: _pnlLossRed');
+    // Expiry column's call-site explicitly untouched — stays on the
+    // plain (amber-for-negative) agDirCellText default.
+    expect(expiryCol, 'Expiry P&L column call-site must be left untouched (agDirCellText)').toContain('cellClass: agDirCellText');
+
+    console.log('[navbreakdown_daypnl_ssot] A6 red-for-negative Day/Lifetime P&L verified');
+  });
+
+  test('the misleading "matches NavStrip pill values" colour-convention comment is corrected', () => {
+    const path = '/Users/ramanambore/projects/ramboq/frontend/src/lib/data/algoGridUtils.js';
+    let source = '';
+    try {
+      source = readFileSync(path, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read algoGridUtils.js: ${e.message}`);
+      return;
+    }
+    // The old, wrong claim ("Color convention matches NavStrip pill
+    // values" as a blanket statement for agDirCellText) must be gone —
+    // it's now scoped/qualified, not a blanket claim.
+    expect(source).not.toMatch(/Color convention matches NavStrip pill values:\s*\n\s*\*\s*positive/);
+    expect(source).toContain('does NOT match');
+  });
+});
