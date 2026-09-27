@@ -3698,7 +3698,8 @@
   }
   .ot-side-toggle-compact .ot-side-btn:hover:not(.on):not([disabled]) {
     background: rgba(255, 255, 255, 0.06);
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate). */
+    color: var(--algo-slate);
   }
   /* .ot-side-toggle-compact .ot-side-btn.ot-side-buy.on / .ot-side-sell.on
      (the BUY/SELL variant) lives in SideToggle.svelte's own scope — that

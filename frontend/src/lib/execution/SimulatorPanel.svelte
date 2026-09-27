@@ -1776,7 +1776,9 @@
     font-size: var(--fs-xs);
   }
   .sim-pills-label {
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
     font-size: var(--fs-2xs);
     font-weight: 700;
     letter-spacing: 0.06em;

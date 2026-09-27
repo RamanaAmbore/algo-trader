@@ -267,7 +267,8 @@
     margin-left: auto;
     background: rgba(126,151,184,0.10);
     border: 1px solid rgba(180,200,230,0.25);
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     border-radius: 4px;
     padding: 0.18rem 0.5rem;
     font-size: var(--fs-lg);
@@ -293,7 +294,8 @@
   .rec-status {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
-    color: rgba(200,216,240,0.92);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 92%, transparent);
   }
   .rec-paused {
     color: var(--c-action);
@@ -318,7 +320,8 @@
     font-size: var(--fs-md);
     font-weight: 600;
     font-family: var(--font-numeric);
-    color: rgba(200,216,240,0.9);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 90%, transparent);
     background: rgba(126,151,184,0.10);
     border: 1px solid rgba(180,200,230,0.25);
     border-radius: 4px;

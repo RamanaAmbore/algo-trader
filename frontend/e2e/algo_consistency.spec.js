@@ -168,18 +168,17 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
     // fillStyle do NOT parse CSS var()/color-mix() at all, regardless of
     // load timing — those need JS-side getComputedStyle resolution or a
     // documented hardcoded fallback, not a text substitution).
+    // execution/RecordingsPanel.svelte, execution/SimulatorPanel.svelte,
+    // order/ChaseAggPicker.svelte, order/OptionChainTab.svelte,
+    // order/OrderTicket.svelte, order/OrderTimelineDrawer.svelte,
+    // order/QtyInput.svelte, order/SideToggle.svelte — swept (commit
+    // 4/N): all verified algo-only (no public/investor mount) and no
+    // canvas/SVG sites, straightforward color-mix()/named-token
+    // conversions.
     'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs — verify per-site
     'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
     'src/lib/MultiPriceChart.svelte',          // canvas colour consumer — verify before converting
     'src/lib/OptionsPayoff.svelte',            // hand-rolled SVG — verify before converting
-    'src/lib/execution/RecordingsPanel.svelte',
-    'src/lib/execution/SimulatorPanel.svelte',
-    'src/lib/order/ChaseAggPicker.svelte',
-    'src/lib/order/OptionChainTab.svelte',
-    'src/lib/order/OrderTicket.svelte',
-    'src/lib/order/OrderTimelineDrawer.svelte',
-    'src/lib/order/QtyInput.svelte',
-    'src/lib/order/SideToggle.svelte',
     'src/routes/(algo)/admin/alerts/+page.svelte',
     'src/routes/(algo)/admin/derivatives/+page.svelte', // .byund-row .cell-muted done; other sites remain
     'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte',

@@ -321,7 +321,8 @@
   .otd-qty {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    color: rgba(200, 216, 240, 0.7);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
   }
   .otd-mode-pill {
     font-family: var(--font-numeric);

@@ -132,7 +132,8 @@
   }
   .ot-side-toggle-compact .ot-side-btn:hover:not(.on):not([disabled]) {
     background: rgba(255, 255, 255, 0.06);
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate). */
+    color: var(--algo-slate);
   }
   /* Border-treatment parity with the footer's .oes-footer-side-btn-single
      side selector (SymbolPanel.svelte) — same rgba(...,0.70) border alpha

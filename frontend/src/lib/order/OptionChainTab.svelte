@@ -1612,7 +1612,8 @@
     font-weight: 700;
   }
   .chain-tpl-note-label {
-    color: rgba(200, 216, 240, 0.7);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
     text-transform: uppercase;
     letter-spacing: 0.08em;
     font-weight: 700;
@@ -1622,7 +1623,9 @@
     font-weight: 700;
   }
   .chain-tpl-note-desc {
-    color: rgba(200, 216, 240, 0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
   }
   .chain-basket-clear,
   .chain-basket-place {

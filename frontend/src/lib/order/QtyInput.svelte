@@ -193,8 +193,10 @@
   .ot-qty-chip {
     font-size: var(--fs-sm);
     color: var(--text-muted);
-    background: rgba(200,216,240,0.06);
-    border: 1px solid rgba(200,216,240,0.12);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α) background/border;
+       each alpha preserved. */
+    background: color-mix(in srgb, var(--algo-slate) 6%, transparent);
+    border: 1px solid color-mix(in srgb, var(--algo-slate) 12%, transparent);
     border-radius: 3px;
     padding: 0.1rem 0.35rem;
     font-family: var(--font-numeric);

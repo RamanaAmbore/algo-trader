@@ -107,7 +107,8 @@
   .cap-pill--panel {
     padding: 0.14rem 0.4rem;
     background: transparent;
-    color: rgba(200,216,240,0.65);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
     border: 0;
     border-right: 1px solid rgba(251,191,36,0.20);
     font-family: var(--font-numeric);
