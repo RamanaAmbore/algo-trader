@@ -30,7 +30,8 @@
     "description": "Quantitative investment analytics — long-term stock portfolio with algo-executed options overlay. 25+ years active investing, 22%+ XIRR.",
     "founder": {
       "@type": "Person",
-      "name": "Haritha Chikile"
+      "name": "Haritha Chikile",
+      "alumniOf": "Kakatiya University"
     },
     "employee": {
       "@type": "Person",
@@ -101,7 +102,7 @@
 
     <div class="prose-section-label" style="margin-top: 1.5rem;">Founder</div>
 
-    <p>Haritha Chikile — Founder, RamboQuant Analytics LLP.</p>
+    <p>Haritha Chikile — Founder, RamboQuant Analytics LLP. B.Sc. and MBA from Kakatiya University.</p>
 
     <div class="prose-section-label" style="margin-top: 1.5rem;">Platform Architect &amp; Quantitative Developer</div>
 
