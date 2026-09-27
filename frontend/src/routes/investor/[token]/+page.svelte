@@ -286,7 +286,11 @@
     max-width: 920px;
     margin: 0 auto;
     padding: 2.5rem 1.5rem 4rem;
-    font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    /* B2 (2026-09): 'Inter' was referenced but never loaded (no
+       @font-face, no Google Fonts link) — dropped rather than self-
+       hosting a new font file in this pass. See the matching app.css
+       comment on .ag-theme-ramboq's --ag-font-family for the same call. */
+    font-family: -apple-system, BlinkMacSystemFont, sans-serif;
     color: #2a2418;
   }
   @media (max-width: 700px) {
@@ -313,7 +317,8 @@
   .ip-brand-mark { color: var(--card-accent-text, #8f6000); }
   .ip-brand-rest { color: #2a2418; }
   .ip-tag {
-    font-size: 0.65rem;
+    /* B2: 0.65rem (~10.4px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
     color: var(--card-as-of-text, #7a6650);
@@ -365,7 +370,9 @@
   .ip-hero-main { flex: 1 1 14rem; }
   .ip-hero-block { flex: 0 1 10rem; }
   .ip-hero-lbl {
-    font-size: 0.6rem;
+    /* B2: 0.6rem (~9.6px) bumped to the 0.7rem floor — these label the
+       primary NAV figures, a credibility-relevant number per the plan. */
+    font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -386,7 +393,8 @@
   .ip-hero-block.pnl-pos .ip-hero-val { color: #14653a; }
   .ip-hero-block.pnl-neg .ip-hero-val { color: #962d2d; }
   .ip-hero-asof {
-    font-size: 0.62rem;
+    /* B2: 0.62rem (~9.9px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     color: var(--card-as-of-text, #7a6650);
     margin-top: 0.25rem;
   }
@@ -404,7 +412,8 @@
     padding: 0.7rem 0.9rem;
   }
   .ip-tile-lbl {
-    font-size: 0.55rem;
+    /* B2: 0.55rem (~8.8px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
@@ -479,7 +488,8 @@
     background: #e7e0cf; color: var(--card-as-of-text, #7a6650); pointer-events: none;
   }
   .ip-statement-hint {
-    font-size: 0.65rem; color: var(--card-as-of-text, #7a6650); line-height: 1.5;
+    /* B2: 0.65rem (~10.4px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem; color: var(--card-as-of-text, #7a6650); line-height: 1.5;
   }
 
   .ip-footer {

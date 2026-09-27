@@ -342,7 +342,8 @@
   /* Zoom hint below each diagram */
   .faq-zoom-hint {
     text-align: center;
-    font-size: 0.68rem;
+    /* B2: 0.68rem (~10.9px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     /* B1: #8a9ab0 measured ~2.82:1 on the card bg — fails AA. Reuses the
        same muted meta color already used elsewhere on this page
        (.faq-chevron default, .term-lbl equivalents) — ~5.06:1. */

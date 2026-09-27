@@ -496,7 +496,17 @@
   --ag-row-hover-color: #efebdf;
   --ag-selected-row-background-color: #e2dccc;
   --ag-border-color: #c4bba8;
-  --ag-font-family: 'Inter', 'SF Pro Text', -apple-system, system-ui, sans-serif;
+  /* B2 (2026-09): 'Inter' was referenced but never loaded (no @font-face,
+     no Google Fonts link) — a silent fallback that only rendered as Inter
+     on machines that happened to have it installed system-wide. Verified
+     this is the ONLY consumer of .ag-theme-ramboq that matters: the
+     class is only actually mounted by (public)/performance/+page.svelte's
+     <PerformancePage> (default theme prop); no algo route mounts
+     PerformancePage or NavCard with this theme. Dropped the dead
+     reference rather than self-hosting a new font file in this pass —
+     'SF Pro Text' already renders natively on macOS/iOS, and the rest of
+     the stack is a solid system-font fallback everywhere else. */
+  --ag-font-family: 'SF Pro Text', -apple-system, system-ui, sans-serif;
   --ag-font-size: 0.625rem;
   --ag-row-height: 22px;
   --ag-header-height: 28px;

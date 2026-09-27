@@ -362,7 +362,9 @@
     margin: 0.12rem 0 0.08rem;
   }
   .pub-brand-tagline {
-    font-size: 0.4rem;
+    /* B2: 0.4rem (~6.4px) was far below the 0.7rem legibility floor —
+       one of the two confirmed-worst violations named in the plan. */
+    font-size: 0.7rem;
     font-weight: 500;
     color: rgba(255,255,255,0.82);
     letter-spacing: 0.02em;
@@ -372,7 +374,9 @@
   }
   .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; }
   .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
-  .pub-brand-mobile .pub-brand-tagline { font-size: 0.4rem; }
+  /* B2: same 0.7rem floor on mobile — no smaller exception. Verified
+     (mobile_typography_floor.spec.js) no horizontal overflow at 360px. */
+  .pub-brand-mobile .pub-brand-tagline { font-size: 0.7rem; }
 
   /* Nav buttons — laptop / desktop. About / Market / Performance / FAQ /
      Contact get the prominent treatment; the right-side context-switch

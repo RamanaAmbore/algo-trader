@@ -227,7 +227,8 @@
     line-height: 1.55rem;
   }
   .trust-lbl {
-    font-size: 0.55rem;
+    /* B2: 0.55rem (~8.8px) was below the 0.7rem legibility floor. */
+    font-size: 0.7rem;
     font-weight: 700;
     color: #5a7090;
     text-transform: uppercase;
@@ -394,7 +395,8 @@
     border-radius: 0.3rem;
   }
   .term-lbl {
-    font-size: 0.55rem;
+    /* B2: 0.55rem (~8.8px) was below the 0.7rem legibility floor. */
+    font-size: 0.7rem;
     font-weight: 700;
     color: #5a7090;
     text-transform: uppercase;
@@ -408,7 +410,8 @@
     line-height: 1.15;
   }
   .term-note {
-    font-size: 0.65rem;
+    /* B2: 0.65rem (~10.4px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     color: #5a7090;
     line-height: 1.35;
     margin-top: 0.2rem;
@@ -436,7 +439,10 @@
      weight as /performance's strategy thesis and /about's closing
      statement. */
   .closer-disclaimer {
-    font-size: 0.62rem;
+    /* B2: 0.62rem (~9.9px) bumped to the 0.7rem floor — this is a risk
+       disclosure, arguably MORE important to keep legible than a
+       decorative label. */
+    font-size: 0.7rem;
     margin: 1rem auto 0;
     max-width: 32rem;
     font-style: italic;

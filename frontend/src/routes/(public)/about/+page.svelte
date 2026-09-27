@@ -187,7 +187,9 @@
     .stat-creds  { font-size: 1.15rem; line-height: 2.1rem; }
   }
   .stat-label {
-    font-size: 0.6rem;
+    /* B2: 0.6rem (~9.6px) was below the 0.7rem legibility floor — one of
+       the two confirmed-worst violations named in the plan. */
+    font-size: 0.7rem;
     font-weight: 600;
     color: #5a7090;
     text-transform: uppercase;
@@ -264,7 +266,8 @@
 
   /* ── Prose section labels ──────────────────────────────────────────────── */
   .prose-section-label {
-    font-size: 0.6rem;
+    /* B2: 0.6rem (~9.6px) bumped to the 0.7rem floor. */
+    font-size: 0.7rem;
     font-weight: 700;
     color: #5a7090;
     text-transform: uppercase;
