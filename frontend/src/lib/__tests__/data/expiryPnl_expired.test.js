@@ -36,9 +36,14 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-// Pin todayIST so expiry-date comparisons aren't flaky across calendar days.
+// Pin the trading-session date so expiry-date comparisons aren't flaky
+// across calendar days. isExpiredHeldContract uses tradingSessionDateIST()
+// (08:00 IST rollover), not todayIST() (midnight rollover) — see that
+// function's own describe block below for the fix this session-boundary
+// swap addresses.
 vi.mock('$lib/dateFormat.js', () => ({
   todayIST: () => '2026-09-27',
+  tradingSessionDateIST: () => '2026-09-27',
 }));
 
 // Controllable fake instruments cache. getInstrument mirrors the real

@@ -1,7 +1,7 @@
 import { decomposeSymbol, guessExpiryYmdFromSymbol } from './decomposeSymbol.js';
 import { baseDayPnlForPosition, currentTotalProfit } from './nav.js';
 import { getInstrument as _getInstrumentDefault, hasFNO as _hasFNODefault } from './instruments.js';
-import { todayIST } from '../dateFormat.js';
+import { tradingSessionDateIST } from '../dateFormat.js';
 
 // Structural tail regexes mirroring decomposeSymbol's own _OPT_MONTHLY /
 // _OPT_WEEKLY shapes (YY+MON+strike+CE/PE, or YY+month-code+DD+strike+
@@ -698,15 +698,25 @@ export function resolveExpiryAnchor({ isOpt, rootSpot, ownLiveLtp = 0, ownPolled
 export function isExpiredHeldContract(sym, qty, getInstrumentFn = _getInstrumentDefault, hasFNOFn = _hasFNODefault) {
   if (!qty) return false;
   const inst = getInstrumentFn(sym);
+  // Trading-session date (rolls over at 08:00 IST), NOT the bare calendar
+  // date (see tradingSessionDateIST's own docstring for why). Operator
+  // 2026-09-27: Exp P&L must stay a THEORETICAL mark-to-last-spot value
+  // all the way through expiry-day close and the overnight closed window —
+  // it must not collapse to the frozen actual/settled P&L (this function's
+  // TRUE branch triggers exactly that collapse everywhere it's consumed:
+  // the payoff chart, Legs grid, Snapshot grid, and NavStrip's P-pill) just
+  // because the wall-clock calendar date ticked over at midnight, several
+  // hours before the next trading session even opens.
+  const sessionToday = tradingSessionDateIST();
   if (inst) {
-    return !!(inst.x && inst.x < todayIST());
+    return !!(inst.x && inst.x < sessionToday);
   }
   const root = (decomposeSymbol(sym).root || '').toUpperCase();
   if (root && hasFNOFn(root)) {
     return true;
   }
   const guess = guessExpiryYmdFromSymbol(sym);
-  return !!(guess && guess < todayIST());
+  return !!(guess && guess < sessionToday);
 }
 
 /**

@@ -17,9 +17,14 @@ import {
 } from '$lib/derivatives/pageLoad.js';
 import { isExpiredHeldContract, expiredPositionExpPnl } from '$lib/data/expiryPnl.js';
 
-// Pin todayIST to a fixed date so tests are not flaky across calendar days.
+// Pin the date so tests are not flaky across calendar days. isExpiredHeldContract
+// uses tradingSessionDateIST() (08:00 IST rollover), not todayIST() (midnight
+// rollover) — see expiryPnl_sessionBoundary.test.js for tests of that boundary
+// itself; this file's fixed pin just needs both mocked so nothing here depends
+// on wall-clock time.
 vi.mock('$lib/dateFormat.js', () => ({
   todayIST: () => '2026-07-27',
+  tradingSessionDateIST: () => '2026-07-27',
 }));
 
 // ─────────────────────────────────────────────────────────────────────────────
