@@ -923,9 +923,14 @@ describe('mkLtpCol — tooltipValueGetter', () => {
 });
 
 // ---------------------------------------------------------------------------
-// mkAcctColTrailing — A2 (2026-09 audit): cellStyle emits the shared
-// --acct-color custom property (renamed from --acct-stripe) that app.css's
-// `.ag-theme-algo .ag-col-acct` rule reads for the stripe/bg-tint/weight.
+// mkAcctColTrailing — 2026-09 fix: this is the TRAILING (last) column of the
+// right grid (Positions/Holdings) — Account is NOT the first column there
+// (St/Symbol/LTP/.../OI all precede it). Per the operator's first-column-
+// only rule, the shared identity stripe/tint (--acct-color, app.css's
+// `.ag-theme-algo .ag-col-acct` rule) must NOT apply here — the cell
+// renders plain (still monospace via `mp-acct-cell` for +N alignment,
+// no colour identity). Supersedes the prior A2-era test asserting the
+// opposite (this column used to carry `ag-col-acct` + a cellStyle).
 // ---------------------------------------------------------------------------
 
 describe('mkAcctColTrailing', () => {
@@ -933,24 +938,18 @@ describe('mkAcctColTrailing', () => {
     return mkAcctColTrailing({ RA: 'ag-right-aligned-cell' });
   }
 
-  it('carries the ag-col-acct cellClass so the shared app.css rule applies', () => {
+  it('does NOT carry the ag-col-acct cellClass (trailing column, no stripe/tint)', () => {
     const col = makeCol();
-    expect(col.cellClass).toContain('ag-col-acct');
+    expect(col.cellClass).not.toContain('ag-col-acct');
   });
 
-  it('cellStyle emits --acct-color (not the old --acct-stripe name)', () => {
+  it('keeps mp-acct-cell for monospace +N-badge alignment', () => {
     const col = makeCol();
-    const style = col.cellStyle({ data: { _acctColor: '#fbbf24' } });
-    expect(style).toEqual({ '--acct-color': '#fbbf24' });
+    expect(col.cellClass).toContain('mp-acct-cell');
   });
 
-  it('cellStyle falls back to transparent when no resolved colour', () => {
+  it('has no cellStyle — no --acct-color custom property is injected', () => {
     const col = makeCol();
-    expect(col.cellStyle({ data: { _acctColor: null } })).toEqual({ '--acct-color': 'transparent' });
-  });
-
-  it('cellStyle returns empty object for TOTAL rows (no stripe/tint)', () => {
-    const col = makeCol();
-    expect(col.cellStyle({ data: { _isTotal: true, _acctColor: '#fbbf24' } })).toEqual({});
+    expect(col.cellStyle).toBeUndefined();
   });
 });

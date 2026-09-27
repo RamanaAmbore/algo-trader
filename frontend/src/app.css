@@ -1380,8 +1380,18 @@
    (both !important, same specificity — a cascade race). Scoped to
    .ag-theme-algo (2-class compound selector beats the bare 1-class reset
    on specificity alone, regardless of source order) so it reaches every
-   dark-theme surface (BrokerHealthBadge, NavBreakdown, MarketPulse) but
-   never PerformancePage's ag-theme-ramboq grid. */
+   dark-theme surface where Account is the FIRST column (BrokerHealthBadge,
+   NavBreakdown, dashboard Nav/Equity/Capital) but never PerformancePage's
+   ag-theme-ramboq grid.
+
+   First-column-only rule (2026-09 fix): the stripe/tint is reserved for
+   grids where Account leads the column order. MarketPulse's right grid
+   (Positions/Holdings) carries Account as a TRAILING column (after St /
+   Symbol / LTP / .../ OI) — its `mkAcctColTrailing()` (pulseColumns.js)
+   intentionally does NOT apply `ag-col-acct` for this reason; that cell
+   renders plain (still monospace via `mp-acct-cell` for +N badge
+   alignment, no colour identity). Do not re-add `ag-col-acct` to a
+   trailing/non-first account column without operator sign-off. */
 .ag-theme-algo .ag-col-acct {
   border-left: 3px solid var(--acct-color, transparent) !important;
   background-color: color-mix(in srgb, var(--acct-color, transparent) 14%, transparent);

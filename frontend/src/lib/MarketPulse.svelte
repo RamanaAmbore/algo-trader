@@ -3338,9 +3338,18 @@
    * Return { optClass, symTitle } for the symbol span.
    * optClass: CE/PE tint class (or empty string).
    * symTitle: virtual-root title attribute string for MCX/CDS rows (or empty string).
+   *
+   * @param {boolean} applyOptTint - CE/PE colour treatment (A5 Phase A:
+   *   `.sym-main` base colour + weight, `.sym-ce`/`.sym-pe` split) is a
+   *   "first column only" decoration (2026-09 fix), same rule as the
+   *   account stripe/tint. The LEFT grid's symbol column IS the first
+   *   column (mkLeftColDefs) → keeps the tint. The RIGHT grid's symbol
+   *   column is SECOND (after the 'St' pos-state column, mkRightColDefs)
+   *   → tint suppressed there. Caller passes false for the right grid.
    */
-  function _symCellClasses(row, main) {
-    const optClass = row.opt_type === 'CE' ? 'sym-ce'
+  function _symCellClasses(row, main, applyOptTint = true) {
+    const optClass = !applyOptTint ? ''
+                   : row.opt_type === 'CE' ? 'sym-ce'
                    : row.opt_type === 'PE' ? 'sym-pe'
                    : '';
     const _exchU = String(row.exchange || '').toUpperCase();
@@ -3402,7 +3411,13 @@
     return out;
   }
 
-  function symRenderer(params) {
+  /**
+   * @param {boolean} applyOptTint - see `_symCellClasses` doc. Defaults
+   * to true (LEFT grid, first-column symbol). `symRendererRight` below
+   * passes false for the RIGHT grid, where symbol is not the first
+   * column (2026-09 fix).
+   */
+  function symRenderer(params, applyOptTint = true) {
     const row = params.data || {};
     // Two alias sources can light up the cell:
     //   - row.display_name — operator-supplied nickname on the
@@ -3425,7 +3440,7 @@
       ? `<span class="sym-alias" title="Tradingsymbol"> → ${_pulseFmtSym(row.tradingsymbol || '', row.exchange || '')}</span>`
       : '';
     // CE/PE tint + virtual-root title attribute (MCX/CDS only).
-    const { optClass, symTitle } = _symCellClasses(row, main);
+    const { optClass, symTitle } = _symCellClasses(row, main, applyOptTint);
     // Lot-viable chip + P/H/W/U/M badge cluster.
     // lotChip sits immediately after the symbol text (before aliasTail + badgeHtml)
     // so the operator's eye lands on the actionable covered-call count first.
@@ -3469,6 +3484,15 @@
       ? '<span class="sym-provisional" title="Provisional — awaiting broker confirmation">~</span>'
       : '';
     return `${provChip}<span class="sym-main ${optClass}"${symTitle}>${main}</span>${lotChip}${aliasTail}${badgeHtml}${removeBtn}${moveBtns}${actionsBtn}${dirLabel}`;
+  }
+
+  // ag-Grid `cellRenderer` callbacks receive a single `params` arg — this
+  // thin wrapper is the RIGHT grid's cellRenderer reference so its symbol
+  // column (not the first column there — see symRenderer's applyOptTint
+  // doc) renders without the CE/PE tint, without duplicating the whole
+  // renderer body.
+  function symRendererRight(params) {
+    return symRenderer(params, false);
   }
 
   /**
@@ -3600,7 +3624,7 @@
     // $state binding that is REASSIGNED (not just mutated) — the tick handler
     // does `_ltpFlashUp = new Set(...)` so a captured value would be stale.
     const _symColLeft       = mkSymColLeft({ symRenderer });
-    const _symColRight      = mkSymColRight({ symRenderer });
+    const _symColRight      = mkSymColRight({ symRenderer: symRendererRight });
     const _sparkCol         = mkSparkCol({ sparkRenderer });
     const _ltpCol           = mkLtpCol({
       getLiveLtpSnap:  () => _liveLtpSnap,

@@ -382,23 +382,23 @@ export function mkOiCol({ RA, numericHdr, aggCompact }) {
  * Renders a "STALE @ HH:MM" badge when the row came from the broker_apis
  * LKG frame cache (circuit breaker OPEN at fetch time).
  *
+ * No `ag-col-acct` stripe/tint here (2026-09 fix) — the shared identity
+ * decoration (left-border stripe + 14% bg tint via `--acct-color`, see
+ * app.css's `.ag-theme-algo .ag-col-acct` rule) is reserved for grids
+ * where Account is the FIRST column (NavBreakdown, BrokerHealthBadge,
+ * dashboard Nav/Equity/Capital). This grid's Account column is TRAILING
+ * (last, after St/Symbol/LTP/.../OI) — operator ruling: decoration only
+ * applies to first-column account cells; a trailing account renders as
+ * a plain cell (still monospace via `mp-acct-cell` for +N badge
+ * alignment, just no colour identity stripe/tint).
+ *
  * @param {{ RA: string | ((p: any) => string | string[]) }} opts
  */
 export function mkAcctColTrailing({ RA }) {
   return {
     field: '_acct_display', headerName: 'Account', colId: 'account',
     width: 86, minWidth: 70, maxWidth: 110,
-    cellClass: 'mp-acct-cell ag-col-acct',
-    // --acct-color (A2, 2026-09 audit) — shared name every dark-theme
-    // surface's account column uses; app.css's .ag-theme-algo .ag-col-acct
-    // rule reads it for the stripe + bg tint + weight. Row already carries
-    // the resolved colour as `_acctColor` (baked in by pulseUnified.js via
-    // $lib/account.js's acctColor()), so no extra import needed here.
-    cellStyle: (p) => {
-      if (p.data?._isTotal) return {};
-      const color = p.data?._acctColor ?? null;
-      return { '--acct-color': color || 'transparent' };
-    },
+    cellClass: 'mp-acct-cell',
     valueGetter: (p) => {
       if (p.data?._isTotal) return '';
       const accts = p.data?.accounts;

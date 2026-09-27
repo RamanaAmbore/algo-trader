@@ -751,3 +751,221 @@ test.describe('algo consistency — symbol-cell base treatment (A5)', () => {
     expect(leg).toContain('var(--c-short)');
   });
 });
+
+/* ── First-column-only decoration rule (2026-09 fix) ──────────────────
+ * Operator ruling: a column's distinctive decoration — account identity
+ * stripe/tint (--acct-color, `.ag-theme-algo .ag-col-acct`) or symbol
+ * CE/PE colour split (`.sym-ce`/`.sym-pe`) — applies ONLY when that
+ * column is the FIRST column in its grid. Non-first-column instances
+ * must render as plain cells.
+ *
+ * Grids audited:
+ *   Account — KEEP (first col):  NavBreakdown (dashboard NAV/Capital/
+ *             Equity tabs), BrokerHealthBadge popup.
+ *   Account — REMOVE (trailing): MarketPulse Positions/Holdings grid
+ *             (`mkAcctColTrailing`, pulseColumns.js) — the confirmed
+ *             defect.
+ *   Symbol  — KEEP (first col):  MarketPulse left grid (Pinned/
+ *             Watchlist/Movers).
+ *   Symbol  — REMOVE (not first, a state/pair column precedes it):
+ *             MarketPulse right grid (Positions/Holdings), derivatives
+ *             Legs/Expiry tab (CandidateLegRow.svelte — checkbox + state
+ *             track precede the symbol cell).
+ *
+ * Static/source checks are deterministic; live computed-style checks
+ * are best-effort (skip, not fail, when live account/position data
+ * isn't present — e.g. a fresh demo account or an idle Sunday session).
+ * ───────────────────────────────────────────────────────────────────── */
+
+test.describe('algo consistency — first-column-only decoration (source)', () => {
+  test('MarketPulse: left-grid symbol column keeps the tint renderer, right-grid does not', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/MarketPulse.svelte'), 'utf-8');
+    // Left grid (first-column symbol) must still wire the plain `symRenderer`.
+    expect(src, 'mkSymColLeft must use symRenderer (CE/PE tint kept — first column)')
+      .toMatch(/mkSymColLeft\(\{\s*symRenderer\s*\}\)/);
+    // Right grid (symbol is 2nd, after the 'St' pos-state column) must use the
+    // no-tint wrapper instead of the raw symRenderer.
+    expect(src, 'mkSymColRight must use symRendererRight (CE/PE tint suppressed — not first column)')
+      .toMatch(/mkSymColRight\(\{\s*symRenderer:\s*symRendererRight\s*\}\)/);
+    // The wrapper itself must call through with applyOptTint=false.
+    expect(src).toMatch(/function symRendererRight\(params\)\s*\{\s*return symRenderer\(params,\s*false\)/);
+  });
+
+  test('CandidateLegRow (derivatives Legs/Expiry): symbol CE/PE tint is hardcoded off', () => {
+    const legPath = path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte');
+    const src = fs.readFileSync(legPath, 'utf-8');
+    // Row order is checkbox -> .cand-state-cell (state track) -> .cand-sym
+    // (symbol) — symbol is the THIRD element, never first, so the CE/PE
+    // split must never be computed from decomposeSymbol here.
+    expect(src, '_optClass must be a hardcoded empty string, not derived from opt type')
+      .toMatch(/const _optClass\s*=\s*'';/);
+    expect(src).not.toMatch(/_optClass\s*=\s*\$derived\(/);
+  });
+
+  test('pulseColumns.js: mkAcctColTrailing carries no ag-col-acct stripe/tint', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/data/pulseColumns.js'), 'utf-8');
+    const fnMatch = src.match(/export function mkAcctColTrailing\([^)]*\)\s*\{[\s\S]*?\n\}/);
+    expect(fnMatch, 'mkAcctColTrailing function not found').not.toBeNull();
+    const body = fnMatch[0];
+    expect(body, 'trailing Account column must not carry ag-col-acct').not.toContain('ag-col-acct');
+    expect(body, 'trailing Account column must not inject --acct-color').not.toContain('--acct-color');
+  });
+});
+
+test.describe.serial('algo consistency — first-column-only decoration (live)', () => {
+  test.setTimeout(120_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  /** Reads border-left-width/-color + background-color off a locator's first match. */
+  async function readAcctCellStyle(locator) {
+    return locator.first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return {
+        borderLeftWidth: cs.borderLeftWidth,
+        borderLeftColor: cs.borderLeftColor,
+        backgroundColor: cs.backgroundColor,
+      };
+    });
+  }
+
+  test('dashboard NavBreakdown (NAV tab, P-slot): Account is first column — keeps stripe + tint', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.nav-bd-ag', { timeout: 20_000 }).catch(() => {});
+
+    const cells = p.locator('.card-body:not([hidden]) .nav-bd-ag .ag-cell[col-id="account"]')
+      .filter({ hasNotText: 'TOTAL' });
+    const count = await cells.count();
+    test.skip(count === 0, 'no non-TOTAL NavBreakdown P-slot account rows rendered');
+
+    const style = await readAcctCellStyle(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`)
+      .toBeGreaterThanOrEqual(3);
+    expect(style.borderLeftColor, `border colour: ${style.borderLeftColor}`)
+      .not.toBe('rgba(0, 0, 0, 0)');
+  });
+
+  test('BrokerHealthBadge popup: Account is first data column — keeps stripe + tint', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    // The chip only renders once $connStatus resolves (async store) — wait
+    // for it rather than sampling immediately after navigation.
+    const chip = p.locator('.broker-chip');
+    await chip.first().waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {});
+    if (!(await chip.count())) {
+      test.skip(true, 'broker-chip not present on this session');
+      return;
+    }
+    await chip.first().click();
+    await p.waitForSelector('.bh-modal', { timeout: 10_000 }).catch(() => {});
+
+    const cells = p.locator('.bh-modal .ag-cell[col-id="account"]');
+    const count = await cells.count();
+    test.skip(count === 0, 'no account rows rendered in BrokerHealthBadge popup');
+
+    const style = await readAcctCellStyle(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`)
+      .toBeGreaterThanOrEqual(3);
+    expect(style.borderLeftColor, `border colour: ${style.borderLeftColor}`)
+      .not.toBe('rgba(0, 0, 0, 0)');
+  });
+
+  test('MarketPulse Positions/Holdings grid: Account is trailing — no stripe/tint', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.mp-bucket-positions .bucket-grid .ag-row', { timeout: 20_000 }).catch(() => {});
+
+    // Account is the LAST column of a ~20-column grid — ag-Grid virtualises
+    // off-screen columns out of the DOM entirely, so the (already-scrolled-
+    // out) Account cells aren't present until brought into view. Click the
+    // pinned-left symbol cell of the first row, then press End (ag-Grid's
+    // keyboard shortcut to focus the row's last cell) to force it in.
+    const firstSymCell = p.locator('.mp-bucket-positions .bucket-grid .ag-row').first()
+      .locator('.ag-cell[col-id="tradingsymbol"]');
+    if (await firstSymCell.count()) {
+      await firstSymCell.click();
+      await p.keyboard.press('End');
+      await p.waitForTimeout(500);
+    }
+
+    const cells = p.locator(
+      '.mp-bucket-positions .bucket-grid .ag-cell[col-id="account"], .mp-bucket-holdings .bucket-grid .ag-cell[col-id="account"]'
+    ).filter({ hasNotText: 'TOTAL' });
+    const count = await cells.count();
+    test.skip(count === 0, 'no non-TOTAL account rows rendered in Positions/Holdings');
+
+    const style = await readAcctCellStyle(cells);
+    expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`)
+      .toBe(0);
+    expect(style.backgroundColor, `background: ${style.backgroundColor}`)
+      .toBe('rgba(0, 0, 0, 0)');
+  });
+
+  test('MarketPulse left grid: symbol is first column — CE/PE tint still resolvable', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.ag-theme-algo', { timeout: 20_000 }).catch(() => {});
+
+    const ceOrPe = p.locator('.mp-col-left .sym-main.sym-ce, .mp-col-left .sym-main.sym-pe');
+    const count = await ceOrPe.count();
+    test.skip(count === 0, 'no CE/PE symbol rows in Pinned/Watchlist/Movers to sample');
+
+    const color = await ceOrPe.first().evaluate((el) => getComputedStyle(el).color);
+    // var(--c-long) / var(--c-short) both resolve to a real (non-slate) rgb —
+    // just assert it differs from the plain base .sym-main slate colour.
+    const baseColor = await p.evaluate(() => {
+      const span = document.createElement('span');
+      span.className = 'sym-main';
+      document.body.appendChild(span);
+      const c = getComputedStyle(span).color;
+      document.body.removeChild(span);
+      return c;
+    });
+    expect(color, `CE/PE tinted colour: ${color}`).not.toBe(baseColor);
+  });
+
+  test('MarketPulse right grid: symbol is 2nd column (after St) — no CE/PE tint', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.mp-bucket-positions .bucket-grid, .mp-bucket-holdings .bucket-grid', { timeout: 20_000 }).catch(() => {});
+
+    // Non-vacuous guard: find a right-grid symbol cell whose visible text
+    // looks like an option contract (ends CE/PE) before asserting absence
+    // of the tint class — otherwise a zero-option account would pass by
+    // having nothing to check.
+    const optionLike = p.locator(
+      '.mp-bucket-positions .bucket-grid .sym-main, .mp-bucket-holdings .bucket-grid .sym-main'
+    ).filter({ hasText: /CE$|PE$/ });
+    const count = await optionLike.count();
+    test.skip(count === 0, 'no CE/PE option rows in Positions/Holdings to sample');
+
+    const hasTintClass = await optionLike.first().evaluate((el) =>
+      el.classList.contains('sym-ce') || el.classList.contains('sym-pe'));
+    expect(hasTintClass, 'right-grid option symbol must NOT carry sym-ce/sym-pe (not first column)').toBe(false);
+  });
+});

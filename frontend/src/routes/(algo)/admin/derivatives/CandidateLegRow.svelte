@@ -27,7 +27,6 @@
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { rootOfLabel }            from '$lib/data/rootOf.js';
   import { formatSymbol }           from '$lib/data/decomposeSymbol';
-  import { decomposeSymbol }        from '$lib/data/decomposeSymbol';
   import { getInstrument, getOptionUnderlyingLot } from '$lib/data/instruments';
   import { acctColor }              from '$lib/account';
   import { lotsForRow, fmtLots }    from '$lib/data/lotsForRow';
@@ -123,10 +122,13 @@
   const isClosable = $derived(!isClosed && c.source !== 'draft');
   const isDraft    = $derived(c.source === 'draft');
 
-  const _decomp    = $derived(decomposeSymbol(c.symbol));
-  const _optClass  = $derived(
-    _decomp.optType === 'CE' ? 'sym-ce' : _decomp.optType === 'PE' ? 'sym-pe' : ''
-  );
+  // CE/PE tint (A5 Phase A: `.sym-main` base colour/weight + `.sym-ce`/
+  // `.sym-pe` split) is a "first column only" decoration (2026-09 fix,
+  // same rule as the account stripe/tint). This row's layout is
+  // checkbox → state track (`.cand-state-cell`) → symbol (`.cand-sym`)
+  // — symbol is the THIRD element, not first — so the tint is suppressed
+  // here; `.sym-main` renders plain (no `.sym-ce`/`.sym-pe` class).
+  const _optClass  = '';
   const _acctColor = $derived(c.account ? acctColor(c.account) : null);
   const _legFlashKey = $derived(`leg:${c.account ?? ''}|${c.symbol ?? ''}`);
 
