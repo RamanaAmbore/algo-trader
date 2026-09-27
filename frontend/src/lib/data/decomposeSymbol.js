@@ -178,6 +178,77 @@ export function composeMonthToken(d, expiryYmd) {
 }
 
 /**
+ * Conservative expiry-date GUESS derived purely from a Kite tradingsymbol's
+ * own encoded year/month(/day) — reuses the SAME `_OPT_WEEKLY`/`_OPT_MONTHLY`/
+ * `_FUT_MONTHLY` regexes `decomposeSymbol` itself matches against, no new
+ * parsing mechanism. No instruments-cache dependency at all — used as a
+ * fallback when the cache doesn't have this exact symbol AND isn't
+ * otherwise authoritative for its root (see expiryPnl.js's
+ * `isExpiredHeldContract`), so a cache miss never has to be treated as
+ * "must be expired" (2026-09 audit fix — the prior design's `!inst` alone
+ * as the expiry signal misclassified every BFO-listed instrument, since
+ * BFO is never fetched by the backend's instruments endpoint at all).
+ *
+ * Precision varies by contract shape:
+ *   - Weekly options encode an exact day (YY + month-code + DD) — returns
+ *     that exact calendar date.
+ *   - Monthly options/futures encode only year+month (Kite's actual
+ *     expiry is an exchange-specific day within that month — e.g. last
+ *     Thursday for NSE monthlies, MCX commodities often expire well
+ *     BEFORE month-end — genuinely NOT derivable from the symbol text
+ *     alone) — returns the LAST DAY of that month as a deliberately
+ *     conservative UPPER BOUND. A contract whose symbol says "26SEP" is
+ *     NEVER treated as expired-via-this-guess before Oct 1, even though
+ *     its real expiry may have been days or weeks earlier — under-
+ *     detecting for a while is the safe direction of error here (a live
+ *     position getting wrongly frozen is worse than an expired position
+ *     staying on the live-spot valuation a little longer). Callers that
+ *     need the tighter case (missing from cache but the ROOT has other
+ *     live F&O — i.e. Kite has almost certainly just dropped this exact
+ *     settled contract from the dump) should check that FIRST and only
+ *     fall back to this guess when the cache isn't authoritative at all.
+ *
+ * Returns null when the symbol doesn't parse as a monthly/weekly F&O
+ * contract (equity, or a digit-bearing root `decomposeSymbol`'s strict
+ * pure-letters pattern rejects) — callers must treat null as "unknown",
+ * i.e. NOT expired, never "expired by default".
+ *
+ * @param {string} sym
+ * @returns {string|null} YYYY-MM-DD, or null when undeterminable.
+ */
+export function guessExpiryYmdFromSymbol(sym) {
+  if (!sym) return null;
+  const s = sym.toUpperCase().trim();
+
+  let m = _OPT_WEEKLY.exec(s);
+  if (m) {
+    const [, , yy, monCode, dd] = m;
+    const mon = _SHORT_MONTH[monCode];
+    const monthIdx = mon ? MONTHS_SHORT.findIndex(x => x.toUpperCase() === mon) : -1;
+    if (monthIdx < 0) return null;
+    const year = 2000 + Number(yy);
+    const day = Number(dd);
+    if (!Number.isFinite(day) || day < 1 || day > 31) return null;
+    return `${year}-${String(monthIdx + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+  }
+
+  m = _OPT_MONTHLY.exec(s);
+  if (!m) m = _FUT_MONTHLY.exec(s);
+  if (m) {
+    const [, , yy, mon] = m;
+    const monthIdx = MONTHS_SHORT.findIndex(x => x.toUpperCase() === mon);
+    if (monthIdx < 0) return null;
+    const year = 2000 + Number(yy);
+    // Last calendar day of (year, monthIdx) — UTC-explicit so this is
+    // never shifted by the local runtime timezone.
+    const lastDay = new Date(Date.UTC(year, monthIdx + 1, 0)).getUTCDate();
+    return `${year}-${String(monthIdx + 1).padStart(2, '0')}-${String(lastDay).padStart(2, '0')}`;
+  }
+
+  return null;
+}
+
+/**
  * Format a Kite-style F&O tradingsymbol with hyphens for readability,
  * matching Dhan's display convention. Pure display transform —
  * underlying storage stays Kite-format so backend / broker calls

@@ -10,32 +10,49 @@
  * (detection), expiredLegFrozenPnl / expiredPositionExpPnl /
  * expiredPositionExpPnlPieces (frozen valuation, no live-spot dependency).
  *
+ * 2026-09 audit follow-up (Defect 2): the original isExpiredHeldContract
+ * treated ANY cache miss as "expired" (gated only by a since-removed
+ * isInstrumentsCacheLoaded()) — this misclassified every BFO-listed
+ * instrument (BFO is never fetched at all — see
+ * backend/api/routes/instruments.py's _EXCHANGES tuple) as permanently
+ * expired-and-frozen EVERYWHERE (NavStrip/Pulse/Snapshot/Legs TOTAL, not
+ * just derivatives) — a wider blast radius than the bug being fixed.
+ * Redesigned to a 3-branch decision (found in cache / missing-but-root-
+ * has-other-live-F&O / missing-and-cache-not-authoritative-for-this-root)
+ * — this file's tests now cover all three branches directly.
+ *
  * Five quality dimensions:
  *  1. SSOT  — same functions portfolioStore.svelte.js's _posTier2 and
  *             derivatives/+page.svelte's four call-sites both import.
  *  2. Perf  — all synchronous; no I/O.
  *  3. Stale — the "discriminating" test directly reproduces the bug this
  *             fix closes (frozen value must NOT depend on a spot input).
- *  4. Reuse — isExpiredHeldContract accepts an injected lookup, matching
+ *  4. Reuse — isExpiredHeldContract accepts injected lookups, matching
  *             buildCandidatePositions' own DI pattern (pageLoad.js).
- *  5. UX    — cold-start guard: before the instruments master loads, no
- *             held F&O row is misclassified as expired app-wide.
+ *  5. UX    — BFO / cold-start / failed-exchange-download guard: a cache
+ *             miss that ISN'T root-authoritative never misclassifies a
+ *             live position as expired app-wide.
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 // Pin todayIST so expiry-date comparisons aren't flaky across calendar days.
 vi.mock('$lib/dateFormat.js', () => ({
-  todayIST: () => '2026-07-27',
+  todayIST: () => '2026-09-27',
 }));
 
-// Controllable fake instruments cache — isInstrumentsCacheLoaded() gates
-// isExpiredHeldContract's `!inst` branch so a genuine cold-start (cache
-// not loaded yet) never misclassifies every held F&O row as expired.
-const _mockCache = { loaded: true, byInst: /** @type {Record<string, {x?:string}>} */ ({}) };
+// Controllable fake instruments cache. getInstrument mirrors the real
+// module's exact-symbol lookup; hasFNO mirrors "does this ROOT have ANY
+// live F&O in cache" (true when the relevant exchange was actually
+// fetched and has OTHER contracts for this root, independent of whether
+// THIS exact symbol is present).
+const _mockCache = {
+  byInst: /** @type {Record<string, {x?:string}>} */ ({}),
+  fnoRoots: /** @type {Set<string>} */ (new Set()),
+};
 vi.mock('$lib/data/instruments.js', () => ({
   getInstrument: (/** @type {string} */ sym) => _mockCache.byInst[sym] ?? null,
-  isInstrumentsCacheLoaded: () => _mockCache.loaded,
+  hasFNO: (/** @type {string} */ root) => _mockCache.fnoRoots.has(root),
 }));
 
 import {
@@ -46,8 +63,8 @@ import {
 } from '$lib/data/expiryPnl.js';
 
 beforeEach(() => {
-  _mockCache.loaded = true;
   _mockCache.byInst = {};
+  _mockCache.fnoRoots = new Set();
 });
 
 describe('isExpiredHeldContract', () => {
@@ -55,34 +72,55 @@ describe('isExpiredHeldContract', () => {
     expect(isExpiredHeldContract('GOLD26FEBFUT', 0)).toBe(false);
   });
 
-  it('true when the instrument is missing entirely (delisted from the master)', () => {
-    _mockCache.byInst = {};
-    expect(isExpiredHeldContract('GOLD25DECFUT', 1)).toBe(true);
-  });
-
-  it('true when the instrument exists but its expiry date has already passed', () => {
-    _mockCache.byInst = { GOLDM25DEC5000CE: { x: '2025-12-24' } }; // before mocked today 2026-07-27
+  it('AUTHORITATIVE branch: instrument exists — uses its own expiry date', () => {
+    _mockCache.byInst = { GOLDM25DEC5000CE: { x: '2025-12-24' } }; // before mocked today 2026-09-27
     expect(isExpiredHeldContract('GOLDM25DEC5000CE', 1)).toBe(true);
   });
 
-  it('false when the instrument exists and has NOT expired yet', () => {
-    _mockCache.byInst = { GOLD26AUGFUT: { x: '2026-08-05' } };
-    expect(isExpiredHeldContract('GOLD26AUGFUT', 1)).toBe(false);
+  it('AUTHORITATIVE branch: instrument exists and has NOT expired yet', () => {
+    _mockCache.byInst = { GOLD26DECFUT: { x: '2026-12-04' } };
+    expect(isExpiredHeldContract('GOLD26DECFUT', 1)).toBe(false);
   });
 
-  it('COLD START (2026-09 audit fix): instruments cache not loaded yet — never misclassifies as expired, even on a lookup miss', () => {
-    _mockCache.loaded = false;
+  it('GOLD/GOLDM regression case — missing exact contract, but root has other live F&O (root-authoritative) → true', () => {
+    // The exact reported bug: GOLDM26SEPFUT already expired (5th of the
+    // month, per Kite's real MCX calendar) and delisted from the dump,
+    // but sibling GOLDM contracts (26OCT, 26NOV, ...) remain in cache —
+    // hasFNO('GOLDM') is true, so the missing exact symbol is trusted as
+    // expired instead of falling through to the conservative (and, for
+    // this case, too-lenient) last-day-of-month symbol guess.
+    _mockCache.byInst = {}; // GOLDM26SEPFUT itself not in cache (delisted)
+    _mockCache.fnoRoots = new Set(['GOLDM']); // sibling contracts ARE in cache
+    expect(isExpiredHeldContract('GOLDM26SEPFUT', 1)).toBe(true);
+  });
+
+  it('BFO NOT-AUTHORITATIVE case — missing exact contract, root has NO live F&O at all (BFO never fetched) → false for a current-month symbol', () => {
+    // SENSEX options trade on BFO, which backend/api/routes/instruments.py
+    // never fetches — hasFNO('SENSEX') is false (no BFO/any-exchange
+    // entries at all for this root), so the cache is NOT authoritative;
+    // falls back to the conservative symbol guess. "26SEP" is the mocked
+    // CURRENT month (today = 2026-09-27) — last-day-of-month (Sep 30) is
+    // NOT before today, so this must NOT be misclassified as expired.
     _mockCache.byInst = {};
-    // Without the cache-loaded gate, this would return true (no
-    // instrument found) purely because the master hasn't loaded — which
-    // would misclassify EVERY held F&O row app-wide during that window.
-    expect(isExpiredHeldContract('NIFTY26FEBFUT', 75)).toBe(false);
+    _mockCache.fnoRoots = new Set(); // nothing for SENSEX at all
+    expect(isExpiredHeldContract('SENSEX26SEP82000CE', 1)).toBe(false);
   });
 
-  it('accepts an injected lookup function (parameterized DI, matches buildCandidatePositions\' own pattern)', () => {
-    const fakeLookup = vi.fn(() => null);
-    expect(isExpiredHeldContract('X', 1, fakeLookup)).toBe(true);
-    expect(fakeLookup).toHaveBeenCalledWith('X');
+  it('NOT-AUTHORITATIVE + strictly-past month guess → true (cold cache / failed exchange download, but symbol month has clearly passed)', () => {
+    _mockCache.byInst = {};
+    _mockCache.fnoRoots = new Set(); // cache has nothing for this root
+    // "26FEB" (Feb 2026) is strictly before the mocked today (2026-09-27)
+    // — the whole month has elapsed, so even the conservative last-day-
+    // of-month guess correctly resolves to expired.
+    expect(isExpiredHeldContract('NIFTY26FEBFUT', 75)).toBe(true);
+  });
+
+  it('accepts injected lookup functions (parameterized DI, matches buildCandidatePositions\' own pattern)', () => {
+    const fakeGetInstrument = vi.fn(() => null);
+    const fakeHasFNO = vi.fn(() => true);
+    expect(isExpiredHeldContract('GOLDM26SEPFUT', 1, fakeGetInstrument, fakeHasFNO)).toBe(true);
+    expect(fakeGetInstrument).toHaveBeenCalledWith('GOLDM26SEPFUT');
+    expect(fakeHasFNO).toHaveBeenCalledWith('GOLDM');
   });
 });
 

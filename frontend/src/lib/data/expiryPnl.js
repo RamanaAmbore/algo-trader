@@ -1,6 +1,6 @@
-import { decomposeSymbol } from './decomposeSymbol.js';
+import { decomposeSymbol, guessExpiryYmdFromSymbol } from './decomposeSymbol.js';
 import { baseDayPnlForPosition, currentTotalProfit } from './nav.js';
-import { getInstrument as _getInstrumentDefault, isInstrumentsCacheLoaded as _isInstrumentsCacheLoadedDefault } from './instruments.js';
+import { getInstrument as _getInstrumentDefault, hasFNO as _hasFNODefault } from './instruments.js';
 import { todayIST } from '../dateFormat.js';
 
 // Structural tail regexes mirroring decomposeSymbol's own _OPT_MONTHLY /
@@ -649,40 +649,64 @@ export function resolveExpiryAnchor({ isOpt, rootSpot, ownLiveLtp = 0, ownPolled
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * True when a held (qty!==0) F&O contract has already expired / been
- * delisted from the live instruments master — the SAME condition
- * `derivatives/pageLoad.js`'s `buildCandidatePositions` checks inline to
- * tag a row `_expired: true` (2026-09 GOLDM fix: a held row whose contract
- * can't be resolved — either missing entirely, or carrying an expiry date
- * that's already passed — stays visible/counted instead of being dropped).
+ * True when a held (qty!==0) F&O contract has already expired.
  *
- * Extracted here, PARAMETERIZED on the instrument lookup (defaults to the
- * real `getInstrument`), so `portfolioStore.svelte.js`'s Snapshot pipeline
- * — which carries no `_expired` tag of its own (that's a page-level
- * annotation `pageLoad.js` derives independently) — can detect the
- * IDENTICAL condition without re-deriving a parallel, potentially-drifting
- * version. NOT wired into `pageLoad.js`'s own inline check in this pass
- * (that file's existing logic + its `pageLoad_expired.test.js` suite are
- * left untouched — lower blast radius; a future SSOT consolidation could
- * unify both call sites onto this one function).
+ * 2026-09 audit fix (Defect 2, post-ship): the original design treated
+ * ANY instruments-cache lookup MISS as "expired" — this misclassified:
+ *   - every BFO-listed instrument (SENSEX/BANKEX options) as permanently
+ *     expired-and-frozen EVERYWHERE, since the backend's instruments
+ *     endpoint never fetches the BFO exchange at all (see
+ *     backend/api/routes/instruments.py's `_EXCHANGES` tuple) — a much
+ *     WIDER blast radius than the derivatives-page-only bug this was
+ *     meant to fix, since portfolioStore feeds NavStrip/Pulse/Snapshot/
+ *     Legs TOTAL, not just the derivatives page.
+ *   - every held F&O row app-wide during a cold-start / empty-list /
+ *     one-exchange-download-failed window.
+ * Fixed: a cache miss is NEVER treated as "expired" by itself. Three-
+ * branch decision, in order:
+ *   1. Instrument FOUND in cache → use its own precise expiry date
+ *      (`inst.x < today`) — the authoritative case.
+ *   2. Instrument MISSING, but the cache has OTHER live F&O for this same
+ *      root (`hasFNOFn(root)` true) — the relevant exchange WAS fetched,
+ *      so a miss on this EXACT symbol means Kite has already dropped it
+ *      from the live dump (its own documented behaviour for a settled
+ *      contract) — trust it as expired. This is what correctly catches
+ *      the GOLD/GOLDM regression case (a specific expired MCX contract
+ *      delisted while sibling GOLD/GOLDM contracts remain in cache).
+ *   3. Instrument MISSING and the cache has NOTHING for this root at all
+ *      (BFO never fetched, cold start, or a failed download for that
+ *      exchange) — the cache is NOT authoritative here. Fall back to a
+ *      conservative symbol-parsed date guess (`guessExpiryYmdFromSymbol`,
+ *      decomposeSymbol.js — reuses the SAME regexes already used to parse
+ *      F&O symbols elsewhere, not a new mechanism) instead of assuming
+ *      expired. A miss now means "we don't know the lot size" or similar
+ *      cache-dependent concerns, NOT "assume expired".
  *
- * Gated on the instruments cache actually being loaded — before the first
- * `loadInstruments()` resolves, EVERY F&O symbol lookup returns null, which
- * would otherwise misclassify every held F&O row across the WHOLE app
- * (NavStrip, Pulse, Snapshot — not just derivatives) as "expired" during
- * that brief window, silently switching every position onto the frozen
- * (wrong-during-cold-start) valuation basis below.
+ * Extracted here, PARAMETERIZED on both lookups (default to the real
+ * `getInstrument`/`hasFNO`), so `portfolioStore.svelte.js`'s Snapshot
+ * pipeline — which carries no `_expired` tag of its own (that's a page-
+ * level annotation `derivatives/pageLoad.js` derives independently, via
+ * this SAME function) — detects the IDENTICAL condition without
+ * re-deriving a parallel, potentially-drifting version.
  *
  * @param {string} sym
  * @param {number} qty
  * @param {(sym: string) => {x?: string}|null} [getInstrumentFn]
+ * @param {(root: string) => boolean} [hasFNOFn]
  * @returns {boolean}
  */
-export function isExpiredHeldContract(sym, qty, getInstrumentFn = _getInstrumentDefault) {
+export function isExpiredHeldContract(sym, qty, getInstrumentFn = _getInstrumentDefault, hasFNOFn = _hasFNODefault) {
   if (!qty) return false;
-  if (!_isInstrumentsCacheLoadedDefault()) return false;
   const inst = getInstrumentFn(sym);
-  return !inst || !!(inst.x && inst.x < todayIST());
+  if (inst) {
+    return !!(inst.x && inst.x < todayIST());
+  }
+  const root = (decomposeSymbol(sym).root || '').toUpperCase();
+  if (root && hasFNOFn(root)) {
+    return true;
+  }
+  const guess = guessExpiryYmdFromSymbol(sym);
+  return !!(guess && guess < todayIST());
 }
 
 /**

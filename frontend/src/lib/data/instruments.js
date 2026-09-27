@@ -255,19 +255,6 @@ export function getInstrument(tradingsymbol) {
   return _byTradingsymbol.get(tradingsymbol.toUpperCase()) || null;
 }
 
-/**
- * True once the instruments master has loaded at least once this session
- * (via `loadInstruments()`). Callers that need to distinguish "genuinely
- * no instrument found for this symbol" from "cache hasn't loaded yet"
- * (e.g. `expiryPnl.js`'s `isExpiredHeldContract` — a `getInstrument()` miss
- * during the pre-load window would otherwise misclassify every held F&O
- * row as expired) should gate on this before trusting a `getInstrument()`
- * miss as a real signal.
- * @returns {boolean}
- */
-export function isInstrumentsCacheLoaded() {
-  return _byTradingsymbol !== null;
-}
 
 /** Every exchange a tradingsymbol trades on. Most symbols return
  *  one entry; dual-listed equities (RELIANCE / IFCI / etc.) return
