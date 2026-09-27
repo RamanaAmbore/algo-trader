@@ -209,6 +209,23 @@ _KITE_VALUE_UNIT_LOGGED = False
 # no recorded attempt yet (never tried = assume healthy).
 _FETCH_HEALTH: dict[str, dict] = {}
 
+
+def _default_health_entry() -> dict:
+    """Full-shape default _FETCH_HEALTH entry — every consumer that reads
+    last_ok_at/last_fail_at/consecutive_fail_count via direct subscript
+    (e.g. is_account_healthy()) relies on ALL keys being present. Defined
+    above the module-level CB-state-file loader (below) since that loader
+    also needs a fully-shaped entry, not a bare {}."""
+    return {
+        "last_ok_at": 0.0,
+        "last_fail_at": 0.0,
+        "last_fail_msg": "",
+        "consecutive_fail_count": 0,
+        "circuit_open_until": None,
+        "circuit_last_opened_at": None,
+        "open_cycle_count": 0,
+    }
+
 # Dedicated lock for the read-modify-write on circuit-breaker fields.
 # Plain dict writes are GIL-safe but the consecutive_fail_count +=1
 # is a compound operation that is NOT safe without a lock.  The existing
@@ -236,7 +253,15 @@ try:
         for _cb_acct, _cb_entry in _cb_saved.items():
             _cb_until = _cb_entry.get("circuit_open_until")
             if _cb_until and _cb_until > _cb_now_boot:
-                _FETCH_HEALTH.setdefault(_cb_acct, {}).update({
+                # Seed with the FULL default shape (not a bare {}) so an
+                # account that never gets a subsequent _record_fetch() call
+                # (e.g. deferred by the Dhan multi-account stabilizer, or
+                # simply not yet polled) still has last_ok_at/last_fail_at/
+                # consecutive_fail_count present — is_account_healthy() and
+                # _derive_account_health() read these via direct subscript
+                # in places and would otherwise KeyError on a CB-only entry.
+                _entry = _FETCH_HEALTH.setdefault(_cb_acct, _default_health_entry())
+                _entry.update({
                     "circuit_open_until":     _cb_until,
                     "open_cycle_count":       _cb_entry.get("open_cycle_count", 0),
                     "circuit_last_opened_at": _cb_entry.get("circuit_last_opened_at"),
@@ -820,18 +845,6 @@ def _maybe_auto_downgrade(account: str) -> None:
         logger.warning(f"[DHAN-AUTO-DOWNGRADE] account={account} check failed: {_exc}")
 
 
-def _default_health_entry() -> dict:
-    return {
-        "last_ok_at": 0.0,
-        "last_fail_at": 0.0,
-        "last_fail_msg": "",
-        "consecutive_fail_count": 0,
-        "circuit_open_until": None,
-        "circuit_last_opened_at": None,
-        "open_cycle_count": 0,
-    }
-
-
 def _circuit_state(account: str) -> str:
     """Return 'open', 'half-open', or 'closed' for `account`.
 
@@ -1164,7 +1177,14 @@ def is_account_healthy(account: str) -> bool:
     """
     e = _FETCH_HEALTH.get(account)
     if e:
-        return e["last_ok_at"] >= e["last_fail_at"]
+        # Defensive .get() (not direct subscript) — a CB-state-file-seeded
+        # entry that never receives a subsequent _record_fetch() call (e.g.
+        # deferred by the Dhan multi-account stabilizer) could otherwise be
+        # missing last_ok_at/last_fail_at and raise KeyError here. Missing
+        # key defaults to 0.0, matching "never tried" semantics elsewhere
+        # in this module — same missing-vs-zero convention used for broker
+        # funds/margin fields (see grammar.py:_num_or_none).
+        return (e.get("last_ok_at", 0.0) or 0.0) >= (e.get("last_fail_at", 0.0) or 0.0)
     # No local entry — either the local dict was never populated (cutover
     # mode) or the account has truly never been fetched yet. Consult the
     # canonical snapshot (which may hit conn_service over UDS).

@@ -803,3 +803,75 @@ class TestConcurrentBreakerHistoryLock:
             f"Expected {N_THREADS} events after concurrent appends, got {len(final)}. "
             "Compound RMW without lock lost events."
         )
+
+
+class TestPartialHealthEntryDefensive:
+    """is_account_healthy() must never KeyError on a partial _FETCH_HEALTH
+    entry — e.g. one seeded ONLY with circuit-breaker fields by the
+    /tmp/ramboq_cb_state.json startup loader for an account that never
+    gets a subsequent _record_fetch() call (deferred by the Dhan
+    multi-account stabilizer, or simply not yet polled this process).
+
+    Root-cause scenario (2026-09 dev badge investigation): before the fix,
+    the loader wrote `_FETCH_HEALTH.setdefault(acct, {}).update({...cb
+    fields only...})` — a bare {} missing last_ok_at/last_fail_at. Any
+    caller reading those keys via direct subscript would KeyError."""
+
+    ACCOUNT = "TEST-PARTIAL-ENTRY"
+
+    def setup_method(self):
+        _reset_health(self.ACCOUNT)
+
+    def teardown_method(self):
+        _reset_health(self.ACCOUNT)
+
+    def test_is_account_healthy_survives_cb_only_partial_entry(self):
+        """Simulate exactly what the CB-state-file loader used to produce
+        pre-fix: a dict with ONLY circuit-breaker fields, no last_ok_at/
+        last_fail_at/consecutive_fail_count keys at all."""
+        from backend.brokers import broker_apis
+
+        broker_apis._FETCH_HEALTH[self.ACCOUNT] = {
+            "circuit_open_until": _time.time() + 300.0,
+            "open_cycle_count": 1,
+            "circuit_last_opened_at": _time.time(),
+        }
+
+        # Must not raise KeyError — missing last_ok_at/last_fail_at default
+        # to 0.0 (never-tried semantics), so 0.0 >= 0.0 → healthy=True.
+        assert broker_apis.is_account_healthy(self.ACCOUNT) is True
+
+    def test_cb_state_loader_seeds_full_default_shape(self):
+        """_default_health_entry() must carry every key is_account_healthy()
+        and _derive_account_health() read via direct subscript — this is
+        the shape the startup loader now merges onto, not a bare {}."""
+        from backend.brokers import broker_apis
+
+        entry = broker_apis._default_health_entry()
+        for key in (
+            "last_ok_at", "last_fail_at", "last_fail_msg",
+            "consecutive_fail_count", "circuit_open_until",
+            "circuit_last_opened_at", "open_cycle_count",
+        ):
+            assert key in entry, f"_default_health_entry() missing {key!r}"
+
+    def test_setdefault_with_default_entry_preserves_existing_full_entry(self):
+        """setdefault(acct, _default_health_entry()) must NOT clobber an
+        already-fully-populated entry for an account that both has CB
+        state AND has already been fetched (order-independence check)."""
+        from backend.brokers import broker_apis
+
+        broker_apis._FETCH_HEALTH[self.ACCOUNT] = {
+            "last_ok_at": 123.0,
+            "last_fail_at": 0.0,
+            "last_fail_msg": "",
+            "consecutive_fail_count": 0,
+            "circuit_open_until": None,
+            "circuit_last_opened_at": None,
+            "open_cycle_count": 0,
+        }
+        entry = broker_apis._FETCH_HEALTH.setdefault(
+            self.ACCOUNT, broker_apis._default_health_entry()
+        )
+        assert entry["last_ok_at"] == 123.0
+        assert broker_apis.is_account_healthy(self.ACCOUNT) is True
