@@ -768,6 +768,25 @@ async def _task_market(state: dict) -> None:
 _DAILY_CONTENT_TASK: "asyncio.Task | None" = None
 
 
+def _daily_content_generation_enabled() -> bool:
+    """True on prod (main branch) only.
+
+    2026-09: prod is the SOLE generator for market/news content — the
+    Gemini market-summary call and the news RSS truncate+reload are
+    public, non-account-specific, and identical between environments, so
+    running them independently on both dev and prod (both waking on the
+    same 05:30 IST trigger) doubled Gemini quota usage and duplicate RSS
+    egress for no operator benefit. Dev's `/api/market` and `/api/news`
+    routes instead proxy-read prod's already-generated content over
+    loopback (`backend/api/helpers/dev_content_proxy.py`).
+
+    Reuses the same `deploy_branch` config signal `_task_deploy_sync_check()`
+    reads (and `is_prod_branch()` already exposes) — deliberately not a new
+    flag. Pure function, no subprocess/DB access, safe to call every tick."""
+    from backend.shared.helpers.utils import is_prod_branch
+    return is_prod_branch()
+
+
 def _spawn_daily_content_refresh() -> None:
     """Fire-and-forget spawn of `_daily_content_refresh_cycle`, guarded
     against double-spawn."""
@@ -848,7 +867,21 @@ async def _daily_content_refresh_cycle() -> None:
     """Retry-every-30-min loop, hard stop at 08:00 IST — attempts whatever
     (market / news) hasn't succeeded yet each pass. Runs every calendar
     day, no trading-day gate (same shape as `_task_holiday_refresh`'s own
-    retry loop)."""
+    retry loop).
+
+    2026-09: no-ops entirely on dev — see `_daily_content_generation_enabled`.
+    Dev serves market/news via the loopback proxy to prod instead of ever
+    calling Gemini or truncating its own news table. Safe to spawn
+    repeatedly (every 05:30 wake-up, every `_task_market` startup) since
+    each call just returns immediately."""
+    if not _daily_content_generation_enabled():
+        logger.info(
+            "[DAILY-CONTENT] dev environment (deploy_branch != main) — "
+            "generation skipped; market/news are served via loopback proxy "
+            "from prod instead (see dev_content_proxy.py)"
+        )
+        return
+
     while True:
         market_done = not await _market_needs_refresh_today()
         if not market_done:
@@ -894,27 +927,46 @@ async def _task_news_keepwarm() -> None:
 
     Independent of `_daily_content_refresh_cycle` — this is its own
     supervised interval loop; the "one shared clock" rule applies only
-    to the once-daily 05:30 wake-up, not this recurring keep-warm."""
-    from backend.api.routes.news import _fetch_and_accumulate
-    from backend.api import cache as _cache_mod
+    to the once-daily 05:30 wake-up, not this recurring keep-warm.
 
+    2026-09: on dev, each iteration is a no-op (see
+    `_daily_content_generation_enabled` / `_news_keepwarm_once`) — dev's
+    "news" cache key is instead served by `NewsController`'s own loopback
+    proxy to prod, which primes its own short-TTL cache on demand."""
     while True:
         try:
-            fresh = await _fetch_and_accumulate()
-            # Never prime the cache with an empty result — _fetch_and_
-            # accumulate returns items=[] on a DB read failure (e.g. a
-            # transient race against _perform_news_reset_once's
-            # truncate+insert), and priming that for 360s would freeze
-            # the news feed BLANK for six minutes — the exact "silently
-            # collapse to empty" failure CLAUDE.md's staleness-freeze
-            # rule forbids. An empty fetch simply skips this cycle;
-            # the previous good cache entry (or the route's own TTL)
-            # keeps serving until the NEXT keep-warm cycle succeeds.
-            if fresh.items:
-                _cache_mod.put("news", fresh, ttl_seconds=360)
+            await _news_keepwarm_once()
         except Exception as e:
             logger.error(f"[NEWS-KEEPWARM] failed: {e}")
         await asyncio.sleep(5 * 60)
+
+
+async def _news_keepwarm_once() -> None:
+    """One keep-warm iteration's body, factored out of `_task_news_keepwarm`'s
+    while-loop so it's directly unit-testable (no sleep/loop to work around).
+
+    No-ops on dev — see `_daily_content_generation_enabled`."""
+    if not _daily_content_generation_enabled():
+        logger.debug(
+            "[NEWS-KEEPWARM] dev environment — skip (served via loopback "
+            "proxy from prod instead)"
+        )
+        return
+
+    from backend.api.routes.news import _fetch_and_accumulate
+    from backend.api import cache as _cache_mod
+
+    fresh = await _fetch_and_accumulate()
+    # Never prime the cache with an empty result — _fetch_and_accumulate
+    # returns items=[] on a DB read failure (e.g. a transient race against
+    # _perform_news_reset_once's truncate+insert), and priming that for
+    # 360s would freeze the news feed BLANK for six minutes — the exact
+    # "silently collapse to empty" failure CLAUDE.md's staleness-freeze
+    # rule forbids. An empty fetch simply skips this cycle; the previous
+    # good cache entry (or the route's own TTL) keeps serving until the
+    # NEXT keep-warm cycle succeeds.
+    if fresh.items:
+        _cache_mod.put("news", fresh, ttl_seconds=360)
 
 
 _PERF_KICK_EVENT: asyncio.Event | None = None

@@ -10,9 +10,10 @@ import asyncio
 from datetime import time as _dt_time
 
 import msgspec
-from litestar import Controller, get
+from litestar import Controller, get, post
 from litestar.exceptions import HTTPException
 
+from backend.api.auth_guard import admin_guard
 from backend.api.cache import get_or_fetch
 from backend.api.schemas import MarketResponse
 from backend.shared.helpers import genai_api
@@ -22,7 +23,7 @@ from backend.shared.helpers.date_time_utils import (
     timestamp_indian,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import config as app_config, get_cycle_date
+from backend.shared.helpers.utils import config as app_config, get_cycle_date, is_enabled, is_prod_branch
 
 
 class MarketStatusResponse(msgspec.Struct):
@@ -95,6 +96,45 @@ async def _db_or_gemini() -> MarketResponse:
     return result
 
 
+async def _dev_final_fallback() -> MarketResponse:
+    """Dev's last resort when the loopback proxy to prod has no
+    last-known-good payload yet (e.g. a fresh dev boot racing a prod
+    outage) — serves dev's own historical `market_report` DB row if one
+    exists (whatever content dev itself generated before the 2026-09
+    shared-generation migration, however stale), and NEVER calls Gemini
+    (dev must never generate). Falls through to the same static
+    `_UNAVAILABLE` string `_db_or_gemini` uses for its own cold-boot case
+    only when even that DB row doesn't exist."""
+    from backend.api.background import _load_market_from_db
+
+    cached = await _load_market_from_db()
+    if cached:
+        return cached
+    return MarketResponse(
+        content=_UNAVAILABLE,
+        cycle_date=str(get_cycle_date(hours=0, mins=0)),
+        refreshed_at=timestamp_display(),
+    )
+
+
+async def _dev_market_content() -> MarketResponse:
+    """Dev-only: proxy-read prod's already-generated market report over
+    loopback. See `backend.api.helpers.dev_content_proxy` for the
+    short-TTL + freeze-to-last-good design."""
+    from backend.api.helpers.dev_content_proxy import (
+        ProdProxyUnavailable,
+        fetch_from_prod,
+    )
+
+    try:
+        return await fetch_from_prod(
+            "/api/market", MarketResponse,
+            is_valid=lambda m: bool(m.content) and m.content != _UNAVAILABLE,
+        )
+    except ProdProxyUnavailable:
+        return await _dev_final_fallback()
+
+
 def _parse_hhmm(s: str, fallback: tuple[int, int]) -> _dt_time:
     try:
         h, m = s.split(":")
@@ -146,16 +186,66 @@ async def _compute_market_status() -> MarketStatusResponse:
     )
 
 
+async def _run_market_dry_run() -> MarketResponse:
+    """B7 preview logic, factored out of the route handler so it's
+    directly unit-testable without a Litestar Controller instance.
+
+    Runs the CURRENT (possibly not-yet-merged) Gemini prompt through
+    `fetch_fresh()` exactly ONCE and returns the generated text directly
+    — does NOT write to the `market_report` DB table, does NOT call
+    `cache.put`/`invalidate` for the "market" key, and does NOT go
+    through `_perform_market_refresh_once` (the only function that
+    persists). This is how the operator previews a reworked prompt (e.g.
+    B7) before requesting `/dprod`: with shared generation, prod-as-
+    sole-generator otherwise means dev could never produce a
+    fresh-prompt sample before merge, and dev-as-generator would leak
+    unreviewed output onto prod's live public page.
+
+    Requires the `genai` capability enabled for THIS environment
+    (`notifications.genai_enabled` DB override, or `cap_in_dev.genai` in
+    backend_config.yaml — dev defaults this to False to avoid burning
+    Gemini quota on an idle dev box). Raises a clear 400 — not an opaque
+    502 — when that precondition isn't met, since a dev operator
+    previewing B7 needs to know to flip the setting, not just that
+    "Gemini returned nothing"."""
+    if not is_enabled('genai'):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "GenAI capability is disabled for this environment — enable "
+                "notifications.genai_enabled (or cap_in_dev.genai) before "
+                "running a dry-run preview."
+            ),
+        )
+    loop = asyncio.get_running_loop()
+    result = await loop.run_in_executor(None, fetch_fresh)
+    if result is None:
+        raise HTTPException(status_code=502, detail="Gemini returned no content for dry-run")
+    return result
+
+
 class MarketController(Controller):
     path = "/api/market"
 
     @get("/")
     async def get_market(self) -> MarketResponse:
         try:
-            return await get_or_fetch("market", _db_or_gemini, ttl_seconds=_TTL)
+            if is_prod_branch():
+                return await get_or_fetch("market", _db_or_gemini, ttl_seconds=_TTL)
+            # Dev: proxy-read prod's already-generated content over
+            # loopback instead of ever calling Gemini locally. Short TTL
+            # (not prod's 24h _TTL) — see dev_content_proxy.TTL_SECONDS.
+            from backend.api.helpers.dev_content_proxy import TTL_SECONDS as _DEV_TTL
+            return await get_or_fetch("market_dev_proxy", _dev_market_content, ttl_seconds=_DEV_TTL)
         except Exception as e:
             logger.error(f"Market API error: {e}")
             raise HTTPException(status_code=500, detail=str(e))
+
+    @post("/dry-run", guards=[admin_guard])
+    async def dry_run_market(self) -> MarketResponse:
+        """Admin-only B7 preview — see `_run_market_dry_run` for the full
+        design/rationale."""
+        return await _run_market_dry_run()
 
     @get("/status")
     async def get_market_status(self) -> MarketStatusResponse:

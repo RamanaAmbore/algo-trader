@@ -47,7 +47,7 @@ from backend.shared.helpers.date_time_utils import (
     timestamp_est,
 )
 from backend.shared.helpers.ramboq_logger import get_logger
-from backend.shared.helpers.utils import is_enabled
+from backend.shared.helpers.utils import is_enabled, is_prod_branch
 
 logger = get_logger(__name__)
 
@@ -542,6 +542,31 @@ async def _fetch_and_score() -> NewsResponse:
     return NewsResponse(items=tagged, refreshed_at=base.refreshed_at)
 
 
+async def _dev_news_content(sentiment: bool = False) -> NewsResponse:
+    """Dev-only: proxy-read prod's already-generated/accumulated news feed
+    over loopback (query string forwarded so `?sentiment=true` still gets
+    prod's own Gemini-scored result — prod does the real work, dev only
+    reads it, so this never violates "dev must never call Gemini").
+
+    Falls back to dev's own accumulated `news_headlines` rows (never a
+    fresh RSS fetch, never Gemini) only when the proxy has no
+    last-known-good payload yet for this process."""
+    from backend.api.helpers.dev_content_proxy import (
+        ProdProxyUnavailable,
+        fetch_from_prod,
+    )
+
+    path = "/api/news?sentiment=true" if sentiment else "/api/news"
+    try:
+        return await fetch_from_prod(path, NewsResponse, is_valid=lambda n: bool(n.items))
+    except ProdProxyUnavailable:
+        logger.error(
+            f"News: prod proxy unavailable for {path!r}, no last-known-good "
+            f"yet — falling back to dev's own accumulated DB rows"
+        )
+        return await _build_news_response_from_db()
+
+
 class NewsController(Controller):
     path = "/api/news"
 
@@ -551,8 +576,21 @@ class NewsController(Controller):
         friendly). Pass ?sentiment=true to add bull / bear / neutral
         tags — used by the MCP get_recent_news tool. Score result is
         cached for 10 min separately so back-to-back operator calls
-        share the LLM round-trip."""
+        share the LLM round-trip.
+
+        2026-09: on dev, proxy-reads prod's already-generated feed over
+        loopback (short TTL, freeze-to-last-good) instead of ever
+        fetching RSS or calling Gemini locally — see
+        `_dev_news_content` / `dev_content_proxy.py`."""
         try:
+            if not is_prod_branch():
+                from backend.api.helpers.dev_content_proxy import TTL_SECONDS as _DEV_TTL
+                cache_key = "news_scored_dev_proxy" if sentiment else "news_dev_proxy"
+
+                async def _dev_fetch() -> NewsResponse:
+                    return await _dev_news_content(sentiment)
+
+                return await get_or_fetch(cache_key, _dev_fetch, ttl_seconds=_DEV_TTL)
             if sentiment:
                 return await get_or_fetch("news_scored", _fetch_and_score, ttl_seconds=_CACHE_TTL)
             return await get_or_fetch("news", _fetch_and_accumulate, ttl_seconds=_CACHE_TTL)
