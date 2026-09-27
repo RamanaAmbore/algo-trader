@@ -739,6 +739,12 @@ def _hold_mask_account_in_resp(resp: "HoldingsResponse", _msc) -> "HoldingsRespo
         resp,
         rows=[_mask_row(r) for r in resp.rows],
         summary=[_mask_row(s) for s in resp.summary],
+        # Mask stale_accounts too — same rows/summary treatment. See
+        # positions_helpers._apply_account_mask for the mask_account
+        # same-prefix-collision caveat (e.g. DH6847/DH3747 both ->
+        # "DH####" via the unregistered fallback) — applies identically
+        # here and is intentionally conservative, not a safety regression.
+        stale_accounts=sorted({mask_account(a) for a in resp.stale_accounts}),
     )
 
 
@@ -775,7 +781,16 @@ def _filter_holdings_by_account(
     else:
         new_summary = []
 
-    return _msc.structs.replace(resp, rows=filtered_rows, summary=new_summary)
+    return _msc.structs.replace(
+        resp,
+        rows=filtered_rows,
+        summary=new_summary,
+        # stale_accounts narrowed to the single filtered account too —
+        # same scoping treatment as rows/summary above.
+        stale_accounts=[
+            a for a in resp.stale_accounts if str(a).upper() == acct_upper
+        ],
+    )
 
 
 async def _scope_and_mask_holdings(
@@ -810,6 +825,11 @@ async def _scope_and_mask_holdings(
             summary=[s for s in resp.summary
                      if str(getattr(s, "account", "")).upper() in allowed_set
                      or str(getattr(s, "account", "")).upper() == "TOTAL"],
+            # stale_accounts scoped the same way as rows/summary — a
+            # trader-scoped session must not see raw codes for accounts
+            # it can't otherwise see.
+            stale_accounts=[a for a in resp.stale_accounts
+                             if str(a).upper() in allowed_set],
         )
     # Account filter runs after trader-scope (uses raw codes, pre-mask).
     if account:

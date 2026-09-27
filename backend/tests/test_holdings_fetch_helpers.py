@@ -500,3 +500,195 @@ async def test_holdings_snapshot_summary_uses_recomputed_day_change_val():
         f"TOTAL day_change_val={total_row.day_change_val} must equal "
         f"sum of recomputed per-row values={expected_total_dcv}, not 0"
     )
+
+
+# ---------------------------------------------------------------------------
+# stale_accounts masking/scoping — _hold_mask_account_in_resp,
+# _scope_and_mask_holdings (trader branch), _filter_holdings_by_account
+#
+# Same P0-adjacent gap already found and fixed in
+# positions_helpers._apply_account_mask / _apply_trader_scope
+# (test_positions_helpers.py): these holdings functions masked/scoped
+# rows[].account / summary[].account but left
+# HoldingsResponse.stale_accounts untouched, leaking raw unmasked/
+# out-of-scope account codes to non-admin/trader sessions.
+# ---------------------------------------------------------------------------
+
+import msgspec as _msgspec
+
+
+def _make_holding_row(account: str, tradingsymbol: str = "RELIANCE"):
+    from backend.api.schemas import HoldingRow
+    return HoldingRow(
+        account=account, tradingsymbol=tradingsymbol, exchange="NSE",
+        quantity=10, average_price=100.0, inv_val=1000.0, cur_val=1100.0,
+        pnl=100.0, pnl_percentage=10.0,
+    )
+
+
+def _make_holdings_summary_row(account: str):
+    from backend.api.schemas import HoldingsSummaryRow
+    return HoldingsSummaryRow(
+        account=account, inv_val=1000.0, cur_val=1100.0, pnl=100.0,
+        pnl_percentage=10.0, day_change_val=50.0, day_change_percentage=5.0,
+    )
+
+
+def _make_holdings_response(rows=None, summary=None, stale_accounts=None):
+    from backend.api.schemas import HoldingsResponse
+    return HoldingsResponse(
+        rows=rows or [],
+        summary=summary or [],
+        refreshed_at="2026-09-26T00:00:00Z",
+        stale_accounts=list(stale_accounts or []),
+    )
+
+
+class TestHoldMaskAccountStaleAccounts:
+    """_hold_mask_account_in_resp must mask stale_accounts the same way
+    it masks rows[].account / summary[].account."""
+
+    def test_stale_accounts_are_masked(self):
+        from backend.api.routes.holdings import _hold_mask_account_in_resp
+        from backend.shared.helpers.utils import mask_account
+
+        resp = _make_holdings_response(stale_accounts=["ZG0790", "DH6847"])
+        out = _hold_mask_account_in_resp(resp, _msgspec)
+
+        assert set(out.stale_accounts) == {
+            mask_account("ZG0790"), mask_account("DH6847"),
+        }
+        assert "ZG0790" not in out.stale_accounts
+        assert "DH6847" not in out.stale_accounts
+
+    def test_stale_accounts_empty_stays_empty(self):
+        from backend.api.routes.holdings import _hold_mask_account_in_resp
+
+        resp = _make_holdings_response(stale_accounts=[])
+        out = _hold_mask_account_in_resp(resp, _msgspec)
+        assert out.stale_accounts == []
+
+    def test_same_prefix_collision_is_documented_conservative_behavior(
+        self, monkeypatch,
+    ):
+        """mask_account's UNREGISTERED fallback collides same-prefix
+        accounts (DH6847/DH3747 both -> DH####) — masking stale_accounts
+        this way is intentionally conservative (a masked session may
+        distrust a root it didn't strictly need to), matching the
+        documented behavior in positions_helpers._apply_account_mask."""
+        import backend.shared.helpers.utils as _utils_mod
+        from backend.api.routes.holdings import _hold_mask_account_in_resp
+        from backend.shared.helpers.utils import mask_account
+
+        monkeypatch.setattr(_utils_mod, "_REGISTRY", {})
+        assert mask_account("DH6847") == mask_account("DH3747") == "DH####"
+
+        resp = _make_holdings_response(stale_accounts=["DH6847", "DH3747"])
+        out = _hold_mask_account_in_resp(resp, _msgspec)
+        assert out.stale_accounts == ["DH####"]
+
+    def test_rows_and_summary_still_masked_alongside_stale_accounts(self):
+        from backend.api.routes.holdings import _hold_mask_account_in_resp
+        from backend.shared.helpers.utils import mask_account
+
+        row = _make_holding_row("ZG0790")
+        summary_row = _make_holdings_summary_row("ZG0790")
+        resp = _make_holdings_response(
+            rows=[row], summary=[summary_row], stale_accounts=["ZG0790"],
+        )
+        out = _hold_mask_account_in_resp(resp, _msgspec)
+
+        assert out.rows[0].account == mask_account("ZG0790")
+        assert out.summary[0].account == mask_account("ZG0790")
+        assert out.stale_accounts == [mask_account("ZG0790")]
+
+
+class TestFilterHoldingsByAccountStaleAccounts:
+    """_filter_holdings_by_account must narrow stale_accounts to the
+    single filtered account, same as rows/summary."""
+
+    def test_stale_accounts_narrowed_to_filtered_account(self):
+        from backend.api.routes.holdings import _filter_holdings_by_account
+
+        resp = _make_holdings_response(
+            rows=[_make_holding_row("ZG0790"), _make_holding_row("DH6847", "TCS")],
+            summary=[
+                _make_holdings_summary_row("ZG0790"),
+                _make_holdings_summary_row("DH6847"),
+            ],
+            stale_accounts=["ZG0790", "DH6847"],
+        )
+        out = _filter_holdings_by_account(resp, "ZG0790", _msgspec)
+        assert out.stale_accounts == ["ZG0790"]
+        assert "DH6847" not in out.stale_accounts
+
+    def test_no_account_filter_leaves_stale_accounts_unchanged(self):
+        from backend.api.routes.holdings import _filter_holdings_by_account
+
+        resp = _make_holdings_response(stale_accounts=["ZG0790", "DH6847"])
+        out = _filter_holdings_by_account(resp, None, _msgspec)
+        assert out.stale_accounts == ["ZG0790", "DH6847"]
+
+    def test_stale_accounts_empty_when_filtered_account_not_stale(self):
+        from backend.api.routes.holdings import _filter_holdings_by_account
+
+        resp = _make_holdings_response(
+            rows=[_make_holding_row("ZG0790")],
+            summary=[_make_holdings_summary_row("ZG0790")],
+            stale_accounts=["DH6847"],
+        )
+        out = _filter_holdings_by_account(resp, "ZG0790", _msgspec)
+        assert out.stale_accounts == []
+
+
+class TestScopeAndMaskHoldingsTraderStaleAccounts:
+    """_scope_and_mask_holdings must narrow stale_accounts to the
+    trader's allowed account set, same as rows/summary."""
+
+    @pytest.mark.asyncio
+    async def test_stale_accounts_scoped_to_allowed_set(self, monkeypatch):
+        from backend.api.routes import holdings
+
+        async def _fake_scope(request):
+            return (["ZG0790"], [1])
+
+        async def _fake_role(request):
+            return "trader"
+
+        monkeypatch.setattr(holdings, "user_scope_for_connection", _fake_scope)
+        monkeypatch.setattr(
+            holdings, "resolve_role_from_connection", lambda request: "trader",
+        )
+        monkeypatch.setattr(holdings, "is_admin_request", lambda request: True)
+
+        resp = _make_holdings_response(
+            rows=[_make_holding_row("ZG0790"), _make_holding_row("DH6847", "TCS")],
+            summary=[
+                _make_holdings_summary_row("ZG0790"),
+                _make_holdings_summary_row("DH6847"),
+            ],
+            stale_accounts=["ZG0790", "DH6847"],
+        )
+        out = await holdings._scope_and_mask_holdings(resp, request=object())
+
+        assert out.stale_accounts == ["ZG0790"]
+        assert "DH6847" not in out.stale_accounts
+        # Regression guard — rows/summary scoping unaffected.
+        assert [r.account for r in out.rows] == ["ZG0790"]
+
+    @pytest.mark.asyncio
+    async def test_stale_accounts_empty_when_none_allowed(self, monkeypatch):
+        from backend.api.routes import holdings
+
+        async def _fake_scope(request):
+            return ([], [])
+
+        monkeypatch.setattr(holdings, "user_scope_for_connection", _fake_scope)
+        monkeypatch.setattr(
+            holdings, "resolve_role_from_connection", lambda request: "trader",
+        )
+        monkeypatch.setattr(holdings, "is_admin_request", lambda request: True)
+
+        resp = _make_holdings_response(stale_accounts=["ZG0790"])
+        out = await holdings._scope_and_mask_holdings(resp, request=object())
+        assert out.stale_accounts == []
