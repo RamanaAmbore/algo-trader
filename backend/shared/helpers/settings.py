@@ -716,7 +716,16 @@ def _seed_execution_flags(session: "Any", existing_by_key: dict) -> None:
         ))
 
 
-_OWNED_OUTSIDE_SEEDS_PREFIXES = ("execution.",)
+_OWNED_OUTSIDE_SEEDS_PREFIXES = (
+    "execution.",
+    # news.last_reset_date — internal bookkeeping marker (last IST
+    # calendar date the news_headlines table was truncated + reloaded),
+    # written directly by background._daily_content_refresh_cycle, not a
+    # seeded operator-facing setting. Must survive _prune_retired_keys or
+    # the marker gets wiped on every restart, re-triggering a truncate on
+    # the next boot even when today's reset already ran.
+    "news.",
+)
 
 
 async def _prune_retired_keys(session: "Any", existing_by_key: dict, seed_keys: set) -> int:

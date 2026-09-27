@@ -3,16 +3,26 @@ Stock-market news feed — headlines persisted in Postgres.
 
 Pulls from curated Indian and global financial RSS feeds (already pre-filtered
 by their editors), applies a small keyword exclusion for noise, dedupes by
-link, and stores in Postgres. Wipes the table every morning at 07:00 IST,
-aligned with the daily market-report refresh. Gated by is_enabled('market_feed').
+link, and stores in Postgres. Gated by is_enabled('market_feed').
+
+Daily reset (2026-09 scheduling redesign): the table is truncated + reloaded
+from fresh RSS once per calendar day via `_perform_news_reset_once()`
+(background.py's `_daily_content_refresh_cycle`, spawned from the SAME
+05:30 IST wake-up `_task_holiday_refresh` uses for the holiday calendar —
+one shared clock, not an independent one). The reset marker is persisted
+in the `settings` table (`news.last_reset_date`), not an in-memory flag,
+so it survives a process restart. This request path (`_fetch_and_accumulate`)
+no longer triggers the truncation itself — it only accumulates/dedupes.
+A separate recurring keep-warm task (`background._task_news_keepwarm`,
+every 5 minutes) primes the plain "news" cache key (never "news_scored")
+so a visitor rarely hits a cold RSS fetch.
 """
 
 import asyncio
 import re
-import threading
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from email.utils import parsedate_to_datetime
 
 # Force IPv4 for outbound requests — the server's IPv6 /48 can reach Kite but
@@ -151,10 +161,6 @@ def _is_low_info(title: str) -> bool:
         return True
     return False
 
-_reset_lock = threading.Lock()
-_last_reset: date | None = None
-
-
 def _fmt_stamp(dt: datetime) -> str:
     try:
         ist = dt.astimezone(timestamp_indian().tzinfo)
@@ -167,24 +173,68 @@ def _fmt_stamp(dt: datetime) -> str:
         return ""
 
 
-async def _maybe_reset() -> None:
-    """Truncate news_headlines once per day after 07:00 IST (morning rollover)."""
-    global _last_reset
-    now = timestamp_indian()
-    today = now.date()
-    seven_am = now.replace(hour=7, minute=0, second=0, microsecond=0)
-    with _reset_lock:
-        due = (now >= seven_am and _last_reset != today)
-        if due:
-            _last_reset = today
-    if due:
-        try:
-            async with async_session() as s:
-                await s.execute(delete(NewsHeadline))
-                await s.commit()
-            logger.info("News: headlines table cleared for new trading day")
-        except Exception as e:
-            logger.error(f"News: reset failed: {e}")
+_NEWS_RESET_MARKER_KEY = "news.last_reset_date"
+
+# Serializes the two DB write paths that touch news_headlines wholesale:
+# _perform_news_reset_once's truncate+reload and _fetch_and_accumulate's
+# purge+insert. Without this, a startup catch-up reset racing the
+# keep-warm task's first cycle (both can fire within moments of a boot
+# that lands just before 05:30 IST) could interleave a DELETE from one
+# with an INSERT from the other, corrupting the accumulated set or
+# raising a duplicate-key error that surfaces as an empty NewsResponse.
+_NEWS_WRITE_LOCK = asyncio.Lock()
+
+
+async def _news_needs_reset_today() -> bool:
+    """DB-persisted marker read straight from the settings table — NOT
+    via `settings.get_string`/`_CACHE` (that in-process cache is loaded
+    once at boot via `reload_cache()` and won't see a same-process write
+    made moments earlier by `_news_mark_reset_done_today`).
+
+    Used ONLY by the background/startup-catchup path
+    (`_perform_news_reset_once` / `_daily_content_refresh_cycle`) —
+    replaces the old in-memory `_last_reset` + wall-clock 07:00 check,
+    which reset to None on every process restart and could re-truncate
+    the table on a redeploy even after today's reset had already run."""
+    from backend.api.models import Setting
+
+    try:
+        async with async_session() as s:
+            row = (await s.execute(
+                select(Setting).where(Setting.key == _NEWS_RESET_MARKER_KEY)
+            )).scalar_one_or_none()
+        if not row or not row.value:
+            return True
+        return row.value != timestamp_indian().date().isoformat()
+    except Exception as e:
+        logger.warning(f"News: reset-marker read failed (assume needs reset): {e}")
+        return True
+
+
+async def _news_mark_reset_done_today() -> None:
+    """Persist today's IST date as the reset marker. Called ONLY after a
+    successful truncate + reload — never before, so a crash mid-reset
+    doesn't falsely mark today as done."""
+    from backend.api.models import Setting
+
+    today_iso = timestamp_indian().date().isoformat()
+    async with async_session() as s:
+        row = (await s.execute(
+            select(Setting).where(Setting.key == _NEWS_RESET_MARKER_KEY)
+        )).scalar_one_or_none()
+        if row:
+            row.value = today_iso
+        else:
+            s.add(Setting(
+                category="news", key=_NEWS_RESET_MARKER_KEY, value_type="string",
+                value=today_iso, default_value="",
+                description=(
+                    "Internal marker (not operator-facing) — last IST "
+                    "calendar date the news_headlines table was truncated "
+                    "and reloaded from fresh RSS."
+                ),
+            ))
+        await s.commit()
 
 
 _UA = (
@@ -343,12 +393,42 @@ def _resolve_refreshed(db_items: list) -> str:
     return timestamp_display()
 
 
+def _news_items_from_db_rows(db_items: list) -> list:
+    """Shared row -> NewsItem mapping — used by both the live accumulate
+    path and the background reset's cache-priming path so the two never
+    drift out of sync."""
+    return [
+        NewsItem(
+            title=h.title, link=h.link,
+            source=h.source or "", timestamp=h.timestamp_display or "",
+        )
+        for h in db_items
+    ]
+
+
+async def _build_news_response_from_db() -> NewsResponse:
+    """Query the full current news_headlines table and build a
+    NewsResponse — shared tail used by `_fetch_and_accumulate` and by
+    `_perform_news_reset_once`'s cache-priming step (avoids a second RSS
+    round-trip just to build the response object after a reset)."""
+    async with async_session() as s:
+        rows = await s.execute(
+            select(NewsHeadline).order_by(NewsHeadline.published_at.desc())
+        )
+        db_items = list(rows.scalars().all())
+    items = _news_items_from_db_rows(db_items)
+    return NewsResponse(items=items, refreshed_at=_resolve_refreshed(db_items))
+
+
 async def _fetch_and_accumulate() -> NewsResponse:
-    """Fetch RSS feeds, insert new links into DB, return the full accumulated list."""
+    """Fetch RSS feeds, insert new links into DB, return the full accumulated list.
+
+    Daily truncation no longer happens on this hot request path — see
+    `_perform_news_reset_once` (background.py's `_daily_content_refresh_cycle`,
+    chained off the same 05:30 IST wake-up as the holiday calendar
+    refresh). This function only accumulates/dedupes."""
     if not is_enabled('market_feed'):
         return NewsResponse(items=[], refreshed_at=timestamp_display())
-
-    await _maybe_reset()
 
     loop = asyncio.get_running_loop()
     try:
@@ -358,31 +438,81 @@ async def _fetch_and_accumulate() -> NewsResponse:
         fresh = []
 
     try:
-        async with async_session() as s:
-            stale_links, seen_fps = await _purge_stale_db_rows(s)
-            added = await _insert_new_headlines(s, fresh, stale_links, seen_fps)
-            if added or stale_links:
-                await s.commit()
-            if added:
-                logger.info(f"News: +{added} new headlines")
+        async with _NEWS_WRITE_LOCK:
+            async with async_session() as s:
+                stale_links, seen_fps = await _purge_stale_db_rows(s)
+                added = await _insert_new_headlines(s, fresh, stale_links, seen_fps)
+                if added or stale_links:
+                    await s.commit()
+                if added:
+                    logger.info(f"News: +{added} new headlines")
 
-            rows = await s.execute(
-                select(NewsHeadline).order_by(NewsHeadline.published_at.desc())
-            )
-            db_items = list(rows.scalars().all())
-            items = [
-                NewsItem(
-                    title=h.title, link=h.link,
-                    source=h.source or "", timestamp=h.timestamp_display or "",
+                rows = await s.execute(
+                    select(NewsHeadline).order_by(NewsHeadline.published_at.desc())
                 )
-                for h in db_items
-            ]
+                db_items = list(rows.scalars().all())
+                items = _news_items_from_db_rows(db_items)
     except Exception as e:
         logger.error(f"News DB query failed: {e}")
         items = []
         db_items = []
 
     return NewsResponse(items=items, refreshed_at=_resolve_refreshed(db_items))
+
+
+async def _perform_news_reset_once() -> bool:
+    """One daily news-reset attempt: fetch fresh RSS, and ONLY on a
+    non-empty successful fetch, truncate news_headlines and reload from
+    it — never truncate first (a failed fetch must leave yesterday's
+    headlines visible all morning, not an empty page). Marks the reset
+    done + primes the plain "news" cache key (never "news_scored" — that
+    variant calls Gemini per-headline and the public page never requests
+    it) only on success. Returns True on success, False to signal retry.
+    """
+    if not is_enabled('market_feed'):
+        return True   # capability off — nothing to do, don't spin retries
+
+    loop = asyncio.get_running_loop()
+    try:
+        fresh = await loop.run_in_executor(None, _fetch_rss)
+    except Exception as e:
+        logger.error(f"[DAILY-CONTENT] news RSS fetch failed: {e}")
+        return False
+    if not fresh:
+        logger.warning(
+            "[DAILY-CONTENT] news RSS fetch returned nothing — will retry, no truncate"
+        )
+        return False
+
+    try:
+        async with _NEWS_WRITE_LOCK:
+            async with async_session() as s:
+                await s.execute(delete(NewsHeadline))
+                added = await _insert_new_headlines(s, fresh, [], set())
+                await s.commit()
+        logger.info(f"News: daily reset — table truncated, {added} fresh headlines loaded")
+    except Exception as e:
+        logger.error(f"[DAILY-CONTENT] news DB reset failed: {e}")
+        return False
+
+    try:
+        await _news_mark_reset_done_today()
+    except Exception as e:
+        # Don't let a marker-write failure crash the whole cycle (via
+        # _guarded in background.py) and skip the remaining retries —
+        # the reset itself already succeeded; worst case we re-run an
+        # already-successful reset on the next retry pass, which is
+        # harmless (truncate+reload is idempotent).
+        logger.error(f"[DAILY-CONTENT] news reset-marker write failed: {e}")
+
+    try:
+        from backend.api import cache as _cache_mod
+        fresh_response = await _build_news_response_from_db()
+        _cache_mod.put("news", fresh_response, ttl_seconds=360)
+    except Exception as e:
+        logger.warning(f"[DAILY-CONTENT] news cache prime failed (non-fatal): {e}")
+
+    return True
 
 
 async def _fetch_and_score() -> NewsResponse:

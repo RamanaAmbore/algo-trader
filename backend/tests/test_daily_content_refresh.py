@@ -34,6 +34,7 @@ Five quality dimensions:
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import pathlib
 from datetime import datetime, timedelta, timezone
@@ -188,14 +189,22 @@ class TestPerformMarketRefreshOnce:
 class TestDailyContentRefreshCycle:
     @pytest.mark.asyncio
     async def test_already_fresh_returns_immediately_no_sleep(self):
+        """News side is mocked as already-fresh too (commit B extended
+        `_daily_content_refresh_cycle` to also check/perform news; a
+        market-only test must not accidentally exercise the REAL news
+        path — see test_news_daily_reset.py's
+        TestDailyContentRefreshCycleWithNews for news-specific coverage)."""
         from backend.api import background as bg
 
         with patch.object(bg, "_market_needs_refresh_today", new=AsyncMock(return_value=False)), \
              patch.object(bg, "_perform_market_refresh_once", new=AsyncMock()) as mock_perform, \
+             patch("backend.api.routes.news._news_needs_reset_today", new=AsyncMock(return_value=False)), \
+             patch.object(bg, "_perform_news_refresh_once", new=AsyncMock()) as mock_news, \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             await bg._daily_content_refresh_cycle()
 
         mock_perform.assert_not_called()
+        mock_news.assert_not_called()
         mock_sleep.assert_not_awaited()
 
     @pytest.mark.asyncio
@@ -204,6 +213,8 @@ class TestDailyContentRefreshCycle:
 
         with patch.object(bg, "_market_needs_refresh_today", new=AsyncMock(return_value=True)), \
              patch.object(bg, "_perform_market_refresh_once", new=AsyncMock(return_value=True)), \
+             patch("backend.api.routes.news._news_needs_reset_today", new=AsyncMock(return_value=False)), \
+             patch.object(bg, "_perform_news_refresh_once", new=AsyncMock()), \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             await bg._daily_content_refresh_cycle()
 
@@ -216,6 +227,8 @@ class TestDailyContentRefreshCycle:
         late_now = datetime(2026, 9, 26, 8, 5, 0)
         with patch.object(bg, "_market_needs_refresh_today", new=AsyncMock(return_value=True)), \
              patch.object(bg, "_perform_market_refresh_once", new=AsyncMock(return_value=False)), \
+             patch("backend.api.routes.news._news_needs_reset_today", new=AsyncMock(return_value=False)), \
+             patch.object(bg, "_perform_news_refresh_once", new=AsyncMock()), \
              patch.object(bg, "timestamp_indian", return_value=late_now), \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             await bg._daily_content_refresh_cycle()
@@ -235,6 +248,8 @@ class TestDailyContentRefreshCycle:
 
         with patch.object(bg, "_market_needs_refresh_today", new=AsyncMock(return_value=True)), \
              patch.object(bg, "_perform_market_refresh_once", new=_perform), \
+             patch("backend.api.routes.news._news_needs_reset_today", new=AsyncMock(return_value=False)), \
+             patch.object(bg, "_perform_news_refresh_once", new=AsyncMock()), \
              patch.object(bg, "timestamp_indian", return_value=early_now), \
              patch("asyncio.sleep", new=AsyncMock()) as mock_sleep:
             await bg._daily_content_refresh_cycle()
@@ -297,6 +312,26 @@ class TestSpawnDailyContentRefreshGuard:
             "Once the prior cycle has finished, a new spawn must create a "
             "fresh task (e.g. the next day's 05:30 wake-up)"
         )
+
+    @pytest.mark.asyncio
+    async def test_on_shutdown_cancels_in_flight_daily_content_task(self):
+        """_DAILY_CONTENT_TASK is spawned dynamically, not part of
+        app.state.bg_tasks — on_shutdown must cancel it explicitly or a
+        market/news refresh is left dangling mid-flight on shutdown."""
+        from backend.api import background as bg
+
+        async def _never_ending():
+            await asyncio.sleep(3600)
+
+        with patch.object(bg, "_daily_content_refresh_cycle", side_effect=_never_ending):
+            bg._spawn_daily_content_refresh()
+            task = bg._DAILY_CONTENT_TASK
+
+        app = MagicMock()
+        app.state.bg_tasks = []
+        await bg.on_shutdown(app)
+
+        assert task.done() and task.cancelled()
 
 
 # ---------------------------------------------------------------------------
@@ -377,8 +412,31 @@ def test_task_market_has_no_second_independent_while_loop():
     )
     assert m is not None, "_task_market not found in background.py"
     body = m.group(0)
-    assert "while True:" not in body, (
+    # Strip the docstring (which legitimately quotes _supervised's
+    # "while True:" shape to EXPLAIN why _task_market must not have one)
+    # before searching for actual code.
+    code_only = re.sub(r'""".*?"""', "", body, count=1, flags=re.DOTALL)
+    assert "while True:" not in code_only, (
         "_task_market must not contain an independent scheduling loop"
+    )
+
+
+def test_bg_market_registration_is_not_wrapped_in_supervised():
+    """_task_market must be scheduled as a plain one-shot
+    asyncio.create_task, NOT wrapped in _supervised — _supervised is
+    `while True: await coro_fn()` with no break on a normal return, so
+    wrapping a function that returns almost immediately (hydrate + spawn,
+    no loop of its own) would re-invoke it in a tight infinite loop,
+    hammering the DB and re-spawning the daily content-refresh cycle
+    nonstop. This is a real regression this test exists to pin: it
+    shipped once (a5cff0c7) and made the entire test suite crawl."""
+    src = _BG_PATH.read_text()
+    m = re.search(r'asyncio\.create_task\([^\n]*name="bg-market"\)[^\n]*\n', src)
+    assert m is not None, 'bg-market task registration line not found'
+    line = m.group(0)
+    assert "_supervised" not in line, (
+        f"bg-market must be a plain asyncio.create_task(_task_market(state), ...), "
+        f"not wrapped in _supervised — got: {line.strip()}"
     )
 
 

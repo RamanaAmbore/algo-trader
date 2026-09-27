@@ -714,18 +714,32 @@ async def _task_market(state: dict) -> None:
     `_daily_content_refresh_cycle`, spawned once from the SAME 05:30 IST
     wake-up `_task_holiday_refresh` already uses (one shared clock, not
     two independent ones).
+
+    IMPORTANT — this coroutine returns almost immediately (hydrate +
+    spawn, no loop). It MUST be scheduled as a plain one-shot
+    `asyncio.create_task`, NOT wrapped in `_supervised` (`_supervised`
+    is `while True: await coro_fn()` with no break on a normal return —
+    wrapping a function that returns quickly would re-invoke it in a
+    tight infinite loop, hammering the DB and re-spawning the daily
+    cycle nonstop). The body is wrapped in its own try/except here
+    instead, since there's no supervisor to catch a crash.
     """
     from backend.api.cache import _store
     import time as _time
 
-    cached = await _load_market_from_db()
-    if cached:
-        _store["market"] = (_time.monotonic() + 86400, cached)
-        logger.info(f"Background: market cache hydrated from DB (cycle {cached.cycle_date})")
-    else:
-        logger.info("Background: no market report in DB yet (first-ever boot)")
+    try:
+        cached = await _load_market_from_db()
+        if cached:
+            _store["market"] = (_time.monotonic() + 86400, cached)
+            logger.info(f"Background: market cache hydrated from DB (cycle {cached.cycle_date})")
+        else:
+            logger.info("Background: no market report in DB yet (first-ever boot)")
 
-    _spawn_daily_content_refresh()
+        _spawn_daily_content_refresh()
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:
+        logger.error(f"Background: market startup task failed: {e}")
 
 
 # ═════════════════════════════════════════════════════════════════════════
@@ -805,6 +819,14 @@ async def _perform_market_refresh_once() -> bool:
     return True
 
 
+async def _perform_news_refresh_once() -> bool:
+    """Thin wrapper around news.py's `_perform_news_reset_once` — kept
+    here so `_daily_content_refresh_cycle` only imports from background
+    module scope, matching `_perform_market_refresh_once`'s shape."""
+    from backend.api.routes.news import _perform_news_reset_once
+    return await _perform_news_reset_once()
+
+
 async def _daily_content_refresh_cycle() -> None:
     """Retry-every-30-min loop, hard stop at 08:00 IST — attempts whatever
     (market / news) hasn't succeeded yet each pass. Runs every calendar
@@ -815,18 +837,67 @@ async def _daily_content_refresh_cycle() -> None:
         if not market_done:
             market_done = await _perform_market_refresh_once()
 
-        if market_done:
+        from backend.api.routes.news import _news_needs_reset_today
+        news_done = not await _news_needs_reset_today()
+        if not news_done:
+            news_done = await _perform_news_refresh_once()
+
+        if market_done and news_done:
             logger.info("[DAILY-CONTENT] cycle complete for today")
             return
 
         now_ist = timestamp_indian()
         if now_ist.hour >= 8:
             logger.warning(
-                f"[DAILY-CONTENT] give-up after 08:00 IST — market_done={market_done}"
+                f"[DAILY-CONTENT] give-up after 08:00 IST — "
+                f"market_done={market_done} news_done={news_done}"
             )
             return
         await asyncio.sleep(30 * 60)
 
+
+async def _task_news_keepwarm() -> None:
+    """Recurring intraday keep-warm — re-primes the plain "news" cache
+    key every 5 minutes so a visitor's request almost never hits a cold
+    RSS fetch (which can take several seconds across 8 feeds).
+
+    Scoped to the plain "news" key ONLY — never "news_scored" (that
+    variant calls Gemini per-headline for sentiment tagging; the public
+    /market page's fetchNews() never requests `sentiment=true`, so
+    warming it would burn free-tier Gemini quota for a variant nobody
+    asks for).
+
+    5 minutes (not 10, not 60) is deliberate: the plain RSS-only path
+    calls zero Gemini, so there is no AI-quota concern justifying a
+    longer interval, and 5 minutes keeps the residual cold-cache window
+    tight relative to the news route's own 60s in-process cache TTL.
+    The cache.put TTL here (360s) is intentionally longer than the
+    5-minute interval so a slightly-delayed warm cycle never lets the
+    primed entry expire before the next one runs.
+
+    Independent of `_daily_content_refresh_cycle` — this is its own
+    supervised interval loop; the "one shared clock" rule applies only
+    to the once-daily 05:30 wake-up, not this recurring keep-warm."""
+    from backend.api.routes.news import _fetch_and_accumulate
+    from backend.api import cache as _cache_mod
+
+    while True:
+        try:
+            fresh = await _fetch_and_accumulate()
+            # Never prime the cache with an empty result — _fetch_and_
+            # accumulate returns items=[] on a DB read failure (e.g. a
+            # transient race against _perform_news_reset_once's
+            # truncate+insert), and priming that for 360s would freeze
+            # the news feed BLANK for six minutes — the exact "silently
+            # collapse to empty" failure CLAUDE.md's staleness-freeze
+            # rule forbids. An empty fetch simply skips this cycle;
+            # the previous good cache entry (or the route's own TTL)
+            # keeps serving until the NEXT keep-warm cycle succeeds.
+            if fresh.items:
+                _cache_mod.put("news", fresh, ttl_seconds=360)
+        except Exception as e:
+            logger.error(f"[NEWS-KEEPWARM] failed: {e}")
+        await asyncio.sleep(5 * 60)
 
 
 _PERF_KICK_EVENT: asyncio.Event | None = None
@@ -6962,7 +7033,11 @@ async def on_startup(app) -> None:
         logger.warning("Background: session guard failed (non-fatal) — %s", _sg_exc)
     logger.info("Background: start_persist_flush done, creating tasks")
     app.state.bg_tasks = [
-        asyncio.create_task(_supervised(lambda: _task_market(state),          name="bg-market"),          name="bg-market"),
+        # One-shot task (hydrate + spawn, returns quickly) — NOT wrapped in
+        # _supervised (which loops forever on any normal return; see
+        # _task_market's docstring for why that would tight-loop).
+        asyncio.create_task(_task_market(state), name="bg-market"),
+        asyncio.create_task(_supervised(_task_news_keepwarm,                   name="bg-news-keepwarm"),   name="bg-news-keepwarm"),
         asyncio.create_task(_supervised(lambda: _task_performance(state),      name="bg-performance"),     name="bg-performance"),
         asyncio.create_task(_supervised(_task_expiry_check,                    name="bg-expiry"),          name="bg-expiry"),
         asyncio.create_task(_supervised(_task_instruments,                     name="bg-instruments"),     name="bg-instruments"),
@@ -7042,5 +7117,16 @@ async def on_shutdown(app) -> None:
                 await task
             except asyncio.CancelledError:
                 pass
+    # _DAILY_CONTENT_TASK is spawned dynamically (from _task_market's
+    # startup call or _task_holiday_refresh's 05:30 wake-up), not part of
+    # app.state.bg_tasks — cancel it explicitly so shutdown doesn't leave
+    # a dangling market/news refresh mid-flight.
+    global _DAILY_CONTENT_TASK
+    if _DAILY_CONTENT_TASK is not None and not _DAILY_CONTENT_TASK.done():
+        _DAILY_CONTENT_TASK.cancel()
+        try:
+            await _DAILY_CONTENT_TASK
+        except asyncio.CancelledError:
+            pass
     _executor.shutdown(wait=False)
     logger.info("Background: all tasks stopped")

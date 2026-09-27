@@ -81,6 +81,18 @@ def peek(key: str) -> "Any | None":
     return None
 
 
+def put(key: str, value: Any, ttl_seconds: int) -> None:
+    """Prime the cache with an already-fetched value directly — used by
+    keep-warm background jobs so the NEXT real request hits a warm cache
+    instead of re-triggering a live fetch. Deliberately distinct from
+    invalidate(): invalidating after a background refresh would just
+    force the very next visitor's request to miss the cache and re-do
+    the live fetch anyway (fine when the live fetch is cheap, e.g.
+    market's DB-first _db_or_gemini — wrong when it isn't, e.g. news's
+    RSS pull, which has no DB-first branch)."""
+    _store[key] = (time.monotonic() + ttl_seconds, value)
+
+
 def invalidate(key: str) -> None:
     """Remove a key from the cache (called by ARQ worker after publish)."""
     _store.pop(key, None)

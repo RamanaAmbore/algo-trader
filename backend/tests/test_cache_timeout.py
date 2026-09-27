@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from backend.api.cache import get_or_fetch, invalidate_all
+from backend.api.cache import get_or_fetch, invalidate_all, put as cache_put
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +166,37 @@ def test_options_chain_instruments_uses_peek_not_get_or_fetch():
             "threads that accumulate GB of instrument data and OOM prod (see 2026-08-11 fix). "
             "Use coalescing (no timeout) so concurrent callers wait for the same download."
         )
+
+
+# ---------------------------------------------------------------------------
+# cache.put() — priming (2026-09 market/news scheduling redesign)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_put_primes_cache_get_or_fetch_never_calls_fetcher():
+    """put() must make the NEXT get_or_fetch() call for that key return
+    the primed value directly — this is the "warm the cache with a
+    keep-warm job" contract the news/market schedulers rely on."""
+    calls = {"n": 0}
+
+    def _fetcher():
+        calls["n"] += 1
+        return "live-fetched"
+
+    cache_put("k1", "primed-value", ttl_seconds=60)
+    result = await get_or_fetch("k1", _fetcher, ttl_seconds=30)
+
+    assert result == "primed-value"
+    assert calls["n"] == 0, "get_or_fetch must not call the fetcher after put() primed the key"
+
+
+@pytest.mark.asyncio
+async def test_put_expires_after_ttl_and_falls_through_to_fetcher():
+    cache_put("k2", "primed-value", ttl_seconds=0.01)
+    await asyncio.sleep(0.05)
+
+    result = await get_or_fetch("k2", lambda: "live-fetched", ttl_seconds=30)
+    assert result == "live-fetched"
 
 
 def test_sparkline_startup_warm_is_disabled():
