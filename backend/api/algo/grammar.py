@@ -406,6 +406,39 @@ def _scope_holdings_any_acct(ctx):
     mask = df['account'].astype(str) != 'TOTAL'
     return [r.to_dict() for _, r in df[mask].iterrows()]
 
+_PARTIAL_OUTAGE_LOG_INTERVAL_MIN = 15
+_last_partial_outage_log: "dict[str, object]" = {"ts": None, "accounts": None}
+
+
+def _log_partial_outage_suppression(accounts: list) -> None:
+    """Rate-limited warning when `_scope_positions_total` suppresses
+    evaluation due to a partial outage. Without this, a single account
+    stuck failing indefinitely (e.g. an expired Dhan/Groww token) silently
+    disables EVERY positions.total loss/ROC alert for as long as it lasts
+    — with nothing logged anywhere to surface that degradation. Logs once
+    per `_PARTIAL_OUTAGE_LOG_INTERVAL_MIN` (not every tick — this scope
+    resolver runs on every agent-engine cycle, every few seconds under
+    the simulator and every 5 min live) UNLESS the failed-account set
+    itself changes, in which case it logs immediately regardless of the
+    interval so a NEW failure is never masked by a still-cooling-down
+    rate limit from an older one."""
+    import time as _time
+    now_ts = _time.monotonic()
+    last_ts = _last_partial_outage_log["ts"]
+    last_accounts = _last_partial_outage_log["accounts"]
+    interval_s = _PARTIAL_OUTAGE_LOG_INTERVAL_MIN * 60
+    accounts_changed = last_accounts != accounts
+    if not accounts_changed and last_ts is not None and (now_ts - last_ts) < interval_s:
+        return
+    _last_partial_outage_log["ts"] = now_ts
+    _last_partial_outage_log["accounts"] = accounts
+    logger.warning(
+        f"[PARTIAL-OUTAGE] positions.total scope suppressed — "
+        f"accts={accounts} — every loss/ROC agent scoped to positions.total "
+        f"is silently not evaluating this tick"
+    )
+
+
 def _scope_positions_total(ctx):
     df = ctx.sum_positions
     if df is None or df.empty:
@@ -419,7 +452,9 @@ def _scope_positions_total(ctx):
     # "absent from observations = untouched, never treated as
     # recovered" contract), rather than firing/clearing latches off a
     # P&L total that's silently missing money.
-    if (getattr(df, 'attrs', {}) or {}).get('partial_outage'):
+    accts = (getattr(df, 'attrs', {}) or {}).get('partial_outage')
+    if accts:
+        _log_partial_outage_suppression(accts)
         return []
     mask = df['account'].astype(str) == 'TOTAL'
     return [r.to_dict() for _, r in df[mask].iterrows()]
