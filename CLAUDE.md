@@ -447,6 +447,17 @@ the wall-clock `date` column. Test: `backend/tests/test_positions_snapshot_sessi
 
 **Payoff chart Exp P&L basis (C1, 2026-09)** — The displayed Exp P&L value shown ON the Payoff chart next to the expiry marker (dart position) is priced at `payoffSpot` (anchor-contract basis, lines 1891–1920 in `frontend/src/routes/(algo)/admin/derivatives/+page.svelte`) instead of `liveSpot` (front-month), so the overlay value and the marker's drawn position are guaranteed to visually agree — both reference the same contract. This is a deliberate, correctly-scoped choice: the separate Legs-grid TOTAL row's Exp P&L continues to read `liveSpot` / front-month (line 2222, `_legsExpPnlTotal`), a different and correct consumer. The chart's value is computed by `_chartExpPnlAtSpot` (line 2232, summing enabled legs at `payoffSpot`) and passed to `OptionsPayoff.svelte` as the `legsExpPnlAtSpot` prop (line 30, used at lines 981–985). NSE underlyings (no anchor future) also live-tick via the Tier-1b fallback (lines 1901–1911, reusing liveSpot's own cash-ticker lookup) so the overlay ticks live every second instead of stepping once per 5s refetch — the C2 fix for overlay-desync on NSE. A broader cross-surface SSOT consolidation landed in the same timeframe, consolidating spot/LTP, prevClose, Day P&L, and position existence onto `portfolioStore` — `payoffSpot`'s anchor-contract tier remains the one deliberate exception to the single-spot-resolver rule and was not affected by this consolidation. **Future work MUST NOT revert this to liveSpot** — the visual disagreement between marker and number (if it were to happen) is a user-facing defect. Invariant: chart value = marker position visually, always.
 
+**Exp P&L session-boundary fix (2026-09-27, commit 8b47be7b)** — `isExpiredHeldContract()` 
+in `frontend/src/lib/data/expiryPnl.js` now compares a held F&O leg's expiry date against 
+`tradingSessionDateIST()` (rolls at 08:00 IST boundary, matching this app's session convention) 
+instead of `todayIST()` (bare midnight calendar rollover). All Exp P&L consumers (payoff chart, 
+Legs grid, Snapshot grid, NavStrip P-pill — all funnel through this one predicate) now stay 
+theoretical mark-to-spot through expiry-day close and the entire overnight window, collapsing 
+to the frozen actual/settled P&L only once the next trading session actually begins (08:00 IST), 
+never at bare midnight hours before market open. Invariant: Exp P&L session boundary is always 
+derived from the trading-session-date convention, matching `_SESSION_ANCHOR_CUTOFF_TS_SQL` 
+and the Day P&L / nav rules elsewhere in CLAUDE.md.
+
 **close_price / ltp invariant — DO NOT CHANGE without explicit operator instruction** —
 `prev_close` = previous session's **settlement LTP** (frozen from settlement until next session opens at 08:00 IST). `ltp` ticks live during session, freezes at settlement price at close. Day P&L = `(ltp − prev_close) × qty`.
 
@@ -569,6 +580,21 @@ is from Kite's stale BHAV-copy API, the epsilon check always passed → no patch
 Fix (commit 93689676): query now uses `daily_book.ltp` directly (same pattern as positions fix). 
 No more COALESCE fallback — holdings day P&L now computed from prior-settlement LTP per the 
 "close_price / ltp invariant — DO NOT CHANGE" rule.
+
+**NAV write-skip / force-write policy (2026-09, commits 89fa495b / 50d8784e / 436549f2)** — 
+`write_nav_snapshot()` in `backend/api/algo/nav.py` now gates entirely on `snap["understated"]` 
+(NOT the broader `errors` field, which includes correct-but-stale LKG substitutions and must NOT 
+block writes). If understated and NOT forced: skip the write, return `skipped_write: True`, and 
+`_run_nav_compute_once` retries. If understated AND forced (`force=True` passed once clock 
+passes `target + _NAV_FORCE_GRACE`, a 10-minute module constant in `background.py`): check 
+whether a `nav_daily` row ALREADY EXISTS for that date. If one does (e.g. an earlier clean cycle 
+or interim snapshot), skip the forced write entirely — never downgrade an already-good row. 
+Only when NO row exists for the day does a forced write proceed with a labeled `[FORCED after 
+retry grace — value UNDERSTATED]` row. Invariant: an understated write can only fill a genuine 
+gap, never regress an existing good/interim snapshot. Related API changes: `/api/auth/firm-nav` 
+now caches + returns a `stale` flag; `/api/nav/by-account` masks `errors` for non-admin; 
+`POST /api/nav/compute` returns `written: bool`. See `write_nav_snapshot`'s own docstring 
+(nav.py, lines 937–1007) for the full reasoning and edge cases.
 
 ---
 
