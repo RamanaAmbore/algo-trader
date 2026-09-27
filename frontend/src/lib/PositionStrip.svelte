@@ -837,7 +837,14 @@
      strip without an intrusive banner message. */
   .ps-strip.ps-stale {
     background: linear-gradient(180deg, #1a1200 0%, #1a1500 100%);
-    border-bottom-color: rgba(251, 146, 60, 0.6);
+    /* A10 (2026-09 audit) — was a third, off-token orange
+       rgba(251,146,60,0.6); pointed at the canonical --algo-amber/
+       --c-action hue (#fbbf24, same as BrokerHealthBadge's stale state),
+       alpha (0.6) preserved via color-mix so the border's visual weight
+       is unchanged. MarketPulse's separate grey-hatch stale treatment is
+       untouched — the broader "one stale metaphor everywhere" question
+       stays open for the operator. */
+    border-bottom-color: color-mix(in srgb, var(--algo-amber) 60%, transparent);
   }
   /* Closed-hours poll pulse — dim slate border flash when both markets are
      closed but broker data still refreshes (positions, holdings, funds,
