@@ -329,6 +329,46 @@ Agent condition evaluation enforces three critical invariants via the alert engi
 
 **Market daily window** — 08:00–23:31 IST. At 08:00: `fix_daily_book_prev_close()` sets BOTH `daily_book.ltp = prev_close = settlement close_price` — the only moment prev_close changes. NON-MCX snapshot at 15:45 (close+15 min) writes `ltp` only, no prev_close change. MCX snapshot at 23:45 (close+15 min) same. Ticker stops at 23:31. Closed window: 23:31→08:00 IST — routes serve `daily_book` snapshot only. Full schedule: memory `project_market_daily_window`.
 
+**Expiry-day position freeze — snapshots persist until next market open** (2026-09,
+commits 4fa0d711 + fd07dda3) — Once a F&O contract's expiry date passes, its final
+`daily_book` position snapshot is frozen in the database and served in all views
+until 08:00 IST next trading day. Why freezing is structural, not optional: during
+the closed window (23:31→08:00 IST per "Market daily window" rule), the broker
+WebSocket and API are disconnected, so `daily_book` is the ONLY data that exists —
+deleting a frozen row destroys the sole copy available to serve. SSOT classifier:
+`expiry_status()` in [`backend/api/algo/expiry_freeze.py`](backend/api/algo/expiry_freeze.py),
+returns `not_expiry` / `frozen` / `refresh_eligible`. Uses contract expiry date,
+the row's own 08:00-IST session boundary (same convention as
+`_SESSION_ANCHOR_CUTOFF_TS_SQL`), and holiday-aware `next_market_open_ist()`.
+
+  **Expired vs closed distinction:** A position is EXPIRED when the contract's OWN
+  expiry date has passed; it gets frozen treatment. A position is CLOSED when the
+  operator/algo squared off while the contract still had time left — these use the
+  existing 7-day orphan sweep unchanged. Conflating them would resurrect every
+  early-closed position as perpetually frozen.
+
+  **DB/persistence pipeline** — Two bugs fixed in `backend/api/algo/daily_snapshot.py`
+  and `backend/api/routes/positions.py`: (1) The 7-day orphan-sweep
+  (`_delete_orphan_positions()` and `_delete_prior_orphan_positions()`) now checks
+  `expiry_status() == "frozen"` before deleting, preventing premature row destruction.
+  (2) New `kind='positions_empty'` marker from `_write_confirmed_empty_marker()` —
+  written ONLY on broker-confirmed zero, never on failed/ambiguous fetches (links to
+  Staleness rule's A1 fix) — ensures flat-account days get an anchor row so the
+  orphan-sweep remains functional. (3) `_union_and_filter_expiry_frozen_rows()` prevents
+  same-account fresh batches (a still-live symbol) from masking older frozen rows via
+  the `latest_batch` CTE. Defensive backstop: `refresh_eligible` rows are excluded
+  outright (not stale-marked), covering open-hours outages where `snapshot-fallback`
+  is used.
+
+  **Derivatives Exp-close tab** — `derivativesMath.js:annotateOptionCandidates()`
+  falls back to `decomposeSymbol()` when `getInstrument(sym)` returns null (Kite
+  purges expired contracts from its daily instruments cache), deriving optType/strike/underlying
+  from symbol text alone. Expired legs forced unconditionally into the actionable
+  `'close'` band without re-spotting to rolled-forward front-month (ITM/OTM fixed at
+  settlement). Sibling instance of the earlier 2026-09 GOLDM regression fix in
+  `pageLoad.js:buildCandidatePositions()` — same defect class ("silently vanishes when
+  Kite purges contract"), different pipeline.
+
 **WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). New instrument from order fill: Kite postback extracts `instrument_token` directly from payload, calls `get_ticker().subscribe([token])` on `COMPLETE`. Dhan/Groww postbacks resolve the token from (tradingsymbol, exchange) via instruments lookup, then subscribe. `subscribe()` is idempotent. Full design: memory `project_websocket_design`.
 
 **Dhan/Groww order detection** — Fill detection relies on broker webhooks + periodic book poll. Kite webhooks are reliable. Dhan webhook (`/dhan_postback`) must be manually configured in the Dhan partner dashboard — if not configured, fills are detected only at the next 5-min `_task_performance` poll. Groww webhook support is uncertain (Groww may not send postbacks). Verify Dhan webhook URL is set to `https://ramboq.com/api/orders/dhan_postback` in Dhan's partner portal before relying on immediate fill detection. The 5-min book poll is the guaranteed backstop for all brokers.
