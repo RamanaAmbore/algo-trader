@@ -77,6 +77,33 @@ export function acctColor(account) {
 }
 
 /**
+ * Shared JS-side helper for ag-Grid `cellStyle` callbacks — every
+ * dark-theme surface's account column (`.ag-col-acct`) calls this to
+ * inject the ONE custom property (`--acct-color`) the shared `app.css`
+ * rule reads for the left-edge stripe + 14% background tint. Replaces
+ * the differently-named per-surface variables each surface used to
+ * invent (`--bh-acct-color` in BrokerHealthBadge, `--acct-stripe` in
+ * NavBreakdown/MarketPulse/PerformancePage).
+ *
+ * ag-Grid in this codebase uses vanilla-JS cellRenderers (no
+ * ag-grid-Svelte bridge) — this stays a plain function, not a shared
+ * Svelte component, since a mounted component would need manual
+ * per-cell mount/destroy lifecycle and become a second implementation.
+ *
+ * PerformancePage.svelte (ag-theme-ramboq, the public cream page) is
+ * intentionally NOT wired to `--acct-color` — it keeps its own
+ * isolated `--acct-stripe` custom property + scoped CSS rule (see A1/A2
+ * audit notes in NavBreakdown.svelte / app.css). Do not point it at
+ * this helper without operator sign-off.
+ *
+ * @param {string | null | undefined} account
+ * @returns {{ '--acct-color': string }}
+ */
+export function acctStyleVars(account) {
+  return { '--acct-color': acctColor(account) || 'transparent' };
+}
+
+/**
  * Pick the lead account from a row's `accounts` Set / array. Used
  * when colour-coding the symbol cell — a multi-account row is rare
  * but real (same symbol held in 2 accounts), so we tint by the first

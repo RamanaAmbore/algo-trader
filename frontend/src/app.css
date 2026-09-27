@@ -1334,12 +1334,33 @@
 }
 
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
-   A 3px left-edge stripe on the account cell only (never the symbol cell).
-   The colour is injected as --acct-stripe via cellStyle in PerformancePage;
-   falls back to transparent so the stripe is invisible for TOTAL rows and
-   any row that doesn't carry a hue mapping. Works across both themes. */
+   Default: no stripe. Real accounts get one via the .ag-theme-algo rule
+   below; this bare rule is the base reset every non-wired cell falls back
+   to (TOTAL rows, cells with no --acct-color set, and PerformancePage's
+   ag-theme-ramboq public grid, which is intentionally NOT part of the
+   unified dark-theme treatment — see its own scoped :global(.ag-col-acct)
+   rule in PerformancePage.svelte, kept isolated on purpose). */
 .ag-col-acct {
   border-left: 0 !important;
+}
+
+/* ── Unified dark-theme account-identity treatment (2026-09 audit, A2) ────
+   One shared custom property (--acct-color, set via $lib/account.js's
+   acctStyleVars() from every dark-theme surface's cellStyle) drives THREE
+   identity signals from one place: 3px left stripe, 14% background tint
+   of the same hue, and a shared font-weight — replacing the scattered,
+   differently-named per-surface variables (--bh-acct-color in
+   BrokerHealthBadge, --acct-stripe in NavBreakdown/MarketPulse) that used
+   to compete with the bare .ag-col-acct reset above via source-order
+   (both !important, same specificity — a cascade race). Scoped to
+   .ag-theme-algo (2-class compound selector beats the bare 1-class reset
+   on specificity alone, regardless of source order) so it reaches every
+   dark-theme surface (BrokerHealthBadge, NavBreakdown, MarketPulse) but
+   never PerformancePage's ag-theme-ramboq grid. */
+.ag-theme-algo .ag-col-acct {
+  border-left: 3px solid var(--acct-color, transparent) !important;
+  background-color: color-mix(in srgb, var(--acct-color, transparent) 14%, transparent);
+  font-weight: 600;
 }
 
 /* ── Dual-zone log timestamp ──────────────────────────────────────────────

@@ -28,6 +28,7 @@
   import { longPress } from '$lib/actions/longPress.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { retryTemplateAttach } from '$lib/api';
+  import { acctColor } from '$lib/account';
 
   // Re-attach button state — per-card spinner + inline note. The note
   // disappears the next time the parent OrderCard re-renders with a
@@ -97,27 +98,13 @@
     return t === 'BUY' ? 'color: var(--btn-buy)' : 'color: var(--btn-sell)';
   }
 
-  // Per-account hue — same algorithm /orders uses so the same account
-  // gets the same tint on both surfaces. Module-level cache keeps the
-  // assignment stable across mounts.
-  // Audit fix — switched from unbounded `string[]` + O(n) indexOf to a
-  // bounded Map<acct, idx> with O(1) lookup. Pre-fix the array grew
-  // by one entry per unique account seen across all OrderCard
-  // instances and `_acctList.indexOf(a)` ran O(n) on every render.
-  // In LogPanel with 50 orders polling at 3 s that was 150 indexOf
-  // searches per cycle. With a Map it's a single hash lookup; the
-  // Map size is capped by the number of unique accounts (handful in
-  // practice), so unbounded growth isn't a real concern but using
-  // Map makes the bound explicit + the lookup constant-time.
-  const _ACCT_COLORS = ['text-sky-300', 'text-amber-300', 'text-fuchsia-300', 'text-teal-300'];
-  /** @type {Map<string, number>} */
-  const _ACCT_IDX = new Map();
-  /** @param {string} a */
-  function _acctColor(a) {
-    let idx = _ACCT_IDX.get(a);
-    if (idx === undefined) { idx = _ACCT_IDX.size; _ACCT_IDX.set(a, idx); }
-    return _ACCT_COLORS[idx % _ACCT_COLORS.length];
-  }
+  // Per-account identity — delegates to the shared $lib/account.js
+  // palette (A2, 2026-09 audit). Previously this was a local, insertion-
+  // order Map over 4 Tailwind TEXT classes — non-deterministic across
+  // sessions (order of first-seen account changed the colour) AND
+  // recolored the identity signal onto text, the same anti-pattern A2
+  // corrects everywhere else. Fixed to the STRIPE (identity channel) via
+  // the `.oc-acct` class below, not text colour.
 
   // Field-fallback helpers — broker `OrderRow` uses `tradingsymbol` /
   // `price` / `average_price` / `order_timestamp`; the platform's
@@ -175,7 +162,7 @@
   <div class="flex items-center justify-between mb-0.5 gap-1">
     <span class="font-semibold text-xs">
       <span style={_txnStyle(order.transaction_type)}>{order.transaction_type}</span>
-      <span class={_acctColor(order.account)}>{order.account}</span>
+      <span class="oc-acct" style={order.account ? `--acct-color: ${acctColor(order.account) || 'transparent'};` : ''}>{order.account}</span>
       <!-- svelte-ignore a11y_interactive_supports_focus -->
       <span class="text-[var(--algo-slate)] oc-sym-btn"
         role="button"
@@ -385,6 +372,20 @@
     border: 1px solid var(--st-border, rgba(251,191,36,0.40));
     background: var(--st-bg, rgba(251,191,36,0.12));
     color: var(--st-fg, #fbbf24);
+  }
+  /* Account identity — STRIPE (not text colour, A2 2026-09 audit fix).
+     Inline card header has far less horizontal room than a grid cell
+     (LogPanel mounts at ≤360px), so this is a thinner 2px stripe + tight
+     0.2rem padding rather than the 3px + 14% bg tint used on ag-Grid
+     account columns — same identity signal, sized for the available
+     space. --acct-color set inline per-order via $lib/account.js's
+     acctColor(); falls back to transparent for orders with no account
+     (e.g. some AlgoOrderInfo shapes). */
+  :global(.oc-acct) {
+    border-left: 2px solid var(--acct-color, transparent);
+    padding-left: 0.2rem;
+    color: var(--algo-slate);
+    font-weight: 600;
   }
   /* Per-status CSS var blocks — parent .algo-status-card carries
      data-status; child .algo-status-pill inherits via cascade. */

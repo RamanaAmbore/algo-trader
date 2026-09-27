@@ -22,7 +22,7 @@
   import { brokerHealthStore, openActivityModal } from '$lib/stores';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { acctColor } from '$lib/account';
+  import { acctStyleVars } from '$lib/account';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
@@ -77,6 +77,15 @@
     },
     {
       field: 'account', headerName: 'Account', width: 115, minWidth: 80,
+      // A2 (2026-09 audit) structural fix: the stripe used to live on the
+      // inner `.bh-row-account` <span> the cellRenderer builds below, NOT
+      // on the ag-Grid CELL element itself — the shared app.css rule
+      // (`.ag-theme-algo .ag-col-acct`) targets the CELL class and never
+      // reached that inner div. `cellClass` + `cellStyle` below put
+      // --acct-color on the cell directly (same element the CSS rule
+      // targets), matching NavBreakdown/MarketPulse.
+      cellClass: 'ag-col-acct',
+      cellStyle: p => acctStyleVars(p.value),
       cellRenderer: p => {
         const acct = p.data ?? {};
         const state = acct.state ?? '';
@@ -95,8 +104,6 @@
         const wrap = document.createElement('span');
         wrap.className = `bh-row-account bh-row-acct-fill ${accCls}`;
         wrap.title = title;
-        const _hc = acctColor(p.value);
-        if (_hc) wrap.style.setProperty('--bh-acct-color', _hc);
         wrap.textContent = p.value ?? '';
         if (cbOptIn && acct.circuit_state === 'open') {
           const chip = document.createElement('span');
@@ -261,7 +268,6 @@
 
   :global(.bh-row-account) {
     color: var(--algo-slate);
-    font-weight: 600;
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -269,13 +275,18 @@
     align-items: center;
     gap: 0.35rem;
     width: 100%;
-    background-color: color-mix(in srgb, var(--bh-acct-color, transparent) 14%, transparent);
-    /* Account left-bar — same pattern as NavBreakdown.svelte / PerformancePage.svelte
-       (border-left: 3px solid var(--acct-stripe, transparent) !important), reusing the
-       per-account color already computed into --bh-acct-color for the background tint
-       above (acctColor() via account.js) — no new color logic needed. */
-    border-left: 3px solid var(--bh-acct-color, transparent) !important;
+    /* Stripe + 14% bg tint + font-weight now come from the CELL itself
+       (app.css's `.ag-theme-algo .ag-col-acct` rule, driven by
+       --acct-color set via this column's cellStyle → acctStyleVars()) —
+       this inner span no longer duplicates them (A2, 2026-09 audit; was
+       --bh-acct-color, applied here instead of the cell, which the
+       shared rule could never reach). */
   }
+  /* Connection-health state colour — a DIFFERENT semantic channel
+     (health status, not account identity); the one deliberate exception
+     to "stripe is the sole identity signifier" (A2 plan). Bold weight
+     kept here to carry the alert urgency for red/amber/active states —
+     intentionally NOT unified to the shared 600 weight. */
   :global(.bh-acct-red)      { color: var(--c-short) !important; font-weight: 700 !important; }
   :global(.bh-acct-amber)    { color: var(--c-action) !important; font-weight: 700 !important; }
   :global(.bh-acct-inactive) { color: var(--text-faint) !important; }

@@ -8,8 +8,10 @@
  *   ✓ Header displays slot-specific title ("Positions P&L" / "Margin" / "Cash" / "Holdings")
  *   ✓ Close button (✕) visible and functional
  *
- * Fix 2 — Account column stripe with --acct-stripe CSS variable injection
- *   ✓ NavBreakdown account cells have cellStyle injecting --acct-stripe color
+ * Fix 2 — Account column stripe with --acct-color CSS variable injection
+ *   (renamed from --acct-stripe, A2 2026-09 audit — one shared name for
+ *   every dark-theme surface's account-identity custom property)
+ *   ✓ NavBreakdown account cells have cellStyle injecting --acct-color
  *   ✓ Border color is based on account hash (visible 3px left border)
  *   ✓ Pattern reused across P, M, C, H slots
  *
@@ -144,7 +146,7 @@ test.describe('Fix 1: NavBreakdown header with close button', () => {
 // FIXTURE 2: Account Column Stripe (Fix 2)
 // ═══════════════════════════════════════════════════════════════════════════
 
-test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
+test.describe('Fix 2: Account column stripe with --acct-color', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
   });
@@ -172,8 +174,9 @@ test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
     // Assert cellStyle is applied to account columns in grid definitions
     expect(source).toContain('cellStyle: _acctCellStyle');
 
-    // Assert --acct-stripe CSS variable is used
-    expect(source).toContain('--acct-stripe');
+    // Assert --acct-color CSS variable is used (renamed from --acct-stripe,
+    // A2 2026-09 audit — see file-header note)
+    expect(source).toContain('--acct-color');
 
     console.log('[Fix 2] NavBreakdown account stripe SSOT verified');
   });
@@ -188,16 +191,17 @@ test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
       return;
     }
 
-    // Assert the shared acctColor (from $lib/account, rank-based with a
-    // djb2-hash fallback — see account.js's doc comment) is imported so
-    // the same account always gets the same colour across page reloads
-    // AND across every other surface (BrokerHealthBadge, MarketPulse,
-    // derivatives, PerformancePage) — not a locally-duplicated hash.
+    // Assert the shared acctStyleVars (from $lib/account, wraps the
+    // rank-based acctColor with a djb2-hash fallback — see account.js's
+    // doc comment) is imported so the same account always gets the same
+    // colour across page reloads AND across every other surface
+    // (BrokerHealthBadge, MarketPulse, derivatives, PerformancePage) —
+    // not a locally-duplicated hash.
     expect(source).toContain("from '$lib/account'");
     expect(source).not.toContain('function _acctColor(');
 
     // Assert the function is used by _acctCellStyle
-    const hasColorUsage = /_acctCellStyle[\s\S]*?acctColor/.test(source);
+    const hasColorUsage = /_acctCellStyle[\s\S]*?acctStyleVars/.test(source);
     expect(hasColorUsage).toBe(true);
 
     // Assert TOTAL account is filtered out (no color for totals row) —

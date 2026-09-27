@@ -18,7 +18,7 @@ vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
   }
 }));
 
-import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol } from '../../data/pulseColumns.js';
+import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing } from '../../data/pulseColumns.js';
 
 // ---------------------------------------------------------------------------
 // Minimal stubs — mkRightColDefs requires many column objects and formatters
@@ -919,5 +919,38 @@ describe('mkLtpCol — tooltipValueGetter', () => {
   it('tooltipValueGetter returns null when value is 0', () => {
     const col = makeLtpCol();
     expect(col.tooltipValueGetter({ value: 0 })).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// mkAcctColTrailing — A2 (2026-09 audit): cellStyle emits the shared
+// --acct-color custom property (renamed from --acct-stripe) that app.css's
+// `.ag-theme-algo .ag-col-acct` rule reads for the stripe/bg-tint/weight.
+// ---------------------------------------------------------------------------
+
+describe('mkAcctColTrailing', () => {
+  function makeCol() {
+    return mkAcctColTrailing({ RA: 'ag-right-aligned-cell' });
+  }
+
+  it('carries the ag-col-acct cellClass so the shared app.css rule applies', () => {
+    const col = makeCol();
+    expect(col.cellClass).toContain('ag-col-acct');
+  });
+
+  it('cellStyle emits --acct-color (not the old --acct-stripe name)', () => {
+    const col = makeCol();
+    const style = col.cellStyle({ data: { _acctColor: '#fbbf24' } });
+    expect(style).toEqual({ '--acct-color': '#fbbf24' });
+  });
+
+  it('cellStyle falls back to transparent when no resolved colour', () => {
+    const col = makeCol();
+    expect(col.cellStyle({ data: { _acctColor: null } })).toEqual({ '--acct-color': 'transparent' });
+  });
+
+  it('cellStyle returns empty object for TOTAL rows (no stripe/tint)', () => {
+    const col = makeCol();
+    expect(col.cellStyle({ data: { _isTotal: true, _acctColor: '#fbbf24' } })).toEqual({});
   });
 });

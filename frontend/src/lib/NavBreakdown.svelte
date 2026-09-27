@@ -31,7 +31,7 @@
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
-  import { acctColor } from '$lib/account';
+  import { acctStyleVars } from '$lib/account';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { connStatus } from '$lib/stores';
 
@@ -344,10 +344,10 @@
   // derivatives, PerformancePage). Previously this file duplicated an
   // 8-hue palette that had drifted from account.js's 7-hue one.
 
-  /** cellStyle injecting --acct-stripe for the account column. */
+  /** cellStyle injecting --acct-color for the account column (A2:
+   *  shared name — see app.css's .ag-theme-algo .ag-col-acct rule). */
   function _acctCellStyle(p) {
-    const c = acctColor(p.data?.account);
-    return c ? { '--acct-stripe': c } : { '--acct-stripe': 'transparent' };
+    return acctStyleVars(p.data?.account);
   }
 
 
@@ -619,9 +619,9 @@
 
   .nav-bd-ag { width: 100%; }
 
-  :global(.nav-bd-ag .ag-col-acct) {
-    border-left: 3px solid var(--acct-stripe, transparent) !important;
-  }
+  /* Account-identity stripe + bg tint + weight now come from the shared
+     app.css rule (.ag-theme-algo .ag-col-acct, driven by --acct-color) —
+     this file's own competing override deleted (A2, 2026-09 audit). */
 
   .nav-bd-caption {
     display: flex;

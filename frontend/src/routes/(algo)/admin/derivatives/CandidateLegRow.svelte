@@ -174,7 +174,7 @@
 {/if}
 
 <div class="cand-row {stripe} cand-row-{dir}"
-     style={_acctColor ? `--cand-acct-color: ${_acctColor};` : ''}
+     style={_acctColor ? `--acct-color: ${_acctColor};` : ''}
      class:cand-disabled={!enabled}
      class:cand-closed={isClosed}
      class:cand-draft={isDraft}
@@ -529,8 +529,17 @@
   /* Symbol-cell treatment ported from the Pulse Positions grid so the
      two surfaces look identical at a glance. ONE vertical right border
      per symbol cell encoding TODAY's P&L direction (day-pnl mini-bar).
-     `--cand-acct-color` is set per-row via inline style from the
-     account's hash colour (acctColor from $lib/account). */
+     `--acct-color` (A2, 2026-09 audit — renamed from `--cand-acct-color`
+     to the one shared name every account-identity surface now uses) is
+     set per-row via inline style from the account's colour (acctColor
+     from $lib/account). This row has no dedicated account cell — the
+     symbol cell IS its account-identity slot, unlike ag-Grid surfaces
+     which use a separate `.ag-col-acct` column; no left-border stripe
+     added here (would duplicate the existing right-edge direction
+     border below). NOTE: the long/short direction tint immediately
+     below OVERRIDES this identity tint when the row has a position —
+     an existing, documented exception to "state colour never overrides
+     the identity channel"; flagged for the operator, not changed here. */
   .cand-sym {
     display: inline-flex;
     align-items: center;
@@ -539,7 +548,7 @@
   }
   .cand-sym-acct {
     position: relative;
-    background-color: color-mix(in srgb, var(--cand-acct-color, transparent) 14%, transparent);
+    background-color: color-mix(in srgb, var(--acct-color, transparent) 14%, transparent);
   }
   .cand-row.cand-row-long  .cand-sym-acct { background-color: rgba(74,  222, 128, 0.10) !important; }
   .cand-row.cand-row-short .cand-sym-acct { background-color: rgba(248, 113, 113, 0.10) !important; }

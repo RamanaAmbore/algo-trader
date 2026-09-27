@@ -389,10 +389,15 @@ export function mkAcctColTrailing({ RA }) {
     field: '_acct_display', headerName: 'Account', colId: 'account',
     width: 86, minWidth: 70, maxWidth: 110,
     cellClass: 'mp-acct-cell ag-col-acct',
+    // --acct-color (A2, 2026-09 audit) — shared name every dark-theme
+    // surface's account column uses; app.css's .ag-theme-algo .ag-col-acct
+    // rule reads it for the stripe + bg tint + weight. Row already carries
+    // the resolved colour as `_acctColor` (baked in by pulseUnified.js via
+    // $lib/account.js's acctColor()), so no extra import needed here.
     cellStyle: (p) => {
       if (p.data?._isTotal) return {};
       const color = p.data?._acctColor ?? null;
-      return color ? { '--acct-stripe': color } : { '--acct-stripe': 'transparent' };
+      return { '--acct-color': color || 'transparent' };
     },
     valueGetter: (p) => {
       if (p.data?._isTotal) return '';

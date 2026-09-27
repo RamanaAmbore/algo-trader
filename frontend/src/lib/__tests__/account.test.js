@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { ACCT_PALETTE, acctColor, setAccountColorRank, leadAccount } from '$lib/account.js';
+import { ACCT_PALETTE, acctColor, acctStyleVars, setAccountColorRank, leadAccount } from '$lib/account.js';
 
 // Real operator accounts (2026-09 audit) — the exact set that motivated
 // the rank-based colour assignment: a djb2 hash mod either the 7-hue
@@ -37,13 +37,13 @@ describe('acctColor', () => {
   it('hash fallback collides for the real account set (documents the bug rank-assignment fixes)', () => {
     const colors = REAL_ACCOUNTS.map(acctColor);
     const distinct = new Set(colors);
-    // This is the confirmed-collision regression case — DH6847/DH3747
-    // share a hue under pure djb2-hash. If this ever stops colliding
-    // (e.g. account list changes), the assertion below simply
-    // documents "no collision today" rather than failing; the real
-    // guarantee is the rank-based test below, which must ALWAYS be
-    // collision-free for this set.
-    expect(distinct.size).toBeLessThanOrEqual(REAL_ACCOUNTS.length);
+    // Confirmed-collision regression case — DH6847/DH3747 share a hue
+    // under pure djb2-hash mod the 7-hue palette. Strict `toBeLessThan`
+    // (not `<=`, which is trivially true) so this test actually fails —
+    // and flags a real regression to re-investigate — if the account
+    // set or palette ever changes such that the hash stops colliding;
+    // the real collision-free GUARANTEE is the rank-based test below.
+    expect(distinct.size).toBeLessThan(REAL_ACCOUNTS.length);
   });
 
   it('rank-based assignment is collision-free for the real 5-account set', () => {
@@ -83,6 +83,23 @@ describe('acctColor', () => {
     setAccountColorRank('not-an-array');
     const c = acctColor('ZG0790');
     expect(ACCT_PALETTE).toContain(c);
+  });
+});
+
+describe('acctStyleVars', () => {
+  afterEach(() => {
+    setAccountColorRank(null);
+  });
+
+  it('returns an --acct-color custom-property object for a real account', () => {
+    setAccountColorRank(REAL_ACCOUNTS);
+    expect(acctStyleVars('ZG0790')).toEqual({ '--acct-color': ACCT_PALETTE[0] });
+  });
+
+  it('falls back to transparent for TOTAL / null / unresolved accounts', () => {
+    expect(acctStyleVars('TOTAL')).toEqual({ '--acct-color': 'transparent' });
+    expect(acctStyleVars(null)).toEqual({ '--acct-color': 'transparent' });
+    expect(acctStyleVars(undefined)).toEqual({ '--acct-color': 'transparent' });
   });
 });
 
