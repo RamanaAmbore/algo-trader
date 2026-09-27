@@ -280,7 +280,32 @@
 <style>
   /* Page-level reset — strip the algo / public layout chrome so the
      LP gets a clean cream/champagne canvas. */
-  :global(body) { background: #fdfaf2; color: #2a2418; }
+  /* B8 (2026-09): desktop side-margin decoration — approved treatment,
+     not a new design decision. Content is capped at 920px/centered,
+     leaving a flat void on wide viewports. Two pieces:
+       (a) subtle radial vignette on the full-width body background —
+           flat #fdfaf2 across the entire content column (0-38% of the
+           1400px-wide ellipse = 532px radius, comfortably wider than
+           the content column's 460px half-width, so the readable area
+           is never touched), shifting almost imperceptibly toward a
+           deeper cream/champagne tone (#f3e9d2) in the margin band,
+           fading back to flat further out.
+       (b) 1px champagne-gold hairlines flanking the content column
+           (.ip-page::before/::after below) — reuses the EXACT hairline
+           color already used for the public nav/footer's separators
+           (rgba(200,168,75,0.45)), no new color invented.
+     Explicitly NOT done (rejected in design discussion): paper-grain/
+     noise texture, repeating pattern/watermark, full-bleed imagery. */
+  :global(body) {
+    color: #2a2418;
+    background: #fdfaf2 radial-gradient(
+      ellipse 1400px 100% at center,
+      #fdfaf2 0%,
+      #fdfaf2 38%,
+      #f3e9d2 62%,
+      #fdfaf2 88%
+    );
+  }
 
   .ip-page {
     max-width: 920px;
@@ -292,6 +317,28 @@
        comment on .ag-theme-ramboq's --ag-font-family for the same call. */
     font-family: -apple-system, BlinkMacSystemFont, sans-serif;
     color: #2a2418;
+    position: relative;
+  }
+  /* B8 hairlines — desktop-only. Gated to >=1080px: the strict minimum
+     to avoid overlapping content is 920px content + 2×24px offset =
+     968px; 1080px adds a comfortable buffer above that so the lines
+     never collide with the content column on in-between desktop widths.
+     The existing @media (max-width: 700px) mobile breakpoint below is
+     untouched — there's no side margin to decorate at that width. */
+  @media (min-width: 1080px) {
+    .ip-page::before,
+    .ip-page::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: rgba(200,168,75,0.45);
+      pointer-events: none;
+      z-index: 0;
+    }
+    .ip-page::before { left: calc(50% - 484px); }  /* 460px half-width + 24px offset */
+    .ip-page::after  { right: calc(50% - 484px); }
   }
   @media (max-width: 700px) {
     .ip-page { padding: 1.5rem 1rem 3rem; }
