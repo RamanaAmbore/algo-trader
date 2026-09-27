@@ -311,4 +311,68 @@ test.describe('broker-chip color + popup broker names', () => {
     await P.locator('.bh-close').first().click();
     await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
   });
+
+  // ── 7. UX: circuit-breaker OPEN chip background resolves to the shared
+  //         --c-short-10 token (0.10 alpha), not a hardcoded 0.15 (A9,
+  //         2026-09 audit) ──────────────────────────────────────────────
+
+  test('.bh-circuit-chip background resolves to --c-short-10 (0.10 alpha)', async () => {
+    const now = new Date().toISOString();
+    const openMock = {
+      accounts: [
+        {
+          account: 'ZG0790', broker: 'kite', state: 'red',
+          reason: 'circuit open', last_good_at: null, last_check_at: now,
+          is_active_ticker: true, circuit_state: 'open',
+          consecutive_fail_count: 5,
+          circuit_open_until: new Date(Date.now() + 5 * 60 * 1000).toISOString(),
+          circuit_breaker_enabled: true,
+        },
+      ],
+      groww_entitlement_denied: {},
+      primary_market_data_account: 'ZG0790',
+    };
+    await P.route('**/api/admin/broker-health', route => route.fulfill({
+      status: 200, contentType: 'application/json', body: JSON.stringify(openMock),
+    }));
+    await P.route('**/api/admin/brokers', route => route.fulfill({
+      status: 200, contentType: 'application/json',
+      body: JSON.stringify([{ account: 'ZG0790', loaded: true, broker_id: 'zerodha_kite', is_active: true }]),
+    }));
+
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+
+    // force:true — the red/down chip carries a continuous pulse animation
+    // (.broker-chip-down, see layout.svelte), which makes Playwright's
+    // default actionability "element is stable" wait never resolve
+    // (matches the known slow pattern on the existing red-chip test).
+    await chip.click({ force: true });
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    const circuitChip = modal.locator('.bh-circuit-chip').first();
+    const present = await circuitChip.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT }).then(() => true).catch(() => false);
+    if (!present) {
+      test.info().annotations.push({ type: 'skip', description: 'No circuit-open chip rendered' });
+      await P.locator('.bh-close').first().click().catch(() => {});
+      return;
+    }
+
+    const result = await circuitChip.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      const scratch = document.createElement('span');
+      scratch.style.color = 'var(--c-short-10)';
+      document.body.appendChild(scratch);
+      const resolvedToken = getComputedStyle(scratch).color;
+      document.body.removeChild(scratch);
+      return { background: cs.backgroundColor, resolvedToken };
+    });
+
+    expect(result.background, '.bh-circuit-chip background must equal --c-short-10 (0.10 alpha)')
+      .toBe(result.resolvedToken);
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
 });

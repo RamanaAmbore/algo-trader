@@ -300,7 +300,12 @@
     padding: 0.05rem 0.3rem;
     border-radius: 9999px;
     color: var(--c-short);
-    background: rgba(248, 113, 113, 0.15);
+    /* A9 (2026-09 audit) — was a hardcoded 0.15 alpha; aligned to the
+       shared --c-short-10 token (0.10, = --algo-red-bg) every other red
+       background tint in the codebase uses. Border alpha (0.4) and the
+       pill SHAPE (vs. derivatives' square-2px CLOSED/OPEN chips) are
+       left alone — open design questions, not addressed here. */
+    background: var(--c-short-10);
     border: 1px solid rgba(248, 113, 113, 0.4);
     vertical-align: middle;
     flex-shrink: 0;
