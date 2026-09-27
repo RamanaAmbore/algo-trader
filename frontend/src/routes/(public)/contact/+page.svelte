@@ -95,6 +95,12 @@
           </button>
         </div>
       </form>
+
+      <div class="pub-contact-direct">
+        <a href="mailto:contact@ramboquant.com">contact@ramboquant.com</a>
+        <span class="pub-sep">|</span>
+        Registered Office: D8H Regal Palm Garden, Velachery, Chennai 600042, India
+      </div>
     </div>
   </div>
 </div>
@@ -128,6 +134,27 @@
   .contact-send-btn:hover:not(:disabled) {
     background: #b87a0a;
     border-color: #b87a0a;
+  }
+
+  /* Direct contact fallback below the form — operator: forms fail
+     silently more often than they should be the only channel for
+     someone deciding to reach out. Uses the same muted champagne-label
+     token as the rest of the cream theme (--card-label-text), not a
+     new hardcoded color. */
+  .pub-contact-direct {
+    margin-top: 1.25rem;
+    padding-top: 1rem;
+    border-top: 1px solid rgba(200,168,75,0.3);
+    text-align: center;
+    font-size: 0.78rem;
+    color: var(--card-label-text, #7a5e1e);
+    line-height: 1.5;
+  }
+  .pub-contact-direct a {
+    color: inherit;
+    font-weight: 600;
+    text-decoration: underline;
+    text-underline-offset: 2px;
   }
   .contact-send-btn:disabled {
     background: #d4c898;
