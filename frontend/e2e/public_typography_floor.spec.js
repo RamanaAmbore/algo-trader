@@ -54,6 +54,15 @@ async function sweepSmallText(page, floorPx) {
       if (/\b(pub-brand-name|pub-brand-sub|pub-user-role)\b/.test(cls)) continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
+      // getComputedStyle only reports the ELEMENT'S OWN display/visibility —
+      // it does NOT reflect an ancestor's `display: none` (e.g. the mobile
+      // nav bar's `md:hidden` Tailwind class at desktop widths). A child
+      // nested inside such an ancestor still reports its own declared
+      // `display: block`/`visibility: visible`, producing a false positive
+      // here even though nothing is actually rendered on screen. getClientRects()
+      // reflects TRUE rendered visibility (empty when any ancestor is
+      // display:none), so use that as the real gate.
+      if (el.getClientRects().length === 0) continue;
       const size = parseFloat(style.fontSize);
       if (size < floor) {
         offenders.push({

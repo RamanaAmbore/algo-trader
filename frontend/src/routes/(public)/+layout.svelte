@@ -442,9 +442,16 @@
   }
   .pub-brand-mobile .pub-brand-name    { font-size: 0.66rem; }
   .pub-brand-mobile .pub-brand-sub     { font-size: 0.5rem; }
-  /* B2: same 0.7rem floor on mobile — no smaller exception. Verified
-     (mobile_typography_floor.spec.js) no horizontal overflow at 360px. */
-  .pub-brand-mobile .pub-brand-tagline { font-size: 0.7rem; }
+  /* Operator (2026-09): shrunk from B2's 0.7rem floor specifically on
+     this mobile brand lockup, to balance the tagline's visual height
+     against the compact header logo's icon height at this one narrow
+     breakpoint — same "fixed-size brand wordmark, not a data/credibility
+     label" reasoning public_typography_floor.spec.js already uses to
+     exempt .pub-brand-name/.pub-brand-sub from the B2 floor (that
+     spec's own sub-floor sweep only runs at the 1400px desktop
+     viewport, so this mobile-only value is untouched by it). Verified
+     no horizontal overflow at 360px (public_typography_floor.spec.js). */
+  .pub-brand-mobile .pub-brand-tagline { font-size: 0.6rem; }
   /* B9 (2026-09): mobile brand block must never flex-shrink below its
      natural content width — when logged in, the .pub-user-pill sitting
      in the same row (space-between) was eating into the brand block's
