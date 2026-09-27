@@ -108,7 +108,9 @@ export function mkDirCellText(opts = {}) {
  *   - defaultColDef: resizable, sortable, non-movable, no header menu
  *   - sortingOrder: ['asc', 'desc', null] — matches the historical dashboard
  *     _baseGridOpts so W/L grid column sorts don't regress
- *   - rowHeight: 26 — matches --ag-header-height: 28px (algo theme)
+ *   - rowHeight: 28 (desktop) / 36 (mobile) — must match --ag-row-height CSS var.
+ *     Callers MUST also set el.style.setProperty('--ag-row-height', `${rowH}px`) on
+ *     the grid container element to keep JS rowHeight and CSS centering var in sync.
  *   - getRowId: symbol → account → '' (for in-place rowData updates)
  *
  * @param {object} [overrides]
@@ -124,7 +126,7 @@ export function mkBaseGridOpts(overrides = {}) {
       suppressHeaderMenuButton: true,
     },
     sortingOrder: /** @type {('asc'|'desc'|null)[]} */ (['asc', 'desc', null]),
-    rowHeight: _isMobile ? 36 : 26,
+    rowHeight: _isMobile ? 36 : 28,
     getRowId: ({ data }) => {
       if (!data) return '';
       if (data.symbol)  return String(data.symbol);
@@ -133,4 +135,21 @@ export function mkBaseGridOpts(overrides = {}) {
     },
     ...overrides,
   };
+}
+
+/**
+ * syncGridRowHeightVar — sets the --ag-row-height CSS custom property on
+ * a grid container element to match the JS rowHeight. Call this immediately
+ * after createGrid() to ensure ag-Grid's legacy theme line-height derivation
+ * (used for cell text vertical centering) stays in sync with the actual row height.
+ *
+ * Usage:
+ *   const grid = createGrid(el, mkBaseGridOpts());
+ *   syncGridRowHeightVar(el);
+ *
+ * @param {HTMLElement} gridEl - The grid container element (passed to createGrid)
+ */
+export function syncGridRowHeightVar(gridEl) {
+  const rowH = _isMobile ? 36 : 28;
+  gridEl.style.setProperty('--ag-row-height', `${rowH}px`);
 }

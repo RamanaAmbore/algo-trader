@@ -24,7 +24,7 @@
   import { onDestroy, untrack } from 'svelte';
   import { aggCompact } from '$lib/format';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
-  import { mkBaseGridOpts, NUMERIC_HDR, agAggFmt, agDirCellText, mkDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
+  import { mkBaseGridOpts, syncGridRowHeightVar, NUMERIC_HDR, agAggFmt, agDirCellText, mkDirCellText, agPctFmt } from '$lib/data/algoGridUtils.js';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { fundsStore, holdingsStore, positionsStore, pulseHoldingsStore } from '$lib/data/marketDataStores.svelte.js';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
@@ -456,18 +456,22 @@
   $effect(() => {
     if (activeSlot !== 'P' || !_pEl || _pGrid) return;
     _pGrid = createGrid(_pEl, { ...mkBaseGridOpts(), columnDefs: _pCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
+    syncGridRowHeightVar(_pEl);
   });
   $effect(() => {
     if (activeSlot !== 'M' || !_mEl || _mGrid) return;
     _mGrid = createGrid(_mEl, { ...mkBaseGridOpts(), columnDefs: _mCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
+    syncGridRowHeightVar(_mEl);
   });
   $effect(() => {
     if (activeSlot !== 'C' || !_cEl || _cGrid) return;
     _cGrid = createGrid(_cEl, { ...mkBaseGridOpts(), columnDefs: _cCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
+    syncGridRowHeightVar(_cEl);
   });
   $effect(() => {
     if (activeSlot !== 'H' || !_hEl || _hGrid) return;
     _hGrid = createGrid(_hEl, { ...mkBaseGridOpts(), columnDefs: _hCols, rowData: [], domLayout: 'autoHeight', getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : '' });
+    syncGridRowHeightVar(_hEl);
   });
 
   // Row-data updates.

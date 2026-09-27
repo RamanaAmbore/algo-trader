@@ -18,7 +18,7 @@
    */
   import { onDestroy } from 'svelte';
   import { createGrid, ModuleRegistry, AllCommunityModule } from 'ag-grid-community';
-  import { mkBaseGridOpts } from '$lib/data/algoGridUtils.js';
+  import { mkBaseGridOpts, syncGridRowHeightVar } from '$lib/data/algoGridUtils.js';
   import { brokerHealthStore, openActivityModal } from '$lib/stores';
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
@@ -157,6 +157,7 @@
       suppressCellFocus: true,
       onRowClicked: () => { open = false; openActivityModal('conn'); },
     });
+    syncGridRowHeightVar(_gridEl);
   });
 
   $effect(() => {

@@ -46,7 +46,7 @@
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { baseDayPnlForPosition } from '$lib/data/nav';
-  import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, mkBaseGridOpts } from '$lib/data/algoGridUtils.js';
+  import { NUMERIC_HDR, agNumFmt, agAggFmt, agPctFmt, agDirCell, mkBaseGridOpts, syncGridRowHeightVar } from '$lib/data/algoGridUtils.js';
 
   // ag-Grid module registration — idempotent across re-mounts.
   ModuleRegistry.registerModules([AllCommunityModule]);
@@ -1401,7 +1401,7 @@
   // W/L grid factory — shared shape, separate instances per side.
   // Direction determines the colour of the % cell (up=green/down=red).
   function _makeWlGrid(el, kind /* 'win' | 'lose' */) {
-    return createGrid(el, {
+    const grid = createGrid(el, {
       ...mkBaseGridOpts(),
       columnDefs: [
         // Symbol column iteratively shrunk: 110 → 72 (−35 %) → 65
@@ -1444,6 +1444,8 @@
       overlayNoRowsTemplate:
         `<span style="font-size: var(--fs-md);color:var(--c-muted)">No ${kind === 'win' ? 'winners' : 'losers'} in this bucket</span>`,
     });
+    syncGridRowHeightVar(el);
+    return grid;
   }
 
   $effect(() => {
