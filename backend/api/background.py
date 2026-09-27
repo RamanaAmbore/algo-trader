@@ -7028,6 +7028,25 @@ async def _run_close_once(state: dict) -> None:
                 logger.error(f"Background[cron]: close summary failed for {seg['name']}: {e}")
 
 
+# Last-ditch grace period (2026-09-27 council audit, second-pass
+# refinement) — write_nav_snapshot() is called with force=True once IST
+# clock time reaches `target + _NAV_FORCE_GRACE`, guaranteeing a
+# nav_daily row lands for the day even during a prolonged single-account
+# outage. RELATIVE to `target` (not a fixed clock time) deliberately:
+#   • MCX's close_time (hence `target` ≈ close+15min) can move via
+#     `market_special_sessions` / a snapshot_time override — a FIXED
+#     23:55 cutoff could land AT OR BEFORE a retuned `target`, meaning
+#     the very first attempt would already be forced and the skip-and-
+#     retry protection would never run for that day at all.
+#   • The MCX-holiday / weekend fallback (`target` ≈ 15:45 or 16:00) has
+#     a MUCH longer 23:45-midnight-equivalent window than the normal
+#     23:45 case — a fixed 23:55 cutoff would mean ~8 HOURS of 30s-
+#     interval retries (broker fetch + a WARNING log line each) before
+#     ever forcing, which is its own operational problem.
+# See _run_nav_compute_once's docstring for the full rationale.
+_NAV_FORCE_GRACE = timedelta(minutes=10)
+
+
 async def _run_nav_compute_once(state: dict) -> None:
     """Write a NAV snapshot once per day, at the MCX EOD settlement moment
     (MCX close + 15 min ≈ 23:45 IST) — not a fixed 16:00 IST.
@@ -7054,8 +7073,21 @@ async def _run_nav_compute_once(state: dict) -> None:
     old fixed 16:00 IST as a last resort.
 
     The once-per-day latch (`state["nav_done"] == today`) is unchanged —
-    still resets naturally at IST date rollover and is popped on failure
-    below so the next poll (30s cadence) retries.
+    still resets naturally at IST date rollover and is popped on a
+    skipped write below so the next poll (30s cadence) retries.
+
+    `write_nav_snapshot(force=...)` (2026-09-27 council audit, second-pass
+    refinement): the skip-on-understated retry window is short and finite
+    — this function only fires between the scheduled snapshot time
+    (`target`, ~23:45 IST on a normal day) and IST midnight (`now.time()
+    < target` stops firing once `today` rolls over), and there is no
+    backfill path for a missed day. Passing `force=True` once the clock
+    reaches `target + _NAV_FORCE_GRACE` guarantees SOME row lands for the
+    day even during a prolonged single-account outage, rather than
+    losing the day permanently — see `_NAV_FORCE_GRACE`'s own docstring
+    for why this is relative to `target` rather than a fixed clock time.
+    See `write_nav_snapshot`'s own docstring for the full write-policy
+    rationale.
     """
     from backend.api.algo.nav import write_nav_snapshot
     from backend.api.helpers.exchange_clock import (
@@ -7077,8 +7109,53 @@ async def _run_nav_compute_once(state: dict) -> None:
     if now.time() < target:
         return
     state["nav_done"] = today
+    _cutoff_dt = datetime.combine(today, target) + _NAV_FORCE_GRACE
+    # If target + grace would roll past midnight (an unusually late
+    # target — e.g. a retuned MCX close), fall back to 23:59 so the
+    # force-write guarantee still fires SOME time today rather than
+    # never (the skip-and-retry protection window is simply shorter on
+    # such a day — unavoidable given "must resolve before midnight").
+    _cutoff = _cutoff_dt.time() if _cutoff_dt.date() == today else dtime(23, 59)
+    force_write = now.time() >= _cutoff
     try:
-        snap = await write_nav_snapshot()
+        snap = await write_nav_snapshot(force=force_write)
+        if snap.get("skipped_write"):
+            # 2026-09-27 council audit: write_nav_snapshot() itself
+            # decided the recompute is understated (no last-known-good
+            # for at least one leg) and skipped the upsert to avoid
+            # permanently persisting a wrong number. Pop the latch (same
+            # recovery path the exception branch below already uses) so
+            # the next 30s poll retries instead of considering today
+            # done with no row written at all.
+            logger.warning(
+                f"Background[cron]: NAV snapshot SKIPPED (understated) for "
+                f"{today.isoformat()} — will retry next poll"
+            )
+            # Once-per-day audit event (not once-per-30s-retry) — a
+            # permanently-broken account (e.g. an expired login with no
+            # LKG anywhere) would otherwise retry silently ~30 times an
+            # hour after 23:45 with zero operator-visible record that
+            # NAV history has a gap for today. Guarded the same way the
+            # once-per-day nav_done latch itself is (state key resets
+            # naturally at IST date rollover since `today` changes).
+            if state.get("nav_skip_noted") != today:
+                state["nav_skip_noted"] = today
+                try:
+                    from backend.api.audit import write_audit_event
+                    write_audit_event(
+                        category="system.nav",
+                        action="NAV_SNAPSHOT_SKIPPED",
+                        actor_username="system",
+                        actor_role="system",
+                        target_type="nav_daily",
+                        target_id=today.isoformat(),
+                        summary=("understated: " + " | ".join(snap.get("understated") or []))[:1000],
+                        status_code=200,
+                    )
+                except Exception:
+                    pass
+            state.pop("nav_done", None)
+            return
         logger.info(
             f"Background[cron]: NAV snapshot ₹{snap['nav']:,.0f} for {today.isoformat()}"
         )

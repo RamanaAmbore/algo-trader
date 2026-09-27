@@ -37,7 +37,13 @@ class TestFetchHoldingsFromSnapshot:
 
     @pytest.mark.asyncio
     async def test_returns_zero_when_snapshot_is_none(self):
-        """Returns 0.0 (no error) when _holdings_snapshot returns None."""
+        """Returns 0.0 when _holdings_snapshot returns None. 2026-09-27
+        council audit: this case (DB failure OR genuinely empty book,
+        conflated at the source) is now flagged via `errs` for
+        visibility — no longer silent — but deliberately NOT tagged
+        `_UNDERSTATED_TAG` (see algo/nav.py's docstring for why: tagging
+        it would block write_nav_snapshot() for every genuinely
+        zero-holdings day, not just real failures)."""
         from backend.api.algo.nav import _fetch_holdings_from_snapshot
 
         accounts, errs = [], []
@@ -48,7 +54,8 @@ class TestFetchHoldingsFromSnapshot:
             total = await _fetch_holdings_from_snapshot(accounts, errs)
 
         assert total == 0.0
-        assert not errs
+        assert errs == ["holdings_snapshot: no snapshot available"]
+        assert not any(e.startswith("UNDERSTATED:") for e in errs)
 
     @pytest.mark.asyncio
     async def test_appends_error_and_returns_zero_on_exception(self):

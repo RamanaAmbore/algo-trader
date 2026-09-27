@@ -127,3 +127,39 @@ async def test_errors_propagate_from_compute_firm_nav():
         resp = await NavController.nav_by_account.fn(self=None, request=req)
 
     assert resp.errors == ["holdings: broker timeout"]
+
+
+@pytest.mark.asyncio
+async def test_errors_mask_account_codes_for_non_admin():
+    """2026-09-27 council audit follow-up: the degraded-fetch freeze fix
+    (algo/nav.py) now routinely populates `errors` with raw account
+    codes — this unauthenticated route must mask them exactly like every
+    other account code it serves to non-admin callers."""
+    req = _fake_request(token_payload={"role": "demo"})
+    err_snap = dict(_SNAP)
+    err_snap["errors"] = ["margins: DH6847 fetch failed, no last-known-good available"]
+    with patch(
+        "backend.api.algo.nav.compute_firm_nav", new=AsyncMock(return_value=err_snap),
+    ):
+        resp = await NavController.nav_by_account.fn(self=None, request=req)
+
+    assert len(resp.errors) == 1
+    assert "DH6847" not in resp.errors[0]
+    assert "fetch failed" in resp.errors[0]
+
+
+@pytest.mark.asyncio
+async def test_errors_stay_raw_for_admin():
+    req = _fake_request(
+        token_payload={"role": "admin"}, auth_header="Bearer faketoken",
+    )
+    err_snap = dict(_SNAP)
+    err_snap["errors"] = ["margins: DH6847 fetch failed, no last-known-good available"]
+    with patch(
+        "backend.api.algo.nav.compute_firm_nav", new=AsyncMock(return_value=err_snap),
+    ), patch(
+        "backend.api.routes.auth.verify_token", return_value={"role": "admin"},
+    ):
+        resp = await NavController.nav_by_account.fn(self=None, request=req)
+
+    assert resp.errors == ["margins: DH6847 fetch failed, no last-known-good available"]

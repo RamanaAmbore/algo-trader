@@ -61,6 +61,15 @@ class NavComputeResponse(msgspec.Struct):
     holdings_mtm:  float
     accounts:      list[str]
     errors:        list[str]
+    # 2026-09-27 council audit: write_nav_snapshot() can now SKIP the
+    # actual nav_daily upsert (an understated leg — no last-known-good
+    # anywhere) while still returning the computed-but-unpersisted
+    # figures above. Pre-fix this endpoint always returned a normal 200
+    # with numbers, silently implying a row was written even when it
+    # wasn't. `written=False` makes that distinguishable — the operator
+    # explicitly triggered this as a "compute now" action and must know
+    # whether it actually landed in nav_daily.
+    written:       bool = True
 
 
 class NavByAccountRow(msgspec.Struct):
@@ -256,7 +265,7 @@ class NavController(Controller):
         from backend.api.rbac import (
             normalise_role, resolve_role_from_connection, user_scope_for_connection,
         )
-        from backend.shared.helpers.utils import mask_account
+        from backend.shared.helpers.utils import mask_account, mask_account_in_text
 
         snap = await _algo_compute_firm_nav()
         by_acct: dict = dict(snap.get("by_account") or {})
@@ -290,11 +299,21 @@ class NavController(Controller):
                 nav=round(sum(r.nav for r in rows), 2),
             )
 
+        # 2026-09-27 council audit follow-up: `errors` now routinely
+        # carries raw account codes (e.g. "margins: DH6847 fetch failed
+        # ...") since the degraded-fetch freeze fix populates it — mask
+        # them for non-admin callers exactly like every account code in
+        # `rows` above, on this SAME unauthenticated/unguarded route.
+        raw_errors = list(snap.get("errors") or [])
+        errors = raw_errors if admin else [
+            mask_account_in_text(e) for e in raw_errors
+        ]
+
         return NavByAccountResponse(
             rows=rows,
             total=total,
             as_of=datetime.now(timezone.utc).isoformat(),
-            errors=list(snap.get("errors") or []),
+            errors=errors,
         )
 
     @get("/latest", guards=[cap_guard("view_nav")])
@@ -413,6 +432,18 @@ class NavController(Controller):
         - Mid-day check after a position close
         - Backfill after a broker outage
         - Operator wants to see current NAV before EOD
+
+        `written=False` in the response (2026-09-27 council audit) means
+        `write_nav_snapshot()` computed these figures but deliberately
+        did NOT persist them to `nav_daily` — at least one leg is
+        genuinely understated (no last-known-good available anywhere;
+        see `snap['errors']`), and writing an understated number would
+        be worse than not writing at all. The figures above are still
+        the live computed values for the operator's own inspection —
+        they are just not (yet) in `nav_daily`. Retrying later (after
+        the underlying broker issue clears) will write normally; this
+        endpoint does not force a write the way the scheduled
+        `_run_nav_compute_once`'s last-ditch-before-midnight call does.
         """
         from backend.api.algo.nav import write_nav_snapshot
         from backend.shared.helpers.date_time_utils import timestamp_indian
@@ -426,4 +457,5 @@ class NavController(Controller):
             holdings_mtm=float(snap["holdings_mtm"]),
             accounts=snap["accounts"],
             errors=snap["errors"],
+            written=not snap.get("skipped_write", False),
         )

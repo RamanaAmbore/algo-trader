@@ -344,6 +344,128 @@ def _holdings_from_df(df, ticker) -> tuple[float, list[str]]:
     return mtm, accounts
 
 
+# Prefix marking an `errors` entry as UNDERSTATED — the leg genuinely
+# contributed less than its real value this cycle (no LKG anywhere to
+# freeze to), as opposed to an entry that's merely informational (e.g. an
+# LKG-substituted account, whose contributed number IS correct, just
+# slightly old). `compute_firm_nav()` filters on this prefix to build
+# `snap["understated"]`, which is what `write_nav_snapshot()` gates its
+# never-poison-a-clean-row check on — an informational-only degradation
+# must never block a write (the number is trustworthy), while an
+# understated leg always must (2026-09-27 council audit follow-up: an
+# earlier version of this fix conflated both severities into the single
+# `errors` list, which would have also blocked the write for the common
+# "LKG worked fine" case).
+_UNDERSTATED_TAG = "UNDERSTATED: "
+
+
+def _substitute_degraded_frames(dfs: list, kind: str, errors: list[str]) -> list:
+    """Detect per-account frames carrying a masked-failure shape
+    (`attrs['fetch_failed']` — set by `broker_apis._fetch_*_local` on any
+    per-account exception) and substitute the broker layer's own
+    last-known-good frame in place of silently letting that account's NAV
+    leg contribute a hard zero.
+
+    This closes the exact gap CLAUDE.md's "Staleness indicator freeze
+    rule" documents for `positions.py`/`holdings.py`
+    (`_is_positions_outage` / `_accounts_flagged_stale`): those routes
+    detect the SAME `attrs['fetch_failed']` shape on the SAME per-account
+    DataFrame contract `broker_apis.fetch_positions()` /
+    `fetch_holdings()` / `fetch_margins()` produce — `nav.py` previously
+    checked neither the attrs NOR the resulting `errors` list, so a
+    transient single-account broker exception (which returns an EMPTY
+    frame with `fetch_failed=True`, not a raised exception — the outer
+    per-phase try/except never sees it) silently zeroed that account's
+    cash/position/holdings leg with no operator-visible signal.
+
+    Reuses `broker_apis._stale_substitute_frame` — the SAME helper the
+    circuit-breaker-open / Dhan-interval-skip paths already call to
+    freeze to LKG — rather than inventing a second cache. Two outcomes:
+
+      • LKG exists → the substituted frame carries the account's real
+        (if slightly stale) last-known values; it is used exactly like a
+        normal successful fetch, and an informational entry is still
+        appended to `errors` so `write_nav_snapshot()`'s `note` records
+        the degradation even though the number itself is trustworthy.
+      • No LKG anywhere (fresh restart / >24h offline) → the substitute
+        is itself an empty `fetch_failed=True` frame; there is genuinely
+        no last-known-good value to freeze to, so (matching
+        positions.py's equivalent "account silently drops out of the
+        sum, but is flagged" behaviour) the account contributes 0 and an
+        `_UNDERSTATED_TAG`-prefixed entry is appended to `errors` —
+        `compute_firm_nav()` filters this prefix into `snap["understated"]`,
+        which is what actually gates `write_nav_snapshot()`'s decision to
+        skip the write (see `_UNDERSTATED_TAG`'s own docstring).
+
+    VERIFIED reachability (2026-09-27 council audit, empirically confirmed
+    — not just inferred): `margins` frames are never routed through
+    `broker_apis._apply_backfill_to_list`'s concat (holdings/positions
+    are), so every per-account frame's attrs survive intact through
+    `fetch_margins()` for BOTH full- and partial-outage shapes — this
+    function's detection is fully reliable for margins.
+
+    `positions`/`holdings` reliably preserve attrs ONLY for the
+    ALL-accounts-failed shape (the same shape `_is_positions_outage`
+    depends on — `_apply_backfill_to_list` returns the original
+    per-account list untouched when every frame is empty). In a MIXED
+    success/one-account-failure result, `_apply_backfill_to_list` filters
+    the failed account's EMPTY frame out of `non_empty` before concat —
+    empirically confirmed: the failed account leaves ZERO trace (no row,
+    no attrs) in the combined single-element list this function receives,
+    so this detection never fires for that shape and the leg silently
+    contributes 0 with no error recorded, exactly the original bug
+    pattern. Two sub-cases:
+      • `positions` has its own R1 in-process substitution
+        (`_fetch_positions_local`'s except/None branches already call
+        `_stale_substitute_frame` BEFORE returning) — when an LKG
+        exists, the substituted frame is non-empty and survives the
+        `non_empty` filter with correct values already inline, so this
+        gap does NOT apply there. It only applies when NO LKG exists
+        anywhere (the substitute itself comes back empty).
+      • `holdings` has no equivalent in-process substitution at all
+        (`_fetch_holdings_local`'s except/None branches just set
+        `fetch_failed=True` on an empty frame, unlike positions) — EVERY
+        single-account holdings failure is unreachable by this function,
+        LKG-available or not.
+    This is a `backend/brokers/broker_apis.py` (`_apply_backfill_to_list`)
+    reachability gap, not a `nav.py` one — flagged for the broker-layer
+    owner rather than patched here (out of this module's domain). Suggested
+    fix: `_apply_backfill_to_list` should stash failed account codes in
+    `combined.attrs` (e.g. `attrs['partial_outage']`, mirroring
+    `positions.py:_positions_partial_outage_accounts`'s existing
+    convention) before returning, so callers above it can still see what
+    was silently dropped.
+    """
+    from backend.brokers.broker_apis import _stale_substitute_frame
+
+    out: list = []
+    for df in (dfs or []):
+        attrs = getattr(df, "attrs", {}) or {}
+        if not attrs.get("fetch_failed"):
+            out.append(df)
+            continue
+        acct = attrs.get("account")
+        if not acct and not df.empty and "account" in df.columns:
+            acct = df["account"].iloc[0]
+        acct = str(acct) if acct else None
+        if not acct:
+            errors.append(f"{_UNDERSTATED_TAG}{kind}: fetch failed for an unidentified account")
+            out.append(df)
+            continue
+        sub = _stale_substitute_frame(kind, acct)
+        if sub.attrs.get("fetch_failed"):
+            errors.append(f"{_UNDERSTATED_TAG}{kind}: {acct} fetch failed, no last-known-good available")
+        else:
+            since = sub.attrs.get("stale_since")
+            logger.warning(
+                f"nav: {kind} degraded for {acct} — serving last-known-good"
+                + (f" (since {since})" if since else "")
+            )
+            errors.append(f"{kind}: {acct} degraded — served last-known-good")
+        out.append(sub)
+    return out
+
+
 def _merge_accounts(accounts_in: list[str], new_accts: list[str]) -> None:
     """Append unique non-empty account codes from new_accts into accounts_in in place."""
     for a in new_accts:
@@ -387,9 +509,162 @@ async def _resolve_conn_keys() -> list[str]:
     return keys
 
 
+def _recover_missing_margins_accounts(
+    expected_accounts: Optional[list[str]], seen: set,
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]],
+) -> float:
+    """Diff `expected_accounts` (every configured broker account) against
+    `seen` (accounts that actually produced a margins row this phase) and
+    attempt an LKG recovery for each gap.
+
+    Exists because margins is the ONE broker-fetch shape where an
+    account's contribution being silently absent is otherwise
+    UNDETECTABLE by attrs alone. `_substitute_degraded_frames` (attrs-
+    based) is fully reliable for margins in the SAME-process case
+    (`RAMBOQ_USE_CONN_SERVICE` unset) — margins never passes through
+    `_apply_backfill_to_list`'s concat, so per-account `fetch_failed`
+    attrs survive intact. But under `RAMBOQ_USE_CONN_SERVICE=1` (prod),
+    an empty `fetch_failed=True` per-account frame crosses the
+    conn_service UDS boundary via `conn_sync.fetch_margins()`, and
+    `DataFrame.attrs` is NOT guaranteed to survive that RPC
+    serialization — this check is deliberately boundary-agnostic: it
+    works from expected-vs-actual ACCOUNT PRESENCE instead of attrs, so
+    it closes the gap regardless of whether attrs made it across. The
+    `_peek("funds")` cached-closed-hours branch has the identical hole
+    (a no-LKG account is simply absent from `cached_funds.rows`, with
+    no `stale_accounts` entry either) — this helper covers both call
+    sites.
+
+    Every configured margins account always produces exactly one row on
+    a healthy fetch (unlike positions/holdings, which can legitimately
+    be flat/empty) — so "expected but never seen" unambiguously means a
+    masked failure, never a legitimate empty state. No-op when
+    `expected_accounts` is falsy (caller didn't resolve the account
+    list — e.g. existing tests/call sites that predate this check).
+    """
+    if not expected_accounts:
+        return 0.0
+    missing = sorted(set(expected_accounts) - seen - {"TOTAL"})
+    if not missing:
+        return 0.0
+    from backend.brokers.broker_apis import _stale_substitute_frame
+    total = 0.0
+    for acct in missing:
+        sub = _stale_substitute_frame("margins", acct)
+        if sub.empty or sub.attrs.get("fetch_failed"):
+            errors.append(
+                f"{_UNDERSTATED_TAG}margins: {acct} missing from fetch result, "
+                f"no last-known-good available"
+            )
+            continue
+        chunk, accts = _funds_from_df(sub)
+        total += chunk
+        _merge_accounts(accounts_in, accts)
+        if by_account is not None:
+            _accumulate_by_account(sub, by_account, _funds_from_df)
+        errors.append(f"margins: {acct} degraded — served last-known-good")
+    return total
+
+
+def _fetch_funds_from_cache(
+    cached_funds, accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]],
+    expected_accounts: Optional[list[str]],
+) -> Optional[float]:
+    """Extract cash_total from an already-cached FundsResponse (the
+    closed-hours branch of `_fetch_funds_phase`). Returns None on any
+    internal failure so the caller falls through to the live broker path
+    — mirrors the original inline try/except exactly, just extracted to
+    keep `_fetch_funds_phase`'s cyclomatic complexity under the project's
+    D-grade gate.
+    """
+    try:
+        total = 0.0
+        accts: list[str] = []
+        for row in (cached_funds.rows or []):
+            acct = str(getattr(row, "account", "") or "")
+            if acct == "TOTAL":
+                continue
+            cash = float(getattr(row, "cash", 0) or 0)
+            premium = float(getattr(row, "option_premium", 0) or 0)
+            total += cash + premium
+            if acct:
+                accts.append(acct)
+                if by_account is not None:
+                    by_account[acct] = by_account.get(acct, 0.0) + cash + premium
+        _merge_accounts(accounts_in, accts)
+        _stale_accts = getattr(cached_funds, "stale_accounts", None)
+        if isinstance(_stale_accts, (list, tuple, set)) and _stale_accts:
+            # The funds route already froze these accounts to its own LKG
+            # (see funds.py's stale_since_map) — values above are real (if
+            # slightly old). Surface it (informational only — NOT
+            # `_UNDERSTATED_TAG`-prefixed) so write_nav_snapshot()'s note
+            # captures the degradation without skipping the write (see
+            # `_UNDERSTATED_TAG`'s docstring for why a "degraded but has
+            # real values" entry never blocks, only a genuinely
+            # understated one does).
+            errors.append(
+                "funds: stale (cached) for "
+                + ", ".join(sorted(str(a) for a in _stale_accts))
+            )
+        total += _recover_missing_margins_accounts(
+            expected_accounts, set(accts), accounts_in, errors, by_account,
+        )
+        return total
+    except Exception as e:
+        logger.warning(f"nav: cached funds extraction failed ({e}) — falling through to broker")
+        return None
+
+
+async def _fetch_funds_from_broker(
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]],
+    expected_accounts: Optional[list[str]],
+) -> float:
+    """Live broker margins fetch + LKG substitution + missing-account
+    recovery. Extracted from `_fetch_funds_phase` to keep its own
+    cyclomatic complexity under the project's D-grade gate.
+    """
+    from backend.brokers.broker_apis import fetch_margins
+    try:
+        funds_dfs = await asyncio.to_thread(fetch_margins)
+        funds_dfs = _substitute_degraded_frames(funds_dfs, "margins", errors)
+        total = 0.0
+        # `attempted` (distinct from `seen`/`accts`, which only tracks
+        # accounts that actually CONTRIBUTED a row) also counts an
+        # account whose frame carries `attrs['account']` even when
+        # EMPTY/failed — `_substitute_degraded_frames` already handled
+        # and reported that shape, so `_recover_missing_margins_accounts`
+        # must not re-flag it a second time. Only accounts with ZERO
+        # trace anywhere (the UDS-attrs-lost shape) should reach the
+        # recovery helper.
+        attempted: set = set()
+        for df in funds_dfs or []:
+            _df_attrs = getattr(df, "attrs", {}) or {}
+            if _df_attrs.get("account"):
+                attempted.add(str(_df_attrs["account"]))
+            chunk, accts = _funds_from_df(df)
+            total += chunk
+            attempted.update(accts)
+            _merge_accounts(accounts_in, accts)
+            if by_account is not None:
+                _accumulate_by_account(df, by_account, _funds_from_df)
+        total += _recover_missing_margins_accounts(
+            expected_accounts, attempted, accounts_in, errors, by_account,
+        )
+        return total
+    except Exception as e:
+        # Whole-leg failure (not a single account) — total is genuinely
+        # understated (0.0), not merely degraded-but-frozen.
+        errors.append(f"{_UNDERSTATED_TAG}funds: {e}")
+        return 0.0
+
+
 async def _fetch_funds_phase(
     accounts_in: list[str], errors: list[str],
     by_account: Optional[dict[str, float]] = None,
+    expected_accounts: Optional[list[str]] = None,
 ) -> float:
     """Fetch margin data and return cash_total; mutates accounts_in and errors.
 
@@ -401,6 +676,10 @@ async def _fetch_funds_phase(
     `by_account`, when passed, is mutated in place with each account's cash
     leg (cash + option_premium) — optional so existing callers/tests that
     only need the firm total are unaffected.
+
+    `expected_accounts`, when passed, drives
+    `_recover_missing_margins_accounts` — see its docstring for why
+    margins needs this boundary-agnostic (attrs-independent) check.
     """
     from backend.api.helpers.snapshot_gate import _any_segment_open
     from backend.api.cache import peek as _peek
@@ -409,41 +688,15 @@ async def _fetch_funds_phase(
     if not mkt_open:
         cached_funds = _peek("funds")
         if cached_funds is not None:
-            # Extract cash_total from cached FundsResponse (non-TOTAL rows only).
-            # NAV v4 cash term = cash + option_premium (see _funds_from_df).
-            try:
-                total = 0.0
-                accts: list[str] = []
-                for row in (cached_funds.rows or []):
-                    acct = str(getattr(row, "account", "") or "")
-                    if acct == "TOTAL":
-                        continue
-                    cash = float(getattr(row, "cash", 0) or 0)
-                    premium = float(getattr(row, "option_premium", 0) or 0)
-                    total += cash + premium
-                    if acct:
-                        accts.append(acct)
-                        if by_account is not None:
-                            by_account[acct] = by_account.get(acct, 0.0) + cash + premium
-                _merge_accounts(accounts_in, accts)
+            total = _fetch_funds_from_cache(
+                cached_funds, accounts_in, errors, by_account, expected_accounts,
+            )
+            if total is not None:
                 return total
-            except Exception as e:
-                logger.warning(f"nav: cached funds extraction failed ({e}) — falling through to broker")
 
-    from backend.brokers.broker_apis import fetch_margins
-    try:
-        funds_dfs = await asyncio.to_thread(fetch_margins)
-        total = 0.0
-        for df in funds_dfs or []:
-            chunk, accts = _funds_from_df(df)
-            total += chunk
-            _merge_accounts(accounts_in, accts)
-            if by_account is not None:
-                _accumulate_by_account(df, by_account, _funds_from_df)
-        return total
-    except Exception as e:
-        errors.append(f"funds: {e}")
-        return 0.0
+    return await _fetch_funds_from_broker(
+        accounts_in, errors, by_account, expected_accounts,
+    )
 
 
 async def _fetch_positions_phase(
@@ -458,6 +711,7 @@ async def _fetch_positions_phase(
     from backend.brokers.broker_apis import fetch_positions
     try:
         pos_dfs = await asyncio.to_thread(fetch_positions)
+        pos_dfs = _substitute_degraded_frames(pos_dfs, "positions", errors)
         total = 0.0
         for df in pos_dfs or []:
             chunk, accts = _positions_from_df(df)
@@ -467,7 +721,7 @@ async def _fetch_positions_phase(
                 _accumulate_by_account(df, by_account, _positions_from_df)
         return total
     except Exception as e:
-        errors.append(f"positions: {e}")
+        errors.append(f"{_UNDERSTATED_TAG}positions: {e}")
         return 0.0
 
 
@@ -485,6 +739,28 @@ async def _fetch_holdings_from_snapshot(
     try:
         snap = await _holdings_snapshot()
         if snap is None:
+            # `_holdings_snapshot()` returns None for BOTH "no snapshot
+            # exists yet" (legitimately empty) AND "the DB query failed"
+            # (per its own docstring — `_query_holdings_snapshot_rows()`
+            # catches its own exceptions and returns None) — the two are
+            # conflated at the source, indistinguishable here. Flagged
+            # via `errors` for visibility, but deliberately NOT tagged
+            # `_UNDERSTATED_TAG`:
+            #   1. Tagging it would make write_nav_snapshot() skip EVERY
+            #      day for a genuinely zero-holdings firm/account
+            #      (harmless empty book), not just genuine failures —
+            #      the false-positive rate would be too high given the
+            #      two cases are conflated.
+            #   2. A DB that's actually down at the 23:45 IST write
+            #      moment will ALSO fail the write itself (`s.execute`
+            #      below raises), which DOES propagate as an exception
+            #      out of `write_nav_snapshot()` and hits the existing,
+            #      well-tested exception-based retry path in
+            #      `_run_nav_compute_once` (background.py pops the
+            #      `nav_done` latch on any exception already) — so a
+            #      real DB outage still self-heals via that path even
+            #      without tagging this specific read as understated.
+            errors.append("holdings_snapshot: no snapshot available")
             return 0.0
         total = 0.0
         for row in (snap.rows or []):
@@ -496,7 +772,7 @@ async def _fetch_holdings_from_snapshot(
                 by_account[acct] = by_account.get(acct, 0.0) + cur
         return total
     except Exception as exc:
-        errors.append(f"holdings_snapshot: {exc}")
+        errors.append(f"{_UNDERSTATED_TAG}holdings_snapshot: {exc}")
         return 0.0
 
 
@@ -524,6 +800,7 @@ async def _fetch_holdings_phase(
 
         from backend.brokers.broker_apis import fetch_holdings
         hold_dfs = await asyncio.to_thread(fetch_holdings)
+        hold_dfs = _substitute_degraded_frames(hold_dfs, "holdings", errors)
         total = 0.0
         for df in hold_dfs or []:
             chunk, accts = _holdings_from_df(df, ticker)
@@ -533,7 +810,7 @@ async def _fetch_holdings_phase(
                 _accumulate_by_account(df, by_account, _holdings_from_df, ticker)
         return total
     except Exception as e:
-        errors.append(f"holdings: {e}")
+        errors.append(f"{_UNDERSTATED_TAG}holdings: {e}")
         return 0.0
 
 
@@ -590,7 +867,14 @@ async def compute_firm_nav() -> dict:
     pos_by_acct: dict[str, float] = {}
     hold_by_acct: dict[str, float] = {}
 
-    await _resolve_conn_keys()   # side-effects: ensures registry populated
+    # 2026-09-27 council audit: previously called for its registry-
+    # populating side-effect only and the result discarded — now also
+    # passed to _fetch_funds_phase as the "every configured account
+    # should have produced a margins row" expected set (see
+    # _recover_missing_margins_accounts's docstring for why margins
+    # specifically needs this boundary-agnostic expected-vs-actual
+    # check rather than relying on attrs alone).
+    expected_accounts = await _resolve_conn_keys()
     # Fire all three broker phases concurrently instead of sequentially —
     # each phase does its own broker round-trip (funds/positions/holdings),
     # and running them one-after-another made compute_firm_nav() pay the
@@ -605,7 +889,7 @@ async def compute_firm_nav() -> dict:
     # membership-check-then-append atomic between await points — no true
     # preemption occurs mid-statement.
     cash_total, positions_mtm, holdings_mtm = await asyncio.gather(
-        _fetch_funds_phase(accounts_in, errors, cash_by_acct),
+        _fetch_funds_phase(accounts_in, errors, cash_by_acct, expected_accounts),
         _fetch_positions_phase(accounts_in, errors, pos_by_acct),
         _fetch_holdings_phase(accounts_in, errors, _ticker, hold_by_acct),
     )
@@ -624,6 +908,17 @@ async def compute_firm_nav() -> dict:
             "nav": round(c + p + h, 2),
         }
 
+    # `understated` (2026-09-27 council audit follow-up) — the subset of
+    # `errors` where a leg genuinely contributed LESS than its real value
+    # this cycle (no LKG anywhere to freeze to). `errors` as a whole stays
+    # the broader "something was degraded" signal (drives `note` + the
+    # public route's masking + auth.py's `stale`); `understated` is the
+    # narrower "the NUMBER is actually wrong" signal `write_nav_snapshot`
+    # gates its never-poison-a-clean-row check on. An LKG-substituted
+    # account (real, if slightly old, values) is intentionally NOT in
+    # this list — see `_UNDERSTATED_TAG`'s docstring.
+    understated = [e for e in errors if e.startswith(_UNDERSTATED_TAG)]
+
     return {
         "nav": round(nav, 2),
         "cash_total": round(cash_total, 2),           # = Σ (cash_sod + option_premium)
@@ -631,16 +926,76 @@ async def compute_firm_nav() -> dict:
         "holdings_mtm": round(holdings_mtm, 2),       # = Σ holding.cur_val
         "accounts": sorted(accounts_in),
         "errors": errors,
+        "understated": understated,
         "by_account": by_account,
     }
 
 
-async def write_nav_snapshot(target_date: Optional[date] = None) -> dict:
+async def write_nav_snapshot(
+    target_date: Optional[date] = None, force: bool = False,
+) -> dict:
     """Compute today's NAV and write it to `nav_daily` (upsert).
     Returns the snapshot dict + the row id.
 
     Idempotent — same `as_of_date` re-writes the existing row (e.g.
     operator triggers a recompute mid-day after an outage clears).
+
+    Never-poison-persisted-storage guard (mirrors CLAUDE.md's "Staleness
+    indicator freeze rule" — the positions/holdings frontend cache
+    invariant "any response carrying stale_accounts... is never written
+    to Tier 2 [localStorage]... to prevent poisoning the cache with a
+    masked-failure value", applied here to `nav_daily`, the persisted
+    analog).
+
+    Gates purely on `snap["understated"]` (NOT the broader `errors`):
+    an LKG-substituted account's contributed number is correct (if
+    slightly old) — that degradation is informational only (still
+    recorded in `note`) and must NOT block the write. An understated
+    leg (no LKG anywhere — the number is actually wrong, not just old)
+    skips the write UNLESS `force=True`, even for the day's first-ever
+    snapshot — 2026-09-27 council audit follow-up: the scheduled 23:45
+    IST write is usually the day's ONLY write, so a narrower "only skip
+    if it would overwrite an already-clean row" guard never engages for
+    that case, letting a permanently-understated row land as
+    investor-facing history with only an easy-to-miss `note` marking it.
+    A MISSING `nav_daily` row for a day is operator-visible (a gap in
+    the NAV history chart/table); an understated one silently looks
+    like a real, if bad, day.
+
+    `force=True` (2026-09-27 council audit, second-pass refinement):
+    the retry window for a skipped write is short and finite —
+    `_run_nav_compute_once` (background.py) only retries between the
+    scheduled fire time (~23:45 IST) and IST midnight (`now.time() <
+    target`'s gate stops firing once `today` rolls over), and there is
+    no backfill path (`POST /compute` always targets TODAY's live
+    broker state, never a past date). A single account stuck offline
+    all evening (documented Dhan margins flakiness — see
+    `_MARGINS_SSOT_TTL`'s comment) would otherwise mean this trading
+    day NEVER gets a `nav_daily` row at all — permanently, not just
+    delayed — which breaks unit pricing (units × nav_per_unit) and the
+    8-year SEBI audit history worse than a visibly-marked understated
+    row would. `_run_nav_compute_once` passes `force=True` once the
+    clock passes `target + _NAV_FORCE_GRACE` (NOT a fixed IST-midnight-
+    adjacent time — see that constant's own docstring for why it must
+    be relative to `target`) so a degraded-but-present row always beats
+    a permanent gap, while every earlier attempt still gets the full
+    skip-and-retry protection.
+
+    OPERATOR POLICY NOTE — this is a deliberate trade-off, not a full
+    fix: an account that stays broken with no last-known-good available
+    (e.g. an expired credential) will write a FORCED, understated row
+    EVERY DAY once the grace period elapses, rather than the day simply
+    having no row. That is the original silent-wrong-number harm, now
+    at least clearly labelled (`note` contains "UNDERSTATED" / "FORCED")
+    instead of hidden — but it is not eliminated. `_NAV_FORCE_GRACE`
+    (background.py) is a module constant the operator may want tuned
+    (or exposed via `/admin/settings`) depending on how much protection
+    window vs. guaranteed-daily-row they prefer.
+
+    Returns `snap` with `snap["skipped_write"] = True` added when the
+    write was skipped (only possible when NOT forced) —
+    `_run_nav_compute_once` checks this to pop its once-per-day latch
+    so the next 30s poll retries instead of considering the day done.
     """
     from sqlalchemy.dialects.postgresql import insert as pg_insert
     from backend.api.database import async_session
@@ -653,6 +1008,23 @@ async def write_nav_snapshot(target_date: Optional[date] = None) -> dict:
     note = None
     if snap["errors"]:
         note = "errors: " + " | ".join(snap["errors"])[:500]
+
+    if snap.get("understated") and not force:
+        logger.warning(
+            f"nav_daily: SKIPPED write for {target.isoformat()} — understated "
+            f"legs (no last-known-good available): "
+            f"{' | '.join(snap['understated'])[:400]}"
+        )
+        return {**snap, "skipped_write": True}
+
+    if snap.get("understated") and force:
+        logger.warning(
+            f"nav_daily: FORCED write for {target.isoformat()} after the "
+            f"retry grace period despite understated legs (a degraded "
+            f"row beats a permanent gap): "
+            f"{' | '.join(snap['understated'])[:400]}"
+        )
+        note = (note or "") + " [FORCED after retry grace — value UNDERSTATED]"
 
     async with async_session() as s:
         stmt = pg_insert(NavDaily).values(
