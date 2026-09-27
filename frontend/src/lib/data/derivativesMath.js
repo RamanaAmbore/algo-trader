@@ -11,6 +11,8 @@
  *   and the shared matcher closures repeated across 5+ $derived.by blocks.
  */
 
+import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Shared filter factories (eliminate repeated closure boilerplate)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,14 +79,70 @@ export function annotateOptionCandidates({
     if (qty === 0) continue;
     if (c.source === 'draft') continue;
     const inst = getInstrument(String(c.symbol || '').toUpperCase());
-    if (!inst) continue;
-    const optType = inst.t;
+    // 2026-09 Exp-close-tab fix — sibling to buildCandidatePositions'
+    // `isUnresolvable` handling (derivatives/pageLoad.js), for the SAME
+    // underlying cause: an expired contract Kite has already dropped from
+    // the daily instruments dump (e.g. GOLDM the day after its own expiry
+    // session) resolves `getInstrument()` to null. The ORIGINAL code here
+    // did `if (!inst) continue`, silently DROPPING the row from this tab
+    // entirely — the operator's exact bug report ("goldm symbol legs has
+    // data [in the Legs tab], but not exp close [tab]"): the backend's
+    // expiry-day-final freeze (backend/api/algo/expiry_freeze.py) keeps
+    // the daily_book row alive and the Legs tab (buildCandidatePositions)
+    // already tags-and-keeps it, but THIS tab's stricter `!inst` guard
+    // still dropped it — a second, sibling instance of the identical
+    // "silently vanishes once Kite purges the expired contract from its
+    // instruments cache" defect, in a pipeline the original 2026-09 GOLDM
+    // fix didn't reach. Fall back to the pure-JS symbol parser
+    // (decomposeSymbol, mirrors backend's parse_tradingsymbol) for
+    // optType/strike/underlying so the row still surfaces here too,
+    // consistent with the operator's "snapshot taken at expiry — freeze
+    // and keep showing it, don't blank/drop any part of it" rule.
+    const decomp = inst ? null : decomposeSymbol(String(c.symbol || ''));
+    const optType = inst ? inst.t : decomp?.optType;
     if (optType !== 'CE' && optType !== 'PE') continue;
-    const strike = Number(inst.k || 0);
+    const strike = Number((inst ? inst.k : decomp?.strike) || 0);
     if (!strike) continue;
-    const underlying = String(inst.u || '').toUpperCase();
-    const expiry = String(inst.x || '');
+    const underlying = String((inst ? inst.u : decomp?.root) || '').toUpperCase();
+    // Real expiry date is unknown once Kite has purged the contract from
+    // its instruments cache (`inst` is null) — display-only field, safe
+    // to leave blank; `expiry` is never used for ITM/band MATH, only shown
+    // in row tooltips/labels.
+    const expiry = inst ? String(inst.x || '') : '';
     const segment = mcxUnderlyings.has(underlying) ? 'commodity' : 'equity';
+    const lg = legAnalytics[c.symbol];
+    const theta = Number(lg?.greeks?.theta ?? 0) || 0;
+
+    if (!inst) {
+      // An expired-and-cache-purged contract's TRUE ITM/OTM status was
+      // fixed at its own settlement — today's front-month spot
+      // (resolveSpot(underlying) rolls FORWARD to the CURRENT contract,
+      // e.g. GOLDM26OCT for a GOLDM26SEP row) is an economically
+      // unrelated instrument, so computing ITM against it here would be
+      // meaningless (same class of bug already fixed for Exp P&L valuation
+      // in portfolioStore.svelte.js's `isExpiredHeldContract` check).
+      // Force it into the actionable 'close' band unconditionally instead
+      // of risking a fabricated OTM classification that would silently
+      // bury an already-settled leg needing operator attention — matches
+      // the "surface it, never blank it" rule for a frozen snapshot row.
+      annotated.push({
+        ...c,
+        _strike: strike,
+        _underlying: underlying,
+        _expiry: expiry,
+        _optType: optType,
+        _segment: segment,
+        _isITM: true,
+        _spot: 0,
+        _spotUnavailable: true,
+        _qty: qty,
+        _theta: theta,
+        _otmDist: null,
+        _expiredFrozen: true,
+      });
+      continue;
+    }
+
     const candSpot = resolveSpot(underlying);
     // Spot-unavailable guard (2026-09 Commit 4): without a real spot, a
     // naive `candSpot < strike` / `candSpot > strike` comparison against
@@ -97,8 +155,6 @@ export function annotateOptionCandidates({
     // of a numeric OTM distance computed against a fabricated 0.
     const hasSpot = Number.isFinite(candSpot) && candSpot > 0;
     const isITM = hasSpot && (optType === 'CE' ? candSpot > strike : candSpot < strike);
-    const lg = legAnalytics[c.symbol];
-    const theta = Number(lg?.greeks?.theta ?? 0) || 0;
     const otmDist = !hasSpot ? null
       : isITM ? 0
       : (optType === 'CE' ? strike - candSpot : candSpot - strike);
@@ -301,7 +357,9 @@ export function computeExpiryBands({ annotated }) {
         ...r,
         _band: 'close',
         _closeId: `C${_eqCloseCounter}`,
-        _reason: 'ITM equity — physical settlement risk',
+        _reason: r._expiredFrozen
+          ? 'Expired — frozen at last settlement'
+          : 'ITM equity — physical settlement risk',
       });
     } else {
       result.equity.push({
@@ -361,7 +419,9 @@ export function computeExpiryBands({ annotated }) {
         _band: 'close',
         _closeId: `C${closeCounter}`,
         _residualQty: qty,
-        _reason: `Unhedged ITM commodity (residual qty ${qty > 0 ? '+' : ''}${qty})`,
+        _reason: row._expiredFrozen
+          ? 'Expired — frozen at last settlement'
+          : `Unhedged ITM commodity (residual qty ${qty > 0 ? '+' : ''}${qty})`,
       });
     }
   }

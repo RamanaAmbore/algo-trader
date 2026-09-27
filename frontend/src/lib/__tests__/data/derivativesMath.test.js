@@ -115,12 +115,37 @@ describe('annotateOptionCandidates — qty=0 guard', () => {
     expect(result).toHaveLength(0);
   });
 
-  it('skips rows where getInstrument returns null', () => {
+  it('falls back to decomposeSymbol (not dropped) when getInstrument returns null '
+     + 'but the symbol still parses as an option — 2026-09 Exp-close-tab fix, '
+     + 'sibling to buildCandidatePositions\' isUnresolvable handling: an expired '
+     + 'contract Kite has already purged from its instruments dump must still '
+     + 'surface here (previously silently dropped — the operator-reported '
+     + '"goldm symbol legs has data, but not exp close" bug)', () => {
     const candidates = [makeCand('UNKNOWN24AUG800CE', 50)];
     const result = annotateOptionCandidates({
       candidates,
       spot: SPOT_800,
       expFilter: ['2026-08-28'],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument: () => null,
+    });
+    expect(result).toHaveLength(1);
+    expect(result[0]._optType).toBe('CE');
+    expect(result[0]._strike).toBe(800);
+    expect(result[0]._underlying).toBe('UNKNOWN');
+    expect(result[0]._isITM).toBe(true);
+    expect(result[0]._spotUnavailable).toBe(true);
+    expect(result[0]._expiredFrozen).toBe(true);
+  });
+
+  it('still skips a row that is genuinely unparseable (not F&O-shaped at all) '
+     + 'even when getInstrument returns null', () => {
+    const candidates = [makeCand('RELIANCE', 50)];
+    const result = annotateOptionCandidates({
+      candidates,
+      spot: SPOT_800,
+      expFilter: [],
       mcxUnderlyings: MCX_EMPTY,
       legAnalytics: {},
       getInstrument: () => null,
@@ -263,6 +288,75 @@ describe('computeExpiryBands — spot-unavailable rows land in the existing "otm
     });
     const bands = computeExpiryBands({ annotated });
     expect(bands.equity[0]._reason).toMatch(/^OTM by ₹/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// annotateOptionCandidates / computeExpiryBands — expired-and-cache-purged
+// contract still surfaces in the "Exp close" tab (2026-09 fix). Real
+// production shape: GOLDM26SEP155000PE (account ZJ6294) — the contract's
+// own expiry has passed and Kite's daily instruments dump no longer lists
+// it (getInstrument returns null), but the backend's expiry-day-final
+// freeze (backend/api/algo/expiry_freeze.py, commit 4fa0d711) keeps the
+// daily_book row — and therefore the Legs tab's candidatePositions row —
+// alive. Before this fix, `annotateOptionCandidates`'s `if (!inst) continue`
+// silently dropped the SAME row from the "Exp close" tab specifically —
+// the operator's exact report: "goldm symbol legs has data, but not exp
+// close".
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('annotateOptionCandidates / computeExpiryBands — expired-and-cache-purged contract surfaces in Exp-close tab', () => {
+  it('a GOLDM leg with no instrument-cache entry lands in the commodity "close" band, not dropped', () => {
+    const candidates = [makeCand('GOLDM26SEP155000PE', -100, { account: 'ZJ6294' })];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: () => 0,   // front-month spot would be economically unrelated anyway
+      expFilter: [],
+      mcxUnderlyings: new Set(['GOLDM']),
+      legAnalytics: {},
+      getInstrument: () => null,  // Kite has purged the expired contract
+    });
+    expect(annotated).toHaveLength(1);
+    expect(annotated[0]._expiredFrozen).toBe(true);
+    expect(annotated[0]._segment).toBe('commodity');
+
+    const bands = computeExpiryBands({ annotated });
+    expect(bands.equity).toHaveLength(0);
+    expect(bands.commodity).toHaveLength(1);
+    expect(bands.commodity[0]._band).toBe('close');
+    expect(bands.commodity[0]._reason).toBe('Expired — frozen at last settlement');
+  });
+
+  it('an expired equity/NFO-shaped leg lands in the equity "close" band with the frozen reason', () => {
+    const candidates = [makeCand('NIFTY24AUG20000CE', 50)];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: () => 0,
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument: () => null,
+    });
+    const bands = computeExpiryBands({ annotated });
+    expect(bands.equity).toHaveLength(1);
+    expect(bands.equity[0]._band).toBe('close');
+    expect(bands.equity[0]._reason).toBe('Expired — frozen at last settlement');
+  });
+
+  it('a resolvable (live) row is completely unaffected — no _expiredFrozen tag, normal ITM math runs', () => {
+    const getInstrument = (sym) =>
+      sym === 'NIFTY26AUG800CE' ? makeInst('CE', 800, 'NIFTY') : null;
+    const candidates = [makeCand('NIFTY26AUG800CE', 50)];
+    const annotated = annotateOptionCandidates({
+      candidates,
+      spot: SPOT_800 + 100,
+      expFilter: [],
+      mcxUnderlyings: MCX_EMPTY,
+      legAnalytics: {},
+      getInstrument,
+    });
+    expect(annotated[0]._expiredFrozen).toBeUndefined();
+    expect(annotated[0]._isITM).toBe(true);
   });
 });
 
