@@ -145,8 +145,20 @@ test('stale code — failing hex values removed from app.css', async () => {
   expect(css, 'card-label-text must not be #c8a84b (1.94:1)').not.toContain('--card-label-text:          #c8a84b');
   expect(css, 'card-as-of-text must not be #a89878 (2.40:1)').not.toContain('--card-as-of-text:          #a89878');
 
-  // pnl-gain cream was #059669 (3.55:1) → now #047a56 (5.05:1)
+  // pnl-gain cream was #059669 (3.55:1) → now #047a56 (5.05:1) → now #065f46 (5.98-6.87:1)
   expect(css, 'pnl-gain on cream must use #047a56').not.toContain('.ag-theme-ramboq .pnl-gain { color: #059669');
+
+  // 2026-09 size/contrast audit — #dc2626/#047a56/#4a7c7a/#b5521a/#6b7280
+  // all measured below (or barely above) 4.5:1 against the odd-row/hover
+  // cream backgrounds once the cell's own self-tint was composited in.
+  // Deepened toward the dark end of each hue; see the "cream theme —
+  // qty-long/qty-short/qty-flat/pnl-loss/pnl-gain" test below for the
+  // live ratios.
+  expect(css, 'pnl-loss on cream must not use #dc2626 (4.32:1 fail)').not.toContain('.ag-theme-ramboq .pnl-loss { color: #dc2626');
+  expect(css, 'pnl-gain on cream must not use #047a56 (4.79:1 fail)').not.toContain('.ag-theme-ramboq .pnl-gain { color: #047a56');
+  expect(css, 'qty-long on cream must not use #4a7c7a (4.22:1 fail)').not.toContain('.ag-theme-ramboq .qty-long  { color: #4a7c7a');
+  expect(css, 'qty-short on cream must not use #b5521a (4.49:1 fail)').not.toContain('.ag-theme-ramboq .qty-short { color: #b5521a');
+  expect(css, 'qty-flat on cream must not use #6b7280 (4.06:1 fail)').not.toContain('.ag-theme-ramboq .qty-flat  { color: #6b7280');
 });
 
 test('stale code — BrokerHealthBadge failing hex values removed', async () => {
@@ -408,6 +420,7 @@ test('CSS tokens — cream theme on cream surfaces (read live from app.css)', as
   const cardBg   = '#fffdf8'; // ag-theme-ramboq .ag-background-color + pub-card
   const gridBg   = '#faf8f4'; // ag-theme-ramboq base row bg
   const oddRowBg = '#f5f2eb'; // ag-theme-ramboq odd row
+  const hoverBg  = '#efebdf'; // ag-theme-ramboq --ag-row-hover-color
   const creamBg  = '#f0ece3'; // body
   const cardVarBg = '#f0ead8'; // --card-bg itself — the darkest bg some of
                                 // these labels actually render on (e.g.
@@ -479,9 +492,21 @@ test('CSS tokens — cream theme on cream surfaces (read live from app.css)', as
   // Fixed (non-token) cream-theme colors used elsewhere — regression guard,
   // still literal since these live outside the .card-theme-cream block.
   const fixedChecks = [
-    ['pnl-gain (#047a56) on grid bg',      '#047a56', gridBg],
-    ['pnl-gain (#047a56) on odd-row bg',   '#047a56', oddRowBg],
-    ['pnl-loss (#dc2626) on grid bg',      '#dc2626', gridBg],
+    ['pnl-gain (#065f46) on grid bg',      '#065f46', gridBg],
+    ['pnl-gain (#065f46) on odd-row bg',   '#065f46', oddRowBg],
+    ['pnl-gain (#065f46) on hover bg',     '#065f46', hoverBg],
+    ['pnl-loss (#991b1b) on grid bg',      '#991b1b', gridBg],
+    ['pnl-loss (#991b1b) on odd-row bg',   '#991b1b', oddRowBg],
+    ['pnl-loss (#991b1b) on hover bg',     '#991b1b', hoverBg],
+    ['qty-long (#335654) on grid bg',      '#335654', gridBg],
+    ['qty-long (#335654) on odd-row bg',   '#335654', oddRowBg],
+    ['qty-long (#335654) on hover bg',     '#335654', hoverBg],
+    ['qty-short (#944315) on grid bg',     '#944315', gridBg],
+    ['qty-short (#944315) on odd-row bg',  '#944315', oddRowBg],
+    ['qty-short (#944315) on hover bg',    '#944315', hoverBg],
+    ['qty-flat (#4b5563) on grid bg',      '#4b5563', gridBg],
+    ['qty-flat (#4b5563) on odd-row bg',   '#4b5563', oddRowBg],
+    ['qty-flat (#4b5563) on hover bg',     '#4b5563', hoverBg],
     ['section-heading (#8a6e28)',          '#8a6e28', '#ffffff'],
     ['field-label (#5a7090)',              '#5a7090', '#ffffff'],
     // B1 (2026-09): faq-zoom-hint / footer-link fixes — same muted meta

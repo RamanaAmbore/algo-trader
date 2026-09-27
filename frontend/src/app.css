@@ -525,7 +525,15 @@
      'SF Pro Text' already renders natively on macOS/iOS, and the rest of
      the stack is a solid system-font fallback everywhere else. */
   --ag-font-family: 'SF Pro Text', -apple-system, system-ui, sans-serif;
-  --ag-font-size: 0.625rem;
+  /* Bumped 10px -> 11px (2026-09 contrast/size audit) — 10px was near the
+     practical legibility floor for a data-dense grid. 11px still fits the
+     existing 22px/32px row heights (PerformancePage.svelte's makeGrid()
+     writes rowHeight straight to --ag-row-height; ag-Grid's legacy-theme
+     line-height formula is ~rowHeight - 3px, i.e. ~19px/29px — comfortably
+     taller than 11px, so no row-height change needed). The `.ag-row`
+     font-size override below must move in lockstep — it takes precedence
+     over this var at the cell level. */
+  --ag-font-size: 0.6875rem;
   --ag-row-height: 22px;
   --ag-header-height: 28px;
   /* Hide the column-resize handle (.ag-header-cell-resize:after).
@@ -565,7 +573,10 @@
 .ag-theme-ramboq .ag-header-cell {
   letter-spacing: 0.03em;
   text-transform: uppercase;
-  font-size: 0.5625rem !important;
+  /* Bumped 9px -> 10px alongside the 2026-09 row font-size bump (10px ->
+     11px, above) so the header doesn't read smaller than the data it
+     labels. 28px --ag-header-height leaves ample room. */
+  font-size: 0.625rem !important;
   font-weight: 600;
   color: #e8d9a8 !important;
   background-color: transparent !important;
@@ -582,7 +593,14 @@
   display: none !important;
 }
 /* Sort-arrow polish — same shrink as the algo theme but tinted to
-   the public-site champagne-gold accent. */
+   the public-site champagne-gold accent.
+   Contrast audit note (2026-09): this icon renders inside .ag-header-cell,
+   which sits on the navy #1d2939 header strip (see .ag-theme-ramboq
+   .ag-header above), NOT the cream body background. #d4920c measures
+   ~5.5:1 against #1d2939 — already comfortably clears WCAG AA. Left
+   unchanged; darkening it toward the body-background target used
+   elsewhere in this pass would have dropped it to ~2:1 against its
+   actual navy background and made it nearly invisible. */
 .ag-theme-ramboq .ag-sort-indicator-container {
   margin-left: 2px;
 }
@@ -617,7 +635,7 @@
   font-variant-numeric: tabular-nums;
 }
 .ag-theme-ramboq .ag-row {
-  font-size: 0.625rem !important;
+  font-size: 0.6875rem !important;
   font-weight: 400;
   color: #1a1e35;
   letter-spacing: 0.01em;
@@ -744,9 +762,16 @@
   box-shadow: inset 1px 0 0 0 rgba(126,151,184,0.40) !important;
 }
 
-/* P&L cell colors — theme-aware, applied via cellClass in PerformancePage */
-.ag-theme-ramboq .pnl-loss { color: #dc2626; background-color: rgba(220,38,38,0.05); }
-.ag-theme-ramboq .pnl-gain { color: #047a56; background-color: rgba(4,122,86,0.05); }
+/* P&L cell colors — theme-aware, applied via cellClass in PerformancePage.
+   Darkened 2026-09 (contrast audit) — #dc2626/#047a56 measured 4.32-4.55:1
+   and 4.79-5.05:1 against this theme's odd-row/hover backgrounds (#f5f2eb,
+   #efebdf), only barely clearing WCAG AA's 4.5:1 floor for normal-size text
+   at 10px. Deepened toward the dark end of the same hue (red stays red,
+   green stays green) so the worst-case background (including the cell's
+   own 5% self-tint composited on top) clears ~6:1+. See
+   frontend/e2e/contrast.spec.js. */
+.ag-theme-ramboq .pnl-loss { color: #991b1b; background-color: rgba(153,27,27,0.05); }
+.ag-theme-ramboq .pnl-gain { color: #065f46; background-color: rgba(6,95,70,0.05); }
 .ag-theme-ramboq .pnl-zero { color: #3c4660; }
 /* Brighter red/green tuned for the dark navy body — 500-range colours
    read as "black text" on the old light theme, so switched to 400-range
@@ -1033,10 +1058,17 @@
              next to the gold accent without clashing
      SHORT = muted terracotta — warm earth tone, natural complement to
              champagne gold and the cream card body
-   Qty cell text uses the same palette at full saturation. */
-.ag-theme-ramboq .qty-long  { color: #4a7c7a !important; font-weight: 700 !important; }
-.ag-theme-ramboq .qty-short { color: #b5521a !important; font-weight: 700 !important; }
-.ag-theme-ramboq .qty-flat  { color: #6b7280 !important; }
+   Qty cell text uses the same palette at full saturation.
+   Darkened 2026-09 (contrast audit) — #4a7c7a measured 4.22-4.44:1 and
+   #6b7280 ~4.06:1 against the odd-row/hover backgrounds, both below the
+   4.5:1 AA floor; #b5521a (4.49-4.73:1) barely cleared it. Deepened each
+   toward the dark end of its own hue (teal/orange/slate hue angles
+   unchanged) to clear ~5.7:1+ worst-case, while keeping visible hue
+   separation from the pnl-loss/pnl-gain reds/greens above (side-of-book
+   vs. in-profit are deliberately distinct colour families). */
+.ag-theme-ramboq .qty-long  { color: #335654 !important; font-weight: 700 !important; }
+.ag-theme-ramboq .qty-short { color: #944315 !important; font-weight: 700 !important; }
+.ag-theme-ramboq .qty-flat  { color: #4b5563 !important; }
 /* Long/short indicator on the public-theme performance grids:
      - bars (left+right edges) are scoped to the symbol cell only
      - background tint extends to BOTH symbol AND account cells (the
