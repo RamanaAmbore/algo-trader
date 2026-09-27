@@ -46,14 +46,13 @@ test.describe('Audience-routing redesign', () => {
     // 1a — Hero paragraph contains the strategy framing
     await expect(page.getByText(STRATEGY_HERO, { exact: false })).toBeVisible();
 
-    // 1b — Trust strip: 4 cells
+    // 1b — Trust strip: 3 cells (2026-09: the 4th "LLP / Registered entity"
+    // cell was removed site-wide per operator instruction — no dangling
+    // separator/fragment, and no standalone "LLP" credibility badge left).
     await expect(page.getByText('22%', { exact: false }).first()).toBeVisible();
     await expect(page.getByText('25+', { exact: false }).first()).toBeVisible();
     await expect(page.getByText(/FRM.*CFA|CFA.*XLRI/i).first()).toBeVisible();
-    // B6 (2026-09): "ACU-5195" removed site-wide — not a required legal/
-    // LLPIN disclosure (operator-confirmed). The 4th trust cell now reads
-    // "LLP" alone (no dangling separator/fragment).
-    await expect(page.getByText('LLP', { exact: true }).first()).toBeVisible();
+    await expect(page.getByText('Registered entity', { exact: false })).toHaveCount(0);
     await expect(page.getByText(/ACU-5195/i)).toHaveCount(0);
 
     // 1c — Two Y-fork cards
