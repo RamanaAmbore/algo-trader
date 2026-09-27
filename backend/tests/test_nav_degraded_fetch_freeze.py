@@ -410,12 +410,19 @@ class TestComputeFirmNavFreezesOnDegradedAccount:
 # write_nav_snapshot — never poison an already-clean persisted row
 # ---------------------------------------------------------------------------
 
-def _mock_session_for_select(select_return, execute_side_effect=None):
+def _mock_session_for_select(select_return, execute_side_effect=None, scalar_return=None):
     mock_session = AsyncMock()
     if execute_side_effect is not None:
         mock_session.execute = AsyncMock(side_effect=execute_side_effect)
     else:
         mock_session.execute = AsyncMock(return_value=select_return)
+    # write_nav_snapshot's force-write path does a `.scalar(select(...))`
+    # existence check (as_of_date already has a row for today?) BEFORE
+    # deciding whether to force-write — default to None (no existing row)
+    # so callers that don't care about this new check keep their prior
+    # behavior; tests exercising the "already exists" branch pass a
+    # truthy scalar_return explicitly.
+    mock_session.scalar = AsyncMock(return_value=scalar_return)
     mock_session.commit = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)
     mock_session.__aexit__ = AsyncMock(return_value=False)
@@ -511,12 +518,20 @@ class TestWriteNavSnapshotNeverPoisonsCleanRow:
         mock_session.commit.assert_awaited_once()
 
     @pytest.mark.asyncio
-    async def test_force_true_writes_understated_snapshot_instead_of_skipping(self):
+    async def test_force_true_writes_understated_snapshot_when_no_row_exists_yet(self):
         """2026-09-27 council audit, second-pass refinement: a permanent
         write-skip has no backfill path and a short (23:45-midnight)
         retry window — force=True (the last-ditch call before IST
         midnight) must write the degraded row rather than lose the day
-        entirely, with the note marked FORCED for operator visibility."""
+        entirely, with the note marked FORCED for operator visibility.
+
+        This covers the sub-case where NO row exists for today yet (the
+        common case for the scheduled 23:45 IST compute) — the existence
+        check's `.scalar()` returns None (the helper's default), so the
+        forced write proceeds. See the sibling test below for the OTHER
+        sub-case (a row already exists) — operator-confirmed policy
+        (2026-09-27): a forced write must never downgrade an existing
+        good/interim row."""
         from backend.api.algo.nav import write_nav_snapshot
         from datetime import date as _date
 
@@ -527,7 +542,7 @@ class TestWriteNavSnapshotNeverPoisonsCleanRow:
             "understated": ["UNDERSTATED: margins: DH6847 fetch failed, no last-known-good available"],
             "by_account": {},
         }
-        mock_session = _mock_session_for_select(MagicMock())
+        mock_session = _mock_session_for_select(MagicMock())  # scalar_return=None (default) — no existing row
 
         with patch(
             "backend.api.algo.nav.compute_firm_nav",
@@ -543,6 +558,42 @@ class TestWriteNavSnapshotNeverPoisonsCleanRow:
         written_note = mock_session.execute.call_args[0][0].compile().params["note"]
         assert "FORCED" in written_note
         assert "DH6847" in written_note
+
+    @pytest.mark.asyncio
+    async def test_force_true_skips_write_when_row_already_exists_for_today(self):
+        """Operator-confirmed policy (2026-09-27): a forced write must
+        NEVER downgrade an already-good row. When a nav_daily row already
+        exists for `target` (e.g. an earlier clean cycle that day, or an
+        interim NSE-close snapshot), a later force=True call with an
+        understated snapshot must skip entirely — the existing row is
+        left untouched, not overwritten with a worse number."""
+        from backend.api.algo.nav import write_nav_snapshot
+        from datetime import date as _date
+
+        understated_snap = {
+            "nav": 5000.0, "cash_total": 5000.0, "positions_mtm": 0.0,
+            "holdings_mtm": 0.0, "accounts": ["ZG0790"],
+            "errors": ["UNDERSTATED: margins: DH6847 fetch failed, no last-known-good available"],
+            "understated": ["UNDERSTATED: margins: DH6847 fetch failed, no last-known-good available"],
+            "by_account": {},
+        }
+        # scalar_return=42 — a truthy row id, simulating "a row already exists for today".
+        mock_session = _mock_session_for_select(MagicMock(), scalar_return=42)
+
+        with patch(
+            "backend.api.algo.nav.compute_firm_nav",
+            new=AsyncMock(return_value=understated_snap),
+        ), patch(
+            "backend.api.database.async_session", return_value=mock_session,
+        ):
+            result = await write_nav_snapshot(target_date=_date(2026, 9, 27), force=True)
+
+        assert result["skipped_write"] is True
+        mock_session.scalar.assert_awaited_once()
+        # The existence check ran, but the upsert itself must NEVER fire —
+        # no execute() call of any kind beyond the scalar select.
+        mock_session.execute.assert_not_called()
+        mock_session.commit.assert_not_awaited()
 
 
 class TestComputeFirmNavUnderstatedField:

@@ -981,13 +981,21 @@ async def write_nav_snapshot(
     a permanent gap, while every earlier attempt still gets the full
     skip-and-retry protection.
 
-    OPERATOR POLICY NOTE — this is a deliberate trade-off, not a full
-    fix: an account that stays broken with no last-known-good available
-    (e.g. an expired credential) will write a FORCED, understated row
-    EVERY DAY once the grace period elapses, rather than the day simply
-    having no row. That is the original silent-wrong-number harm, now
-    at least clearly labelled (`note` contains "UNDERSTATED" / "FORCED")
-    instead of hidden — but it is not eliminated. `_NAV_FORCE_GRACE`
+    OPERATOR POLICY DECISION (2026-09-27, confirmed): a forced write
+    (`force=True` with `understated` legs) NEVER downgrades an
+    already-good row. Before writing, this function checks whether a
+    `nav_daily` row already exists for `target` — if one does (e.g. an
+    earlier cycle that day computed cleanly, or an interim NSE-close
+    snapshot), the forced write is skipped entirely and that existing
+    row is left untouched, rather than being overwritten by a later,
+    worse (understated) number from an account that broke afterward.
+    Forcing only ever fills a genuine GAP (no row for `target` yet), it
+    never regresses one. An account that stays broken with no
+    last-known-good available (e.g. an expired credential), on a day
+    with no earlier clean row, still gets a FORCED, clearly-labelled
+    (`note` contains "UNDERSTATED" / "FORCED") understated row rather
+    than the day having none at all — that residual case is accepted
+    as strictly better than a permanent gap. `_NAV_FORCE_GRACE`
     (background.py) is a module constant the operator may want tuned
     (or exposed via `/admin/settings`) depending on how much protection
     window vs. guaranteed-daily-row they prefer.
@@ -1018,10 +1026,27 @@ async def write_nav_snapshot(
         return {**snap, "skipped_write": True}
 
     if snap.get("understated") and force:
+        from sqlalchemy import select
+
+        async with async_session() as _chk:
+            _existing_id = await _chk.scalar(
+                select(NavDaily.id).where(NavDaily.as_of_date == target)
+            )
+        if _existing_id is not None:
+            # A row for today already exists (an earlier clean cycle, or an
+            # interim snapshot) — never downgrade it with a later, worse
+            # understated number. Forcing only ever fills a genuine gap.
+            logger.warning(
+                f"nav_daily: SKIPPED forced write for {target.isoformat()} — "
+                f"a row already exists for today; never downgrade an "
+                f"existing good/interim snapshot with an understated one: "
+                f"{' | '.join(snap['understated'])[:400]}"
+            )
+            return {**snap, "skipped_write": True}
         logger.warning(
             f"nav_daily: FORCED write for {target.isoformat()} after the "
-            f"retry grace period despite understated legs (a degraded "
-            f"row beats a permanent gap): "
+            f"retry grace period despite understated legs — no row exists "
+            f"for today yet, so a degraded row beats a permanent gap: "
             f"{' | '.join(snap['understated'])[:400]}"
         )
         note = (note or "") + " [FORCED after retry grace — value UNDERSTATED]"
