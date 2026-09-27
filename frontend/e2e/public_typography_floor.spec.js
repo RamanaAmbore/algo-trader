@@ -99,6 +99,27 @@ test('mobile (360px) — brand tagline bump does not cause horizontal overflow',
     .toBeLessThanOrEqual(clientWidth + 1); // +1px rounding tolerance
 });
 
+test('mobile (360px) — brand tagline renders at the 0.52rem exempt size, single line', async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 800 });
+  await page.goto('/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(500);
+  const metrics = await page.evaluate(() => {
+    const el = document.querySelector('.pub-brand-mobile .pub-brand-tagline');
+    if (!el) return null;
+    return {
+      fontSize: parseFloat(getComputedStyle(el).fontSize),
+      lineCount: el.getClientRects().length,
+    };
+  });
+  expect(metrics, '.pub-brand-mobile .pub-brand-tagline not found').not.toBeNull();
+  // 0.52rem at the default 16px root = 8.32px. This pins the exempt
+  // mobile-only value so a future regen against the wrong target
+  // (e.g. dev.ramboq.com instead of the local edit) fails loudly
+  // instead of silently passing the overflow-only check above.
+  expect(metrics.fontSize, `expected 0.52rem (8.32px), got ${metrics.fontSize}px`).toBeCloseTo(8.32, 1);
+  expect(metrics.lineCount, 'tagline must render on a single line, not wrap').toBe(1);
+});
+
 test('mobile (390px) — /about and /faq also fit without horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   for (const path of ['/about', '/faq']) {
