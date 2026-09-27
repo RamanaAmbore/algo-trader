@@ -181,7 +181,8 @@
   }
   .afm-when {
     font-size: var(--fs-sm);
-    color: rgba(200,216,240,0.65);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
     margin-top: 0.2rem;
   }
   .afm-close {
@@ -210,7 +211,8 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.08em;
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 55%, transparent);
     margin-bottom: 0.15rem;
   }
   .afm-body {

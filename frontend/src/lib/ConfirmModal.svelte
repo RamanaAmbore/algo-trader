@@ -167,7 +167,8 @@
   }
   .cm-message {
     font-size: var(--fs-lg);
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     line-height: 1.45;
     margin-bottom: 0.85rem;
   }
@@ -186,7 +187,8 @@
   }
   .cm-input-label {
     font-size: var(--fs-sm);
-    color: rgba(200,216,240,0.6);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 60%, transparent);
     text-transform: uppercase;
     letter-spacing: 0.05em;
   }

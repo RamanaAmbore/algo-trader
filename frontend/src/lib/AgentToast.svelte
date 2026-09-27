@@ -174,7 +174,8 @@
   }
   .atst-x {
     margin-left: auto;
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 55%, transparent);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0 0.18rem;
@@ -195,7 +196,8 @@
   .atst-cond {
     margin-top: 0.18rem;
     font-size: var(--fs-xs);
-    color: rgba(200,216,240,0.7);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
     line-height: 1.3;
     overflow: hidden;
     display: -webkit-box;

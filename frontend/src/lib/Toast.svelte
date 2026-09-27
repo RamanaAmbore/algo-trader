@@ -213,7 +213,9 @@
     padding: 0 0.2rem;
     line-height: 1;
     font-size: var(--fs-xl);
-    color: rgba(200,216,240,0.45);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α) (OLD pre-whitening
+       --algo-slate); alpha (0.45) preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 45%, transparent);
     background: transparent;
     border: none;
     cursor: pointer;

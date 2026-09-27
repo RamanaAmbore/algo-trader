@@ -140,10 +140,12 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
    *     entry, not a blind text substitution.
    */
   const A3_MUTED_LITERAL_ALLOWLIST = [
-    'src/lib/AgentFireModal.svelte',
-    'src/lib/AgentToast.svelte',
+    // AgentFireModal.svelte, AgentToast.svelte, ConfirmModal.svelte,
+    // Toast.svelte — swept (commit 2/N): simple non-numeric caption/
+    // close-button text roles, verified algo-only (not mounted in
+    // (public)/investor route trees), converted to
+    // color-mix(in srgb, var(--algo-slate) <original alpha>%, transparent).
     'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs
-    'src/lib/ConfirmModal.svelte',
     'src/lib/DayPnlBreakup.svelte',
     'src/lib/LogPanel.svelte',
     'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
@@ -152,7 +154,6 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
     'src/lib/PnlAnalysis.svelte',
     'src/lib/SymbolPanel.svelte',
     'src/lib/TemplateBar.svelte',
-    'src/lib/Toast.svelte',
     'src/lib/execution/RecordingsPanel.svelte',
     'src/lib/execution/SimulatorPanel.svelte',
     'src/lib/order/ChaseAggPicker.svelte',
