@@ -244,11 +244,20 @@ _CB_FAIL_THRESHOLD: int = 3          # consecutive fails to open the breaker
 _CB_INITIAL_COOLOFF_S: float = 300.0 # 5 min
 _CB_MAX_COOLOFF_S: float = 1800.0    # 30 min cap
 
-# Load persisted CB state that hasn't expired yet (survives process restarts).
-# Mirrors the _dhan_next_poll pattern at line 292.
-try:
-    if os.path.exists(_CB_STATE_PATH):
-        _cb_saved = _json.loads(open(_CB_STATE_PATH).read())
+def _load_cb_state_file(path: str) -> None:
+    """Load persisted CB state that hasn't expired yet (survives process
+    restarts) from `path` into _FETCH_HEALTH. Mirrors the _dhan_next_poll
+    pattern at line ~309. Extracted into a function (was inline
+    module-level code) so it's independently testable with a tmp_path
+    fixture — the bare-{} seeding bug this guards against can only be
+    reproduced by actually exercising this loader against a real file.
+
+    Every exception is swallowed — a malformed/missing/permission-denied
+    state file must never block module import."""
+    try:
+        if not os.path.exists(path):
+            return
+        _cb_saved = _json.loads(open(path).read())
         _cb_now_boot = _time.time()
         for _cb_acct, _cb_entry in _cb_saved.items():
             _cb_until = _cb_entry.get("circuit_open_until")
@@ -266,8 +275,13 @@ try:
                     "open_cycle_count":       _cb_entry.get("open_cycle_count", 0),
                     "circuit_last_opened_at": _cb_entry.get("circuit_last_opened_at"),
                 })
-except Exception:
-    pass
+    except Exception:
+        pass
+
+
+# Run at import time against the real state path — same effect as the
+# previous inline module-level block.
+_load_cb_state_file(_CB_STATE_PATH)
 
 # ---------------------------------------------------------------------------
 # Per-account Dhan poll-priority interval gate (Jul 2026)

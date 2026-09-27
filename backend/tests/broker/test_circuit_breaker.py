@@ -22,6 +22,7 @@ Scenario catalogue:
 
 from __future__ import annotations
 
+import json as _json_module
 import threading
 import time as _time
 from unittest.mock import MagicMock, patch, call as mock_call
@@ -875,3 +876,86 @@ class TestPartialHealthEntryDefensive:
         )
         assert entry["last_ok_at"] == 123.0
         assert broker_apis.is_account_healthy(self.ACCOUNT) is True
+
+    def test_cb_state_file_loader_seeds_full_shape_not_bare_dict(self, tmp_path):
+        """Exercises the ACTUAL /tmp/ramboq_cb_state.json loader
+        (_load_cb_state_file, extracted from the module-level import-time
+        block) against a real file — not just _default_health_entry()'s
+        return shape. Pre-fix, this loader wrote
+        `_FETCH_HEALTH.setdefault(acct, {}).update({cb fields only})`,
+        leaving last_ok_at/last_fail_at/consecutive_fail_count absent for
+        an account with CB state but no prior _record_fetch() call —
+        exactly the scenario is_account_healthy() would KeyError on."""
+        from backend.brokers import broker_apis
+
+        future_until = _time.time() + 300.0
+        state_file = tmp_path / "cb_state.json"
+        state_file.write_text(_json_module.dumps({
+            self.ACCOUNT: {
+                "circuit_open_until": future_until,
+                "open_cycle_count": 2,
+                "circuit_last_opened_at": _time.time() - 10.0,
+            }
+        }))
+
+        broker_apis._load_cb_state_file(str(state_file))
+        try:
+            entry = broker_apis._FETCH_HEALTH[self.ACCOUNT]
+            for key in (
+                "last_ok_at", "last_fail_at", "last_fail_msg",
+                "consecutive_fail_count", "circuit_open_until",
+                "circuit_last_opened_at", "open_cycle_count",
+            ):
+                assert key in entry, (
+                    f"_load_cb_state_file left {key!r} missing — the loader "
+                    "must seed via _default_health_entry(), not a bare {}"
+                )
+            assert entry["circuit_open_until"] == future_until
+            assert entry["open_cycle_count"] == 2
+            # Must not raise — this is the actual regression this fix guards.
+            assert broker_apis.is_account_healthy(self.ACCOUNT) is True
+        finally:
+            _reset_health(self.ACCOUNT)
+
+    def test_cb_state_file_loader_skips_expired_entries(self, tmp_path):
+        """An entry whose circuit_open_until is already in the past must
+        NOT be seeded into _FETCH_HEALTH at all (matches pre-extraction
+        behaviour — only non-expired CB state survives a restart)."""
+        from backend.brokers import broker_apis
+
+        state_file = tmp_path / "cb_state.json"
+        state_file.write_text(_json_module.dumps({
+            self.ACCOUNT: {
+                "circuit_open_until": _time.time() - 300.0,
+                "open_cycle_count": 1,
+                "circuit_last_opened_at": _time.time() - 600.0,
+            }
+        }))
+
+        broker_apis._load_cb_state_file(str(state_file))
+        try:
+            assert self.ACCOUNT not in broker_apis._FETCH_HEALTH
+        finally:
+            _reset_health(self.ACCOUNT)
+
+    def test_cb_state_file_loader_missing_file_is_noop(self, tmp_path):
+        """A nonexistent state file path is a silent no-op — never blocks
+        module import (matches the swallow-all-exceptions contract)."""
+        from backend.brokers import broker_apis
+
+        missing = tmp_path / "does_not_exist.json"
+        # Must not raise.
+        broker_apis._load_cb_state_file(str(missing))
+        assert self.ACCOUNT not in broker_apis._FETCH_HEALTH
+
+    def test_cb_state_file_loader_malformed_json_is_noop(self, tmp_path):
+        """Malformed JSON in the state file is swallowed, not raised —
+        a corrupt CB-state file must never block module import."""
+        from backend.brokers import broker_apis
+
+        bad_file = tmp_path / "cb_state.json"
+        bad_file.write_text("{not valid json")
+
+        # Must not raise.
+        broker_apis._load_cb_state_file(str(bad_file))
+        assert self.ACCOUNT not in broker_apis._FETCH_HEALTH
