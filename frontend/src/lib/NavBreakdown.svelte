@@ -31,6 +31,7 @@
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { acctColor } from '$lib/account';
   import { exportRowsToCsv } from '$lib/utils/csvExport.js';
   import { connStatus } from '$lib/stores';
 
@@ -336,33 +337,16 @@
     return aggCompact(v);
   }
 
-  // ── Account palette + colour helper ─────────────────────────────────
-  // Mirrors PerformancePage ACCT_PALETTE so each account hashes to the
-  // same colour in every table that shows it.
-  const _ACCT_PALETTE = [
-    '#a78bfa', // violet
-    '#5eead4', // teal
-    '#fda4af', // rose
-    'var(--algo-sky)', // sky
-    '#bef264', // lime
-    '#fcd34d', // amber
-    '#a5b4fc', // indigo
-    '#f0abfc', // fuchsia
-  ];
-
-  function _acctColor(/** @type {string|null|undefined} */ account) {
-    if (!account || account === 'TOTAL') return null;
-    let h = 5381;
-    for (let i = 0; i < account.length; i++) {
-      h = ((h << 5) + h) ^ account.charCodeAt(i);
-      h = h >>> 0;
-    }
-    return _ACCT_PALETTE[h % _ACCT_PALETTE.length];
-  }
+  // ── Account colour helper ────────────────────────────────────────────
+  // Delegates to the shared `$lib/account.js` palette + rank-based
+  // colour assignment so every account resolves to the same colour in
+  // every table that shows it (BrokerHealthBadge, MarketPulse,
+  // derivatives, PerformancePage). Previously this file duplicated an
+  // 8-hue palette that had drifted from account.js's 7-hue one.
 
   /** cellStyle injecting --acct-stripe for the account column. */
   function _acctCellStyle(p) {
-    const c = _acctColor(p.data?.account);
+    const c = acctColor(p.data?.account);
     return c ? { '--acct-stripe': c } : { '--acct-stripe': 'transparent' };
   }
 

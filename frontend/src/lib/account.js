@@ -1,13 +1,38 @@
 /**
- * Shared per-account color palette + hash mapping.
+ * Shared per-account color palette + colour mapping.
  *
- * Each operator account (ZG0790 / ZJ6294 / …) gets a stable colour
- * via a djb2 hash mod the palette length. The same code lands on the
- * same colour everywhere in the UI — PerformancePage account column
- * stripes, MarketPulse right-grid symbol cell tint, etc.
+ * Each operator account (ZG0790 / ZJ6294 / …) gets a stable colour.
+ * The same code lands on the same colour everywhere in the UI —
+ * PerformancePage account column stripes, MarketPulse right-grid
+ * symbol cell tint, BrokerHealthBadge, NavBreakdown, derivatives, etc.
  *
  * TOTAL rows + null accounts return null (caller uses transparent /
  * no tint).
+ *
+ * Colour assignment — rank-based, with djb2-hash fallback:
+ *   With only 5 real accounts (ZG0790/ZJ6294/DH6847/DH3747/GR87DF) a
+ *   djb2 hash mod a short palette collides (verified 2026-09 audit —
+ *   BOTH the 7-hue and an earlier 8-hue duplicate palette produced at
+ *   least one shared colour). A hash can't be fixed by picking a
+ *   different palette length short of the full account count, so the
+ *   primary path is now POSITION in the canonical account order
+ *   (`accountDisplayOrder` / `sortAccountsBy` in `accountSort.js`,
+ *   already deterministic and already the operator-configured
+ *   ordering) — guaranteed collision-free as long as the account
+ *   count stays under the palette length.
+ *
+ *   `setAccountColorRank()` is called by `accountSort.js` once the
+ *   order map loads from the API, seeding `_rankedAccounts`. Until
+ *   then (first paint, or callers passing a non-account string like
+ *   an underlying symbol at `derivatives/+page.svelte`, or a masked
+ *   string on public/investor surfaces that never load the order
+ *   map), `acctColor()` falls back to the original djb2 hash so every
+ *   caller still gets *a* stable colour — just not collision-free
+ *   for the small real-account edge case.
+ *
+ *   account.js intentionally does NOT import accountSort.js directly
+ *   (that would pull `$lib/api` into this leaf module's graph) — the
+ *   push comes from accountSort.js calling `setAccountColorRank()`.
  */
 
 export const ACCT_PALETTE = [
@@ -20,9 +45,29 @@ export const ACCT_PALETTE = [
   '#f0abfc', // fuchsia
 ];
 
+/** @type {string[] | null} */
+let _rankedAccounts = null;
+
+/**
+ * Seed the deterministic rank list `acctColor()` uses in preference to
+ * the hash fallback. Called by `accountSort.js` after its order map
+ * loads (position = sorted index by display_order then account_id).
+ * @param {string[] | null | undefined} rankedAccounts
+ */
+export function setAccountColorRank(rankedAccounts) {
+  _rankedAccounts = Array.isArray(rankedAccounts) ? rankedAccounts : null;
+}
+
 /** @param {string | null | undefined} account */
 export function acctColor(account) {
   if (!account || account === 'TOTAL') return null;
+  if (_rankedAccounts) {
+    const idx = _rankedAccounts.indexOf(account);
+    if (idx !== -1) return ACCT_PALETTE[idx % ACCT_PALETTE.length];
+  }
+  // Fallback: djb2 hash — used before the order map has loaded, for
+  // non-account strings (e.g. underlying symbols), and for masked
+  // account strings on surfaces that never fetch the order map.
   let h = 5381;
   for (let i = 0; i < account.length; i++) {
     h = ((h << 5) + h) ^ account.charCodeAt(i);

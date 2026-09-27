@@ -23,6 +23,7 @@
  */
 
 import { fetchBrokerOrder } from '$lib/api';
+import { setAccountColorRank } from '$lib/account';
 
 /** @type {Record<string, number>} */
 let _orderMap = {};
@@ -96,6 +97,11 @@ export async function loadAccountOrder() {
       const map = await fetchBrokerOrder();
       if (map && typeof map === 'object') {
         _orderMap = map;
+        // Seed account.js's colour-rank list — position in this sorted
+        // list (not a hash) is what makes acctColor() collision-free for
+        // the small real account set. See account.js's colour-assignment
+        // doc comment.
+        setAccountColorRank(sortAccountsBy(Object.keys(_orderMap), _orderMap));
         _notify();
       }
     } catch (_) {

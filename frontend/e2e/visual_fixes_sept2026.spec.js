@@ -162,8 +162,12 @@ test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
     // Assert _acctCellStyle function exists
     expect(source).toContain('_acctCellStyle');
 
-    // Assert _ACCT_PALETTE exists with account color hashing
-    expect(source).toContain('_ACCT_PALETTE');
+    // A1 (2026-09 audit) consolidated the per-file duplicated palette
+    // onto $lib/account.js's single source of truth — NavBreakdown no
+    // longer carries a local _ACCT_PALETTE, it imports the shared
+    // `acctColor` helper instead.
+    expect(source).toContain("import { acctColor } from '$lib/account'");
+    expect(source).not.toContain('_ACCT_PALETTE');
 
     // Assert cellStyle is applied to account columns in grid definitions
     expect(source).toContain('cellStyle: _acctCellStyle');
@@ -174,7 +178,7 @@ test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
     console.log('[Fix 2] NavBreakdown account stripe SSOT verified');
   });
 
-  test('3-Reuse: Account color hash function is consistent', () => {
+  test('3-Reuse: Account color function is consistent (shared $lib/account.js)', () => {
     const path = '/Users/ramanambore/projects/ramboq/frontend/src/lib/NavBreakdown.svelte';
     let source = '';
     try {
@@ -184,18 +188,25 @@ test.describe('Fix 2: Account column stripe with --acct-stripe', () => {
       return;
     }
 
-    // Assert _acctColor function uses a consistent hash (DJB2 or similar)
-    // so the same account always gets the same color across page reloads
-    expect(source).toContain('_acctColor');
+    // Assert the shared acctColor (from $lib/account, rank-based with a
+    // djb2-hash fallback — see account.js's doc comment) is imported so
+    // the same account always gets the same colour across page reloads
+    // AND across every other surface (BrokerHealthBadge, MarketPulse,
+    // derivatives, PerformancePage) — not a locally-duplicated hash.
+    expect(source).toContain("from '$lib/account'");
+    expect(source).not.toContain('function _acctColor(');
 
     // Assert the function is used by _acctCellStyle
-    const hasColorUsage = /_acctCellStyle[\s\S]*?_acctColor/.test(source);
+    const hasColorUsage = /_acctCellStyle[\s\S]*?acctColor/.test(source);
     expect(hasColorUsage).toBe(true);
 
-    // Assert TOTAL account is filtered out (no color for totals row)
-    expect(source).toContain('TOTAL');
+    // Assert TOTAL account is filtered out (no color for totals row) —
+    // this guard now lives in $lib/account.js's acctColor(), not here.
+    const accountJsPath = '/Users/ramanambore/projects/ramboq/frontend/src/lib/account.js';
+    const accountJsSource = readFileSync(accountJsPath, 'utf-8');
+    expect(accountJsSource).toContain('TOTAL');
 
-    console.log('[Fix 2] Account color hash consistency verified');
+    console.log('[Fix 2] Account color consistency verified (shared account.js)');
   });
 });
 

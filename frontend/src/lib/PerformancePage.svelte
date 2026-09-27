@@ -1,5 +1,6 @@
 <script>
   import { onMount, onDestroy, tick, untrack } from 'svelte';
+  import { acctColor } from '$lib/account';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
@@ -484,35 +485,14 @@
   };
 
   // ── Per-account colour identity ─────────────────────────────────────────
-  // djb2 hash → stable index into an 8-hue palette. TOTAL rows receive no
-  // colour so they read as neutral aggregates. Palette chosen for mutual
-  // distinctness + visibility on both dark (algo) and light (ramboq) grids.
-  // ACCT_PALETTE + acctColor moved to `$lib/account.js` so MarketPulse
-  // and PerformancePage share one source of truth — each account hashes
-  // to the same colour everywhere it surfaces in the UI. The const +
-  // function inlined below are kept for back-compat with the existing
-  // closures (acctCellRenderer / acctCellStyle reference them directly);
-  // they now delegate to the shared helper.
-  const ACCT_PALETTE = [
-    '#a78bfa', // violet
-    '#5eead4', // teal
-    '#fda4af', // rose
-    'var(--algo-sky)', // sky
-    '#bef264', // lime
-    '#fcd34d', // amber
-    '#a5b4fc', // indigo
-    '#f0abfc', // fuchsia
-  ];
-
-  function acctColor(/** @type {string|null|undefined} */ account) {
-    if (!account || account === 'TOTAL') return null;
-    let h = 5381;
-    for (let i = 0; i < account.length; i++) {
-      h = ((h << 5) + h) ^ account.charCodeAt(i);
-      h = h >>> 0; // force unsigned 32-bit
-    }
-    return ACCT_PALETTE[h % ACCT_PALETTE.length];
-  }
+  // TOTAL rows receive no colour so they read as neutral aggregates.
+  // Colour + palette now live in `$lib/account.js` (imported above) so
+  // every surface — MarketPulse, NavBreakdown, BrokerHealthBadge,
+  // derivatives, PerformancePage — shares one source of truth: each
+  // account resolves to the same colour everywhere it surfaces in the
+  // UI. (Previously this file duplicated an 8-hue palette that had
+  // drifted from account.js's 7-hue one, including a `var(--algo-sky)`
+  // entry that isn't valid in string-concat callers — removed.)
 
   // cellRenderer for the account column — handles maskAccounts only.
   // The per-account stripe lives on the cell's left border (via
