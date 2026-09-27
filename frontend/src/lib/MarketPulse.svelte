@@ -4606,8 +4606,13 @@
 </ModalShell>
 
 <style>
-  /* Symbol cell — main + alias. */
-  :global(.sym-main)  { color: #e2e8f0; font-weight: 600; }
+  /* Symbol cell — main + alias. A5 (2026-09 audit): colour + weight now
+     match derivatives Legs tab's CandidateLegRow.svelte `.sym-main`
+     (same role — base symbol text before the CE/PE split below) — was
+     a hardcoded #e2e8f0 at weight 600, CandidateLegRow uses
+     var(--algo-slate) at weight 500. Two surfaces, same role, now one
+     shared treatment. */
+  :global(.sym-main)  { color: var(--algo-slate); font-weight: 500; }
   /* CE = green (right to BUY = bullish), PE = red (right to SELL =
      bearish). Sensibull / Streak convention. Operator scanning
      positions tells calls from puts at a glance. */

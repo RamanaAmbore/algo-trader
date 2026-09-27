@@ -578,3 +578,41 @@ test.describe.serial('algo consistency — perf', () => {
     expect(growthMB, `heap growth after 5-route lap: ${growthMB.toFixed(2)} MB`).toBeLessThan(8);
   });
 });
+
+/* ── A5 (2026-09 audit) — symbol-cell colour/weight consistency ──────
+ * MarketPulse's base `.sym-main` rule and derivatives Legs tab's
+ * CandidateLegRow.svelte `.sym-main` rule render the SAME role (base
+ * symbol text before the CE/PE green/red split) and must now share
+ * colour (var(--algo-slate)) + weight (500). Reuse-dimension guard:
+ * source-grep both files rather than depending on live grid data. ── */
+
+test.describe('algo consistency — symbol-cell base treatment (A5)', () => {
+  test('MarketPulse.svelte and CandidateLegRow.svelte .sym-main share colour + weight', () => {
+    const mpPath = path.join(process.cwd(), 'src/lib/MarketPulse.svelte');
+    const legPath = path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte');
+    const mp = fs.readFileSync(mpPath, 'utf-8');
+    const leg = fs.readFileSync(legPath, 'utf-8');
+
+    // Base rule (not the .sym-ce/.sym-pe overrides) — match the exact
+    // `.sym-main { … }` declaration, tolerating a `:global(...)` wrapper
+    // and/or an ancestor selector (e.g. `.cand-sym .sym-main)`) before
+    // the closing paren + `{`.
+    const mpBase = mp.match(/\.sym-main\)?\s*\{([^}]*)\}/);
+    const legBase = leg.match(/\.sym-main\)?\s*\{([^}]*)\}/);
+    expect(mpBase, 'MarketPulse.svelte must declare a base .sym-main rule').not.toBeNull();
+    expect(legBase, 'CandidateLegRow.svelte must declare a base .sym-main rule').not.toBeNull();
+
+    for (const [name, body] of [['MarketPulse', mpBase[1]], ['CandidateLegRow', legBase[1]]]) {
+      expect(body, `${name}'s .sym-main must use var(--algo-slate), not a hardcoded hex`).toContain('var(--algo-slate)');
+      expect(body, `${name}'s .sym-main must be font-weight: 500`).toMatch(/font-weight:\s*500/);
+      expect(body, `${name}'s .sym-main must NOT hardcode #e2e8f0 (A3 banned literal)`).not.toContain('#e2e8f0');
+    }
+
+    // The CE/PE split is unrelated to this fix and must be untouched on
+    // both surfaces — still driven by --c-long / --c-short.
+    expect(mp).toContain('var(--c-long)');
+    expect(mp).toContain('var(--c-short)');
+    expect(leg).toContain('var(--c-long)');
+    expect(leg).toContain('var(--c-short)');
+  });
+});
