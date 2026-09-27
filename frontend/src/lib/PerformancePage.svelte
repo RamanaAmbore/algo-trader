@@ -753,7 +753,7 @@
   // debits' broker columns to schema-friendly snake_case.
   //   API field → broker source
   //   cash          ← avail opening_balance (start-of-day cash)
-  //   live_cash     ← avail cash (= live_balance, intraday-adjusted)
+  //   live_cash     ← avail cash (direct funds only, NOT avail.live_balance — that field also includes collateral)
   //   avail_margin  ← net (broker's account value)
   //   used_margin   ← util debits
   //   collateral    ← avail collateral

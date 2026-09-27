@@ -14,7 +14,7 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { fetchMyNav, fetchFirmNavPublic } from '$lib/api';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { authStore, visibleInterval, ltpFlashPct } from '$lib/stores';
+  import { authStore, visibleInterval, ltpFlashPct, formatDualTz } from '$lib/stores';
   import { priceFmt, pctFmt, aggCompact } from '$lib/format';
   import { positionsDayPnlStore } from '$lib/data/positionsDayPnlStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
@@ -50,7 +50,10 @@
   const firmDayPnl  = $derived(positionsDayPnlStore.total + holdingsDayPnlStore.total);
   const firmCumPnl  = $derived(nav ? Number(nav.firm_cum_pnl ?? 0) : 0);
   const partnerCount= $derived(nav ? (nav.partner_count ?? 0) : 0);
-  const asOf        = $derived(nav?.as_of ?? '');
+  // `nav.as_of` arrives as a raw Python isoformat() string (e.g.
+  // "2026-09-25T18:30:18.700965+00:00"). Render through the same
+  // dual-timezone formatter RefreshButton/LogPanel use, never raw.
+  const asOf        = $derived(nav?.as_of ? formatDualTz(new Date(nav.as_of)) : '');
 
   // Day P&L % relative to NAV (avoids /0 when nav is fresh/zero)
   const shareDayPct = $derived(shareNav > 0 ? (shareDayPnl / shareNav * 100) : 0);
