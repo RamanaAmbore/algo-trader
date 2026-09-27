@@ -2824,6 +2824,19 @@ button:not(:disabled):active,
   --card-accent-text:         #8f6000;
   --card-accent-text-large:   #b87a0a;
 
+  /* B8 (2026-09): desktop side-margin decoration tokens — shared between
+     every surface that wraps in .card-theme-cream: the public layout
+     ((public)/+layout.svelte, all public routes) and the investor portal
+     (investor/[token]/+page.svelte). Both render a fixed-position 1px
+     hairline flanking their content frame, offset this same fixed
+     distance outside it; centralized here so the color/offset can't
+     drift between the two independent implementations (frame widths
+     and vignette base colors differ per surface, so those stay local).
+     See investor/[token]/+page.svelte and (public)/+layout.svelte for
+     the per-surface geometry math. */
+  --b8-hairline-color: rgba(200,168,75,0.45);
+  --b8-margin-offset:  24px;
+
   /* P&L colours */
   --card-gain-text:           #1a6b3a;
   --card-loss-text:           #9b1c1c;

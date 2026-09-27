@@ -324,7 +324,11 @@
      968px; 1080px adds a comfortable buffer above that so the lines
      never collide with the content column on in-between desktop widths.
      The existing @media (max-width: 700px) mobile breakpoint below is
-     untouched — there's no side margin to decorate at that width. */
+     untouched — there's no side margin to decorate at that width.
+     Color + offset now read from the shared --b8-hairline-color /
+     --b8-margin-offset tokens (app.css .card-theme-cream) so this page
+     and (public)/+layout.svelte's own B8 decoration can't drift apart —
+     literal fallbacks kept identical to the original values. */
   @media (min-width: 1080px) {
     .ip-page::before,
     .ip-page::after {
@@ -333,12 +337,12 @@
       top: 0;
       bottom: 0;
       width: 1px;
-      background: rgba(200,168,75,0.45);
+      background: var(--b8-hairline-color, rgba(200,168,75,0.45));
       pointer-events: none;
       z-index: 0;
     }
-    .ip-page::before { left: calc(50% - 484px); }  /* 460px half-width + 24px offset */
-    .ip-page::after  { right: calc(50% - 484px); }
+    .ip-page::before { left:  calc(50% - 460px - var(--b8-margin-offset, 24px)); }  /* 460px half-width + 24px offset */
+    .ip-page::after  { right: calc(50% - 460px - var(--b8-margin-offset, 24px)); }
   }
   @media (max-width: 700px) {
     .ip-page { padding: 1.5rem 1rem 3rem; }

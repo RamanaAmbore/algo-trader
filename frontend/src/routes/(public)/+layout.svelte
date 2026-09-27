@@ -245,6 +245,74 @@
     align-items: center;
   }
 
+  /* B8 (2026-09): desktop side-margin decoration — same approved
+     treatment as /investor/[token] (commit 94cfa193), extended to every
+     route under (public)/ since they all share this layout's frame.
+     Re-derived (not copy-pasted) for this layout's 1280px .pub-card
+     column (vs. investor's 920px) and its extra position:fixed
+     accent-top/bottom strips:
+       (a) radial vignette — flat #f0ece3 (identical to .pub-viewport's
+           own background-color AND to .pub-accent-top/bottom's side-
+           panel fill below, so there's no visible seam where the
+           vignette meets those strips) across the content column,
+           shifting to a deeper champagne tone (#e6dbc3 — same channel
+           delta the investor page applied to its own #fdfaf2 base) in
+           the margin band, fading back to flat further out.
+           background-attachment:fixed anchors the ellipse to the
+           viewport (not the scrolling document), so its vertical flat
+           zone always lines up with the accent strips' fixed top/
+           bottom edges regardless of scroll position or page height —
+           without this, a tall page could scroll the deep vignette
+           band under the strips' flat fill and create a visible seam.
+       (b) 1px champagne-gold hairlines flanking the 1280px .pub-card
+           frame, reusing the SAME --b8-hairline-color /
+           --b8-margin-offset tokens (app.css .card-theme-cream) as the
+           investor page — one shared color/offset source, not two.
+     Both gated to desktop widths only, INSIDE this single media query,
+     so mobile keeps the existing diagonal hatch untouched and never
+     pays the background-attachment:fixed scroll-repaint cost.
+     Geometry: content half-width 640px (1280px .pub-card / 2). Hairline
+     offset = 640 + 24 = 664px from center. Strict no-overlap minimum is
+     1280 + 2×24 = 1328px; gate reuses the investor page's exact 112px
+     buffer (968->1080), landing on 1440px. Ellipse horizontal radius
+     scaled from investor's 1400px/460px-half-width ratio to this
+     frame's 640px half-width (1400 × 640/460 ≈ 1950px), giving a flat
+     zone of 1950×0.38 = 741px — comfortably wider than the 640px
+     content half-width (matches investor's ~15.6% buffer ratio). */
+  @media (min-width: 1440px) {
+    .pub-viewport {
+      background-attachment: fixed;
+      background-image:
+        repeating-linear-gradient(
+          135deg,
+          transparent,
+          transparent 40px,
+          rgba(154,126,56,0.05) 40px,
+          rgba(154,126,56,0.05) 41px
+        ),
+        radial-gradient(
+          ellipse 1950px 100% at center,
+          #f0ece3 0%,
+          #f0ece3 38%,
+          #e6dbc3 62%,
+          #f0ece3 88%
+        );
+    }
+    .pub-viewport::before,
+    .pub-viewport::after {
+      content: '';
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      width: 1px;
+      background: var(--b8-hairline-color, rgba(200,168,75,0.45));
+      pointer-events: none;
+      z-index: 0;
+    }
+    .pub-viewport::before { left:  calc(50% - 640px - var(--b8-margin-offset, 24px)); }
+    .pub-viewport::after  { right: calc(50% - 640px - var(--b8-margin-offset, 24px)); }
+  }
+
   .pub-accent-top, .pub-accent-bottom {
     /* Strip spans the full viewport width and is `position: fixed` so
        the entire top/bottom 4 px region (gradient + side panels) sits
