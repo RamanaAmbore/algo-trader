@@ -992,7 +992,14 @@
     width: min(25.2rem, 100vw);
     max-height: 70vh;
     overflow-y: auto;
-    background: var(--card-bg, #0f1a2e);
+    /* fix(ui): unify with BrokerHealthBadge's .algo-modal (app.css's
+       canonical dark-popup recipe uses var(--card-bg-gradient) directly —
+       the established convention across ~10 other dark-theme popup/card
+       surfaces). This panel only ever renders inside .algo-viewport
+       .card-theme-dark (never the cream theme), so the theme-agnostic
+       --card-bg indirection was unnecessary and left room for the two
+       popups to drift if either's DOM nesting ever changed. */
+    background: var(--card-bg-gradient);
     border: 1px solid var(--border-color, rgba(255,255,255,0.08));
     border-radius: 4px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);

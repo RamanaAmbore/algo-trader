@@ -656,7 +656,10 @@
     color: var(--algo-muted);
     letter-spacing: 0.04em;
     padding: 0.25rem 0.5rem;
-    background: var(--card-bg, #1d2a44);
+    /* fix(ui): unify with BrokerHealthBadge's .algo-modal / the
+       established var(--card-bg-gradient) convention — see the matching
+       comment in PositionStrip.svelte's .ps-breakdown-panel. */
+    background: var(--card-bg-gradient);
     border-top: 1px solid rgba(126,151,184,0.10);
   }
   .nav-bd-caption span {
@@ -669,7 +672,7 @@
     color: rgba(155, 176, 208, 0.55);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
     font-size: 0.72rem;
-    background: var(--card-bg, #1d2a44);
+    background: var(--card-bg-gradient);
     display: flex;
     flex-wrap: wrap;
     align-items: center;
