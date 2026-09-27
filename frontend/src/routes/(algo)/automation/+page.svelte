@@ -724,7 +724,7 @@
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
             <span class="text-xs text-[var(--c-action)] truncate">{agent.name}</span>
             {#if agent.long_name}
-              <span class="text-xs font-mono truncate" style="color: var(--algo-slate)">{agent.long_name}</span>
+              <span class="text-xs font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
             {/if}
           </span>
           <!-- Notify-channel icon strip — one tiny emoji per enabled
@@ -1333,7 +1333,7 @@
   .ai-why {
     margin-top: 0.45rem;
     font-size: var(--fs-md);
-    color: var(--algo-slate);
+    color: var(--algo-slate-muted);
     background: rgba(167,139,250,0.06);
     border-left: 2px solid #a78bfa;
     padding: 0.32rem 0.55rem;
@@ -1365,7 +1365,7 @@
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
     padding: 0.4rem 0.55rem;
-    color: var(--algo-slate);
+    color: var(--algo-slate-muted);
     overflow: auto;
     max-height: 18rem;
   }
@@ -1393,20 +1393,20 @@
     letter-spacing: 0.06em;
     flex-shrink: 0;
   }
-  .ai-meta-why { color: var(--algo-slate); flex: 1 1 8rem; min-width: 0; }
+  .ai-meta-why { color: var(--algo-slate-muted); flex: 1 1 8rem; min-width: 0; }
   .ai-meta-prompt { font-size: var(--fs-sm); color: var(--algo-muted); }
   .ai-meta-prompt summary { cursor: pointer; color: #a78bfa; }
   .ai-meta-prompt summary:hover { color: #c4b5fd; }
   .ai-meta-prompt span {
     display: block;
     margin-top: 0.2rem;
-    color: var(--algo-slate);
+    color: var(--algo-slate-muted);
     background: rgba(167,139,250,0.06);
     padding: 0.3rem 0.5rem;
     border-left: 2px solid #a78bfa;
     border-radius: 2px;
   }
-  .ai-meta-rest { color: var(--algo-slate)aa; font-style: italic; flex-basis: 100%; }
+  .ai-meta-rest { color: var(--algo-slate-muted); font-style: italic; flex-basis: 100%; }
 
   /* Live-preview styling — compact, dense, matches algo dark palette. */
   .agent-preview {
@@ -1424,7 +1424,7 @@
   }
   .preview-header { margin-bottom: 0.5rem; }
   .preview-title { font-weight: 700; color: var(--c-action); font-size: var(--fs-xl); }
-  .preview-desc  { font-style: italic; color: var(--algo-slate)aa; font-size: var(--fs-sm); margin-top: 0.1rem; }
+  .preview-desc  { font-style: italic; color: var(--algo-slate-muted); font-size: var(--fs-sm); margin-top: 0.1rem; }
   .preview-meta  { font-size: var(--fs-xs); color: var(--algo-muted); margin-top: 0.2rem; }
   .preview-sep   { margin: 0 0.35rem; color: var(--algo-muted)40; }
   .preview-section-label {
@@ -1535,7 +1535,7 @@
   .preview-action-params {
     font-size: var(--fs-xs);
     background: rgba(0,0,0,0.25);
-    color: var(--algo-slate);
+    color: var(--algo-slate-muted);
     padding: 0.25rem 0.35rem;
     border-radius: 2px;
     margin-top: 0.2rem;
@@ -1629,7 +1629,7 @@
     padding: 0.05rem 0.35rem;
     border-radius: 3px;
     background: rgba(126,151,184,0.10);
-    color: var(--algo-slate);
+    color: var(--algo-slate-muted);
     border: 1px solid rgba(255,255,255,0.12);
   }
 
