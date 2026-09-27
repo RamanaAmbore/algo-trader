@@ -70,7 +70,7 @@
     </div>
     <div class="stat-divider"></div>
     <div class="stat-item">
-      <div class="stat-creds">FRM · CFA L3 (cand.) · XLRI</div>
+      <div class="stat-creds">FRM · CFA L3 (cand.) · XLRI · M.S. CS</div>
       <div class="stat-label">Architect's Credentials</div>
     </div>
   </div>
