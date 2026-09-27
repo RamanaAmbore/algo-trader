@@ -1849,6 +1849,37 @@ async def _opp_live_handle_success(
         ))
     except Exception:
         pass
+
+    # 2026-09 council audit fix (perf lens): this success path previously
+    # invalidated only the "orders" cache and scheduled no positions
+    # refresh at all -- that machinery lived exclusively in the postback
+    # fan-out (_postback_broadcast_fanout -> _positions_refresh_after_fill),
+    # which fires reliably for Kite but is the ONLY path for Dhan/Groww,
+    # whose postback delivery is documented as unreliable/manually-
+    # configured. An operator placing a live Dhan/Groww order with the
+    # webhook unconfigured would see the order acknowledged instantly but
+    # positions would not reflect the fill for up to 5 minutes (the
+    # _task_performance poll backstop) -- directly undermining "call
+    # position APIs immediately". Scoped to Dhan/Groww only: Kite's own
+    # postback already triggers this same function promptly on a real
+    # fill, so running it again here would just double broker calls for
+    # no benefit. The function is self-verifying (polls actual broker
+    # positions and only fires positions_refreshed once quantity genuinely
+    # changed), so triggering it speculatively right after PLACEMENT
+    # (not confirmed fill) is safe -- it silently no-ops after ~7s for an
+    # order that's still resting unfilled, same as it always has for its
+    # existing postback-triggered callers.
+    try:
+        from backend.brokers.registry import _broker_id_for
+        if _broker_id_for(account) in ("dhan", "groww"):
+            from backend.api.routes.orders import _positions_refresh_after_fill
+            _qty_delta = qty * (1 if (side or "").upper() == "BUY" else -1)
+            asyncio.create_task(
+                _positions_refresh_after_fill(account, sym, _qty_delta)
+            )
+    except Exception:
+        pass
+
     _clear_rejections(bk_key)
     return TicketOrderResponse(
         order_id=str(order_id),

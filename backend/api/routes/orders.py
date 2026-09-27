@@ -555,7 +555,20 @@ async def _positions_refresh_after_fill(
         for _attempt in range(5):
             await _aio.sleep(1)
             try:
-                dfs = await _aio.to_thread(fetch_positions)
+                # 2026-09 council audit fix (perf + architect lenses,
+                # independently): fetch_positions() is memoized behind a
+                # 30s-TTL cache. _rco_invalidate_terminal_caches() busts it
+                # once, synchronously, right before this task is scheduled —
+                # so only the FIRST read in this 5-attempt loop was ever a
+                # real broker round-trip; every subsequent read (t+3..t+7s)
+                # silently re-read that same first result. cur_qty could
+                # never differ from initial_qty under normal conditions, so
+                # this loop reliably timed out and positions_refreshed
+                # essentially never fired — directly undermining the
+                # operator's "call position APIs immediately" requirement.
+                # force_refresh=True makes every attempt a genuine broker
+                # call, not just the first.
+                dfs = await _aio.to_thread(fetch_positions, force_refresh=True)
                 rows = [
                     r for df in (dfs or [])
                     for r in df.to_dict(orient="records")
