@@ -33,7 +33,7 @@
   // Credential badges — displayed as pill chips below the name.
   const CREDS = [
     { label: 'FRM',          color: 'amber'  },
-    { label: 'CFA-L3',       color: 'sky'    },
+    { label: 'CFA-L3 (cand.)', color: 'sky'    },
     { label: 'M.Sc. CS',     color: 'purple' },
     { label: 'Six Sigma GB', color: 'green'  },
   ];
@@ -279,7 +279,7 @@
 
 <svelte:head>
   <title>Ramana R. Ambore · RamboQuant | About</title>
-  <meta name="description" content="Ramana R. Ambore — Principal System Analyst at Fidelity Investments, Platform Architect & Quant Developer at RamboQuant. FRM · CFA-L3 · M.Sc. CS · Six Sigma GB." />
+  <meta name="description" content="Ramana R. Ambore — Principal System Analyst at Fidelity Investments, Platform Architect & Quant Developer at RamboQuant. FRM · CFA-L3 (cand.) · M.Sc. CS · Six Sigma GB." />
 </svelte:head>
 
 <div class="show" class:show-ready={_mounted}>
@@ -309,7 +309,7 @@
         <div class="show-attribution">
           <span class="show-attr-name">Ramana R. Ambore</span>
           <span class="show-attr-sep">·</span>
-          <span class="show-attr-creds">FRM · CFA-L3 · M.Sc. CS · Six Sigma GB · NTT Global top-40 innovator</span>
+          <span class="show-attr-creds">FRM · CFA-L3 (cand.) · M.Sc. CS · Six Sigma GB · NTT Global top-40 innovator</span>
           <div class="show-attr-roles">
             <span>Principal System Analyst · Fidelity Investments (19 yrs)</span>
             <span class="show-attr-sep">·</span>
