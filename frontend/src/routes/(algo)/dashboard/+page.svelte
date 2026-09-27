@@ -2547,16 +2547,18 @@
   }
   .dash-mini-grid + .bucket-subheader { margin-top: 0.55rem; }
 
-  /* Column borders — match Pulse's clean borderless look. Pulse
-     suppresses via .mp-bucket-wrap in MarketPulse.svelte, but that
-     :global() rule is scoped to routes that load MarketPulse. Dashboard
-     uses .dash-mini-grid as the theme root (ag-theme-algo on the same
-     element), so we target ag-cell children directly from that root.
+  /* Column borders — this rule used to mirror Pulse's OLD borderless
+     look, but Pulse itself was reverted to show the whisper vertical
+     hairline (app.css's `.ag-theme-algo .ag-cell` SSOT, restored
+     2026-09) — this comment was stale, quietly leaving the W/L
+     mini-grids as the one algo grid still missing the divider.
+     Only zero border-left here (matching the same left-edge cleanup
+     every other .ag-theme-algo grid keeps); border-right now falls
+     through to the shared hairline rule instead of being re-zeroed.
      The meaningful LTP-heat inset stripes are painted via box-shadow,
-     not border, so they are unaffected. */
+     not border, so they are unaffected either way. */
   :global(.dash-mini-grid.ag-theme-algo .ag-cell),
   :global(.dash-mini-grid.ag-theme-algo .ag-header-cell) {
-    border-right: 0 !important;
     border-left: 0 !important;
   }
 
