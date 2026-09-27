@@ -91,11 +91,11 @@
   }
 </script>
 
-<svelte:head><title>Lab | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>Sandbox | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Lab</h1>
+    <h1 class="page-title-chip">Sandbox</h1>
   </span>
   <AlgoTimestamp />
   <span class="ml-auto"></span>

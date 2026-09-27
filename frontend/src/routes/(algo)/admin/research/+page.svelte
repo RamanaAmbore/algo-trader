@@ -1020,7 +1020,11 @@
   .thr-sym {
     font-family: var(--font-numeric);
     font-weight: 700;
-    font-size: 1rem;
+    /* Was a bespoke 1rem literal, no matching --fs-* token — mapped to
+       --fs-xl (0.85rem), the documented "title cluster" tier, matching
+       this element's role as a prominent inline symbol/title badge
+       (2026-09 font audit). */
+    font-size: var(--fs-xl);
     color: var(--c-action);
   }
   .thr-title {

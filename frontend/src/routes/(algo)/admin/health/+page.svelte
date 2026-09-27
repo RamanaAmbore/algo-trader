@@ -490,7 +490,7 @@
     align-items: baseline;
     gap: 0.4rem;
     padding: 0.18rem 0;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
@@ -519,7 +519,7 @@
     align-items: center;
     gap: 0.45rem;
     padding: 0.2rem 0;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }
@@ -576,7 +576,7 @@
     align-items: center;
     gap: 0.65rem;
     padding: 0.2rem 0;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     color: var(--algo-slate);
     border-bottom: 1px solid rgba(126,151,184,0.10);
   }

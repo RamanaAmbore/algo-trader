@@ -487,5 +487,8 @@
 
 <style>
   .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }
-  :global(.algo-table) thead th { font-size: 0.68rem; }
+  /* Was a bespoke 0.68rem override — drifted from the canonical
+     `.algo-table thead th` SSOT in app.css (var(--fs-sm), 0.6rem),
+     the only other consumer of which (admin/settings) renders the
+     canonical size. Removed so both pages match (2026-09 font audit). */
 </style>

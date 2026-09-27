@@ -1446,3 +1446,153 @@ test.describe.serial('algo consistency — close-button rest-state fill (live)',
     expect(hoverAlpha, `.sc-close hover alpha (${hoverAlpha}) must exceed rest alpha (${restAlpha})`).toBeGreaterThan(restAlpha);
   });
 });
+
+/* ── Build/Config-group font-size consistency audit (2026-09) ─────────
+ * Operator-requested sweep of the Automation, Sandbox, Strategies pages
+ * plus the "Build" (Activity/Console/Research/Tokens) and "Config"
+ * (Brokers/Settings/Users/Statements/History/Audit/Metrics/Perf/Health)
+ * nav groups — pages that hadn't been covered by the earlier Dashboard/
+ * Pulse/Derivatives consistency passes. Found + fixed three literal
+ * (non-`var(--fs-*)`) font-size drift sites:
+ *   - admin/health: .kv-row/.broker-row/.ip-row hardcoded 0.72rem
+ *     (exact duplicate of --fs-lg) -> var(--fs-lg).
+ *   - admin/tokens: `.algo-table thead th` local override at 0.68rem,
+ *     diverging from the canonical `.algo-table thead th` SSOT in
+ *     app.css (var(--fs-sm)/0.6rem) — removed so it matches
+ *     admin/settings, the only other `.algo-table` consumer.
+ *   - admin/research: `.thr-sym` hardcoded 1rem (no matching token)
+ *     -> var(--fs-xl), the "title cluster" tier.
+ * Every other page in the sweep (Automation, Sandbox, Strategies,
+ * Activity, Console, Tokens body, Brokers, Settings, Users,
+ * Statements, History, Audit, Metrics, Perf) already used
+ * var(--fs-*) exclusively — checked-and-clean, no fix needed.
+ * Also fixed: /admin/execution page header + <title> said "Lab" while
+ * its own nav entry reads "Sandbox" (URL kept at /admin/execution for
+ * backward-compat — see (algo)/+layout.svelte _algoLinksAll comment).
+ * ─────────────────────────────────────────────────────────────────── */
+
+const FONT_AUDIT_PAGES = [
+  'src/routes/(algo)/automation/+page.svelte',
+  'src/routes/(algo)/admin/execution/+page.svelte',
+  'src/routes/(algo)/strategies/+page.svelte',
+  'src/routes/(algo)/activity/+page.svelte',
+  'src/routes/(algo)/console/+page.svelte',
+  'src/routes/(algo)/admin/research/+page.svelte',
+  'src/routes/(algo)/admin/tokens/+page.svelte',
+  'src/routes/(algo)/admin/brokers/+page.svelte',
+  'src/routes/(algo)/admin/settings/+page.svelte',
+  'src/routes/(algo)/admin/+page.svelte',
+  'src/routes/(algo)/admin/statements/+page.svelte',
+  'src/routes/(algo)/admin/history/+page.svelte',
+  'src/routes/(algo)/admin/audit/+page.svelte',
+  'src/routes/(algo)/admin/metrics/+page.svelte',
+  'src/routes/(algo)/admin/perf/+page.svelte',
+  'src/routes/(algo)/admin/health/+page.svelte',
+];
+
+test.describe('algo consistency — Build/Config font-size audit (source)', () => {
+  test('no literal (non-token) font-size regressions across the audited page group', () => {
+    // Same contract as the top-of-file stale-code guard, scoped to this
+    // page set, with the two known/allowed non-role literals (both
+    // close-button glyph sizes, covered by the Task-1 close-btn guard
+    // above, not page-content text) excluded.
+    const ALLOWED = new Set([
+      'src/routes/(algo)/admin/+page.svelte::font-size: 1.1rem;',            // .ip-modal-x close glyph
+      'src/routes/(algo)/admin/metrics/+page.svelte::font-size: 1.4rem;',    // .metrics-modal-close glyph
+    ]);
+    const offenders = [];
+    for (const rel of FONT_AUDIT_PAGES) {
+      const abs = path.join(process.cwd(), rel);
+      let src;
+      try { src = fs.readFileSync(abs, 'utf-8'); } catch { continue; }
+      const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+      const rx = /font-size\s*:\s*[0-9.]+(?:rem|em|px)\s*;/g;
+      let m;
+      while ((m = rx.exec(stripped))) {
+        const key = `${rel}::${m[0]}`;
+        if (!ALLOWED.has(key)) offenders.push(key);
+      }
+    }
+    expect(offenders, `Literal font-size regression (must use var(--fs-*)):\n${offenders.join('\n')}`).toEqual([]);
+  });
+
+  test('admin/health kv/broker/ip rows use var(--fs-lg), not the old 0.72rem literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/health/+page.svelte'), 'utf-8');
+    for (const cls of ['.kv-row', '.broker-row', '.ip-row']) {
+      const m = src.match(new RegExp(cls.replace('.', '\\.') + '\\s*\\{([^}]*)\\}'));
+      expect(m, `${cls} rule not found`).not.toBeNull();
+      expect(m[1], `${cls} must use var(--fs-lg)`).toMatch(/font-size:\s*var\(--fs-lg\)/);
+    }
+  });
+
+  test('admin/tokens .algo-table thead th no longer overrides the canonical SSOT size', () => {
+    const raw = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/tokens/+page.svelte'), 'utf-8');
+    // Strip comments — the migration-note comment documents the OLD
+    // value in prose ("a bespoke 0.68rem override"), which must not
+    // trip this live-code guard.
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '');
+    expect(src, 'the bespoke 0.68rem thead-th override must be removed').not.toContain('0.68rem');
+  });
+
+  test('admin/research .thr-sym uses var(--fs-xl), not the old 1rem literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/research/+page.svelte'), 'utf-8');
+    const m = src.match(/\.thr-sym\s*\{([^}]*)\}/);
+    expect(m, '.thr-sym rule not found').not.toBeNull();
+    expect(m[1], '.thr-sym must use var(--fs-xl)').toMatch(/font-size:\s*var\(--fs-xl\)/);
+  });
+
+  test('admin/execution header + title say "Sandbox", not the stale "Lab"', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/execution/+page.svelte'), 'utf-8');
+    expect(src).toContain('<h1 class="page-title-chip">Sandbox</h1>');
+    expect(src).toContain('<title>Sandbox | RamboQuant Analytics</title>');
+    // Internal-only references (comments, console.warn prefixes) are
+    // out of scope — only the user-visible header + tab title changed.
+  });
+});
+
+test.describe.serial('algo consistency — Build/Config font-size audit (live)', () => {
+  test.setTimeout(60_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  test('/admin/execution renders "Sandbox" as its page title, matching the nav label', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/execution', { waitUntil: 'domcontentloaded' });
+    await expect(p.locator('h1.page-title-chip')).toHaveText('Sandbox', { timeout: 10_000 });
+    await expect(p).toHaveTitle('Sandbox | RamboQuant Analytics');
+  });
+
+  test('admin/health KV row computed font-size matches --fs-lg (0.72rem)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/health', { waitUntil: 'domcontentloaded' });
+    // Health data loads async (broker/system status fetch) — wait for the
+    // first KV row rather than assuming it's present at domcontentloaded.
+    await p.waitForSelector('.kv-row', { timeout: 15_000 }).catch(() => {});
+    const row = p.locator('.kv-row').first();
+    const count = await row.count();
+    test.skip(count === 0, 'no .kv-row rendered on /admin/health');
+    const fs_ = await row.evaluate((el) => getComputedStyle(el).fontSize);
+    expect(fs_, `.kv-row computed font-size: ${fs_}`).toBe('11.52px'); // 0.72rem @ 16px root
+  });
+});

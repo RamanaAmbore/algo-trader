@@ -145,7 +145,9 @@ test.describe('Sim end-to-end — Option B workspace', () => {
     await authOnce(page);
     await page.goto('/dashboard');
     await page.waitForLoadState('domcontentloaded');
-    const execLink = page.locator('.algo-nav-btn', { hasText: /^Lab$/ }).first();
+    // Nav label renamed Lab -> Sandbox (URL kept at /admin/execution for
+    // backward-compat) — see (algo)/+layout.svelte _algoLinksAll comment.
+    const execLink = page.locator('.algo-nav-btn', { hasText: /^Sandbox$/ }).first();
     await expect(execLink).toBeVisible({ timeout: 8000 });
     await execLink.click();
     await expect(page).toHaveURL(/\/admin\/execution/, { timeout: 8000 });
