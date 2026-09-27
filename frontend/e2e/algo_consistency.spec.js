@@ -1132,3 +1132,146 @@ test.describe.serial('algo consistency — PerformancePage account decoration (l
     expect(Number.parseFloat(style.borderLeftWidth), `border-left: ${style.borderLeftWidth}`).toBeGreaterThanOrEqual(3);
   });
 });
+
+/* ── Whisper vertical cell hairline (2026-09 UI polish) ───────────────
+ * Dense ₹/P&L numeric grids had no vertical separation between adjacent
+ * cell values on `.ag-theme-algo` — app.css's own `.ag-theme-algo
+ * .ag-cell` border-right (`rgba(126,151,184,0.10)`, SSOT, same hue/
+ * family already used for `.ag-row` border-bottom + `.ag-header-cell`
+ * border-right) was being unconditionally zeroed by MarketPulse's
+ * `.mp-bucket-wrap` scoped override, which is the grid the operator
+ * actually looks at day-to-day. Fix restores the fall-through instead
+ * of duplicating the literal; keeps the pre-existing exclusions
+ * (symbol cells — own coloured direction-bar edge; last column — no
+ * trailing edge against the grid's outer border, keyed off ag-Grid's
+ * own `ag-column-last` marker so it's virtualisation/pinning-safe).
+ * `.ag-theme-ramboq` (PerformancePage, public/cream theme) is a
+ * deliberately isolated namespace — untouched by this commit. ───────── */
+
+/** Parse a computed border-right-color string into an alpha in [0,1].
+ *  Chromium may report a plain literal as `rgba(r,g,b,a)` or, for a
+ *  `color-mix()`-derived value, as `color(srgb r g b / a)` — handle
+ *  both so this guard survives a future token refactor. */
+function _parseAlpha(colorStr) {
+  if (!colorStr) return null;
+  let m = colorStr.match(/rgba?\(\s*[\d.]+\s*,\s*[\d.]+\s*,\s*[\d.]+\s*(?:,\s*([\d.]+)\s*)?\)/);
+  if (m) return m[1] === undefined ? 1 : Number.parseFloat(m[1]);
+  m = colorStr.match(/color\([^)]*\/\s*([\d.]+)\s*\)/);
+  if (m) return Number.parseFloat(m[1]);
+  return null;
+}
+
+test.describe('algo consistency — whisper cell hairline (source)', () => {
+  test('app.css: whisper hairline SSOT + last-column exclusion are declared', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    expect(src, 'base .ag-cell border-right whisper token').toContain('border-right: 1px solid rgba(126,151,184,0.10) !important;');
+    expect(src, 'ag-column-last exclusion (virtualisation/pinning-safe, not :last-child)')
+      .toMatch(/\.ag-theme-algo \.ag-cell\.ag-column-last,\s*\n\s*\.ag-theme-algo \.ag-header-cell\.ag-column-last \{\s*\n\s*border-right:\s*0\s*!important;/);
+  });
+
+  test('MarketPulse.svelte: mp-bucket-wrap no longer blanket-zeroes the hairline on every cell', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/lib/MarketPulse.svelte'), 'utf-8');
+    // Regression fence for the OLD rule this commit reverses.
+    expect(src, 'must not blanket-zero border-right on every mp-bucket-wrap cell')
+      .not.toMatch(/:global\(\.mp-bucket-wrap \.ag-theme-algo \.ag-cell\),\s*\n\s*:global\(\.mp-bucket-wrap \.ag-theme-algo \.ag-header-cell\) \{\s*\n\s*border-right:\s*0/);
+    // The symbol-cell exclusion must still be explicit (own colour edge).
+    expect(src).toMatch(/:global\(\.mp-bucket-wrap \.ag-theme-algo \.ag-cell\.ag-col-sym\)/);
+  });
+});
+
+test.describe.serial('algo consistency — whisper cell hairline (live)', () => {
+  test.setTimeout(120_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  test('MarketPulse Positions grid: non-last numeric cell shows a low-opacity vertical border', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.mp-bucket-positions .bucket-grid .ag-row', { timeout: 20_000 }).catch(() => {});
+
+    // A middle numeric column (LTP) — not the pinned symbol cell, not the
+    // trailing last column.
+    const cell = p.locator('.mp-bucket-positions .bucket-grid .ag-row .ag-cell[col-id="ltp"]').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no LTP cells rendered in Positions grid');
+
+    const style = await cell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderRightWidth, color: cs.borderRightColor, style: cs.borderRightStyle };
+    });
+
+    // (a) visible-but-low-opacity vertical border present.
+    expect(style.style, `border-right-style: ${style.style}`).toBe('solid');
+    expect(Number.parseFloat(style.width), `border-right-width: ${style.width}`).toBeGreaterThan(0);
+
+    // (b) opacity ceiling — must read as a "whisper", not a hard grid line.
+    const alpha = _parseAlpha(style.color);
+    expect(alpha, `could not parse alpha from ${style.color}`).not.toBeNull();
+    expect(alpha, `border-right-color: ${style.color} (alpha ${alpha})`).toBeGreaterThan(0);
+    expect(alpha, `border-right-color: ${style.color} (alpha ${alpha}) exceeds whisper ceiling`).toBeLessThanOrEqual(0.25);
+  });
+
+  test('MarketPulse Positions grid: pinned symbol cell keeps its own colour edge, not the plain hairline', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.mp-bucket-positions .bucket-grid .ag-row', { timeout: 20_000 }).catch(() => {});
+
+    const symCell = p.locator('.mp-bucket-positions .bucket-grid .ag-row .ag-cell.ag-col-sym').first();
+    const count = await symCell.count();
+    test.skip(count === 0, 'no symbol cells rendered in Positions grid');
+
+    const width = await symCell.evaluate((el) => getComputedStyle(el).borderRightWidth);
+    expect(Number.parseFloat(width), `symbol cell border-right: ${width} — must stay 0 to avoid doubling with its direction-bar edge`).toBe(0);
+  });
+
+  test('MarketPulse TOTAL row: cells stay divider-free (restoring the whisper hairline must not regress the earlier TOTAL-row-no-border decision)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/pulse', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.mp-bucket-positions .bucket-grid .ag-row', { timeout: 20_000 }).catch(() => {});
+
+    const totalCell = p.locator('.ag-theme-algo .mp-total-row .ag-cell').first();
+    const count = await totalCell.count();
+    test.skip(count === 0, 'no TOTAL row rendered (no positions/holdings in this session)');
+
+    const width = await totalCell.evaluate((el) => getComputedStyle(el).borderRightWidth);
+    expect(Number.parseFloat(width), `mp-total-row cell border-right: ${width} — TOTAL stratum must stay divider-free (total_row_muted_colors_no_border.spec.js contract)`).toBe(0);
+  });
+
+  test('PerformancePage (public, ag-theme-ramboq): cell border is unaffected by the algo whisper hairline', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/performance', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.ag-theme-ramboq .ag-row', { timeout: 20_000 }).catch(() => {});
+
+    const cell = p.locator('.ag-theme-ramboq .ag-cell').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no live cells rendered on /performance');
+
+    const color = await cell.evaluate((el) => getComputedStyle(el).borderRightColor);
+    // Cream-theme literal (rgb(209,213,219)) — must NOT have picked up
+    // the algo dark-theme's rgba(126,151,184,...) hairline colour.
+    expect(color, `.ag-theme-ramboq cell border-right-color: ${color}`).toBe('rgb(209, 213, 219)');
+  });
+});

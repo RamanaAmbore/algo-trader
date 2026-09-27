@@ -683,10 +683,16 @@
 
 /* TOTAL row — clear both axes so the amber stratum reads uniformly.
    Audit defect: the box-shadow stripe was leaking onto TOTAL cells
-   that carried any `.ltp-vs-prev-*` class. */
+   that carried any `.ltp-vs-prev-*` class. border-right: 0 keeps the
+   2026-09 whisper cell-divider (`.ag-theme-algo .ag-cell`, above) off
+   the TOTAL stratum — that row already reads as visually distinct via
+   its own amber background/border-top/-bottom; a vertical hairline on
+   top of that would compete rather than recede. Verified by
+   total_row_muted_colors_no_border.spec.js. */
 .ag-theme-algo .ag-row.totals-row .ag-cell,
 .ag-theme-ramboq .ag-row.totals-row .ag-cell {
   box-shadow: none !important;
+  border-right: 0 !important;
 }
 
 /* Winners / Losers buckets — revert LTP heat entirely. These are
@@ -1241,12 +1247,32 @@
   padding-left: 4px !important;
   padding-right: 4px !important;
   color: var(--algo-slate) !important;
+  /* Whisper vertical hairline — SSOT divider between adjacent cell
+     values (2026-09 UI polish). Same hue/alpha family already used for
+     `.ag-row` border-bottom (10%, below) and `.ag-header-cell`
+     border-right (18%, above) so the vertical + horizontal dividers
+     read as one consistent "whisper grid" rather than a new literal.
+     Exclusions (both by higher-specificity selector, not source order —
+     see `.ag-col-sym`/`.ag-col-sym-left` below and `.ag-column-last`
+     further down): symbol cells carry their own coloured direction-bar
+     edge instead, and the true last column (ag-Grid's own
+     `ag-column-last` marker, safe under virtualization/pinning) would
+     otherwise butt a redundant line against the grid's outer border.
+     MarketPulse's `.mp-bucket-wrap` previously zeroed this to 0 for
+     every cell — restored (MarketPulse.svelte) to fall through to this
+     same rule instead of duplicating the literal. */
   border-right: 1px solid rgba(126,151,184,0.10) !important;
   /* Tabular figures so digit widths don't jitter as values update —
      applied at the cell level so every numeric column on every algo
      grid (PerformancePage + watchlist) inherits it without per-column
      style. */
   font-variant-numeric: tabular-nums;
+}
+/* True last column only (post-virtualization/pinning-safe marker) —
+   no trailing hairline against the grid's own outer border. */
+.ag-theme-algo .ag-cell.ag-column-last,
+.ag-theme-algo .ag-header-cell.ag-column-last {
+  border-right: 0 !important;
 }
 .ag-theme-algo .ag-col-sym {
   display: flex !important;

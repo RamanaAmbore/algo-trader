@@ -5090,21 +5090,31 @@
      the opposite edge. Same inset-box-shadow idiom as `.mp-sym-acct`
      so the line lands at the exact same pixel position regardless
      of which grid the cell is in. */
-  /* Global divider-strip on every Pulse bucket grid. Per operator
-     feedback the five grids (Pinned/Watchlist, Winners, Losers,
-     Positions, Holdings) need to look IDENTICAL except for the
-     symbol-cell tint (encoding direction / account) and the row
-     background tint. ag-Grid's 1 px gray cell-divider would otherwise
-     show on some grids and not others (Winners/Losers had them
-     stripped earlier so the green/red tint border read clean, the
-     others kept them — visually inconsistent). Strip both border-
-     right + border-left on every cell so the gray hairlines never
-     show; the meaningful colored inset borders on symbol cells stay
-     because they're painted via box-shadow, not border. */
-  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell),
-  :global(.mp-bucket-wrap .ag-theme-algo .ag-header-cell) {
-    border-right: 0 !important;
+  /* Divider-strip on every Pulse bucket grid. Per operator feedback the
+     five grids (Pinned/Watchlist, Winners, Losers, Positions, Holdings)
+     need to look IDENTICAL except for the symbol-cell tint (encoding
+     direction / account) and the row background tint — so every cell
+     here still shares one rule, none singled out.
+     2026-09 UI polish reversed the EARLIER version of this rule (which
+     zeroed border-right/-left to 0 on every cell): dense ₹/P&L columns
+     read as one continuous field with no divider at all. Left edge
+     stays 0 (avoids a doubled line at each cell boundary — only the
+     right edge carries a divider, same convention as the rest of the
+     app). Right edge now falls through to app.css's own
+     `.ag-theme-algo .ag-cell` whisper-hairline rule instead of
+     duplicating its literal here — single SSOT. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell) {
     border-left: 0 !important;
+  }
+  /* Symbol cell keeps its own coloured direction-bar/tint edge (painted
+     via ::after / box-shadow, not border) instead of the plain
+     whisper hairline — the two would otherwise visually compound into
+     a doubled/thicker-looking edge on the one cell that already has a
+     colour identity signal. Set with explicit specificity (not source
+     order) so it holds regardless of app.css's own ag-col-sym rule. */
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell.ag-col-sym),
+  :global(.mp-bucket-wrap .ag-theme-algo .ag-cell.ag-col-sym-left) {
+    border-right: 0 !important;
   }
   /* Sparkline cell exception — restore left+right borders as symmetric
      visual separators between sym→sparkline and sparkline→LTP. */
@@ -5185,6 +5195,18 @@
       #1d2a44 !important;
     border-top: 2px solid rgba(251, 191, 36, 0.70) !important;
     border-bottom: 1px solid rgba(251, 191, 36, 0.55) !important;
+  }
+  /* Keep the 2026-09 whisper cell-divider off the TOTAL stratum — same
+     rule as app.css's `.ag-row.totals-row .ag-cell` (derivatives/
+     PerformancePage totals). The amber background + top/bottom border
+     already mark this row as a distinct aggregate stratum; a vertical
+     hairline on top would compete rather than recede. Verified by
+     total_row_muted_colors_no_border.spec.js. Higher specificity than
+     the general `.mp-bucket-wrap .ag-theme-algo .ag-cell` rule above
+     (which only zeroes border-left), so this wins regardless of
+     source order. */
+  :global(.mp-bucket-wrap .ag-theme-algo .mp-total-row .ag-cell) {
+    border-right: 0 !important;
   }
   /* TOTAL row symbol cell — amber tint instead of the per-row
      direction tint so the row reads as an aggregate, not as a
