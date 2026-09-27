@@ -591,7 +591,7 @@ export function mkRightColDefs({
       headerTooltip: `Day P&L as % of yesterday's market value (close × qty).` },
     { field: 'lots', headerName: 'Lots', width: 52, colId: 'lots',
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
+      cellClass: `${RA} cell-muted`,
       valueGetter: (p) => lotsForRow(p.data),
       valueFormatter: ({ value }) => fmtLots(value),
       headerTooltip: 'Qty in F&O lot units. Holdings on F&O underlyings use the underlying lot; option / futures positions use the contract lot. Cash equity + non-F&O rows read 0.' },
@@ -790,7 +790,7 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
       return positionsDerivedStore.get(sym).extrinsic;
     },
-    cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
+    cellClass: `${raStr} cell-muted`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
     headerTooltip: 'Extrinsic value in P&L terms — Exp P&L minus mark-to-market P&L (ltp−avg)×qty. Positive when time value remains in the premium.',
   };
