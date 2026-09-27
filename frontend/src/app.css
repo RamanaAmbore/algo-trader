@@ -603,7 +603,14 @@
 .ag-theme-ramboq .ag-cell {
   padding-left: 3px !important;
   padding-right: 3px !important;
-  border-right: 1px solid #d1d5db !important;
+  /* Whisper hairline (2026-09) — was an opaque #d1d5db (cool grey,
+     unrelated to the cream/champagne palette), which read as a hard,
+     dominant vertical rule against the warm #faf8f4/#f5f2eb row
+     backgrounds. Mirrors the algo-theme's own low-alpha divider
+     convention (.ag-theme-algo .ag-cell below) but tinted to this
+     theme's navy ink (#1a1e35) instead of algo's blue-grey, and at a
+     touch higher alpha since it sits on a lighter background. */
+  border-right: 1px solid rgba(29,41,57,0.12) !important;
   /* Tabular figures so digit widths don't jitter as values update.
      Same rule on ag-theme-algo below — public + algo grids share this
      idiom. */
