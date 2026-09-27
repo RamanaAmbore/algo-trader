@@ -643,12 +643,12 @@ export function mkRightColDefs({
       headerTooltip: 'P&L per share — live LTP minus average cost (holdings only).' },
     { field: 'inv_val', headerName: 'Invested', colId: 'inv_val',
       width: 78, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
+      cellClass: `${RA} cell-muted`,
       valueFormatter: aggFmtGrid,
       headerTooltip: 'Avg cost × held qty — your invested rupees on this holding.' },
     { field: 'cur_val', headerName: 'Value', colId: 'cur_val',
       width: 78, type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA,
+      cellClass: `${RA} cell-muted`,
       valueFormatter: aggFmtGrid,
       valueGetter: (p) => {
         if (!p.data || p.data._isTotal) return p.data?.cur_val ?? null;
@@ -732,10 +732,10 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, 
       cellClass: dirCellClass, valueFormatter: pctFmtGrid },
     { field: 'cur_val',               headerName: 'Value', width: 78,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA, valueFormatter: aggFmtGrid },
+      cellClass: `${RA} cell-muted`, valueFormatter: aggFmtGrid },
     { field: 'inv_val',               headerName: 'Invested', width: 78,
       type: 'numericColumn', headerClass: numericHdr,
-      cellClass: RA, valueFormatter: aggFmtGrid },
+      cellClass: `${RA} cell-muted`, valueFormatter: aggFmtGrid },
   ];
 }
 
