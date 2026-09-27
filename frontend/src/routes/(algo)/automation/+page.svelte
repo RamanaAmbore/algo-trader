@@ -587,7 +587,7 @@
     <h1 class="page-title-chip">
       Automation
       {#if simActive}
-        <span class="ml-2 align-middle text-[0.6rem] px-1.5 py-0.5 rounded bg-[var(--c-long)]/20 text-[var(--c-long)] border border-[var(--c-long)]/40 font-mono">
+        <span class="ml-2 align-middle text-[length:var(--fs-sm)] px-1.5 py-0.5 rounded bg-[var(--c-long)]/20 text-[var(--c-long)] border border-[var(--c-long)]/40 font-mono">
           SIMULATOR EVENTS
         </span>
       {/if}
@@ -722,9 +722,9 @@
                operator can scan "what does this agent do" without
                expanding the row. -->
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
-            <span class="text-xs text-[var(--c-action)] truncate">{agent.name}</span>
+            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{agent.name}</span>
             {#if agent.long_name}
-              <span class="text-xs font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
+              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
             {/if}
           </span>
           <!-- Notify-channel icon strip — one tiny emoji per enabled
@@ -741,7 +741,7 @@
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
             title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
-            class="text-[0.55rem] px-1.5 py-0 rounded font-bold border flex-shrink-0
+            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
               {(agent.trade_mode || 'paper') === 'live'
                 ? 'bg-red-500/15 text-red-400 border-red-500/40'
                 : 'bg-sky-500/15 text-sky-400 border-sky-500/40'}">
@@ -749,7 +749,7 @@
           </button>
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggle(agent); }}
-            class="text-[0.55rem] px-1.5 py-0 rounded font-medium border flex-shrink-0
+            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
               {agent.status !== 'inactive'
                 ? 'bg-green-500/15 text-green-400 border-green-500/40'
                 : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
@@ -775,7 +775,7 @@
                   </span>
                   <input bind:value={editForm.long_name}
                          placeholder="when:positions.total.pnl<=-50k   alert:critical/tg+email   do:notify-only"
-                         class="field-input font-mono text-[0.6rem]" />
+                         class="field-input font-mono text-[length:var(--fs-sm)]" />
                 </div>
                 <div class="md:col-span-2">
                   <span class="field-label">Description</span>
@@ -848,11 +848,11 @@
                     ]} />
                   {#if lifespanChip(agent)}
                     {@const _ls = lifespanChip(agent)}
-                    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1" title={_ls.tooltip}>
+                    <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1" title={_ls.tooltip}>
                       Current: <span class={'lifespan-chip lifespan-chip-' + _ls.color}>{_ls.label}</span>
                     </div>
                   {:else if agent.lifespan_type === 'persistent'}
-                    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1 italic">
+                    <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1 italic">
                       Persistent — fires until manually deactivated.
                     </div>
                   {/if}
@@ -948,7 +948,7 @@
                     <InfoHint popup text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
                   </span>
                   <textarea bind:value={editForm.blackout_windows}
-                            class="field-input font-mono text-[0.6rem]" rows="3"
+                            class="field-input font-mono text-[length:var(--fs-sm)]" rows="3"
                             placeholder={'[{"start":"12:00","end":"13:00"}]'}></textarea>
                 </div>
               </div>
@@ -956,7 +956,7 @@
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
                   <span class="field-label">Conditions (JSON)</span>
-                  <textarea bind:value={editForm.conditions} class="field-input font-mono text-[0.6rem]" rows="5"></textarea>
+                  <textarea bind:value={editForm.conditions} class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
                 </div>
                 <div>
                   <span class="field-label">Alert channels</span>
@@ -1002,29 +1002,29 @@
                         class="action-add-pill action-add-log">+ log</button>
                     </div>
                   </div>
-                  <textarea bind:value={editForm.actions} class="field-input font-mono text-[0.6rem]" rows="5"></textarea>
+                  <textarea bind:value={editForm.actions} class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
                 </div>
               </div>
 
               {#if validationErrors.length}
-                <div class="mt-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.6rem] border border-red-500/40">
+                <div class="mt-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
                   <div class="font-semibold mb-1">Condition validation failed:</div>
                   <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
                 </div>
               {:else if validationGrammar}
-                <div class="mt-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.6rem] border border-emerald-500/30">
+                <div class="mt-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[length:var(--fs-sm)] border border-emerald-500/30">
                   Validated — ready to save.
                 </div>
               {/if}
 
               <div class="flex gap-2 mt-3">
                 <button type="button" onclick={async () => { await runValidation(); }}
-                  class="text-[0.65rem] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold">
+                  class="text-[length:var(--fs-md)] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold">
                   Validate
                 </button>
-                <button type="button" onclick={saveEdit} class="btn-primary text-[0.65rem] py-1 px-4">Save</button>
+                <button type="button" onclick={saveEdit} class="btn-primary text-[length:var(--fs-md)] py-1 px-4">Save</button>
                 <button type="button" onclick={() => { editing = null; validationErrors = []; validationGrammar = ''; }}
-                  class="btn-secondary text-[0.65rem] py-1 px-4">Cancel</button>
+                  class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
               </div>
 
               <!-- ── LIVE TREE PREVIEW (below the form) ── -->
@@ -1117,7 +1117,7 @@
                   {/if}
                 </div>
               {:else if agent.description}
-                <div class="text-[0.6rem] text-white/60 italic mt-1.5 mb-1">{agent.description}</div>
+                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-1.5 mb-1">{agent.description}</div>
               {/if}
 
               <!-- Condition tree (always shown; falls back to text summary when parse fails) -->
@@ -1125,10 +1125,10 @@
               {#if agent.conditions && Object.keys(agent.conditions).length}
                 <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
               {:else}
-                <div class="text-[0.6rem] text-white/60 italic">no conditions</div>
+                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">no conditions</div>
               {/if}
 
-              <div class="text-[0.6rem] text-white/75 mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
+              <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-2 mb-1 flex items-center flex-wrap gap-x-2 gap-y-0.5">
                 <span class="text-[var(--c-muted)]">Alert via:</span> <span>{channelSummary(agent.events)}</span>
                 {#if agent.tier && agent.tier !== 'medium'}
                   <span class={'tier-badge tier-badge-' + agent.tier}
@@ -1162,9 +1162,9 @@
                   {/each}
                 </div>
               {:else}
-                <div class="text-[0.6rem] text-white/60 italic">alert-only (no actions)</div>
+                <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">alert-only (no actions)</div>
               {/if}
-              <div class="flex items-center justify-between text-[0.55rem] text-[var(--c-muted)] mt-2">
+              <div class="flex items-center justify-between text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-2">
                 <span>
                   Last fire: {agent.last_triggered_at ? logTime(new Date(agent.last_triggered_at)) : '—'}
                   <span class="mx-1">|</span>

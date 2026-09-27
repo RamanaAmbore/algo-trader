@@ -417,11 +417,16 @@
   .bt-field { min-width: 0; display: flex; flex-direction: column; gap: 0.2rem; }
   .bt-field-wide { grid-column: span 2; }
   .bt-field .field-label {
+    /* font-weight 700 + no explicit color: inherits the canonical
+       .field-label color (#5a7090, app.css) so Backtest's field labels
+       match Scenario's (SimulatorPanel never overrides color, only
+       size) instead of the previous local #94a3b8 override, which
+       rendered visibly lighter than every other field label on the
+       Sandbox page. */
     font-size: var(--fs-xs);
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #94a3b8;
   }
   .bt-field .field-input {
     background: rgba(13, 21, 38, 0.6);
@@ -488,7 +493,11 @@
     .bt-field-wide { grid-column: span 1; }
   }
 
-  .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: var(--fs-lg); margin-bottom: 0.75rem; }
+  /* var(--fs-md) matches the inline warning/error notices on the
+     Scenario tab (SimulatorPanel's armed-agent / sim-disabled / seed
+     notices) — was var(--fs-lg), rendering this tab's banner visibly
+     larger than the equivalent-role notice one tab over. */
+  .sim-banner        { padding: 0.5rem 0.75rem; border-radius: 0.375rem; font-size: var(--fs-md); margin-bottom: 0.75rem; }
   .sim-banner-warn   { background: rgba(251,191,36,0.10); color: var(--c-action); border: 1px solid rgba(251,191,36,0.20); }
   .sim-banner-error  { background: var(--c-short-10); color: var(--c-short); border: 1px solid rgba(248,113,113,0.20); }
 
@@ -498,12 +507,12 @@
   .sim-btn-start     { background: rgba(74,222,128,0.15); color: var(--c-long); border-color: rgba(74,222,128,0.3); }
   .sim-btn-start:hover:not(:disabled) { background: rgba(74,222,128,0.25); }
   .sim-btn-stop      { background: rgba(248,113,113,0.15); color: var(--c-short); border-color: rgba(248,113,113,0.3); }
-  .sim-btn-clear     { background: rgba(148,163,184,0.10); color: #94a3b8; border-color: rgba(148,163,184,0.2); }
+  .sim-btn-clear     { background: rgba(148,163,184,0.10); color: var(--algo-dim); border-color: rgba(148,163,184,0.2); }
 
   .sim-progress      { margin-bottom: 0; }
   .sim-progress-bar  { height: 6px; background: rgba(148,163,184,0.15); border-radius: 3px; overflow: hidden; }
   .sim-progress-fill { height: 100%; background: var(--c-long); border-radius: 3px; transition: width 0.3s; }
-  .sim-progress-label { font-size: var(--fs-md); color: #94a3b8; margin-top: 0.25rem; display: block; }
+  .sim-progress-label { font-size: var(--fs-md); color: var(--algo-dim); margin-top: 0.25rem; display: block; }
 
   .replay-charts {
     display: grid;
@@ -524,7 +533,7 @@
   .sim-section h3    { font-size: var(--fs-xl); font-weight: 600; color: var(--algo-slate); margin-bottom: 0.5rem; }
   .sim-table-wrap    { overflow-x: auto; }
   .sim-table         { width: 100%; border-collapse: collapse; font-size: var(--fs-lg); }
-  .sim-table th      { text-align: left; padding: 0.35rem 0.5rem; color: #94a3b8; border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: var(--fs-sm); }
+  .sim-table th      { text-align: left; padding: 0.35rem 0.5rem; color: var(--algo-muted); border-bottom: 1px solid rgba(148,163,184,0.15); font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; font-size: var(--fs-sm); }
   .sim-table td      { padding: 0.3rem 0.5rem; color: var(--algo-slate); border-bottom: 1px solid rgba(148,163,184,0.06); }
   .sim-td-mono       { font-family: 'JetBrains Mono', monospace; font-size: var(--fs-md); }
   .sim-td-detail     { max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -532,6 +541,10 @@
   .sim-sell          { color: #fb923c; }
   .sim-pill          { font-size: var(--fs-sm); font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
   .sim-pill-replay   { color: var(--c-long); background: rgba(74,222,128,0.12); }
+  /* #64748b is deliberately darker than --algo-dim (#94a3b8) — an
+     "even more muted" placeholder tier for the empty-charts caption,
+     one-off in this file. No existing token matches; left as a
+     literal rather than mis-mapped to --algo-dim (visibly lighter). */
   .sim-empty-charts  { font-size: var(--fs-md); color: #64748b; font-style: italic; margin-bottom: 0.75rem; }
 
   @media (max-width: 768px) {

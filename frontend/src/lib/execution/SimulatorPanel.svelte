@@ -679,17 +679,17 @@
 
 <StaleBanner {error} hasData={scenarios.length > 0} label="Simulator" />
 {#if note}
-  <div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[0.65rem] border border-emerald-500/30">
+  <div class="mb-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[length:var(--fs-md)] border border-emerald-500/30">
     {note}
   </div>
 {/if}
 
 {#if armedAgent}
-  <div class="mb-3 p-2 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] text-[0.65rem] border border-[var(--c-action)]/50">
+  <div class="mb-3 p-2 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] text-[length:var(--fs-md)] border border-[var(--c-action)]/50">
     Isolated run armed — will dry-fire <b>#{armedAgent?.id} {armedAgent?.name}</b>
     (bypasses schedule / cooldown / baseline gates).
     <button type="button" onclick={() => { agentId = ''; }}
-      class="ml-2 text-[0.6rem] underline">Clear</button>
+      class="ml-2 text-[length:var(--fs-sm)] underline">Clear</button>
   </div>
 {/if}
 
@@ -700,7 +700,7 @@
      directly under the page chrome on prod and dev alike. -->
 <div class="algo-status-card sim-status-sticky p-3 mb-3"
      data-status={status.active ? 'triggered' : 'inactive'}>
-  <div class="flex items-center flex-wrap gap-2 text-[0.7rem]">
+  <div class="flex items-center flex-wrap gap-2 text-[length:var(--fs-lg)]">
     <span class="w-2 h-2 rounded-full {status.active ? 'bg-red-500 animate-pulse' : 'bg-slate-500'}"></span>
     <span class="text-[var(--c-action)] font-semibold">{status.active ? 'RUNNING' : 'idle'}</span>
     {#if status.scenario}
@@ -731,7 +731,7 @@
     {/if}
   </div>
   {#if liveSnap}
-    <div class="text-[0.6rem] text-white/70 mt-1">
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-1">
       Live snapshot: {liveSnap?.snapshot_at?.slice(11, 19)} ·
       {liveSnap?.positions_count}P / {liveSnap?.margins_count}M
       · accounts=[{(liveSnap?.accounts ?? []).join(', ')}]
@@ -1382,8 +1382,8 @@
       class="sim-btn sim-btn-danger disabled:opacity-40">Clear sim</button>
   </div>
   {#if simOff}
-    <div class="mt-2 p-2 rounded text-[0.65rem] text-amber-200
-                bg-amber-500/10 border border-amber-500/40">
+    <div class="mt-2 p-2 rounded text-[length:var(--fs-md)] text-[var(--c-action)]
+                bg-[var(--c-action)]/10 border border-[var(--c-action)]/40">
       Simulator is disabled on the <b>{branchLabel(status?.branch ?? 'current')}</b>
       branch (cap_in_<b>{branchLabel(status?.branch ?? 'branch')}</b>.simulator is
       off). Toggle it in <code>backend_config.yaml</code> or from the
@@ -1393,9 +1393,9 @@
   {#if pickedSlug}
     {@const picked = scenarios.find(s => s.slug === pickedSlug)}
     {#if picked}
-      <div class="text-[0.6rem] text-white/60 italic mt-2">{picked.description}</div>
+      <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic mt-2">{picked.description}</div>
       {#if seedMode === 'scripted' && picked.has_initial === false}
-        <div class="text-[0.6rem] text-amber-400 mt-2">
+        <div class="text-[length:var(--fs-sm)] text-[var(--c-action)] mt-2">
           Scenario <b>{picked.slug}</b> has no scripted initial state — price
           moves would have nothing to apply to. Press <b>Load live book</b>
           and switch Seed to <b>Live</b> (or <b>Live + scenario</b>), or pick
@@ -1405,7 +1405,7 @@
     {/if}
   {/if}
   {#if seedMode !== 'scripted' && !liveSnap}
-    <div class="text-[0.6rem] text-amber-400 mt-2">
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-action)] mt-2">
       Seed mode <b>{seedMode}</b> requires a live-book snapshot — press
       <b>Load live book</b> before Start.
     </div>
@@ -1433,7 +1433,7 @@
             onclick={addCustomRow}>+ Add row</button>
   </div>
   {#if !customRows.length}
-    <div class="text-[0.6rem] text-[var(--c-muted)] mt-1">
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] mt-1">
       No custom positions. Click <b>+ Add row</b> to layer synthetic
       positions on top of the seeded book.
     </div>
@@ -1468,7 +1468,7 @@
         </div>
       {/each}
     </div>
-    <div class="text-[0.55rem] text-[var(--c-muted)] mt-1">
+    <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1">
       Negative qty = short. F&O symbols re-price coherently when an
       <span class="font-mono">underlying_*</span> move fires.
     </div>

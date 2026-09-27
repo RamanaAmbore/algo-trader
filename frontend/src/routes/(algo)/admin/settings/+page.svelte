@@ -394,10 +394,10 @@
 {:else}
 
 {#if _canView}
-{#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{error}</div>{/if}
+{#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-md)] border border-red-500/40">{error}</div>{/if}
 
 {#if execRows.length}
-  <div class="mb-3 p-2 rounded text-[0.65rem] border
+  <div class="mb-3 p-2 rounded text-[length:var(--fs-md)] border
               {liveCount === 0
                 ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/40'
                 : 'bg-red-500/15 text-red-300 border-red-500/50'}">
@@ -420,7 +420,7 @@
   <LoadingSkeleton variant="card" rows={3} />
   <LoadingSkeleton variant="card" rows={5} />
 {:else if !settings.length}
-  <div class="text-[0.65rem] text-white/60">No settings seeded yet.</div>
+  <div class="text-[length:var(--fs-md)] text-[var(--c-muted)]">No settings seeded yet.</div>
 {:else}
   <div class="mb-3 flex items-center gap-2 content-fade-in">
     <input type="text"
@@ -429,12 +429,12 @@
            bind:value={filter} />
     {#if filter}
       <button type="button"
-              class="btn-secondary text-[0.6rem] py-1 px-3"
+              class="btn-secondary text-[length:var(--fs-sm)] py-1 px-3"
               onclick={() => filter = ''}>Clear</button>
     {/if}
   </div>
   {#if !grouped.length}
-    <div class="text-[0.65rem] text-white/60">No settings match the filter.</div>
+    <div class="text-[length:var(--fs-md)] text-[var(--c-muted)]">No settings match the filter.</div>
   {/if}
   {#each grouped as [category, rows]}
     <section class="algo-card mb-2" data-status="inactive">
@@ -444,10 +444,10 @@
       <div>
         {#each rows as s}
           <div class="settings-row">
-            <div class="grid grid-cols-[auto_minmax(0,1fr)_110px_auto_auto] gap-2 items-center text-[0.65rem] py-1">
+            <div class="grid grid-cols-[auto_minmax(0,1fr)_110px_auto_auto] gap-2 items-center text-[length:var(--fs-md)] py-1">
               <InfoHint text={[
                 s.description,
-                `<span class="font-mono text-white/80 text-[0.55rem]">default: ${s.default_value}</span>`,
+                `<span class="font-mono text-[length:var(--fs-xs)]" style="color: var(--algo-muted)">default: ${s.default_value}</span>`,
                 s.schema?.min !== undefined || s.schema?.max !== undefined ? `range: ${s.schema.min ?? '−∞'} … ${s.schema.max ?? '+∞'}` : '',
                 s.schema?.enum ? `choices: ${s.schema.enum.join(' / ')}` : '',
                 s.units ? `units: <span class="font-mono">${s.units}</span>` : '',
@@ -456,7 +456,7 @@
               <div class="flex items-baseline gap-2 flex-wrap">
                 <span class="font-mono text-[#7dd3fc] break-all">{s.key}</span>
                 {#if isModified(s)}
-                  <span class="px-1 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] border border-[var(--c-action)]/30 text-[0.55rem] shrink-0">mod</span>
+                  <span class="px-1 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] border border-[var(--c-action)]/30 text-[length:var(--fs-xs)] shrink-0">mod</span>
                 {/if}
               </div>
 
@@ -504,18 +504,18 @@
                          value={currentValue(s)}
                          oninput={(e) => onEdit(s, e.currentTarget.value)} />
                 {/if}
-                {#if s.units}<span class="text-[0.55rem] text-[var(--c-muted)] whitespace-nowrap">{s.units}</span>{/if}
+                {#if s.units}<span class="text-[length:var(--fs-xs)] text-[var(--c-muted)] whitespace-nowrap">{s.units}</span>{/if}
               </div>
 
               <button type="button"
                 onclick={() => save(s)}
                 disabled={!isDirty(s)}
-                class="btn-primary text-[0.6rem] py-0.5 px-2 disabled:opacity-30 whitespace-nowrap">Save</button>
+                class="btn-primary text-[length:var(--fs-sm)] py-0.5 px-2 disabled:opacity-30 whitespace-nowrap">Save</button>
 
               <button type="button"
                 onclick={() => reset(s)}
                 disabled={!isModified(s)}
-                class="btn-secondary text-[0.6rem] py-0.5 px-2 disabled:opacity-30 whitespace-nowrap">Reset</button>
+                class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2 disabled:opacity-30 whitespace-nowrap">Reset</button>
             </div>
 
           </div>
@@ -533,8 +533,8 @@
 
 {#snippet proxyCrud()}
   <div class="mt-2 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
-    <h3 class="text-[0.65rem] font-bold mb-1 opacity-90">Pair table</h3>
-    <p class="text-[0.55rem] opacity-70 mb-1">
+    <h3 class="text-[length:var(--fs-md)] font-bold mb-1 opacity-90">Pair table</h3>
+    <p class="text-[length:var(--fs-xs)] opacity-70 mb-1">
       Pair-only cross-reference between a held instrument and the
       option underlying it can hedge. The derivatives page computes
       effective qty as <code>β × market_value ÷ target_spot</code>
@@ -560,7 +560,7 @@
       hedge fit: high R² + low σ = tight hedge; low R² = noisy.
     </p>
     {#if proxiesErr}
-      <div class="text-[0.65rem] text-red-300 mb-1">{proxiesErr}</div>
+      <div class="text-[length:var(--fs-md)] text-red-300 mb-1">{proxiesErr}</div>
     {/if}
     {#if proxies.length}
       <div class="overflow-x-auto mb-2">
@@ -593,13 +593,13 @@
                 </td>
                 <td class="p-1"><input type="checkbox" bind:checked={p.is_active} /></td>
                 <td class="p-1 flex gap-1">
-                  <button class="btn-primary text-[0.6rem] py-0.5 px-2"
+                  <button class="btn-primary text-[length:var(--fs-sm)] py-0.5 px-2"
                           disabled={!!computingProxy[p.id]}
                           onclick={() => computeProxy(p)}>
                     {computingProxy[p.id] ? '…' : 'Compute β'}
                   </button>
-                  <button class="btn-primary text-[0.6rem] py-0.5 px-2" onclick={() => saveProxy(p)}>Save</button>
-                  <button class="btn-secondary text-[0.6rem] py-0.5 px-2" onclick={() => removeProxy(p)}>×</button>
+                  <button class="btn-primary text-[length:var(--fs-sm)] py-0.5 px-2" onclick={() => saveProxy(p)}>Save</button>
+                  <button class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2" onclick={() => removeProxy(p)}>×</button>
                 </td>
               </tr>
             {/each}
@@ -607,7 +607,7 @@
         </table>
       </div>
     {/if}
-    <div class="flex flex-wrap items-center gap-1 text-[0.65rem]">
+    <div class="flex flex-wrap items-center gap-1 text-[length:var(--fs-md)]">
       <input placeholder="Proxy (e.g. GOLDBEES)" bind:value={proxyForm.proxy_symbol} class="field-input w-32" />
       <input placeholder="Target (e.g. GOLD)"    bind:value={proxyForm.target_root}  class="field-input w-28" />
       <input placeholder="note" bind:value={proxyForm.note} class="field-input flex-1 min-w-32" />
@@ -615,7 +615,7 @@
            regression endpoint overwrites it with R² on every run, so
            an operator-set value was silently destroyed. The DB default
            (1.0) is the right pre-regression baseline. -->
-      <button class="btn-primary text-[0.65rem] py-0.5 px-2" onclick={addProxy}>+ Add</button>
+      <button class="btn-primary text-[length:var(--fs-md)] py-0.5 px-2" onclick={addProxy}>+ Add</button>
     </div>
   </div>
 {/snippet}
@@ -631,17 +631,17 @@
   <section class="algo-card mb-2 content-fade-in" data-status="inactive">
     <div class="flex items-center gap-2 mb-2">
       <h3 class="section-heading flex-1 mb-0 pb-0 border-0">Exchange Schedule</h3>
-      {#if scheduleLoading}<span class="text-[0.55rem] opacity-60 ml-1">loading…</span>{/if}
+      {#if scheduleLoading}<span class="text-[length:var(--fs-xs)] opacity-60 ml-1">loading…</span>{/if}
     </div>
     {#if scheduleErr}
-      <div class="mb-2 text-[0.65rem] text-red-300">{scheduleErr}</div>
+      <div class="mb-2 text-[length:var(--fs-md)] text-red-300">{scheduleErr}</div>
     {/if}
 
     <!-- Defaults table -->
     <div class="flex items-center gap-2 mb-1 mt-2">
-      <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Default Schedules</span>
+      <span class="text-[length:var(--fs-sm)] font-bold opacity-80 uppercase tracking-widest">Default Schedules</span>
       {#if hasCap('manage_exchange_schedule', _caps, _role)}
-        <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+        <button class="btn-primary text-[length:var(--fs-xs)] py-0.5 px-2 ml-auto"
                 onclick={() => openScheduleForm(null)}>+ Add Session</button>
       {/if}
     </div>
@@ -664,20 +664,20 @@
           <tbody>
             {#each scheduleDefaults as row (row.id)}
               <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
-                <td class="p-1 font-mono text-[0.65rem]">{row.gate}</td>
-                <td class="p-1 font-mono text-[0.65rem] opacity-70">{fmtWeekdays(row.weekdays)}</td>
-                <td class="p-1 text-[0.65rem]">
+                <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.gate}</td>
+                <td class="p-1 font-mono text-[length:var(--fs-md)] opacity-70">{fmtWeekdays(row.weekdays)}</td>
+                <td class="p-1 text-[length:var(--fs-md)]">
                   {row.session_name}
-                  {#if !row.is_open}<span class="ml-1 text-[0.55rem] opacity-60">(closed)</span>{/if}
+                  {#if !row.is_open}<span class="ml-1 text-[length:var(--fs-xs)] opacity-60">(closed)</span>{/if}
                 </td>
-                <td class="p-1 text-[0.55rem] opacity-70">{(row.exchanges || []).join(', ')}</td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.close_time || '—'}</td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.snapshot_time       || '—'}</td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.snapshot_reset_time || '—'}</td>
+                <td class="p-1 text-[length:var(--fs-xs)] opacity-70">{(row.exchanges || []).join(', ')}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.close_time || '—'}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.snapshot_time       || '—'}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.snapshot_reset_time || '—'}</td>
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1">
-                    <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                    <button class="btn-secondary text-[length:var(--fs-xs)] py-0.5 px-1.5"
                             class:opacity-40={!row.editable}
                             class:cursor-not-allowed={!row.editable}
                             disabled={!row.editable}
@@ -690,14 +690,14 @@
         </table>
       </div>
     {:else if !scheduleLoading}
-      <div class="text-[0.6rem] opacity-60 mb-3">No default schedules seeded yet.</div>
+      <div class="text-[length:var(--fs-sm)] opacity-60 mb-3">No default schedules seeded yet.</div>
     {/if}
 
     <!-- Overrides table -->
     <div class="flex items-center gap-2 mb-1">
-      <span class="text-[0.6rem] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
+      <span class="text-[length:var(--fs-sm)] font-bold opacity-80 uppercase tracking-widest">Date Overrides</span>
       {#if hasCap('manage_exchange_schedule', _caps, _role)}
-        <button class="btn-primary text-[0.55rem] py-0.5 px-2 ml-auto"
+        <button class="btn-primary text-[length:var(--fs-xs)] py-0.5 px-2 ml-auto"
                 onclick={() => { const f = { gate: 'NSE', exchanges: [...GATE_EXCHANGES['NSE']], date: '', weekdays: null, session_name: 'closed', is_open: false, open_time: null, close_time: null, snapshot_time: null, snapshot_reset_time: null, reason: null, editable: true, deletable: true }; scheduleForm = f; }}>+ Add Override</button>
       {/if}
     </div>
@@ -720,28 +720,28 @@
           <tbody>
             {#each scheduleOverrides as row (row.id)}
               <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
-                <td class="p-1 font-mono text-[0.65rem]">{row.gate}</td>
-                <td class="p-1 font-mono text-[0.65rem]">{row.date}</td>
-                <td class="p-1 text-[0.65rem]">{row.session_name}</td>
-                <td class="p-1 text-[0.55rem] opacity-70">{(row.exchanges || []).join(', ')}</td>
-                <td class="p-1 text-[0.65rem]"
+                <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.gate}</td>
+                <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.date}</td>
+                <td class="p-1 text-[length:var(--fs-md)]">{row.session_name}</td>
+                <td class="p-1 text-[length:var(--fs-xs)] opacity-70">{(row.exchanges || []).join(', ')}</td>
+                <td class="p-1 text-[length:var(--fs-md)]"
                     class:text-green-400={row.is_open}
                     class:text-red-400={!row.is_open}>
                   {row.is_open ? 'Open' : 'Closed'}
                 </td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.open_time  || '—'}</td>
-                <td class="p-1 text-center font-mono text-[0.65rem]">{row.close_time || '—'}</td>
-                <td class="p-1 text-[0.65rem] opacity-80">{row.reason || '—'}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.open_time  || '—'}</td>
+                <td class="p-1 text-center font-mono text-[length:var(--fs-md)]">{row.close_time || '—'}</td>
+                <td class="p-1 text-[length:var(--fs-md)] opacity-80">{row.reason || '—'}</td>
                 {#if hasCap('manage_exchange_schedule', _caps, _role)}
                   <td class="p-1">
                     <div class="flex gap-1">
-                      <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5"
+                      <button class="btn-secondary text-[length:var(--fs-xs)] py-0.5 px-1.5"
                               class:opacity-40={!row.editable}
                               class:cursor-not-allowed={!row.editable}
                               disabled={!row.editable}
                               onclick={() => openScheduleForm(row)}>✏</button>
                       {#if row.deletable}
-                        <button class="btn-secondary text-[0.55rem] py-0.5 px-1.5 text-red-400"
+                        <button class="btn-secondary text-[length:var(--fs-xs)] py-0.5 px-1.5 text-red-400"
                                 onclick={() => row.id != null && removeSchedule(row.id)}>×</button>
                       {/if}
                     </div>
@@ -753,16 +753,16 @@
         </table>
       </div>
     {:else if !scheduleLoading}
-      <div class="text-[0.6rem] opacity-60">No date overrides — all exchanges follow default schedules.</div>
+      <div class="text-[length:var(--fs-sm)] opacity-60">No date overrides — all exchanges follow default schedules.</div>
     {/if}
 
     <!-- Unified add/edit panel — manage_exchange_schedule only -->
     {#if scheduleForm && hasCap('manage_exchange_schedule', _caps, _role)}
       <div class="mt-3 pt-3 border-t" style="border-top-color: rgba(126,151,184,0.15)">
-        <h4 class="text-[0.6rem] font-bold uppercase tracking-widest opacity-80 mb-2">
+        <h4 class="text-[length:var(--fs-sm)] font-bold uppercase tracking-widest opacity-80 mb-2">
           {scheduleForm.id != null ? 'Edit Session' : 'New Session'}
         </h4>
-        <div class="grid gap-2 text-[0.65rem]" style="grid-template-columns: 140px 1fr">
+        <div class="grid gap-2 text-[length:var(--fs-md)]" style="grid-template-columns: 140px 1fr">
 
           <label for="sched-gate" class="opacity-70 self-center">Gate</label>
           <div>
@@ -776,14 +776,14 @@
           </div>
 
           <label for="sched-date" class="opacity-70 self-center">Date
-            <span class="block text-[0.5rem] opacity-60 font-normal">blank = default</span>
+            <span class="block text-[length:var(--fs-2xs)] opacity-60 font-normal">blank = default</span>
           </label>
           <div>
             <input id="sched-date" type="date"
                    class="field-input"
                    value={scheduleForm.date || ''}
                    oninput={(e) => scheduleForm = { ...scheduleForm, date: e.currentTarget.value || null }} />
-            <p class="text-[0.5rem] opacity-50 mt-0.5">Leave blank to edit the recurring default schedule</p>
+            <p class="text-[length:var(--fs-2xs)] opacity-50 mt-0.5">Leave blank to edit the recurring default schedule</p>
           </div>
 
           <label for="sched-session" class="opacity-70 self-center">Session name</label>
@@ -793,7 +793,7 @@
                    placeholder="regular / evening / closed / muhurat"
                    value={scheduleForm.session_name}
                    oninput={(e) => scheduleForm = { ...scheduleForm, session_name: e.currentTarget.value }} />
-            <p class="text-[0.5rem] opacity-50 mt-0.5">Use "closed" with Is open=No to mark a holiday</p>
+            <p class="text-[length:var(--fs-2xs)] opacity-50 mt-0.5">Use "closed" with Is open=No to mark a holiday</p>
           </div>
 
           <span class="opacity-70 self-start pt-0.5">Exchanges</span>
@@ -806,7 +806,7 @@
                 <span class="font-mono">{ex}</span>
               </label>
             {/each}
-            <p class="w-full text-[0.5rem] opacity-50 mt-0.5">Uncheck F&amp;O exchanges for Muhurat trading overrides</p>
+            <p class="w-full text-[length:var(--fs-2xs)] opacity-50 mt-0.5">Uncheck F&amp;O exchanges for Muhurat trading overrides</p>
           </div>
 
           <span class="opacity-70 self-center">Is open</span>
@@ -838,14 +838,14 @@
           {/if}
 
           <label for="sched-snapshot" class="opacity-70 self-center">Snapshot time
-            <span class="block text-[0.5rem] opacity-60 font-normal">blank = none</span>
+            <span class="block text-[length:var(--fs-2xs)] opacity-60 font-normal">blank = none</span>
           </label>
           <input id="sched-snapshot" type="time" class="field-input"
                  value={scheduleForm.snapshot_time || ''}
                  oninput={(e) => scheduleForm = { ...scheduleForm, snapshot_time: e.currentTarget.value || null }} />
 
           <label for="sched-reset" class="opacity-70 self-center">Reset time
-            <span class="block text-[0.5rem] opacity-60 font-normal">blank = none</span>
+            <span class="block text-[length:var(--fs-2xs)] opacity-60 font-normal">blank = none</span>
           </label>
           <input id="sched-reset" type="time" class="field-input"
                  value={scheduleForm.snapshot_reset_time || ''}
@@ -860,8 +860,8 @@
         </div>
 
         <div class="flex gap-2 mt-3">
-          <button class="btn-primary text-[0.65rem] py-1 px-3" onclick={saveSchedule}>Save</button>
-          <button class="btn-secondary text-[0.65rem] py-1 px-3" onclick={closeScheduleForm}>Cancel</button>
+          <button class="btn-primary text-[length:var(--fs-md)] py-1 px-3" onclick={saveSchedule}>Save</button>
+          <button class="btn-secondary text-[length:var(--fs-md)] py-1 px-3" onclick={closeScheduleForm}>Cancel</button>
         </div>
       </div>
     {/if}
