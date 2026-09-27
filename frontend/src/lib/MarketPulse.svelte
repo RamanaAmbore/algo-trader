@@ -5300,7 +5300,10 @@
     padding: 0.3rem 0.75rem;
     background: transparent;
     border: none;
-    color: rgba(200,216,240,0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved.
+       Verified .ctx-item/.ctx-sep are only consumed by MarketPulse.svelte
+       and SymbolContextMenu.svelte, neither public-mounted. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     cursor: pointer;
     font-size: var(--fs-md);
     white-space: nowrap;
@@ -5314,7 +5317,7 @@
   :global(.ctx-item-danger:hover) { background: rgba(248,113,113,0.1); color: var(--c-short); }
   :global(.ctx-sep) {
     height: 1px;
-    background: rgba(200,216,240,0.1);
+    background: color-mix(in srgb, var(--algo-slate) 10%, transparent);
     margin: 0.2rem 0;
   }
 
@@ -5422,7 +5425,10 @@
      rule that mirrors the algo theme's hairline accents. */
   :global(.mp-add-divider) {
     height: 1px;
-    background: rgba(200, 216, 240, 0.10);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved.
+       Verified .mp-add-divider is only consumed by MarketPulse.svelte
+       and AddToPulseModal.svelte, neither public-mounted. */
+    background: color-mix(in srgb, var(--algo-slate) 10%, transparent);
     margin: 0.85rem 0 0.6rem;
   }
 

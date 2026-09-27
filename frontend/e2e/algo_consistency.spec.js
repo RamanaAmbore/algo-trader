@@ -115,11 +115,40 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
    *     text) → color-mix(in srgb, var(--algo-slate) <site's own
    *     original alpha>%, transparent) — alpha preserved per-site.
    *
-   * This is a RATCHET, not a one-shot pass: ALLOWLIST below is the
-   * honest, current record of files not yet swept (batched by
-   * directory/component group across several commits). Each batch
-   * removes the files it fully converts; shrinking this array (never
-   * growing it) is the progress signal. Empty array = sweep complete.
+   * SWEEP COMPLETE (commits 1–6/6, 2026-09) — ALLOWLIST is now empty;
+   * a full re-scan of src/lib + src/routes/(algo) (113 .svelte files)
+   * confirms zero remaining offenders. Kept as a RATCHET (not deleted)
+   * so any future regression is caught immediately rather than
+   * silently reappearing.
+   *
+   * Risk categories investigated along the way, resolved as VIABLE
+   * (not blockers) after live verification:
+   *   - SVG stroke= presentation attributes (ChartWorkspace.svelte,
+   *     OptionsPayoff.svelte, PnlAnalysis.svelte, dashboard/+page.svelte)
+   *     — var()/color-mix() DO resolve correctly once the stylesheet
+   *     carrying the custom property has loaded (verified live against
+   *     a real page load — an earlier premature computed-style check,
+   *     evaluated before Vite's dev-mode CSS injection completed, had
+   *     falsely suggested "unsupported").
+   *   - "Canvas colour consumer" files flagged by name (MultiPriceChart,
+   *     admin/metrics, admin/perf) turned out on inspection to have NO
+   *     canvas usage at all (grepped getContext/strokeStyle/fillStyle —
+   *     zero matches in all three); MultiPriceChart renders via SVG.
+   *     Ordinary CSS/SVG conversions applied.
+   *   - admin/metrics + admin/perf's sites were actually
+   *     `var(--text, #e2e8f0)` / `var(--text-soft, #e2e8f0)` fallback
+   *     forms — `--text`/`--text-soft` are never defined anywhere in the
+   *     codebase (grepped), so the "fallback" was the real, always-
+   *     active value, not a rare edge case. Fallback literal replaced
+   *     with var(--algo-slate); the var(--text, …) indirection itself
+   *     kept in case a future --text token is added.
+   *   - LogPanel.svelte IS public-mounted ((public)/market,
+   *     (public)/performance) — verified safe before converting: an
+   *     adjacent rule in the same class family already used
+   *     var(--algo-slate) directly, proving the token already resolves
+   *     correctly wherever LogPanel renders.
+   *   - showcase/+page.svelte is a narrative "tour" page (not a colour-
+   *     swatch/documentation sample) — verified before converting.
    *
    * Explicitly and permanently OUT of scope (not part of the ratchet,
    * documented here rather than silently ignored):
@@ -128,68 +157,15 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
    *     fallback values inside an existing var(...) reference (already
    *     tokenised at the call site), lower risk/priority than a bare
    *     literal.
-   *   - Any file confirmed to mount on a public/investor route with a
-   *     LIGHT/cream background (a converted var(--algo-slate) — white —
-   *     would be invisible there) — verified per-file before removal
-   *     from the allowlist, not assumed safe.
-   *   - SVG presentation attributes (`stroke="…"` in ChartWorkspace) and
-   *     canvas/JS colour-string consumers (getContext/strokeStyle/
-   *     fillStyle, or colour strings passed into JS config objects) —
-   *     var()/color-mix() don't resolve there; needs either
-   *     getComputedStyle-based JS resolution or a documented allowlist
-   *     entry, not a blind text substitution.
+   *   - Genuine canvas 2D context colour strings (getContext('2d').
+   *     strokeStyle/fillStyle) — a fundamentally different mechanism
+   *     that never parses CSS var()/color-mix() regardless of load
+   *     timing. None were found in this codebase during the sweep, but
+   *     if one is ever added, it needs JS-side getComputedStyle
+   *     resolution or a documented hardcoded fallback, not a text
+   *     substitution.
    */
-  const A3_MUTED_LITERAL_ALLOWLIST = [
-    // AgentFireModal.svelte, AgentToast.svelte, ConfirmModal.svelte,
-    // Toast.svelte — swept (commit 2/N): simple non-numeric caption/
-    // close-button text roles, verified algo-only (not mounted in
-    // (public)/investor route trees), converted to
-    // color-mix(in srgb, var(--algo-slate) <original alpha>%, transparent).
-    // DayPnlBreakup.svelte, LogPanel.svelte, PnlAnalysis.svelte,
-    // SymbolPanel.svelte, TemplateBar.svelte — swept (commit 3/N).
-    // LogPanel.svelte is public-mounted ((public)/market,
-    // (public)/performance) — verified safe: the same class family
-    // already used var(--algo-slate) directly in an adjacent :hover
-    // rule, proving the token already resolves correctly wherever
-    // LogPanel mounts. PnlAnalysis.svelte's one SVG stroke= site
-    // (hover crosshair <line>) was verified live (computed-style check
-    // against a real /pulse page load) to correctly resolve var()/
-    // color-mix() in SVG presentation attributes once stylesheets are
-    // loaded — an earlier premature check (before CSS finished loading)
-    // gave a false "unsupported" result; documented in-code at the site.
-    //
-    // SVG/canvas risk category CONFIRMED VIABLE (2026-09): var()/
-    // color-mix() DO resolve in SVG stroke= presentation attributes in
-    // this engine, once the stylesheet carrying the custom property has
-    // loaded. Remaining ChartWorkspace/OptionsPayoff SVG sites and
-    // MultiPriceChart/admin-metrics/admin-perf canvas sites still need
-    // individual verification (canvas 2D context colour strings are a
-    // DIFFERENT mechanism entirely — getContext('2d').strokeStyle/
-    // fillStyle do NOT parse CSS var()/color-mix() at all, regardless of
-    // load timing — those need JS-side getComputedStyle resolution or a
-    // documented hardcoded fallback, not a text substitution).
-    // execution/RecordingsPanel.svelte, execution/SimulatorPanel.svelte,
-    // order/ChaseAggPicker.svelte, order/OptionChainTab.svelte,
-    // order/OrderTicket.svelte, order/OrderTimelineDrawer.svelte,
-    // order/QtyInput.svelte, order/SideToggle.svelte — swept (commit
-    // 4/N): all verified algo-only (no public/investor mount) and no
-    // canvas/SVG sites, straightforward color-mix()/named-token
-    // conversions.
-    // admin/alerts, admin/derivatives/+page.svelte (fully clean now —
-    // the .byund-row .cell-muted fix from commit 1/N was only ONE of
-    // its 4 sites), admin/derivatives/CandidateLegRow.svelte,
-    // admin/research, automation/agent-templates, automation/templates,
-    // dashboard/+page.svelte — swept (commit 5/N). dashboard's one SVG
-    // stroke= hover-crosshair site converted using the same
-    // now-confirmed-viable pattern as PnlAnalysis.svelte (commit 3/N).
-    'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs — verify per-site
-    'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
-    'src/lib/MultiPriceChart.svelte',          // canvas colour consumer — verify before converting
-    'src/lib/OptionsPayoff.svelte',            // hand-rolled SVG — verify before converting
-    'src/routes/(algo)/admin/metrics/+page.svelte',      // likely canvas/chart consumer — verify
-    'src/routes/(algo)/admin/perf/+page.svelte',         // likely canvas/chart consumer — verify
-    'src/routes/(algo)/showcase/+page.svelte',           // may be documentation swatches — verify
-  ];
+  const A3_MUTED_LITERAL_ALLOWLIST = /** @type {string[]} */ ([]);
 
   test('A3 ratchet — stale pale-blue literals only in the allowlisted (not-yet-swept) files', () => {
     const files = collectSvelteFiles();

@@ -521,7 +521,10 @@
     background: color-mix(in srgb, #7dd3fc 8%, transparent);
     border: 1px solid color-mix(in srgb, #7dd3fc 35%, transparent);
     border-radius: 4px;
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate).
+       Verified this page is a narrative "tour" page, not a colour-
+       swatch/documentation sample — safe to convert like real UI. */
+    color: var(--algo-slate);
     font-size: 0.72rem;
     font-weight: 500;
     letter-spacing: 0.02em;
@@ -531,7 +534,8 @@
   .show-contact-btn:hover {
     background: color-mix(in srgb, #7dd3fc 14%, transparent);
     border-color: color-mix(in srgb, #7dd3fc 55%, transparent);
-    color: #e2e8f0;
+    /* A3 (2026-09 audit) — was flat hex #e2e8f0; now var(--algo-slate). */
+    color: var(--algo-slate);
   }
 
   /* Right column card */

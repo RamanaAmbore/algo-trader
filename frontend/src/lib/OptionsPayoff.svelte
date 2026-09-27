@@ -1114,8 +1114,12 @@
             <!-- Neutral grid: even quieter than milestone sigmas — kept
                  deliberately faint so the σ family stays the
                  least-prominent tier. -->
+            <!-- A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha
+                 preserved. Verified var()/color-mix() resolve correctly
+                 in SVG stroke= presentation attributes (same finding as
+                 ChartWorkspace.svelte's equivalent sites). -->
             <line x1={xt.x} x2={xt.x} y1={PAD_T} y2={height - PAD_B}
-                  stroke={wholeSigma ? 'rgba(200,216,240,0.10)' : 'rgba(200,216,240,0.06)'}
+                  stroke={wholeSigma ? 'color-mix(in srgb, var(--algo-slate) 10%, transparent)' : 'color-mix(in srgb, var(--algo-slate) 6%, transparent)'}
                   stroke-width="0.75"
                   stroke-dasharray={wholeSigma ? '2 4' : '1 5'}/>
           {/if}
@@ -1715,7 +1719,8 @@
     display: inline-block;
     width: 1px;
     height: 0.8em;
-    background: rgba(200, 216, 240, 0.2);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    background: color-mix(in srgb, var(--algo-slate) 20%, transparent);
     align-self: center;
   }
   .legend-item {
@@ -1844,8 +1849,9 @@
     font-style: italic;
     /* Contrast raised 0.55 → 0.85 alpha — earlier rendered ~2.5:1
        against the navy chart bg, below the 4.5:1 target for body
-       text. Operator's only multi-expiry context cue. */
-    color: rgba(200, 216, 240, 0.85);
+       text. Operator's only multi-expiry context cue.
+       A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
   }
 
   /* Spot-anchor chip — slate-blue palette for normal state;

@@ -635,7 +635,12 @@
   }
   .perf-reg-page {
     font-weight: 600;
-    color: var(--text, #e2e8f0);
+    /* A3 (2026-09 audit) — was var(--text, #e2e8f0). --text is never
+       actually defined anywhere in this codebase (grepped), so the
+       fallback was the real, always-active value — not a rare edge
+       case. Fallback replaced with var(--algo-slate); the var(--text, …)
+       wrapper itself is kept in case a future --text token is added. */
+    color: var(--text, var(--algo-slate));
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     font-size: var(--fs-lg);
   }
@@ -687,7 +692,7 @@
   .perf-card-name {
     font-size: var(--fs-lg);
     font-weight: 600;
-    color: var(--text, #e2e8f0);
+    color: var(--text, var(--algo-slate));
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     white-space: nowrap;
     overflow: hidden;
@@ -828,7 +833,7 @@
   }
   .perf-fn-name {
     font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-    color: var(--text, #e2e8f0);
+    color: var(--text, var(--algo-slate));
     white-space: nowrap;
     max-width: 18rem;
     overflow: hidden;

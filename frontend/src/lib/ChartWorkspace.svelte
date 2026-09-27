@@ -1970,14 +1970,21 @@
              grid lines, candles, and overlays. --chart-bg-tint in app.css. -->
         <rect class="chart-bg" x={CPAD_L} y={CPAD_T} width={_innerW} height={_innerH}
               fill="var(--chart-bg-tint)" rx="0"/>
-        <!-- Y-axis baseline (left edge of plot area) -->
+        <!-- Y-axis baseline (left edge of plot area).
+             A3 (2026-09 audit) — this file's 7 axis/grid-line stroke=
+             sites were stale rgba(200,216,240,α) literals; each alpha
+             preserved via color-mix(in srgb, var(--algo-slate) α%,
+             transparent). Verified live that var()/color-mix() resolve
+             correctly in SVG stroke= presentation attributes once
+             stylesheets are loaded (same finding as PnlAnalysis.svelte
+             and dashboard/+page.svelte's equivalent sites). -->
         <line x1={CPAD_L} x2={CPAD_L} y1={CPAD_T} y2={CPAD_T + _innerH}
-              stroke="rgba(200,216,240,0.25)" stroke-width="1"/>
+              stroke="color-mix(in srgb, var(--algo-slate) 25%, transparent)" stroke-width="1"/>
 
         <!-- Y-axis grid + labels — labels rotated -45° to save horizontal space -->
         {#each _yTicks as tick}
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={tick.y} y2={tick.y}
-                stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
+                stroke="color-mix(in srgb, var(--algo-slate) 15%, transparent)" stroke-width="1"/>
           <text x={CPAD_L - 4} y={tick.y}
                 class="cw-yaxis-label"
                 text-anchor="end" dominant-baseline="middle"
@@ -1991,7 +1998,7 @@
         {#each _xLabels as xl, i}
           {#if i > 0}
             <line x1={xl.x} x2={xl.x} y1={CPAD_T} y2={CPAD_T + _innerH}
-                  stroke="rgba(200,216,240,0.10)" stroke-width="1" stroke-dasharray="2 3"/>
+                  stroke="color-mix(in srgb, var(--algo-slate) 10%, transparent)" stroke-width="1" stroke-dasharray="2 3"/>
           {/if}
           <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
@@ -2101,7 +2108,7 @@
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={rsiYOf(30)} y2={rsiYOf(30)}
                 stroke="rgba(74,222,128,0.5)" stroke-width="1" stroke-dasharray="3 3"/>
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={rsiYOf(50)} y2={rsiYOf(50)}
-                stroke="rgba(200,216,240,0.20)" stroke-width="1" stroke-dasharray="2 4"/>
+                stroke="color-mix(in srgb, var(--algo-slate) 20%, transparent)" stroke-width="1" stroke-dasharray="2 4"/>
           <!-- RSI level labels (left edge) -->
           <text x={CPAD_L - 4} y={rsiYOf(70) + 3} text-anchor="end"
                 fill="rgba(248,113,113,0.7)" font-size="9" font-family="monospace">70</text>
@@ -2143,7 +2150,7 @@
                 fill="rgba(255,255,255,0.02)" stroke="rgba(255,255,255,0.06)" stroke-width="0.5"/>
           <!-- Zero line -->
           <line x1={CPAD_L} x2={_chartW - CPAD_R} y1={macdZero} y2={macdZero}
-                stroke="rgba(200,216,240,0.25)" stroke-width="1" stroke-dasharray="2 4"/>
+                stroke="color-mix(in srgb, var(--algo-slate) 25%, transparent)" stroke-width="1" stroke-dasharray="2 4"/>
           <!-- Histogram bars -->
           {#each _macdSeries as pt}
             {#if pt.histogram != null}
@@ -2296,13 +2303,13 @@
                 fill="var(--chart-bg-tint)" rx="0"/>
           <!-- Intraday Y-axis baseline -->
           <line x1={P2L} x2={P2L} y1={P2T} y2={H2 - P2B}
-                stroke="rgba(200,216,240,0.25)" stroke-width="1"/>
+                stroke="color-mix(in srgb, var(--algo-slate) 25%, transparent)" stroke-width="1"/>
           <!-- Intraday X-axis baseline -->
           <line x1={P2L} x2={W2 - P2R} y1={H2 - P2B} y2={H2 - P2B}
                 stroke="rgba(255,255,255,0.22)" stroke-width="1"/>
           {#each _t2YTicks as yt}
             <line x1={P2L} x2={W2 - P2R} y1={yt.y} y2={yt.y}
-                  stroke="rgba(200,216,240,0.15)" stroke-width="1"/>
+                  stroke="color-mix(in srgb, var(--algo-slate) 15%, transparent)" stroke-width="1"/>
             <text x={P2L - 3} y={yt.y}
                   class="cw-yaxis-label"
                   text-anchor="end" dominant-baseline="middle"

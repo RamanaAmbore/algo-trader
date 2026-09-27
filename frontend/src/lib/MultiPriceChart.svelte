@@ -391,7 +391,10 @@
     gap: 0.3rem 0.55rem;
     margin-top: 0.35rem;
     padding-top: 0.3rem;
-    border-top: 1px solid rgba(200,216,240,0.08);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved.
+       This component renders via SVG (no canvas), so var()/color-mix()
+       resolve normally — no special handling needed. */
+    border-top: 1px solid color-mix(in srgb, var(--algo-slate) 8%, transparent);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
   }

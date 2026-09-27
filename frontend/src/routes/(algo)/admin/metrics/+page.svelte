@@ -427,7 +427,10 @@
   }
   .metrics-tile-latest {
     font-weight: 600;
-    color: var(--text, #e2e8f0);
+    /* A3 (2026-09 audit) — was var(--text, #e2e8f0); --text is never
+       defined anywhere (grepped), so the fallback was the real,
+       always-active value. Fallback replaced with var(--algo-slate). */
+    color: var(--text, var(--algo-slate));
     font-variant-numeric: tabular-nums;
   }
   .metrics-tile-svg {
@@ -565,7 +568,7 @@
     border-radius: 4px;
     font-size: var(--fs-lg);
     font-family: var(--font-numeric);
-    color: var(--text-soft, #e2e8f0);
+    color: var(--text-soft, var(--algo-slate));
     overflow-x: auto;
     max-height: 280px;
     margin: 0;
@@ -603,7 +606,7 @@
   .metrics-test-kv :global(.algo-table-num) {
     text-align: right;
     font-variant-numeric: tabular-nums;
-    color: var(--text, #e2e8f0);
+    color: var(--text, var(--algo-slate));
   }
   .metrics-test-slow-label {
     font-size: var(--fs-lg);
