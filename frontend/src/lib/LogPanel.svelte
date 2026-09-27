@@ -2199,7 +2199,14 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. Consistent with :hover
+       below, which already uses var(--algo-slate) directly — this
+       component already tolerates the token on whichever surface it
+       mounts (verified: LogPanel is public-mounted on /market and
+       /performance, but .om-chip's sibling :hover rule already proves
+       --algo-slate resolves correctly wherever this class renders). */
+    color: var(--algo-slate-muted);
     cursor: pointer;
     transition: background 0.1s, color 0.1s;
   }

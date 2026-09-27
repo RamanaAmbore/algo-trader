@@ -3452,7 +3452,8 @@
     padding: 0 0.4rem;
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
-    color: rgba(200, 216, 240, 0.85);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     font-weight: 600;
     white-space: nowrap;
     display: inline-flex;
@@ -3696,7 +3697,8 @@
   }
   .oes-basket-tpl-note-arrow { color: #7dd3fc; font-weight: 700; }
   .oes-basket-tpl-note-name  { color: #7dd3fc; font-weight: 700; }
-  .oes-basket-tpl-note-desc  { color: rgba(200, 216, 240, 0.6); }
+  /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+  .oes-basket-tpl-note-desc  { color: color-mix(in srgb, var(--algo-slate) 60%, transparent); }
 
   .oes-basket-bar {
     position: sticky;
@@ -3985,7 +3987,8 @@
     font-weight: 700;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    color: rgba(200, 216, 240, 0.7);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
   }
   .oes-leg-editor-field {
     display: inline-flex;
@@ -4015,7 +4018,8 @@
     background: rgba(8, 14, 28, 0.78);
     border: 1px solid rgba(34, 211, 238, 0.65);
     border-radius: 3px;
-    color: #f8fafc;
+    /* A3 (2026-09 audit) — was flat hex #f8fafc; now var(--algo-slate). */
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 600;
@@ -4045,7 +4049,8 @@
     background: transparent;
     border: 1px solid rgba(126, 151, 184, 0.35);
     border-radius: 3px;
-    color: rgba(200, 216, 240, 0.75);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 75%, transparent);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     cursor: pointer;
@@ -4079,7 +4084,8 @@
   }
   .oes-basket-pill-limit-prefix {
     font-size: var(--fs-md);
-    color: rgba(200,216,240,0.6);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 60%, transparent);
     line-height: 1;
   }
   .oes-basket-pill-limit {
@@ -4462,7 +4468,9 @@
     border: 1px solid rgba(125, 211, 252, 0.40);
     border-radius: 3px;
     background: transparent;
-    color: rgba(200, 216, 240, 0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
     transition: background 0.12s, color 0.12s, border-color 0.12s;
     flex-shrink: 0;
     box-sizing: border-box;
@@ -4544,12 +4552,15 @@
     letter-spacing: 0.04em;
   }
   .oes-footer-side-btn-single.on-none {
-    color: rgba(200, 216, 240, 0.55);
-    border-color: rgba(200, 216, 240, 0.32);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
+       .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
+    border-color: color-mix(in srgb, var(--algo-slate) 32%, transparent);
     border-style: dashed;
   }
   .oes-footer-side-btn-single.on-none:hover {
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate). */
+    color: var(--algo-slate);
     background: rgba(255,255,255,0.04);
   }
   /* R7 fix (2026-09): ghost/outlined, NOT filled — the prior 18%-opacity
@@ -4590,7 +4601,11 @@
   /* .oes-common-mode-chip removed — the row that used it was deleted.
      .oes-common-chase-toggle removed — replaced by {#if _chaseEnabled}. */
   .oes-common-chase-label {
-    color: rgba(200,216,240,0.55);
+    /* A3 (2026-09 audit) — this scoped rule (Svelte-hashed, higher
+       specificity than app.css's global :global(.oes-common-chase-label))
+       had its OWN separate stale rgba(200,216,240,0.55) — same alpha as
+       the .cell-muted token, so reused directly. */
+    color: var(--algo-slate-muted);
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
@@ -4684,7 +4699,8 @@
     color: var(--algo-muted);
   }
   .oes-funds-v {
-    color: #e2e8f0;
+    /* A3 (2026-09 audit) — was flat hex #e2e8f0; now var(--algo-slate). */
+    color: var(--algo-slate);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
   }

@@ -304,7 +304,8 @@
     padding: 0 0.75rem;
     background: transparent;
     border: 0;
-    color: rgba(200, 216, 240, 0.65);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 800;
@@ -334,7 +335,12 @@
   }
   .oes-tpl-btn-none.on {
     background: rgba(148, 163, 184, 0.22);
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1 (full opacity); now
+       var(--algo-slate) per the whitening-sweep convention (--algo-slate
+       itself moved pale-blue → white in 2026-09; this site never got
+       migrated). Visible brightening — flagged, consistent with the
+       rest of the sweep. */
+    color: var(--algo-slate);
     text-shadow: 0 0 6px rgba(148, 163, 184, 0.45);
   }
   .oes-tpl-btn:disabled {
@@ -348,7 +354,9 @@
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 600;
-    color: #f8fafc;
+    /* A3 (2026-09 audit) — was flat hex #f8fafc (full opacity, near-white
+       already); now var(--algo-slate) — same whitening-sweep pattern. */
+    color: var(--algo-slate);
     background: rgba(251, 191, 36, 0.10);
     border: 1px solid rgba(251, 191, 36, 0.32);
     padding: 0.12rem 0.42rem;
@@ -414,7 +422,8 @@
     background: rgba(12, 18, 32, 0.82);
     border: 1px solid rgba(251, 191, 36, 0.70);
     border-radius: 3px;
-    color: #f8fafc;
+    /* A3 (2026-09 audit) — same as .oes-basket-tpl-name above. */
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 600;
@@ -500,7 +509,8 @@
     background: rgba(12, 18, 32, 0.82);
     border: 1px solid rgba(251, 191, 36, 0.40);
     border-radius: 3px;
-    color: rgba(200, 216, 240, 0.65);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
@@ -532,7 +542,8 @@
     background: rgba(12, 18, 32, 0.82);
     border: 1px solid rgba(251, 191, 36, 0.50);
     border-radius: 3px;
-    color: #f8fafc;
+    /* A3 (2026-09 audit) — same as .oes-basket-tpl-name above. */
+    color: var(--algo-slate);
     font-family: var(--font-numeric), monospace;
     font-size: var(--fs-xs);
     resize: vertical;
@@ -561,6 +572,7 @@
     align-self: flex-end;
   }
   .oes-tpl-reset-link:hover {
-    color: #cbd5e1;
+    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate). */
+    color: var(--algo-slate);
   }
 </style>

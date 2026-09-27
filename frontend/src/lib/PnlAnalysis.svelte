@@ -650,9 +650,14 @@
                 stroke-linecap="round" />
         {/if}
         {#if hovLineX != null && hovDate}
+          <!-- A3 (2026-09 audit) — stale rgba(200,216,240,α) in an SVG
+               stroke= presentation attribute. Verified var()/color-mix()
+               DO resolve here once stylesheets are loaded (confirmed via
+               live computed-style check — SVG presentation attributes
+               parse as CSS values in this engine); alpha preserved. -->
           <line x1={hovLineX.toFixed(1)} y1={PAD_T}
                 x2={hovLineX.toFixed(1)} y2={H - PAD_B}
-                stroke="rgba(200,216,240,0.35)" stroke-width="1" />
+                stroke="color-mix(in srgb, var(--algo-slate) 35%, transparent)" stroke-width="1" />
         {/if}
       </svg>
 
@@ -1104,8 +1109,9 @@
   }
   .bm-chip.bm-off {
     background: transparent;
-    color: rgba(200,216,240,0.35);
-    border-color: rgba(200,216,240,0.18);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 35%, transparent);
+    border-color: color-mix(in srgb, var(--algo-slate) 18%, transparent);
   }
 
   .perf-svg {
@@ -1265,8 +1271,9 @@
   .algo-btn:hover:not(:disabled) { background: var(--algo-amber-bg); }
   .algo-btn:disabled { opacity: 0.45; cursor: not-allowed; }
   .algo-btn-dim {
-    border-color: rgba(200,216,240,0.2);
-    background: rgba(200,216,240,0.05);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    border-color: color-mix(in srgb, var(--algo-slate) 20%, transparent);
+    background: color-mix(in srgb, var(--algo-slate) 5%, transparent);
     color: var(--algo-muted);
   }
 

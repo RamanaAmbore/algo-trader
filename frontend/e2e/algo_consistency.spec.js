@@ -145,15 +145,33 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
     // close-button text roles, verified algo-only (not mounted in
     // (public)/investor route trees), converted to
     // color-mix(in srgb, var(--algo-slate) <original alpha>%, transparent).
-    'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs
-    'src/lib/DayPnlBreakup.svelte',
-    'src/lib/LogPanel.svelte',
+    // DayPnlBreakup.svelte, LogPanel.svelte, PnlAnalysis.svelte,
+    // SymbolPanel.svelte, TemplateBar.svelte — swept (commit 3/N).
+    // LogPanel.svelte is public-mounted ((public)/market,
+    // (public)/performance) — verified safe: the same class family
+    // already used var(--algo-slate) directly in an adjacent :hover
+    // rule, proving the token already resolves correctly wherever
+    // LogPanel mounts. PnlAnalysis.svelte's one SVG stroke= site
+    // (hover crosshair <line>) was verified live (computed-style check
+    // against a real /pulse page load) to correctly resolve var()/
+    // color-mix() in SVG presentation attributes once stylesheets are
+    // loaded — an earlier premature check (before CSS finished loading)
+    // gave a false "unsupported" result; documented in-code at the site.
+    //
+    // SVG/canvas risk category CONFIRMED VIABLE (2026-09): var()/
+    // color-mix() DO resolve in SVG stroke= presentation attributes in
+    // this engine, once the stylesheet carrying the custom property has
+    // loaded. Remaining ChartWorkspace/OptionsPayoff SVG sites and
+    // MultiPriceChart/admin-metrics/admin-perf canvas sites still need
+    // individual verification (canvas 2D context colour strings are a
+    // DIFFERENT mechanism entirely — getContext('2d').strokeStyle/
+    // fillStyle do NOT parse CSS var()/color-mix() at all, regardless of
+    // load timing — those need JS-side getComputedStyle resolution or a
+    // documented hardcoded fallback, not a text substitution).
+    'src/lib/ChartWorkspace.svelte',           // SVG stroke= presentation attrs — verify per-site
     'src/lib/MarketPulse.svelte',              // .cell-muted done; other sites remain
     'src/lib/MultiPriceChart.svelte',          // canvas colour consumer — verify before converting
     'src/lib/OptionsPayoff.svelte',            // hand-rolled SVG — verify before converting
-    'src/lib/PnlAnalysis.svelte',
-    'src/lib/SymbolPanel.svelte',
-    'src/lib/TemplateBar.svelte',
     'src/lib/execution/RecordingsPanel.svelte',
     'src/lib/execution/SimulatorPanel.svelte',
     'src/lib/order/ChaseAggPicker.svelte',

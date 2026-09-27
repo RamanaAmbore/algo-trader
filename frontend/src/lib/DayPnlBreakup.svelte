@@ -93,7 +93,7 @@
 
       <div class="dpb-scroll">
         {#if !positions?.length}
-          <p style="text-align:center;color:rgba(200,216,240,0.5);padding:1.5rem 0;font-size:0.8rem;">No positions</p>
+          <p style="text-align:center;color:color-mix(in srgb, var(--algo-slate) 50%, transparent);padding:1.5rem 0;font-size:0.8rem;">No positions</p>
         {:else}
         <table class="dpb-table">
           <thead>
@@ -226,14 +226,15 @@
   .dpb-close {
     background: transparent;
     border: none;
-    color: rgba(200, 216, 240, 0.5);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     cursor: pointer;
     font-size: var(--fs-lg);
     padding: 0.1rem 0.3rem;
     line-height: 1;
     margin-left: 0.25rem;
   }
-  .dpb-close:hover { color: rgba(200, 216, 240, 0.9); }
+  .dpb-close:hover { color: color-mix(in srgb, var(--algo-slate) 90%, transparent); }
   .dpb-scroll {
     overflow: auto;
     flex: 1;
@@ -256,7 +257,9 @@
     padding: 0.25rem 0.4rem;
     font-size: 0.65rem;
     font-weight: 600;
-    color: rgba(200, 216, 240, 0.55);
+    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as
+       .cell-muted's dedicated token, so reused directly. */
+    color: var(--algo-slate-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
     white-space: nowrap;
@@ -277,27 +280,30 @@
   .dpb-chevron {
     background: transparent;
     border: none;
-    color: rgba(200, 216, 240, 0.4);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 40%, transparent);
     cursor: pointer;
     font-size: 0.65rem;
     padding: 0;
     line-height: 1;
   }
-  .dpb-chevron:hover { color: rgba(200, 216, 240, 0.85); }
+  .dpb-chevron:hover { color: color-mix(in srgb, var(--algo-slate) 85%, transparent); }
   .dpb-td-sym {
     font-size: var(--fs-sm);
-    color: rgba(200, 216, 240, 0.9);
+    color: color-mix(in srgb, var(--algo-slate) 90%, transparent);
     white-space: nowrap;
   }
   .dpb-td-acct {
     font-size: 0.65rem;
-    color: rgba(200, 216, 240, 0.5);
+    color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     white-space: nowrap;
   }
   .dpb-td-num {
     text-align: right;
     white-space: nowrap;
-    color: rgba(200, 216, 240, 0.75);
+    /* Numeric role, but at its OWN 0.75 alpha (not the 0.55 muted-token
+       tier) — preserved distinctly rather than forced onto the token. */
+    color: color-mix(in srgb, var(--algo-slate) 75%, transparent);
   }
   .dpb-td-daypnl {
     font-weight: 600;
@@ -314,7 +320,8 @@
   }
   .dpb-formula {
     font-size: 0.65rem;
-    color: rgba(200, 216, 240, 0.5);
+    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
+    color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     font-variant-numeric: tabular-nums;
     padding-left: 1.8rem !important;
   }
@@ -333,5 +340,7 @@
   }
   .dpb-pos { color: #4ade80; }
   .dpb-neg { color: #f87171; }
-  .dpb-flat { color: rgba(200, 216, 240, 0.55); }
+  /* A3 (2026-09 audit) — direction-neutral numeric P&L text, same
+     "muted" role + alpha as .cell-muted — reuses the named token. */
+  .dpb-flat { color: var(--algo-slate-muted); }
 </style>
