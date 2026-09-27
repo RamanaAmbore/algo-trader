@@ -123,7 +123,7 @@
   <meta name="robots" content="noindex,nofollow" />
 </svelte:head>
 
-<div class="ip-page">
+<div class="ip-page card-theme-cream">
   <header class="ip-header">
     <div class="ip-brand">
       <span class="ip-brand-mark">RAMBO</span>
@@ -218,17 +218,17 @@
             <line x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y}
                   stroke="#d4c89f" stroke-width="1" stroke-opacity="0.40" />
             <text x={_pad.l - 8} y={y + 3} text-anchor="end"
-                  fill="#8b7340" font-size="10"
+                  fill="var(--card-as-of-text, #7a6650)" font-size="10"
                   font-family="ui-monospace, monospace">{_fmtInr(v)}</text>
           {/each}
           <path d={path} fill="none" stroke="#d4920c" stroke-width="2" />
           <circle cx={xOf(history.length - 1)} cy={yOf(_vals[_vals.length - 1])}
                   r="3" fill="#d4920c" stroke="#fdfaf2" stroke-width="2" />
           <text x={xOf(0)} y={H - 6} text-anchor="start"
-                fill="#8b7340" font-size="10"
+                fill="var(--card-as-of-text, #7a6650)" font-size="10"
                 font-family="ui-monospace, monospace">{history[0].as_of_date}</text>
           <text x={xOf(history.length - 1)} y={H - 6} text-anchor="end"
-                fill="#8b7340" font-size="10"
+                fill="var(--card-as-of-text, #7a6650)" font-size="10"
                 font-family="ui-monospace, monospace">{history[history.length - 1].as_of_date}</text>
         </svg>
       </section>
@@ -306,20 +306,24 @@
     letter-spacing: 0.08em;
     font-size: 1.15rem;
   }
-  .ip-brand-mark { color: #d4920c; }
+  /* B1: raw #d4920c measured ~2.61:1 on white/#fffdf8 — fails AA (this
+     mark is 1.15rem/800-weight, just under the 18.66px bold "large"
+     floor, so normal-text 4.5:1 applies). Reuses the public cream
+     theme's accent token — this page now wraps in .card-theme-cream. */
+  .ip-brand-mark { color: var(--card-accent-text, #8f6000); }
   .ip-brand-rest { color: #2a2418; }
   .ip-tag {
     font-size: 0.65rem;
     letter-spacing: 0.14em;
     text-transform: uppercase;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
     font-weight: 700;
   }
 
   .ip-status {
     text-align: center;
     padding: 4rem 1rem;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
     font-size: 0.85rem;
   }
 
@@ -331,10 +335,13 @@
     text-align: center;
   }
   .ip-error-icon {
-    font-size: 1.6rem; color: #d4920c; margin-bottom: 0.3rem;
+    /* B1: 1.6rem (25.6px) qualifies as WCAG "large text" (3:1 floor).
+       Raw #d4920c measures ~2.65:1 on white — still fails; the "large"
+       accent token clears it. */
+    font-size: 1.6rem; color: var(--card-accent-text-large, #b87a0a); margin-bottom: 0.3rem;
   }
   .ip-error-msg { font-weight: 700; color: #2a2418; margin-bottom: 0.4rem; }
-  .ip-error-hint { font-size: 0.72rem; color: #8b7340; }
+  .ip-error-hint { font-size: 0.72rem; color: var(--card-as-of-text, #7a6650); }
 
   .ip-greeting {
     font-size: 1.05rem;
@@ -362,7 +369,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
   }
   .ip-hero-val {
     font-size: 1.75rem;
@@ -372,12 +379,15 @@
     margin-top: 0.3rem;
     font-variant-numeric: tabular-nums;
   }
-  .ip-hero-main .ip-hero-val { color: #d4920c; }
+  /* B1: 1.75rem/800-weight qualifies as WCAG "large text" (3:1 floor).
+     Raw #d4920c measures ~2.65:1 on #ffffff — still fails; the "large"
+     accent token clears it while staying warmer than the small-text one. */
+  .ip-hero-main .ip-hero-val { color: var(--card-accent-text-large, #b87a0a); }
   .ip-hero-block.pnl-pos .ip-hero-val { color: #14653a; }
   .ip-hero-block.pnl-neg .ip-hero-val { color: #962d2d; }
   .ip-hero-asof {
     font-size: 0.62rem;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
     margin-top: 0.25rem;
   }
 
@@ -398,7 +408,7 @@
     font-weight: 700;
     letter-spacing: 0.08em;
     text-transform: uppercase;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
   }
   .ip-tile-val {
     margin-top: 0.25rem;
@@ -425,7 +435,7 @@
   }
   .ip-meta {
     font-weight: 500;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
     margin-left: 0.5rem;
     text-transform: none;
     letter-spacing: 0;
@@ -466,10 +476,10 @@
   }
   .ip-statement-btn:hover { background: #b87b09; }
   .ip-statement-btn.disabled {
-    background: #e7e0cf; color: #8b7340; pointer-events: none;
+    background: #e7e0cf; color: var(--card-as-of-text, #7a6650); pointer-events: none;
   }
   .ip-statement-hint {
-    font-size: 0.65rem; color: #8b7340; line-height: 1.5;
+    font-size: 0.65rem; color: var(--card-as-of-text, #7a6650); line-height: 1.5;
   }
 
   .ip-footer {
@@ -477,9 +487,10 @@
     padding-top: 1.2rem;
     border-top: 1px solid #e7e0cf;
     font-size: 0.7rem;
-    color: #8b7340;
+    color: var(--card-as-of-text, #7a6650);
   }
   .ip-footer-disclaimer { margin-bottom: 0.5rem; line-height: 1.55; }
-  .ip-footer-meta a { color: #d4920c; text-decoration: none; }
+  /* B1: 0.7rem — normal-text AA (4.5:1) applies; raw #d4920c ~2.61:1 fails. */
+  .ip-footer-meta a { color: var(--card-accent-text, #8f6000); text-decoration: none; }
   .ip-footer-meta a:hover { text-decoration: underline; }
 </style>

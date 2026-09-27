@@ -2766,10 +2766,26 @@ button:not(:disabled):active,
   --card-label-text:          #7a5e1e;   /* champagne gold label — darkened for AA contrast */
   --card-as-of-text:          #7a6650;
 
+  /* Gold/champagne accent used AS TEXT (link, kicker, "+" suffix, hero
+     figure) on a light cream/white surface. B1 (2026-09): raw #d4920c /
+     #c8a84b measured 2.61:1–2.65:1 on #fffdf8 — fails AA for both normal
+     and large text. Two tiers:
+       --card-accent-text        4.5:1+  normal/small text (links, "+"
+                                  suffixes, brand marks below ~18.5px)
+       --card-accent-text-large  3.0:1+  large text only (>=24px, or
+                                  >=18.66px bold) — kept warmer/brighter
+                                  since the large-text AA floor is looser. */
+  --card-accent-text:         #8f6000;
+  --card-accent-text-large:   #b87a0a;
+
   /* P&L colours */
   --card-gain-text:           #1a6b3a;
   --card-loss-text:           #9b1c1c;
-  --card-zero-text:           #7a6b52;
+  /* B1 (2026-09): #7a6b52 measured ~4.32:1 on --card-bg (#f0ead8) —
+     fails AA (was only ever checked against the lightest #fffdf8 card
+     face before). Darkened to clear 4.5:1 on the darkest bg it renders
+     on. */
+  --card-zero-text:           #6e6049;
 
   /* Active/selected row (tab + period picker) */
   --card-active-row-bg:       rgba(212, 146, 12, 0.13);

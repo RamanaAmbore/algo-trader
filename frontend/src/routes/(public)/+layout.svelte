@@ -588,8 +588,15 @@
   .pub-footer p { width: 100%; }
   .pub-footer-text { color: rgba(210,225,255,0.75); font-size: 0.7rem; line-height: 1.3; }
   .pub-sep { color: #c8a84b; font-weight: bold; margin: 0 0.35rem; }
+  /* B1 palette conformance: per this file's own palette comment above
+     (line ~226), #c8a84b is the ACCENT/border shade (kept on .pub-sep,
+     a punctuation glyph, not prose) and #e8c86a is the designated
+     "text on dark" shade. #c8a84b already measures ~7.7:1 on the navy
+     footer bg (AA is not at risk here — the footer text/bg pair passes
+     comfortably); this swap is a palette-role fix, not a contrast
+     rescue. #e8c86a measures even higher on the same bg. */
   .pub-footer-link {
-    color: #c8a84b;
+    color: #e8c86a;
     text-decoration: none;
     border-bottom: 1px dotted rgba(200,168,75,0.45);
   }

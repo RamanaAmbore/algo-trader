@@ -214,7 +214,10 @@
   .trust-plus {
     font-size: 0.95rem;
     font-weight: 700;
-    color: #d4920c;
+    /* B1: raw #d4920c measured 2.61:1 on the card bg — fails AA even at
+       large-text 3:1 (15.2px bold isn't "large" per WCAG). Token passes
+       4.5:1 on #fffdf8. */
+    color: var(--card-accent-text, #8f6000);
   }
   .trust-creds {
     font-size: 0.85rem;
@@ -335,7 +338,9 @@
   .fork-cta {
     font-size: 0.78rem;
     font-weight: 700;
-    color: #b27908;
+    /* B1: #b27908 measured ~3.7:1 on the card bg — fails normal-text AA
+       (12.48px bold isn't "large" per WCAG). */
+    color: var(--card-accent-text, #8f6000);
     letter-spacing: 0.02em;
     margin-top: auto;
     align-self: flex-start;
@@ -420,7 +425,8 @@
     margin: 0 0 0.4rem;
   }
   .closer-line a {
-    color: #b27908;
+    /* B1: #b27908 measured ~3.7:1 on the card bg — fails normal-text AA. */
+    color: var(--card-accent-text, #8f6000);
     font-weight: 600;
     text-decoration: none;
   }

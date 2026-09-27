@@ -286,35 +286,129 @@ test('CSS tokens — dark theme on log-panel bg (#152033)', () => {
   }
 });
 
-test('CSS tokens — cream theme on cream surfaces', () => {
+// ── Token-driven (SSOT) cream-theme contrast ───────────────────────────────
+// B5 (2026-09): rewritten so it reads the ACTUAL current hex value out of
+// app.css's `.card-theme-cream { ... }` block via regex, rather than
+// asserting a hardcoded literal that happens to match whatever value was
+// current when the test was written. A future edit to a token's hex value
+// is checked against its real contrast ratio automatically — the test
+// can't silently keep "passing" against a stale expected literal once the
+// source value changes underneath it.
+function extractCreamToken(css, varName) {
+  const blockMatch = css.match(/\.card-theme-cream\s*\{([\s\S]*?)\n\}/);
+  if (!blockMatch) return null;
+  const escaped = varName.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+  const re = new RegExp(`${escaped}:\\s*(#[0-9a-fA-F]{3,8})`);
+  const m = blockMatch[1].match(re);
+  return m ? m[1] : null;
+}
+
+test('CSS tokens — cream theme on cream surfaces (read live from app.css)', async () => {
+  const { readFileSync } = await import('fs');
+  const css = readFileSync(new URL('../src/app.css', import.meta.url).pathname, 'utf8');
+
   const cardBg   = '#fffdf8'; // ag-theme-ramboq .ag-background-color + pub-card
   const gridBg   = '#faf8f4'; // ag-theme-ramboq base row bg
   const oddRowBg = '#f5f2eb'; // ag-theme-ramboq odd row
   const creamBg  = '#f0ece3'; // body
+  const cardVarBg = '#f0ead8'; // --card-bg itself — the darkest bg some of
+                                // these labels actually render on (e.g.
+                                // .trust-lbl / .stat-label / .term-lbl sit
+                                // on #f5f2eb-or-darker tint strips, not the
+                                // lightest #fffdf8 card face; NavCard /
+                                // PerformancePage also paint directly on it)
+  const investorBodyBg = '#fdfaf2'; // investor/[token] page body bg — this
+                                // page now wraps in .card-theme-cream too
+                                // (B1) and reuses --card-as-of-text for its
+                                // meta/label text (.ip-tag, .ip-status,
+                                // .ip-footer, chart axis labels, etc.)
 
-  const checks = [
-    // Fixed tokens (cream theme)
-    ['--card-label-text (fixed #7a5e1e)',  '#7a5e1e', cardBg],
-    ['--card-as-of-text (fixed #7a6650)',  '#7a6650', cardBg],
-    ['--card-muted-text (fixed #736448)',  '#736448', cardBg],
-    // pnl-gain (fixed)
+  // Normal-text (4.5:1) tokens — paired with EVERY bg each one actually
+  // renders against in the app, not just the lightest #fffdf8 card face.
+  // A token that only clears 4.5:1 on the lightest bg but not a darker one
+  // it also renders on is still an AA failure in practice (this is exactly
+  // how --card-zero-text's #7a6b52 -> #6e6049 fix (2026-09) was found —
+  // it passed on #fffdf8 but failed at ~4.32:1 on --card-bg itself).
+  const normalTextChecks = [
+    ['--card-label-text',   cardBg],
+    ['--card-label-text',   oddRowBg],
+    ['--card-label-text',   cardVarBg],
+    ['--card-as-of-text',   cardBg],
+    ['--card-as-of-text',   cardVarBg],
+    ['--card-as-of-text',   investorBodyBg],
+    ['--card-muted-text',   cardBg],
+    ['--card-muted-text',   cardVarBg],
+    ['--card-cell-text',    creamBg],
+    ['--card-currency-text', creamBg],
+    ['--card-gain-text',    cardBg],
+    ['--card-gain-text',    cardVarBg],
+    ['--card-loss-text',    cardBg],
+    ['--card-loss-text',    cardVarBg],
+    ['--card-zero-text',    cardBg],
+    ['--card-zero-text',    cardVarBg],
+    // B1 (2026-09): new gold/champagne-as-text accent token — 4.5:1 tier
+    // for normal/small text (links, "+" suffixes, brand marks).
+    ['--card-accent-text',  cardBg],
+    ['--card-accent-text',  oddRowBg],
+    ['--card-accent-text',  cardVarBg],
+    ['--card-accent-text',  investorBodyBg],
+  ];
+  for (const [varName, bg] of normalTextChecks) {
+    const fg = extractCreamToken(css, varName);
+    expect(fg, `${varName} not found in .card-theme-cream block`).not.toBeNull();
+    const r = contrastRatio(fg, bg);
+    expect(r, `${varName} (${fg}) on ${bg}: ${r.toFixed(2)}`).toBeGreaterThanOrEqual(4.5);
+  }
+
+  // Large-text (3:1) tokens — only ever used at >=24px, or >=18.66px bold,
+  // per the token's own doc comment in app.css.
+  const largeTextChecks = [
+    // B1 (2026-09): large-text tier for the same gold/champagne accent —
+    // used for the investor-portal hero figure and other >=24px / bold
+    // >=18.66px accent numerals where the looser 3:1 floor applies.
+    ['--card-accent-text-large', cardBg],
+    ['--card-accent-text-large', '#ffffff'],
+    // .ip-error-icon's error-box bg (investor page)
+    ['--card-accent-text-large', '#fef5e7'],
+  ];
+  for (const [varName, bg] of largeTextChecks) {
+    const fg = extractCreamToken(css, varName);
+    expect(fg, `${varName} not found in .card-theme-cream block`).not.toBeNull();
+    const r = contrastRatio(fg, bg);
+    expect(r, `${varName} (${fg}) on ${bg}: ${r.toFixed(2)}`).toBeGreaterThanOrEqual(3.0);
+  }
+
+  // Fixed (non-token) cream-theme colors used elsewhere — regression guard,
+  // still literal since these live outside the .card-theme-cream block.
+  const fixedChecks = [
     ['pnl-gain (#047a56) on grid bg',      '#047a56', gridBg],
     ['pnl-gain (#047a56) on odd-row bg',   '#047a56', oddRowBg],
-    // pnl-loss (unchanged, regression guard)
     ['pnl-loss (#dc2626) on grid bg',      '#dc2626', gridBg],
-    // section-heading (fixed)
-    ['section-heading (#8a6e28)',           '#8a6e28', '#ffffff'],
-    // Passing tokens — regression guard
-    ['--card-cell-text (#0c1830)',          '#0c1830', creamBg],
-    ['--card-currency-text (#4a5872)',      '#4a5872', creamBg],
-    ['--card-gain-text (#1a6b3a)',          '#1a6b3a', cardBg],
-    ['--card-loss-text (#9b1c1c)',          '#9b1c1c', cardBg],
-    ['--card-zero-text (#7a6b52)',          '#7a6b52', cardBg],
-    ['field-label (#5a7090)',               '#5a7090', '#ffffff'],
+    ['section-heading (#8a6e28)',          '#8a6e28', '#ffffff'],
+    ['field-label (#5a7090)',              '#5a7090', '#ffffff'],
+    // B1 (2026-09): faq-zoom-hint / footer-link fixes — same muted meta
+    // color already used elsewhere on the FAQ page (~5.06:1 on white).
+    ['faq meta reuse (#5a7090) on white',  '#5a7090', '#ffffff'],
   ];
-  for (const [label, fg, bg] of checks) {
+  for (const [label, fg, bg] of fixedChecks) {
     const r = contrastRatio(fg, bg);
     expect(r, `${label}: ${r.toFixed(2)} fg=${fg} bg=${bg}`).toBeGreaterThanOrEqual(4.5);
+  }
+});
+
+test('CSS tokens — footer champagne text on navy footer bg (#0c1830)', () => {
+  // B1 (2026-09): palette-role fix, not an AA rescue — #c8a84b already
+  // passes here (~7.7:1); #e8c86a (the file's own documented "text on
+  // dark" shade) passes even higher. Guards against a future regression
+  // back to a fixed value that happens to fail on a *different* bg.
+  const bg = '#0c1830';
+  const checks = [
+    ['pub-sep / accent (#c8a84b)',        '#c8a84b'],
+    ['pub-footer-link / text-on-dark (#e8c86a)', '#e8c86a'],
+  ];
+  for (const [label, fg] of checks) {
+    const r = contrastRatio(fg, bg);
+    expect(r, `${label}: ${r.toFixed(2)} on ${bg}`).toBeGreaterThanOrEqual(4.5);
   }
 });
 

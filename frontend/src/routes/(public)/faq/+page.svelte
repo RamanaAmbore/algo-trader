@@ -284,8 +284,10 @@
     outline: none;
   }
   .faq-question:focus-visible { outline: 2px solid #d4920c; outline-offset: 2px; }
-  .faq-question:hover { color: #d4920c; }
-  .faq-open .faq-question { color: #d4920c; }
+  /* B1: raw #d4920c measured ~2.61:1 on the card bg — fails AA at
+     0.85rem/600-weight (not "large" text). Token passes 4.5:1. */
+  .faq-question:hover { color: var(--card-accent-text, #8f6000); }
+  .faq-open .faq-question { color: var(--card-accent-text, #8f6000); }
   .faq-chevron {
     width: 1rem;
     height: 1rem;
@@ -293,7 +295,7 @@
     transition: transform 0.2s;
     flex-shrink: 0;
   }
-  .faq-open .faq-chevron { color: #d4920c; }
+  .faq-open .faq-chevron { color: var(--card-accent-text, #8f6000); }
   .faq-answer {
     padding: 0 0 1rem;
     font-size: 0.83rem;
@@ -341,7 +343,10 @@
   .faq-zoom-hint {
     text-align: center;
     font-size: 0.68rem;
-    color: #8a9ab0;
+    /* B1: #8a9ab0 measured ~2.82:1 on the card bg — fails AA. Reuses the
+       same muted meta color already used elsewhere on this page
+       (.faq-chevron default, .term-lbl equivalents) — ~5.06:1. */
+    color: #5a7090;
     margin-top: 0.35rem;
     pointer-events: none;
   }

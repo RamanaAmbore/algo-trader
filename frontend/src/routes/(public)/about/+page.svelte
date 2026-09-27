@@ -163,7 +163,9 @@
   .stat-plus {
     font-size: 1.5rem;
     font-weight: 700;
-    color: #d4920c;
+    /* B1: raw #d4920c measured ~2.65:1 on the card bg — fails even the
+       large-text 3:1 floor (24px qualifies as "large"). Token clears it. */
+    color: var(--card-accent-text-large, #b87a0a);
   }
   .stat-creds {
     /* Aligned vertically with .stat-num — the numeric stats render at
@@ -310,13 +312,17 @@
     color: #5a4010;
   }
   .cta-btn-primary {
-    background: #d4920c;
-    border-color: #d4920c;
+    /* B1: white text on raw #d4920c measured ~2.65:1 (fails AA at
+       0.8rem bold, not "large" text). Darker gold clears 4.5:1. */
+    background: var(--card-accent-text, #8f6000);
+    border-color: var(--card-accent-text, #8f6000);
     color: #fff;
   }
   .cta-btn-primary:hover {
-    background: #b87a0a;
-    border-color: #b87a0a;
+    /* Reuses the same dark brown already used for .cta-btn:hover text
+       above — deeper still, comfortably passing on hover. */
+    background: #5a4010;
+    border-color: #5a4010;
     color: #fff;
   }
 
