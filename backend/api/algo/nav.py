@@ -52,9 +52,16 @@ Caller responsibility:
   operator can also trigger via the admin endpoint for ad-hoc
   recompute / backfill.
 
-Frontend equivalent: `frontend/src/lib/data/nav.js` (navByAccount).
-Both surfaces share the same v4 formula; any future revision must
-update both files together.
+SSOT (2026-09 NAV consolidation): this module is now the ONLY place
+the v4 formula is computed, firm-level AND per-account
+(`compute_firm_nav()["by_account"]`). The frontend no longer
+maintains a parallel implementation — `frontend/src/lib/data/nav.js`'s
+`navRowForAccount`/`navByAccount` (which had already drifted: missing
+the `realised` term, no unrealised qty!=0 gate, no holdings
+ticker-rescue fallback) were removed in favour of
+`GET /api/nav/by-account` (backend/api/routes/nav.py), which returns
+this module's own `by_account` breakdown directly. Any future formula
+revision only needs to change this file.
 """
 
 from __future__ import annotations
@@ -342,6 +349,30 @@ def _merge_accounts(accounts_in: list[str], new_accts: list[str]) -> None:
             accounts_in.append(a)
 
 
+def _accumulate_by_account(df, out: dict[str, float], from_df_fn, *extra_args) -> None:
+    """Accumulate per-account totals into `out` by filtering `df` to each
+    unique account and re-running the already-tested `from_df_fn` (one of
+    `_funds_from_df` / `_positions_from_df` / `_holdings_from_df`) on that
+    single-account subset.
+
+    Deliberately reuses the exact same vectorized aggregation logic the
+    firm total uses (unrealised qty!=0 gating, ticker-rescue fallback for
+    holdings, etc.) instead of a parallel per-account formula — this is
+    what makes `compute_firm_nav()`'s `by_account` breakdown structurally
+    incapable of drifting from its own firm total: `sum(by_account) ==
+    firm_total` by construction, not by convention.
+    """
+    if df is None or df.empty or "account" not in df.columns:
+        return
+    for acct in df["account"].dropna().unique():
+        acct_s = str(acct)
+        if not acct_s or acct_s == "TOTAL":
+            continue
+        sub = df[df["account"] == acct]
+        chunk, _ = from_df_fn(sub, *extra_args)
+        out[acct_s] = out.get(acct_s, 0.0) + chunk
+
+
 async def _resolve_conn_keys() -> list[str]:
     """Return known broker account keys, falling back to conn_service when local is empty."""
     from backend.brokers.connections import Connections
@@ -354,13 +385,20 @@ async def _resolve_conn_keys() -> list[str]:
     return keys
 
 
-async def _fetch_funds_phase(accounts_in: list[str], errors: list[str]) -> float:
+async def _fetch_funds_phase(
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]] = None,
+) -> float:
     """Fetch margin data and return cash_total; mutates accounts_in and errors.
 
     Market-hours gate: when both segments are closed and the funds route has a
     cached FundsResponse, extract cash_total from that without calling the broker.
     This keeps the NAV cash term consistent with what the funds route itself returns
     and avoids stale pre-settlement broker responses during the W3/W4/W5 windows.
+
+    `by_account`, when passed, is mutated in place with each account's cash
+    leg (cash + option_premium) — optional so existing callers/tests that
+    only need the firm total are unaffected.
     """
     from backend.api.helpers.snapshot_gate import _any_segment_open
     from backend.api.cache import peek as _peek
@@ -383,6 +421,8 @@ async def _fetch_funds_phase(accounts_in: list[str], errors: list[str]) -> float
                     total += cash + premium
                     if acct:
                         accts.append(acct)
+                        if by_account is not None:
+                            by_account[acct] = by_account.get(acct, 0.0) + cash + premium
                 _merge_accounts(accounts_in, accts)
                 return total
             except Exception as e:
@@ -396,14 +436,23 @@ async def _fetch_funds_phase(accounts_in: list[str], errors: list[str]) -> float
             chunk, accts = _funds_from_df(df)
             total += chunk
             _merge_accounts(accounts_in, accts)
+            if by_account is not None:
+                _accumulate_by_account(df, by_account, _funds_from_df)
         return total
     except Exception as e:
         errors.append(f"funds: {e}")
         return 0.0
 
 
-async def _fetch_positions_phase(accounts_in: list[str], errors: list[str]) -> float:
-    """Fetch positions data and return positions_mtm; mutates accounts_in and errors."""
+async def _fetch_positions_phase(
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]] = None,
+) -> float:
+    """Fetch positions data and return positions_mtm; mutates accounts_in and errors.
+
+    `by_account`, when passed, is mutated in place with each account's
+    position M2M leg (unrealised[qty!=0] + realised, per `_positions_from_df`).
+    """
     from backend.brokers.broker_apis import fetch_positions
     try:
         pos_dfs = await asyncio.to_thread(fetch_positions)
@@ -412,6 +461,8 @@ async def _fetch_positions_phase(accounts_in: list[str], errors: list[str]) -> f
             chunk, accts = _positions_from_df(df)
             total += chunk
             _merge_accounts(accounts_in, accts)
+            if by_account is not None:
+                _accumulate_by_account(df, by_account, _positions_from_df)
         return total
     except Exception as e:
         errors.append(f"positions: {e}")
@@ -419,7 +470,8 @@ async def _fetch_positions_phase(accounts_in: list[str], errors: list[str]) -> f
 
 
 async def _fetch_holdings_from_snapshot(
-    accounts_in: list[str], errors: list[str]
+    accounts_in: list[str], errors: list[str],
+    by_account: Optional[dict[str, float]] = None,
 ) -> float:
     """Compute holdings_mtm when NSE is closed using the holdings route SSOT.
 
@@ -438,21 +490,34 @@ async def _fetch_holdings_from_snapshot(
             total += cur
             acct = str(getattr(row, "account", "") or "")
             _merge_accounts(accounts_in, [acct] if acct else [])
+            if by_account is not None and acct:
+                by_account[acct] = by_account.get(acct, 0.0) + cur
         return total
     except Exception as exc:
         errors.append(f"holdings_snapshot: {exc}")
         return 0.0
 
 
-async def _fetch_holdings_phase(accounts_in: list[str], errors: list[str], ticker) -> float:
+async def _fetch_holdings_phase(
+    accounts_in: list[str], errors: list[str], ticker,
+    by_account: Optional[dict[str, float]] = None,
+) -> float:
     """Fetch holdings data and return holdings_mtm; mutates accounts_in and errors.
 
     NSE closed → _fetch_holdings_from_snapshot (daily_book via _holdings_snapshot SSOT).
     NSE open   → live broker fetch; cur_val is current during the session.
+
+    `by_account` propagates through both branches — mutated in place with
+    each account's holdings M2M leg when passed.
     """
     from backend.api.helpers.snapshot_gate import is_exchange_closed_now
     try:
         if is_exchange_closed_now("NSE"):
+            # Positional-arg call preserved exactly (no by_account) when the
+            # caller didn't ask for a breakdown — keeps existing call-site
+            # assertions (accounts_in, errors) intact in tests.
+            if by_account is not None:
+                return await _fetch_holdings_from_snapshot(accounts_in, errors, by_account)
             return await _fetch_holdings_from_snapshot(accounts_in, errors)
 
         from backend.brokers.broker_apis import fetch_holdings
@@ -462,6 +527,8 @@ async def _fetch_holdings_phase(accounts_in: list[str], errors: list[str], ticke
             chunk, accts = _holdings_from_df(df, ticker)
             total += chunk
             _merge_accounts(accounts_in, accts)
+            if by_account is not None:
+                _accumulate_by_account(df, by_account, _holdings_from_df, ticker)
         return total
     except Exception as e:
         errors.append(f"holdings: {e}")
@@ -469,7 +536,8 @@ async def _fetch_holdings_phase(accounts_in: list[str], errors: list[str], ticke
 
 
 async def compute_firm_nav() -> dict:
-    """Return today's NAV plus the breakdown components.
+    """Return today's NAV plus the breakdown components — firm-level AND
+    per-account.
 
     Shape:
         {
@@ -479,12 +547,33 @@ async def compute_firm_nav() -> dict:
           "holdings_mtm":    float,
           "accounts":        list[str],   # which broker codes contributed
           "errors":          list[str],   # per-account failures (non-blocking)
+          "by_account": {
+              "<account_code>": {
+                  "cash": float, "pos_m2m": float,
+                  "holdings_mtm": float, "nav": float,
+              }, ...
+          },
         }
 
     Each broker-account call is wrapped in its own try/except so a
     single offline broker doesn't break the whole snapshot. The
     `errors` list surfaces what was excluded; the `accounts` list
     is the inverse (what WAS included).
+
+    `by_account` is the SSOT for every per-account NAV consumer
+    (PerformancePage's NAV grid via `GET /api/nav/by-account`, and — by
+    extension — the dashboard chip and NavCard, which all read the same
+    `compute_firm_nav()` call). It is built by
+    `_accumulate_by_account()` re-running the SAME per-account-filtered
+    `_funds_from_df` / `_positions_from_df` / `_holdings_from_df` calls
+    the firm total uses, so `sum(row.nav for row in by_account.values())
+    == nav` holds by construction (module-level invariant test:
+    `backend/tests/test_nav_by_account.py`). This replaces the parallel
+    client-side formula that used to live in
+    `frontend/src/lib/data/nav.js` (`navRowForAccount` / `navByAccount`,
+    removed 2026-09) — that formula had already drifted from this one
+    (missing the `realised` term, no unrealised qty!=0 gate, no holdings
+    ticker-rescue fallback).
 
     Vectorized via Polars — each per-account DataFrame is converted
     once with pl.from_pandas() and aggregated with .sum() expressions
@@ -495,13 +584,29 @@ async def compute_firm_nav() -> dict:
     _ticker = _get_ticker()
     accounts_in: list[str] = []
     errors: list[str] = []
+    cash_by_acct: dict[str, float] = {}
+    pos_by_acct: dict[str, float] = {}
+    hold_by_acct: dict[str, float] = {}
 
     await _resolve_conn_keys()   # side-effects: ensures registry populated
-    cash_total     = await _fetch_funds_phase(accounts_in, errors)
-    positions_mtm  = await _fetch_positions_phase(accounts_in, errors)
-    holdings_mtm   = await _fetch_holdings_phase(accounts_in, errors, _ticker)
+    cash_total     = await _fetch_funds_phase(accounts_in, errors, cash_by_acct)
+    positions_mtm  = await _fetch_positions_phase(accounts_in, errors, pos_by_acct)
+    holdings_mtm   = await _fetch_holdings_phase(accounts_in, errors, _ticker, hold_by_acct)
 
     nav = cash_total + positions_mtm + holdings_mtm
+
+    by_account: dict[str, dict[str, float]] = {}
+    for acct in accounts_in:
+        c = cash_by_acct.get(acct, 0.0)
+        p = pos_by_acct.get(acct, 0.0)
+        h = hold_by_acct.get(acct, 0.0)
+        by_account[acct] = {
+            "cash": round(c, 2),
+            "pos_m2m": round(p, 2),
+            "holdings_mtm": round(h, 2),
+            "nav": round(c + p + h, 2),
+        }
+
     return {
         "nav": round(nav, 2),
         "cash_total": round(cash_total, 2),           # = Σ (cash_sod + option_premium)
@@ -509,6 +614,7 @@ async def compute_firm_nav() -> dict:
         "holdings_mtm": round(holdings_mtm, 2),       # = Σ holding.cur_val
         "accounts": sorted(accounts_in),
         "errors": errors,
+        "by_account": by_account,
     }
 
 

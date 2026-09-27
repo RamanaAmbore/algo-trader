@@ -63,6 +63,24 @@ class NavComputeResponse(msgspec.Struct):
     errors:        list[str]
 
 
+class NavByAccountRow(msgspec.Struct):
+    """One account's live v4 NAV breakdown — SSOT row shape shared by
+    PerformancePage's NAV grid, NavCard's FIRM NAV panel, and the
+    dashboard NAV chip (all ultimately sum/read these same rows)."""
+    account:      str
+    cash:         float   # cash_sod + option_premium
+    pos_m2m:      float   # Σ position.unrealised(qty!=0) + Σ position.realised
+    holdings_mtm: float   # Σ holdings.cur_val
+    nav:          float   # cash + pos_m2m + holdings_mtm
+
+
+class NavByAccountResponse(msgspec.Struct):
+    rows:   list[NavByAccountRow]
+    total:  Optional[NavByAccountRow]
+    as_of:  str
+    errors: list[str]
+
+
 class InvestorSlice(msgspec.Struct):
     """Per-investor NAV slice. Returned by /api/nav/me.
 
@@ -211,6 +229,73 @@ class NavController(Controller):
                   .order_by(NavDaily.as_of_date.asc())
             )).scalars().all()
         return NavListResponse(rows=[_to_row(r) for r in rows], days=days)
+
+    @get("/by-account")
+    async def nav_by_account(self, request: Request) -> NavByAccountResponse:
+        """Per-account LIVE NAV breakdown — the SAME v4 computation
+        `compute_firm_nav()` uses for the firm total
+        (`backend/api/algo/nav.py`), broken out per account. This is the
+        SSOT for PerformancePage's NAV grid; it replaces the parallel
+        client-side formula that used to live in
+        `frontend/src/lib/data/nav.js` (`navRowForAccount`/`navByAccount`,
+        removed 2026-09) — that formula had drifted (missing `realised`,
+        no unrealised qty!=0 gate, no holdings ticker-rescue fallback).
+
+        Deliberately unguarded — this route follows the SAME public/masked
+        pattern `/api/funds`, `/api/positions`, `/api/holdings` already use
+        (see `backend/api/routes/funds.py:get_funds`): real live numbers
+        for every visitor (anonymous /performance investors included, same
+        as NavCard's public firm-aggregate panel), account codes masked
+        for non-admin/non-designated callers via `mask_account`, and
+        `trader` role horizontally scoped to `assigned_accounts`. This
+        does NOT expose anything the three underlying routes don't already
+        expose individually — it's an aggregate view over the same data.
+        """
+        from backend.api.algo.nav import compute_firm_nav as _algo_compute_firm_nav
+        from backend.api.auth_guard import is_admin_request
+        from backend.api.rbac import (
+            normalise_role, resolve_role_from_connection, user_scope_for_connection,
+        )
+        from backend.shared.helpers.utils import mask_account
+
+        snap = await _algo_compute_firm_nav()
+        by_acct: dict = dict(snap.get("by_account") or {})
+
+        role = normalise_role(resolve_role_from_connection(request))
+        if role == "trader":
+            allowed, _ = await user_scope_for_connection(request)
+            allowed_set = {str(a).upper() for a in (allowed or [])}
+            by_acct = {a: v for a, v in by_acct.items() if str(a).upper() in allowed_set}
+
+        admin = is_admin_request(request)
+        rows: list[NavByAccountRow] = []
+        for acct in sorted(by_acct.keys()):
+            v = by_acct[acct]
+            code = acct if admin else mask_account(acct)
+            rows.append(NavByAccountRow(
+                account=code,
+                cash=float(v.get("cash", 0.0)),
+                pos_m2m=float(v.get("pos_m2m", 0.0)),
+                holdings_mtm=float(v.get("holdings_mtm", 0.0)),
+                nav=float(v.get("nav", 0.0)),
+            ))
+
+        total: Optional[NavByAccountRow] = None
+        if rows:
+            total = NavByAccountRow(
+                account="TOTAL",
+                cash=round(sum(r.cash for r in rows), 2),
+                pos_m2m=round(sum(r.pos_m2m for r in rows), 2),
+                holdings_mtm=round(sum(r.holdings_mtm for r in rows), 2),
+                nav=round(sum(r.nav for r in rows), 2),
+            )
+
+        return NavByAccountResponse(
+            rows=rows,
+            total=total,
+            as_of=datetime.now(timezone.utc).isoformat(),
+            errors=list(snap.get("errors") or []),
+        )
 
     @get("/latest", guards=[cap_guard("view_nav")])
     async def latest_nav(self) -> NavLatestResponse:
