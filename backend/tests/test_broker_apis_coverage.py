@@ -1243,6 +1243,7 @@ class TestRecordSessionOk:
 
     def teardown_method(self):
         broker_apis._FETCH_HEALTH.clear()
+        broker_apis._last_session_ok_event_at.clear()
 
     def test_empty_account_noop(self):
         """Empty-string account is a no-op."""
@@ -1267,6 +1268,64 @@ class TestRecordSessionOk:
         broker_apis._FETCH_HEALTH[account]["last_ok_at"] = 0.0
         broker_apis.record_session_ok(account)
         assert broker_apis._FETCH_HEALTH[account]["last_ok_at"] > 0.0
+
+    def test_emits_session_ok_event_market_hours_independent(self):
+        """record_session_ok emits a `session_ok` connection event.
+
+        This is the 2026-09 fix: connection/session health tracking must
+        stay live regardless of market-open status (it must NOT depend
+        on `_task_performance`'s market/weekday gate the way `fetch_ok`
+        does). record_session_ok is called unconditionally from
+        conn_service's 90s heartbeat loop, so emitting an event here
+        keeps `broker_connection_events` from going dark for hours
+        whenever the market is closed / it's a weekend / dev is idle.
+        """
+        account = "DH6847"
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis.record_session_ok(account)
+        mock_emit.assert_called_once()
+        call_args = mock_emit.call_args[0]
+        assert call_args[0] == account
+        assert call_args[2] == "session_ok"
+
+    def test_session_ok_event_throttled_within_window(self):
+        """A second call inside _SESSION_OK_EVENT_MIN_INTERVAL_S does not
+        emit a second event — bounds broker_connection_events volume for
+        a heartbeat that fires every 90s, 24/7."""
+        account = "DH6847"
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis.record_session_ok(account)
+            broker_apis.record_session_ok(account)
+            broker_apis.record_session_ok(account)
+        assert mock_emit.call_count == 1, (
+            f"Expected exactly one session_ok event within the throttle "
+            f"window, got {mock_emit.call_count}"
+        )
+        # last_ok_at still advances on every call even when the event is throttled.
+        assert broker_apis._FETCH_HEALTH[account]["last_ok_at"] > 0.0
+
+    def test_session_ok_event_fires_again_after_throttle_window(self):
+        """Once the throttle window has elapsed, the next call emits a fresh event."""
+        account = "DH6847"
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis.record_session_ok(account)
+            # Simulate the throttle window having elapsed.
+            broker_apis._last_session_ok_event_at[account] -= (
+                broker_apis._SESSION_OK_EVENT_MIN_INTERVAL_S + 1.0
+            )
+            broker_apis.record_session_ok(account)
+        assert mock_emit.call_count == 2
+
+    def test_session_ok_independent_per_account(self):
+        """The throttle is keyed per-account — one account's recent event
+        does not suppress another account's event (this is what makes
+        DH6847 show up on its own cadence, not shadowed by other accounts)."""
+        with patch.object(broker_apis, "_emit_conn_event") as mock_emit:
+            broker_apis.record_session_ok("DH6847")
+            broker_apis.record_session_ok("DH3747")
+        assert mock_emit.call_count == 2
+        emitted_accounts = {c[0][0] for c in mock_emit.call_args_list}
+        assert emitted_accounts == {"DH6847", "DH3747"}
 
 
 class TestRecordFetchNonOptinRecovery:

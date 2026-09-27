@@ -1017,19 +1017,47 @@ def _record_breaker_state(
     return _new_breaker_open, _was_halfopen, _was_recovering
 
 
+# Throttle for the `session_ok` audit-trail event emitted by
+# record_session_ok() (see below). Without this, the conn_service
+# _health_heartbeat() loop (every 90s, 24/7, market-hours-independent)
+# would write a DB row per account every cycle forever — ~960/account/day
+# vs. the ~5-15/day a market-hours-gated fetch_ok cadence produces today.
+# Throttling to once per _SESSION_OK_EVENT_MIN_INTERVAL_S keeps the audit
+# trail meaningful (a fresh row roughly every 5 min whenever the session
+# is healthy) without materially changing broker_connection_events volume.
+_SESSION_OK_EVENT_MIN_INTERVAL_S: float = 300.0  # 5 min
+_last_session_ok_event_at: dict[str, float] = {}
+
+
 def record_session_ok(account: str) -> None:
     """Stamp last_ok_at when a broker session token is confirmed valid.
 
-    Called from connections.py after token_ok so the health badge
-    reflects session state even before the first data fetch of the day.
-    Does NOT touch circuit-breaker counters — login success is not a
-    data-fetch probe.
+    Called from connections.py after token_ok, AND from conn_service's
+    90s _health_heartbeat() loop for every account with a non-expired
+    token — so the health badge reflects session state even before the
+    first data fetch of the day, and (2026-09 fix) even when
+    `_task_performance`'s broker-data refresh is skipped entirely for
+    hours (market closed / weekend / dev-idle). Broker DATA fetches
+    (holdings/positions/margins) correctly stay gated behind market-open
+    checks — this function intentionally does NOT: connection/session
+    health tracking is a distinct concern from data-serving and must
+    stay live 24/7 so `broker_connection_events` — the table operators
+    inspect to diagnose "is this account's connection actually working"
+    — doesn't go dark for hours at a time while the underlying broker
+    session is demonstrably fine (e.g. market_status/orders calls still
+    succeeding). Does NOT touch circuit-breaker counters — login/session
+    validity is not a data-fetch probe.
     """
     if not account:
         return
+    now = _time.time()
     with _BREAKER_LOCK:
         e = _FETCH_HEALTH.setdefault(account, _default_health_entry())
-        e["last_ok_at"] = _time.time()
+        e["last_ok_at"] = now
+    last_evt = _last_session_ok_event_at.get(account, 0.0)
+    if now - last_evt >= _SESSION_OK_EVENT_MIN_INTERVAL_S:
+        _last_session_ok_event_at[account] = now
+        _emit_conn_event(account, _broker_id_safe(account), "session_ok")
 
 
 def _record_fetch(account: str, ok: bool, error: str = "") -> None:

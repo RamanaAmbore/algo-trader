@@ -125,10 +125,19 @@ async def create_broker_connection_events_table(conn) -> None:  # type: ignore[n
 
     Records auth_fail, fetch_fail, token_ok, rotation_detected,
     fetch_ok_recovery, circuit_open, circuit_close, ticker_close,
-    ticker_error, ticker_reconnect events from connections.py,
+    ticker_error, ticker_reconnect, session_ok events from connections.py,
     broker_apis.py, dhan.py, and kite_ticker.py. Indexed by
     (account, event_ts DESC), (event_type, event_ts DESC), and
     event_ts DESC for the admin /broker-connection-events endpoint.
+
+    session_ok (2026-09): emitted by record_session_ok() from the
+    conn_service 90s health-heartbeat loop, throttled to once per 5 min
+    per account. Market-hours-independent by design — unlike fetch_ok
+    (only emitted from the market-gated _task_performance broker-data
+    refresh), session_ok keeps the audit trail live even when the
+    market is closed / it's a weekend / dev is idle, so connection
+    health tracking never falsely looks "gone dark" while the
+    underlying broker session is actually fine.
 
     No retention purge defined — operator manages manually.
     """
