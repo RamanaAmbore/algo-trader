@@ -2332,6 +2332,8 @@
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
           bind:templateId={_sharedTemplateId}
+          templateName={_selectedTemplate?.name || _selectedTemplate?.slug || ''}
+          templateIsNone={_shellUsingNone}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}

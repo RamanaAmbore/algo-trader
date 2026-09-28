@@ -51,6 +51,8 @@
    *   onAccountChange?: (account: string) => void,
    *   refreshKey?:     number,
    *   templateId?:     number | null,
+   *   templateName?:   string,
+   *   templateIsNone?: boolean,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -85,6 +87,14 @@
     // flips to Chain (and vice versa). Standalone callers leave it
     // unbound — the chain falls back to 'none' on first paint.
     templateId = $bindable(/** @type {number|null} */ (null)),
+    // Resolved template display info — owned by SymbolPanel's own
+    // _selectedTemplate/_shellUsingNone (the single shared Template
+    // Default/None picker below the tab body). Passed down, not
+    // re-derived here, so the strike grid's per-leg badge can show
+    // WHICH template the system auto-picked without duplicating the
+    // template-catalog lookup the shell already owns.
+    templateName   = /** @type {string} */ (''),
+    templateIsNone = false,
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -510,6 +520,18 @@
   let _localBasket   = $state([]);
   // Effective basket — shell's if lifted, otherwise local.
   const chainBasket  = $derived(_externalBasket ? (basketLegs ?? []) : _localBasket);
+  // (strike, optType) -> staged leg, for the per-row lot-detail badge.
+  // Keyed off the fields addOptionToBasket already stamps onto each new
+  // leg (strike/optType) — avoids re-resolving/parsing the tradingsymbol
+  // per row just to find out "is this strike's CE/PE already staged".
+  const _basketLegByKey = $derived.by(() => {
+    /** @type {Map<string, any>} */
+    const map = new Map();
+    for (const b of chainBasket) {
+      if (b.strike != null && b.optType) map.set(`${b.strike}:${b.optType}`, b);
+    }
+    return map;
+  });
 
   let basketPlacing  = $state(false);
   let basketError    = $state('');
@@ -635,6 +657,10 @@
       account:  _account,
       lots: 1, lotSize: Number(inst.ls || 1), product: 'NRML',
       limit: Number(limit) || 0, chaseAgg: 'low',
+      // Row-lookup fields only (not read by placeTicketOrder, which
+      // builds its own explicit payload) — let the strike grid show a
+      // per-leg lot badge without re-resolving/parsing the tradingsymbol.
+      strike, optType,
     });
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
   }
@@ -908,6 +934,9 @@
             {@const peQ = chainQuotesMap?.[String(k)]?.pe}
             {@const ceSpreadWide = ceQ?.bid > 0 && ceQ?.ask > 0 && (ceQ.ask - ceQ.bid) / ((ceQ.ask + ceQ.bid) / 2) > 0.10}
             {@const peSpreadWide = peQ?.bid > 0 && peQ?.ask > 0 && (peQ.ask - peQ.bid) / ((peQ.ask + peQ.bid) / 2) > 0.10}
+            {@const ceLeg = _basketLegByKey.get(`${k}:CE`)}
+            {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
+            {@const tmplAttached = !templateIsNone && !!templateName}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} use:chainAtmRow>
                 <td class="chain-td-ce">
@@ -928,6 +957,10 @@
                                 title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
+                      {#if ceLeg}
+                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L</span>
+                      {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
@@ -948,6 +981,10 @@
                                 title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
+                      {#if peLeg}
+                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L</span>
+                      {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
@@ -980,6 +1017,10 @@
                                 title={ceQ?.bid > 0 || ceQ?.ask > 0 ? `SELL ${k} CE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'CE', 'short')}>−</button>
                       </span>
+                      {#if ceLeg}
+                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L</span>
+                      {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
@@ -1000,6 +1041,10 @@
                                 title={peQ?.bid > 0 || peQ?.ask > 0 ? `SELL ${k} PE` : "No quote — price unknown"}
                                 onclick={() => addOptionToBasket(k, 'PE', 'short')}>−</button>
                       </span>
+                      {#if peLeg}
+                        <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L</span>
+                      {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
                       {/if}
@@ -1356,10 +1401,14 @@
      family as the header. */
   .chain-row-itm-call > td { background: var(--c-long-06); }
   .chain-row-itm-put  > td { background: var(--c-short-06); }
+  /* Softened 2026-09-29 — operator: the top+bottom amber border read
+     as an "overpowering underline" at 0.55 alpha. Same mechanism,
+     gentler weight; still reads clearly as "this is the ATM row"
+     without fighting the row's own content for attention. */
   .chain-row-atm > td {
-    background: rgba(251,191,36,0.18);
-    border-top:    1px solid rgba(251,191,36,0.55);
-    border-bottom: 1px solid rgba(251,191,36,0.55);
+    background: rgba(251,191,36,0.10);
+    border-top:    1px solid rgba(251,191,36,0.32);
+    border-bottom: 1px solid rgba(251,191,36,0.32);
   }
   /* Sticky "active row" — the strike the operator last poked. Distinct
      violet accent so it never fights the amber ATM stripe (which
@@ -1422,6 +1471,42 @@
     font-family: monospace; font-size: var(--fs-sm); font-weight: 700;
     letter-spacing: 0.04em; margin-left: 0.3rem;
     animation: chain-quick-fade 0.9s ease-out forwards;
+  }
+  /* Persistent per-leg lot badge — unlike .chain-quick-toast (900ms
+     flash), this stays as long as the strike's CE/PE leg is staged in
+     the basket, so the operator can see at a glance which legs of a
+     row are already added without re-clicking. Neutral slate at rest;
+     gets an amber ring + dot when a non-None template is currently
+     armed (`tmplAttached`), so "this leg will get TP/SL/Wing attached
+     on fill" is visible right at the leg, not only in the shared
+     Template Default/None row below the tab body. */
+  .chain-leg-badge {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.2rem;
+    padding: 1px 5px;
+    border-radius: 2px;
+    margin-left: 0.3rem;
+    font-family: monospace;
+    font-size: var(--fs-xs, 0.65rem);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    background: rgba(148, 163, 184, 0.14);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    color: var(--algo-slate);
+  }
+  .chain-leg-badge-tmpl {
+    background: rgba(251, 191, 36, 0.14);
+    border-color: rgba(251, 191, 36, 0.45);
+    color: var(--c-action);
+  }
+  .chain-leg-badge-tmpl::before {
+    content: '';
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--c-action);
+    flex-shrink: 0;
   }
   /* Template selector — small inline label + dropdown. Sized to sit
      next to Clear / Place without dominating the action row. */
