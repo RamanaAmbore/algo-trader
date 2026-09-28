@@ -723,6 +723,56 @@ async def _overlay_snapshot_for_closed_exchanges(rows: list, *, kind: str) -> li
     return out
 
 
+def _extract_per_account_signal(per_acct: list) -> list[dict]:
+    """Normalize `per_acct` into a list of {account, stale, fetch_failed,
+    stale_since} dicts, regardless of whether `pd.concat` has already run
+    on it.
+
+    2026-09-27 audit fix: `per_acct` here is `broker_apis.fetch_positions()`'s
+    return value, which runs `_apply_backfill_to_list` internally —
+    whenever 2+ accounts are configured and at least one holds real
+    positions, that helper concatenates every per-account frame into ONE
+    combined frame BEFORE this module ever sees it. `pd.concat` clears
+    `.attrs` on the result whenever the inputs' attrs differ (the normal
+    case — only a stale/failed account's frame carries these keys), so
+    every function below that reads `df.attrs` per-frame always saw {}
+    the moment a second account was configured — confirmed by direct
+    reproduction: a stale-substituted account, a zero-row fetch_failed
+    account, and a healthy account together yielded `_accounts_flagged_
+    stale() == set()`, `_build_stale_since_map() == {}`,
+    `_positions_partial_outage_accounts() == []`, and
+    `_is_positions_outage() == False` — a real per-account outage
+    silently went undetected.
+
+    Fix: `_apply_backfill_to_list` now captures each input frame's own
+    attrs into a `_per_account_signal` list BEFORE concatenating, stashed
+    on the combined frame's own attrs. This function reads that when
+    present (the common case, `len(per_acct) == 1` with the attr set);
+    otherwise falls back to reading each frame's own attrs directly,
+    unchanged from before — covers `_apply_backfill_to_list`'s early-return
+    paths (empty / all-empty input), where `per_acct` is still the raw,
+    un-concatenated multi-frame list with intact per-frame attrs.
+    """
+    if len(per_acct) == 1:
+        sig = getattr(per_acct[0], "attrs", {}).get("_per_account_signal")
+        if sig is not None:
+            return sig
+    out: list[dict] = []
+    for df in per_acct:
+        attrs = getattr(df, "attrs", {}) or {}
+        acct = attrs.get("account")
+        if not acct and not df.empty and "account" in df.columns:
+            acct = df["account"].iloc[0]
+        out.append({
+            "account": str(acct) if acct else None,
+            "stale": bool(attrs.get("stale", False)),
+            "fetch_failed": bool(attrs.get("fetch_failed", False)),
+            "stale_since": attrs.get("stale_since"),
+            "empty": bool(df.empty),
+        })
+    return out
+
+
 def _is_positions_outage(per_acct: list) -> bool:
     """Return True when `per_acct` (the raw per-account DataFrame list from
     `broker_apis.fetch_positions()`) represents a masked broker outage
@@ -747,7 +797,8 @@ def _is_positions_outage(per_acct: list) -> bool:
     outage, so callers fall through to the legitimate empty-book path.
     """
     if per_acct:
-        return all(df.attrs.get('fetch_failed', False) for df in per_acct)
+        signal = _extract_per_account_signal(per_acct)
+        return bool(signal) and all(s['fetch_failed'] for s in signal)
     from backend.brokers.registry import _loaded_accounts
     return bool(_loaded_accounts())
 
@@ -779,22 +830,13 @@ def _positions_partial_outage_accounts(per_acct: list) -> list[str]:
     """
     if not per_acct:
         return []
-    failed = [
-        df for df in per_acct
-        if (getattr(df, "attrs", {}) or {}).get("fetch_failed")
-    ]
-    if not failed or len(failed) == len(per_acct):
+    signal = _extract_per_account_signal(per_acct)
+    failed = [s for s in signal if s['fetch_failed']]
+    if not failed or len(failed) == len(signal):
         # Nothing failed, or full outage (already handled by
         # _is_positions_outage) — neither is the "partial" shape.
         return []
-    out: list[str] = []
-    for df in failed:
-        attrs = getattr(df, "attrs", {}) or {}
-        acct = attrs.get("account")
-        if not acct and not df.empty and "account" in df.columns:
-            acct = df["account"].iloc[0]
-        out.append(str(acct) if acct else "?")
-    return out
+    return [s['account'] if s['account'] else "?" for s in failed]
 
 
 def _accounts_flagged_stale(per_acct: list) -> set[str]:
@@ -811,15 +853,9 @@ def _accounts_flagged_stale(per_acct: list) -> set[str]:
     for callers that populate rows without the attr.
     """
     out: set[str] = set()
-    for _df in (per_acct or []):
-        attrs = getattr(_df, "attrs", {}) or {}
-        if not (attrs.get("stale") or attrs.get("fetch_failed")):
-            continue
-        acct = attrs.get("account")
-        if not acct and not _df.empty and "account" in _df.columns:
-            acct = _df["account"].iloc[0]
-        if acct:
-            out.add(str(acct))
+    for s in _extract_per_account_signal(per_acct or []):
+        if s['account'] and (s['stale'] or s['fetch_failed']):
+            out.add(s['account'])
     return out
 
 
@@ -832,14 +868,12 @@ def _build_stale_since_map(per_acct: list) -> dict[str, str]:
     from zoneinfo import ZoneInfo
     from datetime import datetime
     result: dict[str, str] = {}
-    for _df in (per_acct or []):
-        _ss = _df.attrs.get("stale_since")
-        if not _ss or _df.empty or "account" not in _df.columns:
+    for s in _extract_per_account_signal(per_acct or []):
+        if not s['stale_since'] or s['empty'] or not s['account']:
             continue
-        _acct = str(_df["account"].iloc[0])
         try:
-            result[_acct] = datetime.fromtimestamp(
-                float(_ss), tz=ZoneInfo("Asia/Kolkata")
+            result[s['account']] = datetime.fromtimestamp(
+                float(s['stale_since']), tz=ZoneInfo("Asia/Kolkata")
             ).strftime("%H:%M IST")
         except Exception:
             pass

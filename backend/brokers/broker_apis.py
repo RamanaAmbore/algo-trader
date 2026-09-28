@@ -1409,10 +1409,22 @@ def _fetch_holdings_cached() -> list[pd.DataFrame]:
     # never serves zero-LTP rows that Dhan returns off-market hours.
     # _fetch_holdings_local records LKG per-account BEFORE backfill; this
     # second pass overwrites those entries with the patched prices.
+    #
+    # 2026-09-27 audit fix: this re-record must be SKIPPED for any account
+    # whose frame was itself stale-substituted (already-old LKG data,
+    # just re-priced by backfill_market_data — not a genuine new
+    # success). Previously this loop re-stamped EVERY account
+    # unconditionally, so a continuously-failing account's `stale_since`
+    # was reset to "now" every single poll cycle, and the 24h
+    # `_LKG_MAX_AGE_S` cutoff (meant to stop substituting once an
+    # account has been offline too long) could never fire.
     if backfilled:
         combined = backfilled[0]
         if not combined.empty and "account" in combined.columns:
+            _stale_accts = _stale_accounts_from_signal(combined)
             for acct, df_acct in combined.groupby("account", sort=False):
+                if str(acct) in _stale_accts:
+                    continue
                 _record_lkg_frame("holdings", str(acct), df_acct.copy())
     return backfilled
 
@@ -1426,11 +1438,15 @@ def _fetch_positions_cached() -> list[pd.DataFrame]:
     else:
         result = _fetch_positions_local()
     backfilled = _apply_backfill_to_list(result)
-    # Upgrade LKG to post-backfill prices — same rationale as holdings above.
+    # Upgrade LKG to post-backfill prices — same rationale, and the same
+    # 2026-09-27 stale-skip fix, as holdings above.
     if backfilled:
         combined = backfilled[0]
         if not combined.empty and "account" in combined.columns:
+            _stale_accts = _stale_accounts_from_signal(combined)
             for acct, df_acct in combined.groupby("account", sort=False):
+                if str(acct) in _stale_accts:
+                    continue
                 _record_lkg_frame("positions", str(acct), df_acct.copy())
     return backfilled
 
@@ -1898,6 +1914,51 @@ def _enrich_holdings(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def _capture_per_account_signal(frames: list[pd.DataFrame]) -> list[dict]:
+    """Extract {account, stale, fetch_failed, stale_since} from each
+    input frame's OWN `.attrs` before `_apply_backfill_to_list` collapses
+    them into one combined frame via `pd.concat`.
+
+    2026-09-27 audit fix: `pd.concat` clears `.attrs` on the resulting
+    frame whenever the inputs' attrs differ — the normal case here, since
+    only a stale/failed account's frame carries these keys at all. A
+    fetch_failed frame with zero rows is ALSO excluded from `non_empty`
+    entirely (silently absent from the concatenated data), so its signal
+    would be lost twice over without this capture. Stashed onto the
+    combined frame's own attrs as `_per_account_signal` so
+    `positions.py`'s stale/outage detection (which needs this recorded
+    BEFORE concat, per its own docstrings) can still read it after the
+    fact. See `positions.py:_extract_per_account_signal`.
+    """
+    out: list[dict] = []
+    for df in frames:
+        attrs = getattr(df, "attrs", {}) or {}
+        acct = attrs.get("account")
+        if not acct and not df.empty and "account" in df.columns:
+            acct = df["account"].iloc[0]
+        out.append({
+            "account": str(acct) if acct else None,
+            "stale": bool(attrs.get("stale", False)),
+            "fetch_failed": bool(attrs.get("fetch_failed", False)),
+            "stale_since": attrs.get("stale_since"),
+            "empty": bool(df.empty),
+        })
+    return out
+
+
+def _stale_accounts_from_signal(combined: "pd.DataFrame") -> set[str]:
+    """Account codes flagged `stale=True` in `combined.attrs['_per_account_signal']`
+    (set by `_apply_backfill_to_list`). Used by the post-backfill LKG
+    re-record passes in `_fetch_holdings_cached`/`_fetch_positions_cached`
+    to skip re-stamping a stale-substituted account's `stale_since` —
+    see those call sites for the 2026-09-27 audit fix this backs.
+    """
+    return {
+        s["account"] for s in (combined.attrs.get("_per_account_signal") or [])
+        if s.get("stale") and s.get("account")
+    }
+
+
 def _apply_backfill_to_list(
     frames: list[pd.DataFrame],
 ) -> list[pd.DataFrame]:
@@ -1921,12 +1982,17 @@ def _apply_backfill_to_list(
     """
     if not frames:
         return frames
+    # Captured BEFORE the non_empty filter / concat below — both steps
+    # destroy per-account attrs one way or another (see
+    # _capture_per_account_signal's docstring).
+    signal = _capture_per_account_signal(frames)
     non_empty = [f for f in frames if not f.empty]
     if not non_empty:
         return frames
     try:
         combined = pd.concat(non_empty, ignore_index=True)
         backfill_market_data(combined)
+        combined.attrs["_per_account_signal"] = signal
         return [combined]
     except Exception as _e:
         logger.warning(f"_apply_backfill_to_list: backfill failed: {_e}")
@@ -2921,7 +2987,22 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
     except Exception as e:
         logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
+        # 2026-09-27 audit fix: this used to fall through to
+        # _record_lkg_frame below unconditionally, storing this EMPTY,
+        # failed frame as the new "last known good" — overwriting
+        # whatever real margins data was cached from the last successful
+        # fetch. Holdings/positions already freeze-to-last-known-good on
+        # failure (an early return / stale substitution before ever
+        # reaching their own _record_lkg_frame call); margins was the one
+        # kind missing that pattern. Substitute the real LKG frame here
+        # (marks attrs['stale']=True) instead of returning + caching an
+        # empty frame, and skip the LKG write entirely so a transient
+        # failure can never clobber a good cached entry.
+        lkg = _stale_substitute_frame("margins", account) if account else pd.DataFrame()
+        if not lkg.empty:
+            return lkg
         df_margins.attrs['fetch_failed'] = True
+        return df_margins
 
     # Stash a shallow copy for the stale-substitute path when this
     # account's breaker opens on a future cycle. Empty frames are also
