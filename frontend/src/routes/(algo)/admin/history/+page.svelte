@@ -563,7 +563,16 @@
   .hist-side-sell { background: rgba(248, 113, 113, 0.15); color: #fca5a5; border: 1px solid rgba(248,113,113,0.45); }
 
   .cell-pos { color: var(--c-long); }
-  .cell-neg { color: #fca5a5; }
+  /* 2026-09-28 audit fix — "History grid uses a different red for
+     negative P&L than everywhere else". This page's .cell-pos was
+     moved to var(--c-long) in the earlier off-white→white token sweep
+     (73140a20) but .cell-neg was missed, left on the off-token
+     #fca5a5 (--algo-red-text-bright, a lighter pink) instead of the
+     canonical --c-short (--algo-red, #f87171) every other P&L surface
+     uses. Scoped to cash_delta/realised_m2m cells only — .hist-side-sell
+     (the BUY/SELL pill's own text color, a few lines up) is a
+     deliberately different, unrelated role and is left untouched. */
+  .cell-neg { color: var(--c-short); }
 
   /* Per-row Audit link in Orders tab — drill-through to /admin/audit
      filtered by request_id. */

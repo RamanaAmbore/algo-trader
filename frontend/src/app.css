@@ -781,7 +781,15 @@
 .ag-theme-algo .ag-cell.pnl-zero { color: var(--algo-dim) !important; }
 .ag-theme-algo .ag-cell.dir-gain { color: var(--algo-green) !important; }
 .ag-theme-algo .ag-cell.dir-loss { color: var(--algo-amber) !important; }
-.ag-theme-algo .ag-cell.dir-flat { color: var(--algo-slate) !important; }
+/* 2026-09-28 audit fix — "NavBreakdown's zero/flat values render bright
+   white instead of muted grey". --algo-slate was whitened to #ffffff in
+   the earlier off-white→white sweep (2bd6d65b); dir-flat kept pointing
+   at it, so a flat/zero cell read identically to normal primary text
+   instead of muted. The sibling pnl-zero (line 781, same "flat/zero"
+   role in the parallel pnl-gain/pnl-loss/pnl-zero family) already uses
+   --algo-dim for exactly this — matching it here instead of inventing
+   a third muted token. */
+.ag-theme-algo .ag-cell.dir-flat { color: var(--algo-dim) !important; }
 /* A6 (2026-09 audit) — genuine P&L loss (red, matches PositionStrip's
    .ps-neg convention), distinct from dir-loss's amber (kept for margin/
    cash/holdings-value columns + NavBreakdown's Expiry P&L, which is

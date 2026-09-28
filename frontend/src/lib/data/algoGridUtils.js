@@ -67,7 +67,8 @@ export const agDirCell = (p) =>
  * holdings value, and NavBreakdown's Expiry P&L column, which is
  * genuinely amber-flavoured regardless of sign on PositionStrip's own
  * `.ps-exp` pill) — none of those were asked to change in this pass.
- *   positive → --algo-green, negative → --algo-amber, zero/neutral → --algo-slate
+ *   positive → --algo-green, negative → --algo-amber, zero/neutral → --algo-dim (muted;
+ *   app.css's .dir-flat rule — kept in sync with pnl-zero's identical muted-zero choice)
  * @param {import('ag-grid-community').CellClassParams} p
  * @returns {string}
  */

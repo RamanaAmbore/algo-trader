@@ -6787,10 +6787,17 @@
       minmax(3.8rem, 0.6fr)  /* P&L */
       minmax(4rem,   0.6fr)  /* Exp P&L */
       minmax(4rem,   0.6fr)  /* Extrinsic */
-      minmax(3rem,   0.55fr) /* Legs */
-      minmax(4rem,   0.6fr)  /* F&O qty */
+      /* 2026-09-28 audit fix — "Legs/F&O-qty columns are ~3-4x wider
+         than needed". Both hold 1-3 digit integers (~35-40px content),
+         but carried the same fr weight as the money columns, so they
+         grew proportionally with the card instead of staying content-
+         sized. max-content sizes them to their actual content; the
+         freed fr-share redistributes to the remaining fr columns
+         automatically. */
+      minmax(2.5rem, max-content) /* Legs */
+      minmax(2.5rem, max-content) /* F&O qty */
       minmax(4rem,   0.6fr); /* EV */
-    min-width: 1020px;
+    min-width: 990px;
     font-family: var(--font-numeric);
     font-size: var(--fs-lg);
   }
