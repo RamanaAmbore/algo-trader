@@ -3736,17 +3736,38 @@
   .oes-basket-pill-sym :global(.leg-month)  { color: rgba(148,163,184,0.70); font-weight: 400; }
   .oes-basket-pill-sym :global(.leg-strike) { color: var(--algo-blue-tint, #f1f7ff); }
   .oes-basket-pill-sym :global(.leg-sep)    { opacity: 0.35; }
+  /* Same amber-chip treatment as QtyInput.svelte's `.ot-lots-step`
+     (the ticket form's own lot stepper) — reused, not reinvented, so
+     the +/− read as one consistent "true button" affordance across
+     both surfaces. Operator (2026-09-29): these were borderless/
+     transparent at rest and didn't read as buttons in the basket
+     pill row. Sized down from `.ot-lots-step`'s 2rem to fit the
+     compact pill context. */
   .oes-basket-pill-step {
-    border: none;
-    background: transparent;
-    color: currentColor;
+    width: 1.15rem;
+    height: 1.15rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    border: 1px solid rgba(251, 191, 36, 0.45);
+    background: rgba(251, 191, 36, 0.10);
+    color: var(--c-action);
     font-weight: 800;
     font-family: monospace;
-    cursor: pointer;
-    padding: 0 0.2rem;
     line-height: 1;
+    padding: 0;
+    cursor: pointer;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    touch-action: manipulation;
+    -webkit-user-select: none;
+    user-select: none;
   }
-  .oes-basket-pill-step:hover:not(:disabled) { color: #fff; }
+  .oes-basket-pill-step:hover:not(:disabled) {
+    background: var(--c-action-22, rgba(251, 191, 36, 0.22));
+    border-color: rgba(251, 191, 36, 0.75);
+  }
   .oes-basket-pill-step:disabled { opacity: 0.35; cursor: not-allowed; }
   .oes-basket-pill-lots {
     min-width: 1rem;

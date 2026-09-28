@@ -1285,7 +1285,7 @@
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); border-left: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1316,7 +1316,20 @@
      the chain — without tabular-nums, digits shift horizontally
      on every quote update, creating visual jitter that obscures
      the spread. */
-  .chain-row > td.chain-td-strike { text-align: center; color: var(--algo-slate); font-weight: 700; font-variant-numeric: tabular-nums; padding-left: 0.1rem; padding-right: 0.1rem; }
+  .chain-row > td.chain-td-strike {
+    text-align: center;
+    color: var(--algo-slate);
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+    padding-left: 0.1rem;
+    padding-right: 0.1rem;
+    /* Subtle column divider between CE | Strike | PE — same
+       whisper-quiet weight as the row dividers above, completing
+       the "grid" reading operator asked for without adding visual
+       clutter back in. */
+    border-left: 1px solid rgba(255,255,255,0.06);
+    border-right: 1px solid rgba(255,255,255,0.06);
+  }
   .chain-td-strike-atm { color: var(--c-action); font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
     display: inline-flex;
