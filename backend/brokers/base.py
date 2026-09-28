@@ -26,51 +26,66 @@ _logger = logging.getLogger(__name__)
 _MCX_EXCHANGES = frozenset({"MCX", "NCO"})
 
 
+def _validate_exchange_qty_multiple(
+    exchange: str, contracts: int, lot_size: int, *, label: str = "broker"
+) -> None:
+    """Validate contract qty against the MCX/NCO lot-multiple rules WITHOUT
+    performing the contracts→lots wire conversion.
+
+    Shared by `_exchange_contracts_to_wire` (brokers that convert contracts
+    to lots on the wire, e.g. Kite/Dhan) AND any adapter that sends raw
+    contracts on the wire but must still refuse the same malformed
+    quantities (e.g. Groww's `translate_qty`, which is a no-op on the
+    numeric value but must not silently accept a cache-miss/sub-lot/
+    non-multiple qty just because it isn't converting units).
+
+    Raises ValueError on the same conditions `_exchange_contracts_to_wire`
+    always has: lot_size ≤ 1 (instruments-cache miss — no real MCX contract
+    has lot_size≤1), sub-lot qty (0 < contracts < lot_size), and
+    non-multiple qty (contracts not evenly divisible by lot_size). No-op
+    for non-MCX/NCO exchanges and for contracts == 0.
+    """
+    if exchange not in _MCX_EXCHANGES:
+        return
+    if lot_size <= 1:
+        raise ValueError(
+            f"[QTY-GUARD] {exchange} lot_size={lot_size} for "
+            f"qty={contracts} — instruments cache miss (no real MCX "
+            f"contract has lot_size≤1). Refusing order to prevent "
+            f"catastrophic oversize. Retry after cache warms."
+        )
+    if contracts == 0:
+        return
+    if contracts < lot_size:
+        raise ValueError(
+            f"[QTY-GUARD] {exchange} sub-lot qty={contracts} < "
+            f"lot_size={lot_size} for {label} — broker accepts this "
+            f"AS LOTS, not as a fraction of a lot, causing silent "
+            f"oversize. Refusing order rather than mis-sending "
+            f"{contracts} lots instead of a sub-lot quantity."
+        )
+    if contracts % lot_size != 0:
+        raise ValueError(
+            f"[QTY-GUARD] {exchange} qty={contracts} is not a whole "
+            f"multiple of lot_size={lot_size} for {label} — silently "
+            f"flooring would discard the remainder ({contracts % lot_size} "
+            f"contracts) with no error. Refusing order."
+        )
+
+
 def _exchange_contracts_to_wire(
     exchange: str, contracts: int, lot_size: int, *, label: str = "broker"
 ) -> int:
     """Convert internal contract qty to the wire format required by the exchange.
 
     MCX/NCO: quantity must be in LOTS. All other exchanges are a no-op.
-
-    Safety guard: lot_size ≤ 1 on MCX is always an instruments-cache miss —
-    no real MCX contract has lot_size ≤ 1. Raises ValueError rather than
-    silently sending contracts as lots (100× oversize for CRUDEOIL).
-
-    Sub-lot qty (0 < contracts < lot_size) and non-multiple qty (contracts
-    not evenly divisible by lot_size) both raise ValueError instead of
-    silently passing through / flooring. The broker does NOT reject a
-    sub-lot quantity — it accepts the raw number AS LOTS, which is a
-    silent multi-× oversize (e.g. contracts=50, lot_size=100 → broker
-    receives "50 lots" instead of "0.5 lots"). Flooring a non-multiple
-    quantity silently discards the remainder with no error. Refuse rather
-    than silently guess in either case — the caller's quantity is wrong.
+    See `_validate_exchange_qty_multiple` for the guard conditions applied
+    before conversion.
     """
+    _validate_exchange_qty_multiple(exchange, contracts, lot_size, label=label)
     if exchange in _MCX_EXCHANGES:
-        if lot_size <= 1:
-            raise ValueError(
-                f"[QTY-GUARD] {exchange} lot_size={lot_size} for "
-                f"qty={contracts} — instruments cache miss (no real MCX "
-                f"contract has lot_size≤1). Refusing order to prevent "
-                f"catastrophic oversize. Retry after cache warms."
-            )
         if contracts == 0:
             return 0
-        if contracts < lot_size:
-            raise ValueError(
-                f"[QTY-GUARD] {exchange} sub-lot qty={contracts} < "
-                f"lot_size={lot_size} for {label} — broker accepts this "
-                f"AS LOTS, not as a fraction of a lot, causing silent "
-                f"oversize. Refusing order rather than mis-sending "
-                f"{contracts} lots instead of a sub-lot quantity."
-            )
-        if contracts % lot_size != 0:
-            raise ValueError(
-                f"[QTY-GUARD] {exchange} qty={contracts} is not a whole "
-                f"multiple of lot_size={lot_size} for {label} — silently "
-                f"flooring would discard the remainder ({contracts % lot_size} "
-                f"contracts) with no error. Refusing order."
-            )
         wire = contracts // lot_size
         if wire != contracts:
             _logger.info(

@@ -495,6 +495,23 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   all, unlike its sibling `_chase_abort_on_consecutive_errors` — now alerts
   consistently and notes explicitly if its own final cancel attempt may have
   also failed.
+- **Groww's `translate_qty` had no structural safety net (2026-09 orders-page
+  council audit, finding #6)** — Kite and Dhan both inherit the base
+  `translate_qty`, decorated with `@exchange_qty_convention`, which routes
+  every call through `_exchange_contracts_to_wire` and gets the C7
+  sub-lot/non-multiple/cache-miss guard "for free." `GrowwBroker.translate_qty`
+  (`groww.py`) is a full override — Groww sends CONTRACTS on the wire for
+  every exchange including MCX, so it never converts to lots — and it
+  returned `raw_qty` unchanged with zero validation. Fix: split the guard
+  conditions out of `_exchange_contracts_to_wire` into a standalone
+  `_validate_exchange_qty_multiple(exchange, contracts, lot_size, label)`
+  (`base.py`) that raises the same `ValueError`s (lot_size≤1 cache miss,
+  sub-lot qty, non-multiple qty) with NO unit conversion; `_exchange_contracts_to_wire`
+  now calls it internally (behavior unchanged for Kite/Dhan).
+  `GrowwBroker.translate_qty` now calls `_validate_exchange_qty_multiple`
+  explicitly before returning `raw_qty` unchanged — same refusal semantics
+  as Kite/Dhan, without adopting their lots conversion (which would be
+  wrong for Groww's actual wire convention).
 
 **Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
 Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 

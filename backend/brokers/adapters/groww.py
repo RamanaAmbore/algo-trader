@@ -40,7 +40,7 @@ import requests.exceptions
 from collections import defaultdict
 from typing import Any, Callable
 
-from backend.brokers.base import Broker
+from backend.brokers.base import Broker, _validate_exchange_qty_multiple
 from backend.brokers.errors import (
     BrokerAuthError, BrokerRateLimitError, BrokerNetworkError, BrokerError,
     BrokerInputError, BrokerOrderError,
@@ -1414,7 +1414,17 @@ class GrowwBroker(Broker):
         return out
 
     def translate_qty(self, exchange: str, raw_qty: int, lot_size: int) -> int:
-        # Groww uses CONTRACTS for all exchanges including MCX — no lot conversion needed.
+        # Groww uses CONTRACTS for all exchanges including MCX — no lot
+        # conversion needed. Kite/Dhan get the C7 sub-lot/non-multiple/
+        # cache-miss guard for free via @exchange_qty_convention (base.py);
+        # Groww's override bypassed it entirely (2026-09 orders-page council
+        # audit finding #6) since it never delegates to the base method.
+        # Apply the same validation explicitly — no unit conversion, but the
+        # same malformed-qty conditions must still be refused rather than
+        # silently sent through unchanged.
+        _validate_exchange_qty_multiple(
+            exchange, raw_qty, lot_size, label=self.broker_id
+        )
         return raw_qty
 
 

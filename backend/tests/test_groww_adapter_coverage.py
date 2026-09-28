@@ -1155,6 +1155,42 @@ class TestGrowwBrokerTranslateQty:
         result = broker.translate_qty("NFO", 50, 1)
         assert result == 50
 
+    def test_translate_qty_mcx_zero_qty_noop(self, broker):
+        assert broker.translate_qty("MCX", 0, 100) == 0
+
+    def test_translate_qty_mcx_sub_lot_raises(self):
+        """C7 guard (2026-09 orders-page council audit finding #6): Groww's
+        translate_qty previously bypassed the sub-lot/non-multiple/cache-miss
+        guard entirely since it never delegated to the decorated base
+        implementation. contracts=50 < lot_size=100 must now raise instead of
+        silently returning 50 unchanged."""
+        conn = MagicMock()
+        conn.account = "test_account"
+        broker = GrowwBroker(conn)
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            broker.translate_qty("MCX", 50, 100)
+
+    def test_translate_qty_mcx_non_multiple_raises(self):
+        conn = MagicMock()
+        conn.account = "test_account"
+        broker = GrowwBroker(conn)
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            broker.translate_qty("MCX", 150, 100)
+
+    def test_translate_qty_mcx_lot_size_le_1_raises(self):
+        conn = MagicMock()
+        conn.account = "test_account"
+        broker = GrowwBroker(conn)
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            broker.translate_qty("MCX", 100, 1)
+
+    def test_translate_qty_nco_sub_lot_raises(self):
+        conn = MagicMock()
+        conn.account = "test_account"
+        broker = GrowwBroker(conn)
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            broker.translate_qty("NCO", 10, 100)
+
 
 # ============================================================================
 # PART E: Error Path Tests

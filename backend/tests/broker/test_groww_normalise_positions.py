@@ -267,17 +267,23 @@ class TestGrowwTranslateQtyMCX:
         b = self._broker()
         assert b.translate_qty("NSE", 10, 1) == 10
 
-    def test_mcx_lot_size_one_returned_raw(self):
+    def test_mcx_lot_size_le_1_raises(self):
+        """lot_size<=1 on MCX is always an instruments-cache miss — no real
+        MCX contract has lot_size<=1 (2026-09 orders-page council audit
+        finding #6 fix). Previously Groww's undecorated translate_qty ignored
+        lot_size entirely and returned qty unchanged; now raises the same
+        QTY-GUARD Kite/Dhan already get via @exchange_qty_convention."""
         b = self._broker()
-        # lot_size=1 on MCX: Groww still returns contracts as-is.
-        assert b.translate_qty("MCX", 100, 1) == 100
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            b.translate_qty("MCX", 100, 1)
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            b.translate_qty("MCX", 100, 0)
 
-    def test_mcx_lot_size_zero_returned_raw(self):
+    def test_mcx_sub_lot_raises(self):
+        """Sub-lot qty (contracts < lot_size) is a malformed order regardless
+        of unit convention — no exchange allows fractional lots. Previously
+        Groww's translate_qty returned raw contracts unchanged with no
+        validation at all (finding #6 fix); now raises."""
         b = self._broker()
-        # lot_size=0: Groww override ignores lot_size entirely.
-        assert b.translate_qty("MCX", 100, 0) == 100
-
-    def test_mcx_sub_lot_passes_through(self):
-        b = self._broker()
-        # sub-lot qty: Groww returns raw contracts unchanged.
-        assert b.translate_qty("MCX", 10, 100) == 10
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            b.translate_qty("MCX", 10, 100)

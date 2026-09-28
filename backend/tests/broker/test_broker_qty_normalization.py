@@ -289,10 +289,16 @@ class TestGrowwTranslateQty:
         broker = self._make_groww_broker()
         assert broker.translate_qty("NSE", 10, 1) == 10
 
-    def test_nco_returns_raw_qty(self):
-        """NCO: translate_qty('NCO', 5, 100) → 5 (no expansion)."""
+    def test_nco_sub_lot_raises(self):
+        """NCO: translate_qty('NCO', 5, 100) — sub-lot qty (2026-09 orders-page
+        council audit finding #6 fix). Previously returned 5 unchanged; Groww's
+        no-conversion behavior is still correct (contracts stay contracts) but
+        a sub-lot quantity is a malformed order regardless of unit convention
+        (no exchange allows fractional lots) and must now raise, matching the
+        same guard Kite/Dhan already get via @exchange_qty_convention."""
         broker = self._make_groww_broker()
-        assert broker.translate_qty("NCO", 5, 100) == 5
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            broker.translate_qty("NCO", 5, 100)
 
     def test_zero_qty_returns_zero(self):
         """Zero qty stays zero regardless of exchange."""

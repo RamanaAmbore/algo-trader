@@ -26,7 +26,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from backend.brokers.base import _exchange_contracts_to_wire
+from backend.brokers.base import _exchange_contracts_to_wire, _validate_exchange_qty_multiple
 from backend.brokers.adapters.kite import KiteBroker
 
 
@@ -77,6 +77,38 @@ class TestExchangeContractsToWireGuards:
         broker._conn = MagicMock()
         with pytest.raises(ValueError, match="QTY-GUARD"):
             broker.translate_qty("MCX", 50, 100)
+
+
+# ---------------------------------------------------------------------------
+# _validate_exchange_qty_multiple — the validation-only helper split out of
+# _exchange_contracts_to_wire (2026-09 orders-page council audit finding #6)
+# so an adapter that does NOT convert contracts to lots on the wire (Groww)
+# can still apply the same malformed-qty guard.
+# ---------------------------------------------------------------------------
+
+class TestValidateExchangeQtyMultiple:
+    def test_mcx_sub_lot_raises(self):
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            _validate_exchange_qty_multiple("MCX", 50, 100)
+
+    def test_mcx_non_multiple_raises(self):
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            _validate_exchange_qty_multiple("MCX", 150, 100)
+
+    def test_lot_size_le_1_raises(self):
+        with pytest.raises(ValueError, match="QTY-GUARD"):
+            _validate_exchange_qty_multiple("MCX", 100, 1)
+
+    def test_mcx_zero_qty_noop(self):
+        _validate_exchange_qty_multiple("MCX", 0, 100)  # must not raise
+
+    def test_mcx_clean_multiple_noop(self):
+        _validate_exchange_qty_multiple("MCX", 200, 100)  # must not raise
+
+    def test_non_mcx_exchange_always_noop(self):
+        """Non-MCX/NCO exchanges never validate, regardless of divisibility —
+        this is the exact behavior Groww's translate_qty relies on for NSE/NFO."""
+        _validate_exchange_qty_multiple("NFO", 37, 50)  # must not raise
 
     def test_via_kite_broker_translate_qty_non_multiple_raises(self):
         broker = KiteBroker.__new__(KiteBroker)
