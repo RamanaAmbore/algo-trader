@@ -1234,6 +1234,12 @@ row backgrounds across Pulse grids and derivatives admin page.
   operators see at a glance which legs are long (green) vs short (red) vs approaching 
   expiry (amber)
 
+**Vertical cell divider consistency (Sep 2026, commit 645e9a45)**:
+- Derivatives Legs, Snapshot, and Exp-close tabs now inherit the ag-Grid `.ag-theme-algo` 
+  vertical cell divider (hairline separator between columns) consistently. Previously, 
+  hand-rolled row components bypassed the ag-Grid SSOT styling rule. All tabs now render 
+  uniform column spacing via the shared ag-Grid CSS baseline.
+
 **Impact**: Refined visual hierarchy across MarketPulse and derivatives admin pages. 
 Column borders now cleaner; direction bars and backgrounds carry clearer semantic 
 meaning. No functional changes; pure CSS refinement improving readability and 

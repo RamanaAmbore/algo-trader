@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.30 — 2026-09-24  
+**Version**: 1.31 — 2026-09-27  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -1728,33 +1728,48 @@ carry no PII).
 - `place_gtt()` raises `NotImplementedError` for MCX/NCO
 
 ### GrowwBroker
-- **Groww `translate_qty` contracts-only override** (Aug 2026): Groww positions API returns quantities 
+- **Groww `translate_qty` contracts-only override with validation** (Sep 2026): Groww positions API returns quantities 
   in CONTRACTS for ALL segments including MCX (multiplier=1). Overrides `translate_qty` to return 
   `raw_qty` unchanged (no lots conversion needed), preventing the inherited base-class 
-  MCX→lots logic from incorrectly converting Groww's already-contract qty.
+  MCX→lots logic from incorrectly converting Groww's already-contract qty. However, the override
+  previously had zero validation — it trusted whatever `raw_qty` was passed. Fixed (Sep 2026): 
+  `GrowwBroker.translate_qty` now calls `_validate_exchange_qty_multiple()` (shared helper in 
+  `base.py`) before returning, enforcing the same guards as Kite/Dhan (no sub-lot quantities, 
+  qty must be a clean multiple of lot_size, cache-miss errors). This prevents misconfigured 
+  template plans or modified quantities from reaching the broker undetected.
 - `_retry_groww_auth` wraps every SDK call: `401/403` → re-mint + retry once; `429` → exponential backoff (1→2→4→8s, cap 30s, 3 retries); `504` → refresh session + retry; `400/404` → re-raise immediately
 - `instruments()` uses per-account `@ssot_fetch` key (`groww_instruments_{account}`) to prevent cache collision when multiple Groww accounts are active simultaneously
 - Entitlement counter in `GET /api/admin/broker-health extra` field
 
 ---
 
-## 8.1. Order Placement Guards & Intent Bypass
+## 8.1. Order Placement Guards & Intent Bypass (2026-09-27 Orders-Page Audit Deepened)
 
-**Close intent semantics**: When `intent="close"` is passed through the order flow:
+**Verified-intent propagation — SSOT design (2026-09-27)**
+
+The close-intent bypass fix must verify intent ONCE and propagate the verified value to every downstream consumer. An earlier iteration verified close intent inside one guard (`_ticket_enforce_lot_and_fat_finger`) but left every other consumer in the same request stack (MCX 20-lot cap check, preflight dispatch, broker.place_order calls) re-reading the raw, still-unverified client claim. This recreated the exact bypass the first fix had closed — especially critical for MCX/NCO where the 5-lot cap is unconditionally exempt, leaving only the 20-lot cap as the final guard.
+
+**Ticket path (`/api/orders/ticket`)**
+
+1. **Verification point**: `_ticket_enforce_lot_and_fat_finger()` calls `_verify_close_intent()` to check whether `intent="close"` matches the real broker position (sign match: BUY reduces SHORT or SELL reduces LONG; magnitude OK: `qty ≤ open_qty`)
+2. **Propagation**: `_ticket_enforce_lot_and_fat_finger()` mutates `data.intent` in place to the server-verified result — either `"close"` (if verification passed) or `None` (if verification failed or intent was not close originally)
+3. **Downstream reads**: Every subsequent consumer (`_ticket_check_mcx_size_cap`, `_ticket_run_preflight`, broker.place_order/GTT calls) reads from the same mutated `data.intent` field, guaranteed to see the verified value
+
+**Basket path (`/api/orders/basket`)**
+
+1. **Per-leg verification**: For F&O legs, `orders_basket.py` calls `_verify_close_intent()` per leg and stores the verified result in `_leg_verified_intent` (plain string for equity, verified value for F&O)
+2. **Guard usage**: MCX 20-lot cap check and preflight dispatch both read from `_leg_verified_intent`, not raw `leg.intent`
+3. **Cold-cache guard**: Instruments cache miss during lot-size resolution now returns `BasketLegResult(status="error")` per-leg instead of aborting the whole account group with HTTP 503
+4. **Preflight-blocker enforcement**: Any preflight result other than OK (MARGIN_SHORTFALL, SEGMENT_INACTIVE, LOT_MULTIPLE, etc.) now rejects the individual leg; previously, only MARGIN/SEGMENT were treated as hard blockers
+
+**Close intent semantics**: When intent is verified as `"close"`:
 - **G2 fat-finger cap** (5-lot max per trade) — bypassed for close
 - **MCX 20-lot cap** — bypassed for close
 - **Kite adapter 50-lot ceiling** — bypassed for close
 
-Close orders may exceed all lot caps without triggering validation errors. Non-close orders remain subject to all guards.
+Non-close orders remain subject to all guards. The verification check is strict — fake close claims (wrong sign or magnitude) fail silently without raising.
 
-**Preflight endpoint**: `POST /api/orders/preflight` now parses and forwards `intent` to guard evaluation. Previously ignored intent, causing G2 to fire on close orders > 5 lots. Preflight now correctly models close semantics and returns margin/segment checks with proper guard bypass.
-
-**Basket LIVE safety checks**: Basket order dispatch now runs per-leg guards before placement:
-- **Market-hours gate**: Leg skipped if exchange closed, unless `variety=amo` (after-market order exemption)
-- **MCX 20-lot cap**: Per-leg check, bypassed for `intent="close"`
-- **Preflight**: Margin and segment validation per leg
-
-Previously, basket placement lacked these guards and sent all legs unconditionally.
+**Constants consolidation**: Previously, MCX/FO lot-cap literals (`20`, `5`) were hardcoded independently in three locations. Now unified: `MCX_MAX_LOTS` and `FO_FAT_FINGER_LOT_CAP` defined once in `backend/api/algo/actions_preflight.py` and imported by both route files.
 
 ## 8.3. GTT Template Attachment System Enhancements (Jul 2026)
 
@@ -1855,9 +1870,11 @@ on breach to catch untranslated lots-vs-contracts bugs before they reach the Dha
 
 **Off-hours GTT note** (commit b8b1214c): When a GTT-only template (no wing) is attached while the exchange is closed, `AttachResult.plan.notes` now includes: "GTT registered off-hours ({exchange} closed) — will activate at next session open". Only applies when no wing leg exists (wing MARKET legs require open hours). See `apply_template_to_order` line 2026–2030.
 
-## 8.4. Broker Postback Fill-Status Mapping
+## 8.4. Broker Postback Fill-Status Mapping & Authentication (2026-09)
 
-**File**: `backend/api/routes/orders_postback.py` — `_BROKER_FILLED_STATUSES`
+**File**: `backend/api/routes/orders_postback.py` · `backend/api/routes/orders.py`
+
+### Fill-Status Mapping
 
 Per-broker mapping of fill-completion status tokens used to gate template-attach fan-out (#13):
 
@@ -1869,6 +1886,19 @@ Per-broker mapping of fill-completion status tokens used to gate template-attach
 | (default) | `COMPLETE` | Fallback for unknown brokers |
 
 Template attach only fires when `_broker_is_fill_status(broker_id, status)` returns True. Non-fill terminal statuses (CANCELLED, REJECTED, EXPIRED) are blocked even if routed through `_BROKER_STATUS_MAP` to FILLED. This prevents attaching GTT exits on non-fill events.
+
+### Postback Authentication (2026-09)
+
+**Prior state**: `/dhan_postback` and `/groww_postback` endpoints had `guards=[]` with no authentication at all. Kite postback verifies an HMAC signature via `_pb_verify_signature()`. Dhan and Groww don't sign their payloads, leaving these endpoints open to anyone who discovers the URL.
+
+**Fix**: Implemented `_pb_verify_shared_token()` — a shared-secret query-string token mechanism:
+
+1. **Secret storage**: `dhan_postback_token` and `groww_postback_token` stored in `secrets.yaml` (already generated on local/prod/dev)
+2. **Verification**: Both `/dhan_postback` and `/groww_postback` routes now call `_pb_verify_shared_token(request)` before processing the payload. The endpoint extracts the token from query string (`?token=<secret>`) and verifies it matches the configured secret.
+3. **Fail-open behavior**: If the secret key is absent from `secrets.yaml` (e.g., fresh environment), verification logs one CRITICAL line per broker per process start and fails OPEN (doesn't block the webhook), ensuring the gap can't be silently missed.
+4. **Operator action required**: Append `?token=<secret>` to each broker's webhook URL in their own partner dashboard. Until this is done, brokers send requests without the token, but the check still passes (fail-open). Once configured end-to-end, the token is enforced.
+
+**Account fallback hardening**: `_pb_fallback_lookup_row()` (Groww's payload carries no account field) now narrows candidate `AlgoOrder` rows to accounts resolving to the SAME broker via `_broker_id_for()`, instead of matching across every account platform-wide. This prevents postback spoofing attacks that claim a fill for an order placed on a different broker.
 
 ---
 
@@ -1939,6 +1969,22 @@ On timeout:
 exceeds 10 seconds. Operator sees in-flight orders (cached state) rather than a blank 
 grid or spinner lock. The next poll (3s default) attempts fresh data.
 
+### Chase cancel confirmation — never replace an order without verifying the cancel landed (2026-09)
+
+**File**: `backend/api/routes/orders.py` — `_ch_cancel_and_capture()` + `_ch_capture_late_fill()`
+
+When a chase order attempts to cancel and replace an existing order:
+
+1. **Pre-fix defect**: `_ch_cancel_previous()` would silently swallow any `broker.cancel_order()` exception with only a warning log. The caller then proceeded unconditionally to place a fresh replacement order sized at the full `remaining_qty`, abandoning the original `current_order_id` entirely. If the cancel had silently failed (old order still resting live on the broker), two live orders existed for the same leg — one never polled again — capable of independently filling for up to 2× the intended position.
+
+2. **Fix**: `_ch_capture_late_fill()` (already doing a post-cancel status read to detect fills racing the cancel) now also checks whether that status is genuinely terminal (`_CH_CONFIRMED_GONE_STATUSES`: CANCELLED/EXPIRED/COMPLETE/REJECTED) and returns a `cancel_confirmed: bool` — fail-SAFE (False) on any other status or on status-read failure.
+
+3. **Abort path**: `_ch_cancel_and_capture()` now checks `cancel_confirmed` before placing the replacement order. When `remaining_qty > 0` and the cancel isn't confirmed, the function aborts (no replacement placed, CRITICAL log, urgent ntfy alert) instead of blindly proceeding.
+
+4. **Exhaust-attempts alert**: `_ch_exhaust_max_attempts()` (chase gives up after max_attempts) previously fired NO operator alert at all, unlike its sibling `_chase_abort_on_consecutive_errors()`. Now alerts consistently and notes explicitly whether the final cancel attempt may have also failed.
+
+**Invariant**: Never replace a live order without proof that the previous cancel reached the broker in a terminal state.
+
 ### Frontend polling guard
 
 **File**: `frontend/src/lib/order/ChaseCard.svelte`
@@ -1963,6 +2009,18 @@ The recurring `visibleInterval` callback (default 3s) now calls `_poll()` instea
 calling `_load()` directly. When a poll is in-flight, concurrent `visibleInterval` 
 ticks are silently dropped. This prevents request starvation when the browser is 
 polling faster than the API responds (e.g., `fetch timeout > visibleInterval`).
+
+### Position-Refresh Immediacy After Fill (2026-09)
+
+**File**: `backend/api/routes/orders.py` · `backend/api/routes/orders_place.py`
+
+When a fill is detected (via postback or confirmed by order status), positions must be refreshed immediately so the operator sees `cur_qty` update in the grid. Two gaps fixed:
+
+1. **Postback polling defect**: `_positions_refresh_after_fill()` polls `fetch_positions()` up to 5× over ~7 seconds after a fill. Previously, it called `fetch_positions()` with NO `force_refresh=True` — the function is memoized behind a 30s TTL cache that only gets busted ONCE (synchronously, right before the poll starts). Every poll attempt after the first silently re-read the same stale result; `cur_qty` could never differ from `initial_qty`, and the loop reliably timed out. Fixed: every poll attempt now passes `force_refresh=True`, ensuring fresh data from the broker each time.
+
+2. **Ticket-placement success path gap**: `_opp_live_handle_success()` (the ticket-placement success handler in `orders_place.py`) invalidated only the `"orders"` cache and scheduled no positions-refresh poll at all. That machinery lived exclusively in the postback fan-out (`_postback_broadcast_fanout()` in `orders.py`), which is prompt for Kite (webhook fires on fill) but the ONLY path for Dhan/Groww (their webhooks are unreliable/manually configured). This left Dhan/Groww live orders with no backstop faster than the 5-min `_task_performance` poll. Fixed: `_opp_live_handle_success()` now also schedules `_positions_refresh_after_fill()`, scoped to Dhan/Groww accounts only via `_broker_id_for()`. Kite is deliberately excluded since its own postback already triggers the same function promptly on a real fill; running it twice would just double broker calls.
+
+**Invariant**: Position refresh after fill is triggered BOTH via postback (immediate for Kite, fallback for Dhan/Groww) AND via ticket-placement success (immediate for all brokers), ensuring the fastest refresh possible for each broker's callback reliability.
 
 ## 8.6 Order Pairing — Parent-Child Relationship Linking
 
