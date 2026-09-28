@@ -34,6 +34,17 @@ export const positionsDerivedStore = {
   get byKey()           { return portfolioStore.positions.byKey;              },
   /** Map<account, expiry P&L> — for NavBreakdown P slot */
   get expiryByAcct()    { return portfolioStore.positions.expiryByAcct;       },
+  /**
+   * Per-row F&O Exp P&L/Extrinsic — one entry per raw position row:
+   * { account, symbol, root, source, exp_pnl, extrinsic }. The SSOT the
+   * derivatives Snapshot grid's account-filtered totals already read
+   * from (`portfolioStore.positions.expPnlRows`) — exposed here too so
+   * account-filtered consumers (e.g. MarketPulse's own filtered
+   * per-symbol map) can build a lookup scoped to whichever accounts
+   * they currently have selected, instead of `.byKey[sym]`'s firm-wide
+   * cross-account sum (2026-09-27 audit fix).
+   */
+  get expPnlRows()      { return portfolioStore.positions.expPnlRows ?? [];   },
 
   /**
    * Get derived position by symbol.

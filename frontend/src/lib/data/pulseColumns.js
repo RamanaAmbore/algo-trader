@@ -15,8 +15,7 @@
 // on every ag-Grid redraw — not the stale binding captured at mount.
 
 import { aggCompact, ltpDayClass } from '$lib/format.js';
-import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
-import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
+import { dayChangePct } from '$lib/data/nav.js';
 
 // ─── Pure helpers ────────────────────────────────────────────────────
 
@@ -474,12 +473,18 @@ export function mkLeftColDefs({ symColLeft, sparkCol, ltpCol, prevCol, openCol, 
 // ─── mkRightColDefs private helpers ─────────────────────────────────
 
 // Day P&L % — one-day return on yesterday's market value (close × qty).
-// SSOT: positionsDerivedStore.get(sym) → holdingsDayPnlStore.get(sym).
-// No broker change_pct fallback — that field is a raw market-data % unrelated
-// to the portfolio day P&L % (different denominator, diverges from store).
+// 2026-09-27 audit fix: previously read positionsDerivedStore.get(sym)/
+// holdingsDayPnlStore.get(sym), both per-SYMBOL cross-account aggregates
+// — a symbol held in 2+ accounts showed the SAME chg_pct on every row for
+// that symbol regardless of which account that specific row belongs to.
+// Computed directly from THIS row's own day_pnl/_prev_market_value
+// instead (both already correctly per-row — same fields _accumTotalsRow
+// reads for the TOTAL row, so the TOTAL row's chg_pct is also fixed by
+// this change, automatically, via the same valueGetter).
 function _dayPnlPctValueGetter(p) {
-  const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-  return positionsDerivedStore.get(sym).chg_pct ?? holdingsDayPnlStore.get(sym).chg_pct;
+  const dayPnl = p.data?.day_pnl;
+  const prevMv = Math.abs(Number(p.data?._prev_market_value)) || 0;
+  return dayChangePct(dayPnl, prevMv);
 }
 
 // P&L as % of cost basis.
@@ -532,7 +537,7 @@ function _overnightQtyValueGetter(p) {
  *   qtyFmt: (v: number) => string,
  *   lotsForRow: (row: any) => number|null,
  *   fmtLots: (v: number|null|undefined) => string,
- *   getDerivedByKey?: () => Record<string, {day_pnl: number, exp_pnl: number|null, extrinsic: number|null, pnl: number}>,
+ *   getDerivedByKey?: () => Record<string, {exp_pnl: number|null, extrinsic: number|null}>,
  *   getMpFlash?: () => ReturnType<typeof import('$lib/data/tickFlash.svelte.js').createTickFlash>,
  *   getLtpFlashUp?: () => Set<string>,
  *   getLtpFlashDown?: () => Set<string>,
@@ -739,12 +744,21 @@ export function mkHoldSummaryCols({ RA, numericHdr, pnlCellClass, dirCellClass, 
   ];
 }
 
-// ─── Exp P&L + Extrinsic columns (positionsDerivedStore) ────────────
+// ─── Exp P&L + Extrinsic columns ──────────────────────────────────
 
 /**
- * Exp P&L column — reads positionsDerivedStore.byKey[sym].exp_pnl.
+ * Exp P&L column — reads `getDerivedByKey()[sym].exp_pnl`.
  * Blank for non-derivative rows (exp_pnl === null).
- * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
+ *
+ * 2026-09-27 audit fix: previously imported positionsDerivedStore
+ * directly and read `.get(sym)` — a firm-wide, filter-unaware,
+ * cross-account aggregate (every row for a symbol held in 2+ accounts
+ * showed the SAME combined value, regardless of the operator's account
+ * filter). `getDerivedByKey` is now an accessor the caller wires to an
+ * ALREADY account-filtered per-symbol map (see MarketPulse.svelte's
+ * `_filteredExpPnlByKey`) — this factory just reads through it, so it
+ * has no opinion of its own about which accounts are in scope.
+ * @param {() => Record<string, {exp_pnl: number|null, extrinsic: number|null}>} getDerivedByKey
  */
 export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
   const raStr = /** @type {string} */ (RA);
@@ -761,7 +775,7 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
       // exposure — hide rather than show "—".
       if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return positionsDerivedStore.get(sym).exp_pnl;
+      return getDerivedByKey()[sym]?.exp_pnl ?? null;
     },
     cellClass: p => `${raStr} ${dirCls(p.value)} mp-pnl-cell`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',
@@ -770,9 +784,10 @@ export function mkExpPnlCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-r
 }
 
 /**
- * Extrinsic column — reads positionsDerivedStore.byKey[sym].extrinsic.
- * Blank for non-derivative rows (extrinsic === null).
- * @param {() => import('$lib/data/positionsDerivedStore.svelte.js').positionsDerivedStore['byKey']} getDerivedByKey
+ * Extrinsic column — reads `getDerivedByKey()[sym].extrinsic`.
+ * Blank for non-derivative rows (extrinsic === null). See mkExpPnlCol's
+ * docstring for the 2026-09-27 account-filter fix this shares.
+ * @param {() => Record<string, {exp_pnl: number|null, extrinsic: number|null}>} getDerivedByKey
  */
 export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('ag-right-aligned-cell'), numericHdr = '' } = {}) {
   const raStr = /** @type {string} */ (RA);
@@ -788,7 +803,7 @@ export function mkExtrinsicCol(getDerivedByKey, { RA = /** @type {string} */ ('a
       // Only meaningful for derivative positions.
       if (!p.data?.qty_pos) return null;
       const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-      return positionsDerivedStore.get(sym).extrinsic;
+      return getDerivedByKey()[sym]?.extrinsic ?? null;
     },
     cellClass: `${raStr} cell-muted`,
     valueFormatter: p => p.value != null ? aggCompact(p.value) : '',

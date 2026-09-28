@@ -36,6 +36,22 @@ export const positionsDayPnlStore = {
   get byKey() { return _byKeyProxy; },
   /** Per-account positions day P&L, keyed by UPPERCASE account + 'TOTAL'. */
   get byAccount() { return portfolioStore.positions.byAccount ?? {}; },
+  /**
+   * Day P&L total respecting an account filter — sums `byAccount[acct]`
+   * for each account in `accounts`, or falls back to the firm-wide
+   * `.total` when `accounts` is empty (no filter applied). 2026-09-27
+   * audit fix: Pulse's positions TOTAL row previously always read the
+   * unfiltered `.total`, disagreeing with the account-filtered grid
+   * rows sitting right above it.
+   * @param {string[]} accounts
+   */
+  filteredTotal(accounts) {
+    if (!accounts || accounts.length === 0) return this.total;
+    const by = this.byAccount;
+    let sum = 0;
+    for (const a of accounts) sum += Number(by[String(a).toUpperCase()]) || 0;
+    return sum;
+  },
   setFromPulse() {},
 };
 

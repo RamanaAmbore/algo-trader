@@ -657,6 +657,32 @@
     return (/** @type {any} */ acct) =>
       allow === null || allow.has(String(acct || ''));
   });
+  // 2026-09-27 audit fix: Exp P&L / Extrinsic per symbol, summed ONLY
+  // over the accounts currently in the positions filter (or every
+  // account when unfiltered). positionsDerivedStore.byKey[sym] (the
+  // pre-existing per-symbol store) is a firm-wide cross-account
+  // aggregate with NO awareness of this card's own account filter — a
+  // symbol held in accounts A and B always showed the SAME combined
+  // value on every row for that symbol, regardless of which specific
+  // account(s) were picked. This recomputes the same per-symbol totals
+  // from positionsDerivedStore.expPnlRows (the per-(account,symbol) raw
+  // rows), filtered exactly like scopedPositions filters the grid rows
+  // themselves, so a filtered view's Exp P&L/Extrinsic agree with what
+  // qty/P&L are already correctly showing.
+  const _filteredExpPnlByKey = $derived.by(() => {
+    const allow = positionsAccounts.length === 0
+      ? null
+      : new Set(positionsAccounts.map(a => String(a).toUpperCase()));
+    /** @type {Record<string, {exp_pnl: number|null, extrinsic: number|null}>} */
+    const map = {};
+    for (const row of positionsDerivedStore.expPnlRows) {
+      if (allow && !allow.has(row.account)) continue;
+      const bk = (map[row.symbol] ??= { exp_pnl: null, extrinsic: null });
+      if (row.exp_pnl   != null) bk.exp_pnl   = (bk.exp_pnl   ?? 0) + row.exp_pnl;
+      if (row.extrinsic != null) bk.extrinsic = (bk.extrinsic ?? 0) + row.extrinsic;
+    }
+    return map;
+  });
   // Funds strip is rendered above the two cards — it's not owned by
   // either one. Scope = UNION of both pickers (so an account selected
   // in either card surfaces in Funds). Empty + empty = show all.
@@ -2022,6 +2048,14 @@
   // _holdTier1 and NavStrip P/H) — using r._broker_pnl for the TOTAL
   // would leave it frozen while individual rows update either way.
   // anyDayPnl/anyPnl/anyInv/anyCur flags decide null vs 0 in the return.
+  // 2026-09-27 audit fix: positionsDerivedStore.byKey[sym]/`.get(sym)` is
+  // a firm-wide CROSS-ACCOUNT aggregate with no awareness of this card's
+  // account filter — summed the exp_pnl of EVERY account holding that
+  // symbol regardless of the operator's picked account(s). Uses
+  // _filteredExpPnlByKey instead (summed only over the currently-filtered
+  // accounts, same scoping scopedPositions already applies to the rows
+  // themselves), so the TOTAL row's exp_pnl agrees with the qty/P&L
+  // totals it sits alongside.
   function _accumTotalsRow(/** @type {ReturnType<typeof _blankTotalsAcc>} */ acc, /** @type {any} */ r) {
     const rowPnl    = r.pnl     ?? r._broker_pnl;
     const rowDayPnl = r.day_pnl ?? r._broker_day_pnl;
@@ -2033,10 +2067,10 @@
     if (r.cur_val != null) { acc.curSum += Number(r.cur_val) || 0; acc.anyCur = true; }
     acc.qty_pos  += Number(r.qty_pos)  || 0;
     acc.qty_hold += Number(r.qty_hold) || 0;
-    // Exp P&L totals — read from positionsDerivedStore so it tracks live.
+    // Exp P&L totals — filtered per-symbol lookup, not firm-wide.
     if (r.qty_pos) {
       const sym = String(r.tradingsymbol || '').toUpperCase();
-      acc.exp_pnl += positionsDerivedStore.get(sym, 0).exp_pnl;
+      acc.exp_pnl += Number(_filteredExpPnlByKey[sym]?.exp_pnl) || 0;
     }
   }
 
@@ -3654,7 +3688,11 @@
       RA, numericHdr,
       pnlCellClass, dirCellClass, pctFmtGrid, aggFmtGrid, numFmt, qtyFmt,
       lotsForRow, fmtLots,
-      getDerivedByKey: () => positionsDerivedStore.byKey,
+      // 2026-09-27 audit fix: was positionsDerivedStore.byKey (firm-wide,
+      // filter-unaware) — now the account-filtered per-symbol map so
+      // mkExpPnlCol/mkExtrinsicCol's Exp P&L/Extrinsic agree with the
+      // rest of the (already account-filtered) row.
+      getDerivedByKey: () => _filteredExpPnlByKey,
       getMpFlash: () => _mpFlash,
       getLtpFlashUp: () => _ltpFlashUp,
       getLtpFlashDown: () => _ltpFlashDown,
@@ -3668,12 +3706,25 @@
       rightColDefs[_dayPnlColIdx] = {
         ..._origDayPnlCol,
         valueGetter: p => {
+          // 2026-09-27 audit fix: was positionsDayPnlStore.total
+          // (firm-wide) regardless of the operator's account filter —
+          // disagreed with the account-filtered rows above it.
           if (p.node?.rowPinned && p.data?._majorGroup === 'positions')
-            return positionsDayPnlStore.total ?? p.data?.day_pnl;
+            return positionsDayPnlStore.filteredTotal(positionsAccounts) ?? p.data?.day_pnl;
           if (p.node?.rowPinned) return p.data?.day_pnl;
-          const sym = String(p.data?.tradingsymbol || '').toUpperCase();
-          // p.data?.day_pnl is broker-reported day_change_val; valid before first symbolStore tick
-          return positionsDerivedStore.get(sym).day_pnl ?? p.data?.day_pnl;
+          // 2026-09-27 audit fix: this used to prefer
+          // positionsDerivedStore.get(sym).day_pnl — a per-SYMBOL
+          // CROSS-ACCOUNT aggregate (see mkExpPnlCol's identical fix) —
+          // over the row's own already-correctly-filtered day_pnl,
+          // which meant every positions row for a symbol held in 2+
+          // accounts showed the combined total regardless of the
+          // account filter. The "4 Hz SSOT" rationale in the old
+          // comment here predates the Day P&L redesign (now poll-only,
+          // see CLAUDE.md) — p.data.day_pnl (set via
+          // baseDayPnlForPosition in pulseUnified.js, from the already
+          // account-filtered row set) is the correct, sole SSOT value;
+          // no store lookup needed.
+          return p.data?.day_pnl;
         },
       };
     }

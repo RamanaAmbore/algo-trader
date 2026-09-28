@@ -1,22 +1,11 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mkSymColLeft, mkSymColRight } from '../../data/pulseColumns.js';
 
-
-// positionsDerivedStore is a Svelte 5 reactive module (.svelte.js) — mock it so
-// vitest doesn't try to process $state/$derived runes without the Svelte plugin.
-vi.mock('$lib/data/positionsDerivedStore.svelte.js', () => ({
-  positionsDerivedStore: {
-    byKey: {},
-    get: (sym) => ({ day_pnl: null, chg_pct: null, pnl: null, exp_pnl: null, extrinsic: null, prev_mv: null })
-  }
-}));
-
-vi.mock('$lib/data/holdingsDayPnlStore.svelte.js', () => ({
-  holdingsDayPnlStore: {
-    chgPctByKey: {},
-    get: (sym) => ({ day_pnl: null, chg_pct: null })
-  }
-}));
+// 2026-09-27 audit fix: pulseColumns.js no longer imports
+// positionsDerivedStore.svelte.js / holdingsDayPnlStore.svelte.js directly
+// (mkExpPnlCol/mkExtrinsicCol now take a getDerivedByKey accessor instead,
+// and _dayPnlPctValueGetter computes from row fields) — the vi.mock()
+// calls that used to stand in for those imports were removed as dead code.
 
 import { mkRightColDefs, mkPrevCol, dirCls, mkPnlCellClass, mkPosSummaryCols, mkHoldSummaryCols, mkDeltaCol, mkThetaCol, mkLtpCol, mkAcctColTrailing } from '../../data/pulseColumns.js';
 
@@ -626,64 +615,59 @@ describe('Fix 7 — mkPnlCellClass: _isTotal rows produce no flash class', () =>
 });
 
 // ─────────────────────────────────────────────────────────────────────────
-// _dayPnlPctValueGetter — enforce SSOT (no change_pct fallback)
+// _dayPnlPctValueGetter — computed directly from the row (2026-09-27 audit fix)
 // ─────────────────────────────────────────────────────────────────────────
+//
+// Previously read positionsDerivedStore.get(sym).chg_pct /
+// holdingsDayPnlStore.get(sym).chg_pct — both per-SYMBOL, firm-wide,
+// account-filter-unaware aggregates. A symbol held in 2+ accounts showed
+// the SAME chg_pct on every row for that symbol regardless of the
+// operator's account filter. Now computed directly from THIS row's own
+// day_pnl/_prev_market_value (dayChangePct(dayPnl, prevMv)) — both
+// already correctly per-row (account-filtered upstream), so no store
+// lookup is needed or performed.
 
-describe('_dayPnlPctValueGetter — SSOT enforcement (no change_pct fallback)', () => {
-  it('returns null when both positionsDerivedStore.get(sym).chg_pct and holdingsDayPnlStore.get(sym).chg_pct are null', () => {
-    // Mock the stores to return null for chg_pct
-    const mockPositionsDerivedStore = {
-      get: (sym) => ({ chg_pct: null }),
-    };
-    const mockHoldingsDayPnlStore = {
-      get: (sym) => ({ chg_pct: null }),
-    };
+describe('_dayPnlPctValueGetter — computed from row fields, no store lookup', () => {
+  // Inline version matching pulseColumns.js's real implementation.
+  const dayChangePct = (dayPnl, prevMv) => {
+    const dpnl = Number(dayPnl), mv = Number(prevMv);
+    if (!Number.isFinite(dpnl) || mv <= 0) return null;
+    return (dpnl / mv) * 100;
+  };
+  const _dayPnlPctValueGetter = (p) => {
+    const dayPnl = p.data?.day_pnl;
+    const prevMv = Math.abs(Number(p.data?._prev_market_value)) || 0;
+    return dayChangePct(dayPnl, prevMv);
+  };
 
-    // Inline version of _dayPnlPctValueGetter using the get() accessors
-    const _dayPnlPctValueGetter = (p) => {
-      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
-    };
-
-    const p = { data: { tradingsymbol: 'UNKNOWN', change_pct: 5.0 } };
-    const result = _dayPnlPctValueGetter(p);
-    expect(result).toBeNull();
+  it('returns null when _prev_market_value is 0/missing', () => {
+    const p = { data: { tradingsymbol: 'UNKNOWN', day_pnl: 500 } };
+    expect(_dayPnlPctValueGetter(p)).toBeNull();
   });
 
-  it('returns positions chg_pct when populated', () => {
-    const mockPositionsDerivedStore = {
-      get: (sym) => ({ chg_pct: 3.5 }),
-    };
-    const mockHoldingsDayPnlStore = {
-      get: (sym) => ({ chg_pct: null }),
-    };
-
-    const _dayPnlPctValueGetter = (p) => {
-      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
-    };
-
-    const p = { data: { tradingsymbol: 'RELIANCE', change_pct: 5.0 } };
-    const result = _dayPnlPctValueGetter(p);
-    expect(result).toBe(3.5);
+  it('returns null when day_pnl is missing', () => {
+    const p = { data: { tradingsymbol: 'RELIANCE', _prev_market_value: 10000 } };
+    expect(_dayPnlPctValueGetter(p)).toBeNull();
   });
 
-  it('returns holdings chg_pct as fallback when positions chg_pct is null', () => {
-    const mockPositionsDerivedStore = {
-      get: (sym) => ({ chg_pct: null }),
-    };
-    const mockHoldingsDayPnlStore = {
-      get: (sym) => ({ chg_pct: 2.1 }),
-    };
+  it('computes chg_pct from this row\'s own day_pnl/_prev_market_value', () => {
+    const p = { data: { tradingsymbol: 'RELIANCE', day_pnl: 350, _prev_market_value: 10000 } };
+    expect(_dayPnlPctValueGetter(p)).toBeCloseTo(3.5, 5);
+  });
 
-    const _dayPnlPctValueGetter = (p) => {
-      const sym = String(p.data?.tradingsymbol || p.data?.symbol || '').toUpperCase();
-      return mockPositionsDerivedStore.get(sym).chg_pct ?? mockHoldingsDayPnlStore.get(sym).chg_pct;
-    };
+  it('handles a negative day_pnl (loss)', () => {
+    const p = { data: { tradingsymbol: 'INFY', day_pnl: -210, _prev_market_value: 10000 } };
+    expect(_dayPnlPctValueGetter(p)).toBeCloseTo(-2.1, 5);
+  });
 
-    const p = { data: { tradingsymbol: 'INFY', change_pct: 5.0 } };
-    const result = _dayPnlPctValueGetter(p);
-    expect(result).toBe(2.1);
+  it('same symbol held in two accounts, filtered to one: chg_pct reflects only that account (2026-09-27 audit scenario)', () => {
+    // Account A: day_pnl 300 on a 10000 prev market value → 3%.
+    // Account B (excluded by the filter) would independently be a
+    // different ratio — must NOT leak into this row's result.
+    const p = {
+      data: { tradingsymbol: 'NIFTY25SEP25000CE', account: 'A', day_pnl: 300, _prev_market_value: 10000 },
+    };
+    expect(_dayPnlPctValueGetter(p)).toBeCloseTo(3.0, 5);
   });
 });
 
