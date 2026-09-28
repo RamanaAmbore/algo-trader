@@ -58,9 +58,23 @@
         fetchOrders(),
         fetchAlgoOrdersRecent(100, 'all'),
       ]);
-      const brokerRows = (brokerResp.status === 'fulfilled' && Array.isArray(brokerResp.value?.rows))
-        ? brokerResp.value.rows
-        : [];
+      // Audit fix — "cancelled orders showing as OPEN again": fetchOrders()
+      // (the broker book — authoritative for CANCELLED/COMPLETE/REJECTED,
+      // confirmed at the exchange) can transiently reject (network blip,
+      // 5xx). Pre-fix, a rejected brokerResp silently fell through to
+      // brokerRows=[], so EVERY row in the merged view came from the algo
+      // book instead — whose status field can lag a just-confirmed
+      // cancel/fill until the postback/reconcile pass catches up. The next
+      // poll after a genuine cancel could then render that order back as
+      // OPEN purely because the broker fetch (not the order) failed. Freeze
+      // to the last-known-good merged view instead of recomputing from
+      // partial data — matches this app's staleness-freeze convention
+      // elsewhere (positions/holdings/NAV).
+      if (brokerResp.status !== 'fulfilled') {
+        _loading = false;
+        return;
+      }
+      const brokerRows = Array.isArray(brokerResp.value?.rows) ? brokerResp.value.rows : [];
       const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
         ? algoResp.value
         : [];
