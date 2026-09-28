@@ -197,8 +197,31 @@ test.describe('OrderTicket close-action template suppression', () => {
     const submitBtn = page.locator('button.ot-submit').first();
     if (await submitBtn.count()) {
       const label = await submitBtn.textContent() || '';
-      // Could read: "Place buy", "Add · buy", "Submit (Demo)" etc.
+      // Could read: "Add · buy", "Add · sell", "Submit (Demo)" etc.
       expect(label.toLowerCase()).not.toMatch(/^close\s*·/);
+    }
+  });
+
+  // ── Operator: "in order ticket it should Add · Buy, Add · Sell,
+  //    Close · Buy or Close · Sell" — the submit button's label
+  //    previously fell through a dead `sideLabels[_side] === 'ADD'`
+  //    check (sideLabels never returns the bare string 'ADD', only
+  //    'ADD · BUY'/'ADD · SELL'/'CLOSE · BUY'/'CLOSE · SELL') straight
+  //    to a generic "Place buy"/"Place sell" fallback for every
+  //    non-close/modify/repeat submission. Fixed to prefix-match
+  //    sideLabels and never render "Place" at all.
+  test('action=open submit label reads "Add · <side>", never "Place"', async ({ page }) => {
+    await openShell(page);
+    const modal = page.locator('.ot-modal');
+    await expect(modal).toBeVisible({ timeout: 10_000 });
+
+    const submitBtn = page.locator('button.ot-submit').first();
+    if (await submitBtn.count()) {
+      const label = (await submitBtn.textContent() || '').trim().toLowerCase();
+      expect(label).not.toMatch(/^place\s/);
+      if (!label.startsWith('submit') && label !== '…') {
+        expect(label).toMatch(/^(add|close)\s*·\s*(buy|sell)/);
+      }
     }
   });
 

@@ -3015,8 +3015,8 @@
               {:else if action === 'modify'}Modify Order{orderId ? ' · #' + orderId : ''}
               {:else if action === 'close'}Close · {_side.toLowerCase()}
               {:else if action === 'repeat'}Place again
-              {:else if sideLabels[_side] === 'ADD'}Add · {_side.toLowerCase()}
-              {:else}Place {_side.toLowerCase()}{/if}
+              {:else if sideLabels[_side]?.startsWith('CLOSE')}Close · {_side.toLowerCase()}
+              {:else}Add · {_side.toLowerCase()}{/if}
             </button>
           {/if}
         {/if}
