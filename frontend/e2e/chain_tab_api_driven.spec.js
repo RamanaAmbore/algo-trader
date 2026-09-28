@@ -691,4 +691,43 @@ test.describe('OptionChainTab API-driven redesign (Option B)', () => {
     expect(bannerVisible).toBe(false);
     console.log('[chain_tab_api_driven] instruments error banner correctly hidden on successful IDB load');
   });
+
+  // ── Mobile row density — "chain strike rows too tense" fix ────────────────
+  test('mobile: strike rows get more vertical padding and larger text than desktop', async ({ page }) => {
+    await loginAsAdmin(page);
+    await gotoDerivatives(page);
+    await triggerChainViaButton(page);
+
+    const chainRoot = page.locator('.oct-root').first();
+    if (!(await chainRoot.count())) {
+      test.skip(true, 'OptionChainTab not found — skip mobile density test');
+      return;
+    }
+
+    const hasRows = await page.locator('.chain-row').first().isVisible({ timeout: TIMEOUT_API }).catch(() => false);
+    if (!hasRows) {
+      test.skip(true, 'No strike rows rendered (market closed / no data) — skip mobile density test');
+      return;
+    }
+
+    const cellStyle = await page.locator('.chain-row > td').first().evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { paddingTop: parseFloat(cs.paddingTop), fontSize: parseFloat(getComputedStyle(el.closest('.chain-grid')).fontSize) };
+    });
+
+    const viewportWidth = page.viewportSize()?.width ?? 1400;
+    if (viewportWidth <= 760) {
+      // Mobile override: real vertical breathing room + larger text, not
+      // the zeroed desktop-density padding.
+      expect(cellStyle.paddingTop).toBeGreaterThan(2);
+      expect(cellStyle.fontSize).toBeGreaterThan(11); // > --fs-md's 0.65rem (10.4px)
+    } else {
+      // Desktop density is unchanged by this fix — still the zeroed padding.
+      expect(cellStyle.paddingTop).toBe(0);
+    }
+    console.log(
+      `[chain_tab_api_driven] viewport=${viewportWidth}px row paddingTop=${cellStyle.paddingTop}px ` +
+      `gridFontSize=${cellStyle.fontSize}px`
+    );
+  });
 });

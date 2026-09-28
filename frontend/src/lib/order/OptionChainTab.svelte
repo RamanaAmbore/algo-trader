@@ -1655,4 +1655,22 @@
     .chain-quick-toast { animation: none; }
     .chain-basket-toast { animation: none; }
   }
+
+  /* Operator: "on mobile the chain strike rows too tense, leave space
+     between the rows and make the text a little larger" — the earlier
+     "reduce chain row height by half" pass (see .chain-row > td above)
+     zeroed vertical padding for desktop density; on a touch screen that
+     reads as cramped and hard to tell rows apart. Scoped to mobile only
+     — desktop density is unchanged. */
+  @media (max-width: 760px) {
+    .chain-grid { font-size: 0.78rem; }
+    .chain-row > td {
+      padding: 0.32rem 0.4rem;
+      line-height: 1.4;
+    }
+    .chain-th-ce, .chain-th-pe, .chain-th-strike { font-size: 0.7rem; }
+    .chain-cell-quote { font-size: 0.72rem; }
+    .chain-cell-no-depth { font-size: 0.68rem; }
+    .chain-cell-spread-warn { font-size: 0.62rem; }
+  }
 </style>
