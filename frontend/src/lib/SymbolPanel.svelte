@@ -1154,10 +1154,15 @@
   // on /automation/templates while the modal is open.
   loadOrderTemplates().catch(() => { /* picker stays empty */ });
   // Pure subscription — keeps the basket-bar Select rows current when
-  // /automation/templates mutates. Default selection is owned by the
-  // bound children: OrderTicket (always mounted) applies its
-  // side-aware default on mount, OptionChainTab falls back to 'none'
-  // if templateId is still null when chain activates.
+  // /automation/templates mutates. Default selection is owned entirely
+  // by OrderTicket: it's always mounted (display:none, not unmounted,
+  // when Chain tab is active) and its own onMount `_autoSelectTemplate()`
+  // picks the side-aware is_default template into the SAME two-way-bound
+  // `_sharedTemplateId` that OptionChainTab reads via `bind:templateId`
+  // — so `templateId` is never null by the time Chain basket legs are
+  // built, without OptionChainTab needing its own duplicate default-pick
+  // logic (removed 2026-09, confirmed-dead per the always-shell-bound
+  // call site).
   $effect(() => {
     const rows = $orderTemplatesStore;
     if (rows && rows.length) {
@@ -1315,15 +1320,15 @@
   // D4 fix (2026-09): the common-action Submit button's `onclick` only
   // routes to OrderTicket's own `submit()` (via `_modalFireSubmit` →
   // `triggerSubmit++`) in the plain-ticket-submit branch — basket
-  // submits go through `submitBasket()`/`_modalFireBasket()` instead,
-  // which don't touch OrderTicket's `submitting` state at all. This
+  // submits go through `submitBasket()` instead, which doesn't touch
+  // OrderTicket's `submitting` state at all. This
   // mirrors that same branch condition so the button disables (and
   // shows a pending label) for the FULL duration of a single-ticket
   // submit, not just the unrelated `basketSubmitting` flag — previously
   // a re-click during a slow submit (D3's territory) was a completely
   // natural operator reaction that queued a genuine duplicate order.
   const _ticketOwnSubmitBusy = $derived.by(() =>
-    _activeTab === 'ticket' && !_toBasket && basketLegs.length === 0
+    _activeTab === 'ticket' && basketLegs.length === 0
     && (_ticketState.submitting || _ticketState.pending)
   );
   // Style class for the submit button — green when the submit will
@@ -1341,7 +1346,6 @@
     return _modalSide === 'BUY' ? 'buy' : 'sell';
   });
   let _modalTriggerSubmit = $state(0);
-  let _modalTriggerBasket = $state(0);
   // Latest validation error from the Ticket form — updated whenever
   // OrderTicket's validationErr changes via the onValidationChange
   // callback. Used to surface a toast when the common-action Submit
@@ -1360,7 +1364,6 @@
     /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}} */
     ({ side: null, qty: 0, submitting: false, pending: false })
   );
-  function _modalFireBasket() { if (_activeTab === 'ticket') _modalTriggerBasket++; }
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
       // Tab drift — operator clicked the common-actions Submit but the
@@ -1394,35 +1397,6 @@
     _modalTriggerSubmit++;
   }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
-  // Stable handler reference for the single side footer button.
-  // Operator: "based on short or long existing position it should
-  // derive buy or sell." First click in a symbol-row context (where
-  // currentQty != 0) defaults to ADD direction — long → BUY, short →
-  // SELL. Subsequent clicks toggle. Cold context (currentQty == 0)
-  // defaults to BUY on first click, then toggles.
-  function _cycleSide() {
-    // Operator: "ticket add sell button not working" (Jun 26 2026).
-    // The Jun 2026 "one-shot" iteration locked the side after the
-    // first click and pointed operators at OrderTicket's internal
-    // BUY/SELL toggle — but that toggle is suppressed when
-    // `actionsHidden={showCommonActions}` (true on every common-actions
-    // surface), so operators had no way to switch side at all.
-    //
-    // Revert to a proper toggle:
-    //   - cold (no _modalSide yet): derive ADD direction from current
-    //     position (short → SELL, otherwise BUY)
-    //   - subsequent clicks: flip BUY ⇄ SELL
-    // The visual (on-buy / on-sell colour classes + verb / side
-    // line in the label) reflects the live state so the operator
-    // always sees the CURRENT side, not a "this will switch you to"
-    // call to action.
-    if (!_modalSide) {
-      const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-      _modalSide = cq < 0 ? 'SELL' : 'BUY';
-      return;
-    }
-    _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY';
-  }
   // Derive ADD / CLOSE verb from a side + current position direction.
   // Used by the two-line side button label so the operator sees the
   // intent (ADD/CLOSE) above the broker-side (BUY/SELL).
@@ -1708,13 +1682,6 @@
   // of the panel — operator: "what happened to +basket button which
   // is supposed to be present in order modal and order page".
   const _basketEnabled = $derived(_activeTab === 'ticket');
-  // Operator: "ticket should have basket which can be on or off."
-  // Sticky pill state — when ON the Ticket's Submit routes to
-  // _modalFireBasket (add to basket) instead of _modalFireSubmit
-  // (immediate place). Chain ignores this — its Submit always submits
-  // the basket. Defaults OFF so Ticket's primary action stays "place
-  // the order now"; operator opts into basket-build mode explicitly.
-  let _toBasket = $state(false);
 
   // Footer-side button label helper — operator: "there should be one
   // additional button in ticket buy/sell. if add/close is active
@@ -2307,7 +2274,7 @@
             fundsHidden={true}
             refreshKey={_ticketBump}
             triggerSubmit={triggerSubmit + _modalTriggerSubmit}
-            triggerBasket={triggerBasket + _modalTriggerBasket}
+            triggerBasket={triggerBasket}
             hostManagesEsc={true}
             mode={_sharedMode}
             bind:chase={_sharedChase}
@@ -2935,41 +2902,27 @@
               {/if}
             </span>
           {/if}
-          <!-- Ticket-only side picker. Operator: "buy and sell should
-               be one single button. when add/close active it should
-               prefix add/close. based on short or long existing
-               position it should derive buy or sell. id button has
-               more show in two rows in the button without changing
-               button height." Two-line layout when in symbol-row
-               context: line 1 = ADD/CLOSE verb, line 2 = derived
-               broker side. Cold context: single-line BUY/SELL or
-               "Pick side". -->
+          <!-- Ticket-only side preview label. Operator wants exactly ONE
+               clickable control in this row (the Submit button below) —
+               this is now an inert preview, not a control. Side is set
+               via the ticket body's own SideToggle (BUY/SELL pills,
+               always rendered regardless of actionsHidden — see
+               OrderTicket.svelte's ot-row-knobs). Two-line layout when
+               in symbol-row context: line 1 = ADD/CLOSE verb, line 2 =
+               derived broker side. Cold context: single-line BUY/SELL
+               or "Pick side". -->
           {#if _activeTab === 'ticket' && action !== 'modify'}
             {@const _cq = Number(_ticketProps?.currentQty ?? currentQty) || 0}
-            <!-- R7 fix (2026-09): this is a SIDE SELECTOR, not a submit
-                 button — clicking it only flips BUY/SELL, it never
-                 places an order (that's the button to its right). The
-                 operator's original report ("close buy close sell
-                 buttons don't work") was this exact button read as an
-                 action. Ghost/outlined styling (was filled, visually
-                 near-identical to the primary Submit button) + a small
-                 swap glyph + "Side" title-prefix disambiguate it without
-                 changing WHEN an order actually fires. -->
-            <button type="button"
-                    class="oes-footer-side-btn-single"
-                    class:on-buy={_modalSide === 'BUY'}
-                    class:on-sell={_modalSide === 'SELL'}
-                    class:on-none={!_modalSide}
-                    class:is-stacked={!!_modalSide && _cq !== 0}
-                    title={!_modalSide
-                      ? (_cq === 0
-                          ? 'Side — click to set BUY (click again to flip to SELL). This does not submit.'
-                          : 'Side — click to ADD to the existing position. This does not submit.')
-                      : (_cq === 0
-                          ? `Side is ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}. This does not submit.`
-                          : `${_addCloseVerb(_modalSide)} via ${_modalSide} — click to switch to ${_modalSide === 'BUY' ? 'SELL' : 'BUY'}. This does not submit.`)}
-                    onclick={_cycleSide}>
-              <span class="oes-side-swap-glyph" aria-hidden="true">⇄</span>
+            <span class="oes-footer-side-btn-single"
+                  class:on-buy={_modalSide === 'BUY'}
+                  class:on-sell={_modalSide === 'SELL'}
+                  class:on-none={!_modalSide}
+                  class:is-stacked={!!_modalSide && _cq !== 0}
+                  title={!_modalSide
+                    ? 'No side selected — pick BUY or SELL in the ticket below'
+                    : (_cq === 0
+                        ? `Side: ${_modalSide}`
+                        : `${_addCloseVerb(_modalSide)} via ${_modalSide}`)}>
               {#if !_modalSide}
                 <span>Pick side</span>
               {:else if _cq !== 0}
@@ -2978,35 +2931,28 @@
               {:else}
                 <span>{_modalSide}</span>
               {/if}
-            </button>
+            </span>
           {/if}
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
-            class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket' || (_activeTab === 'ticket' && _toBasket)}
+            class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket'}
             class:oes-common-submit-narrow={basketLegs.length > 0}
             title={basketLegs.length > 0
               ? `Submit all ${basketLegs.length} basket leg${basketLegs.length > 1 ? 's' : ''}`
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
-                  : _toBasket
-                    ? 'Add this ticket as a basket leg'
-                    : _ticketOwnSubmitBusy
-                      ? (_ticketState.pending ? 'Still processing — check Orders' : 'Placing…')
-                      : 'Place the order')}
+                  : _ticketOwnSubmitBusy
+                    ? (_ticketState.pending ? 'Still processing — check Orders' : 'Placing…')
+                    : 'Place the order')}
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')
                       || _ticketOwnSubmitBusy}
             onclick={() => {
               if (basketLegs.length > 0) {
                 // Global basket submit — fires from any tab whenever there
-                // are staged legs. Ticket's _toBasket mode stays intact:
-                // when the operator toggles basket on Ticket and clicks
-                // Submit with no legs yet, _modalFireBasket() adds the
-                // current ticket as the first leg without submitting.
+                // are staged legs (Chain's own +CE / +PE mechanism).
                 submitBasket();
-              } else if (_activeTab === 'ticket' && _toBasket) {
-                _modalFireBasket();
               } else if (_activeTab === 'ticket') {
                 _modalFireSubmit();
               }
@@ -3014,57 +2960,9 @@
                 ? 'Placing…'
                 : (basketLegs.length > 0
                     ? `Submit (${basketLegs.length})`
-                    : (_activeTab === 'ticket' && _toBasket)
-                        /* Operator: "change submit to basket to just
-                           submit in ticket with bracket count of orders
-                           like chain." Show count AFTER click — clicking
-                           adds this ticket as a new leg, so basket goes
-                           from N to N+1. */
-                        ? `Submit (${basketLegs.length + 1})`
-                        : _ticketOwnSubmitBusy
-                          ? (_ticketState.pending ? 'Processing…' : 'Placing…')
-                          : _submitLabel)}</button>
-          <!-- Basket icon at the trailing edge. Operator:
-               · "in chain tab, basket icon enabled by default" →
-                 Chain renders the icon in the `.on` state but as a
-                 read-only span (Chain is always basket-mode).
-               · "active basket icon should have a different background
-                 color" → `.on` state now uses a stronger sky accent +
-                 amber border to read distinctly from the resting state.
-               · "if you have a better icon for basket use it" →
-                 swapped the previous slanted basket for Lucide's
-                 shopping-cart silhouette (wheels + handle), which is
-                 the canonical e-commerce icon. -->
-          {#if _activeTab === 'chain'}
-            <span class="oes-common-basket-toggle oes-common-basket-toggle-icon on is-static"
-                  title="Chain orders are always basket orders — the basket builds from each +CE / +PE / +Fut click."
-                  aria-label="Basket mode (always on for Chain)">
-              <svg width="16" height="16" viewBox="0 0 24 24"
-                   fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true">
-                <circle cx="8" cy="21" r="1" />
-                <circle cx="19" cy="21" r="1" />
-                <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
-              </svg>
-            </span>
-          {:else}
-            <label class="oes-common-basket-toggle oes-common-basket-toggle-icon"
-                   class:on={_toBasket}
-                   title={_toBasket
-                     ? 'Basket mode ON — Submit will add the current ticket as a basket leg'
-                     : 'Basket mode OFF — Submit will place the order immediately'}>
-              <input type="checkbox" bind:checked={_toBasket} class="sr-only" />
-              <svg width="16" height="16" viewBox="0 0 24 24"
-                   fill="none" stroke="currentColor" stroke-width="2"
-                   stroke-linecap="round" stroke-linejoin="round"
-                   aria-hidden="true">
-                <circle cx="8" cy="21" r="1" />
-                <circle cx="19" cy="21" r="1" />
-                <path d="M2.05 2.05h2l2.66 12.42a2 2 0 0 0 2 1.58h9.78a2 2 0 0 0 1.95-1.57l1.65-7.43H5.12" />
-              </svg>
-            </label>
-          {/if}
+                    : _ticketOwnSubmitBusy
+                      ? (_ticketState.pending ? 'Processing…' : 'Placing…')
+                      : _submitLabel)}</button>
         </div>
       </div>
     {/if}
@@ -4482,51 +4380,6 @@
     overflow: hidden;
     text-overflow: ellipsis;
   }
-  /* Basket icon — operator: "make all the buttons including basket
-     icon button same height as chip." 1.7rem square so it matches
-     Submit, Side, and the margin chip exactly. box-sizing ensures
-     border doesn't shift effective height. */
-  .oes-common-basket-toggle-icon {
-    display: inline-flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    width: var(--ctl-h, 1.7rem);
-    height: auto;
-    min-height: var(--ctl-h, 1.7rem);
-    padding: 0.15rem 0;
-    cursor: pointer;
-    user-select: none;
-    border: 1px solid rgba(125, 211, 252, 0.40);
-    border-radius: 3px;
-    background: transparent;
-    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
-       .cell-muted token, so reused directly. */
-    color: var(--algo-slate-muted);
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-    flex-shrink: 0;
-    box-sizing: border-box;
-  }
-  .oes-common-basket-toggle-icon:hover { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
-  /* Operator: "active basket icon should have a different background
-     color." Active state now uses a stronger amber accent so it pops
-     against the resting/hover sky tones — distinct from the muted
-     sky-blue inactive treatment. */
-  .oes-common-basket-toggle-icon.on {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.20);
-    border-color: rgba(251, 191, 36, 0.65);
-  }
-  /* Static (always-on) variant — used on Chain where basket is the
-     only mode. Cursor stays default so the icon reads as a status
-     badge, not an actionable toggle. */
-  .oes-common-basket-toggle-icon.is-static {
-    cursor: default;
-  }
-  .oes-common-basket-toggle-icon.is-static:hover {
-    background: rgba(251, 191, 36, 0.20);
-    border-color: rgba(251, 191, 36, 0.65);
-  }
   .sr-only {
     position: absolute;
     width: 1px; height: 1px;
@@ -4535,23 +4388,23 @@
     clip: rect(0,0,0,0);
     border: 0;
   }
-  /* Single side toggle — operator: "buy and sell should be one single
-     button. id button has more show in two rows in the button without
-     changing button height." Cycles cold → BUY → SELL → BUY on click.
-     In a symbol-row context the verb (ADD/CLOSE) stacks above the
-     derived broker side (BUY/SELL) inside the same 1.7rem button. */
+  /* Single side preview label — operator wants exactly ONE clickable
+     control in the footer (the Submit button); this is now an inert
+     static label glued to it, not a control. In a symbol-row context
+     the verb (ADD/CLOSE) stacks above the derived broker side
+     (BUY/SELL) inside the same 1.7rem slot. cursor:default (not
+     pointer) — no hover affordance since nothing is clickable here. */
   .oes-footer-side-btn-single {
     height: var(--ctl-h, 1.7rem);
     min-width: 5.5rem;
     padding: 0 0.7rem;
     border-radius: 3px;
     border: 1px solid;
-    cursor: pointer;
+    cursor: default;
     font-family: var(--font-numeric);
     font-size: var(--ctl-fs, var(--fs-sm));
     font-weight: 800;
     letter-spacing: 0.04em;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
     white-space: nowrap;
     background: transparent;
     flex-shrink: 0;
@@ -4590,17 +4443,10 @@
     border-color: color-mix(in srgb, var(--algo-slate) 32%, transparent);
     border-style: dashed;
   }
-  .oes-footer-side-btn-single.on-none:hover {
-    /* A3 (2026-09 audit) — was flat hex #cbd5e1; now var(--algo-slate). */
-    color: var(--algo-slate);
-    background: rgba(255,255,255,0.04);
-  }
-  /* R7 fix (2026-09): ghost/outlined, NOT filled — the prior 18%-opacity
-     fill + solid border was visually near-identical to
-     `.oes-common-submit-buy`/`-sell` (the actual submit button), which
-     is exactly why this side SELECTOR read as an action button. Border
-     + text color still carry the BUY/SELL meaning; background stays
-     transparent so it reads as a toggle, not a primary action. */
+  /* Ghost/outlined, NOT filled — a solid fill here would read visually
+     near-identical to `.oes-common-submit-buy`/`-sell` (the actual
+     Submit button next to it). Border + text color still carry the
+     BUY/SELL meaning as a preview; background stays transparent. */
   .oes-footer-side-btn-single.on-buy {
     color: var(--c-long);
     background: transparent;
@@ -4611,18 +4457,6 @@
     background: transparent;
     border-color: rgba(248, 113, 113, 0.70);
   }
-  .oes-footer-side-btn-single.on-buy:hover  { background: rgba(74, 222, 128, 0.10); }
-  .oes-footer-side-btn-single.on-sell:hover { background: rgba(248, 113, 113, 0.10); }
-  /* Small swap glyph — visual cue that this button toggles a value
-     rather than firing an action. Muted so it doesn't compete with the
-     BUY/SELL/ADD/CLOSE text. */
-  .oes-side-swap-glyph {
-    font-size: var(--fs-2xs);
-    opacity: 0.55;
-    margin-right: 0.15rem;
-    line-height: 1;
-  }
-  .oes-footer-side-btn-single.is-stacked .oes-side-swap-glyph { display: none; }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
@@ -4899,12 +4733,9 @@
   .oes-common-submit-buy:hover  { background: rgba(74, 222, 128, 0.28); }
   .oes-common-submit-sell:hover { background: rgba(248, 113, 113, 0.28); }
   /* Basket submit — sky to signal "multiple legs at once", distinct
-     from the directional buy/sell palette. Was cyan (var(--c-info),
-     #22d3ee) — a THIRD blue alongside this same footer's basket-toggle
-     icon (#7dd3fc sky on hover, see .oes-common-basket-toggle-icon
-     above) for what's the same "basket" concept in two adjacent
-     controls (item 11). --c-info itself is left untouched — it's the
-     app-wide "interactive affordance" token, out of this pass's scope. */
+     from the directional buy/sell palette. --c-info itself is left
+     untouched — it's the app-wide "interactive affordance" token,
+     out of this pass's scope. */
   .oes-common-submit-basket {
     background: rgba(125, 211, 252, 0.18);
     border-color: rgba(125, 211, 252, 0.65);

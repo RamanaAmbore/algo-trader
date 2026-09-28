@@ -259,16 +259,13 @@ test.describe('CRUDEOIL 6500PE SELL — regression guard', () => {
       await page.waitForTimeout(500);
     }
 
-    // Pick SELL side — click the side toggle button.
-    const sideBtn = page.locator('button.oes-footer-side-btn-single, button[class*="oes-footer-side"]').first();
-    if (await sideBtn.count()) {
-      // If it reads "BUY" or "Pick side", click until it shows SELL.
-      for (let i = 0; i < 3; i++) {
-        const text = await sideBtn.textContent();
-        if ((text || '').includes('SELL')) break;
-        await sideBtn.click();
-        await page.waitForTimeout(100);
-      }
+    // Pick SELL side — the footer side label is now a static preview
+    // (no click handler); side is set via OrderTicket's own SideToggle
+    // pills inside the ticket body. Disabled until the symbol resolves.
+    const sellPill = page.locator('button.ot-side-sell').first();
+    if (await sellPill.count() && await sellPill.isEnabled().catch(() => false)) {
+      await sellPill.click();
+      await page.waitForTimeout(150);
     }
 
     // Click Submit (common footer).
@@ -355,17 +352,15 @@ test.describe('CRUDEOIL 6500PE SELL — regression guard', () => {
       await page.waitForTimeout(800);
     }
 
-    // Pick SELL. The side button starts as null/"Pick side" or BUY.
-    // Keep clicking until it shows SELL.
-    const sideBtn = page.locator('button.oes-footer-side-btn-single').first();
-    if (await sideBtn.count()) {
-      for (let i = 0; i < 3; i++) {
-        const text = (await sideBtn.textContent()) || '';
-        if (text.includes('SELL')) break;
-        await sideBtn.click();
-        await page.waitForTimeout(150);
-      }
-      // Assert side button now reads SELL.
+    // Pick SELL via OrderTicket's own SideToggle pill (the footer side
+    // label is now a static, non-clickable preview — see
+    // SymbolPanel.svelte's removal of the redundant footer side button).
+    const sellPill = page.locator('button.ot-side-sell').first();
+    if (await sellPill.count() && await sellPill.isEnabled().catch(() => false)) {
+      await sellPill.click();
+      await page.waitForTimeout(150);
+      // Footer preview label mirrors the picked side (onSideChange wiring).
+      const sideBtn = page.locator('.oes-footer-side-btn-single').first();
       await expect(sideBtn).toContainText('SELL');
     }
 

@@ -54,13 +54,37 @@ async function authOnce(page) {
 async function pickOrderType(page, typeValue) {
   const trigger = page.locator('[aria-label="Order type"]').first();
   await expect(trigger).toBeVisible({ timeout: 10_000 });
+  // /orders derives its default symbol from a recent-symbol store,
+  // falling back to empty on a fresh browser profile with no history
+  // (routes/(algo)/orders/+page.svelte) — without a symbol, every knob
+  // (Type/Product/Variety/Validity/SideToggle) stays disabled via
+  // OrderTicket's `_noSymbol` gate, which would hang the click below
+  // forever. Pick a live symbol first if the ticket isn't pre-filled.
+  if (await trigger.isDisabled().catch(() => false)) {
+    const symInput = page.locator('.ssi-input').first();
+    if (await symInput.count() > 0) {
+      await symInput.fill('RELIANCE');
+      const symRow = page.locator('.ssi-row').first();
+      if (await symRow.waitFor({ state: 'visible', timeout: 6_000 }).then(() => true).catch(() => false)) {
+        await symRow.click();
+      } else {
+        await page.keyboard.press('Enter').catch(() => {});
+      }
+      await page.waitForTimeout(500);
+    }
+  }
   await trigger.click();
-  const opt = page.locator('[role="option"]').filter({ hasText: new RegExp(`^${typeValue}$`) }).first();
-  if (await opt.isVisible({ timeout: 2000 })) {
-    await opt.click();
+  // Primary: the rbq-select option-label class (matches this suite's
+  // canonical sibling, order_market_type_lock_verify.spec.js:pickType).
+  const labelSpan = page.locator('.rbq-select-option-label').filter({ hasText: new RegExp(`^${typeValue}$`) }).first();
+  if (await labelSpan.isVisible({ timeout: 3_000 }).catch(() => false)) {
+    await labelSpan.click();
     return;
   }
-  await page.locator('.sel-option, .sel-item').filter({ hasText: new RegExp(`^${typeValue}$`) }).first().click();
+  // Fallback: generic ARIA role, in case the option markup varies by
+  // Select variant.
+  const opt = page.locator('[role="option"]').filter({ hasText: new RegExp(`^${typeValue}$`) }).first();
+  await opt.click();
 }
 
 test.describe.configure({ mode: 'serial' });
@@ -75,39 +99,42 @@ test.describe('OrderTicket — MARKET type locking bug (commit 30379583)', () =>
     await expect(entryCard).toBeVisible({ timeout: 12_000 });
   });
 
-  test('2: basket toggle label must not expand beyond its natural 1.9rem width', async ({ page }) => {
+  test('2: footer side-preview label must not expand beyond its natural width', async ({ page }) => {
     // Regression guard for the root cause:
     // `.oes-common-row > *:first-child { flex: 1 1 auto }` must NOT apply
-    // to .oes-common-basket-toggle-icon when the info slot is empty.
-    // Fix: add `flex-shrink: 0` to the basket label OR scope the
-    // first-child rule to named info-slot classes only.
+    // to a footer action-row child when the info slot is empty.
+    //
+    // The original basket-toggle <label> this test targeted was removed
+    // (2026-09, Ticket-tab footer redesign — see SymbolPanel.svelte;
+    // exactly ONE clickable control, Submit, remains in the row). The
+    // regression class of bug (a footer child expanding via flex-grow
+    // and swallowing clicks meant for its siblings) is still worth
+    // guarding — now on the side-preview label, the row's other
+    // first-child candidate.
     await authOnce(page);
     await page.goto('/orders');
     await page.waitForLoadState('domcontentloaded');
     await page.locator('.bucket-card-entry').first().waitFor({ timeout: 12_000 });
 
-    // Pick a side first (so cold-prompt hides), then pick MARKET
-    // (so margin may not appear). This is the exact condition that triggers
-    // the basket label to become first-child with flex-grow.
-
-    // Pick MARKET type
+    // Pick MARKET type — the exact condition that historically triggered
+    // the flex-grow bug (no margin/notice content in the info slot).
     await pickOrderType(page, 'MARKET');
     await page.waitForTimeout(400);
 
-    // Pick BUY side in the footer
-    const footerBuy = page.locator('.oes-footer-side-btn-buy').first();
-    if (await footerBuy.isVisible()) {
-      await footerBuy.click();
+    // Pick BUY via OrderTicket's own SideToggle pill (the footer label
+    // is now a static, non-clickable preview).
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.isVisible().catch(() => false) && await buyPill.isEnabled().catch(() => false)) {
+      await buyPill.click();
       await page.waitForTimeout(300);
     }
 
-    // Now inspect basket label width
-    const basketInfo = await page.evaluate(() => {
-      const label = document.querySelector('.oes-common-basket-toggle-icon');
+    // Now inspect the side-preview label's width.
+    const labelInfo = await page.evaluate(() => {
+      const label = document.querySelector('.oes-footer-side-btn-single');
       if (!label) return { found: false };
       const rect  = label.getBoundingClientRect();
       const cs    = getComputedStyle(label);
-      // Walk the common-row to see all direct children widths
       const row = label.closest('.oes-common-row');
       const children = row ? [...row.children].map(el => ({
         cls: el.className.substring(0, 60),
@@ -126,18 +153,22 @@ test.describe('OrderTicket — MARKET type locking bug (commit 30379583)', () =>
       };
     });
 
-    console.log('\n===== Basket label + row children =====\n', JSON.stringify(basketInfo, null, 2));
+    console.log('\n===== Side-preview label + row children =====\n', JSON.stringify(labelInfo, null, 2));
 
-    if (!basketInfo.found) {
-      console.log('Basket label not found — may need a symbol first');
+    if (!labelInfo.found) {
+      console.log('Side-preview label not found — may need a symbol first');
       return;
     }
 
-    // The basket icon should be at most its natural width (1.9rem ≈ 30px at 16px root)
-    // plus a small tolerance. If it's expanded to > 80px, the flex-grow bug is active.
-    expect(basketInfo.labelWidth,
-      'Basket toggle label must not expand beyond natural width (flex-grow bug)'
-    ).toBeLessThan(80);
+    // The label should be at most its natural width (~5.5rem ≈ 88px at
+    // 16px root) plus tolerance. A much wider value means the flex-grow
+    // bug is active again.
+    expect(labelInfo.labelWidth,
+      'Side-preview label must not expand beyond natural width (flex-grow bug)'
+    ).toBeLessThan(160);
+    expect(labelInfo.labelFlexGrow,
+      'Side-preview label flexGrow must be 0'
+    ).toBe('0');
   });
 
   test('3: footer BUY/SELL buttons must be hittable after MARKET selection', async ({ page }) => {

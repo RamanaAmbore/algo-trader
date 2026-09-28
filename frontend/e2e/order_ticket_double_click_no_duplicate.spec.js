@@ -86,10 +86,11 @@ test.describe('D4 — double-click on Submit does not fire a duplicate order', (
     await page.keyboard.press('Enter').catch(() => {});
     await page.waitForTimeout(500);
 
-    // Pick a side via the footer selector (does NOT submit — D4/R7 target).
-    const sideBtn = page.locator('.oes-footer-side-btn-single').first();
-    if (await sideBtn.count() > 0) {
-      await sideBtn.click();
+    // Pick a side via the ticket body's own SideToggle pill (the footer
+    // label is now a static preview, not clickable — does NOT submit).
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.count() > 0 && await buyPill.isEnabled().catch(() => false)) {
+      await buyPill.click();
       await page.waitForTimeout(200);
     }
 

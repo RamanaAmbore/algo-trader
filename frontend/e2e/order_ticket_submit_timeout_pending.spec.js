@@ -80,9 +80,11 @@ test.describe('D3 — submit timeout renders "still processing", never a false s
     await page.keyboard.press('Enter').catch(() => {});
     await page.waitForTimeout(500);
 
-    const sideBtn = page.locator('.oes-footer-side-btn-single').first();
-    if (await sideBtn.count() > 0) {
-      await sideBtn.click();
+    // Footer side label is now a static preview (no click handler) —
+    // side is set via OrderTicket's own SideToggle pill in the ticket body.
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.count() > 0 && await buyPill.isEnabled().catch(() => false)) {
+      await buyPill.click();
       await page.waitForTimeout(200);
     }
 

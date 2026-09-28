@@ -3338,10 +3338,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--close-btn-info-bg);
-    border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
+    background: var(--close-btn-danger-bg);
+    border: 1px solid rgba(248, 113, 113, 0.35);
     border-radius: 3px;
-    color: var(--c-info, #22d3ee);
+    color: var(--c-short);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
@@ -3350,8 +3350,7 @@
     transition: background 0.08s, border-color 0.08s;
   }
   .ot-close:hover {
-    background: var(--close-btn-info-bg-hover);
-    border-color: rgba(34,211,238,0.65);
+    background: var(--close-btn-danger-bg-hover);
   }
 
   .ot-row {

@@ -56,6 +56,27 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
       await ticketTab.click();
       await page.waitForTimeout(200);
     }
+    // /orders derives its default symbol from a recent-symbol store,
+    // falling back to empty on a fresh browser profile with no history
+    // (routes/(algo)/orders/+page.svelte) — without a symbol, every
+    // knob (Type/Product/Variety/Validity/SideToggle) stays disabled
+    // via OrderTicket's `_noSymbol` gate, which would make every
+    // `pickType()` call below hang forever. Pick a live symbol first
+    // if the ticket didn't already come pre-filled.
+    const typeSelect = page.locator('[aria-label="Order type"]').first();
+    if (await typeSelect.isDisabled().catch(() => false)) {
+      const symInput = page.locator('.ssi-input').first();
+      if (await symInput.count() > 0) {
+        await symInput.fill('RELIANCE');
+        const symRow = page.locator('.ssi-row').first();
+        if (await symRow.waitFor({ state: 'visible', timeout: 6_000 }).then(() => true).catch(() => false)) {
+          await symRow.click();
+        } else {
+          await page.keyboard.press('Enter').catch(() => {});
+        }
+        await page.waitForTimeout(500);
+      }
+    }
   }
 
   // ── baseline: LIMIT must not lock ────────────────────────────────────
@@ -64,9 +85,12 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
     await loginAsAdmin(page);
     await openOrders(page);
 
-    // Verify basket icon and submit are hittable at LIMIT (the neutral state)
+    // Verify the side-preview label and Submit are hittable (not covered
+    // by an overlapping sibling) at LIMIT (the neutral state). The
+    // basket-toggle icon this test used to also check was removed
+    // (2026-09 Ticket-tab footer redesign) — Submit is now the sole
+    // clickable control in the row.
     const footerInfo = await page.evaluate(() => {
-      const basket = document.querySelector('.oes-common-basket-toggle-icon');
       const submit = document.querySelector('.oes-common-submit');
       const sideBtn = document.querySelector('.oes-footer-side-btn-single');
 
@@ -91,7 +115,6 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
       }
 
       return {
-        basket: hitCheck(basket),
         submit: hitCheck(submit),
         sideBtn: hitCheck(sideBtn),
       };
@@ -99,24 +122,34 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
 
     console.log('\n[LIMIT baseline]', JSON.stringify(footerInfo, null, 2));
 
-    if (footerInfo.basket.found) {
-      expect(footerInfo.basket.isSelf, 'LIMIT: basket icon must be hittable').toBe(true);
-      expect(footerInfo.basket.w, 'LIMIT: basket icon must not be wider than 50px').toBeLessThan(50);
-    }
+    // The basket-toggle icon no longer exists in the DOM at all.
+    const basketCount = await page.locator('.oes-common-basket-toggle-icon').count();
+    expect(basketCount, 'basket-toggle icon must be fully removed').toBe(0);
+
     if (footerInfo.submit.found) {
       expect(footerInfo.submit.isSelf, 'LIMIT: Submit must be hittable').toBe(true);
     }
+    if (footerInfo.sideBtn.found) {
+      expect(footerInfo.sideBtn.isSelf, 'LIMIT: side-preview label must not be covered').toBe(true);
+    }
   });
 
-  // ── MARKET: basket label must not grow ───────────────────────────────
+  // ── MARKET: basket toggle is gone; side label must not grow ─────────
 
-  test('2 — MARKET: basket toggle icon stays at natural width (~30px)', async ({ page }) => {
+  test('2 — MARKET: basket toggle removed, side-preview label stays at natural width', async ({ page }) => {
     await loginAsAdmin(page);
     await openOrders(page);
     await pickType(page, 'MARKET');
 
-    const basketInfo = await page.evaluate(() => {
-      const label = document.querySelector('.oes-common-basket-toggle-icon');
+    // The basket-toggle icon (both the interactive checkbox and the
+    // Chain-only static badge) was removed entirely in the Ticket-tab
+    // footer redesign — confirm it never renders on Ticket, not even
+    // for MARKET.
+    const basketCount = await page.locator('.oes-common-basket-toggle-icon').count();
+    expect(basketCount, 'basket-toggle icon must be fully removed').toBe(0);
+
+    const labelInfo = await page.evaluate(() => {
+      const label = document.querySelector('.oes-footer-side-btn-single');
       if (!label) return { found: false };
       const r = label.getBoundingClientRect();
       const cs = getComputedStyle(label);
@@ -140,17 +173,17 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
       };
     });
 
-    console.log('\n[MARKET basket label]', JSON.stringify(basketInfo, null, 2));
+    console.log('\n[MARKET side-preview label]', JSON.stringify(labelInfo, null, 2));
 
-    expect(basketInfo.found, 'Basket toggle must be in the DOM').toBe(true);
-    // Natural width is 1.9rem = ~30px at 16px root. Allow up to 50px for
-    // any root-font rounding. Anything above 80px means flex-grow is active.
-    expect(basketInfo.labelW,
-      `Basket label width (${basketInfo.labelW}px) must be < 80px — flex-grow bug active if wider`
-    ).toBeLessThan(80);
-    // flex-grow must be 0 (flex-shrink: 0 is asserted by the rule in SymbolPanel)
-    expect(basketInfo.flexGrow,
-      'Basket label flexGrow must be 0 after cfa4d3bf fix'
+    expect(labelInfo.found, 'Side-preview label must be in the DOM').toBe(true);
+    // Natural width is ~5.5rem = ~88px at 16px root. Anything well above
+    // that means a flex-grow regression is active (the original bug's
+    // class of defect — a lone footer child swallowing the row's width).
+    expect(labelInfo.labelW,
+      `Side-preview label width (${labelInfo.labelW}px) must be < 160px — flex-grow bug active if wider`
+    ).toBeLessThan(160);
+    expect(labelInfo.flexGrow,
+      'Side-preview label flexGrow must be 0'
     ).toBe('0');
   });
 
@@ -188,9 +221,8 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
       }
 
       return [
-        hitCheck('.oes-common-basket-toggle-icon', 'basket-icon'),
-        hitCheck('.oes-footer-side-btn-single',    'side-btn-single'),
-        hitCheck('.oes-common-submit',              'submit-btn'),
+        hitCheck('.oes-footer-side-btn-single', 'side-btn-single'),
+        hitCheck('.oes-common-submit',          'submit-btn'),
       ];
     });
 
@@ -251,60 +283,76 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
     }
   });
 
-  // ── MARKET + side picked: side-btn cycles correctly ──────────────────
+  // ── MARKET + side picked via the ticket body's own SideToggle ────────
 
-  test('5 — MARKET + side-btn single: cycles cold→BUY→SELL on click', async ({ page }) => {
+  test('5 — MARKET + SideToggle: BUY/SELL pills stay hittable and drive the footer preview', async ({ page }) => {
+    // 2026-09 footer redesign: the footer side label is now a static,
+    // non-clickable preview (exactly ONE clickable control — Submit —
+    // remains in the row). Side selection moved entirely to OrderTicket's
+    // own SideToggle pills in the ticket body. This test's regression
+    // intent is unchanged: picking MARKET must never leave any control
+    // (the SideToggle pills, or Submit) un-hittable/"locked".
     await loginAsAdmin(page);
     await openOrders(page);
     await pickType(page, 'MARKET');
 
-    // Wait for any pending Svelte reactive cycles from MARKET type change to settle
-    // Root cause investigation: picking MARKET triggers Svelte reactivity that
-    // may temporarily detach/re-create the footer button, leaving a stale
-    // DOM reference. Waiting for the side button to be stable before clicking.
+    // Wait for any pending Svelte reactive cycles from the MARKET type
+    // change to settle before interacting — the original investigation's
+    // hypothesis was that a reactive re-render could leave a click
+    // targeting a stale/detached DOM node.
     await page.locator('.oes-footer-side-btn-single').first()
       .waitFor({ state: 'visible', timeout: 5_000 });
-    // Extra settle time for Svelte 5 reactive effects triggered by MARKET type change
     await page.waitForTimeout(800);
 
-    // Cold state: "Pick side"
+    // Cold state: footer preview reads "Pick side" until a symbol +
+    // side are both resolved.
     const sideBtn = page.locator('.oes-footer-side-btn-single').first();
     await sideBtn.scrollIntoViewIfNeeded();
-    const coldText = await sideBtn.textContent();
-    expect(coldText?.trim(), 'Side btn cold state must read "Pick side"').toBe('Pick side');
-    expect(await sideBtn.evaluate(el => el.classList.contains('on-none'))).toBe(true);
 
-    // Click 1 → BUY
-    // BUG INVESTIGATION NOTE: After picking MARKET, the side button's onclick
-    // handler (Svelte 5 event delegation) does not fire even though:
-    //   - the button is visible and hit-test passes (isSelf: true in test 3)
-    //   - no pointer-events: none anywhere in the ancestry
-    //   - the click event itself fires (confirmed via addEventListener capture)
-    //   - btn.onclick is null (Svelte 5 uses addEventListener, not property)
-    // Hypothesis: MARKET type change triggers Svelte reactive update that
-    // detaches/re-creates the footer block; click lands on the old node.
-    // This IS the operator's reported "selecting market order locks it" bug.
-    await sideBtn.click();
-    await page.waitForTimeout(600);
-    const afterBuy = await page.locator('.oes-footer-side-btn-single').first().evaluate(el => ({
+    const buyPill  = page.locator('button.ot-side-buy').first();
+    const sellPill = page.locator('button.ot-side-sell').first();
+    await expect(buyPill).toBeVisible({ timeout: 5_000 });
+    if (!(await buyPill.isEnabled().catch(() => false))) {
+      test.skip(true, 'SideToggle disabled — no resolvable symbol in this environment');
+      return;
+    }
+
+    // Click 1 → BUY. Hit-test the pill itself first — this is the
+    // control that must never be "locked" by MARKET type selection.
+    const buyBox = await buyPill.boundingBox();
+    if (buyBox) {
+      const hit = await page.evaluate(({ x, y }) => {
+        const el = document.elementFromPoint(x, y);
+        return el ? { tag: el.tagName, cls: (el.className || '').toString().substring(0, 80) } : null;
+      }, { x: buyBox.x + buyBox.width / 2, y: buyBox.y + buyBox.height / 2 });
+      console.log('\n[SideToggle BUY] hit at center:', hit);
+    }
+    await buyPill.click();
+    await page.waitForTimeout(400);
+
+    // Footer preview label mirrors the pick (onSideChange wiring).
+    const afterBuy = await sideBtn.evaluate(el => ({
       text: el.textContent?.trim(),
       onBuy: el.classList.contains('on-buy'),
       cls: el.className,
     }));
-    console.log('\n[side-btn] after click 1:', afterBuy);
-    expect(afterBuy.onBuy, 'Side btn must have on-buy class after first click').toBe(true);
+    console.log('[footer preview] after BUY pill click:', afterBuy);
+    expect(afterBuy.onBuy, 'Footer preview must show on-buy after BUY pill click').toBe(true);
 
     // Click 2 → SELL
-    await page.locator('.oes-footer-side-btn-single').first().click();
+    await expect(sellPill).toBeEnabled({ timeout: 3_000 });
+    await sellPill.click();
     await page.waitForTimeout(200);
-    const afterSell = await page.locator('.oes-footer-side-btn-single').first().evaluate(el => ({
+    const afterSell = await sideBtn.evaluate(el => ({
       text: el.textContent?.trim(),
       onSell: el.classList.contains('on-sell'),
     }));
-    console.log('[side-btn] after click 2:', afterSell);
-    expect(afterSell.onSell, 'Side btn must have on-sell class after second click').toBe(true);
+    console.log('[footer preview] after SELL pill click:', afterSell);
+    expect(afterSell.onSell, 'Footer preview must show on-sell after SELL pill click').toBe(true);
 
-    // Now verify hit-test still passes AFTER side picked (margin pill may appear)
+    // Now verify hit-test still passes AFTER side picked (margin pill may appear).
+    // Submit must remain hittable — this is the ONE clickable control left
+    // in the row and the actual "locked" symptom the operator reported.
     const hitAfterSide = await page.evaluate(() => {
       function _cs2(el) {
         if (!el) return '';
@@ -321,9 +369,9 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
                  hitCls: _cs2(hit), w: Math.round(r.width) };
       }
       return {
-        basket: hitCheck('.oes-common-basket-toggle-icon'),
         submit: hitCheck('.oes-common-submit'),
         sideBtn: hitCheck('.oes-footer-side-btn-single'),
+        sellPill: hitCheck('.ot-side-sell'),
       };
     });
 
@@ -371,10 +419,12 @@ test.describe('/orders — MARKET type lock regression (cfa4d3bf + 98cfffe0)', (
     await loginAsAdmin(page);
     await openOrders(page);
     await pickType(page, 'MARKET');
-    // Pick BUY so the full footer (basket + side=BUY + submit) is rendered
-    const sideBtn = page.locator('.oes-footer-side-btn-single').first();
-    if (await sideBtn.isVisible({ timeout: 2_000 }).catch(() => false)) {
-      await sideBtn.click(); // → BUY
+    // Pick BUY via the ticket body's own SideToggle pill so the full
+    // footer (side preview + submit) is rendered.
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.isVisible({ timeout: 2_000 }).catch(() => false)
+        && await buyPill.isEnabled().catch(() => false)) {
+      await buyPill.click(); // → BUY
       await page.waitForTimeout(300);
     }
 

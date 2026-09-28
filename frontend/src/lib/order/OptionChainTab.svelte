@@ -18,7 +18,6 @@
   } from '$lib/api';
   import { executionMode } from '$lib/stores';
   import Select from '$lib/Select.svelte';
-  import LegLabel from '$lib/LegLabel.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
@@ -34,7 +33,7 @@
   // Templates apply per-leg to each basket entry: when the leg fills,
   // the template runs (TP / SL / Wing) just like a single-leg ticket.
   import {
-    loadOrderTemplates, orderTemplatesStore,
+    loadOrderTemplates,
   } from '$lib/data/templates';
 
   /** @type {{
@@ -195,43 +194,11 @@
       _account = account;
     }
   });
-  // ── Template state ───────────────────────────────────────────
-  // Templates apply per leg of the basket: when the leg fills, the
-  // backend's apply_template_to_order pipeline runs to attach TP /
-  // SL / Wing GTTs. Same shape as the OrderTicket template flow —
-  // single template selection per basket; threaded into every leg
-  // on placeBasket(). Operator picks once, the whole basket
-  // inherits.
-  let _templates = $state(/** @type {any[]} */ ([]));
-  const _selectedTemplate = $derived(
-    _templates.find(t => t.id === templateId) || null
-  );
-  // Subscribe to the shared template store — keeps the picker
-  // current when the operator edits a template on
-  // /automation/templates while the chain tab is mounted. First-paint
-  // 'none' fallback is now handled by SymbolPanel so the default is
-  // shared across the Ticket / Chain / Basket-bar surfaces.
-  $effect(() => {
-    const rows = $orderTemplatesStore;
-    if (rows && rows.length) {
-      // Store in local var — don't read _templates after writing it or the
-      // new-array-reference from filter() creates an infinite self-loop.
-      const active = rows.filter(t => t.is_active);
-      _templates = active;
-      if (untrack(() => templateId) === null) {
-        // Operator: "instead of None, going forward use the default
-        // valid template for buy or sell". Standalone OptionChainTab
-        // has no _side prop in scope, so we pick the first is_default
-        // (any applies_to) — the shell's side-aware effect overrides
-        // this whenever it is mounted, so this fallback only matters
-        // for the rare standalone mount.
-        const def = active.find(t => t.is_default);
-        if (def) { templateId = def.id; return; }
-        const none = active.find(t => t.slug === 'none');
-        if (none) templateId = none.id;
-      }
-    }
-  });
+  // Template state — SELECTION lives entirely in the shell now.
+  // `templateId` is always bound by SymbolPanel (`bind:templateId`,
+  // the tab's sole call site), so the picker default and the
+  // side-aware auto-pick both live there; this tab only threads
+  // `templateId` through to `placeBasket()` per leg.
 
   // Push picker changes back to the shell so the other tabs sync.
   // Guard against the echo of the inbound prop sync above.
@@ -711,43 +678,6 @@
     basketError = ''; _flashToast(_quickKeyFut(sym), '✓ added');
   }
 
-  function setBasketChaseAgg(/** @type {string} */ key, /** @type {'low'|'med'|'high'} */ agg) {
-    if (_externalBasket && onUpdateLeg) {
-      onUpdateLeg(key, (leg) => ({ ...leg, chaseAgg: agg }));
-    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
-      const leg = chainBasket.find(b => b.key === key);
-      if (leg) { onRemoveLeg(leg); onAddLeg({ ...leg, chaseAgg: agg }); }
-    } else {
-      _localBasket = _localBasket.map(b => b.key === key ? { ...b, chaseAgg: agg } : b);
-    }
-  }
-  function basketStepLots(/** @type {string} */ key, /** @type {number} */ delta) {
-    if (_externalBasket && onUpdateLeg) {
-      onUpdateLeg(key, (leg) => ({
-        ...leg,
-        lots: Math.max(1, Math.floor((leg.lots || 1) + delta)),
-      }));
-    } else if (_externalBasket && onRemoveLeg && onAddLeg) {
-      const leg = chainBasket.find(b => b.key === key);
-      if (leg) { onRemoveLeg(leg); onAddLeg({ ...leg, lots: Math.max(1, Math.floor((leg.lots || 1) + delta)) }); }
-    } else {
-      _localBasket = _localBasket.map(b => b.key !== key ? b : { ...b, lots: Math.max(1, Math.floor((b.lots || 1) + delta)) });
-    }
-  }
-  function removeFromBasket(/** @type {string} */ key) {
-    if (_externalBasket && onRemoveLeg) {
-      const leg = chainBasket.find(b => b.key === key);
-      if (leg) onRemoveLeg(leg);
-    } else {
-      _localBasket = _localBasket.filter(b => b.key !== key);
-    }
-  }
-  function clearBasket() {
-    if (_externalBasket && onClearBasket) { onClearBasket(); }
-    else { _localBasket = []; }
-    basketError = '';
-  }
-
   /** @returns {'live'|'paper'} */
   function _resolveBasketMode() {
     const m = String($executionMode || 'paper').toLowerCase();
@@ -1091,70 +1021,6 @@
     <div class="oct-empty">No strikes for {chainUnderlying} expiring {chainExpiry}. Try a different underlying or expiry.</div>
   {/if}
 
-  <!-- Basket bar — render the in-tab pills ONLY when the basket isn't
-       lifted to the shell. With _externalBasket=true the OrderEntryShell
-       already renders a richer pill row in its sticky bottom strip
-       that's visible from every tab; showing the same pills here would
-       just be a duplicate of that. -->
-  {#if chainBasket.length && !_externalBasket}
-    <div class="chain-basket">
-      <div class="chain-basket-legs">
-        {#each chainBasket as leg (leg.key)}
-          <span class="chain-basket-leg chain-basket-leg-{leg.side === 'BUY' ? 'buy' : 'sell'} chain-basket-leg-type-{/CE$/.test(leg.sym) ? 'ce' : /PE$/.test(leg.sym) ? 'pe' : /FUT$/.test(leg.sym) ? 'fut' : 'eq'}"
-                class:is-disabled={basketPlacing}
-                role="button" tabindex="0"
-                title="Click to remove from basket"
-                onclick={() => { if (!basketPlacing) removeFromBasket(leg.key); }}
-                onkeydown={(e) => {
-                  if (basketPlacing) return;
-                  if (e.key === 'Enter' || e.key === ' ' || e.key === 'Delete' || e.key === 'Backspace') {
-                    e.preventDefault(); removeFromBasket(leg.key);
-                  }
-                }}>
-            <span class="chain-basket-side">{leg.side === 'BUY' ? 'B' : 'S'}</span>
-            <span class="chain-basket-sym"><LegLabel sym={leg.sym} compact={true} /></span>
-            <button type="button" class="chain-basket-step" title="Decrease lots"
-                    disabled={basketPlacing || leg.lots <= 1}
-                    onclick={(e) => { e.stopPropagation(); basketStepLots(leg.key, -1); }}>−</button>
-            <span class="chain-basket-lots">{leg.lots}</span>
-            <button type="button" class="chain-basket-step" title="Increase lots"
-                    disabled={basketPlacing}
-                    onclick={(e) => { e.stopPropagation(); basketStepLots(leg.key, +1); }}>+</button>
-            <span class="chain-basket-qty">× {leg.lotSize} = {leg.lots * leg.lotSize}</span>
-            <span class="chain-basket-limit-static"
-                  title={leg.limit > 0 ? `Limit ₹${priceFmt(leg.limit)} from chain bid/ask.` : 'No quote — routes as MARKET.'}>
-              {#if leg.limit > 0}algo @{priceFmt(leg.limit)}{:else}@MKT{/if}
-            </span>
-            <span class="chain-basket-chase">
-              <button type="button" class="chain-basket-chase-pill chain-basket-chase-pill-low"
-                      class:on={(leg.chaseAgg || 'low') === 'low'} disabled={basketPlacing}
-                      title="Low — patient" onclick={(e) => { e.stopPropagation(); setBasketChaseAgg(leg.key, 'low'); }}>L</button>
-              <button type="button" class="chain-basket-chase-pill chain-basket-chase-pill-med"
-                      class:on={leg.chaseAgg === 'med'} disabled={basketPlacing}
-                      title="Medium — midpoint" onclick={(e) => { e.stopPropagation(); setBasketChaseAgg(leg.key, 'med'); }}>M</button>
-              <button type="button" class="chain-basket-chase-pill chain-basket-chase-pill-high"
-                      class:on={leg.chaseAgg === 'high'} disabled={basketPlacing}
-                      title="High — urgent" onclick={(e) => { e.stopPropagation(); setBasketChaseAgg(leg.key, 'high'); }}>H</button>
-            </span>
-          </span>
-        {/each}
-      </div>
-      <div class="chain-basket-actions">
-        <!-- Template picker was previously rendered here but the
-             reachable shell (SymbolPanel) lifts the basket to
-             `_externalBasket=true` so this block never paints in
-             practice. The picker now lives in the shell's
-             `.oes-basket-bar` (SymbolPanel.svelte) so it appears for
-             every chain-modal mount. -->
-        <button type="button" class="chain-basket-clear" disabled={basketPlacing} onclick={clearBasket}>Clear</button>
-        <button type="button" class="chain-basket-place" disabled={basketPlacing} onclick={placeBasket}>
-          {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Submit{/if}
-        </button>
-      </div>
-    </div>
-  {:else if basketJustDone}
-    <div class="chain-basket-toast">✓ basket placed</div>
-  {/if}
   <!-- Audit fix — basketError used to live INSIDE the
        `chainBasket.length && !_externalBasket` block, so in external-
        basket mode (the SymbolPanel shell mounts the tab) the operator's
@@ -1514,20 +1380,28 @@
     background: rgba(251,191,36,0.10);
     color: var(--c-action);
   }
+  /* Quiet-at-rest, full-strength-on-interaction — the strike grid
+     should read as a clean quiet grid, not a wall of bordered
+     buttons. Border drops to a soft 22%-alpha tint at rest (was
+     solid currentColor); hover/focus restores the full solid
+     border + a background fill so the buy/sell affordance is still
+     unmistakable the moment the operator's attention is on it. */
   .chain-btn {
     font-family: monospace; font-size: var(--fs-xs); font-weight: 700;
     padding: 0 5px; border-radius: 2px;
-    border: 1px solid currentColor; background: transparent;
-    cursor: pointer; letter-spacing: 0.04em; transition: background 0.12s;
+    border: 1px solid transparent; background: transparent;
+    cursor: pointer; letter-spacing: 0.04em;
+    transition: background 0.12s, border-color 0.12s;
     line-height: 1.3;
   }
   .chain-btn-pair { display: inline-flex; gap: 10px; }
-  .chain-btn-buy  { color: var(--c-long); }
-  .chain-btn-sell { color: var(--c-short); }
-  .chain-btn-buy:hover  { background: var(--c-long-10); }
-  .chain-btn-sell:hover { background: var(--c-short-10); }
+  .chain-btn-buy  { color: var(--c-long);  border-color: var(--c-long-22); }
+  .chain-btn-sell { color: var(--c-short); border-color: var(--c-short-22); }
+  .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-10);  border-color: var(--c-long); }
+  .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-10); border-color: var(--c-short); }
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .chain-btn:disabled:hover { background: transparent; }
+  .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long-22); }
+  .chain-btn-sell:disabled:hover { border-color: var(--c-short-22); }
   .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #fbbf24); margin-left: 0.12rem; cursor: default; vertical-align: super; }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
@@ -1536,61 +1410,6 @@
     letter-spacing: 0.04em; margin-left: 0.3rem;
     animation: chain-quick-fade 0.9s ease-out forwards;
   }
-  /* Basket styles (exact mirror of admin/options) */
-  .chain-basket {
-    margin-top: 0.6rem; padding: 0.45rem 0.55rem;
-    border: 1px solid rgba(251,191,36,0.32); border-radius: 3px;
-    background: rgba(251,191,36,0.06);
-    display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem;
-  }
-  .chain-basket-legs { display: flex; flex-wrap: wrap; gap: 0.35rem; flex: 1 1 60%; min-width: 0; }
-  .chain-basket-leg {
-    display: inline-flex; align-items: center; gap: 0.3rem;
-    padding: 1px 6px 1px 4px; border-radius: 3px;
-    border: 1px solid currentColor; border-left-width: 4px;
-    font-family: monospace; font-size: var(--fs-sm); line-height: 1.5;
-    cursor: pointer; user-select: none; transition: background 0.12s, transform 0.05s;
-  }
-  .chain-basket-leg:hover:not(.is-disabled) { background: var(--c-short-10); transform: translateY(-1px); }
-  .chain-basket-leg.is-disabled { cursor: progress; opacity: 0.55; }
-  .chain-basket-leg-buy  { color: var(--c-long); background: var(--c-long-14); }
-  .chain-basket-leg-sell { color: var(--c-short); background: var(--c-short-14); }
-  .chain-basket-leg-type-ce  { border-left-color: var(--c-long); }
-  .chain-basket-leg-type-pe  { border-left-color: var(--c-short); }
-  .chain-basket-leg-type-fut { border-left-color: #7dd3fc; }
-  .chain-basket-leg-type-eq  { border-left-color: var(--c-action); }
-  .chain-basket-side { font-weight: 800; letter-spacing: 0.04em; }
-  .chain-basket-sym { color: var(--algo-slate, #ffffff); font-weight: 600; }
-  .chain-basket-qty { color: var(--c-muted); font-size: var(--fs-xs); font-variant-numeric: tabular-nums; }
-  .chain-basket-step {
-    width: 1.05rem; height: 1.05rem; padding: 0; border-radius: 2px;
-    border: 1px solid currentColor; background: transparent; color: currentColor;
-    cursor: pointer; font-family: monospace; font-size: var(--fs-lg); font-weight: 700;
-    line-height: 1; display: inline-flex; align-items: center; justify-content: center;
-  }
-  .chain-basket-step:hover:not(:disabled) { background: rgba(126,151,184,0.10); }
-  .chain-basket-step:disabled { opacity: 0.4; cursor: not-allowed; }
-  .chain-basket-lots { min-width: 1.1rem; text-align: center; color: var(--c-action); font-family: monospace; font-weight: 700; font-size: var(--fs-sm); font-variant-numeric: tabular-nums; }
-  .chain-basket-limit-static { color: var(--c-action); font-family: monospace; font-size: var(--fs-sm); font-weight: 700; font-variant-numeric: tabular-nums; letter-spacing: 0.02em; }
-  .chain-basket-chase { display: inline-flex; align-items: center; gap: 0.15rem; margin-left: 0.15rem; }
-  .chain-basket-chase-pill {
-    width: 1rem; height: 1rem; padding: 0;
-    border: 1px solid rgba(126,151,184,0.35); border-radius: 2px;
-    background: transparent; color: var(--text-muted);
-    font-family: monospace; font-size: var(--fs-xs); font-weight: 700; line-height: 1;
-    cursor: pointer; display: inline-flex; align-items: center; justify-content: center;
-  }
-  .chain-basket-chase-pill:disabled { opacity: 0.4; cursor: not-allowed; }
-  /* Audit fix — HIGH is RED (danger / urgent), not green. Pre-fix
-     OrderTicket painted HIGH red and OptionChainTab painted it
-     green; same semantic control conveyed opposite meanings on tab
-     switch. Industry convention (NinjaTrader / Zerodha) is amber → red
-     ascending urgency. Aligned to LOW=sky, MED=amber, HIGH=red on
-     both surfaces. */
-  .chain-basket-chase-pill-low.on  { background: rgba(125,211,252,0.20); color: #7dd3fc; border-color: rgba(125,211,252,0.55); }
-  .chain-basket-chase-pill-med.on  { background: rgba(251,191,36,0.20);  color: var(--c-action); border-color: rgba(251,191,36,0.55); }
-  .chain-basket-chase-pill-high.on { background: rgba(248,113,113,0.20); color: var(--c-short); border-color: rgba(248,113,113,0.55); }
-  .chain-basket-actions { display: inline-flex; align-items: center; gap: 0.4rem; margin-left: auto; flex-wrap: wrap; }
   /* Template selector — small inline label + dropdown. Sized to sit
      next to Clear / Place without dominating the action row. */
   .chain-tpl-pick {
@@ -1645,25 +1464,7 @@
        .cell-muted token, so reused directly. */
     color: var(--algo-slate-muted);
   }
-  .chain-basket-clear,
-  .chain-basket-place {
-    height: 1.5rem; padding: 0 0.7rem; border-radius: 2px;
-    border: 1px solid currentColor; background: transparent;
-    cursor: pointer; font-family: monospace; font-size: var(--fs-sm); font-weight: 700; letter-spacing: 0.04em;
-  }
-  .chain-basket-clear { color: var(--text-muted); }
-  .chain-basket-clear:hover { background: rgba(163,185,208,0.08); }
-  .chain-basket-place { color: var(--c-action); background: rgba(251,191,36,0.10); }
-  .chain-basket-place:hover { background: rgba(251,191,36,0.20); }
-  .chain-basket-place:disabled,
-  .chain-basket-clear:disabled { opacity: 0.55; cursor: progress; }
   .chain-basket-err { flex: 1 1 100%; color: var(--c-short); font-family: monospace; font-size: var(--fs-sm); margin-top: 0.2rem; }
-  .chain-basket-toast {
-    margin-top: 0.5rem; padding: 0.3rem 0.5rem; border-radius: 2px;
-    background: rgba(74,222,128,0.14); color: var(--c-long);
-    font-family: monospace; font-size: var(--fs-md); font-weight: 700; text-align: center;
-    animation: chain-quick-fade 2.2s ease-out forwards;
-  }
   @keyframes chain-quick-fade {
     0%   { opacity: 1; }
     70%  { opacity: 1; }
@@ -1671,7 +1472,6 @@
   }
   @media (prefers-reduced-motion: reduce) {
     .chain-quick-toast { animation: none; }
-    .chain-basket-toast { animation: none; }
   }
 
   /* Operator: "on mobile the chain strike rows too tense, leave space

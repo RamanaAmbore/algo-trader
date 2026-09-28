@@ -157,14 +157,19 @@ test.describe('close-buy: modal opens with correct payload (desktop)', () => {
     expect(submitText).toMatch(/CLOSE/i);
     expect(submitText).toMatch(/BUY/i);
 
-    // 5. SSOT: clicking the side-toggle does NOT fire a submit
-    //    (side flips to SELL but no order fires — submit is a separate button)
+    // 5. SSOT: the footer side label is now a static preview (no click
+    //    handler) — side is set via OrderTicket's own SideToggle pills
+    //    in the ticket body. Clicking those does NOT fire a submit
+    //    (Submit is the sole clickable control in the footer row).
     const reqsBefore = requests.length;
-    await sideBtn.click();
-    // After toggle: button should now show "ADD SELL" (since it flipped to SELL)
+    const sellPill = page.locator('button.ot-side-sell').first();
+    const buyPill  = page.locator('button.ot-side-buy').first();
+    await expect(sellPill).toBeEnabled({ timeout: 3_000 });
+    await sellPill.click();
+    // Footer preview label mirrors the pick (onSideChange wiring).
     await expect(sideBtn).toHaveClass(/on-sell/, { timeout: 1_000 });
     // Toggle back to BUY
-    await sideBtn.click();
+    await buyPill.click();
     await expect(sideBtn).toHaveClass(/on-buy/, { timeout: 1_000 });
     // No order API calls should have fired from the side-toggle clicks
     const orderReqs = requests.slice(reqsBefore).filter(u =>

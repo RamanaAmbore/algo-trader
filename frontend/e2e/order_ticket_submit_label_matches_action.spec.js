@@ -85,17 +85,32 @@ test.describe('R7 — Submit button label reflects the real pending action', () 
     await page.keyboard.press('Enter').catch(() => {});
     await page.waitForTimeout(500);
 
+    // Footer side label is now a static preview (no click handler) —
+    // side is set via OrderTicket's own SideToggle pills in the ticket
+    // body. See SymbolPanel.svelte's removal of the redundant footer
+    // side-selector button.
     const sideBtn = page.locator('.oes-footer-side-btn-single').first();
     if (await sideBtn.count() === 0) {
       test.skip(true, 'no side selector rendered — cannot exercise R7 label wiring');
       return;
     }
-    // Side-selector pill must NOT look like the primary Submit action —
+    const buyPill = page.locator('button.ot-side-buy').first();
+    if (await buyPill.count() === 0) {
+      test.skip(true, 'no OrderTicket SideToggle rendered — cannot exercise R7 label wiring');
+      return;
+    }
+    // SideToggle is disabled until a symbol resolves — the RELIANCE fill
+    // + Enter above must have landed, or this click would hang/no-op.
+    if (!(await buyPill.isEnabled().catch(() => false))) {
+      test.skip(true, 'SideToggle still disabled — symbol did not resolve in this environment');
+      return;
+    }
+    // Side-preview label must NOT look like the primary Submit action —
     // R7's visual-disambiguation ask. Compare background color: the
-    // ghost-styled side pill should render transparent/near-transparent
+    // ghost-styled preview label should render transparent/near-transparent
     // background, distinct from Submit's filled background once a side
     // and flavor are set.
-    await sideBtn.click(); // sets a side (BUY or flips)
+    await buyPill.click(); // sets side = BUY via the ticket body's own toggle
     await page.waitForTimeout(300);
 
     const sideLabelAfterPick = (await submitBtn.textContent())?.trim() || '';
