@@ -41,7 +41,8 @@ from backend.api.routes.orders_helpers import (
     _resolve_target_pct,
     logger,
 )
-from backend.api.routes.orders_place import _attach_basket_leg_template
+from backend.api.routes.orders_place import _attach_basket_leg_template, _verify_close_intent
+from backend.api.algo.actions_preflight import MCX_MAX_LOTS, FO_FAT_FINGER_LOT_CAP
 from backend.api.auth_guard import is_admin_request
 
 
@@ -301,6 +302,14 @@ async def basket_order_handler(
             # F&O: request qty is LOTS. Resolve lot_size + multiply to
             # contracts for internal use. Same convention as /ticket.
             _FO = ("NFO", "MCX", "CDS", "BFO", "BCD", "NCO")
+            # Default: pass the leg's claimed intent through unchanged for
+            # equity (no size-cap bypass is gated on intent for equity, so
+            # there's nothing here to verify or protect). Overwritten below
+            # with the server-VERIFIED value for F&O legs, where an
+            # unverified claim can bypass the 5-lot / MCX 20-lot caps
+            # (2026-09-27 audit — basket previously trusted `leg.intent`
+            # raw, the exact bypass already fixed on /ticket).
+            _leg_verified_intent = getattr(leg, "intent", None)
             if exch in _FO:
                 from backend.brokers.adapters.kite import get_lot_size as _ls_lookup
                 try:
@@ -314,18 +323,57 @@ async def basket_order_handler(
                         "cache cold). Refusing to prevent oversize order.",
                         account, sym, input_qty, exch,
                     )
-                    raise HTTPException(
-                        status_code=503,
-                        detail=(f"lot_size for {sym} on {exch} unavailable "
-                                f"(cache cold) — retry in a moment"),
-                    )
+                    # 2026-09-27 audit fix (advisor review): this used to
+                    # `raise HTTPException(503)`, which aborts the WHOLE
+                    # group mid-loop — if earlier legs in this same group
+                    # already placed LIVE broker orders, their results were
+                    # discarded (the function never returns a
+                    # BasketGroupResult) and the client, seeing only an
+                    # error, would retry the whole request — placing those
+                    # already-live legs a second time. Every other guard in
+                    # this loop (5-lot cap, MCX cap, preflight) already uses
+                    # a per-leg error + `continue`; this was the one
+                    # outlier. A cold instruments cache is a per-symbol
+                    # condition, not a whole-request failure, so it belongs
+                    # in `leg_results` like the others.
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=(f"lot_size for {sym} on {exch} unavailable "
+                               f"(instruments cache cold) — retry in a moment"),
+                    ))
+                    continue
                 qty = input_qty * _lot   # contracts
                 # G2 fat-finger cap — 5-lot cap for F&O (MCX exempt;
                 # its own 20-lot cap fires just below).
                 _lots = input_qty
-                _leg_close = (getattr(leg, "intent", None) or "").lower() == "close"
                 _is_mcx = exch in ("MCX", "NCO")
-                if not _leg_close and not _is_mcx and _lots > 5:
+                # 2026-09-27 audit fix: previously trusted the client's
+                # `leg.intent == "close"` claim directly for the 5-lot and
+                # MCX 20-lot cap bypasses below — the exact bypass already
+                # fixed on /ticket (_verify_close_intent), never extended
+                # to basket. A claimed-but-unverified close now falls back
+                # to the full cap, same as /ticket.
+                _leg_claimed_close = (getattr(leg, "intent", None) or "").lower() == "close"
+                _leg_close = False
+                if _leg_claimed_close:
+                    _leg_close = await _verify_close_intent(
+                        sym=sym, exchange=exch, side=side,
+                        account=account, contracts=qty,
+                    )
+                    if not _leg_close:
+                        logger.warning(
+                            "[FAT-FINGER-GUARD] basket leg %d claimed close "
+                            "intent but server verification failed (sign "
+                            "mismatch or qty exceeds actual position) — "
+                            "falling back to full cap: acct=%s sym=%s",
+                            i, account, sym,
+                        )
+                # Propagate the VERIFIED value to every other consumer of
+                # this leg's intent (the MCX cap below, the preflight
+                # dict, and broker.place_order) — mirrors /ticket's
+                # data.intent mutation (orders_place.py).
+                _leg_verified_intent = "close" if _leg_close else None
+                if not _leg_close and not _is_mcx and _lots > FO_FAT_FINGER_LOT_CAP:
                     logger.warning(
                         "[FAT-FINGER-GUARD] basket leg rejected: "
                         "acct=%s sym=%s lots=%s lot_size=%s",
@@ -333,8 +381,8 @@ async def basket_order_handler(
                     )
                     leg_results.append(BasketLegResult(
                         leg_index=i, order_id=None, status="error",
-                        error=(f"{_lots} lots exceeds 5-lot safety cap "
-                               f"(lot_size={_lot})"),
+                        error=(f"{_lots} lots exceeds {FO_FAT_FINGER_LOT_CAP}-lot "
+                               f"safety cap (lot_size={_lot})"),
                     ))
                     continue
                 # MCX 20-lot cap — close orders are exempt (operator must
@@ -385,22 +433,24 @@ async def basket_order_handler(
                 #    above and the adapter ceiling in kite.py).
                 if exch in ("MCX", "NCO") and not _leg_close:
                     _bk_lots_for_cap = int(qty // _lot) if _lot > 0 else 0
-                    _MCX_CAP = 20
-                    if _bk_lots_for_cap > _MCX_CAP:
+                    if _bk_lots_for_cap > MCX_MAX_LOTS:
                         logger.error(
                             "[BASKET-LIVE] leg %d rejected: MCX size cap. "
                             "acct=%s sym=%s lots=%d > %d",
-                            i, account, sym, _bk_lots_for_cap, _MCX_CAP,
+                            i, account, sym, _bk_lots_for_cap, MCX_MAX_LOTS,
                         )
                         leg_results.append(BasketLegResult(
                             leg_index=i, order_id=None, status="error",
-                            error=f"MCX lot cap: {_bk_lots_for_cap} > {_MCX_CAP}",
+                            error=f"MCX lot cap: {_bk_lots_for_cap} > {MCX_MAX_LOTS}",
                         ))
                         continue
 
                 # 3. Preflight (margin shortfall + segment inactive).
-                #    intent="close" bypasses G2 inside run_preflight.
-                _leg_intent = getattr(leg, "intent", None)
+                #    intent="close" bypasses G2 inside run_preflight — use
+                #    the server-VERIFIED value (_leg_verified_intent), not
+                #    the raw client claim, so an unverified claim can't
+                #    bypass run_preflight's own G2 check either.
+                _leg_intent = _leg_verified_intent
                 try:
                     from backend.api.algo.actions import run_preflight as _bk_run_preflight
                     _bk_pf = await _bk_run_preflight(account, {
@@ -434,25 +484,30 @@ async def basket_order_handler(
                         b.get("reason") or b.get("code", "?")
                         for b in _bk_pf.get("blocked", [])
                     ) or f"preflight blocked: {', '.join(_bk_blocked_codes)}"
-                    if any(c in ("MARGIN_SHORTFALL", "SEGMENT_INACTIVE") for c in _bk_blocked_codes):
-                        logger.warning(
-                            "[BASKET-LIVE] leg %d blocked by preflight: "
-                            "acct=%s sym=%s codes=%s",
-                            i, account, sym, _bk_blocked_codes,
-                        )
-                        leg_results.append(BasketLegResult(
-                            leg_index=i, order_id=None, status="error",
-                            error=_bk_all_reasons[:500],
-                        ))
-                        continue
-                    # Other preflight blockers (LOT_MULTIPLE, FAT_FINGER etc.)
-                    # were already caught by the guards above; log and continue
-                    # placing so only margin/segment issues gate here.
+                    # 2026-09-27 audit fix (advisor review): this used to
+                    # block ONLY on MARGIN_SHORTFALL/SEGMENT_INACTIVE and
+                    # silently proceed to place on every other code
+                    # (ACCOUNT_UNKNOWN, QTY_FREEZE, INSUFFICIENT_FUNDS,
+                    # LOT_MULTIPLE, LOT_SIZE_UNKNOWN, FAT_FINGER_5_LOT_CAP),
+                    # on the assumption those were "already caught by the
+                    # guards above" — false for FAT_FINGER_5_LOT_CAP on a
+                    # claimed-but-unverified close (that basket-local check
+                    # is intent-gated and was, until this same fix,
+                    # trusting the raw unverified claim same as this
+                    # function). A preflight block only ever rejects THIS
+                    # ONE leg (leg_results + continue, never the whole
+                    # request) — there is no correctness reason to demote
+                    # any blocker code to a warning. Block on all of them.
                     logger.warning(
-                        "[BASKET-LIVE] leg %d preflight non-critical blocker(s): "
-                        "acct=%s sym=%s codes=%s — proceeding to place",
+                        "[BASKET-LIVE] leg %d blocked by preflight: "
+                        "acct=%s sym=%s codes=%s",
                         i, account, sym, _bk_blocked_codes,
                     )
+                    leg_results.append(BasketLegResult(
+                        leg_index=i, order_id=None, status="error",
+                        error=_bk_all_reasons[:500],
+                    ))
+                    continue
                 # ── end LIVE safety checks ────────────────────────────────
 
                 try:

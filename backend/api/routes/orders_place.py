@@ -20,6 +20,7 @@ from typing import Optional
 from litestar.exceptions import HTTPException
 
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.api.algo.actions_preflight import MCX_MAX_LOTS, FO_FAT_FINGER_LOT_CAP
 
 logger = get_logger(__name__)
 
@@ -1288,6 +1289,24 @@ async def _ticket_enforce_lot_and_fat_finger(
     re-derives 'close' server-side from the actual broker position (sign
     AND magnitude) before the bypass is granted; a claimed-but-unverified
     close falls back to the full cap below rather than being trusted.
+
+    Follow-up fix (2026-09-27, orders-page audit deepened per advisor
+    review): the verification above only ever fed ITS OWN local `_is_close`
+    — every OTHER consumer of `data.intent` downstream in the same request
+    (`_ticket_check_mcx_size_cap`'s close exemption, `_ticket_run_preflight`'s
+    preflight dict, and the `broker.place_order`/GTT calls) independently
+    re-read the raw, still-unverified `data.intent` field, silently
+    recreating the exact bypass this function had just closed — for MCX/
+    NCO specifically, where G2 above is already exempt, `_ticket_check_
+    mcx_size_cap` was the ONLY guard standing between a claimed-but-fake
+    close and an unlimited-size live order. Fixed by mutating `data.intent`
+    in place to the server-verified value ('close' only if verification
+    actually passed, else None) once here — `TicketOrderRequest` is a
+    plain (non-frozen) msgspec.Struct already mutated the same way by
+    `_ticket_gate_market_hours_and_align_price` (price/trigger_price
+    alignment) elsewhere in this file, so every downstream reader of
+    `data.intent` automatically sees the verified value with no changes
+    needed at those call sites.
     """
     if data.exchange not in _FO_EXCHANGES:
         return
@@ -1311,25 +1330,29 @@ async def _ticket_enforce_lot_and_fat_finger(
                 "lots=%s exchange=%s",
                 account, sym, _lots, data.exchange,
             )
-    if _is_close and _lots > 5:
+    # Propagate the VERIFIED value to every other consumer of data.intent
+    # in this request (_ticket_check_mcx_size_cap, _ticket_run_preflight,
+    # broker.place_order/GTT calls) — see docstring follow-up note above.
+    data.intent = "close" if _is_close else None
+    if _is_close and _lots > FO_FAT_FINGER_LOT_CAP:
         logger.info(
             "[FAT-FINGER-GUARD] verified close intent bypasses G2 cap: "
             "acct=%s sym=%s lots=%s lot_size=%s exchange=%s",
             account, sym, _lots, lot_size, data.exchange,
         )
-    if not _is_close and not _is_mcx and _lots > 5:
+    if not _is_close and not _is_mcx and _lots > FO_FAT_FINGER_LOT_CAP:
         logger.warning(
             "[FAT-FINGER-GUARD] rejected: acct=%s sym=%s lots=%s "
-            "lot_size=%s (contracts=%d, cap: 5)",
-            account, sym, _lots, lot_size, contracts,
+            "lot_size=%s (contracts=%d, cap: %d)",
+            account, sym, _lots, lot_size, contracts, FO_FAT_FINGER_LOT_CAP,
         )
         raise HTTPException(
             status_code=400,
             detail=(
                 f"Refusing order — {_lots} lots exceeds the "
-                f"5-lot safety cap (lot_size={lot_size}). "
-                "Split into ≤5-lot orders or contact ops to raise "
-                "the cap."
+                f"{FO_FAT_FINGER_LOT_CAP}-lot safety cap (lot_size={lot_size}). "
+                f"Split into ≤{FO_FAT_FINGER_LOT_CAP}-lot orders or contact "
+                "ops to raise the cap."
             ),
         )
 
@@ -1500,30 +1523,37 @@ async def _ticket_record_preflight_block(
 def _ticket_check_mcx_size_cap(
     data, sym: str, contracts: int, lot_size: int,
 ) -> None:
-    """Hard 20-lot cap for MCX/NCO. Input `contracts = lots × lot_size`
-    (already validated) so lots = contracts // lot_size is exact.
+    """Hard MCX_MAX_LOTS-lot cap for MCX/NCO. Input `contracts = lots ×
+    lot_size` (already validated) so lots = contracts // lot_size is exact.
 
     Close orders are exempt — the operator must be able to close any
     open position regardless of size, so no cap is enforced when
-    intent == 'close'."""
+    intent == 'close'.
+
+    `data.intent` here is the value `_ticket_enforce_lot_and_fat_finger`
+    already normalized to the SERVER-VERIFIED result earlier in the same
+    request (called first in `ticket_order_handler`, before this function
+    runs from `_ticket_place_live`) — not the raw client claim. For MCX/
+    NCO specifically this close exemption is the ONLY size guard (G2 above
+    exempts MCX/NCO unconditionally), so trusting an unverified claim here
+    would have been a complete bypass of this cap (2026-09-27 audit)."""
     _ticket_exch = (data.exchange or "NFO")
     if _ticket_exch not in ("MCX", "NCO"):
         return
     if (getattr(data, "intent", None) or "").lower() == "close":
         return
-    _MCX_MAX_LOTS = 20
     _lots = max(1, contracts // lot_size) if lot_size > 0 else contracts
-    if _lots > _MCX_MAX_LOTS:
+    if _lots > MCX_MAX_LOTS:
         logger.error(
             f"[MCX-SIZE-GUARD] {_ticket_exch}/{sym}: lots={_lots} "
-            f"lot_size={lot_size} — exceeds {_MCX_MAX_LOTS}-lot "
+            f"lot_size={lot_size} — exceeds {MCX_MAX_LOTS}-lot "
             f"safety cap. Refusing order."
         )
         raise HTTPException(
             status_code=422,
             detail=(
                 f"Order size {_lots} lots for {sym} exceeds "
-                f"the {_MCX_MAX_LOTS}-lot safety limit. If intentional, "
+                f"the {MCX_MAX_LOTS}-lot safety limit. If intentional, "
                 f"contact support to increase the limit."
             ),
         )

@@ -1056,6 +1056,133 @@ class TestCloseOffsetGate:
                 contracts=10 * 50, lot_size=50,
             )
 
+    # ── 2026-09-27 audit deepened: verified intent must propagate to EVERY ────
+    # downstream consumer of data.intent, not just this function's own local
+    # decision. MCX/NCO is the critical case: G2 above is unconditionally
+    # exempt for MCX/NCO, so `_ticket_check_mcx_size_cap` (the ticket's ONLY
+    # size guard for that exchange) was the sole thing standing between a
+    # claimed-but-unverified 'close' and an unlimited-size live MCX order —
+    # and it read the raw client claim directly, independent of this
+    # function's own verification. These tests cover the fix: this function
+    # now mutates `data.intent` in place to the verified result, so any
+    # downstream reader of the SAME `data` object sees the verified value.
+
+    @pytest.mark.asyncio
+    async def test_enforce_normalizes_data_intent_to_none_when_unverified(self):
+        """Claimed close, verification fails (no matching position) —
+        data.intent must be scrubbed to None, not left as the raw 'close'
+        claim, so no downstream reader can be fooled by it."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+        )
+        empty_df = pd.DataFrame([{
+            "tradingsymbol": "OTHER_SYMBOL", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[empty_df]):
+            # 2 lots stays under the 5-lot cap so this call doesn't raise —
+            # isolates the intent-normalization behavior from the cap check.
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                contracts=2 * 50, lot_size=50,
+            )
+        assert data.intent is None
+
+    @pytest.mark.asyncio
+    async def test_enforce_normalizes_data_intent_to_close_when_verified(self):
+        """Claimed close, verification succeeds — data.intent stays 'close'
+        so legitimate downstream bypasses (MCX cap, preflight G2) still work."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import _ticket_enforce_lot_and_fat_finger
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="NIFTY25JUL24000CE",
+            quantity=1, exchange="NFO", account="ZG0001", intent="close",
+        )
+        real_df = pd.DataFrame([{
+            "tradingsymbol": "NIFTY25JUL24000CE", "quantity": 500, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[real_df]):
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="NIFTY25JUL24000CE",
+                contracts=10 * 50, lot_size=50,
+            )
+        assert data.intent == "close"
+
+    @pytest.mark.asyncio
+    async def test_mcx_cap_rejects_unverified_close_claim_end_to_end(self):
+        """THE vulnerability this closes: an MCX order claiming intent='close'
+        for 30 lots (> 20-lot cap) against NO real matching position. G2 is
+        unconditionally exempt for MCX, so _ticket_check_mcx_size_cap is the
+        ONLY guard — before this fix it trusted the raw claim and let this
+        through uncapped. Runs both functions in the real request order
+        (enforce_lot_and_fat_finger first, exactly as ticket_order_handler
+        does) against the SAME data object to prove the normalization
+        actually reaches the second function."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import (
+            _ticket_enforce_lot_and_fat_finger, _ticket_check_mcx_size_cap,
+        )
+        from litestar.exceptions import HTTPException
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="CRUDEOIL25JULFUT",
+            quantity=1, exchange="MCX", account="ZG0001", intent="close",
+        )
+        empty_df = pd.DataFrame([{
+            "tradingsymbol": "OTHER_SYMBOL", "quantity": 50, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[empty_df]):
+            # MCX is exempt from G2 regardless of verification outcome, so
+            # this call never raises — but it MUST normalize data.intent.
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="CRUDEOIL25JULFUT",
+                contracts=30 * 100, lot_size=100,  # 30 lots, cap is 20
+            )
+        assert data.intent is None  # unverified claim scrubbed
+
+        with pytest.raises(HTTPException) as exc_info:
+            _ticket_check_mcx_size_cap(
+                data, sym="CRUDEOIL25JULFUT", contracts=30 * 100, lot_size=100,
+            )
+        assert exc_info.value.status_code == 422
+        assert "20-lot safety limit" in str(exc_info.value.detail)
+
+    @pytest.mark.asyncio
+    async def test_mcx_cap_allows_verified_close_claim_end_to_end(self):
+        """Same MCX 30-lot order, but against a REAL matching 30+ lot
+        position — legitimately verified close, cap must be bypassed."""
+        from backend.api.schemas import TicketOrderRequest
+        from backend.api.routes.orders_place import (
+            _ticket_enforce_lot_and_fat_finger, _ticket_check_mcx_size_cap,
+        )
+        import pandas as pd
+
+        data = TicketOrderRequest(
+            mode="live", side="SELL", tradingsymbol="CRUDEOIL25JULFUT",
+            quantity=1, exchange="MCX", account="ZG0001", intent="close",
+        )
+        real_df = pd.DataFrame([{
+            "tradingsymbol": "CRUDEOIL25JULFUT", "quantity": 3000, "account": "ZG0001",
+        }])
+        with patch("backend.brokers.broker_apis.fetch_positions", return_value=[real_df]):
+            await _ticket_enforce_lot_and_fat_finger(
+                data, account="ZG0001", sym="CRUDEOIL25JULFUT",
+                contracts=30 * 100, lot_size=100,
+            )
+        assert data.intent == "close"
+
+        # Must not raise — legitimately verified close bypasses the cap.
+        _ticket_check_mcx_size_cap(
+            data, sym="CRUDEOIL25JULFUT", contracts=30 * 100, lot_size=100,
+        )
+
     # ── Fix C: ticket submit gate clears template_id ──────────────────────────
 
     @pytest.mark.asyncio

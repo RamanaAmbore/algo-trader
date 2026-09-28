@@ -447,6 +447,53 @@ before any broker call. Returns `AttachResult.errors` immediately on failure. Si
 of `broker.translate_qty` + adapter ceiling. `plan.parent_lot_size` always resolved (never 0) 
 by `apply_template_to_order` via `await get_lot_size()`.
 
+**Verified-intent propagation — a claimed `intent="close"` must be verified ONCE and
+propagated, never re-read raw downstream (2026-09-27, orders-page audit deepened)** —
+The original close-intent-bypass fix (`_verify_close_intent` in `orders_place.py`,
+verifies sign AND magnitude against the real broker position) only ever fed its OWN
+local decision inside `_ticket_enforce_lot_and_fat_finger` — every OTHER consumer of
+`data.intent` later in the SAME request (`_ticket_check_mcx_size_cap`'s close
+exemption, `_ticket_run_preflight`'s dict, the `broker.place_order`/GTT calls) kept
+independently re-reading the raw, still-unverified client claim, silently recreating
+the exact bypass the first fix had closed. This mattered most for MCX/NCO: G2 (the
+5-lot cap) is unconditionally exempt for MCX/NCO, so `_ticket_check_mcx_size_cap`
+(the 20-lot cap) was the ONLY guard standing between a claimed-but-fake close and an
+unlimited-size live MCX order — and it had zero test coverage before this fix.
+**Fix**: `_ticket_enforce_lot_and_fat_finger` now mutates `data.intent` in place to
+the server-verified result (`"close"` only if verification passed, else `None`)
+right after verifying — `TicketOrderRequest` is a plain (non-frozen) msgspec.Struct
+already mutated the same way elsewhere in the file (`_ticket_gate_market_hours_and_
+align_price` aligns `data.price`/`data.trigger_price` in place), so every downstream
+reader of `data.intent` automatically sees the verified value with no other code
+changes needed. **`/basket` had the identical, never-extended bypass** — each leg's
+`leg.intent == "close"` was trusted raw for the 5-lot cap, the MCX 20-lot cap, AND
+`run_preflight`'s own internal G2 check. Fixed the same way: `_verify_close_intent`
+now runs per F&O leg in `orders_basket.py`, storing the verified result in the same
+`_leg_close` variable every existing guard already reads, and a new
+`_leg_verified_intent` (verified value for F&O, raw passthrough for equity — no cap
+is intent-gated there) is what actually reaches `run_preflight` and `broker.place_order`.
+Two more basket-only defects found in the same pass: (1) a cold instruments-cache
+lot_size resolution failure used to `raise HTTPException(503)` INSIDE the per-leg
+loop, aborting the whole account group and discarding any earlier legs' already-
+placed results — a client retry after seeing that error would place those legs
+again. Now a per-leg `BasketLegResult(status="error")` + `continue`, matching every
+other guard in the same loop. (2) basket's preflight-blocker handling only treated
+`MARGIN_SHORTFALL`/`SEGMENT_INACTIVE` as real blockers; every other code
+(`QTY_FREEZE`, `INSUFFICIENT_FUNDS`, `LOT_MULTIPLE`, `LOT_SIZE_UNKNOWN`,
+`FAT_FINGER_5_LOT_CAP`) was logged and the leg placed anyway — fail-open. Now ANY
+non-ok preflight result rejects the leg; a preflight block only ever costs one leg
+(never the whole request), so there was no correctness reason to demote any code.
+The two independently-hardcoded `20`/`5` lot-cap literals (`orders_place.py`'s
+`_MCX_MAX_LOTS`, `orders_basket.py`'s `_MCX_CAP`, plus a THIRD `5` inside
+`actions_preflight.py:_preflight_validate_lots`'s own FAT_FINGER_5_LOT_CAP check)
+are now `MCX_MAX_LOTS` / `FO_FAT_FINGER_LOT_CAP`, defined once in
+`actions_preflight.py` and imported by both route files — same value today only by
+coincidence before this fix, no guard against future drift. Chain orders (`Option
+ChainTab.svelte`) submit through `placeTicketOrder()` → `/ticket`, so this fix
+covers them too; no separate chain endpoint exists. Template attach path
+(`template_attach.py`) reads no client-supplied intent field at all — nothing to fix
+there.
+
 **Lot/contract oversize guards (2026-09-24, commit f5db7765)** — Seven confirmed
 lot-vs-contract normalization bugs (C1–C7) across chase, template scale-out, trailing
 stop ratchet, and order modify paths; all patches deployed together. Key invariants:

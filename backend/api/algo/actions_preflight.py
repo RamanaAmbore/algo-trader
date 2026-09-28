@@ -9,6 +9,16 @@ from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
 
+# Shared F&O quantity-safety caps (2026-09-27 audit — SSOT consolidation).
+# Previously each of /ticket (orders_place.py), /basket (orders_basket.py),
+# and this module's own `_preflight_validate_lots` hardcoded its own literal
+# `5` / `20` independently — same value today only by coincidence, with no
+# guard against them silently drifting apart on a future edit to just one
+# call site. Both /ticket and /basket import these directly rather than
+# redefining them.
+MCX_MAX_LOTS = 20
+FO_FAT_FINGER_LOT_CAP = 5
+
 
 def _live_positions_in_scope(context: dict, params: dict) -> list[dict]:
     """
@@ -135,18 +145,19 @@ async def _preflight_validate_lots(
             })
         elif not is_close and not _is_mcx_exch:
             _pf_lots = qty // _pf_lot
-            if _pf_lots > 5:
+            if _pf_lots > FO_FAT_FINGER_LOT_CAP:
                 blockers.append({
                     "code": "FAT_FINGER_5_LOT_CAP",
                     "reason": (
-                        f"{_pf_lots} lots exceeds the 5-lot safety cap "
-                        f"(qty={qty}, lot_size={_pf_lot})"
+                        f"{_pf_lots} lots exceeds the {FO_FAT_FINGER_LOT_CAP}-lot "
+                        f"safety cap (qty={qty}, lot_size={_pf_lot})"
                     ),
                     "fix": (
-                        "split into ≤5-lot orders or contact ops to raise the cap"
+                        f"split into ≤{FO_FAT_FINGER_LOT_CAP}-lot orders or "
+                        "contact ops to raise the cap"
                     ),
                     "data": {"qty": qty, "lot_size": _pf_lot,
-                             "lots": _pf_lots, "cap": 5},
+                             "lots": _pf_lots, "cap": FO_FAT_FINGER_LOT_CAP},
                 })
 
     # MCX/NCO cold-cache: the route raises 503 before calling preflight,
