@@ -12,6 +12,7 @@ UX: log lines distinguish fast path ("built from instruments cache") from
 """
 import asyncio
 import pytest
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import os
@@ -21,6 +22,17 @@ os.environ.setdefault("PYTEST_RUNNING", "1")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# _build_expiries_index (instruments.py) deliberately skips any instrument
+# whose expiry is before today (see its docstring — stale persisted data
+# must never surface expired contracts to the chain tab). A hardcoded
+# calendar-date literal here would silently rot into the past as real time
+# advances, making these tests fail for a reason unrelated to any code
+# change (confirmed 2026-09-27: "2026-09-25" had rotted 2 days stale).
+# Compute a date that's always in the future relative to whenever the
+# suite actually runs instead.
+_FUTURE_EXPIRY = (date.today() + timedelta(days=30)).isoformat()
+
 
 def _make_instrument(s, e, t, x=None, k=None, ls=50):
     """Create a real Instrument struct."""
@@ -53,9 +65,9 @@ def _make_cancelling_sleep(cancel_after: int = 2):
 async def test_chain_instruments_warm_fast_path():
     """When instruments cache is warm, _warm() builds chain from it without calling _run."""
     nfo_items = [
-        _make_instrument("NIFTY25SEP25000CE", "NFO", "CE", x="2026-09-25", k=25000.0),
-        _make_instrument("NIFTY25SEP25100CE", "NFO", "CE", x="2026-09-25", k=25100.0),
-        _make_instrument("NIFTY25SEP24900PE", "NFO", "PE", x="2026-09-25", k=24900.0),
+        _make_instrument("NIFTY25SEP25000CE", "NFO", "CE", x=_FUTURE_EXPIRY, k=25000.0),
+        _make_instrument("NIFTY25SEP25100CE", "NFO", "CE", x=_FUTURE_EXPIRY, k=25100.0),
+        _make_instrument("NIFTY25SEP24900PE", "NFO", "PE", x=_FUTURE_EXPIRY, k=24900.0),
     ]
     nse_item = _make_instrument("RELIANCE", "NSE", "EQ")
     full_ir = _make_ir(nfo_items + [nse_item])
@@ -157,7 +169,7 @@ async def test_chain_instruments_warm_fallback_broker():
 async def test_task_instruments_warm_rebuilds_chain():
     """_task_instruments._warm() must populate instruments_chain from the full dump."""
     nfo_items = [
-        _make_instrument(f"NIFTY25SEP2500{i}CE", "NFO", "CE", x="2026-09-25", k=float(25000 + i * 100))
+        _make_instrument(f"NIFTY25SEP2500{i}CE", "NFO", "CE", x=_FUTURE_EXPIRY, k=float(25000 + i * 100))
         for i in range(5)
     ]
     nse_items = [

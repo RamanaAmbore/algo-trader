@@ -99,13 +99,23 @@ async def test_daily_content_refresh_cycle_runs_on_prod(monkeypatch):
 
     calls = {"market": 0, "news": 0}
 
+    # Both patched functions are "needs X today" checks (True = refresh/reset
+    # still needed) — NOT "is done" checks. Returning True here (as this test
+    # originally did) means "needs refresh", which makes the real
+    # _daily_content_refresh_cycle loop call the REAL, unmocked
+    # _perform_market_refresh_once()/_perform_news_refresh_once() and then
+    # hang on the loop's real `await asyncio.sleep(30 * 60)` — confirmed
+    # 2026-09-27, this was hanging every full-suite run indefinitely. Return
+    # False (does NOT need refresh — already done today) so the loop's
+    # `market_done and news_done` check is satisfied on pass 1, matching
+    # what this test's own docstring/comment always intended.
     async def _market_done():
         calls["market"] += 1
-        return True  # already done today — loop exits immediately
+        return False
 
     async def _news_done():
         calls["news"] += 1
-        return True
+        return False
 
     monkeypatch.setattr(background, "_market_needs_refresh_today", _market_done)
     # _daily_content_refresh_cycle does a local
