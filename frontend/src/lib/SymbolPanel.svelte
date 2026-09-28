@@ -3209,6 +3209,26 @@
   }
   .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
   .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }
+  /* Root-cause fix (mobile overflow) — SymbolSearchInput's own
+     `.ssi-drop` results panel anchors `left: 0` relative to its
+     `.ssi-wrap`, with a fixed `min-width: 14rem` for readability.
+     In THIS picker row the Account (5.5rem) + Exchange (5rem)
+     fixed-width selects precede the symbol input, so `.ssi-wrap`
+     sits well right of the row's own left edge — on mobile (320–
+     390px confirmed) a left-anchored 14rem-wide dropdown spills
+     past the viewport's right edge, its tail end clipped by
+     `.canonical-modal-panel`'s `overflow: hidden`, reading as the
+     modal itself "overflowing" on the right. `.ssi-wrap`'s right
+     edge, by contrast, always sits close to the row's own right
+     edge (the symbol input is the last flex-grow slot before the
+     optional `pickerSuffix`), so right-anchoring keeps the full
+     dropdown on-screen at every width without capping its readable
+     content — it grows leftward into the picker row instead of
+     rightward off it. Scoped to `.oes-sym-pick` only: other
+     SymbolSearchInput consumers (ChartWorkspace's `.cw-picker`,
+     which places the input near the row's LEFT edge) keep the
+     default left-anchor, where it's the correct choice. */
+  .oes-sym-pick :global(.ssi-drop) { left: auto; right: 0; }
   /* Account dropdown — placeholder "Account" reads as its label when
      nothing is picked. Narrow Select pinned next to the symbol combo. */
   /* Picker row — Account · Symbol type · Symbol — between header and

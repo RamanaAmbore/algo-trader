@@ -234,6 +234,65 @@ test.describe('Order-ticket visual consistency — desktop computed styles', () 
   });
 });
 
+/** Root-cause regression guard for the mobile symbol-search-dropdown
+ *  overflow (2026-09): SymbolSearchInput's `.ssi-drop` results panel
+ *  anchors `left: 0` off its own `.ssi-wrap` with a fixed
+ *  `min-width: 14rem` (224px). In SymbolPanel's picker row the
+ *  Account (5.5rem) + Exchange (5rem) fixed-width selects precede
+ *  the symbol input, pushing `.ssi-wrap` well right of the row's own
+ *  left edge — on mobile (confirmed 320–390px) the left-anchored
+ *  224px-wide dropdown spilled past the modal's own right edge (which
+ *  IS the viewport's right edge — `.canonical-modal-panel` is a
+ *  full-width sheet), silently clipped by that ancestor's
+ *  `overflow: hidden` rather than growing a page-level scrollbar —
+ *  invisible to a `document.scrollWidth` check, but visually reads as
+ *  "the order modal is overflowing on the right". Fixed by
+ *  right-anchoring `.oes-sym-pick :global(.ssi-drop)` in
+ *  SymbolPanel.svelte (scoped — ChartWorkspace's own `.cw-picker`
+ *  usage keeps the default left-anchor, correct there since its
+ *  input sits near the row's LEFT edge). This spec asserts the
+ *  concrete bounding-box invariant (never past the viewport edge),
+ *  not just a screenshot, so a regression fails loudly in CI. */
+for (const width of [320, 375, 390]) {
+  // Each width gets its OWN describe block — `test.use()` sets options
+  // for its enclosing describe scope, so calling it repeatedly inside
+  // a shared loop body (the original draft of this spec) silently
+  // applied only the LAST iteration's viewport to every test. Separate
+  // describes give each width its own real, isolated viewport.
+  test.describe(`Order-ticket — mobile symbol-search dropdown never exceeds ${width}px viewport`, () => {
+    test.use({ viewport: { width, height: 800 } });
+
+    test(`dropdown stays within ${width}px viewport`, async ({ page }) => {
+      page.setDefaultTimeout(TIMEOUT);
+      await loginAsAdmin(page);
+      await openTicket(page);
+
+      const ssiInput = page.locator('.ssi-input').first();
+      await expect(ssiInput).toBeVisible({ timeout: 5000 });
+      await ssiInput.click();
+      await ssiInput.fill('NIF');
+      // Debounced search — the dropdown (even in its "Searching…" /
+      // no-cache-yet state) renders as soon as the input has focus +
+      // a query, well before the results themselves arrive.
+      const drop = page.locator('.ssi-drop').first();
+      await expect(drop).toBeVisible({ timeout: 5000 });
+
+      const box = await drop.boundingBox();
+      expect(box).not.toBeNull();
+      expect(
+        box.x + box.width,
+        `symbol-search dropdown (right edge ${box.x + box.width}) overflows the ${width}px viewport`
+      ).toBeLessThanOrEqual(width + 1); // +1px rounding tolerance
+      expect(
+        box.x,
+        `symbol-search dropdown (left edge ${box.x}) overflows off-screen to the left`
+      ).toBeGreaterThanOrEqual(-1);
+
+      await page.keyboard.press('Escape');
+    });
+  });
+}
+
 test.describe('Order-ticket visual consistency — mobile 375px SUSPECT items', () => {
   test.use({ viewport: { width: 375, height: 812 } });
 
