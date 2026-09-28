@@ -1185,7 +1185,24 @@
     const n = Number(px);
     if (!Number.isFinite(n) || n <= 0) return n;
     const t = tick > 0 ? tick : 0.05;
-    return Math.round((n / t) + Number.EPSILON) * t;
+    const raw = Math.round((n / t) + Number.EPSILON) * t;
+    // 2026-09-28 audit fix — "invalid price message and order rejection
+    // from kite because of number of decimal places in limit price".
+    // `Math.round(n/t) * t` still leaves JS floating-point residue on
+    // the multiplication (e.g. 590.7999999999999 instead of 590.80,
+    // same class of bug the function's own header comment already
+    // warns about for the INPUT side). buildModifyPayload/
+    // buildOnSubmitPayload/buildPlacePayload (orderTicketSubmit.js) all
+    // send this return value straight to the backend — they don't go
+    // through _formatTick()'s .toFixed() cleanup the way the manual
+    // price-field blur handler (_snapPriceField) does, so the residue
+    // reached Kite raw. Clean it up here, once, at the source, so every
+    // caller gets a value with no more decimal places than the tick
+    // itself has, regardless of whether it separately re-formats it.
+    const tStr = String(t);
+    const dot = tStr.indexOf('.');
+    const decimals = dot < 0 ? 0 : Math.min(4, tStr.length - dot - 1);
+    return Number(raw.toFixed(decimals));
   }
   function _formatTick(/** @type {number} */ n) {
     // Render with the tick's natural decimals. CRUDEOIL ₹1.00 reads

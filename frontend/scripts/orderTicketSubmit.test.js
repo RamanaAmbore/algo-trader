@@ -386,6 +386,66 @@ describe('formatPlacementOk', () => {
   });
 });
 
+// ── roundToTick residue cleanup (2026-09-28 audit fix) ────────────────────────
+//
+// OrderTicket.svelte's own `_roundToTick()` implementation is a $state/rune-
+// adjacent function that can't be imported into this plain-Node test file —
+// same constraint noted throughout this session's other rune-adjacent test
+// files (e.g. dataStore.test.js's computeDropEmpty mirror). This mirrors its
+// exact post-fix logic (verified by direct code comparison against
+// OrderTicket.svelte) so the regression this fix closes — "invalid price
+// message and order rejection from kite because of number of decimal places
+// in limit price" — has a real, checkable test.
+//
+// Root cause: `Math.round((n / t) + Number.EPSILON) * t` still leaves JS
+// floating-point residue on the MULTIPLICATION step (0.05 isn't exactly
+// representable in binary) — e.g. 590.80 @ tick 0.05 produced
+// 590.8000000000001, one decimal place too many for Kite's strict tick
+// validation. buildModifyPayload / buildOnSubmitPayload / buildPlacePayload
+// (this file, above) all send whatever roundToTick(ctx.price) returns
+// straight into the request body — none of them separately re-format it, so
+// the residue reached Kite raw. Fixed by rounding the result to the tick's
+// own natural decimal-place count before returning.
+function mirrorRoundToTick(px, tick) {
+  const n = Number(px);
+  if (!Number.isFinite(n) || n <= 0) return n;
+  const t = tick > 0 ? tick : 0.05;
+  const raw = Math.round((n / t) + Number.EPSILON) * t;
+  const tStr = String(t);
+  const dot = tStr.indexOf('.');
+  const decimals = dot < 0 ? 0 : Math.min(4, tStr.length - dot - 1);
+  return Number(raw.toFixed(decimals));
+}
+
+describe('roundToTick residue cleanup', () => {
+  test('NSE/NFO tick=0.05: 590.80 no longer carries floating-point residue', () => {
+    // Empirically verified pre-fix: Math.round(590.80/0.05 + EPSILON) * 0.05
+    // === 590.8000000000001 in Node — this exact case is what Kite rejected.
+    const result = mirrorRoundToTick(590.80, 0.05);
+    assert.strictEqual(result, 590.8);
+    assert.strictEqual(String(result), '590.8');
+  });
+
+  test('operator-typed price with excess decimals still snaps cleanly', () => {
+    assert.strictEqual(mirrorRoundToTick(175.567, 0.05), 175.55);
+  });
+
+  test('MCX whole-rupee tick=1: no decimal residue introduced', () => {
+    assert.strictEqual(mirrorRoundToTick(9962, 1), 9962);
+    assert.strictEqual(String(mirrorRoundToTick(9962, 1)), '9962');
+  });
+
+  test('zero/negative/non-finite inputs pass through unchanged (existing guard preserved)', () => {
+    assert.strictEqual(mirrorRoundToTick(0, 0.05), 0);
+    assert.strictEqual(mirrorRoundToTick(-5, 0.05), -5);
+    assert.strictEqual(Number.isNaN(mirrorRoundToTick(NaN, 0.05)), true);
+  });
+
+  test('missing/invalid tick falls back to the 0.05 default, matching the live function', () => {
+    assert.strictEqual(mirrorRoundToTick(590.80, 0), 590.8);
+  });
+});
+
 // ── nextTriggerState (D4 fix) ─────────────────────────────────────────────────
 
 describe('nextTriggerState', () => {
