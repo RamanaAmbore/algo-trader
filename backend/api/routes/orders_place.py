@@ -1987,6 +1987,29 @@ async def _ticket_place_live(
         _live_algo_id = await _ticket_persist_live_algo_order(
             data, request, account, sym, side, qty,
         )
+        # 2026-09-28 audit fix — a pre-persist failure used to be
+        # swallowed as "best-effort" and the live order placed anyway
+        # with algo_order_id=None. For a chase-eligible order that means
+        # the ENTIRE chase loop runs untracked: _sync_algo_order_id
+        # no-ops on every cancel-and-replace (no row to write attempts /
+        # last_attempt_at / next_attempt_at / current_limit to), and
+        # _chase_terminal_update_db's fallback broker_order_id lookup
+        # finds nothing either — so on fill, TP-arm / template-attach /
+        # FIFO ledger write are ALL silently skipped, not just delayed.
+        # The operator sees a real broker order they can't track in
+        # /chases/active, with none of the exit automation they
+        # configured. Root-caused live via AlgoOrder #1088 (2026-09-28,
+        # ~12 min chase, request_id=None, attempts=0, every timing field
+        # NULL — a postback-created orphan row was the ONLY trace).
+        # Fail closed instead: refuse to place until the tracking row
+        # exists, so a genuine DB blip surfaces as a clear, retryable
+        # error rather than an untracked live order.
+        if _live_algo_id is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Could not create the order tracking row — order "
+                       "NOT placed. Please retry.",
+            )
         order_id, chase_eligible = await _ticket_place_or_chase_live(
             data, account, sym, side, qty, _live_algo_id, _ls_for_translate,
         )
