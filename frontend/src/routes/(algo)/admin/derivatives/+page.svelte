@@ -6810,15 +6810,46 @@
     text-transform: uppercase;
     color: var(--text-muted);
   }
-  /* Data cells — no left/right borders (Pulse pattern strips them so
-     the row reads as one continuous band). Faint slate bottom border
-     separates rows. tabular-nums so digit widths don't jitter on
-     poll updates. */
+  /* Data cells — faint slate bottom border separates rows; tabular-nums
+     so digit widths don't jitter on poll updates. (This comment used to
+     claim Pulse's OWN pattern was to strip vertical borders entirely —
+     the same stale belief the dashboard mini-grid comment had before
+     Pulse itself was restored to show the whisper vertical hairline;
+     see the vertical-divider rule just below, which fixes this grid to
+     match.) */
   .byund-row > span {
     padding: 0.32rem 0.45rem;
     border-bottom: 1px solid rgba(126,151,184,0.10);
     color: var(--algo-slate);
     transition: background-color 0.1s;
+  }
+  /* Whisper vertical hairline (2026-09 UI-polish parity fix) — matches
+     the ag-Grid SSOT (`app.css` `.ag-theme-algo .ag-cell`, same
+     rgba(126,151,184,0.10) via the shared `--sep-color` token, NOT a
+     new literal). The Snapshot grid is hand-rolled (`.byund-grid`), so
+     it never inherited the ag-Grid rule automatically.
+     Exclusions — cells whose OWN right edge is already decorated by a
+     different mechanism (adding this border too would double that
+     line), or the true last column / TOTAL row:
+       - `.byund-und` (first column, underlying — already carries its
+         own 0.40-alpha edge via an inline box-shadow on its own right
+         edge, same "inset -1px = right-edge" mechanism verified below).
+       - `.byund-chg-sep`: its OWN right edge (the boundary going into
+         P.Close) is already decorated via `inset -1px 0 0 0` box-shadow
+         (verified empirically — a NEGATIVE x-offset inset box-shadow
+         paints the cell's RIGHT edge, same mechanism as `.byund-und`
+         above) — adding a border-right here too would double that
+         line. The LTP cell immediately before it has no such
+         decoration on its own right edge, so it DOES get this divider.
+       - `:last-child` (EV, the true last column), matching ag-Grid's
+         `.ag-column-last` exclusion.
+       - `.byund-row-total` (the whole TOTAL row) — matches ag-Grid's
+         own `.ag-row.totals-row` border-right:0; that row already
+         reads as a distinct amber stratum via its own background/
+         border-top/-bottom, so a hairline on top would compete rather
+         than recede. */
+  .byund-row:not(.byund-row-total) > span:not(.byund-und):not(.byund-chg-sep):not(:last-child) {
+    border-right: 1px solid var(--sep-color);
   }
   .byund-row > span.num {
     text-align: right;

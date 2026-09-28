@@ -445,6 +445,39 @@
     color: var(--algo-slate);
   }
 
+  /* Whisper vertical hairline (2026-09 UI-polish parity fix) — matches
+     the ag-Grid SSOT (`app.css` `.ag-theme-algo .ag-cell`, same
+     rgba(126,151,184,0.10) via the shared `--sep-color` token, NOT a
+     new literal). This is a hand-rolled grid (CandidateLegRow renders
+     both the Legs AND Exp-close tabs, toggled via `legsTab`), so it
+     never inherited the ag-Grid rule automatically — a structural gap,
+     not a broken override.
+     Exclusions — cells whose OWN right edge is already decorated by a
+     different mechanism (adding this border too would double that
+     line), or the true last column:
+       - `.cand-state-cell` (checkbox/state track) and `.cand-sym-acct`
+         (symbol cell — already carries its own 0.40-alpha edge + the
+         long/short direction bar) already have their own distinct
+         visual language per the operator's exclusion list.
+       - `.cand-chg-sep`: its OWN right edge (the boundary going into
+         Lots) is already decorated via `inset -1px 0 0 0` box-shadow
+         (verified empirically — an inset box-shadow with a NEGATIVE
+         x-offset paints the cell's RIGHT edge, same as `.cand-sym-acct`
+         above) — adding a border-right here too would double that line.
+         The LTP cell immediately before it (`.leg-ltp`) has no such
+         decoration on its own right edge, so it DOES get this divider.
+       - `:last-child` (EV, the true last column) stays undecorated,
+         matching ag-Grid's `.ag-column-last` exclusion.
+     The Legs/Exp-close TOTAL row is rendered separately in
+     `+page.svelte` (`.cand-row.cand-row-total`, a different component's
+     scoped styles) so this rule structurally cannot reach it — same
+     "TOTAL row stays a distinct stratum" outcome as ag-Grid's own
+     `.ag-row.totals-row` border-right:0, without needing a duplicate
+     override here. */
+  .cand-row > span:not(.cand-state-cell):not(.cand-sym-acct):not(.cand-chg-sep):not(:last-child) {
+    border-right: 1px solid var(--sep-color);
+  }
+
   /* Numeric column cells — right-aligned + truncation. */
   .cand-row > .num {
     text-align: right;

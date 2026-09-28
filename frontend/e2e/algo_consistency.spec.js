@@ -1177,6 +1177,66 @@ test.describe('algo consistency — whisper cell hairline (source)', () => {
     // The symbol-cell exclusion must still be explicit (own colour edge).
     expect(src).toMatch(/:global\(\.mp-bucket-wrap \.ag-theme-algo \.ag-cell\.ag-col-sym\)/);
   });
+
+  /* ── Cross-surface parity fix (2026-09) — operator report: "not all
+   * algo grids have subtle cell vertical borders like Pulse". Root
+   * causes found:
+   *   1. NavBreakdown (dashboard NAV/Margin/Cash/Holdings panels)
+   *      already inherits this SSOT automatically — confirmed live
+   *      below, no source fix needed there.
+   *   2. dashboard's `.dash-mini-grid` (Winners/Losers mini-grids) —
+   *      the CSS override was already removed in an earlier fix, but
+   *      the `.dash-mini-grid` CLASS is dead: never applied to any
+   *      element in the current dashboard template (the W/L mini-grids
+   *      were relocated to /pulse). No live element to regress; the
+   *      CSS rule is orphaned, not a defect in scope here.
+   *   3. derivatives Legs/Exp-close tabs (`CandidateLegRow.svelte`,
+   *      `.cand-row`) and the Snapshot tab (`+page.svelte`,
+   *      `.byund-row`) are hand-rolled flex/grid rows, NOT ag-Grid —
+   *      they never inherited the SSOT rule. Fixed below by adding an
+   *      equivalent `border-right: 1px solid var(--sep-color)` (same
+   *      rgba(126,151,184,0.10) family as the ag-Grid rule, via the
+   *      existing token rather than a new literal) to each.
+   *      Exclusions on both: the state/checkbox track, the
+   *      symbol/underlying cell, and — critically — the Chg% cell
+   *      (`.cand-chg-sep` / `.byund-chg-sep`), whose OWN right edge is
+   *      already decorated via `inset -1px 0 0 0` box-shadow (verified
+   *      empirically: a negative x-offset inset box-shadow paints a
+   *      cell's RIGHT edge, not its left — same mechanism the symbol
+   *      cell's own edge uses). Excluding the wrong cell here would
+   *      either double that line or leave the LTP→Chg% boundary blank;
+   *      excluding `.cand-chg-sep`/`.byund-chg-sep` themselves is what
+   *      avoids the double line while still decorating every other
+   *      boundary, including LTP's own right edge. */
+  test('CandidateLegRow.svelte (Legs/Exp-close): divider rule excludes cells with their own right-edge decoration', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/CandidateLegRow.svelte'),
+      'utf-8'
+    );
+    expect(src, 'must reuse the shared --sep-color token, not a new literal')
+      .toMatch(/\.cand-row\s*>\s*span:not\(\.cand-state-cell\):not\(\.cand-sym-acct\):not\(\.cand-chg-sep\):not\(:last-child\)\s*\{\s*border-right:\s*1px solid var\(--sep-color\);/);
+    // Regression fence — .leg-ltp must NOT be excluded (that was the bug:
+    // it left the LTP→Chg% boundary with no divider at all).
+    expect(src).not.toMatch(/:not\(\.leg-ltp\)/);
+  });
+
+  test('derivatives +page.svelte (Snapshot/byund-row): divider rule excludes cells with their own right-edge decoration', () => {
+    const src = fs.readFileSync(
+      path.join(process.cwd(), 'src/routes/(algo)/admin/derivatives/+page.svelte'),
+      'utf-8'
+    );
+    expect(src, 'must reuse the shared --sep-color token, not a new literal')
+      .toMatch(/\.byund-row:not\(\.byund-row-total\)\s*>\s*span:not\(\.byund-und\):not\(\.byund-chg-sep\):not\(:last-child\)\s*\{\s*border-right:\s*1px solid var\(--sep-color\);/);
+    // Regression fence — .byund-ltp must NOT be excluded (same doubling/
+    // gap bug as the Legs grid above).
+    expect(src).not.toMatch(/:not\(\.byund-ltp\)/);
+  });
+
+  test('app.css: --sep-color resolves to the same rgba the ag-Grid SSOT rule hardcodes', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/app.css'), 'utf-8');
+    expect(src).toMatch(/--sep-color:\s*rgba\(126,\s*151,\s*184,\s*0\.10\);/);
+    expect(src).toMatch(/\.ag-theme-algo \.ag-cell\s*\{[\s\S]{0,1500}border-right:\s*1px solid rgba\(126,151,184,0\.10\)\s*!important;/);
+  });
 });
 
 test.describe.serial('algo consistency — whisper cell hairline (live)', () => {
@@ -1273,6 +1333,152 @@ test.describe.serial('algo consistency — whisper cell hairline (live)', () => 
     // Cream-theme literal (rgb(209,213,219)) — must NOT have picked up
     // the algo dark-theme's rgba(126,151,184,...) hairline colour.
     expect(color, `.ag-theme-ramboq cell border-right-color: ${color}`).toBe('rgb(209, 213, 219)');
+  });
+});
+
+/* ── Cross-surface parity fix (2026-09) — LIVE checks, own serial block.
+ * Deliberately NOT folded into the "whisper cell hairline (live)" block
+ * above: that block's `.serial` mode means ANY earlier test failure
+ * (e.g. the pre-existing, unrelated PerformancePage ag-theme-ramboq
+ * failure) skips every test queued after it, which would silently
+ * prevent these regression checks from ever running. A separate block
+ * with its own login/page keeps this fix's checks live regardless of
+ * that pre-existing flake. */
+test.describe.serial('algo consistency — whisper vertical divider parity, hand-rolled grids (2026-09, live)', () => {
+  test.setTimeout(90_000);
+
+  /** @type {import('@playwright/test').Page | null} */
+  let sharedPage = null;
+  let authSkipReason = '';
+
+  test.beforeAll(async ({ browser }, testInfo) => {
+    testInfo.setTimeout(60_000);
+    const ctx = await browser.newContext();
+    const page = await ctx.newPage();
+    try {
+      await loginAsAdmin(page);
+      sharedPage = page;
+    } catch (e) {
+      authSkipReason = `login unavailable (${(/** @type {Error} */ (e)).message})`;
+      await ctx.close().catch(() => {});
+    }
+  });
+
+  test.afterAll(async () => {
+    if (sharedPage) await sharedPage.context().close();
+  });
+
+  /** Synthetic detached `.ag-theme-algo .ag-cell` — same reference
+   *  pattern the `.cell-muted` derivation test uses. Doesn't depend on
+   *  any real grid having rendered rows. */
+  async function ssotDividerValue(p) {
+    return p.evaluate(() => {
+      const container = document.createElement('div');
+      container.className = 'ag-theme-algo';
+      const cell = document.createElement('div');
+      cell.className = 'ag-cell';
+      container.appendChild(cell);
+      document.body.appendChild(container);
+      const cs = getComputedStyle(cell);
+      const out = { width: cs.borderRightWidth, color: cs.borderRightColor };
+      document.body.removeChild(container);
+      return out;
+    });
+  }
+
+  test('derivatives Legs tab: LTP cell (own right edge undecorated) gets the divider — catches the "gap" regression', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.cand-row', { timeout: 20_000 }).catch(() => {});
+
+    const ref = await ssotDividerValue(p);
+    const cell = p.locator('.cand-row:not(.cand-row-total) > span.leg-ltp').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no Legs rows rendered this session (empty book)');
+
+    const got = await cell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderRightWidth, color: cs.borderRightColor };
+    });
+    expect(got.width, `Legs LTP cell border-right-width: ${got.width}`).toBe(ref.width);
+    expect(got.color, `Legs LTP cell border-right-color: ${got.color}`).toBe(ref.color);
+  });
+
+  test('derivatives Legs tab: Chg% cell keeps its own single edge, not doubled by the new divider', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.cand-row', { timeout: 20_000 }).catch(() => {});
+
+    const cell = p.locator('.cand-row:not(.cand-row-total) > span.cand-chg-sep').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no Legs rows rendered this session (empty book)');
+
+    const style = await cell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderRightWidth, boxShadow: cs.boxShadow };
+    });
+    // The new whisper divider must NOT have been added here — this
+    // cell's own right edge is already decorated via box-shadow.
+    expect(style.width, `Legs Chg% cell border-right-width: ${style.width} — must stay 0 to avoid doubling with its own box-shadow edge`).toBe('0px');
+    expect(style.boxShadow, `Legs Chg% cell box-shadow: ${style.boxShadow}`).toMatch(/rgba\(126,\s*151,\s*184,\s*0\.4\)/);
+  });
+
+  test('derivatives Snapshot tab: LTP cell gets the divider, Chg% cell stays single-edged', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.byund-row', { timeout: 20_000 }).catch(() => {});
+
+    const ref = await ssotDividerValue(p);
+
+    const ltpCell = p.locator('.byund-row:not(.byund-row-total) > span:not(.byund-und):not(.byund-chg-sep)').first();
+    const count = await ltpCell.count();
+    test.skip(count === 0, 'no Snapshot rows rendered this session (empty book)');
+    const ltpStyle = await ltpCell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderRightWidth, color: cs.borderRightColor };
+    });
+    expect(ltpStyle.width, `Snapshot LTP cell border-right-width: ${ltpStyle.width}`).toBe(ref.width);
+    expect(ltpStyle.color, `Snapshot LTP cell border-right-color: ${ltpStyle.color}`).toBe(ref.color);
+
+    const chgCell = p.locator('.byund-row:not(.byund-row-total) > span.byund-chg-sep').first();
+    const chgWidth = await chgCell.evaluate((el) => getComputedStyle(el).borderRightWidth);
+    expect(chgWidth, `Snapshot Chg% cell border-right-width: ${chgWidth} — must stay 0 to avoid doubling with its own box-shadow edge`).toBe('0px');
+  });
+
+  test('derivatives Snapshot TOTAL row: stays undecorated (matches ag-Grid totals-row exclusion)', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.byund-row-total', { timeout: 20_000 }).catch(() => {});
+
+    const cell = p.locator('.byund-row-total > span').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no Snapshot TOTAL row rendered this session (empty book)');
+
+    const width = await cell.evaluate((el) => getComputedStyle(el).borderRightWidth);
+    expect(width, `TOTAL row border-right-width: ${width}`).toBe('0px');
+  });
+
+  test('dashboard NavBreakdown: ag-Grid cell already resolves the shared SSOT border-right', async () => {
+    test.skip(!sharedPage, authSkipReason);
+    const p = /** @type {import('@playwright/test').Page} */ (sharedPage);
+    await p.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    await p.waitForSelector('.nav-bd-ag .ag-cell', { timeout: 20_000 }).catch(() => {});
+
+    const ref = await ssotDividerValue(p);
+    const cell = p.locator('.nav-bd-ag .ag-cell:not(.ag-column-last)').first();
+    const count = await cell.count();
+    test.skip(count === 0, 'no NavBreakdown rows rendered this session');
+
+    const got = await cell.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { width: cs.borderRightWidth, color: cs.borderRightColor };
+    });
+    expect(got.width, `NavBreakdown cell border-right-width: ${got.width}`).toBe(ref.width);
+    expect(got.color, `NavBreakdown cell border-right-color: ${got.color}`).toBe(ref.color);
   });
 });
 
@@ -1897,3 +2103,4 @@ test.describe.serial('algo consistency — Monitor-group font-size audit (live)'
     expect(fs_, `.ob-sc-n computed font-size: ${fs_}`).toBe('17.6px'); // 1.1rem @ 16px root
   });
 });
+
