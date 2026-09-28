@@ -411,6 +411,23 @@
     min-height: 1.2rem;
   }
 
+  /* 2026-09-28 audit fix — Svelte scoped CSS is per-component: a rule
+     defined in the PARENT (+page.svelte) never reaches elements rendered
+     by a CHILD component's own template, since the compiled selector
+     only carries the parent's own scope-hash class, which these child-
+     rendered elements never receive. .kv-pos/.kv-neg (Qty column,
+     long/short color) and .cell-muted (O/N Qty column) were only ever
+     defined in +page.svelte's <style> block (for its OWN direct markup —
+     kept there, unchanged) — both classes rendered NOTHING here.
+     .cell-pos/.cell-neg/.cell-flat are unaffected: those three are
+     additionally defined globally in app.css, so they already worked
+     regardless of scoping; .kv-pos/.kv-neg/.cell-muted have no such
+     global fallback. Same color tokens as the parent's definitions for
+     consistency. */
+  .kv-pos     { color: var(--c-long); }
+  .kv-neg     { color: var(--c-short); }
+  .cell-muted { color: var(--algo-slate-muted); }
+
   /* ── Row layout — subgrid so columns align with parent .cand-grid ─── */
   /* Single parent grid via subgrid. Each row inherits the parent's
      column tracks — so headers and data cells line up exactly,
