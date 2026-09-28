@@ -456,6 +456,42 @@ class TestLatchHydration:
             agent_engine._V2_LATCH_HYDRATED = False
 
     @pytest.mark.asyncio
+    async def test_hydration_query_bounds_timestamp_to_today(self):
+        """2026-09-28 audit fix: the hydration SELECT had no date bound
+        at all, so every process restart scanned the ENTIRE agent_events
+        history (filtered only by event_type/sim_mode) just to have
+        _hydrate_latch_from_rows discard everything but today's rows in
+        Python — behaviorally correct but an unbounded-growing scan.
+        The query must now filter AgentEvent.timestamp >= today's IST
+        midnight so Postgres can seek the indexed column directly."""
+        agent_engine._V2_LATCH.clear()
+        agent_engine._V2_LATCH_HYDRATED = False
+        try:
+            fake_result = MagicMock()
+            fake_result.all = MagicMock(return_value=[])
+            fake_session = AsyncMock()
+            fake_session.execute = AsyncMock(return_value=fake_result)
+            ctx = AsyncMock()
+            ctx.__aenter__ = AsyncMock(return_value=fake_session)
+            ctx.__aexit__ = AsyncMock(return_value=False)
+
+            with patch.object(agent_engine, "async_session", side_effect=lambda: ctx):
+                await agent_engine._v2_hydrate_latch()
+
+            assert fake_session.execute.await_count == 1
+            executed_query = fake_session.execute.await_args.args[0]
+            compiled = str(executed_query.compile(
+                compile_kwargs={"literal_binds": True},
+            ))
+            assert "timestamp" in compiled.lower() and ">=" in compiled, (
+                f"Expected the hydration query to bound AgentEvent.timestamp "
+                f"with >=, got: {compiled}"
+            )
+        finally:
+            agent_engine._V2_LATCH.clear()
+            agent_engine._V2_LATCH_HYDRATED = False
+
+    @pytest.mark.asyncio
     async def test_suppressed_dispatch_writes_matches_into_detail(self):
         """_ae_dispatch_suppressed_entry must include the same 'matches'
         the triggered path writes — without it, _hydrate_latch_from_rows

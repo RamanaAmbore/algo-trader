@@ -285,7 +285,21 @@ async def _v2_hydrate_latch() -> None:
     try:
         from backend.api.models import AgentEvent
         from backend.shared.helpers.date_time_utils import timestamp_indian
-        today = timestamp_indian().date()
+        _now_ist = timestamp_indian()
+        today = _now_ist.date()
+        # 2026-09-28 audit fix — this query had no date bound at all, so
+        # every process restart did an unbounded scan of the ENTIRE
+        # agent_events history (filtered only by event_type/sim_mode),
+        # just to have _hydrate_latch_from_rows discard everything but
+        # today's rows in Python. Behaviorally correct (that Python-side
+        # filter already prevents stale prior-day entries from surviving
+        # into the latch) but wasteful and unbounded-growing as the table
+        # accumulates months of history. Adding the SQL-level >= bound
+        # lets Postgres seek the indexed timestamp column directly
+        # instead of fetching and discarding irrelevant rows; the Python
+        # filter stays as the authoritative correctness backstop (it also
+        # excludes replay_mode rows, which this SQL bound can't).
+        _ist_midnight = _now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
         async with async_session() as session:
             result = await session.execute(
                 select(Agent.slug, AgentEvent.detail, AgentEvent.timestamp)
@@ -296,6 +310,7 @@ async def _v2_hydrate_latch() -> None:
                 # scope, account) key would otherwise poison the real
                 # latch on the next live restart.
                 .where(AgentEvent.sim_mode.is_(False))
+                .where(AgentEvent.timestamp >= _ist_midnight)
                 .order_by(AgentEvent.timestamp.asc())
             )
             rows = result.all()
