@@ -1902,6 +1902,45 @@ Template attach only fires when `_broker_is_fill_status(broker_id, status)` retu
 
 ---
 
+## 8.4.1 Order-Lifecycle Locking & Final-Status Guards (2026-09-28)
+
+**File**: `backend/api/models.py` · `backend/api/routes/orders_postback.py` · `backend/api/routes/orders.py` · `backend/api/algo/chase.py` · `backend/api/routes/orders_place.py`
+
+### Problem
+
+Six linked defects converged around race windows during order fills:
+
+1. Multiple postback paths (Kite + Dhan + Groww) could detect the same fill concurrently and race-write `AlgoOrder.filled_qty`/`status` out of sync, or apply a late/duplicate delivery on top of an already-final row
+2. Only the Kite postback path (`_pb_write_ledger_fills`) ever wrote FIFO ledger entries (`StrategyLot`, via `backend/api/algo/lot_ledger.py`) — chase's own terminal-fill path and admin reconcile silently skipped it
+3. `_opp_arm_tp_persist_row`'s existence check + insert ran as two unlocked statements — two concurrent callers observing the same fill could both pass the check before either committed, arming two TP orders for one fill
+4. A partial fill's TP got armed for the parent's original full `quantity`, not the quantity actually filled
+5. TP orders defaulted to `NRML` product regardless of the parent's real product (MIS/CNC), since neither caller of `_arm_take_profit` passed `parent_product`
+6. Chase's fill path fired template-attach (arming exit GTTs) unconditionally, unlike the Kite postback path's `_is_offsetting_position` guard
+
+### Solution
+
+**Final-status write guard**: `backend/api/models.py` defines `ALGO_ORDER_TERMINAL_STATUSES` (the full lifecycle vocabulary, informational) and the narrower `ALGO_ORDER_FINAL_STATUSES` (`{FILLED, REJECTED}` — the set actually guarded against). `CANCELLED`/`CANCEL_FAILED`/`UNFILLED` are deliberately excluded: a failed cancel can still have a broker-side order resting live that fills later, so a genuine late FILLED must still apply. `_sync_apply_row_status`/`_pb_apply_status_to_row` (`orders_postback.py`) and `_chase_terminal_update_db` (`chase.py`) each check `row.status in ALGO_ORDER_FINAL_STATUSES` on the locked row before mutating and refuse (log + no-op) if already final — an application-level check on the read row, not a model-level interceptor. Admin reconcile (`orders.py:list_active_chases`) does NOT get this guard — it's the repair path that must be able to correct stuck rows from broker truth.
+
+**SELECT...FOR UPDATE locking across all mutation paths**: Kite postback (`orders_postback.py:_pb_event_kite`), Dhan/Groww postback (`orders_postback.py:_sync_algo_order_rows`), chase's terminal update (`chase.py:_chase_terminal_update_db`), and admin reconcile's bulk scan (`orders.py:list_active_chases`) all lock the `AlgoOrder` row(s) via `.with_for_update()` before mutating, serialising concurrent fill detections and manual edits.
+
+**FIFO ledger writes on all fill paths**: Dhan/Groww postback, chase's own terminal-fill path, and admin reconcile now all call `_pb_write_ledger_fills` (`orders_postback.py`) after a row transitions to FILLED — same helper the Kite path already used, reused rather than duplicated.
+
+**Take-profit double-arm race fixed**: `_opp_arm_tp_persist_row` (`orders_place.py`) now locks the PARENT row via `.with_for_update()` BEFORE the existing-child count check, so a second concurrent caller blocks until the first's TP insert commits, then its own count sees it and skips.
+
+**Partial-fill TP qty correction**: `_opp_arm_tp_persist_row` accepts an optional `filled_qty` (threaded through `_arm_take_profit` from both callers — chase, postback); when supplied it sizes the TP child to the actual filled quantity instead of `parent.quantity`.
+
+**Take-profit product correction**: both callers of `_arm_take_profit` (chase.py's `_ch_maybe_fire_auto_tp`, orders_postback.py's `_pb_dispatch_take_profit_arm`) now pass `parent_product` explicitly — the downstream plumbing to `broker.place_order(product=...)` already existed and was correct, it just never received the value.
+
+**Chase offsetting-position guard**: `chase.py:_ch_check_and_fire_template_attach` now runs the same explicit-close-intent + `_is_offsetting_position` checks the Kite postback path (`_pb_check_and_fire_template_attach`) already ran, before firing template attach — a close/reduce order that happens to carry a stale `template_id` no longer arms exit GTTs on itself.
+
+### Live ticket placement fail-closed on AlgoOrder pre-persist (2026-09-28)
+
+**File**: `backend/api/routes/orders_place.py:ticket_order_handler`
+
+Pre-persist DB insert failures (constraint violation, transaction rollback, timeout) previously went silently undetected, allowing live orders to be placed completely untracked. Root-caused via live prod: `AlgoOrder #1088` placed live, chased for ~12 minutes, never appeared in operator views. Fix: any DB insert failure now returns `HTTPException(503 SERVICE_UNAVAILABLE)` immediately, refusing the order. Client sees clear failure and can retry; no untracked orders escape.
+
+---
+
 ## 8.5 Orders Fetching Resilience & Chase Timeouts
 
 **File**: `backend/api/routes/orders_helpers.py` · `backend/api/routes/orders.py`
