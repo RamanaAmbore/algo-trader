@@ -1383,14 +1383,33 @@ _margins_ssot_refresh_at: float = 0.0
 
 def _raw_cache_invalidate(key: str | None = None) -> None:
     """Drop a key (or all keys when key=None). Used by tests + on postback
-    `book_changed` events so the next fetch picks up the fresh broker state."""
+    `book_changed` events so the next fetch picks up the fresh broker state.
+
+    2026-09-27 audit fix: previously popped `fn._result_cache` directly —
+    a fetch already in flight when this ran (started before the postback/
+    fill, finishes after) would still write its now-stale result back
+    into the cache once it completed, silently undoing this invalidation
+    for up to that fetch's own duration. `ssot_fetch`'s exposed
+    `_invalidate(key)` hook bumps a generation counter alongside the pop,
+    so any such in-flight fetch's completion sees the generation has
+    moved and skips the write — see ssot_fetch.py for the full mechanism.
+    """
     for fn in (_fetch_holdings_cached, _fetch_positions_cached, _fetch_margins_cached):
+        invalidate_fn = getattr(fn, "_invalidate", None)
         cache = getattr(fn, "_result_cache", None)
-        if cache is None:
-            continue
         if key is None:
-            cache.clear()
-        else:
+            if cache is not None:
+                keys = list(cache.keys())
+            else:
+                keys = []
+            if invalidate_fn is not None:
+                for k in keys:
+                    invalidate_fn(k)
+            elif cache is not None:
+                cache.clear()
+        elif invalidate_fn is not None:
+            invalidate_fn(key)
+        elif cache is not None:
             cache.pop(key, None)
 
 

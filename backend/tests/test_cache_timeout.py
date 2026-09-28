@@ -8,7 +8,7 @@ import time
 
 import pytest
 
-from backend.api.cache import get_or_fetch, invalidate_all, put as cache_put
+from backend.api.cache import get_or_fetch, invalidate_all, invalidate, put as cache_put
 
 
 # ---------------------------------------------------------------------------
@@ -225,3 +225,68 @@ def test_sparkline_startup_warm_is_disabled():
         "and OOM-kills the process before port 8000 binds (2026-08-12 incident). "
         "_do_warm now guards on instruments_store Tier 1; startup warm is disabled."
     )
+
+
+# ---------------------------------------------------------------------------
+# 2026-09-27 audit fix — invalidate() racing an in-flight get_or_fetch()
+# ---------------------------------------------------------------------------
+# A fetch that started BEFORE an invalidate() call (e.g. a postback/fill
+# firing mid-fetch) but finishes AFTER used to still write its pre-fill,
+# now-stale value into the cache with a fresh TTL — silently undoing the
+# invalidation for the rest of that fetch's own duration. Generation
+# counters (_generation/_global_gen) close this: a fetch only caches its
+# result if nothing invalidated its key while it was in flight.
+
+@pytest.mark.asyncio
+async def test_invalidate_racing_in_flight_fetch_prevents_stale_recache():
+    """The core reproduction: invalidate() fires WHILE a fetch for the
+    same key is still running. That fetch's result must reach its own
+    caller, but must NOT be written back into the cache afterward."""
+    call_log = []
+
+    async def slow_fetch():
+        call_log.append(1)
+        await asyncio.sleep(0.05)
+        return "pre_fill_stale_value"
+
+    task = asyncio.create_task(get_or_fetch("race_k", slow_fetch, ttl_seconds=30))
+    await asyncio.sleep(0.01)  # let it start and acquire the per-key lock
+
+    # Simulate a fill/postback invalidating this key mid-fetch.
+    invalidate("race_k")
+
+    result = await task
+    assert result == "pre_fill_stale_value"  # in-flight caller still gets its value
+
+    # The cache must NOT have been re-populated with the stale value.
+    from backend.api.cache import peek
+    assert peek("race_k") is None, (
+        "a fetch racing invalidate() must not re-cache its stale result"
+    )
+
+    # A subsequent call must genuinely re-fetch.
+    calls_before = len(call_log)
+    result2 = await get_or_fetch("race_k", slow_fetch, ttl_seconds=30)
+    assert len(call_log) == calls_before + 1
+
+
+@pytest.mark.asyncio
+async def test_invalidate_all_racing_in_flight_fetch_prevents_stale_recache():
+    """Same race, via invalidate_all() (the global generation counter)."""
+    call_log = []
+
+    async def slow_fetch():
+        call_log.append(1)
+        await asyncio.sleep(0.05)
+        return "stale"
+
+    task = asyncio.create_task(get_or_fetch("race_all_k", slow_fetch, ttl_seconds=30))
+    await asyncio.sleep(0.01)
+
+    invalidate_all()
+
+    result = await task
+    assert result == "stale"
+
+    from backend.api.cache import peek
+    assert peek("race_all_k") is None

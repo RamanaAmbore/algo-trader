@@ -640,3 +640,148 @@ def test_serialize_sync_does_not_cache():
     r3 = fetch()
     assert r3 == 3, "serialize should execute fresh each time"
     assert call_count == 3
+
+
+# ===== 2026-09-27 audit fix: superseded-task / external-invalidate races =====
+#
+# _on_done (async) / the finally block (sync) used to clear/overwrite
+# _inflight and _result_cache unconditionally on completion. A slow task
+# that started before a force_refresh call (or an external _invalidate()
+# call, e.g. broker_apis.py's _raw_cache_invalidate on a postback/fill)
+# but finished after could then silently overwrite a fresher result with
+# its own stale one, or rip a newer task's _inflight registration out
+# from under it. These tests reproduce both races directly and assert
+# the fix's identity/generation checks close them.
+
+@pytest.mark.asyncio
+async def test_async_old_task_completing_after_force_refresh_does_not_clobber_new_result():
+    """An old in-flight task that started BEFORE force_refresh, but
+    completes AFTER the force_refresh's own new task has already cached
+    its result, must not overwrite it with its own stale value."""
+
+    @ssot_fetch(mode="coalesce", key="race_x")
+    async def fetch(value, delay):
+        await asyncio.sleep(delay)
+        return value
+
+    # Old, slow call registers first.
+    old_task = asyncio.create_task(fetch("old", 0.08))
+    await asyncio.sleep(0.01)  # let it register in _inflight
+
+    # force_refresh while "old" is still running — fast, completes well
+    # before "old" does.
+    new_result = await fetch("new", 0.01, force_refresh=True)
+    assert new_result == "new"
+
+    # Give the fast task's _on_done a moment to run and cache "new".
+    await asyncio.sleep(0.02)
+    assert fetch._result_cache.get("race_x") == "new"
+
+    # Now let the old, slow task finish — its completion must NOT
+    # clobber the cache with "old".
+    old_result = await old_task
+    assert old_result == "old"  # the caller still gets its own value
+    await asyncio.sleep(0.01)  # let old_task's _on_done run
+    assert fetch._result_cache.get("race_x") == "new", (
+        "old task's stale result must not overwrite the newer cached value"
+    )
+
+
+@pytest.mark.asyncio
+async def test_async_external_invalidate_prevents_in_flight_result_from_caching():
+    """_invalidate(key) racing an in-flight fetch (simulating
+    broker_apis.py's _raw_cache_invalidate firing mid-fetch, e.g. on a
+    postback) must prevent that fetch's result from being cached once it
+    completes — the caller still gets its own value, but the next caller
+    must trigger a real re-fetch rather than silently reusing stale data."""
+    call_log = []
+
+    @ssot_fetch(mode="coalesce", key="race_inval")
+    async def fetch():
+        call_log.append(1)
+        await asyncio.sleep(0.03)
+        return "stale_result"
+
+    task = asyncio.create_task(fetch())
+    await asyncio.sleep(0.01)  # let it register in _inflight
+
+    fetch._invalidate("race_inval")
+
+    result = await task
+    assert result == "stale_result"  # in-flight caller still gets its value
+
+    await asyncio.sleep(0.01)  # let _on_done run
+    assert fetch._result_cache.get("race_inval") is None, (
+        "invalidated key must not be re-populated by the in-flight fetch's stale result"
+    )
+
+    # A subsequent call must genuinely re-fetch.
+    calls_before = len(call_log)
+    result2 = await fetch()
+    assert len(call_log) == calls_before + 1
+    assert result2 == "stale_result"  # same fetcher, but a REAL new call
+
+
+def test_sync_old_call_completing_after_force_refresh_does_not_clobber_new_result():
+    """Sync equivalent of the async force_refresh race above, using real
+    threads so both calls are genuinely concurrent."""
+    import threading as _threading
+
+    @ssot_fetch(mode="coalesce", key="sync_race_x")
+    def fetch(value, delay):
+        time.sleep(delay)
+        return value
+
+    old_result_box = []
+
+    def old_worker():
+        old_result_box.append(fetch("old", 0.08))
+
+    old_thread = threading.Thread(target=old_worker)
+    old_thread.start()
+    time.sleep(0.01)  # let "old" register in _inflight
+
+    new_result = fetch("new", 0.01, force_refresh=True)
+    assert new_result == "new"
+    assert fetch._result_cache.get("sync_race_x") == "new"
+
+    old_thread.join()
+    assert old_result_box == ["old"]  # the caller still gets its own value
+    assert fetch._result_cache.get("sync_race_x") == "new", (
+        "old call's stale result must not overwrite the newer cached value"
+    )
+
+
+def test_sync_external_invalidate_prevents_in_flight_result_from_caching():
+    """Sync equivalent of the async external-_invalidate race above."""
+    call_log = []
+    call_lock = threading.Lock()
+
+    @ssot_fetch(mode="coalesce", key="sync_race_inval")
+    def fetch():
+        with call_lock:
+            call_log.append(1)
+        time.sleep(0.05)
+        return "stale_result"
+
+    result_box = []
+
+    def worker():
+        result_box.append(fetch())
+
+    t = threading.Thread(target=worker)
+    t.start()
+    time.sleep(0.01)  # let it register in _inflight
+
+    fetch._invalidate("sync_race_inval")
+
+    t.join()
+    assert result_box == ["stale_result"]  # in-flight caller still gets its value
+    assert fetch._result_cache.get("sync_race_inval") is None, (
+        "invalidated key must not be re-populated by the in-flight call's stale result"
+    )
+
+    calls_before = len(call_log)
+    result2 = fetch()
+    assert len(call_log) == calls_before + 1
+    assert result2 == "stale_result"
