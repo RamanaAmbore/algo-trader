@@ -268,6 +268,39 @@ async def user_scope_for_connection(connection) -> tuple[list[str], list[int]]:
 # ── Guard factory ────────────────────────────────────────────────────────
 
 
+async def require_capability(connection, cap: str) -> None:
+    """Imperative equivalent of `cap_guard(cap)`, for endpoints that
+    can't express the check as a Litestar `guards=[...]` route
+    declaration — e.g. a single free-text `/interpret`-style endpoint
+    that dispatches to several sub-commands of differing sensitivity,
+    where only SOME parsed sub-commands need the stricter capability.
+
+    Raises the same `PermissionDeniedException` `cap_guard`'s Litestar
+    guard would, so callers don't need their own try/except translation
+    — Litestar's exception handling turns it into the same 403 response
+    either way. Shares the exact same role-resolution + CAPS lookup as
+    `cap_guard` (this function IS what `cap_guard`'s guard closure calls
+    internally) so the two can never drift apart.
+    """
+    from litestar.exceptions import PermissionDeniedException
+    from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
+
+    allowed = CAPS.get(cap)
+    if allowed is None:
+        raise ValueError(f"require_capability: unknown capability {cap!r}")
+    demo_eligible = "demo" in allowed
+
+    # Demo-eligible caps go through the soft guard (anonymous OK on
+    # prod); strict caps require a valid JWT.
+    if demo_eligible:
+        await auth_or_demo_guard(connection, None)
+    else:
+        await jwt_guard(connection, None)
+    role = resolve_role_from_connection(connection)
+    if role not in allowed:
+        raise PermissionDeniedException(f"Capability '{cap}' required")
+
+
 def cap_guard(cap: str):
     """Return a Litestar guard function that requires `cap`. Use as:
 
@@ -276,28 +309,20 @@ def cap_guard(cap: str):
 
     Internally chains through `jwt_guard` (or `auth_or_demo_guard`
     depending on the cap — caps that include 'demo' in their role set
-    are demo-eligible, all others require a real JWT).
+    are demo-eligible, all others require a real JWT). See
+    `require_capability` for the imperative (non-route-guard) equivalent.
     """
     from litestar.connection import ASGIConnection
-    from litestar.exceptions import PermissionDeniedException
     from litestar.handlers.base import BaseRouteHandler
-    from backend.api.auth_guard import jwt_guard, auth_or_demo_guard
 
-    allowed = CAPS.get(cap)
-    if allowed is None:
+    if CAPS.get(cap) is None:
+        # Fail fast at route-registration time (import), same as before
+        # this function was refactored — don't wait for the first request
+        # to discover a typo'd capability name.
         raise ValueError(f"cap_guard: unknown capability {cap!r}")
-    demo_eligible = "demo" in allowed
 
     async def _guard(connection: ASGIConnection, handler: BaseRouteHandler) -> None:  # noqa: ARG001
-        # Demo-eligible caps go through the soft guard (anonymous OK on
-        # prod); strict caps require a valid JWT.
-        if demo_eligible:
-            await auth_or_demo_guard(connection, handler)
-        else:
-            await jwt_guard(connection, handler)
-        role = resolve_role_from_connection(connection)
-        if role not in allowed:
-            raise PermissionDeniedException(f"Capability '{cap}' required")
+        await require_capability(connection, cap)
 
     _guard.__name__ = f"cap_guard__{cap}"
     return _guard

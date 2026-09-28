@@ -17,11 +17,11 @@ import re
 from datetime import datetime, timezone
 
 import msgspec
-from litestar import Controller, delete, get, post, put
+from litestar import Controller, Request, delete, get, post, put
 from litestar.exceptions import HTTPException
 from sqlalchemy import select
 
-from backend.api.rbac import cap_guard
+from backend.api.rbac import cap_guard, require_capability
 from backend.api.database import async_session
 from backend.api.models import Agent, AgentEvent
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -162,6 +162,13 @@ class InterpretRequest(msgspec.Struct):
 
 class InterpretResponse(msgspec.Struct):
     output: str
+    # 2026-09-27 audit fix: this field was missing despite the struct
+    # being constructed with `success=False` at half a dozen call sites
+    # throughout this file (e.g. the "agent not found" paths in
+    # _cmd_status/_cmd_events/_cmd_config) — every one of those would
+    # have raised `TypeError: Unexpected keyword argument 'success'` at
+    # runtime, discovered while adding test coverage for a different fix.
+    success: bool = True
 
 
 class AIDraftRequest(msgspec.Struct):
@@ -693,27 +700,31 @@ class AgentController(Controller):
         logger.info(f"Agent updated: {slug}")
         return {"detail": f"Agent '{slug}' updated"}
 
-    @put("/{slug:str}/activate", status_code=200, guards=[cap_guard("manage_own_agents")])
-    async def activate_agent(self, slug: str) -> dict:
+    async def _age_set_status(self, slug: str, status: str) -> dict:
+        """Shared body for activate/deactivate — extracted so `/interpret`
+        can call the plain function directly instead of invoking the
+        `@put`-decorated route handler as if it were one (2026-09-27 audit
+        fix: `await self.activate_agent(slug)` from `/interpret` doesn't
+        call the underlying async function at all — Litestar wraps a
+        decorated method into a route-handler descriptor, and awaiting
+        THAT object raises `TypeError: 'put' object can't be awaited`,
+        so activate/deactivate via the terminal always threw)."""
         async with async_session() as session:
             result = await session.execute(select(Agent).where(Agent.slug == slug))
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
-            agent.status = "active"
+            agent.status = status
             await session.commit()
-        return {"detail": f"Agent '{slug}' activated"}
+        return {"detail": f"Agent '{slug}' {'activated' if status == 'active' else 'deactivated'}"}
+
+    @put("/{slug:str}/activate", status_code=200, guards=[cap_guard("manage_own_agents")])
+    async def activate_agent(self, slug: str) -> dict:
+        return await self._age_set_status(slug, "active")
 
     @put("/{slug:str}/deactivate", status_code=200, guards=[cap_guard("manage_own_agents")])
     async def deactivate_agent(self, slug: str) -> dict:
-        async with async_session() as session:
-            result = await session.execute(select(Agent).where(Agent.slug == slug))
-            agent = result.scalar_one_or_none()
-            if not agent:
-                raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
-            agent.status = "inactive"
-            await session.commit()
-        return {"detail": f"Agent '{slug}' deactivated"}
+        return await self._age_set_status(slug, "inactive")
 
     @delete("/{slug:str}", status_code=200, guards=[cap_guard("manage_own_agents")])
     async def delete_agent(self, slug: str) -> dict:
@@ -855,10 +866,10 @@ class AgentController(Controller):
         if action == "status":
             return await self._cmd_status(slug)
         if action == "activate":
-            await self.activate_agent(slug)
+            await self._age_set_status(slug, "active")
             return InterpretResponse(output=f"Agent '{slug}' activated")
         if action == "deactivate":
-            await self.deactivate_agent(slug)
+            await self._age_set_status(slug, "inactive")
             return InterpretResponse(output=f"Agent '{slug}' deactivated")
         if action == "events":
             return await self._cmd_events(slug)
@@ -887,8 +898,23 @@ class AgentController(Controller):
                 return result
         return None
 
+    # 2026-09-27 audit fix (critical): this endpoint's class-level guard
+    # is `view_agents_catalog`, which demo/anonymous sessions hold — every
+    # OTHER mutating route on this controller (create/update/activate/
+    # deactivate/delete/ai-draft) overrides that with `manage_own_agents`.
+    # /interpret is a single free-text endpoint dispatching to BOTH
+    # read-only sub-commands (list/status/events/help — fine for demo,
+    # matches the class-level guard's intent) and mutating ones (config/
+    # activate/deactivate/fire/ai create/ai refine) that had NO capability
+    # check of their own, letting any anonymous demo visitor rewrite live
+    # agent conditions, fire a real broker fetch and get back unmasked
+    # account codes in the response, or burn Gemini quota via `ai create`.
+    _MUTATING_INTERPRET_ACTIONS = frozenset({
+        "config", "activate", "deactivate", "fire", "ai",
+    })
+
     @post("/interpret")
-    async def interpret(self, data: InterpretRequest) -> InterpretResponse:
+    async def interpret(self, data: InterpretRequest, request: Request) -> InterpretResponse:
         """Parse and execute a terminal agent command."""
         parts = data.command.strip().split()
         if not parts or parts[0].lower() != "agent":
@@ -896,6 +922,8 @@ class AgentController(Controller):
                 output="Usage: agent <command> [args]", success=False,
             )
         action = parts[1].lower() if len(parts) > 1 else "help"
+        if action in self._MUTATING_INTERPRET_ACTIONS:
+            await require_capability(request, "manage_own_agents")
         result = await self._age_interpret_dispatch(
             action, parts, data.command.strip()
         )
