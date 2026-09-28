@@ -1020,4 +1020,206 @@ async def test_snap_ltp_none_skips_overlay():
     #         _apply_per_exchange_overlay(df, snapshot_ltp_map)
     #
     # assert abs(df.at[0, 'day_change_val'] - original_dcv) < 0.01
+
+
+# ---------------------------------------------------------------------------
+# _filter_expired_live_rows / _fetch() — 2026-09-29 GOLDM incident regression
+# (account ZJ6294): the LIVE broker-fetch path had no expiry filter at all,
+# so Kite kept returning expired MCX GOLDM SEP option contracts as live,
+# non-zero-quantity positions with real (wrong) P&L attached, well past
+# their own freeze boundary. Fix: `_filter_expired_live_rows`, called inside
+# `_fetch()` before backfill/patch/hygiene/summary, using
+# `expiry_freeze.is_live_row_past_freeze_window` as the per-(symbol,
+# exchange) predicate.
+#
+# Five quality dimensions:
+#   SSOT        — the same `is_live_row_past_freeze_window` predicate (unit-
+#                 tested in test_expiry_freeze.py) drives both the live-fetch
+#                 filter here and (per module docstring) the DB-LKG preload
+#                 hardening in background.py.
+#   Correctness — the expired row is absent from BOTH per-row `rows` AND the
+#                 account/symbol P&L rollups (`summary` / `symbol_summary`)
+#                 — this is the P&L-corruption half of the bug, not merely a
+#                 display filter.
+#   Performance — filtering runs on the UNIQUE (symbol, exchange) pair set,
+#                 not per-row; verified indirectly via the row-count-based
+#                 assertions below (multiple accounts holding the same
+#                 expired symbol is covered by the dedicated pair-count
+#                 test).
+#   Reuse       — no new expiry-classification logic in positions.py itself;
+#                 delegates entirely to expiry_freeze.py's predicate.
+#   UX          — a currently-valid position (INFY) is completely unaffected
+#                 by the filter; only the past-freeze-window contract disappears.
+# ---------------------------------------------------------------------------
+
+def _make_live_position_row(
+    account: str = "ZJ6294",
+    tradingsymbol: str = "INFY",
+    exchange: str = "NSE",
+    quantity: int = 50,
+    average_price: float = 2400.0,
+    last_price: float = 2500.0,
+    prev_close: float = 2480.0,
+    pnl: float = 5000.0,
+    product: str = "MIS",
+    **kwargs,
+) -> dict:
+    """Minimal, fully-enriched live positions row (as if already passed
+    through broker_apis._enrich_positions) — mirrors
+    test_positions_degradation_integration.py's `_make_position_row`."""
+    defaults = dict(
+        account=account,
+        tradingsymbol=tradingsymbol,
+        exchange=exchange,
+        quantity=quantity,
+        average_price=average_price,
+        last_price=last_price,
+        prev_close=prev_close,
+        product=product,
+        multiplier=1,
+        unrealised=0.0,
+        realised=0.0,
+        day_change=last_price - prev_close,
+        day_change_val=(last_price - prev_close) * quantity,
+        day_change_percentage=0.0,
+        pnl=pnl,
+        overnight_quantity=quantity,
+        day_buy_quantity=0,
+        day_sell_quantity=0,
+        day_buy_value=0.0,
+        day_sell_value=0.0,
+    )
+    return dict(defaults, **kwargs)
+
+
+def _mock_db_session_ok():
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    result = AsyncMock()
+    result.all = lambda: []
+    mock_session.execute = AsyncMock(return_value=result)
+    return mock_session
+
+
+@pytest.mark.asyncio
+async def test_fetch_filters_expired_past_freeze_window_row():
+    """A row past its own expiry freeze window (GOLDM, real 2026-09-25
+    expiry, incident date 2026-09-29) must be absent from
+    PositionsResponse.rows — the currently-valid INFY row must survive
+    untouched."""
+    from backend.api.routes import positions as positions_module
+
+    valid_row = _make_live_position_row(tradingsymbol="INFY", exchange="NSE", pnl=5000.0)
+    expired_row = _make_live_position_row(
+        tradingsymbol="GOLDM26SEP148000PE", exchange="MCX",
+        quantity=1, overnight_quantity=1, average_price=850.0,
+        last_price=5.0, prev_close=5.0, pnl=-69860.0,
+        day_change_val=-69860.0, product="NRML",
+    )
+    per_acct = [pd.DataFrame([valid_row, expired_row])]
+    mock_session = _mock_db_session_ok()
+
+    async def _fake_past_freeze(symbol, exchange, now_ist):
+        return symbol == "GOLDM26SEP148000PE"
+
+    with patch.object(positions_module.broker_apis, "fetch_positions", return_value=per_acct), \
+         patch.object(positions_module.broker_apis, "backfill_market_data", return_value=0), \
+         patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.registry._loaded_accounts", return_value=["ZJ6294"]), \
+         patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+               side_effect=_fake_past_freeze):
+        resp = await positions_module._fetch()
+
+    syms_in_rows = {r.tradingsymbol for r in resp.rows}
+    assert "GOLDM26SEP148000PE" not in syms_in_rows, (
+        "expired-past-freeze-window contract must not appear in live "
+        "/api/positions rows (2026-09-29 GOLDM incident regression)"
+    )
+    assert "INFY" in syms_in_rows, "currently-valid position must be unaffected"
+
+
+@pytest.mark.asyncio
+async def test_fetch_expired_row_excluded_from_pnl_rollups():
+    """The P&L-corruption half of the bug: the expired row's -69860 pnl
+    must not leak into either the account-level `summary` or the
+    symbol-level `symbol_summary` rollup."""
+    from backend.api.routes import positions as positions_module
+
+    valid_row = _make_live_position_row(tradingsymbol="INFY", exchange="NSE", pnl=5000.0)
+    expired_row = _make_live_position_row(
+        tradingsymbol="GOLDM26SEP148000PE", exchange="MCX",
+        quantity=1, overnight_quantity=1, average_price=850.0,
+        last_price=5.0, prev_close=5.0, pnl=-69860.0,
+        day_change_val=-69860.0, product="NRML",
+    )
+    per_acct = [pd.DataFrame([valid_row, expired_row])]
+    mock_session = _mock_db_session_ok()
+
+    async def _fake_past_freeze(symbol, exchange, now_ist):
+        return symbol == "GOLDM26SEP148000PE"
+
+    with patch.object(positions_module.broker_apis, "fetch_positions", return_value=per_acct), \
+         patch.object(positions_module.broker_apis, "backfill_market_data", return_value=0), \
+         patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.registry._loaded_accounts", return_value=["ZJ6294"]), \
+         patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+               side_effect=_fake_past_freeze):
+        resp = await positions_module._fetch()
+
+    symbol_syms = {s.tradingsymbol for s in resp.symbol_summary}
+    assert "GOLDM26SEP148000PE" not in symbol_syms, (
+        "symbol_summary must not carry a rollup entry for the filtered "
+        "expired contract"
+    )
+
+    zj_summary = [s for s in resp.summary if s.account == "ZJ6294"]
+    assert zj_summary, "account-level summary row for ZJ6294 must exist"
+    assert abs(zj_summary[0].pnl - 5000.0) < 0.01, (
+        f"account pnl must reflect only the surviving INFY leg (5000.0), "
+        f"got {zj_summary[0].pnl} — the expired row's -69860 pnl must not "
+        f"leak into the account rollup"
+    )
+
+
+@pytest.mark.asyncio
+async def test_fetch_expired_row_dedupes_pair_check_across_accounts():
+    """Two accounts holding the SAME expired symbol (real incident:
+    ZJ6294 and ZG0790 both held overlapping GOLDM strikes) must only
+    trigger one predicate check per unique (symbol, exchange) pair, not
+    once per row."""
+    from backend.api.routes import positions as positions_module
+
+    row_a = _make_live_position_row(
+        account="ZJ6294", tradingsymbol="GOLDM26SEP148000PE", exchange="MCX",
+        quantity=1, overnight_quantity=1, pnl=-69860.0,
+    )
+    row_b = _make_live_position_row(
+        account="ZG0790", tradingsymbol="GOLDM26SEP148000PE", exchange="MCX",
+        quantity=2, overnight_quantity=2, pnl=-1200.0,
+    )
+    per_acct = [pd.DataFrame([row_a]), pd.DataFrame([row_b])]
+    mock_session = _mock_db_session_ok()
+
+    call_count = {"n": 0}
+
+    async def _fake_past_freeze(symbol, exchange, now_ist):
+        call_count["n"] += 1
+        return True
+
+    with patch.object(positions_module.broker_apis, "fetch_positions", return_value=per_acct), \
+         patch.object(positions_module.broker_apis, "backfill_market_data", return_value=0), \
+         patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.registry._loaded_accounts", return_value=["ZJ6294", "ZG0790"]), \
+         patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+               side_effect=_fake_past_freeze):
+        resp = await positions_module._fetch()
+
+    assert call_count["n"] == 1, (
+        f"expected exactly 1 predicate check for the single unique "
+        f"(symbol, exchange) pair shared across 2 accounts, got {call_count['n']}"
+    )
+    assert resp.rows == [] and resp.summary == [] and resp.symbol_summary == [], (
+        "both accounts' rows for the shared expired symbol must be filtered"
+    )
     # assert abs(df.at[0, 'day_change_percentage'] - original_dcp) < 0.001

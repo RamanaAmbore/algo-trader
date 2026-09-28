@@ -227,3 +227,89 @@ def test_expiry_status_not_expiry_for_ordinary_closed_position():
         )
     assert status == "not_expiry"
     mock_hol.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# is_live_row_past_freeze_window — the LIVE broker-fetch-path fix
+# (2026-09-29 GOLDM incident, account ZJ6294:
+# `positions.py:_filter_expired_live_rows` / `_fetch()`)
+# ---------------------------------------------------------------------------
+
+def test_live_row_before_boundary_not_past_freeze():
+    """Real ZJ6294/GOLDM scenario: expiry Friday 2026-09-25, 'now' is
+    Monday 2026-09-28 02:13 IST — BEFORE that Monday's 08:00 open. Must
+    be False (still inside its freeze window, must keep showing live)."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 9, 28, 2, 13, tzinfo=_IST)
+    with _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(
+            is_live_row_past_freeze_window("GOLDM26SEP148000PE", "MCX", now_ist)
+        )
+    assert result is False
+
+
+def test_live_row_at_boundary_is_past_freeze():
+    """Same contract, 'now' has crossed Monday 2026-09-28 08:00 IST — the
+    freeze window has ended; this row must be filtered from the live
+    broker fetch (the actual 2026-09-29 production bug: Kite kept
+    returning it past this exact boundary)."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 9, 28, 8, 0, 1, tzinfo=_IST)
+    with _patch_holidays(set()), _patch_no_special_sessions():
+        result = asyncio.run(
+            is_live_row_past_freeze_window("GOLDM26SEP148000PE", "MCX", now_ist)
+        )
+    assert result is True
+
+
+def test_live_row_same_day_as_expiry_not_past_freeze():
+    """A contract expiring TODAY (session still legitimately trading) must
+    never be filtered — this is the fast, no-I/O path: expiry == today."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 9, 25, 14, 0, tzinfo=_IST)  # expiry day itself
+    with patch("backend.api.persistence.holidays_store.get_or_fetch_holidays") as mock_hol:
+        result = asyncio.run(
+            is_live_row_past_freeze_window("GOLDM26SEP148000PE", "MCX", now_ist)
+        )
+    assert result is False
+    mock_hol.assert_not_called()
+
+
+def test_live_row_future_expiry_not_past_freeze_no_io():
+    """A currently-valid contract (expiry well in the future) must resolve
+    False on the fast, no-I/O path — this is the overwhelming majority
+    case exercised on every positions poll."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 9, 28, 10, 0, tzinfo=_IST)
+    with patch("backend.api.persistence.holidays_store.get_or_fetch_holidays") as mock_hol:
+        result = asyncio.run(
+            is_live_row_past_freeze_window("GOLDM26OCT150000PE", "MCX", now_ist)
+        )
+    assert result is False
+    mock_hol.assert_not_called()
+
+
+def test_live_row_non_fo_symbol_always_false():
+    """Equity/cash symbols have no expiry concept — always False, never a
+    DB call."""
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+
+    now_ist = datetime(2026, 9, 28, 10, 0, tzinfo=_IST)
+    result = asyncio.run(is_live_row_past_freeze_window("RELIANCE", "NSE", now_ist))
+    assert result is False
+
+
+def test_live_row_empty_marker_symbol_always_false():
+    from backend.api.algo.expiry_freeze import (
+        EMPTY_MARKER_SYMBOL, is_live_row_past_freeze_window,
+    )
+
+    now_ist = datetime(2026, 9, 28, 10, 0, tzinfo=_IST)
+    result = asyncio.run(
+        is_live_row_past_freeze_window(EMPTY_MARKER_SYMBOL, "MCX", now_ist)
+    )
+    assert result is False

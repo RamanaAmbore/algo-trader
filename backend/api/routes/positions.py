@@ -315,6 +315,79 @@ async def _union_and_filter_expiry_frozen_rows(
     return filtered_rows
 
 
+async def _filter_expired_live_rows(raw: "pd.DataFrame", now_ist: "object") -> "pd.DataFrame":
+    """Live-fetch-path counterpart to `_union_and_filter_expiry_frozen_rows`
+    — fixes the 2026-09-29 incident (account ZJ6294) where the LIVE broker
+    fetch (`_fetch()`, this function's caller) kept returning expired MCX
+    GOLDM SEP option contracts as non-zero-qty positions with real, wrong
+    P&L attached, well past their own freeze boundary. `daily_book` had no
+    row for GOLDM newer than the prior Friday's settlement snapshot, so
+    `_positions_snapshot` (the closed-hours DB path) was never the source
+    and was already confirmed correct — this function hardens the OTHER
+    path, the live broker fetch, which had no expiry filter at all.
+
+    See `backend.api.algo.expiry_freeze.is_live_row_past_freeze_window`'s
+    docstring for why this is a live-fetch-specific predicate, distinct
+    from `expiry_status`/`expiry_if_closed_on_own_expiry_day` (those
+    require a `daily_book` capture-session `captured_at` to compare
+    against a contract's own expiry-day session; a live-fetched row has
+    no such history — it's a "right now" broker read).
+
+    Operates on the UNIQUE `(tradingsymbol, exchange)` pairs present in
+    *raw*, not per-row, so two accounts holding the same expired symbol
+    (this incident: both ZJ6294 and ZG0790 held overlapping GOLDM
+    strikes) only check each pair once. Checks run concurrently via
+    `asyncio.gather` since the check set is small (one poll's positions
+    book) and each check may need a DB round-trip (holiday calendar) only
+    for the rare past-expiry symbol.
+
+    Called from `_fetch()` BEFORE `backfill_market_data` /
+    `_override_stale_ltp_from_ticker` / `_patch_raw_positions` /
+    `_apply_flat_row_hygiene` all run, so a filtered-out row never reaches
+    `_build_polars_summary` / `_build_polars_symbol_summary` either — this
+    matters because the bug also corrupts account/symbol P&L ROLLUPS, not
+    just the per-row display.
+
+    No-ops (returns *raw* unchanged) when *raw* is empty or lacks a
+    `tradingsymbol` column — mirrors this file's other defensive
+    DataFrame-column guards (e.g. `_apply_flat_row_hygiene`).
+    """
+    if raw.empty or 'tradingsymbol' not in raw.columns:
+        return raw
+
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window
+    import asyncio as _asyncio
+
+    has_exchange = 'exchange' in raw.columns
+    pair_list = list({
+        (str(raw.at[i, 'tradingsymbol']), str(raw.at[i, 'exchange']) if has_exchange else None)
+        for i in raw.index
+    })
+    if not pair_list:
+        return raw
+
+    results = await _asyncio.gather(*(
+        is_live_row_past_freeze_window(sym, exch, now_ist) for sym, exch in pair_list
+    ))
+    stale_pairs = {pair for pair, is_stale in zip(pair_list, results) if is_stale}
+    if not stale_pairs:
+        return raw
+
+    def _row_key(i) -> tuple:
+        return (str(raw.at[i, 'tradingsymbol']), str(raw.at[i, 'exchange']) if has_exchange else None)
+
+    keep_mask = [_row_key(i) not in stale_pairs for i in raw.index]
+    filtered = raw.loc[keep_mask].reset_index(drop=True)
+    dropped_n = len(raw) - len(filtered)
+    if dropped_n:
+        logger.warning(
+            "positions live-fetch: filtered %d row(s) past their own "
+            "expiry freeze window (stale symbol/exchange pairs=%s)",
+            dropped_n, sorted(stale_pairs),
+        )
+    return filtered
+
+
 async def _positions_snapshot() -> Optional[PositionsResponse]:
     """Read the most-recent pre-today daily_book[kind='positions'] snapshot
     and reconstruct a PositionsResponse from it.
@@ -1108,6 +1181,22 @@ async def _fetch() -> PositionsResponse:
     # stale_accounts when a partial failure contributed zero rows (R1) —
     # e.g. one account failed with no LKG to substitute while a sibling
     # succeeded with a genuinely empty book.
+    if raw.empty:
+        return PositionsResponse(
+            rows=[], summary=[], refreshed_at=timestamp_display(),
+            stale_accounts=sorted(_stale_flagged_accounts),
+        )
+
+    # Filter out contracts past their own expiry freeze window (2026-09-29
+    # GOLDM incident, account ZJ6294) — the live broker fetch has no
+    # expiry awareness of its own; Kite kept reporting expired MCX GOLDM
+    # options as live positions with real (wrong) P&L attached well past
+    # their freeze boundary. Same "now" derivation as _positions_snapshot
+    # (single consistent wall-clock source across both the snapshot and
+    # live paths). Must run BEFORE backfill/patch/hygiene/summary below so
+    # a dropped row never contributes to account/symbol P&L rollups.
+    from backend.shared.helpers.date_time_utils import timestamp_indian as _ts_indian_live
+    raw = await _filter_expired_live_rows(raw, _ts_indian_live())
     if raw.empty:
         return PositionsResponse(
             rows=[], summary=[], refreshed_at=timestamp_display(),

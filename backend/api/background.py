@@ -1519,6 +1519,37 @@ async def _preload_db_lkg_cache() -> None:
         logger.debug("[DB-LKG] preload: no daily_book rows found")
         return
 
+    # Defensive hardening (2026-09-29 GOLDM incident, expiry_freeze.py):
+    # skip any 'positions' row whose contract has already passed its own
+    # expiry freeze window so a future failed/skipped fetch interval can't
+    # silently substitute an expired-past-freeze-window row into the LKG
+    # fallback. No live evidence this path is currently firing the bug —
+    # the confirmed defect was the live-fetch path (`positions.py:_fetch()`,
+    # see `_filter_expired_live_rows`) — but this preload shares the
+    # identical unfiltered-assumption gap, so it gets the same guard.
+    # Non-F&O symbols (holdings rows, equity) return False immediately
+    # with zero DB calls via `is_live_row_past_freeze_window`'s fast path.
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window as _is_past_freeze
+    _now_ist = timestamp_indian()
+    _pos_pairs = list({
+        (str(row.symbol or ""), str(row.exchange or ""))
+        for row in rows if str(row.kind or "") == "positions"
+    })
+    _stale_pairs: set = set()
+    if _pos_pairs:
+        try:
+            _results = await asyncio.gather(*(
+                _is_past_freeze(sym, exch, _now_ist) for sym, exch in _pos_pairs
+            ))
+            _stale_pairs = {pair for pair, stale in zip(_pos_pairs, _results) if stale}
+        except Exception as exc:
+            logger.warning(f"[DB-LKG] expiry-freeze check failed, skipping filter: {exc}")
+        if _stale_pairs:
+            logger.info(
+                f"[DB-LKG] preload: excluding {len(_stale_pairs)} expired-past-"
+                f"freeze-window (symbol, exchange) pair(s): {sorted(_stale_pairs)}"
+            )
+
     # Group rows by (account, kind) and build DataFrames.
     from collections import defaultdict
     import pandas as pd
@@ -1527,6 +1558,8 @@ async def _preload_db_lkg_cache() -> None:
         account  = str(row.account or "")
         kind     = str(row.kind or "")
         if not account or not kind:
+            continue
+        if kind == "positions" and (str(row.symbol or ""), str(row.exchange or "")) in _stale_pairs:
             continue
         _avg  = float(row.avg_cost or 0.0)
         _ltp  = float(row.ltp or 0.0)

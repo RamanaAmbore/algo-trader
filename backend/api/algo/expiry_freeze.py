@@ -308,6 +308,65 @@ async def next_market_open_ist(after_date: date, exchange: str = "MCX") -> datet
     return datetime(d.year, d.month, d.day, 8, 0, tzinfo=_IST)
 
 
+async def is_live_row_past_freeze_window(
+    symbol: str, exchange: "str | None", now_ist: datetime,
+) -> bool:
+    """Live-broker-fetch-path counterpart to `expiry_status` — fixes the
+    2026-09-29 incident where account ZJ6294's LIVE `/api/positions` fetch
+    kept returning expired MCX GOLDM SEP option contracts (e.g.
+    `GOLDM26SEP148000PE`, real expiry Friday 2026-09-25) as non-zero-qty
+    positions with real (and wrong) attached P&L, well past every freeze
+    boundary — even though `daily_book` had no GOLDM row newer than that
+    Friday's settlement snapshot, and the row's own `price_source:
+    "snapshot_settled"` / `last_price_stale: true` fields already showed
+    the system knew the pricing was stale.
+
+    This module's own docstring states the design's original assumption:
+    `closed_hours_or_broker()`'s live-fetch path "naturally stops
+    returning an expired contract" once the market reopens, so the
+    expiry-freeze machinery above (`expiry_if_closed_on_own_expiry_day`,
+    `expiry_status`) was only ever wired into the DB-SNAPSHOT serving path
+    (`positions.py:_positions_snapshot`), never into the LIVE broker-fetch
+    path (`positions.py:_fetch()`). That assumption is FALSE — Kite is
+    still reporting these contracts live. This function answers a
+    narrower question than `expiry_status`: "should this (symbol,
+    exchange) still be appearing as a live position AT ALL, right now" —
+    for a row with NO `daily_book` capture-session history at all (a
+    live-fetched row is a genuine "right now" broker read, not a
+    persisted snapshot being reclassified). Deliberately a SEPARATE
+    function rather than a reuse of `expiry_if_closed_on_own_expiry_day`
+    for that reason — that function's `captured_at`/"own expiry-day
+    session" requirement has no live-fetch equivalent, there is no prior
+    capture session to compare against here.
+
+    Fast path (no I/O): a symbol that doesn't parse as F&O, or whose
+    parsed expiry hasn't passed yet (including the expiry day itself —
+    the contract is still legitimately trading today), returns False
+    immediately with zero DB calls. This covers the overwhelming majority
+    of rows (every currently-valid contract, and equity/cash rows) on
+    every positions poll. Only once `expiry < now_ist.date()` does this
+    consult the EXISTING `next_market_open_ist(expiry, exchange)` (not
+    reimplemented) to determine whether the freeze window has actually
+    ended yet.
+
+    Fail-safe posture matches the rest of this module (see its docstring,
+    "under-protecting is far safer than over-protecting" re: the futures-
+    expiry approximation): on any parse ambiguity, returns False — never
+    filter out a row that might still be legitimately live.
+    """
+    if not symbol or symbol == EMPTY_MARKER_SYMBOL:
+        return False
+    from backend.api.algo.derivatives import parse_tradingsymbol
+    parsed = parse_tradingsymbol(symbol)
+    if not parsed or not parsed.get("expiry"):
+        return False
+    expiry: date = parsed["expiry"]
+    if expiry >= now_ist.date():
+        return False
+    boundary = await next_market_open_ist(expiry, exchange=exchange or "MCX")
+    return now_ist >= boundary
+
+
 async def expiry_status(
     symbol: str, captured_at: datetime, exchange: "str | None", now_ist: datetime,
 ) -> str:
