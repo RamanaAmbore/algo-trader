@@ -23,7 +23,8 @@
     loadAccounts,
     accountsReadyStore,
     recentSymbolStore,
-    resolveAccount,
+    recentAccountStore,
+    defaultAccountStore,
     getAccountsSync,
   } from '$lib/data/accounts';
   import BellIcon from '$lib/icons/BellIcon.svelte';
@@ -85,13 +86,28 @@
   // to default from context" — the modal was passing `account=""`
   // forcing SymbolPanel to fall through to settings/sole-account only.
   // Now the modal carries the recent context just like /orders does.
+  //
+  // 2026-09-28 audit fix — "chain and ticket are not considering the
+  // account number... all orders are routed to only one kite account".
+  // This used to call resolveAccount() (accounts.js), which reads
+  // localStorage directly — a plain, non-reactive read. Inside a
+  // $derived, Svelte only re-runs when a TRACKED reactive dependency
+  // changes; resolveAccount()'s internal localStorage read isn't one,
+  // so _effectiveAccount computed once (the first time _accountsList
+  // became non-empty) and never updated again for the rest of the
+  // session — every subsequent order-modal open silently reseeded from
+  // that frozen value regardless of which account the operator had
+  // since picked via setRecentAccount(). Fixed by reading the reactive
+  // stores directly (recentAccountStore/defaultAccountStore — the same
+  // ones setRecentAccount()/loadAccounts() actually write to) so this
+  // re-derives on every pick, not just the first accounts-list load.
   const _accountsList = $derived(
     ($accountsReadyStore
       ? getAccountsSync().map(a => String(a?.account_id || a?.account || a || '')).filter(Boolean)
       : []),
   );
   const _effectiveAccount = $derived(
-    resolveAccount(_accountsList[0] || ''),
+    $recentAccountStore || $defaultAccountStore || _accountsList[0] || '',
   );
 
   // ── Internal modal state ──────────────────────────────────────────────
