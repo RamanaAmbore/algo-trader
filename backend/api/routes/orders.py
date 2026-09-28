@@ -1395,11 +1395,18 @@ class OrdersController(Controller):
             # (status != OPEN) and the operator had no surface short of
             # browsing /orders. The order is still LIVE at the broker;
             # recovery is via Reconcile or another Kill attempt.
+            # 2026-09-27 audit fix: FOR UPDATE so this bulk reconcile scan
+            # can't race a postback/chase terminal update landing on the
+            # SAME row concurrently. Deliberately NOT given the FINAL-status
+            # write-refuse guard the postback/chase paths have — reconcile
+            # is the repair path that corrects stuck rows from broker
+            # truth, so it must be able to write any status.
             rows = (await s.execute(
                 sql_select(AlgoOrder)
                 .where(AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]))
                 .order_by(desc(AlgoOrder.id))
                 .limit(500)
+                .with_for_update()
             )).scalars().all()
 
             kept, _reconciled_filled, _needs_commit = _rco_reconcile_active_rows(
@@ -1407,6 +1414,15 @@ class OrdersController(Controller):
             )
             if _needs_commit:
                 await s.commit()
+                if _reconciled_filled:
+                    # 2026-09-27 audit fix (finding #4): admin reconcile
+                    # never wrote FIFO ledger entries for rows it flips to
+                    # FILLED from broker truth — only the Kite postback
+                    # path did. A reconcile-recovered fill with a
+                    # strategy_id silently never reached the ledger.
+                    from backend.api.routes.orders_postback import _pb_write_ledger_fills
+                    await _pb_write_ledger_fills(s, _reconciled_filled)
+                    await s.commit()
                 for _filled_row in _reconciled_filled:
                     _maybe_fire_template_attach_for_reconcile(_filled_row)
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])

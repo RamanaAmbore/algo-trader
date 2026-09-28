@@ -701,6 +701,33 @@ class Strategy(Base):
 
 # ---------------------------------------------------------------------------
 
+# 2026-09-27 audit fix — full terminal-status vocabulary for AlgoOrder.status
+# (informational/query use — e.g. "is this row done, one way or another").
+# NOT the set used to guard against a late/duplicate status write — see
+# ALGO_ORDER_FINAL_STATUSES below for that.
+ALGO_ORDER_TERMINAL_STATUSES: frozenset[str] = frozenset({
+    "FILLED", "CANCELLED", "REJECTED", "UNFILLED", "CANCEL_FAILED",
+})
+
+# The narrower subset of the above from which NO further status write may
+# ever be accepted. CANCELLED/CANCEL_FAILED/UNFILLED are deliberately
+# EXCLUDED: a cancel can fail or a row can be marked unfilled/cancelled
+# while the broker-side order is still resting live (see fac3df18 — chase
+# never places a replacement order without confirming the cancel landed,
+# precisely because a "failed" cancel can still fill later). A late,
+# broker-confirmed FILLED postback arriving after one of these must still
+# be applied, or the row is permanently wrong and no TP arm / ledger write
+# ever happens for a real fill — a live-money bug, not just a UI staleness
+# bug. Only FILLED (can never un-fill) and REJECTED (broker refused the
+# order outright, nothing can still happen to it) are truly final. Shared
+# by every fill-detection/status-transition write-guard (postback handlers,
+# chase's terminal-update); admin reconcile does NOT use this guard — it is
+# the repair path that corrects stuck rows from broker truth and must be
+# able to write any status. See orders_postback.py:_sync_apply_row_status /
+# _pb_apply_status_to_row, chase.py:_chase_apply_terminal_mutation.
+ALGO_ORDER_FINAL_STATUSES: frozenset[str] = frozenset({"FILLED", "REJECTED"})
+
+
 class AlgoOrder(Base):
     __tablename__ = "algo_orders"
 

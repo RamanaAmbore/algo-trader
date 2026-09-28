@@ -382,21 +382,27 @@ async def test_arm_take_profit_sub_lot_g1_blocks():
         lambda exc, qty, ls: qty // ls if ls and ls > 1 else qty
     )
 
-    # Simulate DB: no existing child rows, then parent row with qty=50.
+    # Simulate DB: parent row with qty=50 (locked first, per the
+    # 2026-09-27 audit fix — parent lookup now precedes the existing-child
+    # check so concurrent callers serialize on the parent row), then no
+    # existing child rows, then the TP row re-lookup inside dispatch.
     mock_parent = MagicMock()
     mock_parent.quantity = 50   # sub-lot
     mock_parent.id = 999
 
-    _existing_result     = MagicMock()
-    _existing_result.scalar_one.return_value = 0   # no existing TP child
-
     _parent_result       = MagicMock()
     _parent_result.scalar_one_or_none.return_value = mock_parent
+
+    _existing_result     = MagicMock()
+    _existing_result.scalar_one.return_value = 0   # no existing TP child
 
     _tp_row = MagicMock()
     _tp_row.id = 888
 
-    execute_returns = iter([_existing_result, _parent_result])
+    _tp_lookup_result = MagicMock()
+    _tp_lookup_result.scalar_one_or_none.return_value = _tp_row
+
+    execute_returns = iter([_parent_result, _existing_result, _tp_lookup_result])
 
     mock_session = AsyncMock()
     mock_session.__aenter__ = AsyncMock(return_value=mock_session)

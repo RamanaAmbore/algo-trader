@@ -868,14 +868,36 @@ async def _opp_arm_tp_persist_row(
     target_pct: float,
     target_abs: "float | None",
     parent_mode: str,
+    filled_qty: "int | None" = None,
 ) -> "tuple[int, str, float] | None":
     """Persist the TP child AlgoOrder row. Returns (tp_id, tp_side, tp_price)
-    or None when idempotency/guard checks say skip."""
+    or None when idempotency/guard checks say skip.
+
+    2026-09-27 audit fix (finding #1): the existence check + insert used to
+    run as two unlocked statements, so two concurrent callers observing the
+    same fill (e.g. chase's poll + a racing postback) could both pass the
+    existence check before either committed, arming TWO TP orders for one
+    fill. Fixed by locking the PARENT row via SELECT ... FOR UPDATE first —
+    the second concurrent caller blocks until the first's TP insert commits,
+    then its own existence check sees the just-committed row and skips.
+
+    2026-09-27 audit fix (finding #1 bundle): `filled_qty`, when passed by
+    the caller, is used instead of `parent.quantity` (the ORIGINAL order
+    size) — a partial fill must arm its TP for the quantity actually
+    filled, not the full original order.
+    """
     from sqlalchemy import select as _sel, func as _func
     from backend.api.database import async_session as _async_session
     from backend.api.models import AlgoOrder as _AlgoOrder
 
     async with _async_session() as _s:
+        parent = (await _s.execute(
+            _sel(_AlgoOrder).where(_AlgoOrder.id == parent_row_id)
+            .with_for_update()
+        )).scalar_one_or_none()
+        if parent is None:
+            return None
+
         existing = (await _s.execute(
             _sel(_func.count(_AlgoOrder.id)).where(
                 _AlgoOrder.parent_order_id == parent_row_id
@@ -884,12 +906,7 @@ async def _opp_arm_tp_persist_row(
         if existing:
             return None
 
-        parent = (await _s.execute(
-            _sel(_AlgoOrder).where(_AlgoOrder.id == parent_row_id)
-        )).scalar_one_or_none()
-        if parent is None:
-            return None
-        qty = int(parent.quantity or 0)
+        qty = int(filled_qty) if filled_qty else int(parent.quantity or 0)
         if not qty:
             return None
 
@@ -1057,6 +1074,7 @@ async def _arm_take_profit(
     target_abs: float | None,
     parent_mode: str,      # "paper" | "live"
     parent_product: str = "NRML",
+    filled_qty: "int | None" = None,
 ) -> None:
     """[LEGACY — Phase 2 deprecation marker] Arm a take-profit child
     order on fill via the v1 fractional target_pct path.
@@ -1090,6 +1108,7 @@ async def _arm_take_profit(
         result = await _opp_arm_tp_persist_row(
             parent_row_id, parent_account, parent_symbol, parent_exchange,
             parent_side, fill_price, target_pct, target_abs, parent_mode,
+            filled_qty=filled_qty,
         )
         if result is None:
             return

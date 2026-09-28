@@ -134,8 +134,36 @@ async def _create_postback_orphan_row(
 def _sync_apply_row_status(
     _r, *, new_status: str, price, broker_id: str, status: str, status_message: str,
 ) -> bool:
-    """Update a single AlgoOrder row in-place; return True if the row transitioned to FILLED."""
+    """Update a single AlgoOrder row in-place; return True if the row transitioned to FILLED.
+
+    2026-09-27 audit fix: a row already in a FINAL status (FILLED,
+    REJECTED — see models.ALGO_ORDER_FINAL_STATUSES) must never be
+    overwritten by a DIFFERENT status. Without this, a late/out-of-order
+    postback (or a duplicate delivery racing another writer for the SAME
+    event) could silently flip an already-FILLED row back to CANCELLED/
+    UNFILLED, or fire this function's FILLED-transition side effects
+    (fill_price, filled_at) a second time. The caller (_sync_algo_order_rows)
+    locks the row via SELECT ... FOR UPDATE before calling this, so
+    concurrent callers serialize on the SAME row instead of both reading
+    the pre-mutation status and both believing they "won" the transition.
+
+    Deliberately NOT guarded: CANCELLED/CANCEL_FAILED/UNFILLED → FILLED.
+    A failed cancel (or a row marked unfilled/cancelled) can still have a
+    broker-side order resting live that fills later — refusing that
+    transition would permanently strand the row wrong and skip the TP arm
+    / ledger write for a real fill. See ALGO_ORDER_FINAL_STATUSES's
+    docstring in models.py.
+    """
+    from backend.api.models import ALGO_ORDER_FINAL_STATUSES
     if not new_status or _r.status == new_status:
+        return False
+    if _r.status in ALGO_ORDER_FINAL_STATUSES:
+        logger.warning(
+            "[%s-POSTBACK] refusing to move AlgoOrder #%s from final "
+            "status %s to %s (raw broker status=%s) — late/duplicate/"
+            "out-of-order delivery, ignoring.",
+            broker_id.upper(), getattr(_r, "id", "?"), _r.status, new_status, status,
+        )
         return False
     _r.status = new_status
     if new_status == "FILLED":
@@ -195,8 +223,16 @@ async def _sync_algo_order_rows(
     _filled_rows: list = []
 
     async with _async_s() as _s:
+        # 2026-09-27 audit fix: FOR UPDATE so two concurrent deliveries of
+        # the SAME postback event (or a postback racing chase's terminal
+        # update / admin reconcile for the same order) serialize on this
+        # row instead of both reading the pre-mutation status and both
+        # believing they "won" the transition — see
+        # _sync_apply_row_status's terminal-status guard, which depends
+        # on this lock to be effective.
         _rows = (await _s.execute(
             _sql_select(_AO).where(_AO.broker_order_id == str(order_id))
+            .with_for_update()
         )).scalars().all()
 
         # M2(a): fallback lookup when no direct broker_order_id match.
@@ -241,6 +277,14 @@ async def _sync_algo_order_rows(
             ):
                 _filled_rows.append(_r)
         await _s.commit()
+
+        # 2026-09-27 audit fix (finding #4): this path never wrote FIFO
+        # ledger entries for Dhan/Groww fills — only the Kite postback path
+        # (_pb_event_kite) called _pb_write_ledger_fills. Live fills routed
+        # through Dhan/Groww silently never reached the strategy lot ledger.
+        await _pb_write_ledger_fills(_s, _filled_rows)
+        await _s.commit()
+
         for _r in _rows:
             try:
                 await _write_event(
@@ -426,8 +470,23 @@ def _pb_apply_status_to_row(_r, *, new_status: str | None, price) -> bool:
 
     Returns True iff the row transitioned to FILLED (caller uses the
     list to drive ledger / take-profit / template-attach fan-outs).
+
+    2026-09-27 audit fix: same final-status guard as
+    _sync_apply_row_status (Dhan/Groww path) — see that function's
+    docstring, and ALGO_ORDER_FINAL_STATUSES in models.py, for why
+    CANCELLED/CANCEL_FAILED/UNFILLED are deliberately NOT guarded (a late
+    genuine FILLED must still apply). Caller must lock the row via
+    SELECT ... FOR UPDATE before calling this.
     """
+    from backend.api.models import ALGO_ORDER_FINAL_STATUSES
     if not new_status or _r.status == new_status:
+        return False
+    if _r.status in ALGO_ORDER_FINAL_STATUSES:
+        logger.warning(
+            "[KITE-POSTBACK] refusing to move AlgoOrder #%s from final "
+            "status %s to %s — late/duplicate/out-of-order delivery, ignoring.",
+            getattr(_r, "id", "?"), _r.status, new_status,
+        )
         return False
     _r.status = new_status
     if new_status != "FILLED" or not price:
@@ -550,6 +609,10 @@ def _pb_wants_template_attach(_r) -> bool:
 
 def _pb_dispatch_take_profit_arm(_r) -> None:
     from backend.api.routes.orders_place import _arm_take_profit
+    # 2026-09-27 audit fix (finding #5/#1 bundle): pass the parent's real
+    # product (was silently defaulting to NRML) and the actual filled
+    # quantity (was arming TP for the full original order size even on a
+    # partial fill).
     asyncio.create_task(_arm_take_profit(
         parent_row_id=_r.id,
         parent_account=str(_r.account or ""),
@@ -560,6 +623,8 @@ def _pb_dispatch_take_profit_arm(_r) -> None:
         target_pct=float(_r.target_pct or 0.0),
         target_abs=(_r.target_abs and float(_r.target_abs)),
         parent_mode=str(_r.mode or "live"),
+        parent_product=str(_r.product or "NRML"),
+        filled_qty=int(_r.filled_quantity) if _r.filled_quantity else None,
     ))
 
 
@@ -674,10 +739,14 @@ async def _pb_event_kite(
     try:
         _filled_rows: list = []
         async with _async_session() as _s:
+            # 2026-09-27 audit fix: FOR UPDATE — see _sync_algo_order_rows'
+            # identical fix for the full rationale (serializes concurrent/
+            # duplicate postback deliveries and races against chase's
+            # terminal update / admin reconcile on the same row).
             _rows = (await _s.execute(
                 _sql_select(_AlgoOrder).where(
                     _AlgoOrder.broker_order_id == str(order_id)
-                )
+                ).with_for_update()
             )).scalars().all()
 
             if not _rows:

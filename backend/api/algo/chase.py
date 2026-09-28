@@ -88,6 +88,8 @@ def _chase_snapshot_algo_row(row, broker_order_id: str) -> dict:
         "mode":              str(row.mode or "live"),
         "filled_quantity":   int(row.filled_quantity or 0),
         "quantity":          int(row.quantity or 0),
+        "intent":            str(row.intent or ""),
+        "is_close_intent":   bool(getattr(row, "is_close_intent", False)),
     }
 
 
@@ -115,22 +117,49 @@ async def _chase_terminal_update_db(
     agent_id = None
     _row_snap: dict | None = None
     async with _async_session() as _s:
+        # 2026-09-27 audit fix: FOR UPDATE — this path previously had no
+        # locking at all, so it could race a postback delivery for the SAME
+        # order (either broker firing its own terminal event concurrently
+        # with chase's own poll-derived terminal outcome). See
+        # orders_postback.py's identical fix for the full rationale.
         row = None
         if algo_order_id is not None:
             row = (await _s.execute(
                 _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                .with_for_update()
             )).scalar_one_or_none()
         if row is None:
             row = (await _s.execute(
                 _sql_select(_AlgoOrder).where(
                     _AlgoOrder.broker_order_id == broker_order_id
-                )
+                ).with_for_update()
             )).scalar_one_or_none()
         if row is not None:
             agent_id = getattr(row, "agent_id", None)
             if _new_status and row.status != _new_status:
-                _chase_apply_terminal_mutation(row, _new_status, attempts, final_price, error)
-                await _s.commit()
+                # 2026-09-27 audit fix: same FINAL-status guard as the
+                # postback paths (models.ALGO_ORDER_FINAL_STATUSES) — a
+                # row already FILLED/REJECTED must never be overwritten by
+                # chase's own (possibly late/racing) terminal outcome.
+                from backend.api.models import ALGO_ORDER_FINAL_STATUSES
+                if row.status in ALGO_ORDER_FINAL_STATUSES:
+                    logger.warning(
+                        "[CHASE] refusing to move AlgoOrder #%s from final "
+                        "status %s to %s — late/racing terminal update, "
+                        "ignoring.", getattr(row, "id", "?"), row.status, _new_status,
+                    )
+                else:
+                    _chase_apply_terminal_mutation(row, _new_status, attempts, final_price, error)
+                    await _s.commit()
+                    if _new_status == "FILLED":
+                        # 2026-09-27 audit fix (finding #4): chase's own
+                        # terminal-fill path never wrote FIFO ledger
+                        # entries — only the Kite postback path did. A
+                        # chase-filled order with a strategy_id silently
+                        # never reached the strategy lot ledger.
+                        from backend.api.routes.orders_postback import _pb_write_ledger_fills
+                        await _pb_write_ledger_fills(_s, [row])
+                        await _s.commit()
             # Snapshot AFTER the optional mutation + commit so the
             # downstream attach paths read post-commit values.
             _row_snap = _chase_snapshot_algo_row(row, broker_order_id)
@@ -146,6 +175,10 @@ def _ch_maybe_fire_auto_tp(snap: dict, final_price: float) -> None:
     if snap.get("template_id") is not None:
         return
     from backend.api.routes.orders import _arm_take_profit
+    # 2026-09-27 audit fix (finding #5/#1 bundle): pass the parent's real
+    # product (was silently defaulting to NRML — snap["product"] is already
+    # captured by _chase_snapshot_algo_row) and the actual filled quantity
+    # (chase can take partials — snap["filled_quantity"]).
     asyncio.create_task(_arm_take_profit(
         parent_row_id=snap["id"],
         parent_account=snap["account"],
@@ -156,22 +189,44 @@ def _ch_maybe_fire_auto_tp(snap: dict, final_price: float) -> None:
         target_pct=float(snap.get("target_pct") or 0.0),
         target_abs=(snap.get("target_abs") and float(snap.get("target_abs"))),
         parent_mode=snap["mode"],
+        parent_product=snap["product"],
+        filled_qty=snap["filled_quantity"] or None,
     ))
 
 
-def _ch_maybe_fire_template_attach(snap: dict, final_price: float) -> None:
-    """Fire template attach task on chase fill (idempotent via GTT guard)."""
-    if not snap.get("template_id"):
+async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> None:
+    """Async guard + fire, run as a detached task by _ch_maybe_fire_template_attach.
+
+    2026-09-27 audit fix (finding #6): chase's fill path used to fire
+    template attach (arming exit GTTs) unconditionally once a template_id
+    was present, unlike the Kite postback path
+    (_pb_check_and_fire_template_attach) which runs an offsetting-position
+    check first so a close/reduce order that happens to carry a stale
+    template_id never arms exit GTTs on itself. Mirrors both of that
+    path's guards: explicit close-intent (matching
+    _opl_reconcile_attach_eligible) and the sign-only
+    _is_offsetting_position check.
+    """
+    if (snap.get("intent") or "").lower() == "close" or snap.get("is_close_intent"):
         return
-    if snap.get("parent_order_id") is not None:
+    from backend.api.routes.orders_place import _is_offsetting_position
+    if await _is_offsetting_position(
+        sym=snap["symbol"], exchange=snap["exchange"],
+        side=snap["transaction_type"], account=snap["account"],
+    ):
+        logger.info(
+            "[CHASE] skipping template attach — order offsets existing "
+            "position for #%s %s", snap["id"], snap["symbol"],
+        )
         return
+
     from backend.api.routes.orders import _fire_template_attach_on_fill
     # Sprint B (#4) — size exit GTTs against the ACTUAL filled qty
     # when the chase took partials.
     attach_qty = (
         snap["filled_quantity"] if snap["filled_quantity"] > 0 else snap["quantity"]
     )
-    asyncio.create_task(_fire_template_attach_on_fill(
+    await _fire_template_attach_on_fill(
         parent_row_id=snap["id"],
         parent_account=snap["account"],
         parent_symbol=snap["symbol"],
@@ -181,7 +236,16 @@ def _ch_maybe_fire_template_attach(snap: dict, final_price: float) -> None:
         fill_price=float(final_price),
         template_id=int(snap["template_id"]),
         parent_product=snap["product"],
-    ))
+    )
+
+
+def _ch_maybe_fire_template_attach(snap: dict, final_price: float) -> None:
+    """Fire template attach task on chase fill (idempotent via GTT guard)."""
+    if not snap.get("template_id"):
+        return
+    if snap.get("parent_order_id") is not None:
+        return
+    asyncio.create_task(_ch_check_and_fire_template_attach(snap, final_price))
 
 
 def _chase_terminal_fire_fill_hooks(
