@@ -1148,7 +1148,7 @@
              every chain-modal mount. -->
         <button type="button" class="chain-basket-clear" disabled={basketPlacing} onclick={clearBasket}>Clear</button>
         <button type="button" class="chain-basket-place" disabled={basketPlacing} onclick={placeBasket}>
-          {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Place {chainBasket.length} leg{chainBasket.length === 1 ? '' : 's'}{/if}
+          {#if basketPlacing}Placing… ({basketProgress}/{chainBasket.length}){:else}Submit{/if}
         </button>
       </div>
     </div>
@@ -1376,6 +1376,18 @@
      forcing a second internal scroll. */
   .chain-grid-wrap {
     overflow-y: auto;
+    /* Operator: "order ticket window is wider than viewport mobile
+       sometimes" — root-caused to THIS table: table-layout defaults to
+       `auto`, which sizes columns off cell content's natural minimum
+       width, ignoring .chain-col-ce/-strike/-pe's % hints entirely once
+       CE/PE's bid+ask+stepper content doesn't fit a narrow column. The
+       table then grows past its wrapper (measured 406px inside a
+       ~350px mobile modal) with nothing clipping the X axis, bleeding
+       the whole modal out of the viewport. `table-layout: fixed` below
+       makes the % column widths authoritative; this overflow-x is a
+       clipping backstop for the rare cell whose content still doesn't
+       fit the fixed column. */
+    overflow-x: hidden;
     flex: 1 1 0;
     /* Operator: "show more pe and ce rows in chain". Was 9rem
        (~5–6 strike rows at default row height); bumped to 22rem
@@ -1392,16 +1404,22 @@
   }
   .chain-grid {
     width: 100%;
+    table-layout: fixed;
     border-collapse: collapse;
     font-family: monospace;
     font-size: var(--fs-md);
   }
-  .chain-col-ce     { width: 42%; }
-  .chain-col-strike { width: 16%; }
-  .chain-col-pe     { width: 42%; }
+  .chain-col-ce     { width: 44%; }
+  .chain-col-strike { width: 12%; }
+  .chain-col-pe     { width: 44%; }
   .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.3rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  /* Operator: "reduce the space before and after strike in chain" —
+     strike is a short 4-5 digit number, doesn't need the same
+     horizontal padding as CE/PE (which carry a quote + a stepper
+     button). Tightened from 0.3rem to 0.1rem; column width narrowed
+     from 16% to 12%, giving CE/PE the reclaimed width. */
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1432,7 +1450,7 @@
      the chain — without tabular-nums, digits shift horizontally
      on every quote update, creating visual jitter that obscures
      the spread. */
-  .chain-td-strike  { text-align: center; color: var(--algo-slate); font-weight: 700; font-variant-numeric: tabular-nums; }
+  .chain-row > td.chain-td-strike { text-align: center; color: var(--algo-slate); font-weight: 700; font-variant-numeric: tabular-nums; padding-left: 0.1rem; padding-right: 0.1rem; }
   .chain-td-strike-atm { color: var(--c-action); font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
     display: inline-flex;

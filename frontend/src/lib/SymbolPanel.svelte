@@ -3144,6 +3144,18 @@
        together can exceed 760 px on small viewports. */
     overflow-y: auto;
   }
+  /* Operator: "order ticket window is wider than viewport mobile
+     sometimes" — the modal's own width is already correctly capped
+     (96vw via .ot-modal / 100% here), but nothing clipped the X axis,
+     so an occasional wide child (a long basket pill, a symbol-search
+     row, a knobs row that doesn't get to wrap in time) could still
+     visually bleed past the modal edge and force page-level horizontal
+     scroll. Each inner row already manages its own overflow-x
+     (auto-scroll or flex-wrap) independently — this is a containment
+     backstop on the outer shell only, not a replacement for those. */
+  @media (max-width: 720px) {
+    .oes-modal { overflow-x: hidden; }
+  }
   .oes-modal.oes-modal-inline {
     /* Outer chrome stripped (the host bucket-card provides amber
        accent + gradient).

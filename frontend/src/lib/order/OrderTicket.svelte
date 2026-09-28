@@ -3168,6 +3168,12 @@
   @media (max-width: 760px) {
     .ot-modal {
       width: 96vw;
+      /* Operator: "order ticket window is wider than viewport mobile
+         sometimes" — width is capped above, but nothing clipped the X
+         axis, so an occasional wide child could still visually bleed
+         past the edge and force page-level horizontal scroll. See the
+         matching fix + full rationale on SymbolPanel.svelte's .oes-modal. */
+      overflow-x: hidden;
     }
   }
 
