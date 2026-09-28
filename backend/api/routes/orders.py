@@ -1873,6 +1873,15 @@ class OrdersController(Controller):
         payloads, so authentication is a shared-secret query-string
         token instead (`_pb_verify_shared_token`); see that function's
         docstring for the 2026-09 council audit fix this closes.
+
+        TODO(operator): the shared secret is generated and set in
+        secrets.yaml (local + prod + dev) — the token check is live but
+        NOT yet enforced end-to-end. Append `?token=<dhan_postback_token>`
+        to this webhook's URL in Dhan's own partner dashboard
+        (Settings → Postback URL, or equivalent) — until that's done,
+        Dhan sends requests with no token and `_pb_verify_shared_token`
+        still passes them (fail-open transitional behavior), so the auth
+        gap isn't actually closed yet.
         """
         if not _pb_verify_shared_token(request, "dhan"):
             logger.critical(
@@ -1955,6 +1964,13 @@ class OrdersController(Controller):
         the 2026-09 council audit fix this closes. This endpoint's
         account="" fallback-matching gap made it the more exploitable
         of the two brokers' postback routes.
+
+        TODO(operator): same as the Dhan postback above — the shared
+        secret is generated and set in secrets.yaml (local + prod + dev)
+        but NOT yet appended to this webhook's URL in Groww's own
+        partner dashboard. Append `?token=<groww_postback_token>` there
+        to actually close the auth gap end-to-end (currently fail-open
+        since Groww isn't sending the token yet).
         """
         if not _pb_verify_shared_token(request, "groww"):
             logger.critical(
