@@ -6193,8 +6193,19 @@
   .opt-und-row :global(.rbq-select-option-label[data-hint='popular']) {
     opacity: 0.72;
   }
-  /* Hint shown below the underlying picker when book is empty. */
+  /* Hint shown below the underlying picker when book is empty.
+     Taken OUT of normal flow (2026-09-29 fix): `.opt-picker` aligns
+     its `.opt-field` columns by `align-items: flex-end`, so when this
+     hint rendered in-flow it grew the Underlying column's height,
+     pushing its label+Select UP relative to Account/Expiry (which
+     have no hint row) — visible misalignment whenever the hint
+     appeared. Absolute positioning removes it from the column's
+     height entirely, so alignment no longer depends on whether the
+     hint is showing. */
   .opt-und-hint {
+    position: absolute;
+    top: 100%;
+    left: 0;
     font-size: var(--fs-xs, 0.65rem);
     color: var(--c-muted);
     font-style: italic;
@@ -6286,6 +6297,9 @@
     flex-direction: column;
     gap: 0.15rem;
     min-width: 0;          /* allow shrink past content size */
+    /* Positioning context for `.opt-und-hint`'s absolute placement —
+       harmless for fields without an absolutely-positioned child. */
+    position: relative;
   }
   /* Desktop: ALL fields LEFT-aligned at natural widths. Per the
      canonical picker-bar rule — controls cluster on the left, no
