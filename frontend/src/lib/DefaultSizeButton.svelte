@@ -75,11 +75,18 @@
     }}
     aria-label={`Restore ${label} to default size`}
     title="Restore to default size">
-    <!-- ✕ close glyph — universally recognised "exit / close" affordance.
-         Paired with the pinned body close-button added in FullscreenButton
-         so the operator has two clear exit paths: the in-card button here
-         and the floating ✕ at top-right of the viewport. -->
-    <span class="fs-x-icon" aria-hidden="true">✕</span>
+    <!-- Compress/restore icon — mirror of FullscreenButton's outward-arrows
+         expand icon (corner brackets near center, arms pointing toward the
+         edges). Deliberately NOT a ✕ glyph: this button restores default
+         size, it doesn't close/dismiss content, and a blue ✕ here read as
+         a mismatched "close" button next to the app's red close/dismiss
+         convention (operator-reported 2026-09). Same cyan-400 family
+         color as FullscreenButton/CollapseButton is intentional and kept. -->
+    <svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true">
+      <path d="M6 2V6H2M10 2V6H14M6 14V10H2M10 14V10H14"
+        fill="none" stroke="currentColor" stroke-width="1.5"
+        stroke-linecap="round" stroke-linejoin="round" />
+    </svg>
   </button>
 {/if}
 

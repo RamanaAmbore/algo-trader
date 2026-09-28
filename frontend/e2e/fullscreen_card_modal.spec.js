@@ -1,9 +1,12 @@
 /**
- * Fullscreen card modal — new modal chrome + X sync
+ * Fullscreen card modal — modal chrome + restore-button icon
  *
- * Tests the new fullscreen card feature:
+ * Tests the fullscreen card feature:
  * 1. FullscreenButton.svelte — portalled backdrop + pinned close button
- * 2. DefaultSizeButton.svelte — exit button with ✕ icon
+ *    (`.fs-modal-close-btn` — not yet built; its test self-skips)
+ * 2. DefaultSizeButton.svelte — restore-to-default button, compress icon
+ *    (2026-09-28: swapped from a ✕ glyph, which read as a mismatched
+ *    "close" button against the app's red close/dismiss convention)
  * 3. PageFullscreenButton.svelte — page-header shortcut
  * 4. activeCardStore — card hover tracking
  *
@@ -12,7 +15,7 @@
  * - Perf: fullscreen toggle completes < 500ms (Date.now() measurements)
  * - Stale code: close button existence verified after each fullscreen open
  * - Reusable: shared authOnce() + navDashboard() helpers for all tests
- * - UX: backdrop darkness verified (alpha > 0.4), both ✕ buttons sync
+ * - UX: backdrop darkness verified (alpha > 0.4), restore icon is not ✕
  */
 
 import { test, expect } from '@playwright/test';
@@ -117,29 +120,27 @@ test.describe('Fullscreen card modal — new modal chrome + X sync', () => {
     await expect(page.locator('.fs-card-on')).toHaveCount(0, { timeout: 5_000 });
   });
 
-  // ── 4. Both ✕ buttons show the same symbol ───────────────────────────────
-  test('both_x_buttons_show_same_symbol', async ({ page }) => {
-    // Dimensions: SSOT (text content), UX (visual consistency)
+  // ── 4. Restore button uses the compress icon, not a ✕ glyph ──────────────
+  test('restore_button_is_not_x_glyph', async ({ page }) => {
+    // Dimensions: SSOT (DOM truth), UX (visual consistency), stale-code
+    // (regression guard for the 2026-09-28 operator report: the restore
+    // button's blue ✕ was visually indistinguishable from the app's red
+    // close/dismiss convention; fixed by swapping the glyph, not the color).
     await authOnce(page);
     const fsBtn = await navDashboard(page);
     await fsBtn.click();
     await expect(page.locator('.fs-card-on').first()).toBeVisible({ timeout: 8_000 });
 
-    const closeBtn = page.locator('.fs-modal-close-btn').first();
-    if (!await closeBtn.isVisible({ timeout: 3_000 }).catch(() => false)) {
-      test.skip(true, '.fs-modal-close-btn not present — feature not yet deployed');
-    }
+    const defaultBtn = page.locator('.default-btn').first();
+    await expect(defaultBtn).toBeVisible({ timeout: 5_000 });
 
-    const closeBtnText = await page.evaluate(() =>
-      document.querySelector('.fs-modal-close-btn')?.textContent?.trim() ?? '',
-    );
-    expect(closeBtnText).toBe('✕');
+    // No text-node ✕ glyph should remain inside the restore button.
+    const btnText = (await defaultBtn.textContent())?.trim() ?? '';
+    expect(btnText).not.toContain('✕');
 
-    const xIconText = await page.evaluate(() =>
-      document.querySelector('.default-btn .fs-x-icon')?.textContent?.trim() ?? '',
-    );
-    if (!xIconText) test.skip(true, '.default-btn .fs-x-icon not found');
-    expect(xIconText).toBe('✕');
+    // The restore icon is now an inline SVG, not the old `.fs-x-icon` span.
+    await expect(defaultBtn.locator('svg')).toBeVisible();
+    await expect(defaultBtn.locator('.fs-x-icon')).toHaveCount(0);
   });
 
   // ── 6. Escape key closes modal ────────────────────────────────────────────
