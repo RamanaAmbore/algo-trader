@@ -203,3 +203,48 @@ class TestAddMcxSpotAnchors:
         assert aliases.get("CRUDEOIL26OCTFUT") == "CRUDEOIL", (
             f"Expected CRUDEOIL26OCTFUT → CRUDEOIL alias, got {aliases}"
         )
+
+    @pytest.mark.asyncio
+    async def test_add_mcx_spot_anchors_calendar_spread_aliases_only_front_month(self):
+        """2026-09-28 audit fix — a calendar spread (both legs of the SAME
+        root held at once) must produce exactly ONE alias entry for that
+        root, pointing at the canonical front-month contract (resolved
+        via list_active_futures, same as Pass 1), not whichever
+        held-expiry symbol happened to be aliased directly. Pre-fix, both
+        legs got their own alias entry, registering two tokens under one
+        virtual-root symbol — whichever leg ticked most recently silently
+        won the shared slot downstream."""
+        from backend.api.background import _add_mcx_spot_anchors
+
+        # Both legs of a CRUDEOIL calendar spread, no CE/PE at all — pure
+        # futures positions, so both only ever reach Pass 2.
+        book_pairs = [
+            ("CRUDEOIL26OCTFUT", "MCX"),
+            ("CRUDEOIL26NOVFUT", "MCX"),
+        ]
+        book_seen = set()
+
+        with patch("backend.api.algo.symbol_resolver.list_active_futures") as mock_laf:
+            # The resolver always returns the TRUE front-month regardless
+            # of which leg's root is queried.
+            mock_laf.return_value = ["CRUDEOIL26OCTFUT"]
+
+            aliases = await _add_mcx_spot_anchors(book_pairs, book_seen)
+
+        crudeoil_aliases = {k: v for k, v in aliases.items() if v == "CRUDEOIL"}
+        assert len(crudeoil_aliases) == 1, (
+            f"Expected exactly one CRUDEOIL alias entry (no per-token "
+            f"duplication across the calendar spread's two legs), got: "
+            f"{crudeoil_aliases}"
+        )
+        assert "CRUDEOIL26OCTFUT" in crudeoil_aliases, (
+            f"Expected the aliased symbol to be the resolved front-month "
+            f"(CRUDEOIL26OCTFUT), got: {crudeoil_aliases}"
+        )
+        # The resolver is only queried ONCE for the shared root, not once
+        # per held leg.
+        assert mock_laf.await_count == 1, (
+            f"Expected list_active_futures to be called once for the "
+            f"shared CRUDEOIL root (deduplicated across both legs), "
+            f"got {mock_laf.await_count} calls"
+        )

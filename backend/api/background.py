@@ -1324,17 +1324,42 @@ async def _add_mcx_spot_anchors(
                     book_seen.add(key)
                     book_pairs.append(key)
                 aliases[futs[0].upper()] = root  # "CRUDEOIL26OCTFUT" → "CRUDEOIL"
-        # Pass 2: alias MCX futures already in book_pairs regardless of options.
-        # Covers pure-futures positions (no CE/PE) so set_virtual_root_alias is
-        # always called for held MCX contracts.
+        # Pass 2: alias MCX futures roots not already covered by Pass 1
+        # (pure-futures positions with no CE/PE, so they never appeared
+        # in mcx_roots above).
+        #
+        # 2026-09-28 audit fix — this used to alias whatever
+        # specific-expiry symbol was already held, not necessarily the
+        # front-month contract. _virtual_root_aliases (kite_ticker.py)
+        # is keyed by TOKEN, not root, so a calendar spread (both legs
+        # of the SAME root held at once, e.g. CRUDEOIL26OCTFUT AND
+        # CRUDEOIL26NOVFUT) registered TWO tokens under the one virtual
+        # root symbol "CRUDEOIL" — whichever leg ticked most recently
+        # silently won the shared slot any SSE/getSnapshot("CRUDEOIL")
+        # consumer reads, flipping unpredictably between the two legs'
+        # genuinely different prices. Fixed by resolving the SAME
+        # canonical front-month contract Pass 1 uses
+        # (list_active_futures(root, limit=1)) for these roots too,
+        # instead of aliasing whichever expiry happens to be held —
+        # exactly one token per root, deterministically, matching Pass
+        # 1's semantics.
         _re_fut_inner = _re_module.compile(r'^([A-Z]+)\d+[A-Z]+FUT$')
+        _pass2_roots: set = set()
         for _sym, _exch in list(book_pairs):
             if _exch == 'MCX':
                 _m = _re_fut_inner.match(str(_sym).upper())
                 if _m:
                     _root = _m.group(1)
-                    if str(_sym).upper() not in aliases:
-                        aliases[str(_sym).upper()] = _root
+                    if _root not in mcx_roots:
+                        _pass2_roots.add(_root)
+        for _root in _pass2_roots:
+            _futs2 = await _laf(_root, 'MCX', limit=1)
+            if _futs2:
+                _key2 = (_futs2[0], 'MCX')
+                if _key2 not in book_seen:
+                    book_seen.add(_key2)
+                    book_pairs.append(_key2)
+                aliases[_futs2[0].upper()] = _root
     except Exception as _e:
         logger.debug(f"Background: MCX spot-anchor subscribe skipped: {_e}")
     return aliases
