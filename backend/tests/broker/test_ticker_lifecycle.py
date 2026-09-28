@@ -73,8 +73,17 @@ class TestTickerManagerRestart:
     """Verify TickerManager.restart() produces the correct state sequence."""
 
     def test_restart_resets_started_to_false_then_calls_start(self):
-        """restart() must reset _started=False so start()'s idempotency guard is bypassed."""
-        ticker = _make_started_ticker()
+        """restart() must reset _started=False so start()'s idempotency guard
+        is bypassed — verified via a ticker whose stop() has NOT (yet) been
+        genuinely started (_was_started=False in kite_ticker.py's 2026-09-27
+        reactor-dead fix), so stop() does not mark the reactor dead and
+        restart() proceeds to call start(). A ticker that WAS genuinely
+        started (_make_started_ticker(), a clean-succeeding kws.stop())
+        correctly marks the reactor dead per that same fix — see
+        test_restart_bails_when_reactor_dead_after_stop and
+        test_restart_state_reset_happens_even_when_reactor_marked_dead
+        below for that (realistic, and now the common) case."""
+        ticker = _make_stopped_ticker()  # _started=False — stop() is a no-op on _reactor_dead
 
         start_calls = []
 
@@ -89,12 +98,18 @@ class TestTickerManagerRestart:
              patch("backend.brokers.kite_ticker.logger"):
             ticker.restart("K1", "T1", "ZG0790")
 
+        assert ticker._reactor_dead is False, \
+            "a ticker that was never genuinely started must not be marked reactor-dead by stop()"
         assert len(start_calls) == 1, "restart() must call start() exactly once"
         assert start_calls[0] is False, \
             "restart() must reset _started=False before calling start()"
 
     def test_restart_clears_subscribed_set(self):
-        """restart() must clear _subscribed so re-subscribe starts from scratch."""
+        """restart() must clear _subscribed so re-subscribe starts from scratch —
+        true regardless of whether start() itself subsequently runs (the
+        realistic case, per the 2026-09-27 reactor-dead fix, is that it
+        won't — Twisted's reactor can't restart in-process — but the state
+        reset in restart() happens unconditionally, BEFORE that check)."""
         ticker = _make_started_ticker(subscribed={111, 222, 333})
 
         def fake_start(api_key, access_token, account=""):
@@ -109,41 +124,62 @@ class TestTickerManagerRestart:
 
     def test_restart_carries_subscribed_tokens_into_pending(self):
         """restart() must move previously-subscribed tokens into _pending so
-        on_connect can re-subscribe them automatically."""
+        a FUTURE successful connect (a fresh process, post-respawn) picks
+        them back up via on_connect's auto-resubscribe — this state
+        transition happens unconditionally in restart(), before the
+        reactor-dead check, so it's verified directly on the ticker rather
+        than via what start() observes (which, realistically per the
+        2026-09-27 reactor-dead fix, never runs for an already-started
+        ticker's restart)."""
         ticker = _make_started_ticker(subscribed={100, 200})
         ticker._pending = {300}  # pre-existing pending
 
-        pending_at_start: set = set()
-
-        def fake_start(api_key, access_token, account=""):
-            pending_at_start.update(ticker._pending)
-            ticker._started = True
-
-        with patch.object(ticker, "start", side_effect=fake_start), \
-             patch("backend.brokers.kite_ticker.logger"):
+        with patch("backend.brokers.kite_ticker.logger"):
             ticker.restart("K1", "T1", "ZG0790")
 
         # restart() should carry both old _subscribed + old _pending into new _pending
-        assert 100 in pending_at_start, "restart() should forward subscribed token 100 to _pending"
-        assert 200 in pending_at_start, "restart() should forward subscribed token 200 to _pending"
-        assert 300 in pending_at_start, "restart() should forward pending token 300 to _pending"
+        assert 100 in ticker._pending, "restart() should forward subscribed token 100 to _pending"
+        assert 200 in ticker._pending, "restart() should forward subscribed token 200 to _pending"
+        assert 300 in ticker._pending, "restart() should forward pending token 300 to _pending"
 
     def test_restart_resets_connected_to_false(self):
-        """restart() must reset _connected=False (stop() does this, verify end state)."""
+        """restart() must reset _connected=False (stop() does this) — verified
+        directly on the ticker rather than via what start() observes, since
+        a genuinely-started ticker's restart() now correctly never reaches
+        start() (see the reactor-dead tests above/below)."""
         ticker = _make_started_ticker()
 
-        connected_at_start: list[bool] = []
+        with patch("backend.brokers.kite_ticker.logger"):
+            ticker.restart("K1", "T1", "ZG0790")
 
-        def fake_start(api_key, access_token, account=""):
-            connected_at_start.append(ticker._connected)
-            ticker._started = True
+        assert ticker._connected is False, \
+            "restart() must reset _connected=False"
 
-        with patch.object(ticker, "start", side_effect=fake_start), \
+    def test_restart_state_reset_happens_even_when_reactor_marked_dead(self):
+        """2026-09-27 audit fix, direct coverage: restart() on a genuinely-
+        started ticker (_make_started_ticker() — kws.stop() succeeds
+        cleanly, matching a real Twisted reactor's one-shot-stop behaviour)
+        must now correctly mark the reactor dead and skip start()
+        entirely — this is the REALISTIC outcome for restart() in
+        production, not an edge case. State resets (_started, _subscribed,
+        _connected) still happen; start() is never called."""
+        ticker = _make_started_ticker(subscribed={1, 2, 3})
+
+        start_called = []
+        with patch.object(ticker, "start", side_effect=lambda *a, **kw: start_called.append(1)), \
              patch("backend.brokers.kite_ticker.logger"):
             ticker.restart("K1", "T1", "ZG0790")
 
-        assert connected_at_start[0] is False, \
-            "restart() must reset _connected=False before start() runs"
+        assert ticker._reactor_dead is True, (
+            "a clean kws.stop() following a genuine prior start() must mark "
+            "the reactor dead immediately (Twisted's reactor can never "
+            "restart in-process) — see kite_ticker.py:stop()'s 2026-09-27 fix"
+        )
+        assert start_called == [], \
+            "restart() must not call start() once stop() has marked the reactor dead"
+        assert ticker._started is False
+        assert ticker._subscribed == set()
+        assert ticker._connected is False
 
     def test_restart_forwards_credentials_to_start(self):
         """restart() must pass the exact api_key, access_token, account to start()."""

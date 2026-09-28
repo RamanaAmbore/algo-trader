@@ -606,6 +606,12 @@ class TickerManager:
         """
         import time
         kws = self._kws
+        # 2026-09-27 audit fix: snapshot BEFORE this method's own
+        # `self._started = False` below overwrites it — True here means a
+        # real `connect(threaded=True)` was attempted for this reactor
+        # (start() always sets _started=True immediately before calling
+        # connect(), regardless of whether the connect ever completed).
+        _was_started = self._started
         if kws is not None:
             for step in ("stop_retry", "close"):
                 fn = getattr(kws, step, None)
@@ -619,22 +625,50 @@ class TickerManager:
                 kws_stop = getattr(kws, "stop", None)
                 if kws_stop is not None:
                     kws_stop()
+                    # 2026-09-27 audit fix: Twisted's reactor is a
+                    # process-level singleton — once genuinely stopped,
+                    # reactor.run() raises ReactorNotRestartable on every
+                    # future connect(threaded=True), but that exception
+                    # fires INSIDE the daemon thread connect() spawns, not
+                    # here, so it was previously silently swallowed:
+                    # _started stayed True and _connected stayed False
+                    # forever, and _reactor_dead only got set on some
+                    # LATER stop() call that happened to catch
+                    # ReactorNotRunning on an ALREADY-dead reactor — one
+                    # full failed restart-attempt-cycle (and its ~2×30s
+                    # threshold + 300s cooldown + 30s delay) too late.
+                    # A stop() call that (a) followed a genuine prior
+                    # connect() attempt (_was_started) and (b) didn't
+                    # itself raise ReactorNotRunning IS the call that just
+                    # stopped a real, running reactor — we don't need to
+                    # wait for a future failure to know this process's
+                    # reactor singleton is now permanently unusable.
+                    if _was_started and not self._reactor_dead:
+                        self._reactor_dead = True
+                        logger.critical(
+                            "KiteTicker: Twisted reactor stopped — this "
+                            "process's reactor singleton can never restart "
+                            "(ReactorNotRestartable on any future connect()). "
+                            "Marking dead immediately so the watchdog exits "
+                            "promptly instead of after one more failed "
+                            "silent reconnect attempt."
+                        )
             except Exception as _stop_exc:
                 _exc_name = type(_stop_exc).__name__
                 if "ReactorNotRunning" in _exc_name or "ReactorNotRunning" in str(_stop_exc):
-                    # Reactor already stopped on its own (network failure /
-                    # Kite closed WS and Twisted's reconnect gave up).
-                    # Twisted's reactor is a process-level singleton — once
-                    # stopped, reactor.run() raises ReactorNotRestartable, so
-                    # every future connect(threaded=True) will silently fail.
-                    # Mark as dead so the watchdog can exit and let systemd
-                    # (Restart=always) spawn a fresh process.
-                    self._reactor_dead = True
-                    logger.critical(
-                        "KiteTicker: Twisted reactor stopped independently "
-                        "(ReactorNotRunning) — process restart required for recovery. "
-                        "Watchdog will trigger exit."
-                    )
+                    # Reactor was never running (this stop() call didn't
+                    # follow a genuine connect() attempt) OR already
+                    # stopped on its own (network failure / Kite closed WS
+                    # and Twisted's reconnect gave up) — only the latter
+                    # means the reactor is unusable going forward; only
+                    # mark dead if we know a real connect() was attempted.
+                    if _was_started:
+                        self._reactor_dead = True
+                        logger.critical(
+                            "KiteTicker: Twisted reactor stopped independently "
+                            "(ReactorNotRunning) — process restart required for recovery. "
+                            "Watchdog will trigger exit."
+                        )
                 else:
                     logger.exception("KiteTicker: ticker.stop() failed during shutdown")
             # Brief grace so the CLOSE frame actually leaves the box.
