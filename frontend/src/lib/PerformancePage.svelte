@@ -1411,7 +1411,7 @@
   });
 </script>
 
-<div class:perf-dark={isDark}>
+<div class="perf-root" class:perf-dark={isDark}>
 
 {#if _fillToast}
   <!-- Fill confirmation — fires within a frame of the Kite postback
@@ -1673,9 +1673,35 @@
      instance that races the layout's. -->
 
 
-</div><!-- /perf-dark -->
+</div><!-- /perf-root, /perf-dark -->
 
 <style>
+  /* ── B4 (2026-09): surface-card layer ─────────────────────────────────
+     A near-white "report module" sitting atop the cream page background,
+     mirroring the Financial Times' article/data-module treatment (Phase
+     B redesign). Additive polish only — no layout/behavior change.
+
+     Scoped via :global(.card-theme-cream) ancestor (the wrapper
+     /performance/+page.svelte always applies) AND :not(.perf-dark) so
+     it can only ever paint on the public cream theme — no fallback
+     color is used, so a future dark-theme embed of this component
+     can't accidentally render white behind it. */
+  :global(.card-theme-cream) .perf-root:not(.perf-dark) {
+    background: var(--card-surface-bg);
+    border: 1px solid var(--card-surface-border);
+    border-radius: 8px;
+    padding: 0.9rem 1rem 1.15rem;
+    box-shadow: 0 1px 4px rgba(0, 0, 0, 0.05);
+  }
+  @media (max-width: 600px) {
+    /* Mobile: cells must still fit a phone viewport — trim the card's
+       side padding so grid columns keep their usual room. */
+    :global(.card-theme-cream) .perf-root:not(.perf-dark) {
+      padding: 0.6rem 0.5rem 0.85rem;
+      border-radius: 6px;
+    }
+  }
+
   /* Grid loading placeholder — shown while the ag-Grid dynamic import
      resolves (~100–300ms on first visit). Minimal height so the page
      doesn't jump when the real grid paints below it. */

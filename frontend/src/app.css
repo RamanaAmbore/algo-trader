@@ -2876,6 +2876,18 @@ button:not(:disabled):active,
   --card-border:              #d4c89f;
   --card-divider:             #e0d9cc;
 
+  /* B4 (2026-09): near-white "surface" card layer for data-dense report
+     modules (PerformancePage grids) sitting atop the cream page
+     background — mirrors the FT-style article/data-module treatment.
+     Same face color/border already used by .pub-card and
+     .pub-form-panel-body (#fffdf8 / #ddd8ce) — reused here as tokens so
+     consumers don't need to hardcode the hex. Only ever read inside a
+     .card-theme-cream ancestor (never given a component-side fallback
+     value), so a future dark-theme embed of the same component can't
+     accidentally render white. */
+  --card-surface-bg:           #fffdf8;
+  --card-surface-border:       #ddd8ce;
+
   /* Text */
   --card-cell-text:           #0c1830;
   --card-currency-text:       #4a5872;
