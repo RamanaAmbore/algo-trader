@@ -45,17 +45,17 @@ test.describe('Stale-code: chain grid has subtle column dividers', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
 
     const thRule = src.match(/\.chain-th-strike\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(thRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.06\)/);
-    expect(thRule).toMatch(/border-right:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.06\)/);
+    expect(thRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
+    expect(thRule).toMatch(/border-right:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
 
     const tdRule = src.match(/\.chain-row\s*>\s*td\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(tdRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.06\)/);
-    expect(tdRule).toMatch(/border-right:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.06\)/);
+    expect(tdRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
+    expect(tdRule).toMatch(/border-right:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
   });
 
-  test('Row dividers remain subtle (unchanged, regression guard)', () => {
+  test('Row dividers remain subtle (halved again 2026-09-29, "very very subtle" pass)', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rowRule = src.match(/\.chain-row\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rowRule).toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.04\)/);
+    expect(rowRule).toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.025\)/);
   });
 });

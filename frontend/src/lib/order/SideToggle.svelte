@@ -9,8 +9,8 @@
 
   const sideLabels = $derived.by(() => {
     if (!currentQty || currentQty === 0) return { BUY: 'BUY', SELL: 'SELL' };
-    if (currentQty > 0) return { BUY: 'ADD · BUY', SELL: 'CLOSE · SELL' };
-    return { BUY: 'CLOSE · BUY', SELL: 'ADD · SELL' };
+    if (currentQty > 0) return { BUY: 'ADD/BUY', SELL: 'CLOSE/SELL' };
+    return { BUY: 'CLOSE/BUY', SELL: 'ADD/SELL' };
   });
 </script>
 

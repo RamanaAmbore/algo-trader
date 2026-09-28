@@ -301,5 +301,8 @@ export function formatSubmitLabel(ctx) {
   // ADD = same direction as the existing position; CLOSE = opposite.
   const verb = (cq > 0 ? (ctx.side === 'BUY' ? 'ADD' : 'CLOSE')
                        : (ctx.side === 'BUY' ? 'CLOSE' : 'ADD'));
-  return `Submit · ${verb} · ${ctx.side}${qtySuffix}`;
+  // Verb/side pair uses a slash, not the " · " separator used elsewhere
+  // in this label — operator (2026-09-29): "add . sell should be add/sell,
+  // close . buy as close/buy... the space dot space should be a slash."
+  return `Submit · ${verb}/${ctx.side}${qtySuffix}`;
 }

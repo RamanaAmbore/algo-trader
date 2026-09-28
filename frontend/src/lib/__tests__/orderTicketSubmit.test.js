@@ -79,22 +79,22 @@ describe('formatSubmitLabel (R7 — Submit button reflects the real pending acti
 
   it('long position + SELL → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE · SELL 75');
+      .toBe('Submit · CLOSE/SELL 75');
   });
 
   it('long position + BUY → ADD', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD · BUY 75');
+      .toBe('Submit · ADD/BUY 75');
   });
 
   it('short position + BUY → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE · BUY 75');
+      .toBe('Submit · CLOSE/BUY 75');
   });
 
   it('short position + SELL → ADD', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD · SELL 75');
+      .toBe('Submit · ADD/SELL 75');
   });
 
   // Regression: this function takes no chase parameter at all — the caller

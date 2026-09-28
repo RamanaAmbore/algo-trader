@@ -1323,14 +1323,14 @@
   .chain-col-ce     { width: 44%; }
   .chain-col-strike { width: 12%; }
   .chain-col-pe     { width: 44%; }
-  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
-  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); background: rgba(13,21,38,0.6); }
+  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(13,21,38,0.6); }
+  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(13,21,38,0.6); }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.08); border-left: 1px solid rgba(255,255,255,0.06); border-right: 1px solid rgba(255,255,255,0.06); background: rgba(13,21,38,0.6); }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: rgba(13,21,38,0.6); }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1338,7 +1338,9 @@
        from ~18px to ~9px so the whole grid roughly halves in
        height. */
     padding: 0 0.4rem;
-    border-bottom: 1px solid rgba(255,255,255,0.04);
+    /* Very-subtle pass (2026-09-29) — operator: "row and column
+       borders should be very very subtle", halved again from 0.04. */
+    border-bottom: 1px solid rgba(255,255,255,0.025);
     line-height: 1.1;
   }
   .chain-row:last-child > td { border-bottom: 0; }
@@ -1371,9 +1373,10 @@
     /* Subtle column divider between CE | Strike | PE — same
        whisper-quiet weight as the row dividers above, completing
        the "grid" reading operator asked for without adding visual
-       clutter back in. */
-    border-left: 1px solid rgba(255,255,255,0.06);
-    border-right: 1px solid rgba(255,255,255,0.06);
+       clutter back in. Halved again 0.06->0.03 (2026-09-29, "very
+       very subtle" pass). */
+    border-left: 1px solid rgba(255,255,255,0.03);
+    border-right: 1px solid rgba(255,255,255,0.03);
   }
   .chain-td-strike-atm { color: var(--c-action); font-weight: 800; letter-spacing: 0.04em; }
   .chain-cell-quote {
@@ -1399,16 +1402,21 @@
      used by the chain headers one row above. Now the ITM tint reads
      "the call/put on this row is in the money" in the same color
      family as the header. */
-  .chain-row-itm-call > td { background: var(--c-long-06); }
-  .chain-row-itm-put  > td { background: var(--c-short-06); }
+  /* Very-subtle pass (2026-09-29) — dropped below the -06 token tier
+     (lowest pre-existing c-long/c-short alpha) to a bespoke ~3%
+     wash; operator wants the ITM tint barely-there, not a design-
+     system-standard "soft" fill. */
+  .chain-row-itm-call > td { background: rgba(74,222,128,0.03); }
+  .chain-row-itm-put  > td { background: rgba(248,113,113,0.03); }
   /* Softened 2026-09-29 — operator: the top+bottom amber border read
      as an "overpowering underline" at 0.55 alpha. Same mechanism,
      gentler weight; still reads clearly as "this is the ATM row"
-     without fighting the row's own content for attention. */
+     without fighting the row's own content for attention. Softened
+     AGAIN same day ("very very subtle" pass) 0.10->0.06 / 0.32->0.18. */
   .chain-row-atm > td {
-    background: rgba(251,191,36,0.10);
-    border-top:    1px solid rgba(251,191,36,0.32);
-    border-bottom: 1px solid rgba(251,191,36,0.32);
+    background: rgba(251,191,36,0.06);
+    border-top:    1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   /* Sticky "active row" — the strike the operator last poked. Distinct
      violet accent so it never fights the amber ATM stripe (which

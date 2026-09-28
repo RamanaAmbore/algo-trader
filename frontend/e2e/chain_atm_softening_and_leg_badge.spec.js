@@ -32,11 +32,11 @@ const SYMBOL_PANEL_PATH = path.resolve(
 );
 
 test.describe('Stale-code: ATM row decoration softened', () => {
-  test('.chain-row-atm border alpha reduced from 0.55 to 0.32, no stronger value remains', () => {
+  test('.chain-row-atm border alpha reduced from 0.55 to 0.18 (softened twice, 2026-09-29), no stronger value remains', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.32\)/);
-    expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.32\)/);
+    expect(rule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.18\)/);
+    expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.18\)/);
     expect(rule).not.toContain('0.55');
   });
 });

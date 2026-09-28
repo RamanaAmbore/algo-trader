@@ -354,7 +354,8 @@ test.describe('Order-ticket visual consistency — mobile 375px SUSPECT items', 
     const modal = await openTicket(page);
 
     // Synthetic worst-case: inject the longest real label the component
-    // ever renders ("CLOSE · SELL") into the live SideToggle button,
+    // ever renders ("CLOSE/SELL" — slash separator as of 2026-09-29,
+    // was " · ") into the live SideToggle button,
     // AND add the `.ot-side-btn-long` class the real component only
     // applies when `currentQty` is set (the actual trigger for the
     // 2-word label) — the fix is conditional on that class, so testing
@@ -376,7 +377,7 @@ test.describe('Order-ticket visual consistency — mobile 375px SUSPECT items', 
       const originalText = btn.textContent;
       const hadLongClass = btn.classList.contains('ot-side-btn-long');
       btn.classList.add('ot-side-btn-long');
-      btn.textContent = 'CLOSE · SELL';
+      btn.textContent = 'CLOSE/SELL';
       const textNode = btn.firstChild;
       const range = document.createRange();
       range.selectNodeContents(textNode);
@@ -400,7 +401,7 @@ test.describe('Order-ticket visual consistency — mobile 375px SUSPECT items', 
     }
     expect(
       result.lineCount,
-      `"CLOSE · SELL" renders across ${result.lineCount} line(s) inside the pill (wrapped instead of fitting one line): ${JSON.stringify(result)}`
+      `"CLOSE/SELL" renders across ${result.lineCount} line(s) inside the pill (wrapped instead of fitting one line): ${JSON.stringify(result)}`
     ).toBe(1);
 
     await page.keyboard.press('Escape');
