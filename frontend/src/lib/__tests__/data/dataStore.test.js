@@ -240,3 +240,58 @@ describe('_applyRaw dropEmpty guard — real-money "0 instead of last-known-good
     expect(drop).toBe(true);
   });
 });
+
+// ── _fetch() request-generation guard — pure-function mirror ───────────────
+// Same rationale as computeDropEmpty above: _fetch() lives inside
+// createDataStore() and reads/writes $state, so it can't be driven
+// end-to-end here. This mirrors its exact generation-comparison decision
+// (2026-09-28 audit fix, "createDataStore missing request-generation
+// guard") — a load() call with DIFFERENT args than the current in-flight
+// one starts a fresh fetch without cancelling the old one; the older
+// fetch resolving AFTER a newer one must be discarded, not applied, and
+// must not clear the in-flight bookkeeping out from under the still-
+// pending newer request.
+
+/**
+ * Mirrors _fetch()'s two generation checks: whether a response landing
+ * for `myGen` should be applied to store state, and whether it should
+ * clear _inflight/_inflightArgsKey, given whatever `_generation` is when
+ * the response actually resolves.
+ */
+function shouldApplyFetchResult(myGen, generationAtResolution) {
+  return myGen === generationAtResolution;
+}
+
+describe('_fetch() request-generation guard — out-of-order response race', () => {
+  it('an older request resolving after a newer one is discarded, not applied', () => {
+    // load(argsA) starts → gen becomes 1. Before it resolves, load(argsB)
+    // starts → gen becomes 2. argsA's slower response lands while gen=2.
+    const genAtStart_A = 1;
+    const genAtResolution_whenB_alreadyStarted = 2;
+    expect(shouldApplyFetchResult(genAtStart_A, genAtResolution_whenB_alreadyStarted)).toBe(false);
+  });
+
+  it('the newer request is applied when it resolves (even if the older one is still pending)', () => {
+    const genAtStart_B = 2;
+    const genAtResolution_B = 2; // nothing newer started since B began
+    expect(shouldApplyFetchResult(genAtStart_B, genAtResolution_B)).toBe(true);
+  });
+
+  it('a single, non-raced request is always applied', () => {
+    expect(shouldApplyFetchResult(1, 1)).toBe(true);
+  });
+
+  it('three interleaved requests: only the LAST one to resolve while still current wins', () => {
+    // Model the full sequence: gen 1, 2, 3 start (in that order); they
+    // resolve out of order 2, 1, 3. Only gen 3's resolution should apply
+    // — by the time gens 1 and 2 resolve, gen is already 3.
+    let currentGen = 0;
+    const gen1 = ++currentGen; // load(A)
+    const gen2 = ++currentGen; // load(B) — A still pending
+    const gen3 = ++currentGen; // load(C) — A, B still pending
+    // Resolution order: B, A, C.
+    expect(shouldApplyFetchResult(gen2, currentGen)).toBe(false); // B stale
+    expect(shouldApplyFetchResult(gen1, currentGen)).toBe(false); // A stale
+    expect(shouldApplyFetchResult(gen3, currentGen)).toBe(true);  // C current
+  });
+});

@@ -205,6 +205,20 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   // concurrent load([1,2,3]) calls share the same Promise; a
   // concurrent load([4,5]) with different args starts a fresh fetch.
   let _inflightArgsKey = /** @type {string | undefined} */ (undefined);
+  // Request-generation guard (2026-09-28 audit fix). A load() call with
+  // DIFFERENT args than the current in-flight one fires a genuinely new
+  // _fetch() without cancelling the old one — network responses don't
+  // resolve in request order, so a slower OLDER fetch (e.g. a wider
+  // account filter, a bigger date range) can land AFTER a faster NEWER
+  // one and silently clobber it with stale data until the next poll.
+  // Every _fetch() call captures the generation counter at call-time;
+  // only the request that's still current when its response lands is
+  // allowed to write _value/_error/_meta or clear the in-flight
+  // bookkeeping. Without the second half of that guard, a superseded
+  // fetch's `finally` block would still null out _inflight/_inflightArgsKey
+  // out from under the genuinely-current one, breaking dedup for a
+  // same-args load() called while the current fetch is still pending.
+  let _generation = 0;
 
   // ── Initialise from Tier 2 synchronously ──────────────────────────
   // Run once at module-evaluation time so every component that reads
@@ -280,12 +294,19 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
   }
 
   async function _fetch(args) {
+    const _myGen = ++_generation;
     _loading = true;
     _error   = null;
     try {
       const raw = await fetcher(args);
+      // Superseded by a newer load() while this fetch was in flight —
+      // a different-args request already owns _value/_error/_meta now.
+      // Applying this stale response would silently clobber the newer,
+      // already-applied result.
+      if (_myGen !== _generation) return;
       _applyRaw(raw);
     } catch (e) {
+      if (_myGen !== _generation) return;
       _error = (e && typeof e === 'object' && 'message' in e)
         ? String(/** @type {any} */ (e).message).slice(0, 120)
         : 'Fetch failed';
@@ -298,9 +319,15 @@ export function createDataStore({ key, fetcher, ttl = TTL.minute, parse = (r) =>
       _meta = markFetchFailedMeta(_meta);
       // Leave _value at last-good — stale-while-error semantics.
     } finally {
-      _loading         = false;
-      _inflight        = null;
-      _inflightArgsKey = undefined;
+      // A superseded fetch must NOT clear the in-flight bookkeeping —
+      // that would incorrectly signal "nothing in flight" while the
+      // genuinely-current request is still pending, breaking its own
+      // same-args load() dedup.
+      if (_myGen === _generation) {
+        _loading         = false;
+        _inflight        = null;
+        _inflightArgsKey = undefined;
+      }
     }
   }
 
