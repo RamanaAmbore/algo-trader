@@ -68,7 +68,7 @@
   const _colDefs = [
     {
       field: 'state', headerName: '', colId: 'dot',
-      width: 30, minWidth: 30, maxWidth: 30,
+      width: 24, minWidth: 24, maxWidth: 24,
       cellRenderer: p => {
         const el = document.createElement('span');
         el.className = `bh-dot bh-dot-${p.value ?? 'inactive'}`;
@@ -76,7 +76,7 @@
       },
     },
     {
-      field: 'account', headerName: 'Account', width: 115, minWidth: 80,
+      field: 'account', headerName: 'Account', width: 92, minWidth: 64,
       // A2 (2026-09 audit) structural fix: the stripe used to live on the
       // inner `.bh-row-account` <span> the cellRenderer builds below, NOT
       // on the ag-Grid CELL element itself — the shared app.css rule
@@ -122,12 +122,12 @@
       },
     },
     {
-      field: 'broker', headerName: 'Broker', width: 70,
+      field: 'broker', headerName: 'Broker', width: 56,
       valueFormatter: p => (p.value || 'kite').toUpperCase(),
       cellClass: 'bh-col-broker',
     },
     {
-      field: 'state', headerName: 'Status', colId: 'stateBadge', width: 80,
+      field: 'state', headerName: 'Status', colId: 'stateBadge', width: 64,
       cellRenderer: p => {
         const el = document.createElement('span');
         el.className = `bh-row-state bh-row-state-${p.value ?? 'inactive'}`;
@@ -136,11 +136,11 @@
       },
     },
     {
-      field: 'reason', headerName: 'Reason', flex: 1, minWidth: 80,
+      field: 'reason', headerName: 'Reason', flex: 1, minWidth: 64,
       cellClass: 'bh-col-reason',
     },
     {
-      field: 'last_good_at', headerName: 'Last Good', width: 105,
+      field: 'last_good_at', headerName: 'Last Good', width: 84,
       valueFormatter: p => _fmtIso(p.value),
       cellClass: 'bh-col-ts',
     },

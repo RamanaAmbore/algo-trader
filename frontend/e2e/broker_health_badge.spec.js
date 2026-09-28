@@ -186,7 +186,11 @@ test.describe('broker-chip color + popup broker names', () => {
     const chip = await openPage(P);
     if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
 
-    await chip.click();
+    // force:true — the red/down chip carries a continuous pulse animation
+    // (.broker-chip-down, see layout.svelte), which makes Playwright's
+    // default actionability "element is stable" wait never resolve
+    // (same fix already applied to the circuit-breaker red-chip test below).
+    await chip.click({ force: true });
     const modal = P.locator('.bh-modal').first();
     await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
 
@@ -371,6 +375,42 @@ test.describe('broker-chip color + popup broker names', () => {
 
     expect(result.background, '.bh-circuit-chip background must equal --c-short-10 (0.10 alpha)')
       .toBe(result.resolvedToken);
+
+    await P.locator('.bh-close').first().click();
+    await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
+  });
+
+  // ── 8. UX: popup column widths reduced 20% from their prior values, so
+  //         the panel reads less cramped-wide on narrow/mobile viewports
+  //         (operator request). Locks in the new widths so a future colDef
+  //         edit can't silently drift back toward the old, wider values. ──
+
+  test('popup grid columns are 20% narrower than the pre-fix widths', async () => {
+    await mockHealthEndpoint(P, 'green');
+    const chip = await openPage(P);
+    if (!chip) { test.info().annotations.push({ type: 'skip', description: 'No broker chip' }); return; }
+
+    await chip.click();
+    const modal = P.locator('.bh-modal').first();
+    await modal.waitFor({ state: 'visible', timeout: WAIT_TIMEOUT });
+
+    // [colId, new width, old (pre-fix) width] — new must be ~20% under old.
+    const cols = [
+      ['dot', 24, 30],
+      ['account', 92, 115],
+      ['broker', 56, 70],
+      ['stateBadge', 64, 80],
+      ['last_good_at', 84, 105],
+    ];
+
+    for (const [colId, newWidth, oldWidth] of cols) {
+      const header = modal.locator(`.ag-header-cell[col-id="${colId}"]`).first();
+      const present = await header.count();
+      if (present === 0) continue; // ag-Grid virtualizes some header states; skip if not rendered
+      const width = await header.evaluate((el) => el.getBoundingClientRect().width);
+      expect(width, `${colId} column must be ≤ old width ${oldWidth}px (20% reduction target ${newWidth}px)`)
+        .toBeLessThanOrEqual(oldWidth * 0.85);
+    }
 
     await P.locator('.bh-close').first().click();
     await P.locator('.bh-modal').waitFor({ state: 'hidden', timeout: 3000 }).catch(() => {});
