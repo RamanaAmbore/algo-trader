@@ -98,7 +98,7 @@ async def test_skipped_write_pops_nav_done_latch_for_retry():
         await _run_nav_compute_once(state)
 
     mock_write.assert_awaited_once()
-    mock_write.assert_awaited_once_with(force=False)
+    mock_write.assert_awaited_once_with(target_date=date(2026, 9, 25), force=False)
     assert "nav_done" not in state, (
         "a skipped (understated) write must pop the latch so the next "
         "30s poll retries — otherwise the day permanently has no "
@@ -127,7 +127,7 @@ async def test_force_true_after_last_ditch_grace_period():
     ) as mock_write:
         await _run_nav_compute_once(state)
 
-    mock_write.assert_awaited_once_with(force=True)
+    mock_write.assert_awaited_once_with(target_date=date(2026, 9, 25), force=True)
 
 
 @pytest.mark.asyncio
@@ -148,7 +148,7 @@ async def test_force_false_before_last_ditch_grace_period():
     ) as mock_write:
         await _run_nav_compute_once(state)
 
-    mock_write.assert_awaited_once_with(force=False)
+    mock_write.assert_awaited_once_with(target_date=date(2026, 9, 25), force=False)
 
 
 @pytest.mark.asyncio
@@ -179,7 +179,7 @@ async def test_force_relative_to_early_fallback_target_not_fixed_clock_time():
     ) as mock_write:
         await _run_nav_compute_once(state)
 
-    mock_write.assert_awaited_once_with(force=True)
+    mock_write.assert_awaited_once_with(target_date=date(2026, 9, 25), force=True)
 
 
 @pytest.mark.asyncio
@@ -203,7 +203,7 @@ async def test_force_false_on_first_attempt_when_target_itself_is_late():
     ) as mock_write:
         await _run_nav_compute_once(state)
 
-    mock_write.assert_awaited_once_with(force=False)
+    mock_write.assert_awaited_once_with(target_date=date(2026, 9, 25), force=False)
 
 
 @pytest.mark.asyncio

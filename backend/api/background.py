@@ -7118,7 +7118,19 @@ async def _run_nav_compute_once(state: dict) -> None:
     _cutoff = _cutoff_dt.time() if _cutoff_dt.date() == today else dtime(23, 59)
     force_write = now.time() >= _cutoff
     try:
-        snap = await write_nav_snapshot(force=force_write)
+        # 2026-09-28 audit fix — write_nav_snapshot() computes
+        # target=target_date or timestamp_indian().date() AFTER its own
+        # (potentially slow) compute_firm_nav() call, which is exactly
+        # the operation the force-write path exists to cover when it's
+        # degraded/slow (a "prolonged single-account outage" — meaning
+        # broker calls are timing out, not just erroring instantly). If
+        # that call straddles IST midnight, the un-pinned default lands
+        # the row on the NEXT calendar day even though `today` (this
+        # function's own, already-stable anchor, captured before any of
+        # this started) is the day the snapshot is actually FOR. Pass it
+        # through explicitly so the write always lands on the day the
+        # retry/force logic above was reasoning about.
+        snap = await write_nav_snapshot(target_date=today, force=force_write)
         if snap.get("skipped_write"):
             # 2026-09-27 council audit: write_nav_snapshot() itself
             # decided the recompute is understated (no last-known-good
