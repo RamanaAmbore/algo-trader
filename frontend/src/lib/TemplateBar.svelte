@@ -59,10 +59,13 @@
   // severance fix) so the toggle never reads "ON" while nothing is
   // actually armed to attach on fill.
   const _toggleOn = $derived(!shellUsingNone && !!selectedTemplate);
-  // Clicking ON with no side-aware default configured would be a
-  // silent no-op (onSelectDefault() itself no-ops without one) —
-  // disable the button and explain why via title instead.
+  // Clicking to activate with no side-aware default configured would be
+  // a silent no-op (onSelectDefault() itself no-ops without one) —
+  // disable the button and explain why via title instead. Only disabled
+  // while INACTIVE and there's nothing to activate to; always clickable
+  // while active (deactivating to None never needs a default).
   const _toggleOnDisabled = $derived(!sideAwareDefault);
+  const _templBtnDisabled = $derived(!_toggleOn && _toggleOnDisabled);
   const _toggleOnLabel = $derived(
     _toggleOn
       ? (selectedTemplate.name || selectedTemplate.slug || 'Default')
@@ -160,26 +163,25 @@
 </script>
 
 <span class="oes-basket-tpl-pick">
-  <span class="oes-basket-tpl-label">Templ</span>
-  <span class="oes-tpl-toggle" role="group" aria-label="Template attach">
-    <button type="button"
-            class="oes-tpl-toggle-btn oes-tpl-toggle-btn-on"
-            class:on={_toggleOn}
-            disabled={_toggleOnDisabled}
-            title={_toggleOnDisabled
-              ? 'No default template configured for this side/type'
-              : (_toggleOn && selectedTemplate.description ? selectedTemplate.description : `Attach ${_toggleOnLabel} (side-aware default)`)}
-            onclick={() => onSelectDefault?.()}>
-      {_toggleOnLabel}
-    </button>
-    <button type="button"
-            class="oes-tpl-toggle-btn oes-tpl-toggle-btn-off"
-            class:on={shellUsingNone}
-            title="No template — entry only, no TP/SL/Wing attach"
-            onclick={() => onSelectNone?.()}>
-      None
-    </button>
-  </span>
+  <!-- Single toggle button (replaces the old Default/None two-button
+       pill, 2026-09-30 — operator: "make Templ look like a button which
+       can be active or inactive based on button press, default active").
+       Active (amber-filled) = template attach ON, resolves to the
+       side-aware default. Inactive (dim) = None — entry only. Default
+       state on mount is active whenever a side-aware default resolves
+       (see _toggleOn above), matching the prior toggle's own default. -->
+  <button type="button"
+          class="oes-tpl-button"
+          class:active={_toggleOn}
+          disabled={_templBtnDisabled}
+          title={_templBtnDisabled
+            ? 'No default template configured for this side/type'
+            : (_toggleOn
+                ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
+                : 'No template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)')}
+          onclick={() => { if (_toggleOn) { onSelectNone?.(); } else { onSelectDefault?.(); } }}>
+    Templ
+  </button>
   {#if !shellUsingNone && selectedTemplate}
     <!-- #30 expand toggle — reveals the full param set -->
     <button type="button"
@@ -316,54 +318,40 @@
     font-size: var(--fs-sm);
     color: var(--algo-muted);
   }
-  /* .oes-basket-tpl-label intentionally kept in SymbolPanel — also
-     used by the demo-mode row outside this component. */
-  /* ON/OFF toggle pill (2026-09-30 — replaces the Default/None/named
-     dropdown; a specific named template is now picked via the compact
-     select inside the expand panel instead). Visual language mirrors
-     ChaseAggPicker's 'panel' skin (same 0.28-alpha amber container
-     border, border-right dividers between segments, filled-amber .on
-     state) and SideToggle's compact two-button group anatomy — kept
-     at the SAME detuned amber intensity the rest of this component's
-     chrome already uses (border-color 0.28, panel fill 0.22 on `on`,
-     NOT the more saturated amber ChaseAggPicker itself uses at 100%
-     opacity for its `on` state) per the 2026-09-29 palette pass noted
-     below. */
-  .oes-tpl-toggle {
-    display: inline-flex;
+  /* Single toggle button (2026-09-30 — replaces the old Default/None
+     two-button pill; operator: "make Templ look like a button which
+     can be active or inactive based on button press, default active").
+     Same detuned amber intensity the rest of this component's chrome
+     already uses (border 0.28, active fill 0.22, active text
+     var(--algo-amber)) — matches .oes-tpl-toggle-btn.on's retired
+     palette and .oes-tpl-type-btn.on below, per the 2026-09-29 palette
+     pass noted further down (NOT the more saturated 100%-opacity amber
+     ChaseAggPicker uses for its own `on` state). */
+  .oes-tpl-button {
+    height: var(--ctl-h, 1.55rem);
+    padding: 0 0.6rem;
+    background: transparent;
     border: 1px solid rgba(251, 191, 36, 0.28);
     border-radius: 3px;
-    overflow: hidden;
-    height: var(--ctl-h, 1.55rem);
-    box-sizing: border-box;
-  }
-  .oes-tpl-toggle-btn {
-    padding: 0 0.5rem;
-    background: transparent;
-    border: 0;
-    border-right: 1px solid rgba(251, 191, 36, 0.20);
     color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.03em;
     cursor: pointer;
-    max-width: 8rem;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    transition: background 0.12s, color 0.12s;
+    box-sizing: border-box;
+    transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
-  .oes-tpl-toggle-btn:last-child { border-right: 0; }
-  .oes-tpl-toggle-btn:hover:not(.on):not(:disabled) {
+  .oes-tpl-button:hover:not(.active):not(:disabled) {
     color: var(--c-action);
     background: rgba(251, 191, 36, 0.08);
   }
-  .oes-tpl-toggle-btn.on {
+  .oes-tpl-button.active {
     background: rgba(251, 191, 36, 0.22);
+    border-color: rgba(251, 191, 36, 0.55);
     color: var(--algo-amber, var(--c-action));
   }
-  .oes-tpl-toggle-btn:disabled {
+  .oes-tpl-button:disabled {
     opacity: 0.4;
     cursor: not-allowed;
   }

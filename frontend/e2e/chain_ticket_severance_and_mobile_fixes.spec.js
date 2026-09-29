@@ -284,20 +284,26 @@ test.describe('Chain leg badge — template short-label suffix', () => {
   });
 });
 
-test.describe('TemplateBar — ON/OFF toggle replaces the primary dropdown (2026-09-30)', () => {
-  test('primary control is a toggle pill, not a <Select>', () => {
-    expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-toggle"/);
-    expect(TEMPLATE_BAR).toMatch(/oes-tpl-toggle-btn-on/);
-    expect(TEMPLATE_BAR).toMatch(/oes-tpl-toggle-btn-off/);
+test.describe('TemplateBar — single toggle button replaces the primary dropdown/pill (2026-09-30)', () => {
+  test('primary control is one toggle button, not a <Select> or the retired two-button pill', () => {
+    expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-button"/);
+    expect(TEMPLATE_BAR).toMatch(/class:active=\{_toggleOn\}/);
+    // Retired two-button pill markup/classes must be gone.
+    expect(TEMPLATE_BAR).not.toMatch(/class="oes-tpl-toggle"/);
+    expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-on/);
+    expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-off/);
     // The toggle markup itself (before the expand panel) must not use <Select>.
     const beforeExpandPanel = TEMPLATE_BAR.split('{#if _expanded}')[0] ?? '';
     expect(beforeExpandPanel).not.toMatch(/<Select/);
   });
 
-  test('ON always resolves to the side-aware default, OFF always to None — no "remembered" named template', () => {
-    expect(TEMPLATE_BAR).toMatch(/onclick=\{\(\) => onSelectDefault\?\.\(\)\}/);
-    expect(TEMPLATE_BAR).toMatch(/onclick=\{\(\) => onSelectNone\?\.\(\)\}/);
-    // ON display state guards against a null _sharedTemplateId reading
+  test('active always resolves to the side-aware default, inactive always to None — no "remembered" named template', () => {
+    const btn = TEMPLATE_BAR.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
+    expect(btn, 'toggle button block').not.toBe('');
+    expect(btn).toContain('onSelectDefault?.()');
+    expect(btn).toContain('onSelectNone?.()');
+    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
+    // ON/active display state guards against a null _sharedTemplateId reading
     // as "armed" (the financial-risk-relevant fix) — must require BOTH
     // !shellUsingNone AND a concrete selectedTemplate, not just the former.
     expect(TEMPLATE_BAR).toMatch(/_toggleOn = \$derived\(!shellUsingNone && !!selectedTemplate\)/);

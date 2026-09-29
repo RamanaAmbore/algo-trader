@@ -1,15 +1,18 @@
 /**
  * template_dropdown.spec.js
  *
- * Guards the 2026-09-29 template-picker redesign: operator explicitly
- * asked to reverse the prior "no dropdown — the platform picks the
- * template" decision and add a real dropdown showing every active
- * template by name, plus abbreviate the "Template" label to "Templ".
+ * Guards the template-attach toggle's evolution in TemplateBar.svelte.
+ * History (each stage fully replaced the last): two-pill toggle →
+ * Select dropdown (2026-09-29) → Default/None two-button ON/OFF pill
+ * (2026-09-30) → single toggle button (2026-09-30, operator: "make
+ * Templ look like a button which can be active or inactive based on
+ * button press, default active"). This file previously guarded the
+ * Select-dropdown stage, which no longer exists — rewritten to guard
+ * the CURRENT single-button design instead.
  *
- * Replaces the old Default/None two-pill toggle + separate name chip
- * with a single Select whose options are Default / None / every named
- * template, reusing the exact options-shape pattern already used by
- * the per-leg template override editor in SymbolPanel.svelte.
+ * A specific named template (as opposed to the side-aware default) is
+ * still picked via a compact `<Select>` inside the expand panel — that
+ * part of the "dropdown" name remains accurate.
  */
 
 import { test, expect } from '@playwright/test';
@@ -26,38 +29,66 @@ const SYMBOL_PANEL_PATH = path.resolve(
 );
 
 test.describe('Stale-code: Template label abbreviated to "Templ"', () => {
-  test('TemplateBar.svelte and the demo-mode row both say "Templ", not "Template"', () => {
+  test('TemplateBar.svelte\'s toggle button says "Templ", not "Template"', () => {
     const tplSrc = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
-    const panelSrc = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    expect(tplSrc).toContain('oes-basket-tpl-label">Templ<');
-    expect(panelSrc).toContain('oes-basket-tpl-label">Templ<');
+    // The label lives on the toggle button itself since the 2026-09-30
+    // single-button redesign — SymbolPanel.svelte no longer carries any
+    // Templ-related markup at all (relocated into OptionChainTab →
+    // TemplateBar; see the removal comment near .oes-basket-tpl-row-demo
+    // in SymbolPanel.svelte).
+    expect(tplSrc).toMatch(/class="oes-tpl-button"[\s\S]{0,700}?>\s*Templ\s*</);
     expect(tplSrc).not.toContain('>Template<');
-    expect(panelSrc).not.toContain('>Template<');
+  });
+
+  test('SymbolPanel.svelte carries no leftover Templ-label markup (relocated to TemplateBar)', () => {
+    const panelSrc = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
+    expect(panelSrc).not.toContain('oes-basket-tpl-label">Templ<');
   });
 });
 
-test.describe('Stale-code: Template dropdown replaces Default/None pill toggle', () => {
-  test('TemplateBar renders a Select with Default/None/named-template options, not the old pill buttons', () => {
+test.describe('Stale-code: single toggle button replaces the old Default/None pill', () => {
+  test('TemplateBar renders one Templ toggle button, not the retired two-button pill', () => {
+    const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
+    expect(src).toContain('class="oes-tpl-button"');
+    expect(src).toMatch(/class:active=\{_toggleOn\}/);
+    // Old two-button pill markup/classes must be gone.
+    expect(src).not.toContain('oes-tpl-toggle-btn-on');
+    expect(src).not.toContain('oes-tpl-toggle-btn-off');
+    expect(src).not.toContain('class="oes-tpl-toggle"');
+    // Older still: the Select-dropdown stage must also be gone from the
+    // main toggle (the expand panel's "Specific tmpl" Select is a
+    // separate, still-current feature — checked below, not asserted
+    // absent here).
+    expect(src).not.toMatch(/_onDropdownChange/);
+  });
+
+  test('toggle click handler routes to onSelectNone when active, onSelectDefault when inactive', () => {
+    const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
+    const btn = src.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
+    expect(btn).toContain('onSelectNone?.()');
+    expect(btn).toContain('onSelectDefault?.()');
+    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
+  });
+
+  test('toggle button is disabled only while inactive with no side-aware default (never while active)', () => {
+    const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
+    expect(src).toMatch(/_templBtnDisabled\s*=\s*\$derived\(!_toggleOn\s*&&\s*_toggleOnDisabled\)/);
+    expect(src).toMatch(/disabled=\{_templBtnDisabled\}/);
+  });
+
+  test('default state is active whenever a side-aware default resolves (_toggleOn derivation unchanged)', () => {
+    const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
+    expect(src).toMatch(/_toggleOn\s*=\s*\$derived\(!shellUsingNone\s*&&\s*!!selectedTemplate\)/);
+  });
+
+  test('the expand-panel "Specific tmpl" Select (a genuinely separate feature) is still present', () => {
     const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
     expect(src).toContain('<Select');
-    expect(src).toMatch(/value:\s*'default'/);
-    expect(src).toMatch(/value:\s*'none'/);
     expect(src).toMatch(/nonNoneTemplates\.map/);
-    // Old pill-toggle markup must be gone.
-    expect(src).not.toContain('oes-tpl-btn-default');
-    expect(src).not.toContain('oes-tpl-btn-none');
-    expect(src).not.toContain('onclick={onSelectDefault}');
+    expect(src).toContain('onSelectTemplate?.(Number(v))');
   });
 
-  test('dropdown change handler routes default/none/id to the right callback', () => {
-    const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
-    const fn = src.match(/function _onDropdownChange[\s\S]{0,300}?\n  \}/)?.[0] ?? '';
-    expect(fn).toContain('onSelectDefault?.()');
-    expect(fn).toContain('onSelectNone?.()');
-    expect(fn).toContain('onSelectTemplate?.(Number(v))');
-  });
-
-  test('SymbolPanel passes nonNoneTemplates and onSelectTemplate down to TemplateBar', () => {
+  test('SymbolPanel passes nonNoneTemplates and onSelectTemplate down through OptionChainTab', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
     expect(src).toMatch(/nonNoneTemplates=\{_nonNoneTemplates\}/);
     expect(src).toMatch(/onSelectTemplate=\{\(id\)\s*=>\s*\{\s*_sharedTemplateId\s*=\s*id;\s*\}\}/);
