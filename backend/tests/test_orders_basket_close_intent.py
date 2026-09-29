@@ -222,6 +222,12 @@ class TestBasketCloseIntentVerification:
             order_type="LIMIT",
             price=22000.0,
             intent="close",
+            # This test exercises the direct broker.place_order path
+            # (close-intent verification), not the chase feature — the
+            # schema default chase=True would otherwise route this leg
+            # through _start_live_chase instead. See test_orders_basket_
+            # chase.py for the chase-path equivalent of this scenario.
+            chase=False,
         )
         request_data = BasketOrderRequest(groups=[
             BasketGroup(account="TEST001", legs=[leg])
@@ -336,6 +342,9 @@ class TestBasketCloseIntentVerification:
             order_type="LIMIT",
             price=5500.0,
             intent="close",
+            # Tests the direct place_order path (close-intent
+            # verification), not chase — see test_orders_basket_chase.py.
+            chase=False,
         )
         request_data = BasketOrderRequest(groups=[
             BasketGroup(account="TEST001", legs=[leg])
@@ -397,6 +406,9 @@ class TestBasketCloseIntentVerification:
             order_type="LIMIT",
             price=22000.0,
             intent="close",  # Claimed but unverified
+            # Tests the direct place_order path (intent propagation),
+            # not chase — see test_orders_basket_chase.py.
+            chase=False,
         )
         request_data = BasketOrderRequest(groups=[
             BasketGroup(account="TEST001", legs=[leg])
@@ -471,6 +483,9 @@ class TestBasketColdInstrumentsCacheErrorHandling:
             quantity=1,
             order_type="LIMIT",
             price=22000.0,
+            # Tests the direct place_order path (cold-cache error
+            # handling), not chase — see test_orders_basket_chase.py.
+            chase=False,
         )
         leg1 = BasketLeg(
             tradingsymbol="UNKNOWN",  # Will have lot_size = 0
@@ -632,6 +647,9 @@ class TestBasketPreflightBlockerDemotionRemoved:
             quantity=1,
             order_type="LIMIT",
             price=22000.0,
+            # Tests the direct place_order path (preflight-ok proceeds),
+            # not chase — see test_orders_basket_chase.py.
+            chase=False,
         )
         request_data = BasketOrderRequest(groups=[
             BasketGroup(account="TEST001", legs=[leg])

@@ -39,9 +39,14 @@ from backend.api.routes.orders_helpers import (
     _broker_for,
     _build_overrides_json,
     _resolve_target_pct,
+    _start_live_chase,
     logger,
 )
-from backend.api.routes.orders_place import _attach_basket_leg_template, _verify_close_intent
+from backend.api.routes.orders_place import (
+    _attach_basket_leg_template,
+    _ticket_seed_broker_order_id,
+    _verify_close_intent,
+)
 from backend.api.algo.actions_preflight import MCX_MAX_LOTS, FO_FAT_FINGER_LOT_CAP
 from backend.api.auth_guard import is_admin_request
 
@@ -510,56 +515,138 @@ async def basket_order_handler(
                     continue
                 # ── end LIVE safety checks ────────────────────────────────
 
+                # M16: align limit/SL prices to the tick grid so the
+                # broker doesn't reject with "invalid price" on F&O legs
+                # whose price was typed by the operator without rounding.
+                _leg_order_type = (leg.order_type or "LIMIT").upper()
+                _leg_price = float(leg.price or 0)
+
+                # Chase eligibility mirrors /ticket's _opl_chase_eligible
+                # exactly (orders_place.py): leg.chase (default True) AND
+                # LIMIT order type AND a positive price. MARKET/SL-M legs
+                # or an explicit leg.chase=False fall through to the direct
+                # broker.place_order path below, unchanged from before this
+                # feature existed.
+                _leg_chase_eligible = bool(
+                    leg.chase and _leg_order_type == "LIMIT" and _leg_price > 0
+                )
+
+                _pre_aid: int | None = None
+                if _leg_chase_eligible:
+                    # Pre-persist the AlgoOrder tracking row BEFORE any
+                    # broker call — same fail-closed pattern as /ticket
+                    # (_ticket_persist_live_algo_order +
+                    # ticket_order_handler's `if _live_algo_id is None:
+                    # raise HTTPException(503)` guard, 2026-09-28 commit
+                    # 8fca413b). A DB failure here must refuse the leg
+                    # outright — never start an untracked live chase loop.
+                    try:
+                        async with _async_session2() as _s_pre:
+                            _r_pre = _AlgoOrder2(
+                                account=account, symbol=sym, exchange=exch,
+                                transaction_type=side, quantity=qty,
+                                initial_price=float(leg.price or 0) or None,
+                                broker_order_id=None,
+                                status="OPEN", engine="live", mode="live",
+                                basket_tag=basket_id,
+                                strategy_id=leg.strategy_id,
+                                target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                                template_id=leg.template_id,
+                                template_overrides_json=_build_overrides_json(leg),
+                                product=(leg.product or "NRML"),
+                            )
+                            _s_pre.add(_r_pre)
+                            await _s_pre.commit()
+                            _pre_aid = _r_pre.id
+                    except Exception as _e_pre:
+                        _pre_aid = None
+                        logger.warning(
+                            "[BASKET-LIVE] leg %d AlgoOrder pre-persist "
+                            "failed (chase path) acct=%s sym=%s: %s",
+                            i, account, sym, _e_pre,
+                        )
+                    if _pre_aid is None:
+                        leg_results.append(BasketLegResult(
+                            leg_index=i, order_id=None, status="error",
+                            error=("Could not create the order tracking "
+                                   "row — order NOT placed. Please retry."),
+                        ))
+                        continue
+
                 try:
                     broker = _broker_for(account)
                     from backend.brokers.adapters.kite import get_lot_size
                     from backend.api.routes.orders_helpers import _align_price_to_tick
-                    _ls = await get_lot_size(exch, sym)
-                    _kq = broker.translate_qty(exch, qty, _ls)
-                    # M16: align limit/SL prices to the tick grid so the
-                    # broker doesn't reject with "invalid price" on F&O legs
-                    # whose price was typed by the operator without rounding.
-                    _leg_order_type = (leg.order_type or "LIMIT").upper()
-                    _leg_price = float(leg.price or 0)
-                    _leg_trig  = float(leg.trigger_price or 0)
-                    if _leg_order_type in ("LIMIT", "SL", "SL-M"):
-                        if _leg_price > 0:
-                            _leg_price = await _align_price_to_tick(exch, sym, _leg_price)
-                        if _leg_trig > 0:
-                            _leg_trig = await _align_price_to_tick(exch, sym, _leg_trig)
-                    kite_oid = await asyncio.to_thread(
-                        broker.place_order,
-                        variety=leg.variety or "regular",
-                        exchange=exch,
-                        tradingsymbol=sym,
-                        transaction_type=side,
-                        quantity=_kq,
-                        product=leg.product or "NRML",
-                        order_type=_leg_order_type,
-                        price=_leg_price,
-                        trigger_price=_leg_trig,
-                        validity="DAY",
-                        tag=basket_id,
-                        intent=_leg_intent,
-                    )
-                    # Persist AlgoOrder row so the order book tracks it.
-                    async with _async_session2() as _s:
-                        _r = _AlgoOrder2(
-                            account=account, symbol=sym, exchange=exch,
-                            transaction_type=side, quantity=qty,
-                            initial_price=float(leg.price or 0) or None,
-                            broker_order_id=str(kite_oid),
-                            status="OPEN", engine="live", mode="live",
-                            basket_tag=basket_id,
-                            strategy_id=leg.strategy_id,
-                            target_pct=(eff_target_pct if eff_target_pct > 0 else None),
-                            template_id=leg.template_id,
-                            template_overrides_json=_build_overrides_json(leg),
+
+                    if _leg_chase_eligible:
+                        # Replaces broker.place_order entirely for this
+                        # leg — _start_live_chase places the FIRST order
+                        # itself, then spawns chase_order() as a background
+                        # task that keeps re-quoting until fill/cap, mirror-
+                        # ing the ticket-tab live path exactly. `quantity`
+                        # is CONTRACTS (not translate_qty'd) — chase_order
+                        # translates internally per attempt (chase.py
+                        # broker.normalise_qty), same convention as
+                        # /ticket's _ticket_place_or_chase_live.
+                        kite_oid = await _start_live_chase(
+                            account=account,
+                            symbol=sym,
+                            exchange=exch,
+                            transaction_type=side,
+                            quantity=qty,
+                            aggressiveness=(leg.chase_aggressiveness or "low"),
+                            algo_order_id=_pre_aid,
+                            intent=_leg_intent,
                             product=(leg.product or "NRML"),
+                            variety=(leg.variety or "regular"),
+                            validity="DAY",
                         )
-                        _s.add(_r)
-                        await _s.commit()
-                        _live_aid = _r.id
+                        if kite_oid:
+                            await _ticket_seed_broker_order_id(_pre_aid, kite_oid)
+                        _live_aid = _pre_aid
+                    else:
+                        _leg_trig = float(leg.trigger_price or 0)
+                        _ls = await get_lot_size(exch, sym)
+                        _kq = broker.translate_qty(exch, qty, _ls)
+                        if _leg_order_type in ("LIMIT", "SL", "SL-M"):
+                            if _leg_price > 0:
+                                _leg_price = await _align_price_to_tick(exch, sym, _leg_price)
+                            if _leg_trig > 0:
+                                _leg_trig = await _align_price_to_tick(exch, sym, _leg_trig)
+                        kite_oid = await asyncio.to_thread(
+                            broker.place_order,
+                            variety=leg.variety or "regular",
+                            exchange=exch,
+                            tradingsymbol=sym,
+                            transaction_type=side,
+                            quantity=_kq,
+                            product=leg.product or "NRML",
+                            order_type=_leg_order_type,
+                            price=_leg_price,
+                            trigger_price=_leg_trig,
+                            validity="DAY",
+                            tag=basket_id,
+                            intent=_leg_intent,
+                        )
+                        # Persist AlgoOrder row so the order book tracks it.
+                        async with _async_session2() as _s:
+                            _r = _AlgoOrder2(
+                                account=account, symbol=sym, exchange=exch,
+                                transaction_type=side, quantity=qty,
+                                initial_price=float(leg.price or 0) or None,
+                                broker_order_id=str(kite_oid),
+                                status="OPEN", engine="live", mode="live",
+                                basket_tag=basket_id,
+                                strategy_id=leg.strategy_id,
+                                target_pct=(eff_target_pct if eff_target_pct > 0 else None),
+                                template_id=leg.template_id,
+                                template_overrides_json=_build_overrides_json(leg),
+                                product=(leg.product or "NRML"),
+                            )
+                            _s.add(_r)
+                            await _s.commit()
+                            _live_aid = _r.id
+
                     invalidate("orders")
                     await _attach_basket_leg_template(
                         algo_order_id=_live_aid,
@@ -680,7 +767,7 @@ async def basket_order_handler(
                             "exchange":      exch,
                             "agent_slug":    "basket-ticket",
                             "action_type":   "place_order",
-                            "chase_agg":     "low",
+                            "chase_agg":     (leg.chase_aggressiveness or "low"),
                             "strategy_id":   getattr(leg, "strategy_id", None),
                             "is_close_intent": (getattr(leg, "intent", "") or "").lower() == "close",
                         })
