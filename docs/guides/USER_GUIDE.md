@@ -344,15 +344,17 @@ Edit them from `/automation` — change a threshold, pick notification channels 
 
 ## Order templates — per-position exit rules
 
-Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an order, you pick a template from the OrderTicket dropdown. Once the order fills, the platform automatically places the exit orders on the broker.
+Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an option-chain basket order on the **Chain tab**, you pick a template from the dropdown. Once the order fills, the platform automatically places the exit orders on the broker.
 
 Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is independent. You can mix and match: TP + SL, or just TP, or SL with a trailing stop that chases the price higher.
 
 ### Three ways to use templates
 
-**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the OrderTicket, the dropdown pre-selects your default template, shown as "Default (<template name>)". You don't need to change anything — the default is ready to use.
+**Templates are available only when placing option-chain basket orders (Chain tab).** The Ticket tab (single-order placement) does not use templates — orders placed there go out with no template/exit-rule attachment.
 
-**Per-ticket pick** — Open OrderTicket → click the template dropdown and pick any other template by name from the list. The dropdown updates to show your pick. Use this when you want a different template for a single trade without changing your default.
+**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the Chain tab, the dropdown pre-selects your default template, shown as "Default (<template name>)". You don't need to change anything — the default is ready to use.
+
+**Per-ticket pick** — Open the Chain tab → click the template dropdown and pick any other template by name from the list. The dropdown updates to show your pick. Use this when you want a different template for a single trade without changing your default.
 
 **No template** — Click the template dropdown and select "None". Order places with no auto exits; you close it manually or with an agent.
 
@@ -377,7 +379,7 @@ Platform ships with two:
 | **default-long-option** | Buying calls or puts | TP at +80% MARKET. No SL, no wing, no scale. |
 | **default-short-vol** | Selling puts / calls | TP at +10% LIMIT, SL at −20%, buys a hedge wing 1 strike away. |
 
-You can edit these, create new ones, and mark any template as your default so it auto-fills in OrderTicket.
+You can edit these, create new ones, and mark any template as your default so it auto-fills in the Chain tab.
 
 ### Off-market-hours behaviour
 
@@ -403,7 +405,7 @@ If a template is auto-selected and the order side doesn't match `applies_to`, th
 
 ### Multi-broker support — what works where
 
-Templates now work on **all three brokers**, with a small caveat on Groww. The OrderTicket shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
+Templates now work on **all three brokers**, with a small caveat on Groww. The Chain tab shows an inline warning chip (amber) below the template summary when the selected template asks for a feature the selected broker can't provide natively — you see the gap at submit time, not at fill time.
 
 | Broker | TP only | SL only | TP + SL (OCO) | Trailing stop | Notes |
 |---|---|---|---|---|---|
