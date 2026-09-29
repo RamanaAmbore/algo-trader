@@ -1397,15 +1397,6 @@
     _modalTriggerSubmit++;
   }
   function _modalFlipSide()   { _modalSide = _modalSide === 'BUY' ? 'SELL' : 'BUY'; }
-  // Derive ADD / CLOSE verb from a side + current position direction.
-  // Used by the two-line side button label so the operator sees the
-  // intent (ADD/CLOSE) above the broker-side (BUY/SELL).
-  function _addCloseVerb(/** @type {'BUY'|'SELL'} */ side) {
-    const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
-    if (cq === 0) return '';
-    if (cq > 0) return side === 'BUY' ? 'ADD' : 'CLOSE';
-    return side === 'BUY' ? 'CLOSE' : 'ADD';
-  }
 
   // Margin preview lifted out of OrderTicket so the operator sees the
   // same MARGIN / Avail / After / Short row regardless of which tab is
@@ -2908,37 +2899,14 @@
               {/if}
             </span>
           {/if}
-          <!-- Ticket-only side preview label. Operator wants exactly ONE
-               clickable control in this row (the Submit button below) —
-               this is now an inert preview, not a control. Side is set
-               via the ticket body's own SideToggle (BUY/SELL pills,
-               always rendered regardless of actionsHidden — see
-               OrderTicket.svelte's ot-row-knobs). Two-line layout when
-               in symbol-row context: line 1 = ADD/CLOSE verb, line 2 =
-               derived broker side. Cold context: single-line BUY/SELL
-               or "Pick side". -->
-          {#if _activeTab === 'ticket' && action !== 'modify'}
-            {@const _cq = Number(_ticketProps?.currentQty ?? currentQty) || 0}
-            <span class="oes-footer-side-btn-single"
-                  class:on-buy={_modalSide === 'BUY'}
-                  class:on-sell={_modalSide === 'SELL'}
-                  class:on-none={!_modalSide}
-                  class:is-stacked={!!_modalSide && _cq !== 0}
-                  title={!_modalSide
-                    ? 'No side selected — pick BUY or SELL in the ticket below'
-                    : (_cq === 0
-                        ? `Side: ${_modalSide}`
-                        : `${_addCloseVerb(_modalSide)} via ${_modalSide}`)}>
-              {#if !_modalSide}
-                <span>Pick side</span>
-              {:else if _cq !== 0}
-                <span class="oes-side-line oes-side-line1">{_addCloseVerb(_modalSide)}</span>
-                <span class="oes-side-line oes-side-line2">{_modalSide}</span>
-              {:else}
-                <span>{_modalSide}</span>
-              {/if}
-            </span>
-          {/if}
+          <!-- Ticket-only side preview label REMOVED (2026-09-29, operator:
+               "remove the text before order submit in order ticket") —
+               it duplicated what the Submit button's own label already
+               says (e.g. "Submit · CLOSE/BUY 90"). Side is still set via
+               the ticket body's own SideToggle (BUY/SELL pills, always
+               rendered regardless of actionsHidden — see OrderTicket.svelte's
+               ot-row-knobs); nothing functional was lost, only the
+               redundant preview text. -->
           <button type="button" class="oes-common-submit"
             class:oes-common-submit-buy={_submitFlavor === 'buy'}
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
@@ -4415,65 +4383,6 @@
     clip: rect(0,0,0,0);
     border: 0;
   }
-  /* Single side preview label — operator wants exactly ONE clickable
-     control in the footer (the Submit button); this is now an inert
-     static label glued to it, not a control. In a symbol-row context
-     the verb (ADD/CLOSE) stacks above the derived broker side
-     (BUY/SELL) inside the same 1.7rem slot. cursor:default (not
-     pointer) — no hover affordance since nothing is clickable here. */
-  /* Plain text, NOT a pill — operator (2026-09-29, repeated feedback):
-     the bordered/pill treatment still read as "a second button" next
-     to Submit even in ghost/outlined form. No border, no background,
-     no min-width: color alone carries the BUY/SELL/none meaning, so
-     there is exactly one thing on this row that looks clickable. */
-  .oes-footer-side-btn-single {
-    height: var(--ctl-h, 1.7rem);
-    padding: 0 0.3rem;
-    cursor: default;
-    font-family: var(--font-numeric);
-    font-size: var(--ctl-fs, var(--fs-sm));
-    font-weight: 800;
-    letter-spacing: 0.04em;
-    white-space: nowrap;
-    background: transparent;
-    border: none;
-    flex-shrink: 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    box-sizing: border-box;
-    line-height: 1;
-  }
-  /* Two-line stacking when in symbol-row context. Same total height
-     (1.7rem) — labels just shrink to ~0.5rem so two fit. */
-  .oes-footer-side-btn-single.is-stacked {
-    flex-direction: column;
-    line-height: 1.05;
-  }
-  .oes-footer-side-btn-single.is-stacked .oes-side-line {
-    display: block;
-    text-align: center;
-  }
-  .oes-footer-side-btn-single.is-stacked .oes-side-line1 {
-    font-size: var(--fs-2xs);
-    font-weight: 800;
-    letter-spacing: 0.08em;
-    opacity: 0.85;
-  }
-  .oes-footer-side-btn-single.is-stacked .oes-side-line2 {
-    font-size: var(--fs-sm);
-    font-weight: 800;
-    letter-spacing: 0.04em;
-  }
-  .oes-footer-side-btn-single.on-none {
-    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
-       .cell-muted token, so reused directly. */
-    color: var(--algo-slate-muted);
-    font-style: italic;
-  }
-  .oes-footer-side-btn-single.on-buy { color: var(--c-long); }
-  .oes-footer-side-btn-single.on-sell { color: var(--c-short); }
-
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
      Compact: monospace, 0.62rem, tight gaps. Pills + chase glyphs

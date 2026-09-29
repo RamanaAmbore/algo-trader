@@ -3,11 +3,14 @@
  *
  * Guards three 2026-09-29 operator-requested fixes, source-grep only:
  *
- * 1. The footer's side-preview label ("Pick side" / "BUY" / "SELL")
- *    still read as a second clickable button even after being converted
- *    from <button> to <span> — its pill chrome (border, background,
- *    min-width) remained. Stripped to plain colored text so exactly one
- *    thing on the row (Submit) looks clickable.
+ * 1. The footer's side-preview label ("Pick side" / "BUY" / "SELL") went
+ *    through two rounds: first de-buttonized (span, no click handler,
+ *    stripped pill chrome), then — per repeated operator feedback that it
+ *    STILL read as a second control — removed entirely ("remove the text
+ *    before order submit in order ticket"). Submit's own label already
+ *    restates verb+side+qty, so nothing functional was lost. Guards full
+ *    removal of the markup, the CSS, and the now-dead `_addCloseVerb`
+ *    helper that only that markup ever called.
  * 2. CHASE label sat flush against the L/M/H picker (.oes-tabs has
  *    gap:0, no spacing owned by either child). Added a gap wrapper.
  * 3. The BUY/SELL toggle (SideToggle.svelte) was one merged segmented-
@@ -28,23 +31,26 @@ const SIDE_TOGGLE_PATH = path.resolve(
   '../src/lib/order/SideToggle.svelte',
 );
 
-test.describe('Stale-code: footer side label is plain text, not a pill', () => {
-  test('.oes-footer-side-btn-single has no border/background/min-width', () => {
+test.describe('Stale-code: footer side-preview label removed entirely', () => {
+  test('.oes-footer-side-btn-single markup and CSS are fully gone from SymbolPanel', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    const rule = src.match(/\.oes-footer-side-btn-single\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toContain('border: none');
-    expect(rule).not.toMatch(/min-width/);
-    expect(rule).not.toMatch(/border-radius/);
+    expect(src).not.toContain('oes-footer-side-btn-single');
+    // "Pick side" as a footer-row span's literal rendered text is gone;
+    // an unrelated comment elsewhere describing the ticket body's own
+    // (still-live) SideToggle placeholder state may legitimately still
+    // use the phrase, so check the specific removed markup shape instead
+    // of the bare phrase.
+    expect(src).not.toContain('<span>Pick side</span>');
   });
 
-  test('on-none/on-buy/on-sell variants carry color only, no border-color', () => {
+  test('_addCloseVerb helper removed too (only caller was the removed label)', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
-    const noneRule = src.match(/\.oes-footer-side-btn-single\.on-none\s*\{[^}]*\}/)?.[0] ?? '';
-    const buyRule = src.match(/\.oes-footer-side-btn-single\.on-buy\s*\{[^}]*\}/)?.[0] ?? '';
-    const sellRule = src.match(/\.oes-footer-side-btn-single\.on-sell\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(noneRule).not.toMatch(/border-color/);
-    expect(buyRule).not.toMatch(/border-color/);
-    expect(sellRule).not.toMatch(/border-color/);
+    expect(src).not.toContain('_addCloseVerb');
+  });
+
+  test('Submit button is still the only clickable control in the footer row', () => {
+    const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
+    expect(src).toContain('oes-common-submit');
   });
 });
 

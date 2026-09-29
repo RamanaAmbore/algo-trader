@@ -1329,6 +1329,12 @@
       margin: 0 auto;
     }
   }
+  /* NOTE: border-bottom/font-size desktop overrides moved to a later
+     @media (min-width: 640px) block below (after the base .chain-grid /
+     .chain-row > td / .chain-th-* / .chain-cell-* rules they override)
+     so they actually win the cascade — same selector + specificity,
+     source order decides, and this early block sat BEFORE those base
+     rules. */
   .chain-grid {
     width: 100%;
     table-layout: fixed;
@@ -1481,10 +1487,13 @@
     line-height: 1.3;
   }
   .chain-btn-pair { display: inline-flex; gap: 10px; }
-  .chain-btn-buy  { color: var(--c-long);  border-color: var(--c-long-22); }
-  .chain-btn-sell { color: var(--c-short); border-color: var(--c-short-22); }
-  .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-10);  border-color: var(--c-long); }
-  .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-10); border-color: var(--c-short); }
+  /* Operator (2026-09-29): "+ and - are not looking like button" — the
+     hover-reveal design (transparent at rest, filled on hover) read as
+     plain text at rest. Visible fill at rest now, stronger on hover. */
+  .chain-btn-buy  { color: var(--c-long);  background: var(--c-long-10);  border-color: var(--c-long-22); }
+  .chain-btn-sell { color: var(--c-short); background: var(--c-short-10); border-color: var(--c-short-22); }
+  .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-14);  border-color: var(--c-long); }
+  .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-14); border-color: var(--c-short); }
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
   .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long-22); }
   .chain-btn-sell:disabled:hover { border-color: var(--c-short-22); }
@@ -1596,6 +1605,27 @@
     .chain-quick-toast { animation: none; }
   }
 
+  /* Operator (2026-09-29): "on desktop, the row borders in chain making
+     is cluttered" + "increase the text size in chain for desktop. On
+     mobile, the chain text looks bigger". Placed HERE (after every base
+     chain-grid, chain-row, chain-th and chain-cell rule above) so these
+     same-specificity overrides actually win the cascade, unlike the
+     earlier (now-removed) copy that sat before those base rules and lost.
+     Row dividers: mobile's own report was the opposite ("mobile chain
+     looks better"), so this drops dividers desktop-only, relying on the
+     ATM highlight + ITM tint for row grouping instead of lines. Text
+     size: matches the mobile-only sizes in the block just below instead
+     of leaving desktop smaller at the --fs-md base. */
+  @media (min-width: 640px) {
+    .chain-row > td {
+      border-bottom: none;
+    }
+    .chain-grid { font-size: 0.78rem; }
+    .chain-th-ce, .chain-th-pe, .chain-th-strike { font-size: 0.7rem; }
+    .chain-cell-quote { font-size: 0.72rem; }
+    .chain-cell-no-depth { font-size: 0.68rem; }
+    .chain-cell-spread-warn { font-size: 0.62rem; }
+  }
   /* Operator: "on mobile the chain strike rows too tense, leave space
      between the rows and make the text a little larger" — the earlier
      "reduce chain row height by half" pass (see .chain-row > td above)
