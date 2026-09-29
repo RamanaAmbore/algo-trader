@@ -1366,9 +1366,13 @@
   // module-level fundsStore singleton (three-tier cache, TOTAL row
   // pre-stripped). On mount _refetchFunds() calls fundsStore.load()
   // which either serves from cache instantly or fires a broker fetch.
-  // Each row carries: { account, cash, avail_margin, used_margin, collateral }
+  // Each row carries: { account, cash, avail_margin, used_margin, collateral,
+  // account_stale } — account_stale (real-money fix, 2026-09) flags a row
+  // substituted from the backend's last-known-good frame cache because the
+  // account's circuit breaker was open at fetch time (see CLAUDE.md's
+  // "Staleness indicator freeze rule").
   /** @type {Array<{account:string, cash:number, avail_margin:number,
-   *                used_margin:number, collateral:number}>} */
+   *                used_margin:number, collateral:number, account_stale?:boolean}>} */
   // Last-known-good pattern: keep prior snapshot when fundsStore goes null
   // mid-refresh so the margin pill never blanks during a 5s poll cycle.
   let _funds = $state(/** @type {Array<any>} */ (fundsStore.value ?? []));
@@ -1391,18 +1395,35 @@
     if (!_funds.length) return null;
     if (_account) {
       const match = _funds.find(r => r.account === _account);
+      // Return the matched row AS-IS (including whatever last-known-good
+      // avail_margin/cash the backend already substituted for it) — never
+      // drop it just because it's stale. `account_stale` (already present
+      // on the raw funds row) is what the template below reads to show a
+      // stale indicator instead of silently trusting a possibly-frozen
+      // number as if it were a live read.
       if (match) return match;
     }
+    // Cross-account TOTAL fallback — sums whatever `_funds` holds as-is,
+    // no exclusion of stale accounts (same "sum what's already there"
+    // principle as portfolioStore's fundsAggregate.js helpers). `_funds`
+    // is seeded `fundsStore.value ?? []` and only ever reassigned when
+    // the store's value is non-null (see the $effect above), so an empty
+    // array here already means "no funds data at all" — the `!_funds.length`
+    // guard above already returns null for that case; no additional
+    // null-guard needed in this branch.
     let cash = 0, am = 0, um = 0, col = 0;
+    let stale = false;
     for (const f of _funds) {
       cash += Number(f?.cash || 0);
       am   += Number(f?.avail_margin || 0);
       um   += Number(f?.used_margin  || 0);
       col  += Number(f?.collateral   || 0);
+      if (f?.account_stale === true) stale = true;
     }
     return {
       account:      'TOTAL',
       cash, avail_margin: am, used_margin: um, collateral: col,
+      account_stale: stale,
     };
   });
 
@@ -2561,11 +2582,16 @@
          selected. Negative margin (margin debt) flips the pill red. -->
     {#if _accountFunds && !fundsHidden}
       <div class="ot-funds" class:ot-funds-low={_accountFunds.avail_margin < 0}
-           title={_accountFunds.account === 'TOTAL'
+           class:ot-funds-stale={_accountFunds.account_stale === true}
+           title={(_accountFunds.account === 'TOTAL'
              ? 'Sum across every loaded broker account'
-             : `Funds for ${_accountFunds.account}`}>
+             : `Funds for ${_accountFunds.account}`)
+             + (_accountFunds.account_stale === true ? ' — STALE (last known-good, not a live read)' : '')}>
         {#if _accountFunds.account === 'TOTAL'}
           <span class="ot-funds-k">Total</span>
+        {/if}
+        {#if _accountFunds.account_stale === true}
+          <span class="ot-funds-k ot-funds-stale-badge">STALE</span>
         {/if}
         <span class="ot-funds-k">Avail margin</span>
         <span class="ot-funds-v">₹{aggFmt(_accountFunds.avail_margin || 0)}</span>
@@ -3981,6 +4007,22 @@
     border-color: rgba(248,113,113,0.35);
   }
   .ot-funds-low .ot-funds-v { color: var(--c-short); }
+  /* Stale funds row (2026-09 real-money fix) — the matched account's row
+     carries backend-substituted last-known-good values (broker circuit-
+     breaker open at fetch time), not a live read. Amber dashed border +
+     reduced opacity, matching the STALE convention used elsewhere
+     (BrokerHealthBadge, PositionStrip's .ps-stale) without inventing a
+     new palette. Can combine with .ot-funds-low (negative margin AND
+     stale) — both classes apply independently. */
+  .ot-funds-stale {
+    opacity: 0.75;
+    border-style: dashed;
+    border-color: rgba(251, 191, 36, 0.45);
+  }
+  .ot-funds-stale-badge {
+    color: var(--c-action);
+    font-weight: 700;
+  }
 
   /* Footer is a column: action buttons on top, margin / cost preview
      beneath. IB TWS, ToS, and Sensibull all stack the impact line

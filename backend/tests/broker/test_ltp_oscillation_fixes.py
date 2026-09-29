@@ -465,7 +465,7 @@ class TestDhanIntervalSkipLkgFallback:
                 account="DH1234", kite=None, broker=broker,
             )
 
-        mock_ssf.assert_called_once_with("holdings", "DH1234")
+        mock_ssf.assert_called_once_with("holdings", "DH1234", mark_stale=False)
         assert not result.empty, "Expected non-empty LKG frame when LKG is available"
         assert result.attrs.get("interval_skipped") is True
         assert "circuit_open" not in result.attrs, (
@@ -526,7 +526,7 @@ class TestDhanIntervalSkipLkgFallback:
                 account="DH1234", kite=None, broker=broker,
             )
 
-        mock_ssf.assert_called_once_with("positions", "DH1234")
+        mock_ssf.assert_called_once_with("positions", "DH1234", mark_stale=False)
         assert not result.empty
         assert result.attrs.get("interval_skipped") is True
         assert "circuit_open" not in result.attrs
@@ -582,7 +582,7 @@ class TestDhanIntervalSkipLkgFallback:
                 account="DH1234", kite=None, broker=broker,
             )
 
-        mock_ssf.assert_called_once_with("margins", "DH1234")
+        mock_ssf.assert_called_once_with("margins", "DH1234", mark_stale=False)
         assert not result.empty
         assert result.attrs.get("interval_skipped") is True
         assert "circuit_open" not in result.attrs

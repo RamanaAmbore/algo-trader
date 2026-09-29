@@ -918,6 +918,29 @@
 .ag-theme-algo .ag-row.row-account-stale .ag-col-fill {
   background-color: rgba(148, 163, 184, 0.14) !important;
 }
+/* Public-page (cream) theme variant — 2026-09 funds-grid stale fix
+   (PerformancePage.svelte, /performance page). The rule above is
+   `.ag-theme-algo`-scoped only; PerformancePage always renders under
+   `.ag-theme-ramboq` in practice (the `theme` prop defaults to
+   'ag-theme-ramboq' and no current caller overrides it), so it needs
+   its own variant to have any visual effect — same convention already
+   established by `.ag-row.totals-row`'s per-theme pair above. Navy-
+   based rgba (matching totals-row's own #1d2939-family palette) instead
+   of algo's slate, so the hatch reads correctly against the light
+   cream row background. */
+.ag-theme-ramboq .ag-row.row-account-stale {
+  opacity: 0.62;
+  background-image: linear-gradient(
+    135deg,
+    rgba(29, 41, 57, 0.05) 0,
+    rgba(29, 41, 57, 0.05) 3px,
+    transparent 3px,
+    transparent 8px
+  );
+}
+.ag-theme-ramboq .ag-row.row-account-stale .ag-col-fill {
+  background-color: rgba(29, 41, 57, 0.10) !important;
+}
 /* Right-border indicator on symbol cells — encodes POSITION DIRECTION
    (long vs short) on Positions, or HOLDING DIRECTION (up vs down P&L)
    on Holdings. Single 2 px-wide vertical line flush against the cell's

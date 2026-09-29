@@ -550,7 +550,13 @@
   // qty in lots instead of contracts.
   // Moved to portfolioAggregates (portfolioStore.svelte.js) — reads from SSOT.
   const longOptionsCashPaid = $derived(portfolioAggregates.longOptionsCashPaid);
-  const cashTotal = $derived(liveCashTotal + longOptionsCashPaid);
+  // Real-money fix (2026-09): liveCashTotal is now null (genuinely
+  // unknown — no funds poll has ever landed) rather than 0 on cold
+  // start/first-degraded-poll. `null + longOptionsCashPaid` would
+  // silently coerce to `longOptionsCashPaid` alone (JS treats `null` as
+  // 0 in `+`) and render a subtly-WRONG cash figure instead of an
+  // obviously-missing one — explicit null propagation instead.
+  const cashTotal = $derived(liveCashTotal == null ? null : liveCashTotal + longOptionsCashPaid);
 
   // Expiry profit and per-account map now come from positionsDerivedStore
   // (the unified 4 Hz SSOT). PositionStrip no longer computes these locally.
@@ -563,7 +569,14 @@
   const marginAvail = $derived(portfolioAggregates.marginAvail);
   const marginTotal = $derived(portfolioAggregates.marginTotal);
 
-  function fmtMoney(/** @type {number} */ v) {
+  function fmtMoney(/** @type {number|null} */ v) {
+    // Explicit null guard (real-money fix, 2026-09): aggCompact(null)
+    // already renders '—' — `isFinite(null)` is true (Number(null)===0)
+    // so the old `!isFinite(v)` check silently skipped past null and
+    // relied on that accidental fallthrough. Made explicit so genuinely-
+    // unknown (no poll landed yet) never risks rendering '0' if either
+    // helper's null handling ever changes independently.
+    if (v == null) return '—';
     if (!isFinite(v)) return '0';
     return aggCompact(v);
   }

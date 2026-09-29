@@ -269,20 +269,29 @@ class PositionsResponse(msgspec.Struct):
 # ---------------------------------------------------------------------------
 
 class FundsRow(msgspec.Struct):
+    # cash/avail_margin/used_margin/collateral/live_cash/option_premium
+    # are `float | None` per the missing-vs-zero convention (see
+    # CLAUDE.md "Alert evaluation and latching" and
+    # backend/tests/broker/test_funds_missing_vs_zero.py): a broker
+    # adapter (Dhan/Groww) surfaces `None` — not a coerced 0.0 — when
+    # the underlying field is genuinely absent/unmapped, so only a
+    # broker-confirmed real 0 renders as an actual zero downstream.
+    # funds.py's _fetch() preserves that null through to this Struct
+    # instead of blanket-filling every numeric column with 0.
     account: str
-    cash: float           # avail opening_balance — start-of-day cash
-    avail_margin: float   # net — what's left for trading after used_margin
-    used_margin: float    # util debits
-    collateral: float     # avail collateral
+    cash: float | None           # avail opening_balance — start-of-day cash
+    avail_margin: float | None   # net — what's left for trading after used_margin
+    used_margin: float | None    # util debits
+    collateral: float | None     # avail collateral
     # Defaults are 0 — older Kite responses without `avail.cash` /
     # `util.option_premium` (or any broker adapter that doesn't
     # surface them) fall through cleanly instead of raising a
     # missing-key construction error in the route's FundsRow(**r)
     # builder.
-    live_cash:        float = 0.0  # avail cash (direct funds only, NOT avail.live_balance —
+    live_cash:        float | None = 0.0  # avail cash (direct funds only, NOT avail.live_balance —
                                     # Kite's live_balance also includes collateral) — decreases
                                     # on option premium debit
-    option_premium:   float = 0.0  # util option_premium — net cash spent on currently-held long options
+    option_premium:   float | None = 0.0  # util option_premium — net cash spent on currently-held long options
                                    # (≈ debits − receipts; positive when net long premium)
     # Derived convenience columns — computed server-side so the frontend
     # never re-implements the arithmetic.

@@ -66,10 +66,33 @@ def _rename_broker_cols(df: pl.DataFrame) -> pl.DataFrame:
 
 
 def _append_total_row(df: pl.DataFrame, present: list[str]) -> pl.DataFrame:
-    """Append TOTAL row after per-account rows."""
-    totals = df.select(present).sum().with_columns(pl.lit('TOTAL').alias('account'))
-    return pl.concat([df.select(['account', *present]), totals], how='diagonal') \
-             .fill_nan(0).fill_null(0)
+    """Append TOTAL row after per-account rows.
+
+    `present` is always a subset of `_SUM_COLS` — the funds-meaning
+    columns that must preserve the missing-vs-zero distinction (see
+    `_fetch`'s targeted-fillna comment). Per-account rows are passed
+    through untouched (a genuinely-missing field stays a Polars null,
+    not a coerced 0). Polars' `.sum()` already skips nulls by default
+    (matches pandas `skipna=True` semantics), so a null on SOME accounts
+    never poisons a TOTAL that has at least one real contributor — it's
+    simply excluded, not treated as contributing 0. But `.sum()` over a
+    column that is null on EVERY account returns 0.0, not null — that
+    would fabricate a fake "confirmed zero" TOTAL row out of pure
+    missing data (e.g. a single-account deployment on a broker that
+    doesn't surface a field at all). Guard explicitly: TOTAL is null
+    for a column unless at least one account has a real value. No
+    trailing `.fill_nan(0).fill_null(0)` here: every selected column is
+    funds-meaning, so there is nothing left that legitimately needs a
+    0-default at this stage.
+    """
+    totals = df.select([
+        pl.when(pl.col(c).is_not_null().any())
+          .then(pl.col(c).sum())
+          .otherwise(None)
+          .alias(c)
+        for c in present
+    ]).with_columns(pl.lit('TOTAL').alias('account'))
+    return pl.concat([df.select(['account', *present]), totals], how='diagonal')
 
 
 def _add_derived_columns(df_all: pl.DataFrame) -> pl.DataFrame:
@@ -79,13 +102,21 @@ def _add_derived_columns(df_all: pl.DataFrame) -> pl.DataFrame:
       available_funds = avail_margin  (broker's "net" — free for new trades)
       available_cash  = cash − option_premium  (SOD cash net of locked
                         long-option premiums)
+
+    Unlike their source columns (avail_margin/cash/option_premium, which
+    may now be a genuine null per the missing-vs-zero convention — see
+    `_fetch`), these two are plain `float` fields on `FundsRow` (no
+    `| None`), so a null source is coalesced to 0 here via `.fill_null(0)`
+    — a convenience/display rollup is not itself a raw broker-confirmed
+    value, so it degrades gracefully instead of propagating a null into
+    a non-nullable field.
     """
     def _col(name):
         return pl.col(name) if name in df_all.columns else pl.lit(0.0)
 
     return df_all.with_columns([
-        _col('avail_margin').alias('available_funds'),
-        (_col('cash') - _col('option_premium')).alias('available_cash'),
+        _col('avail_margin').fill_null(0).alias('available_funds'),
+        (_col('cash').fill_null(0) - _col('option_premium').fill_null(0)).alias('available_cash'),
     ])
 
 
@@ -126,9 +157,39 @@ def _fetch() -> FundsResponse:
     if raw.empty:
         raise Exception("Broker (Kite) returned no margin data — upstream Bad Gateway / outage")
 
+    # Missing-vs-zero convention (see CLAUDE.md "Alert evaluation and
+    # latching"): a genuinely absent/unmapped funds field (Dhan/Groww
+    # adapters return NaN for these via _dhan_num_or_none/_gf_or_none — see
+    # backend/tests/broker/test_funds_missing_vs_zero.py) must survive
+    # as a null all the way to the API response, not get silently
+    # coerced to a broker-confirmed-looking 0. Exclude the
+    # funds-meaning columns (_COL_MAP's broker-side keys — net,
+    # avail cash, avail opening_balance, util debits, avail collateral,
+    # util option_premium) from the blanket fillna; only fill OTHER
+    # numeric columns (e.g. 'enabled', flattened sub-fields not in
+    # _SUM_COLS) that don't carry alert/display meaning downstream.
     numeric_cols = raw.select_dtypes(include='number').columns
-    raw[numeric_cols] = raw[numeric_cols].fillna(0)
+    fillable_cols = [c for c in numeric_cols if c not in _COL_MAP]
+    if fillable_cols:
+        raw[fillable_cols] = raw[fillable_cols].fillna(0)
     df = _rename_broker_cols(pl.from_pandas(raw))
+
+    # Dtype-stability guard: pl.from_pandas can infer a Utf8/Object
+    # dtype for a funds-meaning column whose only value across ALL
+    # concatenated accounts is None (e.g. a single-account frame where
+    # a Dhan/Groww adapter's _dhan_num_or_none/_gf_or_none returned
+    # None for every row of that column — pandas keeps it as an
+    # all-None `object` column instead of upcasting to float64, and
+    # Polars in turn infers String rather than Float64). Cast the
+    # funds-meaning columns to Float64 (null-preserving, strict=False)
+    # so `_append_total_row`'s `.sum()` and `_add_derived_columns`'
+    # arithmetic never encounter a non-numeric column — a numeric
+    # string still round-trips correctly; only a genuine null stays null.
+    _cast_cols = [c for c in _SUM_COLS if c in df.columns]
+    if _cast_cols:
+        df = df.with_columns([
+            pl.col(c).cast(pl.Float64, strict=False) for c in _cast_cols
+        ])
 
     present = [c for c in _SUM_COLS if c in df.columns]
     df_all = _add_derived_columns(_append_total_row(df, present))

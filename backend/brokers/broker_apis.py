@@ -608,10 +608,11 @@ def _get_lkg_frame(kind: str, account: str) -> tuple[float, "pd.DataFrame"] | No
         return None
 
 
-def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
+def _stale_substitute_frame(kind: str, account: str, mark_stale: bool = True) -> "pd.DataFrame":
     """Return the LKG frame for (kind, account) with staleness attrs +
-    per-row `account_stale=True` column marked. Returns an empty frame
-    when no LKG exists (falls back to pre-fix behaviour for that cycle).
+    (when `mark_stale=True`) per-row `account_stale=True` column marked.
+    Returns an empty frame when no LKG exists (falls back to pre-fix
+    behaviour for that cycle).
 
     Two-tier lookup:
       1. In-memory LKG (`_LKG_FRAME_BY_ACCT`) — most recent successful
@@ -626,7 +627,8 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
       • df.attrs['circuit_open']  = True   (diagnostic — matches pre-fix attr)
       • df.attrs['db_lkg']        = True   (set only on tier-2 DB path)
       • df['account_stale']       = True   (per-row column; consumed by
-                                            schema mapping in routes)
+                                            schema mapping in routes) —
+                                            ONLY when `mark_stale=True`.
       • df.attrs['account']       = account (diagnostic — lets a caller
                                             identify WHICH account this
                                             frame belongs to even when it
@@ -637,6 +639,18 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
                                             reads this to surface a
                                             zero-row failure in
                                             `stale_accounts`.)
+
+    `mark_stale=False` (2026-09-29 fix): callers substituting purely
+    because of the Dhan interval-gate throttle (a deliberate cadence
+    skip, not a failure) pass this so the per-row `account_stale` column
+    is NOT set — mirroring the existing `lkg.attrs.pop("circuit_open",
+    None)` they already do for the same "this isn't really stale, just
+    throttled" reason. `account_stale=True` must mean ONLY "breaker open
+    OR a genuine fetch exception" for the frontend staleness indicator
+    to be trustworthy. Response-level `attrs['stale']`/`attrs['stale_since']`
+    are left untouched either way — those describe frame AGE, which is
+    still true on an interval-skip; only the per-row failure-flavoured
+    `account_stale` column is gated.
 
     Does NOT set attrs['fetch_failed']=True on the substitution paths —
     that would trigger the route's "all failed → 503" outage gate. A
@@ -672,7 +686,7 @@ def _stale_substitute_frame(kind: str, account: str) -> "pd.DataFrame":
         df.attrs["db_lkg"] = True
     # DO NOT set fetch_failed — see docstring. Substituted rows are "success
     # with old data", not a fetch failure.
-    if not df.empty:
+    if not df.empty and mark_stale:
         df["account_stale"] = True
     return df
 
@@ -1541,7 +1555,7 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
     # returns True for non-Dhan brokers). Manual ?fresh=1 calls bypass
     # by calling fetch_holdings() directly which skips @for_all_accounts.
     if account and not _is_dhan_interval_due(account, broker):
-        lkg = _stale_substitute_frame("holdings", account)
+        lkg = _stale_substitute_frame("holdings", account, mark_stale=False)
         if not lkg.empty:
             lkg.attrs["interval_skipped"] = True
             lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
@@ -2213,7 +2227,7 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
         return _stale_substitute_frame("positions", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
-        lkg = _stale_substitute_frame("positions", account)
+        lkg = _stale_substitute_frame("positions", account, mark_stale=False)
         if not lkg.empty:
             lkg.attrs["interval_skipped"] = True
             lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event
@@ -2958,7 +2972,7 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
         return _stale_substitute_frame("margins", account)
     # Interval gate (Dhan-only) — same pattern as holdings.
     if account and not _is_dhan_interval_due(account, broker):
-        lkg = _stale_substitute_frame("margins", account)
+        lkg = _stale_substitute_frame("margins", account, mark_stale=False)
         if not lkg.empty:
             lkg.attrs["interval_skipped"] = True
             lkg.attrs.pop("circuit_open", None)  # interval-skip, not a breaker event

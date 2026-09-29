@@ -26,6 +26,7 @@ import { decomposeSymbol } from '$lib/data/decomposeSymbol.js';
 import { targetsForProxy, getProxyRow } from '$lib/data/hedgeProxies.js';
 import { getInstrument, instrumentsCacheVersion } from '$lib/data/instruments';
 import { isFOSymbol } from '$lib/data/derivativesMath.js';
+import { sumMarginAvail, sumMarginTotal, sumLiveCashTotal } from '$lib/data/fundsAggregate.js';
 
 // ── 4 Hz throttle (250ms debounce on symbolTickCount) ───────────────────────
 // Same pattern as positionsDerivedStore / holdingsDayPnlStore.
@@ -695,10 +696,20 @@ export const portfolioStore = {
 let _lastLivePositionsPnl    = 0;
 let _lastLiveHoldingsTotal   = 0;
 let _lastLiveHoldingsValue   = 0;
-let _lastLiveCashTotal       = 0;
 let _lastLongOptionsCashPaid = 0;
-let _lastMarginAvail         = 0;
-let _lastMarginTotal         = 0;
+// _lastLiveCashTotal / _lastMarginAvail / _lastMarginTotal (real-money
+// fix, 2026-09 NavStrip "₹0 margin for an extended period" incident):
+// REMOVED. The old freeze-to-last-remembered-scalar pattern held the
+// ENTIRE cross-account total hostage to ONE degraded account (common —
+// a single flaky Dhan/Groww account), and on a fresh page load these
+// scalars reset to 0, so the FIRST poll(s) landing while degraded
+// produced a flat 0 that never recovered until a non-degraded poll
+// arrived. _marginAvail / _marginTotal / _liveCashTotal below now sum
+// whatever fundRows actually holds (via fundsAggregate.js's pure
+// helpers) — including stale accounts' own backend-substituted
+// last-known-good values — every read, and return null only when
+// fundRows itself is null/empty (no successful poll has EVER landed).
+// See fundsAggregate.js's file header for the full incident writeup.
 
 // Sum of lifetime pnl across all position rows (P pill slot 2 in NavStrip).
 // Reads raw broker pnl — no live-LTP delta — matching the MarketPulse TOTAL row
@@ -771,17 +782,17 @@ const _liveHoldingsValue = $derived.by(() => {
 // Live cash: Kite avail.cash (direct funds only — NOT Kite's avail.live_balance,
 // a different field that also includes collateral) summed across all accounts.
 // Falls back to f.cash if live_cash is not yet surfaced by the backend.
+//
+// Real-money fix (2026-09): no longer freezes the WHOLE total when
+// fundsStore.meta.degraded is true (one flaky account used to hold every
+// healthy account's cash hostage). Sums whatever fundRows actually holds
+// — see fundsAggregate.js's sumLiveCashTotal + its file-header incident
+// writeup. Returns null (genuinely unknown) only when no poll has ever
+// landed; PositionStrip renders that as `—`, never `₹0`.
 const _liveCashTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows || fundsStore.meta?.degraded) return _lastLiveCashTotal;
-  let s = 0;
-  for (const f of fundRows) {
-    const lc = Number(f?.live_cash ?? 0);
-    s += lc !== 0 ? lc : Number(f?.cash || 0);
-  }
-  _lastLiveCashTotal = s;
-  return s;
+  return sumLiveCashTotal(fundRows);
 });
 
 // Cash debited on currently-held long options.
@@ -812,28 +823,22 @@ const _longOptionsCashPaid = $derived.by(() => {
 });
 
 // Margin available (deployable) across all accounts.
+//
+// Real-money fix (2026-09): see _liveCashTotal's comment above — sums
+// whatever fundRows actually holds (fundsAggregate.js's sumMarginAvail)
+// instead of freezing the whole total on any single degraded account.
 const _marginAvail = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows || fundsStore.meta?.degraded) return _lastMarginAvail;
-  let s = 0;
-  for (const f of fundRows) s += Number(f?.avail_margin || 0);
-  _lastMarginAvail = s;
-  return s;
+  return sumMarginAvail(fundRows);
 });
 
 // Margin total (used + available = full capacity) across all accounts.
+// Real-money fix (2026-09): same shape as _marginAvail above.
 const _marginTotal = $derived.by(() => {
   // Tracked read — see _livePositionsPnl's comment above.
   const fundRows = fundsStore.value;
-  if (!fundRows || fundsStore.meta?.degraded) return _lastMarginTotal;
-  let s = 0;
-  for (const f of fundRows) {
-    s += Number(f?.used_margin  || 0);
-    s += Number(f?.avail_margin || 0);
-  }
-  _lastMarginTotal = s;
-  return s;
+  return sumMarginTotal(fundRows);
 });
 
 /**
@@ -848,12 +853,18 @@ export const portfolioAggregates = {
   get liveHoldingsTotal()  { return _liveHoldingsTotal;   },
   /** Live holdings market value: ltp × qty (three-tier fallback). */
   get liveHoldingsValue()  { return _liveHoldingsValue;   },
-  /** Available cash across all accounts (Kite avail.cash, fallback to cash). */
+  /** Available cash across all accounts (Kite avail.cash, fallback to cash).
+   *  null when no funds poll has ever landed (genuinely unknown — render `—`,
+   *  never `₹0`). Sums every row present, including stale/degraded accounts
+   *  carrying their own last-known-good substituted values — see
+   *  fundsAggregate.js's file header for the real-money fix this replaced. */
   get liveCashTotal()      { return _liveCashTotal;       },
   /** Cash paid for currently-held long options (avg × qty via lot_size path). */
   get longOptionsCashPaid(){ return _longOptionsCashPaid; },
-  /** Available margin across all accounts. */
+  /** Available margin across all accounts. null when no funds poll has ever
+   *  landed — see liveCashTotal's doc above for the null/degraded semantics. */
   get marginAvail()        { return _marginAvail;         },
-  /** Total margin capacity (used + available) across all accounts. */
+  /** Total margin capacity (used + available) across all accounts. null when
+   *  no funds poll has ever landed — see liveCashTotal's doc above. */
   get marginTotal()        { return _marginTotal;         },
 };

@@ -1617,25 +1617,41 @@ describe('positionsDayPnlStore.byAccount — getter delegation', () => {
 
 // ── Real-money guard (2026-09) — degraded-aware SWR fallback ─────────────────
 //
-// portfolioStore.svelte.js's `_portfolio` collector and the seven
-// `portfolioAggregates` getters (_livePositionsPnl, _liveHoldingsTotal, etc.)
-// now treat a store tagged `.meta.degraded` (backend stale_accounts
-// substitution — see marketDataStores.svelte.js's _bookStaleMeta /
-// dataStore.svelte.js's extractStaleMeta) the SAME as a null/not-yet-landed
-// read: freeze at the last known-good value instead of recomputing off a
+// portfolioStore.svelte.js's `_portfolio` collector and FOUR of the
+// `portfolioAggregates` getters (_livePositionsPnl, _liveHoldingsTotal,
+// _liveHoldingsValue, _longOptionsCashPaid) treat a store tagged
+// `.meta.degraded` (backend stale_accounts substitution — see
+// marketDataStores.svelte.js's _bookStaleMeta / dataStore.svelte.js's
+// extractStaleMeta) the SAME as a null/not-yet-landed read: freeze the
+// WHOLE scalar at the last known-good value instead of recomputing off a
 // partially-substituted or empty-but-technically-non-null response.
+//
+// The remaining THREE funds-derived getters (_liveCashTotal, _marginAvail,
+// _marginTotal) were deliberately changed OFF this freeze-the-whole-scalar
+// pattern in the 2026-09 NavStrip "₹0 margin for an extended period, then
+// jumps to correct value" fix — see fundsAggregate.test.js below and
+// fundsAggregate.js's file header for why: freezing the ENTIRE cross-
+// account total on ANY single degraded account (common — one flaky Dhan/
+// Groww account) held every healthy account's real capital hostage, and
+// on a fresh page load the remembered scalar started at 0, so the first
+// poll(s) landing while degraded produced a flat 0 that never recovered.
+// Those three getters now SUM whatever fundRows holds on every read
+// (including stale accounts' own backend-substituted last-known-good
+// values) and return null only when fundRows itself is null/empty.
 //
 // portfolioStore.svelte.js can't be imported directly (Svelte 5 runes, no
 // svelte-compiler plugin in this harness — see file header). These tests
-// mirror the exact "freeze at last-good" pattern each $derived.by now uses:
-// a plain closure variable holding the last computed value, only updated
-// when the read is fresh (non-null AND non-degraded).
+// mirror the exact "freeze at last-good" pattern the FOUR non-funds
+// $derived.by getters still use: a plain closure variable holding the
+// last computed value, only updated when the read is fresh (non-null AND
+// non-degraded).
 
-describe('portfolioAggregates — last-good scalar snapshot (real-money guard)', () => {
+describe('portfolioAggregates — last-good scalar snapshot (real-money guard, non-funds getters only)', () => {
   /**
    * Pure mirror of the pattern used by _livePositionsPnl / _liveHoldingsTotal
-   * / _liveHoldingsValue / _liveCashTotal / _longOptionsCashPaid /
-   * _marginAvail / _marginTotal in portfolioStore.svelte.js:
+   * / _liveHoldingsValue / _longOptionsCashPaid in portfolioStore.svelte.js.
+   * _liveCashTotal / _marginAvail / _marginTotal do NOT use this pattern
+   * any more — see fundsAggregate.test.js and the file-header comment above.
    *
    *   let _lastX = 0;
    *   const _x = $derived.by(() => {
@@ -1774,5 +1790,62 @@ describe('_portfolio collector — per-slice fresh = non-null AND non-degraded',
     });
     expect(result.positions).toBe(EMPTY_POSITIONS);
     expect(result.holdings.total).toBe(10);
+  });
+});
+
+// ── Real-money fix (2026-09) — _marginAvail/_marginTotal/_liveCashTotal ────
+// source-grep guards. NavStrip "₹0 margin for an extended period, then
+// jumps to correct value" incident — see fundsAggregate.js's file header
+// for the full root-cause writeup and fundsAggregate.test.js for the pure-
+// function unit tests covering the five required cases directly against
+// the REAL shipped sum logic (not a mirror). This block only verifies the
+// $derived.by bodies in portfolioStore.svelte.js actually delegate to
+// those helpers and no longer contain the old freeze-the-whole-scalar
+// pattern.
+describe('portfolioStore.svelte.js — funds getters delegate to fundsAggregate.js (real-money fix)', () => {
+  it('imports sumMarginAvail / sumMarginTotal / sumLiveCashTotal from fundsAggregate.js', () => {
+    expect(portfolioStoreSrc).toMatch(
+      /import\s*\{\s*sumMarginAvail,\s*sumMarginTotal,\s*sumLiveCashTotal\s*\}\s*from\s*'\$lib\/data\/fundsAggregate\.js'/
+    );
+  });
+
+  it('does NOT declare the old freeze-the-whole-scalar last-good variables for funds (removed)', () => {
+    expect(portfolioStoreSrc).not.toMatch(/let _lastLiveCashTotal/);
+    expect(portfolioStoreSrc).not.toMatch(/let _lastMarginAvail/);
+    expect(portfolioStoreSrc).not.toMatch(/let _lastMarginTotal/);
+  });
+
+  it('_liveCashTotal / _marginAvail / _marginTotal still do a TRACKED (not untrack()) read of fundsStore.value', () => {
+    // Same item-1 invariant portfolioAggregatesTriggers.test.js pins for
+    // every portfolioAggregates getter — the redesign must not regress it.
+    for (const name of ['_liveCashTotal', '_marginAvail', '_marginTotal']) {
+      const start = portfolioStoreSrc.indexOf(`const ${name} = $derived.by(() => {`);
+      expect(start, `declaration for ${name} not found`).toBeGreaterThan(-1);
+      const bodyEnd = portfolioStoreSrc.indexOf('\n});', start);
+      const body = portfolioStoreSrc.slice(start, bodyEnd);
+      expect(body, `${name} must read fundsStore.value directly (tracked)`).toMatch(/const fundRows = fundsStore\.value;/);
+      expect(body, `${name} must NOT wrap fundsStore.value in untrack()`).not.toMatch(/untrack\(\(\) => fundsStore\.value\)/);
+    }
+  });
+
+  it('_liveCashTotal delegates to sumLiveCashTotal(fundRows)', () => {
+    const start = portfolioStoreSrc.indexOf('const _liveCashTotal = $derived.by(() => {');
+    const bodyEnd = portfolioStoreSrc.indexOf('\n});', start);
+    const body = portfolioStoreSrc.slice(start, bodyEnd);
+    expect(body).toMatch(/return sumLiveCashTotal\(fundRows\);/);
+  });
+
+  it('_marginAvail delegates to sumMarginAvail(fundRows)', () => {
+    const start = portfolioStoreSrc.indexOf('const _marginAvail = $derived.by(() => {');
+    const bodyEnd = portfolioStoreSrc.indexOf('\n});', start);
+    const body = portfolioStoreSrc.slice(start, bodyEnd);
+    expect(body).toMatch(/return sumMarginAvail\(fundRows\);/);
+  });
+
+  it('_marginTotal delegates to sumMarginTotal(fundRows)', () => {
+    const start = portfolioStoreSrc.indexOf('const _marginTotal = $derived.by(() => {');
+    const bodyEnd = portfolioStoreSrc.indexOf('\n});', start);
+    const body = portfolioStoreSrc.slice(start, bodyEnd);
+    expect(body).toMatch(/return sumMarginTotal\(fundRows\);/);
   });
 });

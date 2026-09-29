@@ -783,6 +783,26 @@
     { field: 'collateral',       headerName: 'Collateral',      flex: 1, valueFormatter: aggFmtGrid, type: 'numericColumn', headerClass: numericHdr },
   ];
 
+  // Funds grid stale-account row treatment (2026-09 real-money fix —
+  // NavStrip "₹0 margin for an extended period" incident). Rows carry
+  // `account_stale === true` when the backend substituted that
+  // account's last-known-good values (broker circuit-breaker open at
+  // fetch time). Reuses the SAME `row-account-stale` visual recipe
+  // (app.css) MarketPulse already applies elsewhere.
+  //
+  // `rowClassRules`, NOT the page's shared `getRowClass` (line ~482):
+  //   1. The shared getRowClass returns '' for every funds row (it only
+  //      decorates rows carrying a `product` field — positions/holdings
+  //      only); funds rows would get no treatment from it at all.
+  //   2. rowClassRules is what ag-Grid RE-EVALUATES on every data
+  //      refresh (updateGrid()'s applyTransaction({update,...}) call on
+  //      each poll) — getRowClass is only evaluated once, when a row is
+  //      first rendered, so a row that recovers from stale would keep
+  //      the class forever if this used getRowClass instead.
+  const fundsRowClassRules = {
+    'row-account-stale': (p) => p.data?.account_stale === true,
+  };
+
   // NAV grid — per-account wealth. Mirrors scripts/nav_breakdown.py
   // and backend/api/algo/nav.py:compute_firm_nav (v4 formula):
   //
@@ -1250,7 +1270,7 @@
       postSortRows: (params) => { pairGroupSort(params.nodes); postSortGroups2Level(params); },
       onFilterChanged: () => _applyPinnedTotal(positionsAllGrid, _lastPositionsTotal),
     });
-    fundsGrid            = makeGrid(fundsEl,             fundsCols);
+    fundsGrid            = makeGrid(fundsEl,             fundsCols, [], null, { rowClassRules: fundsRowClassRules });
     navGrid              = makeGrid(navEl,               navCols);
 
     // Stale-while-revalidate: paint the grids from the module-level store

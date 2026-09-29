@@ -178,18 +178,20 @@ test.describe('NavStrip — degraded positions fetch freezes at last-known-good'
     // this SAME property through a near-identical amber hue/alpha —
     // .ps-heartbeat and .ps-stale can both be applied at once, so the
     // 300ms heartbeat pulse became imperceptible against the resting
-    // stale border. Back to the distinct orange rgba(251,146,60,0.6) so
-    // the two states stay visually independent.
+    // stale border. Back to the distinct orange rgba(251,146,60,*) so
+    // the two states stay visually independent. Alpha lightened 0.6→0.4
+    // in a later same-day commit (2ff726b7 — operator: "make navstrip
+    // bottom border a little lighter"), same hue.
     const result = await strip.evaluate((el) => {
       const cs = getComputedStyle(el);
       const scratch = document.createElement('span');
-      scratch.style.color = 'rgba(251, 146, 60, 0.6)';
+      scratch.style.color = 'rgba(251, 146, 60, 0.4)';
       document.body.appendChild(scratch);
       const resolvedToken = getComputedStyle(scratch).color;
       document.body.removeChild(scratch);
       return { borderBottomColor: cs.borderBottomColor, resolvedToken };
     });
-    expect(result.borderBottomColor, '.ps-strip.ps-stale border-bottom-color must equal the distinct orange rgba(251,146,60,0.6), not the amber color-mix (avoids heartbeat-pulse collision)')
+    expect(result.borderBottomColor, '.ps-strip.ps-stale border-bottom-color must equal the distinct orange rgba(251,146,60,0.4), not the amber color-mix (avoids heartbeat-pulse collision)')
       .toBe(result.resolvedToken);
 
     console.log('[navstrip_degraded_fetch_freeze] value held frozen through degraded poll:', healthyText);
