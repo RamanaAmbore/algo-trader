@@ -90,11 +90,11 @@
 
     <div class="prose-section-label" style="margin-top: 1.5rem;">Founder</div>
 
-    <p>Haritha Chikile — Founder, RamboQuant Analytics LLP. B.Sc. and MBA from Kakatiya University.</p>
+    <p><strong>Haritha Chikile</strong> — Founder, RamboQuant Analytics LLP. B.Sc. and MBA from Kakatiya University.</p>
 
     <div class="prose-section-label" style="margin-top: 1.5rem;">Platform Architect &amp; Quantitative Developer</div>
 
-    <p>Ramana R Ambore is the technical architect and developer behind RamboQuant's platform — he designed, built, and operates the AI-augmented trading system (built with Claude Code) that runs the firm's strategy end-to-end. He brings 30+ years of financial-services engineering experience to that work, including 19 years as a Principal System Analyst at Fidelity Investments, his primary day-to-day role.</p>
+    <p><strong>Ramana R Ambore</strong> is the technical architect and developer behind RamboQuant's platform — he designed, built, and operates the AI-augmented trading system (built with Claude Code) that runs the firm's strategy end-to-end. He brings 30+ years of financial-services engineering experience to that work, including 19 years as a Principal System Analyst at Fidelity Investments, his primary day-to-day role.</p>
 
     <p>His credentials — FRM (GARP, 2022), CFA Level 3 candidate, PGCBM from XLRI, a Master's in Computer Science, Six Sigma Green Belt, IBM Certified DB2 DBA, and Sun Certified Java Programmer — reflect three decades of hands-on systems engineering. He was recognized with the NTT Innovation Award as a top-40 global innovator. The same engineering discipline used on institutional trading floors runs this platform at one-operator scale, so what partners see in their statements is exactly what happened in the market.</p>
 
