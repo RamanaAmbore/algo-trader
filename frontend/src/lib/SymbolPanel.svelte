@@ -44,7 +44,6 @@
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
-  import TemplateBar     from '$lib/TemplateBar.svelte';
   import OrderBook from '$lib/OrderBook.svelte';
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import LegLabel from '$lib/LegLabel.svelte';
@@ -901,6 +900,23 @@
   // lockstep.
   const _shellUsingNone = $derived(
     !!(_noneTpl && _sharedTemplateId === _noneTpl.id)
+  );
+  // Templ-row visibility gates (2026-09-30) — the toggle itself now
+  // renders inside OptionChainTab's expiry row, so these are computed
+  // here (where `_templates`/`action`/`_localSymbol`/`basketLegs` all
+  // already live) and passed down as plain booleans instead of
+  // OptionChainTab re-deriving them. Exact parity with the original
+  // if/else-if gate: `_showDemoTplNote` wins whenever both would be
+  // true (OptionChainTab renders it via `{#if showDemoTplNote}...
+  // {:else if showTemplateBar}`), matching the old branch's demo-first
+  // precedence.
+  const _showTemplateBar = $derived(
+    _templates.length > 0 && action === 'open'
+    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
+  );
+  const _showDemoTplNote = $derived(
+    _isDemo && action === 'open'
+    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
   );
   // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
   // shell can decide whether the active template matches the operator's
@@ -2322,6 +2338,24 @@
           bind:templateId={_sharedTemplateId}
           templateName={_selectedTemplate?.name || _selectedTemplate?.slug || ''}
           templateIsNone={_shellUsingNone}
+          showTemplateBar={_showTemplateBar}
+          showDemoTplNote={_showDemoTplNote}
+          selectedTemplate={_selectedTemplate}
+          sideAwareDefault={_sideAwareDefault}
+          nonNoneTemplates={_nonNoneTemplates}
+          showsWing={_sharedTplShowsWing}
+          shellUsingNone={_shellUsingNone}
+          bind:tpOverride={_sharedTpOverride}
+          bind:slOverride={_sharedSlOverride}
+          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
+          bind:wingPremPctOverride={_sharedWingPremPctOverride}
+          onSelectDefault={() => {
+            if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
+          }}
+          onSelectNone={() => {
+            if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+          }}
+          onSelectTemplate={(id) => { _sharedTemplateId = id; }}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}
@@ -2384,47 +2418,26 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    {#if _activeTab === 'chain' && _isDemo && action === 'open'
-         && ((_localSymbol || '').trim() || basketLegs.length > 0)}
-      <!-- Audit fix (L-3) — demo session sees a single muted note
-           where the Template Default/None toggle would render for
-           authenticated sessions. Anonymous LIVE/PAPER submits are
-           blocked at the API layer; surfacing the full picker would
-           promise capabilities the visitor doesn't have.
-           Scoped to Chain only (2026-09-29, operator: "order ticket is
-           not wired to template" / "chain is with template") — was
-           `_activeTab !== 'chart'` (Ticket + Chain both); templates now
-           only ever apply to Chain's basket legs, never a single
-           Ticket-tab order, so the row (and this demo note) has no
-           reason to show on Ticket at all. -->
-      <div class="oes-basket-tpl-row oes-basket-tpl-row-shell oes-basket-tpl-row-demo">
-        <span class="oes-basket-tpl-label">Templ</span>
-        <span class="oes-basket-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
-      </div>
-    {:else if _activeTab === 'chain' && _templates.length > 0 && action === 'open'
-         && ((_localSymbol || '').trim() || basketLegs.length > 0)}
+    <!-- Templ toggle itself relocated into OptionChainTab's expiry row
+         (2026-09-30, incl. the demo-mode note this row used to render
+         in its place) — see `<OptionChainTab>`'s `showTemplateBar` /
+         `showDemoTplNote` props above, computed from the exact same
+         `_templates.length > 0 && action === 'open' && (symbol-or-legs)`
+         / `_isDemo && action === 'open' && (symbol-or-legs)` gates this
+         block used to inline directly. What's left here is ONLY the
+         on-fill preview chip + cap-warning strip, which stays at shell
+         level (depends on several shell-only state vars) — gated
+         additionally on `!_isDemo` (never shown during demo, matching
+         the old else-if's demo-wins precedence) and `!_shellUsingNone`
+         (an empty bordered box with no content would otherwise render
+         when the operator has explicitly picked "None", since the
+         preview/cap-warning content below is itself gated on
+         `!_shellUsingNone`). -->
+    {#if _showTemplateBar && !_isDemo && !_shellUsingNone}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
-           title={!_shellUsingNone && _selectedTemplate
+           title={_selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
              : 'Default attaches the saved template that matches the current side + symbol type. None opts out of any GTT attach.'}>
-        <TemplateBar
-          selectedTemplate={_selectedTemplate}
-          sideAwareDefault={_sideAwareDefault}
-          nonNoneTemplates={_nonNoneTemplates}
-          showsWing={_sharedTplShowsWing}
-          shellUsingNone={_shellUsingNone}
-          bind:tpOverride={_sharedTpOverride}
-          bind:slOverride={_sharedSlOverride}
-          bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-          bind:wingPremPctOverride={_sharedWingPremPctOverride}
-          onSelectDefault={() => {
-            if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
-          }}
-          onSelectNone={() => {
-            if (_noneTpl) _sharedTemplateId = _noneTpl.id;
-          }}
-          onSelectTemplate={(id) => { _sharedTemplateId = id; }}
-        />
         <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
              via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on
              BOTH tabs because it lives in the shell-level Template
@@ -3439,32 +3452,14 @@
     box-shadow: none;
     box-sizing: border-box;
   }
-  /* Demo-mode variant — muted slate accent instead of amber so the
-     row reads as "not active" without competing for attention. */
-  .oes-basket-tpl-row-demo {
-    background: rgba(13, 22, 38, 0.45);
-    border-color: rgba(148, 163, 184, 0.30);
-    box-shadow: none;
-    display: flex;
-    align-items: center;
-    gap: 0.6rem;
-  }
-  .oes-basket-tpl-demo-note {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    color: rgba(180, 200, 230, 0.65);
-    font-style: italic;
-  }
+  /* .oes-basket-tpl-row-demo / .oes-basket-tpl-demo-note / .oes-basket-tpl-label
+     removed (2026-09-30) — the demo-mode note and the Templ toggle
+     itself both relocated into OptionChainTab.svelte's own expiry row
+     (see `.oct-tpl-demo-note` there); this shell-level row now only
+     ever renders the on-fill preview chip + cap-warning strip. */
   /* .oes-basket-tpl-pick, .oes-basket-tpl-params, .oes-basket-tpl-param,
      .oes-tpl-toggle, .oes-tpl-btn, .oes-basket-tpl-name
      — moved to TemplateBar.svelte (Phase 3 extraction). */
-  .oes-basket-tpl-label {
-    text-transform: uppercase;
-    letter-spacing: 0.08em;
-    font-weight: 800;
-    color: var(--algo-amber, var(--c-action));
-    font-size: var(--fs-sm);
-  }
   /* Cap warning + on-fill preview chips — lifted from OrderTicket so
      they're visible on both Ticket and Chain tabs. Same palette family
      as the OrderTicket version so the visual identity is preserved:

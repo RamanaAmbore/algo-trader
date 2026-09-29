@@ -18,6 +18,7 @@
   } from '$lib/api';
   import { executionMode } from '$lib/stores';
   import Select from '$lib/Select.svelte';
+  import TemplateBar from '$lib/TemplateBar.svelte';
   import {
     loadInstruments, suggestUnderlyings,
     listExpiries, listFutures, getInstrument,
@@ -53,6 +54,20 @@
    *   templateId?:     number | null,
    *   templateName?:   string,
    *   templateIsNone?: boolean,
+   *   showTemplateBar?:  boolean,
+   *   showDemoTplNote?:  boolean,
+   *   selectedTemplate?: object | null,
+   *   sideAwareDefault?: object | null,
+   *   nonNoneTemplates?: any[],
+   *   showsWing?:        boolean,
+   *   shellUsingNone?:   boolean,
+   *   tpOverride?:               number | '',
+   *   slOverride?:               number | '',
+   *   wingStrikeOffsetOverride?: number | '',
+   *   wingPremPctOverride?:      number | '',
+   *   onSelectDefault?:  () => void,
+   *   onSelectNone?:     () => void,
+   *   onSelectTemplate?: (id: number) => void,
    * }} */
   let {
     // Seed the underlying from a known symbol (e.g. NIFTY25APR22000CE → NIFTY).
@@ -95,6 +110,35 @@
     // template-catalog lookup the shell already owns.
     templateName   = /** @type {string} */ (''),
     templateIsNone = false,
+    // Shell-computed visibility gates — replicate the exact original
+    // SymbolPanel if/else-if show/hide logic for the Templ row
+    // (`_templates.length > 0 && action === 'open' && (symbol-or-legs)`
+    // for the live toggle, `_isDemo && action === 'open' && (symbol-
+    // or-legs)` for the demo note) so this tab doesn't need its own
+    // duplicate copy of `action`/`_templates.length` state. Computed
+    // once in SymbolPanel where that state already lives; passed down
+    // as plain booleans, mirroring the existing templateId/templateName
+    // pass-through convention above.
+    showTemplateBar = false,
+    showDemoTplNote = false,
+    // TemplateBar pass-through props — the toggle + expand panel now
+    // render inline in this tab's expiry toolbar row (see markup
+    // below) instead of SymbolPanel mounting <TemplateBar> itself.
+    // Same prop shape TemplateBar.svelte declares; forwarded straight
+    // through, selection callbacks bubble back up to the shell (which
+    // owns `_sharedTemplateId` / the four override $state vars).
+    selectedTemplate = /** @type {any} */ (null),
+    sideAwareDefault = /** @type {any} */ (null),
+    nonNoneTemplates = /** @type {any[]} */ ([]),
+    showsWing        = false,
+    shellUsingNone   = false,
+    tpOverride               = $bindable(/** @type {number|''} */ ('')),
+    slOverride               = $bindable(/** @type {number|''} */ ('')),
+    wingStrikeOffsetOverride = $bindable(/** @type {number|''} */ ('')),
+    wingPremPctOverride      = $bindable(/** @type {number|''} */ ('')),
+    onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
+    onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
+    onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
   } = $props();
 
   // "Place" mode toggle — default OFF (Basket mode). Off: +/− stage
@@ -868,6 +912,29 @@
           {_dte === 0 ? 'expires today' : `${_dte}d to expiry`}
         </span>
       {/if}
+      <!-- Template toggle — relocated from SymbolPanel's shell-level
+           row (2026-09-30) so it sits with the rest of the chain's own
+           per-basket controls. showDemoTplNote / showTemplateBar are
+           computed in the shell (SymbolPanel) mirroring the exact
+           original if/else-if gates: demo wins when both would be
+           true, matching the old branch's precedence. -->
+      {#if showDemoTplNote}
+        <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
+      {:else if showTemplateBar}
+        <TemplateBar
+          {selectedTemplate}
+          {sideAwareDefault}
+          {nonNoneTemplates}
+          {showsWing}
+          {shellUsingNone}
+          bind:tpOverride
+          bind:slOverride
+          bind:wingStrikeOffsetOverride
+          bind:wingPremPctOverride
+          {onSelectDefault}
+          {onSelectNone}
+          {onSelectTemplate} />
+      {/if}
     </div>
   {/if}
 
@@ -937,6 +1004,7 @@
             {@const ceLeg = _basketLegByKey.get(`${k}:CE`)}
             {@const peLeg = _basketLegByKey.get(`${k}:PE`)}
             {@const tmplAttached = !templateIsNone && !!templateName}
+            {@const tmplShort = tmplAttached ? String(templateName).slice(0, 6) : ''}
             {#if isAtm}
               <tr class="chain-row chain-row-{dir} chain-row-atm" class:chain-row-active={activeRow} use:chainAtmRow>
                 <td class="chain-td-ce">
@@ -959,7 +1027,7 @@
                       </span>
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L</span>
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -983,7 +1051,7 @@
                       </span>
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L</span>
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1019,7 +1087,7 @@
                       </span>
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L</span>
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1043,7 +1111,7 @@
                       </span>
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L</span>
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1161,6 +1229,17 @@
     color: var(--c-action);
     background: var(--algo-amber-bg);
     border-color: rgba(251, 191, 36, 0.42);
+  }
+  /* Demo-mode note — replaces the Template toggle when exit rules
+     (TP/SL/Wing) aren't available to an anonymous session. Muted
+     slate italic so it reads as "not active" without competing with
+     the amber toggle it stands in for. */
+  .oct-tpl-demo-note {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    color: rgba(180, 200, 230, 0.65);
+    font-style: italic;
+    flex-shrink: 0;
   }
   .oct-acct-single {
     font-family: monospace;
@@ -1358,14 +1437,22 @@
      through underneath it; matches .chain-grid-wrap's own new solid
      background exactly, so the header reads as part of the same
      surface, not a separate darker band. */
-  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  /* Operator (2026-09-30): CE/PE header text sat on the OPPOSITE
+     side from the +/- buttons — .chain-cell-row-ce/-pe (below,
+     deliberately unchanged) push the quote+buttons block toward the
+     Strike column (flex-end for CE, flex-start for PE), but the
+     header text alignment was the mirror image of that. Flipped so
+     header labels sit over their own row's actual content. Border
+     bumped 0.05 -> 0.18 so the header row visibly separates from
+     the strike rows below it. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1502,11 +1589,21 @@
   .chain-btn-pair { display: inline-flex; gap: 10px; }
   /* Operator (2026-09-29): "+ and - are not looking like button" — the
      hover-reveal design (transparent at rest, filled on hover) read as
-     plain text at rest. Visible fill at rest now, stronger on hover. */
-  .chain-btn-buy  { color: var(--c-long);  background: var(--c-long-10);  border-color: var(--c-long-22); }
-  .chain-btn-sell { color: var(--c-short); background: var(--c-short-10); border-color: var(--c-short-22); }
-  .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-14);  border-color: var(--c-long); }
-  .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-14); border-color: var(--c-short); }
+     plain text at rest. Visible fill at rest now, stronger on hover.
+     Operator (2026-09-30): "+/- still don't look like buttons" — bumped
+     rest-state one tier further: background -10 -> -14, and the border
+     goes from a 22%-alpha tint to a SOLID full-color border so the
+     button reads as clickable even before hover. Hover now bumps
+     background to -22 (was -14) so it still reads visibly stronger
+     than rest even though the border itself is now already solid at
+     rest; :active (below) differentiates further via its inset ring +
+     press-down scale. Rest < hover < active progression preserved via
+     background tier + the active-only box-shadow/scale, not border
+     alone (border is now solid at every state). */
+  .chain-btn-buy  { color: var(--c-long);  background: var(--c-long-14);  border-color: var(--c-long); }
+  .chain-btn-sell { color: var(--c-short); background: var(--c-short-14); border-color: var(--c-short); }
+  .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-22);  border-color: var(--c-long); }
+  .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-22); border-color: var(--c-short); }
   /* Operator (2026-09-29): "make + and - look like buttons. when
      pressed add border or some kind of highlight to show it is
      pressed" — hover already fills the button; :active goes a step
@@ -1526,8 +1623,8 @@
     transform: scale(0.93);
   }
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-  .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long-22); }
-  .chain-btn-sell:disabled:hover { border-color: var(--c-short-22); }
+  .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long); }
+  .chain-btn-sell:disabled:hover { border-color: var(--c-short); }
   .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #fbbf24); margin-left: 0.12rem; cursor: default; vertical-align: super; }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
@@ -1558,6 +1655,14 @@
     background: rgba(148, 163, 184, 0.14);
     border: 1px solid rgba(148, 163, 184, 0.35);
     color: var(--algo-slate);
+    /* 2026-09-30 — badge now optionally carries a " · <template>"
+       suffix (6-char truncated). nowrap + a max-width ellipsis
+       backstop keeps it from wrapping/pushing the +/- buttons out of
+       the 44%-width CE/PE column on a 375px viewport. */
+    white-space: nowrap;
+    max-width: 6.2rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .chain-leg-badge-tmpl {
     background: rgba(251, 191, 36, 0.14);
@@ -1661,11 +1766,14 @@
       padding-top: 0.3rem;
       padding-bottom: 0.3rem;
     }
-    .chain-grid { font-size: 0.78rem; }
-    .chain-th-ce, .chain-th-pe, .chain-th-strike { font-size: 0.7rem; }
-    .chain-cell-quote { font-size: 0.72rem; }
-    .chain-cell-no-depth { font-size: 0.68rem; }
-    .chain-cell-spread-warn { font-size: 0.62rem; }
+    /* Operator (2026-09-30): "reset chain font size to normal" — the
+       0.78rem override here (and its matched th/quote/no-depth/
+       spread-warn overrides, tuned as a set alongside it) read as
+       oversized against the rest of the order-entry surface. Removed
+       entirely so every element falls back to its own base rule
+       (--fs-sm for th/quote, smaller hardcoded values for no-depth/
+       spread-warn) — already a sane, consistent "normal" scale without
+       inventing new overrides. */
   }
   /* Operator: "on mobile the chain strike rows too tense, leave space
      between the rows and make the text a little larger" — the earlier
@@ -1674,15 +1782,12 @@
      reads as cramped and hard to tell rows apart. Scoped to mobile only
      — desktop density is unchanged. */
   @media (max-width: 760px) {
-    .chain-grid { font-size: 0.78rem; }
     .chain-row > td {
       padding: 0.32rem 0.4rem;
       line-height: 1.4;
     }
-    .chain-th-ce, .chain-th-pe, .chain-th-strike { font-size: 0.7rem; }
-    .chain-cell-quote { font-size: 0.72rem; }
-    .chain-cell-no-depth { font-size: 0.68rem; }
-    .chain-cell-spread-warn { font-size: 0.62rem; }
+    /* Operator (2026-09-30): font-size overrides removed here too —
+       see the matching removal note in the desktop block above. */
   }
   /* Operator: "I don't see template elements in chain on mobile. Looks
      like they are hidden" / "reduce the height of chain area on mobile
@@ -1692,14 +1797,26 @@
      .oes-body — a sibling scroll container of its own
      (SymbolPanel.svelte's .oes-body has `overflow-y: auto`). Two
      nested `overflow-y: auto` regions (.oes-body and .chain-grid-wrap)
-     each absorb their own overflow internally, so the TemplateBar row
-     rendered AFTER .oes-body in the shell's markup never gets pushed
-     into view by outer-modal scroll — it's starved of any box height
-     to begin with. Capping this wrapper's height on mobile guarantees
-     .oes-body has leftover room to lay out the Templ row below it. */
+     each absorb their own overflow internally, so shell-level content
+     rendered AFTER .oes-body (the cap-warning/on-fill-preview strip,
+     basket bar, common action footer) never gets pushed into view by
+     outer-modal scroll — starved of any box height to begin with.
+     Capping this wrapper's height on mobile guarantees .oes-body has
+     leftover room to lay out that content below it.
+     Operator (2026-09-30): "give overall background... mobile chain
+     looks better" — `flex: 1 1 0` (the base rule above) greedily
+     fills all available flex space up to this max-height cap
+     regardless of actual row count, dominating the mobile layout even
+     when only a handful of strikes are in view. `flex: 0 1 auto` sizes
+     the wrapper to its own content instead, still capped at 16rem as
+     a ceiling. --chain-depth-h resolves to `auto` on mobile
+     (SymbolPanel.svelte's own `@media max-width:720px` override), so
+     no competing min-height forces growth back past the content
+     height here. */
   @media (max-width: 760px) {
     .chain-grid-wrap {
       max-height: 16rem;
+      flex: 0 1 auto;
     }
   }
 </style>

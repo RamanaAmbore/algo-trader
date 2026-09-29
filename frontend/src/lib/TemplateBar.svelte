@@ -4,10 +4,15 @@
   /**
    * TemplateBar — "On fill" template pick + param override row.
    *
-   * Renders a single Template dropdown (Default / None / every named
-   * template, 2026-09-29 — was a Default/None two-pill toggle with no
-   * way to pick a specific template by name), the active-template name
-   * chip, and the TP% / SL% / Wing parameter override inputs.
+   * Renders a compact ON/OFF toggle pill (2026-09-30 — was a Default /
+   * None / every-named-template dropdown; before that a two-pill
+   * toggle). ON always resolves to the side-aware default template
+   * (`sideAwareDefault`, via `onSelectDefault`) — the operator never
+   * "remembers" a previously picked named template by toggling on;
+   * OFF is the explicit "None — entry only" state. A specific named
+   * template can still be picked via the compact picker inside the
+   * expand panel (`onSelectTemplate`), alongside the TP% / SL% / Wing
+   * parameter override inputs.
    *
    * The outer shell row <div> and the on-fill preview / cap-warn section
    * are intentionally kept in the parent (SymbolPanel) because they depend
@@ -47,31 +52,22 @@
     onSelectTemplate,
   } = $props();
 
-  // Dropdown's own selected value: 'default' sentinel only when no
-  // concrete template is resolved yet (nothing armed); once ANY template
-  // is selected (including the side-aware default itself) the dropdown
-  // shows that template's own name as the selected value — the operator
-  // sees exactly what's armed, not a generic "Default" placeholder. This
-  // mirrors the per-leg override editor's dropdown pattern in
-  // SymbolPanel.svelte (same options shape: sentinel + none + named).
-  const _selectValue = $derived(
-    shellUsingNone ? 'none' : (selectedTemplate ? String(selectedTemplate.id) : 'default')
+  // ON/OFF toggle state. ON only when the shell isn't explicitly on
+  // "None" AND a concrete template is actually resolved — guards the
+  // window right after mount where `_sharedTemplateId` is still null
+  // (OrderTicket no longer auto-selects, per the Ticket/Chain
+  // severance fix) so the toggle never reads "ON" while nothing is
+  // actually armed to attach on fill.
+  const _toggleOn = $derived(!shellUsingNone && !!selectedTemplate);
+  // Clicking ON with no side-aware default configured would be a
+  // silent no-op (onSelectDefault() itself no-ops without one) —
+  // disable the button and explain why via title instead.
+  const _toggleOnDisabled = $derived(!sideAwareDefault);
+  const _toggleOnLabel = $derived(
+    _toggleOn
+      ? (selectedTemplate.name || selectedTemplate.slug || 'Default')
+      : (sideAwareDefault ? (sideAwareDefault.name || sideAwareDefault.slug) : 'Default')
   );
-  const _options = $derived([
-    {
-      value: 'default',
-      label: sideAwareDefault
-        ? `Default (${sideAwareDefault.name || sideAwareDefault.slug})`
-        : 'Default (none configured)',
-    },
-    { value: 'none', label: 'None — entry only' },
-    ...nonNoneTemplates.map(t => ({ value: String(t.id), label: t.name || t.slug || `#${t.id}` })),
-  ]);
-  function _onDropdownChange(/** @type {string} */ v) {
-    if (v === 'default') { onSelectDefault?.(); }
-    else if (v === 'none') { onSelectNone?.(); }
-    else { onSelectTemplate?.(Number(v)); }
-  }
 
   // Expand/collapse state (#30) — persists within session; resets when
   // the parent clears selectedTemplate (i.e. on modal close/symbol change).
@@ -165,14 +161,24 @@
 
 <span class="oes-basket-tpl-pick">
   <span class="oes-basket-tpl-label">Templ</span>
-  <span class="oes-tpl-dropdown-wrap"
-        class:oes-tpl-dropdown-none={shellUsingNone}
-        title={!shellUsingNone && selectedTemplate ? (selectedTemplate.description || '') : ''}>
-    <Select
-      value={_selectValue}
-      options={_options}
-      ariaLabel="Template attach"
-      onValueChange={_onDropdownChange} />
+  <span class="oes-tpl-toggle" role="group" aria-label="Template attach">
+    <button type="button"
+            class="oes-tpl-toggle-btn oes-tpl-toggle-btn-on"
+            class:on={_toggleOn}
+            disabled={_toggleOnDisabled}
+            title={_toggleOnDisabled
+              ? 'No default template configured for this side/type'
+              : (_toggleOn && selectedTemplate.description ? selectedTemplate.description : `Attach ${_toggleOnLabel} (side-aware default)`)}
+            onclick={() => onSelectDefault?.()}>
+      {_toggleOnLabel}
+    </button>
+    <button type="button"
+            class="oes-tpl-toggle-btn oes-tpl-toggle-btn-off"
+            class:on={shellUsingNone}
+            title="No template — entry only, no TP/SL/Wing attach"
+            onclick={() => onSelectNone?.()}>
+      None
+    </button>
   </span>
   {#if !shellUsingNone && selectedTemplate}
     <!-- #30 expand toggle — reveals the full param set -->
@@ -241,6 +247,25 @@
   <!-- #30 Expanded panel — full param set -->
   {#if _expanded}
     <div class="oes-tpl-expanded">
+      <!-- Specific-template picker (2026-09-30) — the toggle above only
+           ever resolves ON to the side-aware Default; this lets the
+           operator explicitly override with one SPECIFIC named
+           template instead, same options shape the old primary
+           dropdown built from `nonNoneTemplates` (Default/None rows
+           dropped — those are the toggle itself now). -->
+      {#if nonNoneTemplates.length > 0}
+        <label class="oes-tpl-pick-specific" title="Pick a specific named template instead of the side-aware default.">
+          <span class="oes-basket-tpl-param-label">Specific tmpl</span>
+          <span class="oes-tpl-pick-specific-select">
+            <Select
+              value={selectedTemplate ? String(selectedTemplate.id) : ''}
+              options={nonNoneTemplates.map(t => ({ value: String(t.id), label: t.name || t.slug || `#${t.id}` }))}
+              ariaLabel="Pick specific template"
+              placeholder="Choose…"
+              onValueChange={(v) => { if (v) onSelectTemplate?.(Number(v)); }} />
+          </span>
+        </label>
+      {/if}
       <!-- Trailing stop % -->
       <label class="oes-basket-tpl-param" title="Trailing stop % — SL trigger ratchets toward LTP as it moves favorably.">
         <span>Trail SL%{_trailAsterisk ? '*' : ''}</span>
@@ -293,14 +318,56 @@
   }
   /* .oes-basket-tpl-label intentionally kept in SymbolPanel — also
      used by the demo-mode row outside this component. */
-  /* Template dropdown (2026-09-29 — replaces the old Default/None
-     two-pill toggle + separate name chip; a real Select now shows
-     Default / None / every named template, and its own selected value
-     already displays whichever template is actually armed, so the
-     supplementary name chip that pill version needed is gone). Border
-     still tracks armed (amber) vs none (slate) so the row reads the
-     same at a glance as it did before.
-     Palette pass (2026-09-29, operator: "template palette not
+  /* ON/OFF toggle pill (2026-09-30 — replaces the Default/None/named
+     dropdown; a specific named template is now picked via the compact
+     select inside the expand panel instead). Visual language mirrors
+     ChaseAggPicker's 'panel' skin (same 0.28-alpha amber container
+     border, border-right dividers between segments, filled-amber .on
+     state) and SideToggle's compact two-button group anatomy — kept
+     at the SAME detuned amber intensity the rest of this component's
+     chrome already uses (border-color 0.28, panel fill 0.22 on `on`,
+     NOT the more saturated amber ChaseAggPicker itself uses at 100%
+     opacity for its `on` state) per the 2026-09-29 palette pass noted
+     below. */
+  .oes-tpl-toggle {
+    display: inline-flex;
+    border: 1px solid rgba(251, 191, 36, 0.28);
+    border-radius: 3px;
+    overflow: hidden;
+    height: var(--ctl-h, 1.55rem);
+    box-sizing: border-box;
+  }
+  .oes-tpl-toggle-btn {
+    padding: 0 0.5rem;
+    background: transparent;
+    border: 0;
+    border-right: 1px solid rgba(251, 191, 36, 0.20);
+    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    cursor: pointer;
+    max-width: 8rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    transition: background 0.12s, color 0.12s;
+  }
+  .oes-tpl-toggle-btn:last-child { border-right: 0; }
+  .oes-tpl-toggle-btn:hover:not(.on):not(:disabled) {
+    color: var(--c-action);
+    background: rgba(251, 191, 36, 0.08);
+  }
+  .oes-tpl-toggle-btn.on {
+    background: rgba(251, 191, 36, 0.22);
+    color: var(--algo-amber, var(--c-action));
+  }
+  .oes-tpl-toggle-btn:disabled {
+    opacity: 0.4;
+    cursor: not-allowed;
+  }
+  /* Palette pass (2026-09-29, operator: "template palette not
      consistent with rest of order elements") — TemplateBar was using
      amber at 0.50-0.70 alpha throughout (dropdown border, expand icon,
      param labels, input borders/focus, expanded-panel chrome), far more
@@ -309,17 +376,8 @@
      every STRUCTURAL/chrome use down to that same light intensity;
      genuine semantic color (red errors, the amber warning chip) is
      untouched — those already matched the rest of the app's error/warn
-     convention and weren't the inconsistency. */
-  .oes-tpl-dropdown-wrap {
-    display: inline-flex;
-    min-width: 9rem;
-    border-radius: 3px;
-    border: 1px solid rgba(251, 191, 36, 0.28);
-    transition: border-color 0.12s;
-  }
-  .oes-tpl-dropdown-none {
-    border-color: rgba(148, 163, 184, 0.35);
-  }
+     convention and weren't the inconsistency. The toggle above (added
+     2026-09-30) follows the same convention from the start. */
   /* #30 expand toggle button */
   .oes-tpl-expand-btn {
     background: transparent;
@@ -452,6 +510,18 @@
     background: rgba(8, 14, 28, 0.55);
     border: 1px solid rgba(251, 191, 36, 0.18);
     border-radius: 4px;
+  }
+  /* Specific-template picker (2026-09-30) — sits first inside the
+     expand panel so the operator can override the ON toggle's
+     side-aware default with one specific named template. */
+  .oes-tpl-pick-specific {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .oes-tpl-pick-specific-select {
+    min-width: 9rem;
+    max-width: 13rem;
   }
   /* TP type mini-toggle (#30) */
   .oes-tpl-type-toggle {

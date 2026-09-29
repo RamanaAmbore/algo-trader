@@ -2652,13 +2652,22 @@
   /* A3 (2026-09 audit) — was a stale rgba(200,216,240,α) literal (OLD
      pre-whitening --algo-slate value); this class is consumed ONLY by
      SymbolPanel.svelte (algo-only, verified via grep), so converting
-     here is safe despite app.css being shared with public pages. */
-  color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
+     here is safe despite app.css being shared with public pages.
+     Color drift fix (2026-09-30) — this global fallback and
+     SymbolPanel.svelte's own scoped `.oes-common-chase-label` rule had
+     independently drifted to different color values (this one used
+     `color-mix(...--algo-slate 70%...)` / `#fbbf24`; the scoped copy
+     that actually wins via specificity uses `--algo-slate-muted` /
+     `--c-action`). This fallback is currently dead in practice (the
+     scoped rule always wins) but would silently reactivate with the
+     wrong colors if the scoped rule were ever removed. Realigned to
+     match the scoped copy exactly so there's no latent inconsistency. */
+  color: var(--algo-slate-muted);
   font-size: 0.55rem;
   font-weight: 700;
   letter-spacing: 0.06em;
 }
-.oes-common-chase-label.on { color: #fbbf24; }
+.oes-common-chase-label.on { color: var(--c-action); }
 .oes-common-chase-agg {
   display: inline-flex;
   border: 1px solid rgba(251,191,36,0.32);

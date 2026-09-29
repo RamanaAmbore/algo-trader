@@ -26,6 +26,22 @@
  *  6. Chain +/- buttons — :active pressed-state styling so a tap/click
  *     reads as tactile feedback, not just a hover restatement.
  *
+ * 2026-09-30 batch (Templ toggle relocation + CE/PE layout/palette):
+ *  7. Templ toggle relocated from a shell-level SymbolPanel row into
+ *     OptionChainTab's own expiry toolbar row; TemplateBar.svelte's
+ *     primary control changed from a Default/None/named <Select>
+ *     dropdown to a compact ON/OFF toggle pill (named-template picker
+ *     moved into the expand panel).
+ *  8. CE/PE header text-align flipped to match where the +/- buttons
+ *     actually sit; header border-bottom darkened; chain font-size
+ *     reset to the platform's normal --fs-md/--fs-sm scale (0.78rem
+ *     override removed); +/- buttons get a solid rest-state border +
+ *     one-tier-stronger background.
+ *  9. Chain leg badges show a truncated template short-label suffix
+ *     when a template is attached.
+ * 10. app.css's global `.oes-common-chase-label` fallback realigned to
+ *     match SymbolPanel.svelte's own scoped copy (color drift fix).
+ *
  * All source-scan (no browser) — mirrors this session's established
  * pattern for guarding CSS/markup decisions that are cheap to verify
  * from source and expensive/flaky to verify live on every push.
@@ -40,16 +56,47 @@ const SYMBOL_PANEL = readFileSync(path.join(dir, 'src/lib/SymbolPanel.svelte'), 
 const ORDER_TICKET = readFileSync(path.join(dir, 'src/lib/order/OrderTicket.svelte'), 'utf8');
 const CHAIN_TAB = readFileSync(path.join(dir, 'src/lib/order/OptionChainTab.svelte'), 'utf8');
 const SUBMIT_HELPERS = readFileSync(path.join(dir, 'src/lib/order/orderTicketSubmit.js'), 'utf8');
+const TEMPLATE_BAR = readFileSync(path.join(dir, 'src/lib/TemplateBar.svelte'), 'utf8');
+const APP_CSS = readFileSync(path.join(dir, 'src/app.css'), 'utf8');
 
 test.describe('Ticket/Chain template severance', () => {
-  test('TemplateBar row only renders for the Chain tab, never Ticket', () => {
-    // Both branches that render the shell-level Templ row (live + demo)
-    // must gate on _activeTab === 'chain', not the old '!== chart'.
-    const demoBranch = SYMBOL_PANEL.match(/\{#if _activeTab === 'chain' && _isDemo[\s\S]{0,120}/)?.[0] ?? '';
-    const liveBranch = SYMBOL_PANEL.match(/\{:else if _activeTab === 'chain' && _templates\.length > 0[\s\S]{0,120}/)?.[0] ?? '';
-    expect(demoBranch, 'demo Templ-row branch must gate on chain tab').toContain("_activeTab === 'chain'");
-    expect(liveBranch, 'live Templ-row branch must gate on chain tab').toContain("_activeTab === 'chain'");
-    expect(SYMBOL_PANEL).not.toMatch(/_activeTab !== 'chart'[\s\S]{0,40}_isDemo/);
+  test('Templ toggle/note visibility gates only ever fire for the Chain tab, never Ticket', () => {
+    // 2026-09-30 — the shell-level demo/live if-else-if branch that used
+    // to render <TemplateBar> directly was replaced by two $derived
+    // booleans (_showTemplateBar / _showDemoTplNote), both scoped to
+    // `_activeTab === 'chain'` inside their own definitions, threaded
+    // down into <OptionChainTab> as plain props. Assert the gates
+    // themselves still only ever apply to the Chain tab.
+    const showTemplateBarDef = SYMBOL_PANEL.match(/const _showTemplateBar = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
+    const showDemoNoteDef = SYMBOL_PANEL.match(/const _showDemoTplNote = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
+    expect(showTemplateBarDef, '_showTemplateBar definition').not.toBe('');
+    expect(showDemoNoteDef, '_showDemoTplNote definition').not.toBe('');
+    expect(showTemplateBarDef).toMatch(/_templates\.length > 0/);
+    expect(showTemplateBarDef).toMatch(/action === 'open'/);
+    expect(showDemoNoteDef).toMatch(/_isDemo/);
+    expect(showDemoNoteDef).toMatch(/action === 'open'/);
+    // Both gates are threaded into <OptionChainTab>, which only ever
+    // mounts when `_activeTab === 'chain'` (its own enclosing {#if}).
+    expect(SYMBOL_PANEL).toMatch(/showTemplateBar=\{_showTemplateBar\}/);
+    expect(SYMBOL_PANEL).toMatch(/showDemoTplNote=\{_showDemoTplNote\}/);
+    // The old inline demo-note markup + its dedicated CSS rule blocks
+    // must be gone (a removal-note comment mentioning the class names
+    // in prose is fine) — the note itself now renders inside
+    // OptionChainTab.
+    expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-row-demo\s*\{/);
+    expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-demo-note\s*\{/);
+    expect(SYMBOL_PANEL).not.toMatch(/class="oes-basket-tpl-row-demo"/);
+  });
+
+  test('Templ toggle mounts inside OptionChainTab, never SymbolPanel', () => {
+    // <TemplateBar (the real Svelte component mount, tag-open) must
+    // exist in OptionChainTab.svelte and be entirely absent from
+    // SymbolPanel.svelte — only pass-through prop names (showTemplateBar,
+    // _showTemplateBar, etc.) may reference the word "TemplateBar" there.
+    expect(CHAIN_TAB).toMatch(/<TemplateBar/);
+    expect(SYMBOL_PANEL).not.toContain('<TemplateBar');
+    // SymbolPanel no longer imports the component directly.
+    expect(SYMBOL_PANEL).not.toMatch(/import TemplateBar\s+from/);
   });
 
   test('OrderTicket mount no longer auto-selects a template', () => {
@@ -145,5 +192,138 @@ test.describe('Chain +/- pressed-state feedback', () => {
     const buyActive = CHAIN_TAB.match(/\.chain-btn-buy:active\s*\{[\s\S]*?\}/)?.[0] ?? '';
     expect(buyActive, 'pressed state should visually differ from rest/hover (border/box-shadow highlight)')
       .toMatch(/box-shadow|border-color/);
+  });
+});
+
+test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () => {
+  test('CE header text-align right, PE header text-align left — matches the +/- button side', () => {
+    const ceRule = CHAIN_TAB.match(/\.chain-th-ce\s*\{[^}]*\}/)?.[0] ?? '';
+    const peRule = CHAIN_TAB.match(/\.chain-th-pe\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(ceRule, '.chain-th-ce rule').not.toBe('');
+    expect(peRule, '.chain-th-pe rule').not.toBe('');
+    expect(ceRule).toMatch(/text-align:\s*right/);
+    expect(peRule).toMatch(/text-align:\s*left/);
+    // The row-content alignment (+/- buttons toward Strike column) must
+    // stay untouched — a deliberate, explicitly-commented layout choice.
+    expect(CHAIN_TAB).toMatch(/\.chain-cell-row-ce\s*\{\s*justify-content:\s*flex-end;\s*\}/);
+    expect(CHAIN_TAB).toMatch(/\.chain-cell-row-pe\s*\{\s*justify-content:\s*flex-start;\s*\}/);
+  });
+
+  test('no font-size: 0.78rem declaration remains anywhere in the chain grid CSS', () => {
+    expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
+  });
+
+  test('chain header cells have a visibly darker border-bottom (0.18 alpha)', () => {
+    for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
+      const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
+      expect(rule, `${sel} rule`).not.toBe('');
+      expect(rule, `${sel} border-bottom alpha`).toMatch(/border-bottom:\s*1px solid rgba\(255,255,255,0\.18\)/);
+    }
+  });
+
+  test('chain-btn-buy/-sell rest state uses the -14 background tier and a solid (non-alpha) border', () => {
+    const buyRule = CHAIN_TAB.match(/\.chain-btn-buy\s*\{[^}]*\}/)?.[0] ?? '';
+    const sellRule = CHAIN_TAB.match(/\.chain-btn-sell\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(buyRule).toMatch(/background:\s*var\(--c-long-14\)/);
+    expect(sellRule).toMatch(/background:\s*var\(--c-short-14\)/);
+    // Solid border — references the base color token, not an alpha-tinted `-NN` variant.
+    expect(buyRule).toMatch(/border-color:\s*var\(--c-long\)/);
+    expect(buyRule).not.toMatch(/border-color:\s*var\(--c-long-\d/);
+    expect(sellRule).toMatch(/border-color:\s*var\(--c-short\)/);
+    expect(sellRule).not.toMatch(/border-color:\s*var\(--c-short-\d/);
+  });
+
+  test('mobile .chain-grid-wrap sizes to its own content (flex: 0 1 auto), still capped at 16rem', () => {
+    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,120}?\}/)?.[0] ?? '';
+    expect(mobileBlock, 'mobile .chain-grid-wrap block').not.toBe('');
+    expect(mobileBlock).toMatch(/max-height:\s*16rem/);
+    expect(mobileBlock).toMatch(/flex:\s*0 1 auto/);
+  });
+});
+
+test.describe('Chain leg badge — template short-label suffix', () => {
+  test('badge shows a truncated template short-label when tmplAttached', () => {
+    expect(CHAIN_TAB).toMatch(/tmplShort\s*=\s*tmplAttached\s*\?\s*String\(templateName\)\.slice\(0,\s*6\)\s*:\s*''/);
+    // All 4 leg-badge render sites (ATM CE/PE + non-ATM CE/PE) must
+    // interpolate the short-label suffix, not just the bare lots count.
+    const badgeMatches = CHAIN_TAB.match(/\{(?:ce|pe)Leg\.lots\}L\{tmplAttached \? ' · ' \+ tmplShort : ''\}/g) ?? [];
+    expect(badgeMatches.length, 'expected 4 leg-badge occurrences (ATM CE/PE + non-ATM CE/PE)').toBe(4);
+    // The tooltip's own template-name string construction is untouched.
+    expect(CHAIN_TAB).toMatch(/tmplAttached \? ' · template: ' \+ templateName : ' · no template'/);
+  });
+});
+
+test.describe('TemplateBar — ON/OFF toggle replaces the primary dropdown (2026-09-30)', () => {
+  test('primary control is a toggle pill, not a <Select>', () => {
+    expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-toggle"/);
+    expect(TEMPLATE_BAR).toMatch(/oes-tpl-toggle-btn-on/);
+    expect(TEMPLATE_BAR).toMatch(/oes-tpl-toggle-btn-off/);
+    // The toggle markup itself (before the expand panel) must not use <Select>.
+    const beforeExpandPanel = TEMPLATE_BAR.split('{#if _expanded}')[0] ?? '';
+    expect(beforeExpandPanel).not.toMatch(/<Select/);
+  });
+
+  test('ON always resolves to the side-aware default, OFF always to None — no "remembered" named template', () => {
+    expect(TEMPLATE_BAR).toMatch(/onclick=\{\(\) => onSelectDefault\?\.\(\)\}/);
+    expect(TEMPLATE_BAR).toMatch(/onclick=\{\(\) => onSelectNone\?\.\(\)\}/);
+    // ON display state guards against a null _sharedTemplateId reading
+    // as "armed" (the financial-risk-relevant fix) — must require BOTH
+    // !shellUsingNone AND a concrete selectedTemplate, not just the former.
+    expect(TEMPLATE_BAR).toMatch(/_toggleOn = \$derived\(!shellUsingNone && !!selectedTemplate\)/);
+  });
+
+  test('a specific named-template picker exists inside the expand panel, scoped to nonNoneTemplates', () => {
+    const expandPanel = TEMPLATE_BAR.match(/\{#if _expanded\}[\s\S]*$/)?.[0] ?? '';
+    expect(expandPanel, 'expand panel block').not.toBe('');
+    expect(expandPanel).toMatch(/oes-tpl-pick-specific/);
+    expect(expandPanel).toMatch(/<Select/);
+    expect(expandPanel).toMatch(/nonNoneTemplates\.map/);
+    expect(expandPanel).toMatch(/onSelectTemplate\?\.\(Number\(v\)\)/);
+  });
+
+  test('all existing TP%/SL%/Wing/Trail-SL/Scale-ladder override inputs are untouched', () => {
+    for (const bindable of ['tpOverride', 'slOverride', 'wingStrikeOffsetOverride', 'wingPremPctOverride', 'slTrailPctOverride', 'tpScalesJsonOverride']) {
+      expect(TEMPLATE_BAR, `${bindable} still bind:value`).toMatch(new RegExp(`bind:value=\\{${bindable}\\}`));
+    }
+    // TP order type is a button-pair toggle (not bind:value) — unchanged shape.
+    expect(TEMPLATE_BAR).toMatch(/tpOrderTypeOverride = 'LIMIT'/);
+    expect(TEMPLATE_BAR).toMatch(/tpOrderTypeOverride = 'MARKET'/);
+  });
+});
+
+test.describe('Color audit — .oes-common-chase-label drift fix (app.css)', () => {
+  test("app.css global fallback matches SymbolPanel's scoped color values exactly", () => {
+    const scopedRule = SYMBOL_PANEL.match(/\.oes-common-chase-label\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    const scopedOnRule = SYMBOL_PANEL.match(/\.oes-common-chase-label\.on\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(scopedRule, 'SymbolPanel scoped .oes-common-chase-label rule').not.toBe('');
+    expect(scopedOnRule, 'SymbolPanel scoped .oes-common-chase-label.on rule').not.toBe('');
+    expect(scopedRule).toMatch(/color:\s*var\(--algo-slate-muted\)/);
+    expect(scopedOnRule).toMatch(/color:\s*var\(--c-action\)/);
+
+    const globalRule = APP_CSS.match(/\.oes-common-chase-label\s*\{[\s\S]*?\n\}/)?.[0] ?? '';
+    const globalOnRule = APP_CSS.match(/\.oes-common-chase-label\.on\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(globalRule, 'app.css global .oes-common-chase-label rule').not.toBe('');
+    expect(globalOnRule, 'app.css global .oes-common-chase-label.on rule').not.toBe('');
+    expect(globalRule).toMatch(/color:\s*var\(--algo-slate-muted\)/);
+    expect(globalOnRule).toMatch(/color:\s*var\(--c-action\)/);
+    // Old drifted values must be gone.
+    expect(globalRule).not.toMatch(/color-mix\(in srgb, var\(--algo-slate\) 70%, transparent\)/);
+    expect(globalOnRule).not.toMatch(/#fbbf24/);
+  });
+});
+
+test.describe('Guard — no new order-placement call was added to any frontend submit path', () => {
+  test('submitBasket still delegates to the existing placeBasket API helper, nothing new', () => {
+    const fn = SYMBOL_PANEL.match(/async function submitBasket\(\) \{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(fn, 'submitBasket implementation').not.toBe('');
+    expect(fn).toMatch(/await placeBasket\(groups\)/);
+    // No direct broker/order-placement call bypassing the existing
+    // placeBasket/placeTicketOrder API-layer helpers was introduced by
+    // this batch of changes.
+    for (const banned of ['apply_plan_live', 'broker.place_order', 'broker.place_gtt']) {
+      expect(SYMBOL_PANEL, `SymbolPanel must not call ${banned}`).not.toContain(banned);
+      expect(CHAIN_TAB, `OptionChainTab must not call ${banned}`).not.toContain(banned);
+      expect(TEMPLATE_BAR, `TemplateBar must not call ${banned}`).not.toContain(banned);
+    }
   });
 });
