@@ -480,6 +480,8 @@ Real-world option orders rarely fill at exactly the price you asked. The platfor
 
 You see this in the Order tab as live updates: `chase #2 limit=₹180.00`, then `chase #3 limit=₹181.50`, then `FILLED @₹181.50 after 3 chase(s)`. The chase engine is the same code path for paper and live — just the quote source differs.
 
+**Where chase applies**: LIMIT orders from both the **Ticket tab** (single-order placement) and the **Chain tab** (multi-leg basket orders) use the same chase mechanism by default. The aggressiveness level — Low / Med / High — is controlled via the CHASE indicator in the order-entry tab strip and applies uniformly to all eligible basket legs. MARKET orders, SL-M orders, and any leg with `chase` disabled bypass chasing and place directly.
+
 ### Chase and market hours
 
 If you submit an order with chase enabled and the exchange is already closed at submission time, the chase will fail immediately with an operator alert (Telegram + email). No order is placed at the broker — the position stays flat. This is intentional: it avoids the previous behaviour where chase would spin, accumulate broker rejections, and only abort after 3 consecutive errors.

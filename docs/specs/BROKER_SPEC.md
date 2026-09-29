@@ -1755,12 +1755,13 @@ The close-intent bypass fix must verify intent ONCE and propagate the verified v
 2. **Propagation**: `_ticket_enforce_lot_and_fat_finger()` mutates `data.intent` in place to the server-verified result — either `"close"` (if verification passed) or `None` (if verification failed or intent was not close originally)
 3. **Downstream reads**: Every subsequent consumer (`_ticket_check_mcx_size_cap`, `_ticket_run_preflight`, broker.place_order/GTT calls) reads from the same mutated `data.intent` field, guaranteed to see the verified value
 
-**Basket path (`/api/orders/basket`)**
+**Basket path (`/api/orders/basket` — Chain tab order placement)**
 
 1. **Per-leg verification**: For F&O legs, `orders_basket.py` calls `_verify_close_intent()` per leg and stores the verified result in `_leg_verified_intent` (plain string for equity, verified value for F&O)
 2. **Guard usage**: MCX 20-lot cap check and preflight dispatch both read from `_leg_verified_intent`, not raw `leg.intent`
 3. **Cold-cache guard**: Instruments cache miss during lot-size resolution now returns `BasketLegResult(status="error")` per-leg instead of aborting the whole account group with HTTP 503
 4. **Preflight-blocker enforcement**: Any preflight result other than OK (MARGIN_SHORTFALL, SEGMENT_INACTIVE, LOT_MULTIPLE, etc.) now rejects the individual leg; previously, only MARGIN/SEGMENT were treated as hard blockers
+5. **Chase for LIMIT legs** (2026-09-29): Basket orders with LIMIT type (per-leg `order_type == "LIMIT"`) now trigger the same adaptive limit-order chase mechanism as Ticket orders. Eligibility: `leg.chase=true` (default) AND positive price. The chase aggressiveness (Low/Med/High) is controlled via the CHASE indicator in the order-entry tab strip, applied uniformly to all eligible basket legs. MARKET and SL-M legs, or legs with `chase=false`, place directly without chasing (unchanged). This unifies the fill behaviour across single-order (Ticket) and multi-leg (Chain) workflows.
 
 **Close intent semantics**: When intent is verified as `"close"`:
 - **G2 fat-finger cap** (5-lot max per trade) — bypassed for close
