@@ -62,9 +62,11 @@ describe('nextTriggerState (D4 — atomic submit-trigger guard)', () => {
 });
 
 describe('formatSubmitLabel (R7 — Submit button reflects the real pending action)', () => {
-  it('basket mode shows "Submit (N)"', () => {
+  // Chain tab (basket legs staged) — operator (2026-09-29): "in chain
+  // the button label should submit". Plain label, no leg count.
+  it('basket mode shows plain "Submit"', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 5, basketCount: 2 }))
-      .toBe('Submit (2)');
+      .toBe('Submit');
   });
 
   it('no side picked → bare "Submit"', () => {
@@ -72,29 +74,31 @@ describe('formatSubmitLabel (R7 — Submit button reflects the real pending acti
       .toBe('Submit');
   });
 
-  it('cold ticket with side + qty', () => {
+  // Lot size dropped from the label — operator (2026-09-29): "remove lot
+  // size from submit buttons in order ticket".
+  it('cold ticket with side — no qty in label', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 75, basketCount: 0 }))
-      .toBe('Submit · BUY 75');
+      .toBe('Submit · BUY');
   });
 
   it('long position + SELL → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE/SELL 75');
+      .toBe('Submit · CLOSE/SELL');
   });
 
   it('long position + BUY → ADD', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD/BUY 75');
+      .toBe('Submit · ADD/BUY');
   });
 
   it('short position + BUY → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE/BUY 75');
+      .toBe('Submit · CLOSE/BUY');
   });
 
   it('short position + SELL → ADD', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD/SELL 75');
+      .toBe('Submit · ADD/SELL');
   });
 
   // Regression: this function takes no chase parameter at all — the caller

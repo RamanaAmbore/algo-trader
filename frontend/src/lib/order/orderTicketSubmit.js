@@ -292,17 +292,20 @@ export function nextTriggerState(prevSeen, trigger, submitting) {
  * @returns {string}
  */
 export function formatSubmitLabel(ctx) {
-  if (ctx.basketCount > 0) return `Submit (${ctx.basketCount})`;
+  // Chain tab (basket legs staged) — operator (2026-09-29): "in chain
+  // the button label should submit" — plain label, no leg count.
+  if (ctx.basketCount > 0) return 'Submit';
   if (!ctx.side) return 'Submit';
-  const qty = Number(ctx.qty) || 0;
-  const qtySuffix = qty > 0 ? ` ${qty}` : '';
   const cq = Number(ctx.currentQty) || 0;
-  if (cq === 0) return `Submit · ${ctx.side}${qtySuffix}`;
+  // Lot size dropped from the label — operator (2026-09-29): "remove
+  // lot size from submit buttons in order ticket". The stepper next to
+  // the button already shows qty; repeating it here was redundant.
+  if (cq === 0) return `Submit · ${ctx.side}`;
   // ADD = same direction as the existing position; CLOSE = opposite.
   const verb = (cq > 0 ? (ctx.side === 'BUY' ? 'ADD' : 'CLOSE')
                        : (ctx.side === 'BUY' ? 'CLOSE' : 'ADD'));
   // Verb/side pair uses a slash, not the " · " separator used elsewhere
   // in this label — operator (2026-09-29): "add . sell should be add/sell,
   // close . buy as close/buy... the space dot space should be a slash."
-  return `Submit · ${verb}/${ctx.side}${qtySuffix}`;
+  return `Submit · ${verb}/${ctx.side}`;
 }

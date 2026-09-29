@@ -299,22 +299,32 @@
      already displays whichever template is actually armed, so the
      supplementary name chip that pill version needed is gone). Border
      still tracks armed (amber) vs none (slate) so the row reads the
-     same at a glance as it did before. */
+     same at a glance as it did before.
+     Palette pass (2026-09-29, operator: "template palette not
+     consistent with rest of order elements") — TemplateBar was using
+     amber at 0.50-0.70 alpha throughout (dropdown border, expand icon,
+     param labels, input borders/focus, expanded-panel chrome), far more
+     saturated than the rest of the order-entry surface's own amber
+     accents (e.g. OrderTicket's `.ot-input` border sits at 0.25). Toned
+     every STRUCTURAL/chrome use down to that same light intensity;
+     genuine semantic color (red errors, the amber warning chip) is
+     untouched — those already matched the rest of the app's error/warn
+     convention and weren't the inconsistency. */
   .oes-tpl-dropdown-wrap {
     display: inline-flex;
     min-width: 9rem;
     border-radius: 3px;
-    border: 1px solid rgba(251, 191, 36, 0.55);
+    border: 1px solid rgba(251, 191, 36, 0.28);
     transition: border-color 0.12s;
   }
   .oes-tpl-dropdown-none {
-    border-color: rgba(148, 163, 184, 0.55);
+    border-color: rgba(148, 163, 184, 0.35);
   }
   /* #30 expand toggle button */
   .oes-tpl-expand-btn {
     background: transparent;
     border: none;
-    color: rgba(251, 191, 36, 0.70);
+    color: var(--algo-slate-muted);
     font-size: var(--fs-xs);
     padding: 0 0.2rem;
     cursor: pointer;
@@ -322,7 +332,7 @@
     transition: color 0.12s;
   }
   .oes-tpl-expand-btn:hover {
-    color: var(--algo-amber, var(--c-action));
+    color: var(--algo-slate);
   }
   /* Parameter override row — sits inline with the Select. Each
      param is a tight label+input pair. The input is bare-monospace

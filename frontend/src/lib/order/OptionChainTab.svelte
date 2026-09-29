@@ -1287,6 +1287,16 @@
      forcing a second internal scroll. */
   .chain-grid-wrap {
     overflow-y: auto;
+    /* Operator (2026-09-29): "give overall background to chain area
+       consistent with overall color scheme on mobile and desktop" —
+       previously only the header cells carried a background
+       (rgba(13,21,38,0.6), a translucent overlay of the same hue as
+       --algo-bg-elev2 but not the token itself), while the body rows
+       had none — a patchy, two-toned look rather than one consistent
+       surface. One solid background at the standard card-wrapper
+       elevation, covering the whole grid (header + body), same on
+       every viewport. */
+    background: var(--algo-bg-elev2, #0d1829);
     /* Operator: "order ticket window is wider than viewport mobile
        sometimes" — root-caused to THIS table: table-layout defaults to
        `auto`, which sizes columns off cell content's natural minimum
@@ -1314,21 +1324,17 @@
     border-radius: 3px;
   }
   /* Operator (2026-09-29): "mobile chain looks better than desktop
-     chain which looks very cluttered". Root cause: the grid had no
-     max-width, so on a wide desktop modal the CE/Strike/PE columns
-     (44%/12%/44%) stretched to match — content (small quote text +
-     tiny buttons) didn't scale up with them, leaving huge unused
-     padding inside each cell while the actual controls stayed
-     clustered in a narrow band down the middle. Mobile's naturally
-     narrow viewport never had this problem. Cap desktop to roughly
-     the same content-appropriate width mobile gets "for free",
-     centered in the wider modal, instead of stretching to fill it. */
-  @media (min-width: 640px) {
-    .chain-grid-wrap {
-      max-width: 30rem;
-      margin: 0 auto;
-    }
-  }
+     chain which looks very cluttered" was FIRST fixed by capping the
+     grid to a mobile-like max-width — later REVERSED by the operator
+     ("let the chain occupy fully available spaces"). The cap is gone.
+     Deliberately did NOT change .chain-cell-row-ce/-pe's flex-end/
+     flex-start alignment (the +/- buttons sitting immediately next to
+     the Strike column, quotes on the outer edge) — that's a considered,
+     explicitly-commented layout choice, not the source of the
+     "cluttered" complaint. The consistent solid background (below),
+     larger desktop font-size, and visible button backgrounds applied
+     elsewhere in this file are what should keep a full-width grid from
+     reading as sparse/clashing rather than re-litigating that layout. */
   /* NOTE: border-bottom/font-size desktop overrides moved to a later
      @media (min-width: 640px) block below (after the base .chain-grid /
      .chain-row > td / .chain-th-* / .chain-cell-* rules they override)
@@ -1345,14 +1351,21 @@
   .chain-col-ce     { width: 44%; }
   .chain-col-strike { width: 12%; }
   .chain-col-pe     { width: 44%; }
-  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(13,21,38,0.6); }
-  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: rgba(13,21,38,0.6); }
+  /* Operator (2026-09-29): "ce, strike, pe header row should not be
+     scrollable" — sticky within .chain-grid-wrap's own scroll
+     container (overflow-y: auto). Needs a fully OPAQUE background
+     (not the old 0.6-alpha overlay) so scrolled body rows don't show
+     through underneath it; matches .chain-grid-wrap's own new solid
+     background exactly, so the header reads as part of the same
+     surface, not a separate darker band. */
+  .chain-th-ce      { text-align: left;   color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: right;  color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: rgba(13,21,38,0.6); }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.05); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1494,6 +1507,24 @@
   .chain-btn-sell { color: var(--c-short); background: var(--c-short-10); border-color: var(--c-short-22); }
   .chain-btn-buy:hover,  .chain-btn-buy:focus-visible  { background: var(--c-long-14);  border-color: var(--c-long); }
   .chain-btn-sell:hover, .chain-btn-sell:focus-visible { background: var(--c-short-14); border-color: var(--c-short); }
+  /* Operator (2026-09-29): "make + and - look like buttons. when
+     pressed add border or some kind of highlight to show it is
+     pressed" — hover already fills the button; :active goes a step
+     further (stronger background + a solid ring + a slight press-down
+     scale) so a tap/click reads as tactile feedback, not just another
+     hover state. */
+  .chain-btn-buy:active  {
+    background: var(--c-long-22);
+    border-color: var(--c-long);
+    box-shadow: inset 0 0 0 1px var(--c-long);
+    transform: scale(0.93);
+  }
+  .chain-btn-sell:active {
+    background: var(--c-short-22);
+    border-color: var(--c-short);
+    box-shadow: inset 0 0 0 1px var(--c-short);
+    transform: scale(0.93);
+  }
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
   .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long-22); }
   .chain-btn-sell:disabled:hover { border-color: var(--c-short-22); }
@@ -1619,6 +1650,16 @@
   @media (min-width: 640px) {
     .chain-row > td {
       border-bottom: none;
+      /* Operator (2026-09-29): "on desktop the chain rows are very
+         close. add gap between them. mobile chain looks better" —
+         the base rule above zeroes vertical padding entirely (a
+         density pass for the row-height-halving fix), and removing
+         the border-bottom just above dropped the only remaining row
+         separator, so desktop rows read as touching. Vertical padding
+         restores breathing room without reintroducing the border
+         lines mobile already reported looking worse with. */
+      padding-top: 0.3rem;
+      padding-bottom: 0.3rem;
     }
     .chain-grid { font-size: 0.78rem; }
     .chain-th-ce, .chain-th-pe, .chain-th-strike { font-size: 0.7rem; }
@@ -1642,5 +1683,23 @@
     .chain-cell-quote { font-size: 0.72rem; }
     .chain-cell-no-depth { font-size: 0.68rem; }
     .chain-cell-spread-warn { font-size: 0.62rem; }
+  }
+  /* Operator: "I don't see template elements in chain on mobile. Looks
+     like they are hidden" / "reduce the height of chain area on mobile
+     to show them". Root cause: .chain-grid-wrap's `flex: 1 1 0` (above)
+     has nothing capping its growth, so on a short mobile viewport it
+     expands to absorb the ENTIRE flex-parent chain up through
+     .oes-body — a sibling scroll container of its own
+     (SymbolPanel.svelte's .oes-body has `overflow-y: auto`). Two
+     nested `overflow-y: auto` regions (.oes-body and .chain-grid-wrap)
+     each absorb their own overflow internally, so the TemplateBar row
+     rendered AFTER .oes-body in the shell's markup never gets pushed
+     into view by outer-modal scroll — it's starved of any box height
+     to begin with. Capping this wrapper's height on mobile guarantees
+     .oes-body has leftover room to lay out the Templ row below it. */
+  @media (max-width: 760px) {
+    .chain-grid-wrap {
+      max-height: 16rem;
+    }
   }
 </style>

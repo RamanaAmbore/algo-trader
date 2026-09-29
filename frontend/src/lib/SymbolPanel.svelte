@@ -1311,7 +1311,7 @@
   // steppers and side flips made INSIDE the ticket, not just the
   // initial props this modal was opened with.
   const _submitLabel = $derived.by(() => {
-    if (basketLegs.length > 0) return `Submit (${basketLegs.length})`;
+    if (basketLegs.length > 0) return 'Submit';
     const liveSide = _ticketState.side || _modalSide;
     const liveQty  = _ticketState.qty || Number(_ticketProps?.qty ?? qty) || 0;
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
@@ -2272,11 +2272,6 @@
             mode={_sharedMode}
             bind:chase={_sharedChase}
             bind:chaseAgg={chaseAgg}
-            bind:templateId={_sharedTemplateId}
-            bind:tpOverride={_sharedTpOverride}
-            bind:slOverride={_sharedSlOverride}
-            bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
-            bind:wingPremPctOverride={_sharedWingPremPctOverride}
             standalone={false}
             defaultChase={_sharedChase}
             defaultChaseAgg={_sharedChaseAgg}
@@ -2389,18 +2384,24 @@
          and the focused-leg's symbol (last-leg by default) for the
          CE/PE regex via _appliesToFor — falling back through
          _localSymbol when no legs are staged. -->
-    {#if _activeTab !== 'chart' && _isDemo && action === 'open'
+    {#if _activeTab === 'chain' && _isDemo && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <!-- Audit fix (L-3) — demo session sees a single muted note
            where the Template Default/None toggle would render for
            authenticated sessions. Anonymous LIVE/PAPER submits are
            blocked at the API layer; surfacing the full picker would
-           promise capabilities the visitor doesn't have. -->
+           promise capabilities the visitor doesn't have.
+           Scoped to Chain only (2026-09-29, operator: "order ticket is
+           not wired to template" / "chain is with template") — was
+           `_activeTab !== 'chart'` (Ticket + Chain both); templates now
+           only ever apply to Chain's basket legs, never a single
+           Ticket-tab order, so the row (and this demo note) has no
+           reason to show on Ticket at all. -->
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell oes-basket-tpl-row-demo">
         <span class="oes-basket-tpl-label">Templ</span>
         <span class="oes-basket-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
       </div>
-    {:else if _activeTab !== 'chart' && _templates.length > 0 && action === 'open'
+    {:else if _activeTab === 'chain' && _templates.length > 0 && action === 'open'
          && ((_localSymbol || '').trim() || basketLegs.length > 0)}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={!_shellUsingNone && _selectedTemplate
@@ -2933,7 +2934,7 @@
             }}>{basketSubmitting
                 ? 'Placing…'
                 : (basketLegs.length > 0
-                    ? `Submit (${basketLegs.length})`
+                    ? 'Submit'
                     : _ticketOwnSubmitBusy
                       ? (_ticketState.pending ? 'Processing…' : 'Placing…')
                       : _submitLabel)}</button>
@@ -4400,6 +4401,16 @@
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
+    /* Operator (2026-09-29): "keep chase right aligned for chain like
+       order ticket" — .oes-tab-ltp (the sibling before this one) owns
+       the only margin-left:auto in this row, so CHASE only landed on
+       the right edge when LTP was ALSO rendered (Ticket tab, single
+       committed symbol). Chain tab often has no single-symbol LTP
+       (_ltp stays null while staging multi-leg baskets), so CHASE lost
+       its right anchor and sat immediately after the tab strip instead.
+       Own margin-left:auto here makes the alignment independent of
+       whether LTP renders, on either tab. */
+    margin-left: auto;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
   /* .oes-tabs has gap:0 (each child owns its own spacing) — the CHASE

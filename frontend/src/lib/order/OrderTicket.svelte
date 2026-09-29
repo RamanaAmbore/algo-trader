@@ -2125,7 +2125,13 @@
           lots: _lots,
           lotSize: _lotSize,
           currentQty,
-          templateId: _isCloseOrder ? null : templateId,
+          // Operator (2026-09-29): "order ticket is not wired to
+          // template" — unconditionally null, not just for close
+          // orders. Ticket-tab submissions never carry a template
+          // regardless of any internal templateId state (which itself
+          // stays null now that auto-select is disabled — see this
+          // component's onMount).
+          templateId: null,
           tpOverride,
           slOverride,
           wingPremPctOverride,
@@ -2277,16 +2283,15 @@
     // is the canonical TP/SL surface now; setting is preserved server-
     // side for back-compat but the modal no longer reads it.
 
-    // Load the OrderTemplate catalog from the module-level cache so
-    // repeated modal opens don't re-hit the DB. The cache kicks in
-    // its first fetch at module-evaluation time, so by the time the
-    // first modal opens the rows are usually already warm.
-    loadOrderTemplates()
-      .then(/** @param {any[]} rows */ (rows) => {
-        _templates = rows.filter(t => t.is_active);
-        _autoSelectTemplate();
-      })
-      .catch(() => { /* silent — picker stays empty */ });
+    // Operator (2026-09-29): "order ticket is not wired to template" —
+    // the Ticket tab places/closes positions with no template attach at
+    // all; template selection is Chain-only now (TemplateBar renders
+    // only for _activeTab === 'chain' in SymbolPanel.svelte). Dropped
+    // the loadOrderTemplates()/_autoSelectTemplate() call that used to
+    // run on every OrderTicket mount — templateId stays null for this
+    // component's whole lifetime, and the submit payload below sends
+    // template_id: null unconditionally as a second, independent
+    // guarantee regardless of this change.
 
     return () => _escCleanup?.();
   });
