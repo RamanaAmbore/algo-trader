@@ -922,10 +922,18 @@
                grid items of .payoff-stats (grid-template-columns: max-content
                max-content). A bare third child here would land in column 1
                of the NEXT row and shift every row below it. Instead this
-               wrapper stays a single column-2 grid item — value + spinner
-               flow inside it — so the 2-column grid shape is preserved. -->
+               wrapper stays a single column-2 grid item — spinner + value
+               flow inside it — so the 2-column grid shape is preserved.
+               Spinner ordered BEFORE the value (2026-09-30, operator:
+               "rotating circle in payoff... after LTP label... in a fixed
+               place before ltp value" / "ltp value should not move while
+               animating") — the reserved-width slot (fixed width whether
+               `.on` or not) means the value's own position never shifts
+               when `refreshing` toggles; flex-end justification keeps the
+               whole [spinner][value] group hugging the column's right
+               edge, so the spinner sits immediately after the LTP label
+               with no gap. -->
           <span class="ps-v-wrap">
-            <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
             <!-- Reserved-width slot (10px, matches the SVG) — always
                  mounted so toggling `refreshing` only flips visibility,
                  never the LTP row's width within the grid. -->
@@ -937,6 +945,7 @@
                   stroke-dasharray="9 30" />
               </svg>
             </span>
+            <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
           </span>
         </div>
         {#if spotPct != null}
@@ -1821,10 +1830,12 @@
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
   }
-  /* Value + refresh-spinner wrapper for the LTP row — stays a single
-     column-2 grid item (see the markup comment above) so the value's
-     own right-alignment survives and the spinner never paints over the
-     _spotFlash tick-flash background applied to .ps-v itself. */
+  /* Spinner + value wrapper for the LTP row — stays a single column-2
+     grid item (see the markup comment above) so the value's own
+     right-alignment survives and the spinner never paints over the
+     _spotFlash tick-flash background applied to .ps-v itself.
+     justify-content: flex-end keeps [spinner][value] hugging the
+     right edge as one group regardless of DOM order. */
   .ps-v-wrap {
     display: inline-flex;
     align-items: center;

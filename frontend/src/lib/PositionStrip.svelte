@@ -804,7 +804,12 @@
        second stop. Anchor both stops on the chrome elevation tokens
        so the band reads as a sibling of navbar + footer. */
     background: linear-gradient(180deg, var(--algo-bg-elev1) 0%, #0f1828 100%);
-    border-bottom: 1px solid var(--algo-amber-border-soft);
+    /* Operator (2026-09-30): "make navstrip bottom border a little
+       lighter" — was the shared --algo-amber-border-soft token
+       (rgba(251,191,36,0.30), also used elsewhere in app.css); scoped
+       override here only, so other consumers of that token are
+       unaffected. */
+    border-bottom: 1px solid rgba(251, 191, 36, 0.18);
     color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
@@ -852,8 +857,10 @@
        both be applied at once (independent booleans), so the 300ms
        heartbeat pulse became imperceptible against the resting stale
        border. Back to the distinct orange so the pulse stays visible
-       when a strip is both heartbeating and stale. */
-    border-bottom-color: rgba(251, 146, 60, 0.6);
+       when a strip is both heartbeating and stale.
+       Lightened (2026-09-30) — operator: "make navstrip bottom border
+       a little lighter". 0.6 → 0.4 alpha, same hue. */
+    border-bottom-color: rgba(251, 146, 60, 0.4);
   }
   /* Closed-hours poll pulse — dim slate border flash when both markets are
      closed but broker data still refreshes (positions, holdings, funds,

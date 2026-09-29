@@ -57,15 +57,26 @@ const ROOT = '/Users/ramanambore/projects/ramboq/frontend';
 // ── Source-scan checks (no browser needed) ────────────────────────────────
 
 test.describe('Source-level guards', () => {
-  test('1: PositionStrip .ps-strip.ps-stale reverted to distinct orange (not amber color-mix)', () => {
+  // 2026-09-30: operator — "make navstrip bottom border a little
+  // lighter" — alpha dropped 0.6 -> 0.4, same distinct-orange hue.
+  test('1: PositionStrip .ps-strip.ps-stale reverted to distinct orange (not amber color-mix), lightened to 0.4 alpha', () => {
     const src = readFileSync(`${ROOT}/src/lib/PositionStrip.svelte`, 'utf-8');
     const staleBlockMatch = src.match(/\.ps-strip\.ps-stale\s*\{[\s\S]*?\n\s*\}/);
     expect(staleBlockMatch, '.ps-strip.ps-stale rule must exist').not.toBeNull();
     const staleBlock = staleBlockMatch[0];
-    expect(staleBlock, 'must use the distinct orange, not the amber color-mix')
-      .toContain('rgba(251, 146, 60, 0.6)');
+    expect(staleBlock, 'must use the distinct orange at the lightened 0.4 alpha')
+      .toContain('rgba(251, 146, 60, 0.4)');
     expect(staleBlock, 'the collision-prone color-mix token must be gone')
       .not.toContain('color-mix(in srgb, var(--algo-amber)');
+  });
+
+  test('1b: base .ps-strip resting border also lightened off the shared amber-border-soft token', () => {
+    const src = readFileSync(`${ROOT}/src/lib/PositionStrip.svelte`, 'utf-8');
+    const baseBlockMatch = src.match(/\.ps-strip\s*\{[\s\S]*?\n\s*\}/);
+    expect(baseBlockMatch, '.ps-strip base rule must exist').not.toBeNull();
+    const baseBlock = baseBlockMatch[0];
+    expect(baseBlock, 'must use a scoped lighter override, not the shared 0.30-alpha token')
+      .toContain('rgba(251, 191, 36, 0.18)');
   });
 
   test('2: CardHeader spinner renders after .ch-title in source order, in a fixed-width slot', () => {
@@ -86,16 +97,25 @@ test.describe('Source-level guards', () => {
     expect(src).toMatch(/\.ch-spin-slot\.on \.ch-spin\s*\{[\s\S]*?animation:\s*rbq-spin/);
   });
 
-  test('3: OptionsPayoff spinner no longer carries the corner-absolute class, renders after LTP value', () => {
+  // 2026-09-30: operator clarified the spinner belongs AFTER the "LTP"
+  // label but BEFORE the LTP value ("rotating circle in payoff...
+  // after LTP label... in a fixed place before ltp value" / "ltp
+  // value should not move while animating") — reordered from the
+  // original after-value placement.
+  test('3: OptionsPayoff spinner no longer carries the corner-absolute class, renders after LTP label but before the LTP value', () => {
     const src = readFileSync(`${ROOT}/src/lib/OptionsPayoff.svelte`, 'utf-8');
     expect(src, 'old corner-absolute class must not be used in markup')
       .not.toMatch(/class="payoff-loading-ring payoff-loading-ring-corner"/);
-    const ltpValueIdx = src.indexOf(`{fmtSpot(spot)}`);
+    const ltpLabelIdx = src.indexOf('<span class="ps-k">LTP</span>');
     const spinnerIdx = src.indexOf('payoff-loading-ring-slot');
-    expect(ltpValueIdx, 'LTP value span must exist').toBeGreaterThan(-1);
+    const ltpValueIdx = src.indexOf(`{fmtSpot(spot)}`);
+    expect(ltpLabelIdx, 'LTP label span must exist').toBeGreaterThan(-1);
     expect(spinnerIdx, 'payoff-loading-ring-slot must exist').toBeGreaterThan(-1);
-    expect(spinnerIdx, 'spinner must render after the LTP value in source order')
-      .toBeGreaterThan(ltpValueIdx);
+    expect(ltpValueIdx, 'LTP value span must exist').toBeGreaterThan(-1);
+    expect(spinnerIdx, 'spinner must render after the LTP label in source order')
+      .toBeGreaterThan(ltpLabelIdx);
+    expect(spinnerIdx, 'spinner must render before the LTP value in source order')
+      .toBeLessThan(ltpValueIdx);
     // Reserved-width slot so toggling `refreshing` doesn't resize the LTP row.
     expect(src).toMatch(/\.payoff-loading-ring-slot\s*\{[\s\S]*?width:\s*10px/);
     expect(src).toMatch(/\.payoff-loading-ring-slot\.on \.payoff-loading-ring\s*\{[\s\S]*?animation:\s*rbq-spin/);
