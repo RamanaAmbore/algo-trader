@@ -2196,7 +2196,9 @@
       {/if}
       {#if _chaseEnabled}
         <span class="oes-common-chase-label on" title="Chase is active">CHASE</span>
-        <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+        <span class="oes-chase-agg-gap">
+          <ChaseAggPicker value={_sharedChaseAgg} onChange={_setSharedChaseAgg} variant="panel" />
+        </span>
       {/if}
     </div>
     {/if}
@@ -4417,12 +4419,14 @@
      the verb (ADD/CLOSE) stacks above the derived broker side
      (BUY/SELL) inside the same 1.7rem slot. cursor:default (not
      pointer) — no hover affordance since nothing is clickable here. */
+  /* Plain text, NOT a pill — operator (2026-09-29, repeated feedback):
+     the bordered/pill treatment still read as "a second button" next
+     to Submit even in ghost/outlined form. No border, no background,
+     no min-width: color alone carries the BUY/SELL/none meaning, so
+     there is exactly one thing on this row that looks clickable. */
   .oes-footer-side-btn-single {
     height: var(--ctl-h, 1.7rem);
-    min-width: 5.5rem;
-    padding: 0 0.7rem;
-    border-radius: 3px;
-    border: 1px solid;
+    padding: 0 0.3rem;
     cursor: default;
     font-family: var(--font-numeric);
     font-size: var(--ctl-fs, var(--fs-sm));
@@ -4430,6 +4434,7 @@
     letter-spacing: 0.04em;
     white-space: nowrap;
     background: transparent;
+    border: none;
     flex-shrink: 0;
     display: inline-flex;
     align-items: center;
@@ -4442,7 +4447,6 @@
   .oes-footer-side-btn-single.is-stacked {
     flex-direction: column;
     line-height: 1.05;
-    padding: 0 0.5rem;
   }
   .oes-footer-side-btn-single.is-stacked .oes-side-line {
     display: block;
@@ -4463,23 +4467,10 @@
     /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as the
        .cell-muted token, so reused directly. */
     color: var(--algo-slate-muted);
-    border-color: color-mix(in srgb, var(--algo-slate) 32%, transparent);
-    border-style: dashed;
+    font-style: italic;
   }
-  /* Ghost/outlined, NOT filled — a solid fill here would read visually
-     near-identical to `.oes-common-submit-buy`/`-sell` (the actual
-     Submit button next to it). Border + text color still carry the
-     BUY/SELL meaning as a preview; background stays transparent. */
-  .oes-footer-side-btn-single.on-buy {
-    color: var(--c-long);
-    background: transparent;
-    border-color: rgba(74, 222, 128, 0.70);
-  }
-  .oes-footer-side-btn-single.on-sell {
-    color: var(--c-short);
-    background: transparent;
-    border-color: rgba(248, 113, 113, 0.70);
-  }
+  .oes-footer-side-btn-single.on-buy { color: var(--c-long); }
+  .oes-footer-side-btn-single.on-sell { color: var(--c-short); }
 
   /* Shared mode + chase toolkit — sits ABOVE the margin/action row
      so both Chain and Ticket tabs read from the same controls.
@@ -4500,6 +4491,10 @@
     letter-spacing: 0.06em;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
+  /* .oes-tabs has gap:0 (each child owns its own spacing) — the CHASE
+     label had none, so the L/M/H picker sat flush against it. Operator
+     (2026-09-29): "there should be space between chase and l/m/h". */
+  .oes-chase-agg-gap { margin-left: 0.4rem; display: inline-flex; }
 
   /* Margin strip — sits BELOW the action buttons. MARGIN · Avail ·
      After · (Short) cells in a horizontal row. After is colour-coded

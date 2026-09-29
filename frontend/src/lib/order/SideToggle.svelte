@@ -103,6 +103,13 @@
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;
+    /* Operator (2026-09-29): "leave gap between buy and sell buttons" —
+       was a single merged segmented-control shape (shared container
+       border + overflow:hidden, buttons flush with border:0). Now two
+       independently-bordered buttons with real space between them;
+       container just provides the gap + height, no border/fill of its
+       own. */
+    gap: 0.4rem;
     /* Shared --ctl-h control height (declared in OrderTicket.svelte
        .ot-modal / SymbolPanel.svelte .oes-modal) — matches Select,
        QtyInput's steppers/input, and the footer side-selector button
@@ -110,17 +117,14 @@
        of visibly uneven row heights. */
     height: var(--ctl-h, 1.55rem);
     min-height: var(--ctl-h, 1.55rem);
-    border-radius: 3px;
-    overflow: hidden;
-    background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(255, 255, 255, 0.18);
     box-sizing: border-box;
   }
   .ot-side-toggle-compact .ot-side-btn {
     flex: 1 1 0;
     padding: 0;
     background: transparent;
-    border: 0;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    border-radius: 3px;
     color: #94a3b8;
     font-family: var(--font-numeric);
     font-size: var(--ctl-fs, var(--fs-sm));
@@ -128,7 +132,8 @@
     letter-spacing: 0.04em;
     line-height: 1;
     cursor: pointer;
-    transition: background 0.12s, color 0.12s, box-shadow 0.12s;
+    box-sizing: border-box;
+    transition: background 0.12s, color 0.12s, box-shadow 0.12s, border-color 0.12s;
   }
   .ot-side-toggle-compact .ot-side-btn:hover:not(.on):not([disabled]) {
     background: rgba(255, 255, 255, 0.06);
