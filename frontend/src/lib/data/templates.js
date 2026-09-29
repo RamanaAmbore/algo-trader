@@ -31,11 +31,28 @@ export async function loadOrderTemplates() {
     try {
       const rows = await _apiFetch();
       _templates = Array.isArray(rows) ? rows : [];
+      orderTemplatesStore.set(_templates);
+      return _templates;
     } catch (e) {
-      _templates = [];
+      // 2026-09-30 fix — DO NOT cache a failed fetch as `[]`. `if
+      // (_templates) return _templates;` above checks truthiness, and an
+      // empty array is truthy — so caching a transient failure (auth
+      // token not yet attached this early in page load, a momentary
+      // network blip) as `[]` PERMANENTLY poisoned every future call in
+      // that browser tab for the rest of its session: no retry, ever,
+      // regardless of how many times the operator switched symbols/tabs
+      // (only a genuine fresh tab reset `_templates` back to `null` —
+      // and if the same early-load race happened again, it broke again
+      // the same way). This is why the Templ toggle worked in fresh
+      // Playwright test runs (auth pre-seeded before navigation, no
+      // race) but could stay permanently invisible in a real operator
+      // session that happened to hit this race once. Leave `_templates`
+      // as `null` on failure so the NEXT call retries fresh instead of
+      // reusing a poisoned empty result. Return `[]` to THIS caller only
+      // (doesn't change the shape callers expect), without caching it.
+      orderTemplatesStore.set([]);
+      return [];
     }
-    orderTemplatesStore.set(_templates);
-    return _templates;
   })();
   try { return await _loadPromise; }
   finally { _loadPromise = null; }

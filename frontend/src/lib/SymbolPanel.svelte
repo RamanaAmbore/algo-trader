@@ -54,7 +54,6 @@
   // CRUD on /automation/templates propagates here without a refresh.
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
-  import { guessExpiryYmdFromSymbol } from '$lib/data/decomposeSymbol.js';
   // resolveUnderlying / findNearestFuture / resolveAnchorToTradeable
   // dynamically imported inside effects only — no static imports needed.
   import { loadAccounts, getDefaultAccount, recentSymbolStore, setRecentSymbol, setRecentAccount } from '$lib/data/accounts';
@@ -249,25 +248,12 @@
   // intentional: seeds from symbol prop once; $effect below re-syncs on external prop changes
   // svelte-ignore state_referenced_locally
   let _localSymbol = $state(String($state.snapshot(symbol) || '').toUpperCase());
-  // Days-to-expiry chip, common across every tab (2026-09-30, operator:
-  // "I want 15d to be common and to be displayed after symbol"). Was
-  // previously computed only inside OptionChainTab.svelte from the
-  // Chain-tab-local `chainExpiry` Select value — this derives it
-  // independently from `_localSymbol` itself via `guessExpiryYmdFromSymbol`
-  // (a pure symbol-text parser, no instruments-cache/Chain-tab-state
-  // dependency), so it's available in the shared header regardless of
-  // which tab is active. Same day-count formula OptionChainTab's own
-  // `_daysToExpiry` uses (15:30 IST settlement cutoff), kept in sync
-  // deliberately rather than importing across components for one line.
-  const _headerDte = $derived.by(() => {
-    const ymd = guessExpiryYmdFromSymbol(_localSymbol);
-    if (!ymd) return null;
-    try {
-      const d = new Date(ymd + 'T15:30:00+05:30');
-      const diffMs = d.getTime() - Date.now();
-      return Math.max(0, Math.floor(diffMs / 86_400_000));
-    } catch { return null; }
-  });
+  // Header days-to-expiry chip REMOVED (2026-09-30, operator: "remove
+  // 15d from order ticket after symbol. I am reversing my decision.") —
+  // was added earlier this same day to make the DTE chip common across
+  // every tab. Chain tab's own Expiry-row chip (.oct-expiry-dte in
+  // OptionChainTab.svelte, unaffected by this reversal) remains the
+  // only days-to-expiry indicator.
   // Sync FROM prop only. Reading _localSymbol via untrack() so the
   // operator's own picks (which set _localSymbol from inside the modal)
   // don't re-trigger this effect — without untrack the comparison
@@ -2201,13 +2187,6 @@
             }}
             ariaLabel="Symbol — pinned or search" />
         </div>
-        {#if _headerDte != null && _localSymbol}
-          <span class="oes-header-dte"
-                class:oes-header-dte-warn={_headerDte <= 3}
-                title="Days until this contract's expiry">
-            {_headerDte === 0 ? 'expires today' : `${_headerDte}d`}
-          </span>
-        {/if}
         {#if pickerSuffix}
           {@render pickerSuffix()}
         {/if}
@@ -3164,26 +3143,6 @@
   }
   .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
   .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }
-  /* Days-to-expiry chip, common header (2026-09-30) — same palette as
-     OptionChainTab.svelte's .oct-expiry-dte/.oct-expiry-dte-warn (now
-     Chain-tab-only, this is the shared-header sibling). */
-  .oes-header-dte {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-xs);
-    font-weight: 700;
-    color: var(--algo-muted);
-    background: rgba(125, 145, 184, 0.08);
-    border: 1px solid rgba(125, 145, 184, 0.22);
-    border-radius: 3px;
-    padding: 0.15rem 0.45rem;
-    flex-shrink: 0;
-    white-space: nowrap;
-  }
-  .oes-header-dte-warn {
-    color: var(--c-action);
-    background: var(--algo-amber-bg);
-    border-color: rgba(251, 191, 36, 0.42);
-  }
   /* Root-cause fix (mobile overflow) — SymbolSearchInput's own
      `.ssi-drop` results panel anchors `left: 0` relative to its
      `.ssi-wrap`, with a fixed `min-width: 14rem` for readability.

@@ -3591,7 +3591,8 @@
   .ot-lots-price-row { gap: 0.6rem; align-items: flex-start; }
   .ot-lots-cell  { flex: 0 0 auto; min-width: 0; }
   .ot-price-cell { flex: 0 0 auto; min-width: 0; }
-  .ot-price-cell .ot-input { width: 9rem; }
+  /* Narrowed 20% (2026-09-30, operator request): 9rem -> 7.2rem. */
+  .ot-price-cell .ot-input { width: 7.2rem; }
 
   .ot-input {
     width: 100%;

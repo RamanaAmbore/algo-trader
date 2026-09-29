@@ -50,9 +50,7 @@ test.describe('Stale-code: single toggle button replaces the old Default/None pi
   test('TemplateBar renders one Templ toggle button, not the retired two-button pill', () => {
     const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
     expect(src).toContain('class="oes-tpl-button"');
-    // TEMP DEBUG MODE (2026-09-30, see below) — button currently reads
-    // _debugOn, not _toggleOn.
-    expect(src).toMatch(/class:active=\{_debugOn\}/);
+    expect(src).toMatch(/class:active=\{_toggleOn\}/);
     // Old two-button pill markup/classes must be gone.
     expect(src).not.toContain('oes-tpl-toggle-btn-on');
     expect(src).not.toContain('oes-tpl-toggle-btn-off');
@@ -64,29 +62,24 @@ test.describe('Stale-code: single toggle button replaces the old Default/None pi
     expect(src).not.toMatch(/_onDropdownChange/);
   });
 
-  test('TEMP DEBUG MODE — toggle is a plain local on/off, not wired to onSelectDefault/onSelectNone', () => {
-    // Operator: "just display templ with on and off behavior without
-    // wiring with functionality... Once I confirm, then wire it
-    // functionality." Deliberate, temporary — REVERT alongside the
-    // source block it guards once the display issue is confirmed fixed
-    // and the button is wired back to the real handlers below.
+  test('toggle click handler routes to onSelectNone when active, onSelectDefault when inactive (RE-WIRED 2026-09-30)', () => {
+    // A temporary debug bypass briefly disconnected this (to isolate a
+    // display bug that turned out to be in loadOrderTemplates()'s
+    // fetch-failure caching, templates.js — unrelated to this handler).
+    // Reverted to the real wiring once that root cause was found+fixed.
     const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
-    const btn = src.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
-    expect(btn).not.toContain('onSelectNone?.()');
-    expect(btn).not.toContain('onSelectDefault?.()');
-    expect(btn).toContain('_debugToggleClick');
-    // The real handlers are still declared as props (available to
-    // re-wire) even though nothing currently calls them.
-    expect(src).toMatch(/^\s*onSelectDefault,/m);
-    expect(src).toMatch(/^\s*onSelectNone,/m);
+    const btn = src.match(/class="oes-tpl-button"[\s\S]{0,700}?<\/button>/)?.[0] ?? '';
+    expect(btn).toContain('onSelectNone?.()');
+    expect(btn).toContain('onSelectDefault?.()');
+    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
+    expect(btn).not.toContain('_debugToggleClick');
+    expect(src).not.toMatch(/let _debugOn/);
   });
 
-  test('TEMP DEBUG MODE — toggle button is never disabled (real disabled-gating logic untouched but disconnected)', () => {
+  test('toggle button is disabled only while inactive with no side-aware default (never while active)', () => {
     const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
-    const btn = src.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
-    expect(btn).not.toMatch(/disabled=/);
-    // The real gating derivation must still exist in the script, just
-    // disconnected from the button's `disabled` attribute.
+    const btn = src.match(/class="oes-tpl-button"[\s\S]{0,700}?<\/button>/)?.[0] ?? '';
+    expect(btn).toMatch(/disabled=\{_templBtnDisabled\}/);
     expect(src).toMatch(/_templBtnDisabled\s*=\s*\$derived\(!_toggleOn\s*&&\s*_toggleOnDisabled\)/);
   });
 

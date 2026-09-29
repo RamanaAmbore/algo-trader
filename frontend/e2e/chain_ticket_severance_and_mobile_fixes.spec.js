@@ -286,11 +286,19 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
   // reversed to flex: 1 1 auto now that the Templ toggle it was protecting
   // has moved above the grid (into the expiry row) — nothing left below
   // the grid to starve, so it can grow to fill real leftover space again.
-  test('mobile .chain-grid-wrap grows to fill available space (flex: 1 1 auto), still capped at 16rem', () => {
-    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,120}?\}/)?.[0] ?? '';
+  test('mobile .chain-grid-wrap shrinks to content (flex: 0 1 auto), still capped at 16rem (2026-09-30 fix)', () => {
+    // Was flex: 1 1 auto — grow:1 stretched the wrapper to consume all
+    // leftover space in its flex-column parent up to the 16rem cap, even
+    // when the actual strike-row content was shorter, leaving visible
+    // empty space below the last row (operator: "why empty space below
+    // chain on mobile"). Shrink-to-content instead.
+    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,1200}?\}/)?.[0] ?? '';
     expect(mobileBlock, 'mobile .chain-grid-wrap block').not.toBe('');
     expect(mobileBlock).toMatch(/max-height:\s*16rem/);
-    expect(mobileBlock).toMatch(/flex:\s*1 1 auto/);
+    // The real CSS declaration (not the explanatory comment prose above
+    // it, which legitimately mentions the old value in passing).
+    expect(mobileBlock).toMatch(/\n\s*flex:\s*0 1 auto;/);
+    expect(mobileBlock).not.toMatch(/\n\s*flex:\s*1 1 auto;/);
   });
 });
 
@@ -309,8 +317,7 @@ test.describe('Chain leg badge — template short-label suffix', () => {
 test.describe('TemplateBar — single toggle button replaces the primary dropdown/pill (2026-09-30)', () => {
   test('primary control is one toggle button, not a <Select> or the retired two-button pill', () => {
     expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-button"/);
-    // TEMP (see below): button currently reads _debugOn, not _toggleOn.
-    expect(TEMPLATE_BAR).toMatch(/class:active=\{_debugOn\}/);
+    expect(TEMPLATE_BAR).toMatch(/class:active=\{_toggleOn\}/);
     // Retired two-button pill markup/classes must be gone.
     expect(TEMPLATE_BAR).not.toMatch(/class="oes-tpl-toggle"/);
     expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-on/);
@@ -320,25 +327,25 @@ test.describe('TemplateBar — single toggle button replaces the primary dropdow
     expect(beforeExpandPanel).not.toMatch(/<Select/);
   });
 
-  test('TEMP DEBUG MODE (2026-09-30) — button is a plain local on/off toggle, deliberately unwired from order-fill logic', () => {
-    // Operator: "if templ issue persists, just display templ with on and
-    // off behavior without wiring with functionality... I think some
-    // wired functionality is creating display issue." This is a
-    // deliberate, temporary state to isolate whether the real
-    // side/scope-resolution wiring was itself the rendering problem —
-    // REVERT this test (and the source block it guards) once confirmed
-    // and the button is wired back to the real onSelectDefault/
-    // onSelectNone handlers.
-    const btn = TEMPLATE_BAR.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
+  test('RE-WIRED (2026-09-30) — button calls the real onSelectDefault/onSelectNone handlers, not a debug-only local toggle', () => {
+    // The temporary debug bypass (which isolated whether TemplateBar's
+    // own logic was the display problem) was reverted after the actual
+    // root cause was found and fixed: loadOrderTemplates() (templates.js)
+    // permanently cached a transient fetch failure as an empty template
+    // list. See that file's own test coverage
+    // (frontend/src/lib/__tests__/data/templates.test.js) for the fix.
+    const btn = TEMPLATE_BAR.match(/class="oes-tpl-button"[\s\S]{0,700}?<\/button>/)?.[0] ?? '';
     expect(btn, 'toggle button block').not.toBe('');
-    expect(btn).toContain('_debugToggleClick');
-    expect(btn).not.toContain('onSelectDefault?.()');
-    expect(btn).not.toContain('onSelectNone?.()');
-    expect(btn).not.toMatch(/disabled=/);
-    // The real wiring must still exist in the script (untouched, just
-    // disconnected) so re-wiring later is a markup-only change.
+    expect(btn).toContain('onSelectDefault?.()');
+    expect(btn).toContain('onSelectNone?.()');
+    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
+    expect(btn).toMatch(/disabled=\{_templBtnDisabled\}/);
+    expect(btn).not.toContain('_debugToggleClick');
+    expect(TEMPLATE_BAR).not.toMatch(/let _debugOn/);
+    // ON/active display state guards against a null _sharedTemplateId
+    // reading as "armed" (the financial-risk-relevant fix) — must
+    // require BOTH !shellUsingNone AND a concrete selectedTemplate.
     expect(TEMPLATE_BAR).toMatch(/_toggleOn = \$derived\(!shellUsingNone && !!selectedTemplate\)/);
-    expect(TEMPLATE_BAR).toMatch(/let _debugOn = \$state\(true\)/);
   });
 
   test('a specific named-template picker exists inside the expand panel, scoped to nonNoneTemplates', () => {
@@ -418,5 +425,54 @@ test.describe('Chart Y-axis label has no rupee symbol', () => {
     expect(label, 'cw-yaxis-label <text> block').not.toBe('');
     expect(label).not.toContain('₹{priceFmt(tick.v)}');
     expect(label).toContain('{priceFmt(tick.v)}');
+  });
+});
+
+// 2026-09-30: operator — "price width can be reduced by 20%".
+test.describe('PRICE input narrowed 20%', () => {
+  test('.ot-price-cell .ot-input is 7.2rem (was 9rem)', () => {
+    expect(ORDER_TICKET).toMatch(/\.ot-price-cell \.ot-input \{ width:\s*7\.2rem;\s*\}/);
+    expect(ORDER_TICKET).not.toMatch(/\.ot-price-cell \.ot-input \{ width:\s*9rem;\s*\}/);
+  });
+});
+
+// 2026-09-30: operator — header DTE chip removal ("remove 15d from order
+// ticket after symbol. I am reversing my decision.") — reverses the
+// earlier same-day "make 15d common across every tab" change.
+test.describe('Header DTE chip removed (reversed decision)', () => {
+  test('SymbolPanel no longer computes or renders a header days-to-expiry chip', () => {
+    expect(SYMBOL_PANEL).not.toMatch(/_headerDte/);
+    expect(SYMBOL_PANEL).not.toMatch(/oes-header-dte/);
+    expect(SYMBOL_PANEL).not.toMatch(/guessExpiryYmdFromSymbol/);
+  });
+
+  test('Chain tab keeps its own Expiry-row DTE chip, unaffected by the reversal', () => {
+    expect(CHAIN_TAB).toMatch(/oct-expiry-dte/);
+    expect(CHAIN_TAB).toMatch(/_daysToExpiry/);
+  });
+});
+
+// 2026-09-30: RE-GATED after finding and fixing the actual root cause —
+// loadOrderTemplates() (templates.js) permanently caching a transient
+// fetch failure as an empty template list. A temporary gate bypass here
+// (and a temporary internal-wiring bypass in TemplateBar.svelte, see the
+// "RE-WIRED" test above) helped isolate that the bug was NOT in either
+// this gate's own logic or TemplateBar's button logic — both now
+// reverted to their real, permanent behavior.
+test.describe('TemplateBar mount gate — real showDemoTplNote/showTemplateBar conditional restored', () => {
+  test('<TemplateBar> is gated by {#if showDemoTplNote}{:else if showTemplateBar}, not unconditional', () => {
+    const expiryIdx = CHAIN_TAB.indexOf('oct-toolbar-label">Expiry<');
+    expect(expiryIdx, 'Expiry label present').toBeGreaterThan(-1);
+    // Search from AFTER the Expiry label — "<TemplateBar" also appears
+    // earlier in this file's own JSDoc prop-documentation comment block.
+    const templateBarIdx = CHAIN_TAB.indexOf('<TemplateBar', expiryIdx);
+    expect(templateBarIdx, '<TemplateBar mount present after Expiry label').toBeGreaterThan(-1);
+    expect(templateBarIdx, '<TemplateBar sits within the Expiry toolbar row')
+      .toBeLessThan(expiryIdx + 2500);
+    const precedingText = CHAIN_TAB.slice(Math.max(0, templateBarIdx - 600), templateBarIdx);
+    expect(precedingText).toMatch(/\{#if showDemoTplNote\}/);
+    expect(precedingText).toMatch(/\{:else if showTemplateBar\}/);
+    expect(CHAIN_TAB).toMatch(/showTemplateBar\s*=\s*false/);
+    expect(CHAIN_TAB).toMatch(/showDemoTplNote\s*=\s*false/);
   });
 });

@@ -917,7 +917,17 @@
            per-basket controls. showDemoTplNote / showTemplateBar are
            computed in the shell (SymbolPanel) mirroring the exact
            original if/else-if gates: demo wins when both would be
-           true, matching the old branch's precedence. -->
+           true, matching the old branch's precedence.
+
+           RE-GATED (2026-09-30, same day) after finding and fixing the
+           actual root cause: loadOrderTemplates() (templates.js) was
+           permanently caching a transient fetch failure as an empty
+           template list for the rest of the browser tab's session,
+           which made `_templates.length > 0` (part of showTemplateBar's
+           definition) false indefinitely in a real operator session
+           that happened to hit the race once — unrelated to this gate's
+           own logic, which a temporary debug bypass correctly ruled
+           out as NOT the cause before the real fix was found. -->
       {#if showDemoTplNote}
         <span class="oct-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
       {:else if showTemplateBar}
@@ -1828,7 +1838,15 @@
   @media (max-width: 760px) {
     .chain-grid-wrap {
       max-height: 16rem;
-      flex: 1 1 auto;
+      /* flex-grow:0 (was 1) — 2026-09-30, operator: "why empty space
+         below chain on mobile". flex:1 1 auto still STRETCHED the
+         wrapper to consume all leftover space in its flex-column parent
+         up to the 16rem cap, even when the actual strike-row content
+         was naturally shorter than that — leaving visible empty space
+         inside the (now taller-than-needed) wrapper, below the last
+         real row, before the on-fill notice/Submit bar. Shrink-to-
+         content (up to the same 16rem cap) instead. */
+      flex: 0 1 auto;
     }
   }
 </style>

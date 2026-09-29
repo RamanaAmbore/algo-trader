@@ -72,28 +72,6 @@
       : (sideAwareDefault ? (sideAwareDefault.name || sideAwareDefault.slug) : 'Default')
   );
 
-  // ═══════════════════════════════════════════════════════════════════
-  // TEMPORARY DEBUG MODE (2026-09-30) — operator: "if templ issue
-  // persists, just display templ with on and off behavior without
-  // wiring with functionality... I think some wired functionality is
-  // creating display issue."
-  //
-  // The button below currently reads `_debugOn`/`_debugToggleClick`, a
-  // plain local $state completely disconnected from `_toggleOn` /
-  // `sideAwareDefault` / `onSelectDefault` / `onSelectNone` — i.e. it no
-  // longer actually attaches or detaches a template on order fill. This
-  // isolates whether the real side/scope-resolution wiring (untouched,
-  // still computed above) was itself causing the button not to render —
-  // once confirmed, REVERT this block and switch the markup below back
-  // to `_toggleOn`/`_templBtnDisabled`/the real onSelectDefault/
-  // onSelectNone handlers (still declared as props above and fully
-  // intact — only their CALL SITE in the button's onclick was removed).
-  // DO NOT ship this to prod as a permanent state — Templ currently does
-  // NOT arm TP/SL/Wing on fill while this is active.
-  let _debugOn = $state(true); // default active, per the original request
-  function _debugToggleClick() { _debugOn = !_debugOn; }
-  // ═══════════════════════════════════════════════════════════════════
-
   // Expand/collapse state (#30) — persists within session; resets when
   // the parent clears selectedTemplate (i.e. on modal close/symbol change).
   let _expanded = $state(false);
@@ -185,20 +163,29 @@
 </script>
 
 <span class="oes-basket-tpl-pick">
-  <!-- Single toggle button (replaces the old Default/None two-button
-       pill, 2026-09-30 — operator: "make Templ look like a button which
-       can be active or inactive based on button press, default active").
-       Active (amber-filled) = template attach ON, resolves to the
-       side-aware default. Inactive (dim) = None — entry only. Default
-       state on mount is active whenever a side-aware default resolves
-       (see _toggleOn above), matching the prior toggle's own default. -->
-  <!-- DEBUG MODE (see block above) — class/click driven by _debugOn,
-       not the real _toggleOn/onSelectDefault/onSelectNone wiring. -->
+  <!-- Single toggle button (2026-09-30 — operator: "make Templ look like
+       a button which can be active or inactive based on button press,
+       default active"). RE-WIRED to the real logic (2026-09-30, same
+       day) after the actual root cause was found and fixed: a bug in
+       loadOrderTemplates() (frontend/src/lib/data/templates.js) that
+       permanently cached a transient fetch failure as an empty template
+       list for the rest of the browser tab's session — unrelated to
+       this component's own logic, which a temporary debug bypass had
+       correctly ruled out first. Active (amber-filled) = template
+       attach ON, resolves to the side-aware default. Inactive (dim,
+       slate) = None — entry only. Default state on mount is active
+       whenever a side-aware default resolves (see _toggleOn above). -->
   <button type="button"
           class="oes-tpl-button"
-          class:active={_debugOn}
-          title={_debugOn ? 'Templ: ON (debug mode — not wired to order fill yet)' : 'Templ: OFF (debug mode — not wired to order fill yet)'}
-          onclick={_debugToggleClick}>
+          class:active={_toggleOn}
+          disabled={_templBtnDisabled}
+          title={_templBtnDisabled
+            ? 'No default template configured for this side/type'
+            : (_toggleOn
+                ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
+                : 'No template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)')}
+          onclick={() => { if (_toggleOn) { onSelectNone?.(); } else { onSelectDefault?.(); } }}>
+    <span class="oes-tpl-button-dot" aria-hidden="true"></span>
     Templ
   </button>
   {#if !shellUsingNone && selectedTemplate}
@@ -347,12 +334,19 @@
      pass noted further down (NOT the more saturated 100%-opacity amber
      ChaseAggPicker uses for its own `on` state). */
   .oes-tpl-button {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
     height: var(--ctl-h, 1.55rem);
-    padding: 0 0.6rem;
-    background: transparent;
-    border: 1px solid rgba(251, 191, 36, 0.28);
+    padding: 0 0.55rem;
+    /* OFF is now a solid, clearly-visible slate state (2026-09-30 —
+       was near-transparent + 65%-alpha text, which read as "barely
+       there" rather than a deliberate OFF choice; part of why the
+       whole control was hard to spot at a glance). */
+    background: rgba(148, 163, 184, 0.10);
+    border: 1px solid rgba(148, 163, 184, 0.35);
     border-radius: 3px;
-    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
@@ -362,8 +356,9 @@
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
   .oes-tpl-button:hover:not(.active):not(:disabled) {
-    color: var(--c-action);
-    background: rgba(251, 191, 36, 0.08);
+    color: var(--algo-slate);
+    background: rgba(148, 163, 184, 0.18);
+    border-color: rgba(148, 163, 184, 0.5);
   }
   .oes-tpl-button.active {
     background: rgba(251, 191, 36, 0.22);
@@ -373,6 +368,18 @@
   .oes-tpl-button:disabled {
     opacity: 0.4;
     cursor: not-allowed;
+  }
+  /* Status dot — small colored circle, amber when ON, slate when OFF,
+     for an at-a-glance cue independent of the text/border color. */
+  .oes-tpl-button-dot {
+    width: 0.4rem;
+    height: 0.4rem;
+    border-radius: 50%;
+    background: var(--algo-slate-muted);
+    flex-shrink: 0;
+  }
+  .oes-tpl-button.active .oes-tpl-button-dot {
+    background: var(--algo-amber, var(--c-action));
   }
   /* Palette pass (2026-09-29, operator: "template palette not
      consistent with rest of order elements") — TemplateBar was using
