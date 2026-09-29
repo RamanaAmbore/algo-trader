@@ -1313,6 +1313,22 @@
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
   }
+  /* Operator (2026-09-29): "mobile chain looks better than desktop
+     chain which looks very cluttered". Root cause: the grid had no
+     max-width, so on a wide desktop modal the CE/Strike/PE columns
+     (44%/12%/44%) stretched to match — content (small quote text +
+     tiny buttons) didn't scale up with them, leaving huge unused
+     padding inside each cell while the actual controls stayed
+     clustered in a narrow band down the middle. Mobile's naturally
+     narrow viewport never had this problem. Cap desktop to roughly
+     the same content-appropriate width mobile gets "for free",
+     centered in the wider modal, instead of stretching to fill it. */
+  @media (min-width: 640px) {
+    .chain-grid-wrap {
+      max-width: 30rem;
+      margin: 0 auto;
+    }
+  }
   .chain-grid {
     width: 100%;
     table-layout: fixed;
