@@ -147,7 +147,9 @@ async def _run_snapshot(db_rows: list[tuple]):
     # `async with async_session() as session:` — so we patch the factory at
     # the source module where it lives.
     with patch("backend.api.database.async_session",
-               return_value=mock_session):
+               return_value=mock_session), \
+         patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+               AsyncMock(return_value=False)):
         return await _positions_snapshot()
 
 

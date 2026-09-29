@@ -1467,6 +1467,52 @@ def _bg_is_sim_active() -> bool:
         return False
 
 
+async def _compute_lkg_stale_pairs(rows: "list") -> set:
+    """Return the set of unique `(symbol, exchange)` pairs, among *rows*'
+    `kind == 'positions'` entries, whose contract has already passed its
+    own expiry freeze window (`expiry_freeze.is_live_row_past_freeze_window`).
+
+    Extracted out of `_preload_db_lkg_cache` (pure extract-function
+    refactor, 2026-09-29) — identical runtime behaviour, split into its
+    own function purely to distribute cyclomatic complexity below the
+    project's D-grade CC gate (the combined function had grown to grade E,
+    CC=31, after the 2026-09-29 GOLDM expiry-freeze hardening was added).
+
+    Checks run once per UNIQUE `(symbol, exchange)` pair (not once per raw
+    row) via `asyncio.gather`. Non-F&O symbols (holdings — never passed in
+    here — and any row that doesn't parse as an F&O contract) return False
+    immediately with zero DB calls via the predicate's own fast path.
+    Fails OPEN on any lookup error (e.g. a holiday-calendar DB hiccup):
+    returns an empty set rather than losing the entire LKG preload, since
+    this is a defensive hardening layer, not the confirmed-firing bug path
+    (`positions.py:_fetch()` / `_filter_expired_live_rows` is).
+    """
+    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window as _is_past_freeze
+
+    _now_ist = timestamp_indian()
+    _pos_pairs = list({
+        (str(row.symbol or ""), str(row.exchange or ""))
+        for row in rows if str(row.kind or "") == "positions"
+    })
+    _stale_pairs: set = set()
+    if not _pos_pairs:
+        return _stale_pairs
+    try:
+        _results = await asyncio.gather(*(
+            _is_past_freeze(sym, exch, _now_ist) for sym, exch in _pos_pairs
+        ))
+        _stale_pairs = {pair for pair, stale in zip(_pos_pairs, _results) if stale}
+    except Exception as exc:
+        logger.warning(f"[DB-LKG] expiry-freeze check failed, skipping filter: {exc}")
+        return set()
+    if _stale_pairs:
+        logger.info(
+            f"[DB-LKG] preload: excluding {len(_stale_pairs)} expired-past-"
+            f"freeze-window (symbol, exchange) pair(s): {sorted(_stale_pairs)}"
+        )
+    return _stale_pairs
+
+
 async def _preload_db_lkg_cache() -> None:
     """Preload the DB-backed LKG cache from daily_book at startup.
 
@@ -1529,26 +1575,11 @@ async def _preload_db_lkg_cache() -> None:
     # identical unfiltered-assumption gap, so it gets the same guard.
     # Non-F&O symbols (holdings rows, equity) return False immediately
     # with zero DB calls via `is_live_row_past_freeze_window`'s fast path.
-    from backend.api.algo.expiry_freeze import is_live_row_past_freeze_window as _is_past_freeze
-    _now_ist = timestamp_indian()
-    _pos_pairs = list({
-        (str(row.symbol or ""), str(row.exchange or ""))
-        for row in rows if str(row.kind or "") == "positions"
-    })
-    _stale_pairs: set = set()
-    if _pos_pairs:
-        try:
-            _results = await asyncio.gather(*(
-                _is_past_freeze(sym, exch, _now_ist) for sym, exch in _pos_pairs
-            ))
-            _stale_pairs = {pair for pair, stale in zip(_pos_pairs, _results) if stale}
-        except Exception as exc:
-            logger.warning(f"[DB-LKG] expiry-freeze check failed, skipping filter: {exc}")
-        if _stale_pairs:
-            logger.info(
-                f"[DB-LKG] preload: excluding {len(_stale_pairs)} expired-past-"
-                f"freeze-window (symbol, exchange) pair(s): {sorted(_stale_pairs)}"
-            )
+    # Extracted into `_compute_lkg_stale_pairs` (pure extract-function
+    # refactor, 2026-09-29) to keep this function's own cyclomatic
+    # complexity below the project's D-grade CC gate — see that helper's
+    # docstring for the full behavioural contract (unchanged).
+    _stale_pairs = await _compute_lkg_stale_pairs(rows)
 
     # Group rows by (account, kind) and build DataFrames.
     from collections import defaultdict

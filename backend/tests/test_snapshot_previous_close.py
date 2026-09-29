@@ -485,7 +485,9 @@ async def test_positions_snapshot_passes_previous_close_to_builder():
     mock_session.__aexit__ = AsyncMock(return_value=False)
     mock_session.execute = AsyncMock(return_value=mock_result)
 
-    with patch("backend.api.database.async_session", return_value=mock_session):
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+               AsyncMock(return_value=False)):
         from backend.api.routes.positions import _positions_snapshot
         resp = await _positions_snapshot()
 

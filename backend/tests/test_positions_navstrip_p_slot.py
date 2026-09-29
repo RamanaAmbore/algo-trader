@@ -302,7 +302,9 @@ class TestSnapshotPathClosePreference:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
-        with patch("backend.api.database.async_session", return_value=mock_session):
+        with patch("backend.api.database.async_session", return_value=mock_session), \
+             patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+                   AsyncMock(return_value=False)):
             resp = await _positions_snapshot()
 
         assert resp is not None, "snapshot query should not fail"
@@ -403,7 +405,9 @@ class TestSnapshotPathClosePreference:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
-        with patch("backend.api.database.async_session", return_value=mock_session):
+        with patch("backend.api.database.async_session", return_value=mock_session), \
+             patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+                   AsyncMock(return_value=False)):
             resp = await _positions_snapshot()
 
         assert resp is not None
@@ -498,7 +502,9 @@ class TestPrevSettlementPnlBackfill:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
-        with patch("backend.api.database.async_session", return_value=mock_session):
+        with patch("backend.api.database.async_session", return_value=mock_session), \
+             patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+                   AsyncMock(return_value=False)):
             resp = await _positions_snapshot()
 
         assert resp is not None
@@ -872,7 +878,9 @@ class TestIntegrationDayChangeNotCollapsed:
         mock_session.__aexit__ = AsyncMock(return_value=False)
         mock_session.execute = AsyncMock(return_value=mock_result)
 
-        with patch("backend.api.database.async_session", return_value=mock_session):
+        with patch("backend.api.database.async_session", return_value=mock_session), \
+             patch("backend.api.algo.expiry_freeze.is_live_row_past_freeze_window",
+                   AsyncMock(return_value=False)):
             resp = await _positions_snapshot()
 
         assert resp is not None

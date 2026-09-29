@@ -73,7 +73,8 @@ Layer 2: see `~/.claude/agents/backend.md` · Layer 3: see `~/.claude/agents/fro
 
 ## Model Usage
 
-- **Default**: `claude-sonnet-5` for all agents (frontend, backend, broker, audit). Haiku only per the table below. Opus ONLY when operator explicitly says "use opus".
+- **Alias**: `claude-sonnet` → currently `claude-sonnet-5` (see global `~/.claude/CLAUDE.md` Model Selection for the canonical definition).
+- **Default**: `claude-sonnet` for all agents (frontend, backend, broker, audit). Haiku only per the table below. Opus ONLY when operator explicitly says "use opus".
 - Local Qwen proxy (`qwen on|off|status`) routes haiku model IDs to LM Studio when enabled — prefer it for cheap orchestration to save cost.
 
 ## Multi-agent coordination (read first)
@@ -82,9 +83,9 @@ Specialized subagents in `~/.claude/agents/` dispatched in parallel by default:
 
 | Agent | Layer | Use | Model |
 |---|---|---|---|
-| `broker` | Layer 1 | `backend/brokers/` — connections, ticker, service, adapters, resilience | claude-sonnet-5 |
-| `backend` | Layer 2 | `backend/api/` — routes, models, background, persistence, algo engine | claude-sonnet-5 |
-| `frontend` | Layer 3 | `frontend/` — SvelteKit, Svelte 5, ag-Grid | claude-sonnet-5 |
+| `broker` | Layer 1 | `backend/brokers/` — connections, ticker, service, adapters, resilience | claude-sonnet |
+| `backend` | Layer 2 | `backend/api/` — routes, models, background, persistence, algo engine | claude-sonnet |
+| `frontend` | Layer 3 | `frontend/` — SvelteKit, Svelte 5, ag-Grid | claude-sonnet |
 | `backend-test` | Layer 1+2 | pytest + pytest-asyncio — broker + API tests | haiku |
 | `playwright` | Layer 3 | Playwright e2e — browser flows, mobile viewport | haiku |
 | `audit` | All | Read-only defect review — no writes | claude-opus-5-5 |
@@ -368,6 +369,25 @@ the row's own 08:00-IST session boundary (same convention as
   settlement). Sibling instance of the earlier 2026-09 GOLDM regression fix in
   `pageLoad.js:buildCandidatePositions()` — same defect class ("silently vanishes when
   Kite purges contract"), different pipeline.
+
+  **Live-fetch path now also expiry-filtered (2026-09-29, commit ec774d40, amends
+  existing entry)** — The existing `expiry_status()` classifier was wired only into
+  the closed-hours DB-snapshot serving path (`positions.py:_positions_snapshot`), not
+  the live broker-fetch path (`positions.py:_fetch()`). The module's own docstring
+  assumed the live-fetch "naturally stops returning an expired contract" once market
+  reopens — but live incident confirmed this assumption was FALSE. Expired MCX option
+  contracts (e.g. `GOLDM26SEP148000PE`) were returned as non-zero-quantity live positions
+  with wrong P&L, even though their `price_source: "snapshot_settled"` field showed the
+  system already knew the pricing was stale. Fix: new `is_live_row_past_freeze_window()` in
+  [`backend/api/algo/expiry_freeze.py`](backend/api/algo/expiry_freeze.py) — distinct from
+  `expiry_if_closed_on_own_expiry_day()` (which requires persisted `daily_book` history);
+  fast no-I/O path when symbol doesn't parse as F&O or expiry hasn't passed yet; only
+  consults `next_market_open_ist()` once expiry has actually passed. Applied via new helper
+  `_filter_expired_live_rows()` in `positions.py:_fetch()` immediately after `raw =
+  pd.concat()`, BEFORE enrichment/hygiene so filtered rows never corrupt account/symbol
+  P&L rollups. Defensive hardening also added to `background.py:_preload_db_lkg_cache()`.
+  Invariant: both DB-snapshot and live-fetch paths now check expiry status; no path can
+  leak an expired contract with stale pricing into live account totals.
 
 **WebSocket subscription** — `MODE_LTP`, event-driven push. All brokers (Kite, Dhan, Groww) use the **same KiteTicker WebSocket** — there is no Dhan or Groww WebSocket. LTP for Dhan/Groww positions is delivered via KiteTicker after the instrument token is resolved from (tradingsymbol, exchange). New instrument from order fill: Kite postback extracts `instrument_token` directly from payload, calls `get_ticker().subscribe([token])` on `COMPLETE`. Dhan/Groww postbacks resolve the token from (tradingsymbol, exchange) via instruments lookup, then subscribe. `subscribe()` is idempotent. Full design: memory `project_websocket_design`.
 

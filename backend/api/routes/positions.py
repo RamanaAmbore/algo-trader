@@ -259,6 +259,41 @@ async def _union_and_filter_expiry_frozen_rows(
          route) — marking it stale would wrongly imply the whole ACCOUNT
          is degraded when only this one already-obsolete row is affected.
 
+      3. SECOND, GENERAL-PURPOSE exclusion check for rows `expiry_status`
+         classifies as `"not_expiry"` (2026-09-29 second GOLDM finding,
+         account ZJ6294): `expiry_status` only recognises a row as a
+         freeze candidate when its OWN `captured_at` session matches the
+         contract's expiry-day session exactly
+         (`expiry_if_closed_on_own_expiry_day`). It has no answer for "the
+         write cadence for this account/symbol stalled some days BEFORE
+         the contract's own expiry, then the contract expired without a
+         fresh write ever landing on its expiry day" — ZJ6294's GOLDM legs
+         last wrote a `kind='positions'` row on 2026-09-18, seven days
+         before the contract's real 2026-09-25 expiry, so
+         `expiry_if_closed_on_own_expiry_day` returns `None` and
+         `expiry_status` returns `"not_expiry"` — the row is never even
+         considered a freeze candidate and sails through unfiltered,
+         served as an ordinary current position indefinitely. This is a
+         distinct gap from the `"frozen"`/`"refresh_eligible"` path above,
+         which requires that expiry-day capture to exist at all.
+         `is_live_row_past_freeze_window` (the live-fetch-path predicate,
+         `expiry_freeze.py`) answers a strictly more general question —
+         "has this contract's OWN expiry passed, and has the next-
+         market-open freeze boundary after that expiry also elapsed" —
+         with no dependency on any particular row's capture session, so it
+         correctly covers this stalled-cadence case too. Applied ONLY when
+         `expiry_status` already said `"not_expiry"`; the existing
+         `"frozen"` / `"refresh_eligible"` branches above are completely
+         untouched. Safe for the "closed, not expired" case (module
+         docstring): a row captured while the contract still has time left
+         has `expiry >= now_ist.date()` at the moment this check runs (the
+         contract genuinely hasn't expired yet), so
+         `is_live_row_past_freeze_window`'s fast, no-I/O path returns
+         `False` immediately regardless of how stale the row's own capture
+         is — this only ever fires once the contract's OWN expiry date is
+         in the past relative to `now_ist` AND the freeze boundary has
+         elapsed.
+
     Every row is a 10..16-column tuple matching the main query's SELECT
     shape (see `_positions_snapshot`'s inline column comment); frozen
     candidates unioned in here are padded to that same shape with
@@ -269,7 +304,7 @@ async def _union_and_filter_expiry_frozen_rows(
     baseline-diff re-derivation is meaningful for a contract that can no
     longer trade.
     """
-    from backend.api.algo.expiry_freeze import expiry_status
+    from backend.api.algo.expiry_freeze import expiry_status, is_live_row_past_freeze_window
     from backend.api.database import async_session as _async_session
     from sqlalchemy import text as _sql_text
 
@@ -310,6 +345,8 @@ async def _union_and_filter_expiry_frozen_rows(
     for r in union_rows:
         status = await expiry_status(r[1], r[9], r[2], now_ist)
         if status == "refresh_eligible":
+            continue
+        if status == "not_expiry" and await is_live_row_past_freeze_window(r[1], r[2], now_ist):
             continue
         filtered_rows.append(r)
     return filtered_rows
