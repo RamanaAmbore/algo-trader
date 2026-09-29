@@ -1535,7 +1535,6 @@
      AGAIN same day ("very very subtle" pass) 0.10->0.06 / 0.32->0.18. */
   .chain-row-atm > td {
     background: rgba(251,191,36,0.06);
-    border-top:    1px solid rgba(251,191,36,0.18);
     border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   /* Sticky "active row" — the strike the operator last poked. Distinct

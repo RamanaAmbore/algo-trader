@@ -35,9 +35,19 @@ test.describe('Stale-code: ATM row decoration softened', () => {
   test('.chain-row-atm border alpha reduced from 0.55 to 0.18 (softened twice, 2026-09-29), no stronger value remains', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
     const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(rule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.18\)/);
     expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.18\)/);
     expect(rule).not.toContain('0.55');
+  });
+
+  // 2026-09-30: operator — "at the market strike row background border
+  // should be at the bottom of the row not at the top of the row". The
+  // top border (which duplicated the bottom, reading as an unwanted
+  // line at the top of the ATM row) is removed; only the bottom border
+  // remains as the ATM-row marker.
+  test('.chain-row-atm has no border-top — bottom-only marker per operator', () => {
+    const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
+    const rule = src.match(/\.chain-row-atm\s*>\s*td\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).not.toMatch(/border-top/);
   });
 });
 
