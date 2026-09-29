@@ -3166,10 +3166,22 @@
     .ot-knobs-price-wrap {
       flex-direction: row;
       align-items: flex-start;
+      gap: 1.2rem;
       border-bottom: 1px solid rgba(255,255,255,0.06);
     }
+    /* Shrink-to-content, not equal-grow (2026-09-30, operator: "there is
+       a gap between validity and lots on desktop which are supposed to
+       be left aligned"). Was `flex: 1 1 auto` — treating the knobs row
+       and the lots/price row as two EQUAL-GROW flex items meant the
+       knobs row's allotted width (roughly half the wrapper) was far
+       wider than its actual content (5 compact dropdowns), so the
+       lots/price row — the NEXT flex item — started at that allotted
+       boundary rather than right after VALIDITY's visible content,
+       creating a large gap regardless of how compact either row's own
+       internal content was. Both rows now shrink to their real width
+       and sit immediately adjacent via the wrapper's own `gap` above. */
     .ot-knobs-price-wrap .ot-row {
-      flex: 1 1 auto;
+      flex: 0 0 auto;
       border-bottom: none;
     }
   }

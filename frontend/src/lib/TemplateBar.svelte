@@ -72,6 +72,28 @@
       : (sideAwareDefault ? (sideAwareDefault.name || sideAwareDefault.slug) : 'Default')
   );
 
+  // ═══════════════════════════════════════════════════════════════════
+  // TEMPORARY DEBUG MODE (2026-09-30) — operator: "if templ issue
+  // persists, just display templ with on and off behavior without
+  // wiring with functionality... I think some wired functionality is
+  // creating display issue."
+  //
+  // The button below currently reads `_debugOn`/`_debugToggleClick`, a
+  // plain local $state completely disconnected from `_toggleOn` /
+  // `sideAwareDefault` / `onSelectDefault` / `onSelectNone` — i.e. it no
+  // longer actually attaches or detaches a template on order fill. This
+  // isolates whether the real side/scope-resolution wiring (untouched,
+  // still computed above) was itself causing the button not to render —
+  // once confirmed, REVERT this block and switch the markup below back
+  // to `_toggleOn`/`_templBtnDisabled`/the real onSelectDefault/
+  // onSelectNone handlers (still declared as props above and fully
+  // intact — only their CALL SITE in the button's onclick was removed).
+  // DO NOT ship this to prod as a permanent state — Templ currently does
+  // NOT arm TP/SL/Wing on fill while this is active.
+  let _debugOn = $state(true); // default active, per the original request
+  function _debugToggleClick() { _debugOn = !_debugOn; }
+  // ═══════════════════════════════════════════════════════════════════
+
   // Expand/collapse state (#30) — persists within session; resets when
   // the parent clears selectedTemplate (i.e. on modal close/symbol change).
   let _expanded = $state(false);
@@ -170,16 +192,13 @@
        side-aware default. Inactive (dim) = None — entry only. Default
        state on mount is active whenever a side-aware default resolves
        (see _toggleOn above), matching the prior toggle's own default. -->
+  <!-- DEBUG MODE (see block above) — class/click driven by _debugOn,
+       not the real _toggleOn/onSelectDefault/onSelectNone wiring. -->
   <button type="button"
           class="oes-tpl-button"
-          class:active={_toggleOn}
-          disabled={_templBtnDisabled}
-          title={_templBtnDisabled
-            ? 'No default template configured for this side/type'
-            : (_toggleOn
-                ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
-                : 'No template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)')}
-          onclick={() => { if (_toggleOn) { onSelectNone?.(); } else { onSelectDefault?.(); } }}>
+          class:active={_debugOn}
+          title={_debugOn ? 'Templ: ON (debug mode — not wired to order fill yet)' : 'Templ: OFF (debug mode — not wired to order fill yet)'}
+          onclick={_debugToggleClick}>
     Templ
   </button>
   {#if !shellUsingNone && selectedTemplate}

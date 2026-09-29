@@ -309,7 +309,8 @@ test.describe('Chain leg badge — template short-label suffix', () => {
 test.describe('TemplateBar — single toggle button replaces the primary dropdown/pill (2026-09-30)', () => {
   test('primary control is one toggle button, not a <Select> or the retired two-button pill', () => {
     expect(TEMPLATE_BAR).toMatch(/class="oes-tpl-button"/);
-    expect(TEMPLATE_BAR).toMatch(/class:active=\{_toggleOn\}/);
+    // TEMP (see below): button currently reads _debugOn, not _toggleOn.
+    expect(TEMPLATE_BAR).toMatch(/class:active=\{_debugOn\}/);
     // Retired two-button pill markup/classes must be gone.
     expect(TEMPLATE_BAR).not.toMatch(/class="oes-tpl-toggle"/);
     expect(TEMPLATE_BAR).not.toMatch(/oes-tpl-toggle-btn-on/);
@@ -319,16 +320,25 @@ test.describe('TemplateBar — single toggle button replaces the primary dropdow
     expect(beforeExpandPanel).not.toMatch(/<Select/);
   });
 
-  test('active always resolves to the side-aware default, inactive always to None — no "remembered" named template', () => {
+  test('TEMP DEBUG MODE (2026-09-30) — button is a plain local on/off toggle, deliberately unwired from order-fill logic', () => {
+    // Operator: "if templ issue persists, just display templ with on and
+    // off behavior without wiring with functionality... I think some
+    // wired functionality is creating display issue." This is a
+    // deliberate, temporary state to isolate whether the real
+    // side/scope-resolution wiring was itself the rendering problem —
+    // REVERT this test (and the source block it guards) once confirmed
+    // and the button is wired back to the real onSelectDefault/
+    // onSelectNone handlers.
     const btn = TEMPLATE_BAR.match(/class="oes-tpl-button"[\s\S]{0,600}?<\/button>/)?.[0] ?? '';
     expect(btn, 'toggle button block').not.toBe('');
-    expect(btn).toContain('onSelectDefault?.()');
-    expect(btn).toContain('onSelectNone?.()');
-    expect(btn).toMatch(/if\s*\(_toggleOn\)/);
-    // ON/active display state guards against a null _sharedTemplateId reading
-    // as "armed" (the financial-risk-relevant fix) — must require BOTH
-    // !shellUsingNone AND a concrete selectedTemplate, not just the former.
+    expect(btn).toContain('_debugToggleClick');
+    expect(btn).not.toContain('onSelectDefault?.()');
+    expect(btn).not.toContain('onSelectNone?.()');
+    expect(btn).not.toMatch(/disabled=/);
+    // The real wiring must still exist in the script (untouched, just
+    // disconnected) so re-wiring later is a markup-only change.
     expect(TEMPLATE_BAR).toMatch(/_toggleOn = \$derived\(!shellUsingNone && !!selectedTemplate\)/);
+    expect(TEMPLATE_BAR).toMatch(/let _debugOn = \$state\(true\)/);
   });
 
   test('a specific named-template picker exists inside the expand panel, scoped to nonNoneTemplates', () => {
