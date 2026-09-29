@@ -16,7 +16,7 @@ Covers:
 """
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, AsyncMock, patch
 from datetime import datetime, timezone
 
 
@@ -606,3 +606,224 @@ class TestExpiryAutoCloseAgentBuiltins:
         assert agent.get('fire_at_time') == '23:00', (
             f"Expected fire_at_time='23:00', got {agent.get('fire_at_time')!r}"
         )
+
+
+class TestDeriveKindOpAware:
+    """_v2_derive_kind no longer mislabels an always-true `>=` trick leaf on
+    cash/avail_margin as a real floor breach — the fix for the operator-
+    reported false-positive '-₹999,999,999' alert firing on every account.
+    """
+
+    def test_avail_margin_always_true_leaf_is_not_negative_margin(self):
+        """The market-open-nse/market-preclose-mcx trick leaf (avail_margin
+        >= -999999999) must NOT classify as 'negative_margin'."""
+        from backend.api.algo.agent_engine import _v2_derive_kind
+        kind = _v2_derive_kind('avail_margin', '>=')
+        assert kind != 'negative_margin', (
+            f"'>=' avail_margin leaf must not classify as negative_margin, got {kind!r}"
+        )
+        assert kind == 'static_abs'
+
+    def test_avail_margin_real_floor_breach_still_negative_margin(self):
+        """CRITICAL regression guard: the genuine loss-funds-negative shape
+        (avail_margin < 0) must STILL classify as 'negative_margin'."""
+        from backend.api.algo.agent_engine import _v2_derive_kind
+        assert _v2_derive_kind('avail_margin', '<') == 'negative_margin'
+        assert _v2_derive_kind('avail_margin', '<=') == 'negative_margin'
+
+    def test_cash_real_floor_breach_still_negative_cash(self):
+        """CRITICAL regression guard: cash < 0 must still classify as
+        'negative_cash' — the other leg of loss-funds-negative."""
+        from backend.api.algo.agent_engine import _v2_derive_kind
+        assert _v2_derive_kind('cash', '<') == 'negative_cash'
+        assert _v2_derive_kind('cash', '<=') == 'negative_cash'
+
+    def test_cash_always_true_leaf_is_not_negative_cash(self):
+        from backend.api.algo.agent_engine import _v2_derive_kind
+        assert _v2_derive_kind('cash', '>=') != 'negative_cash'
+
+    def test_derive_kind_default_op_falls_back_safely(self):
+        """Calling with no op (legacy call shape) must not raise and must
+        not accidentally classify as a floor-breach kind."""
+        from backend.api.algo.agent_engine import _v2_derive_kind
+        assert _v2_derive_kind('avail_margin') != 'negative_margin'
+        assert _v2_derive_kind('cash') != 'negative_cash'
+
+
+class TestFormatThresholdSentinelGuard:
+    """_v2_format_threshold refuses to render an absurd sentinel magnitude
+    (e.g. -999999999) as if it were a real ₹/% figure — belt-and-suspenders
+    fix #3, independent of the kind-classification fix."""
+
+    def test_sentinel_threshold_renders_neutral_label(self):
+        from backend.api.algo.agent_engine import _v2_format_threshold
+        assert _v2_format_threshold('static_abs', -999999999) == 'n/a'
+        assert _v2_format_threshold('negative_margin', -999999999) == 'n/a'
+        assert _v2_format_threshold('static_pct', -999999999) == 'n/a'
+
+    def test_real_threshold_values_unaffected(self):
+        """CRITICAL regression guard: real, small thresholds must render
+        exactly as before (loss-funds-negative uses threshold=0)."""
+        from backend.api.algo.agent_engine import _v2_format_threshold
+        assert _v2_format_threshold('negative_margin', 0) == '-₹0'
+        assert _v2_format_threshold('negative_cash', 0) == '-₹0'
+        assert _v2_format_threshold('static_abs', -30000) == '-₹30,000'
+        assert _v2_format_threshold('static_pct', -2.0) == '-2.00%'
+        assert _v2_format_threshold('rate_abs', -10000) == '-₹10,000/min'
+
+
+class TestMatchToAlertRowMarginFalsePositive:
+    """End-to-end coverage of the operator-reported incident:
+    _v2_match_to_alertrow must render the real fetched value/threshold for
+    a genuine breach and must NOT fabricate '-₹999,999,999' for the
+    schedule-only trick leaf."""
+
+    def test_genuine_negative_margin_breach_unchanged(self):
+        """CRITICAL regression guard — byte-for-byte: the real
+        loss-funds-negative shape (avail_margin < 0) must render exactly as
+        it did before this fix: kind, real fetched pnl, and threshold all
+        untouched."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        match = {
+            'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '<',
+            'threshold': 0, 'value': -5000.0, 'row': {'account': 'ACC1'},
+        }
+        row = _v2_match_to_alertrow(match)
+        assert row['kind'] == 'negative_margin'
+        assert row['section'] == 'Funds'
+        assert row['scope'] == 'ACC1'
+        assert row['pnl'] == -5000.0, "pnl must come from the real fetched value"
+        assert row['threshold'] == '-₹0'
+
+    def test_genuine_negative_margin_breach_golden_render(self):
+        """Byte-for-byte golden render of the real breach through the exact
+        Telegram/email body builders — proves the fix does not touch this
+        alert's operator-visible text at all."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        from backend.shared.helpers.alert_utils import _tg_alert_body, _email_alert_body
+        match = {
+            'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '<',
+            'threshold': 0, 'value': -5000.0, 'row': {'account': 'ACC1'},
+        }
+        row = _v2_match_to_alertrow(match)
+        tg_body = _tg_alert_body([row])
+        assert tg_body == "▸ FND ACC1  -₹5K\n  Margin < 0  -₹0"
+        email_html = _email_alert_body([row])
+        assert "Margin &lt; 0" in email_html or "Margin < 0" in email_html
+        assert "-₹0" in email_html
+        assert "999,999,999" not in email_html
+
+    def test_market_open_nse_trick_leaf_not_rendered_as_margin_breach(self):
+        """The false-positive from the operator report: market-open-nse's
+        always-true leaf must not render as 'Margin < 0 -₹999,999,999'."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        match = {
+            'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '>=',
+            'threshold': -999999999, 'value': 125000.5, 'row': {'account': 'ACC1'},
+        }
+        row = _v2_match_to_alertrow(match)
+        assert row['kind'] != 'negative_margin'
+        assert row['pnl'] == 125000.5, "real per-account margin must still surface"
+        assert row['threshold'] == 'n/a'
+        assert '999,999,999' not in str(row['threshold'])
+
+    def test_expiry_mcx_risk_alert_sentinel_leaf_no_longer_shows_fabricated_number(self):
+        """expiry-mcx-risk-alert also uses the -999999999 'always true'
+        sentinel (pnl >= -999999999) — the format guard (fix #3) applies
+        here too, independent of the kind-classification fix (its kind was
+        already 'static_abs' and remains so)."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        match = {
+            'metric': 'pnl', 'scope': 'positions.expiring_today.mcx_unhedged',
+            'op': '>=', 'threshold': -999999999, 'value': -1200.0,
+            'row': {'account': 'ACC1', 'pnl': -1200.0},
+        }
+        row = _v2_match_to_alertrow(match)
+        assert row['kind'] == 'static_abs'
+        assert row['threshold'] == 'n/a'
+        assert '999,999,999' not in str(row['threshold'])
+
+    def test_multiple_accounts_no_longer_show_identical_fabricated_figure(self):
+        """The exact operator complaint: every account showed the IDENTICAL
+        '-₹999,999,999' line. After the fix each account's row carries its
+        own real value and a neutral (non-fabricated) threshold."""
+        from backend.api.algo.agent_engine import _v2_match_to_alertrow
+        matches = [
+            {'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '>=',
+             'threshold': -999999999, 'value': 50000.0, 'row': {'account': 'ACC1'}},
+            {'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '>=',
+             'threshold': -999999999, 'value': 200000.0, 'row': {'account': 'ACC2'}},
+        ]
+        rows = [_v2_match_to_alertrow(m) for m in matches]
+        pnls = [r['pnl'] for r in rows]
+        assert pnls == [50000.0, 200000.0], "each account must show its own real value"
+        assert all(r['threshold'] == 'n/a' for r in rows)
+        assert all(r['kind'] != 'negative_margin' for r in rows)
+
+
+class TestSendRichAlertScheduledAgentClarity:
+    """_v2_send_rich_alert renders a plain, clear informational line for
+    schedule-only info/low tier agents instead of the kind/threshold table
+    — addresses the operator's follow-up complaint: 'it should clearly
+    tell what the alert is about. it is not clear from the alert.'"""
+
+    @pytest.mark.asyncio
+    async def test_scheduled_info_agent_renders_name_and_schedule_not_margin_table(self):
+        from backend.api.algo.agent_engine import _v2_send_rich_alert
+        agent = MagicMock()
+        agent.slug = "market-open-nse"
+        agent.name = "NSE market open"
+        agent.fire_at_time = "09:15"
+        agent.tier = "info"
+        agent.actions = []
+        matches = [{
+            'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '>=',
+            'threshold': -999999999, 'value': 125000.5, 'row': {'account': 'ACC1'},
+        }]
+        now = datetime.now(timezone.utc)
+        captured = {}
+
+        def fake_dispatch(msg_type, ist_display, tg_table, email_table_html,
+                           subject_detail, sim_mode=False, mode_tag=''):
+            captured['tg_table'] = tg_table
+            captured['email_table_html'] = email_table_html
+
+        with patch('backend.shared.helpers.alert_utils._dispatch', side_effect=fake_dispatch):
+            sent = await _v2_send_rich_alert(agent, matches, now, sim_mode=False)
+
+        assert sent is True
+        assert captured['tg_table'] == "NSE market open — Scheduled — 09:15 IST"
+        assert "999,999,999" not in captured['tg_table']
+        assert "Margin" not in captured['tg_table']
+        assert "NSE market open" in captured['email_table_html']
+        assert "999,999,999" not in captured['email_table_html']
+
+    @pytest.mark.asyncio
+    async def test_genuine_critical_agent_still_renders_full_table(self):
+        """CRITICAL regression guard: a real (non-scheduled-info) alert like
+        loss-funds-negative must still render the full kind/threshold table,
+        completely untouched by the scheduled-agent clarity fix."""
+        from backend.api.algo.agent_engine import _v2_send_rich_alert
+        agent = MagicMock()
+        agent.slug = "loss-funds-negative"
+        agent.name = "Account funds gone negative (cash or margin)"
+        agent.fire_at_time = None
+        agent.tier = "critical"
+        agent.actions = []
+        matches = [{
+            'metric': 'avail_margin', 'scope': 'funds.any_acct', 'op': '<',
+            'threshold': 0, 'value': -5000.0, 'row': {'account': 'ACC1'},
+        }]
+        now = datetime.now(timezone.utc)
+        captured = {}
+
+        def fake_dispatch(msg_type, ist_display, tg_table, email_table_html,
+                           subject_detail, sim_mode=False, mode_tag=''):
+            captured['tg_table'] = tg_table
+            captured['email_table_html'] = email_table_html
+
+        with patch('backend.shared.helpers.alert_utils._dispatch', side_effect=fake_dispatch):
+            sent = await _v2_send_rich_alert(agent, matches, now, sim_mode=False)
+
+        assert sent is True
+        assert captured['tg_table'] == "▸ FND ACC1  -₹5K\n  Margin < 0  -₹0"

@@ -21,14 +21,22 @@ class TestV2MatchToAlertrowSimpleLeaves:
 
     def test_holdings_scope_with_cash_metric_yields_negative_cash_kind(self):
         """
-        Scope token starts with 'holdings', metric is 'cash' → kind='negative_cash'.
+        Scope token starts with 'holdings', metric is 'cash', op is a real
+        below-floor comparator ('<') → kind='negative_cash'.
+
+        `op` updated from the non-canonical placeholder 'lt' to the real
+        registered token '<' (see backend/api/algo/grammar.py OPERATORS) —
+        `_v2_derive_kind` now also considers the leaf's operator, since
+        `cash`/`avail_margin` only classify as a floor-breach kind for a
+        genuine `<`/`<=` leaf (fix for the market-open-nse/market-preclose-
+        mcx false-positive "Margin < 0 -₹999,999,999" alert).
         """
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
 
         match = {
             'metric': 'cash',
             'scope': 'holdings_any_acct',
-            'op': 'lt',
+            'op': '<',
             'threshold': -10000,
             'value': -15000,
             'row': {'account': 'TOTAL', 'day_change_val': -100},
@@ -123,20 +131,28 @@ class TestV2MatchToAlertrowSimpleLeaves:
 
     def test_avail_margin_metric_yields_negative_margin_kind(self):
         """
-        Metric='avail_margin' → kind='negative_margin'.
+        Metric='avail_margin' with a real below-floor op ('<') → kind='negative_margin'.
+
+        `op: '<'` added — this is the genuine loss-funds-negative shape.
+        Without a below-floor op, avail_margin must NOT classify as
+        negative_margin (see TestDeriveKindOpAware / market-open-nse fix
+        in test_mcx_preclose_agent.py) — a match dict with no 'op' key
+        used to incorrectly pin the pre-fix always-negative_margin
+        behaviour that caused the operator-reported false positive.
         """
         from backend.api.algo.agent_engine import _v2_match_to_alertrow
 
         match = {
             'metric': 'avail_margin',
             'scope': 'funds_any_acct',
+            'op': '<',
             'threshold': -50000,
             'value': -75000,
             'row': {'account': 'TOTAL', 'net': -75000},
         }
         result = _v2_match_to_alertrow(match)
         assert result['kind'] == 'negative_margin', (
-            "avail_margin metric must yield negative_margin kind"
+            "avail_margin metric with a below-floor op must yield negative_margin kind"
         )
 
     def test_unknown_scope_prefix_yields_funds_section(self):

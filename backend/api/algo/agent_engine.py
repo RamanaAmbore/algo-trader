@@ -9,6 +9,7 @@ The engine handles cooldown, state transitions, and WebSocket broadcasts.
 """
 
 import asyncio
+import html
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
@@ -716,9 +717,25 @@ def _v2_format_threshold(kind: str, threshold) -> str:
     kind must be one of {static_pct, rate_pct, static_abs, rate_abs,
     negative_cash, negative_margin}. Non-numeric thresholds fall through to
     the str() fallback via the except branch.
+
+    Belt-and-suspenders guard: some built-in agents (e.g. market-open-nse,
+    market-preclose-mcx) hand-author an "always-true" sentinel threshold
+    (-999999999) purely to drive a fire_at_time gate — never a real,
+    displayable figure. Any threshold whose magnitude is absurdly large
+    (>= 1e8, i.e. beyond any real ₹/% figure this app would ever alert on)
+    is refused here and rendered as a neutral label instead, so a future
+    agent definition that reuses this sentinel trick can't leak a
+    fabricated number into the operator-facing alert even if its kind
+    classification is ever wrong upstream.
     """
     try:
         thr = float(threshold)
+        if abs(thr) >= 1e8:
+            logger.warning(
+                f"_v2_format_threshold: refusing to render sentinel-magnitude "
+                f"threshold {thr!r} for kind={kind!r} — falling back to neutral label"
+            )
+            return "n/a"
         if kind in ('static_pct', 'rate_pct'):
             return f"{thr:.2f}%" + ("/min" if kind == 'rate_pct' else "")
         else:
@@ -819,11 +836,21 @@ def _v2_derive_section(scope_tok: str) -> str:
     return 'Funds'
 
 
-def _v2_derive_kind(metric: str) -> str:
-    """Map a metric token to its alert kind label."""
-    if metric in ('cash',):
+def _v2_derive_kind(metric: str, op: str = '') -> str:
+    """Map a metric token (+ its leaf operator) to its alert kind label.
+
+    `cash`/`avail_margin` only classify as the dedicated negative_cash /
+    negative_margin "floor breach" kinds when the leaf's own operator is a
+    below-floor comparison (`<` / `<=`) — e.g. the real `loss-funds-negative`
+    agent. Built-in schedule-only agents (market-open-nse, market-preclose-
+    mcx) reuse `avail_margin` with an always-true `>=` leaf purely to drive
+    their `fire_at_time` gate (see the comment above `_INFO_AGENTS`) — that
+    is NOT a margin breach, so it must fall through to the same generic
+    kind any other non-special metric gets, not be mislabeled as one.
+    """
+    if metric in ('cash',) and op in ('<', '<='):
         return 'negative_cash'
-    if metric in ('avail_margin',):
+    if metric in ('avail_margin',) and op in ('<', '<='):
         return 'negative_margin'
     if '_rate_abs' in metric:
         return 'rate_abs'
@@ -880,12 +907,13 @@ def _v2_match_to_alertrow(match: dict, *,
     """
     scope_tok = match.get('scope', '') or ''
     metric    = match.get('metric', '') or ''
+    op        = match.get('op', '')    or ''
     row       = match.get('row')      or {}
     value     = match.get('value')
     threshold = match.get('threshold')
 
     section     = _v2_derive_section(scope_tok)
-    kind        = _v2_derive_kind(metric)
+    kind        = _v2_derive_kind(metric, op)
     pnl, pct    = _v2_extract_pnl_fields(row, section, metric, value)
     rate_val    = value if kind in ('rate_abs', 'rate_pct') else None
     thr_str     = _v2_format_threshold(kind, threshold)
@@ -976,8 +1004,24 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     if _ae_sim_notify_suppressed(agent, sim_mode):
         return True
 
-    tg_body    = _tg_alert_body(rows)
-    email_html = _email_alert_body(rows)
+    # Scheduled, notify-only informational agents (market-open-nse,
+    # market-preclose-mcx) use an always-true `avail_margin >= -999999999`
+    # leaf purely to drive their `fire_at_time` gate — there is no real
+    # breach to report, so the per-account kind/threshold table is
+    # meaningless here (and, pre-fix, actively misleading). Mirrors the
+    # exact predicate _cycle_maybe_buffer_fire already uses to override
+    # `condition_text` to "Scheduled — HH:MM IST" for the same agents —
+    # that text never reached Telegram/email (only the audit log/websocket
+    # did), so it's surfaced here too, with the agent's own name, so the
+    # operator can tell what the alert is actually about.
+    if (getattr(agent, 'fire_at_time', None)
+            and getattr(agent, 'tier', 'medium') in ('info', 'low')):
+        scheduled_line = f"{agent.name} — Scheduled — {agent.fire_at_time} IST"
+        tg_body    = scheduled_line
+        email_html = f"<p>{html.escape(scheduled_line)}</p>"
+    else:
+        tg_body    = _tg_alert_body(rows)
+        email_html = _email_alert_body(rows)
     subject    = f"Agent {agent.slug}"
     mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
     try:
