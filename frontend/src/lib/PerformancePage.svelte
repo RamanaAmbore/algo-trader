@@ -1909,11 +1909,30 @@
      underline + 10% color tint on the active label.
      Colors sourced from --card-active-* vars set by the parent
      wrapper class (.card-theme-cream / .card-theme-dark). */
-  .tabs-row :global(button[class*="border-primary"]) {
+  /* Positions/Holdings tabs — rewritten (2026-09-29) to target what
+     AlgoTabs.svelte actually renders. The prior selectors
+     (button[class*="border-primary"] / button[class*="text-muted"])
+     were dead code — AlgoTabs never emits Tailwind-literal classnames
+     like that; it emits `.algo-tab` with `aria-selected`. Mirrors the
+     funds-nav-tabs pattern below exactly, including an explicit `color`
+     on both rules — without it, hover fell through to app.css's
+     dark-page-only `.algo-tab:hover { color: var(--algo-slate) }`
+     (--algo-slate is #ffffff), invisible against this page's #fffdf8
+     cream background. */
+  .tabs-row :global(.algo-tab[aria-selected="true"]) {
+    color: var(--card-active-row-text, #1a2744) !important;
     border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
     background: var(--card-active-row-bg, rgba(212, 146, 12, 0.13)) !important;
   }
-  .tabs-row :global(button[class*="text-muted"]:hover) {
+  .tabs-row :global(.algo-tab:hover:not([aria-selected="true"])) {
+    /* --card-muted-text — existing cream-theme muted-text token
+       (app.css .card-theme-cream, #736448), already used elsewhere
+       (NavCard.svelte) for secondary text on this same cream surface.
+       Reused here (not white, not the fully-active #1a2744/#6b4c0c) so
+       hover reads as "in-between" and stays legible on #fffdf8. Same
+       value used in the funds-nav-tabs hover rule below for byte-
+       identical treatment across both tab strips. */
+    color: var(--card-muted-text, #736448) !important;
     border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
     background: rgba(212, 146, 12, 0.07) !important;
   }
@@ -1957,6 +1976,13 @@
     background: var(--card-active-row-bg, rgba(212, 146, 12, 0.13)) !important;
   }
   .funds-nav-tabs :global(.algo-tab:hover:not([aria-selected="true"])) {
+    /* Missing `color` was the bug — fell through to app.css's
+       dark-page-only `.algo-tab:hover { color: var(--algo-slate) }`
+       (#ffffff), invisible on this page's #fffdf8 cream background.
+       --card-muted-text (app.css .card-theme-cream, #736448) — same
+       value as the .tabs-row hover rule above, so both tab strips
+       share byte-identical hover treatment. */
+    color: var(--card-muted-text, #736448) !important;
     border-bottom-color: var(--card-active-border, rgba(212, 146, 12, 0.5)) !important;
     background: rgba(212, 146, 12, 0.07) !important;
   }

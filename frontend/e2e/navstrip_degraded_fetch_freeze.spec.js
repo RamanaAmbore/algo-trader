@@ -173,21 +173,23 @@ test.describe('NavStrip — degraded positions fetch freezes at last-known-good'
     // a newly-invented visual pattern (see PositionStrip.svelte's _anyDegraded).
     await expect(strip).toHaveClass(/ps-stale/, { timeout: TIMEOUT });
 
-    // A10 (2026-09 audit): the border must resolve to the CANONICAL amber
-    // (--algo-amber / --c-action, #fbbf24, same hue BrokerHealthBadge uses
-    // for its stale state) — not the old off-token orange
-    // rgba(251,146,60,0.6). Resolve the expected colour via a scratch
-    // element so a hex-vs-rgb string mismatch never false-fails.
+    // REVERTED (2026-09-29): the A10 amber (--algo-amber color-mix) was
+    // found to collide with @keyframes ps-heartbeat-pulse, which animates
+    // this SAME property through a near-identical amber hue/alpha —
+    // .ps-heartbeat and .ps-stale can both be applied at once, so the
+    // 300ms heartbeat pulse became imperceptible against the resting
+    // stale border. Back to the distinct orange rgba(251,146,60,0.6) so
+    // the two states stay visually independent.
     const result = await strip.evaluate((el) => {
       const cs = getComputedStyle(el);
       const scratch = document.createElement('span');
-      scratch.style.color = 'color-mix(in srgb, var(--algo-amber) 60%, transparent)';
+      scratch.style.color = 'rgba(251, 146, 60, 0.6)';
       document.body.appendChild(scratch);
       const resolvedToken = getComputedStyle(scratch).color;
       document.body.removeChild(scratch);
       return { borderBottomColor: cs.borderBottomColor, resolvedToken };
     });
-    expect(result.borderBottomColor, '.ps-strip.ps-stale border-bottom-color must equal canonical --algo-amber (color-mixed 60%)')
+    expect(result.borderBottomColor, '.ps-strip.ps-stale border-bottom-color must equal the distinct orange rgba(251,146,60,0.6), not the amber color-mix (avoids heartbeat-pulse collision)')
       .toBe(result.resolvedToken);
 
     console.log('[navstrip_degraded_fetch_freeze] value held frozen through degraded poll:', healthyText);

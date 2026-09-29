@@ -1809,11 +1809,25 @@
      a ceiling. --chain-depth-h resolves to `auto` on mobile
      (SymbolPanel.svelte's own `@media max-width:720px` override), so
      no competing min-height forces growth back past the content
-     height here. */
+     height here.
+     REVERSED (2026-09-30) — operator: "empty space below chain
+     strikes, chain is not fully using available space". `flex: 0 1
+     auto` was overly conservative: it was chosen to stop the grid
+     starving the Templ row, which at the time sat BELOW this wrapper
+     as a flex sibling. The Templ toggle has since moved INTO the
+     expiry toolbar row ABOVE the grid (2026-09-30 toggle redesign),
+     so that sibling no longer exists to starve. With no grow at all,
+     the wrapper settled at a small intrinsic content size (~179px on
+     a real device) even when its flex parent had ~288px of genuinely
+     free space and the cap was 256px — a visible dead gap below the
+     grid. `flex: 1 1 auto` lets it grow to actually use that leftover
+     space (still capped at 16rem, still shrinkable), without
+     reintroducing the original starvation problem since there's
+     nothing left below it to starve. */
   @media (max-width: 760px) {
     .chain-grid-wrap {
       max-height: 16rem;
-      flex: 0 1 auto;
+      flex: 1 1 auto;
     }
   }
 </style>

@@ -2927,7 +2927,7 @@
             class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket'}
             class:oes-common-submit-narrow={basketLegs.length > 0}
             title={basketLegs.length > 0
-              ? `Submit all ${basketLegs.length} basket leg${basketLegs.length > 1 ? 's' : ''}`
+              ? 'Submit'
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _ticketOwnSubmitBusy

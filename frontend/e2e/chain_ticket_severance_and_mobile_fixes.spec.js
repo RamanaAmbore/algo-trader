@@ -234,11 +234,16 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(sellRule).not.toMatch(/border-color:\s*var\(--c-short-\d/);
   });
 
-  test('mobile .chain-grid-wrap sizes to its own content (flex: 0 1 auto), still capped at 16rem', () => {
+  // 2026-09-30: operator — "empty space below chain strikes, chain is not
+  // fully using available space". flex: 0 1 auto (content-only sizing) was
+  // reversed to flex: 1 1 auto now that the Templ toggle it was protecting
+  // has moved above the grid (into the expiry row) — nothing left below
+  // the grid to starve, so it can grow to fill real leftover space again.
+  test('mobile .chain-grid-wrap grows to fill available space (flex: 1 1 auto), still capped at 16rem', () => {
     const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,120}?\}/)?.[0] ?? '';
     expect(mobileBlock, 'mobile .chain-grid-wrap block').not.toBe('');
     expect(mobileBlock).toMatch(/max-height:\s*16rem/);
-    expect(mobileBlock).toMatch(/flex:\s*0 1 auto/);
+    expect(mobileBlock).toMatch(/flex:\s*1 1 auto/);
   });
 });
 

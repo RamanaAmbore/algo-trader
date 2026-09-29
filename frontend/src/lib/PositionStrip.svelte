@@ -844,8 +844,16 @@
        alpha (0.6) preserved via color-mix so the border's visual weight
        is unchanged. MarketPulse's separate grey-hatch stale treatment is
        untouched — the broader "one stale metaphor everywhere" question
-       stays open for the operator. */
-    border-bottom-color: color-mix(in srgb, var(--algo-amber) 60%, transparent);
+       stays open for the operator.
+       REVERTED (2026-09-29) — the A10 amber (#fbbf24-derived color-mix)
+       collides with @keyframes ps-heartbeat-pulse below, which animates
+       this SAME property through rgba(251,191,36, 0.20→0.55→0.20) — a
+       near-identical amber hue/alpha. .ps-heartbeat and .ps-stale CAN
+       both be applied at once (independent booleans), so the 300ms
+       heartbeat pulse became imperceptible against the resting stale
+       border. Back to the distinct orange so the pulse stays visible
+       when a strip is both heartbeating and stale. */
+    border-bottom-color: rgba(251, 146, 60, 0.6);
   }
   /* Closed-hours poll pulse — dim slate border flash when both markets are
      closed but broker data still refreshes (positions, holdings, funds,

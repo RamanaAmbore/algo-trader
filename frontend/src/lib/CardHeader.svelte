@@ -37,7 +37,13 @@
   let {
     title = '',
     timestamp = null,
-    loading = false,
+    // undefined (not false) by default — the reserved-width spinner slot
+    // below only mounts when a consumer explicitly wires `loading`, so
+    // the ~18 CardHeader call sites that never pass this prop keep their
+    // original layout (no permanent +10px/+gap shift on the left zone).
+    // Consumers that DO pass loading (true/false) get the always-mounted,
+    // visibility-toggled slot so flipping loading causes zero layout shift.
+    loading = undefined,
     // CardControls props — all forwarded
     isCollapsed = $bindable(false),
     isFullscreen = $bindable(false),
@@ -98,16 +104,24 @@
 <div class="card-header" role="presentation">
   <span class="ch-overflow-anchor" aria-hidden="true" bind:this={_overflowAnchorEl} style="position:absolute;pointer-events:none;"></span>
   <div class="ch-left">
-    {#if loading}
-      <svg class="ch-spin" viewBox="0 0 16 16" width="10" height="10" aria-hidden="true">
-        <circle cx="8" cy="8" r="5.5"
-          fill="none" stroke="currentColor" stroke-width="2"
-          stroke-linecap="round"
-          stroke-dasharray="9 30" />
-      </svg>
-    {/if}
     {@render prefix?.()}
     {#if title}<span class="ch-title">{title}</span>{/if}
+    {#if loading !== undefined}
+      <!-- Reserved-width slot (matches SVG's own 10px), always mounted
+           once a consumer wires `loading` — toggling loading only flips
+           visibility/opacity inside this fixed box, so nothing after it
+           (timestamp, left snippet) shifts. Spin animation lives on the
+           .on class so headers with loading=false never run the
+           infinite-spin keyframe. -->
+      <span class="ch-spin-slot" class:on={loading} aria-hidden="true">
+        <svg class="ch-spin" viewBox="0 0 16 16" width="10" height="10">
+          <circle cx="8" cy="8" r="5.5"
+            fill="none" stroke="currentColor" stroke-width="2"
+            stroke-linecap="round"
+            stroke-dasharray="9 30" />
+        </svg>
+      </span>
+    {/if}
     {#if timestamp}<span class="ch-ts">{timestamp}</span>{/if}
     {@render left?.()}
   </div>
@@ -195,9 +209,30 @@
     gap: 0.3rem;
     flex-shrink: 0;
   }
+  /* Fixed-size wrapper (matches the SVG's own 10px) so toggling `loading`
+     only flips visibility inside a slot of constant width — the title/
+     timestamp/left-snippet content after it never shifts. */
+  .ch-spin-slot {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 10px;
+    height: 10px;
+    flex-shrink: 0;
+    visibility: hidden;
+    opacity: 0;
+  }
+  .ch-spin-slot.on {
+    visibility: visible;
+    opacity: 1;
+  }
   .ch-spin {
     color: var(--c-action, #fbbf24);
     flex-shrink: 0;
+  }
+  /* Animation lives on the .on state only — a CardHeader sitting at
+     loading=false must not run an infinite-spin keyframe forever. */
+  .ch-spin-slot.on .ch-spin {
     animation: rbq-spin 0.9s linear infinite;
   }
 </style>
