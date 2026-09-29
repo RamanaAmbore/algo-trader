@@ -131,7 +131,7 @@ test.describe('Order-ticket visual consistency — desktop computed styles', () 
       };
       return {
         input: f('.ot-price-cell .ot-input'),
-        qtyChip: f('.ot-qty-chip'),
+        qtyChip: f('.ot-qty-suffix'),
         lotsStep: f('.ot-lots-step'),
         select: f('.rbq-select-trigger'),
         sideToggle: f('.ot-side-toggle-compact .ot-side-btn'),
@@ -328,14 +328,15 @@ test.describe('Order-ticket visual consistency — mobile 375px SUSPECT items', 
     ).toBeLessThanOrEqual(priceBox.x + 1); // +1px rounding tolerance
 
     // Bump the lots stepper into triple digits — a realistic large order
-    // ("= 1,00,500 units") is the worst case for the "=N units" chip's
-    // width, not the single/double-digit default. The chip must show the
-    // FULL unit count (it's the exact contract quantity sent to the
-    // broker) — truncating it via ellipsis would hide, not just visually
-    // compress, load-bearing order information.
+    // ("(1,00,500)", 2026-09-30 — was "= 1,00,500 units") is the worst
+    // case for the qty suffix's width, not the single/double-digit
+    // default. The suffix must show the FULL unit count (it's the exact
+    // contract quantity sent to the broker) — truncating it via ellipsis
+    // would hide, not just visually compress, load-bearing order
+    // information.
     const stepUp = row.locator('.ot-lots-step').nth(1);
     for (let i = 0; i < 15; i++) await stepUp.click();
-    const chip = row.locator('.ot-qty-chip').first();
+    const chip = row.locator('.ot-qty-suffix').first();
     await expect(chip).toBeVisible();
     const chipOverflow = await chip.evaluate((el) => ({
       text: el.textContent,

@@ -52,7 +52,12 @@
             onclick={() => stepLots(1)}
             {disabled}
             aria-label="Increase lots">+</button>
-    <span class="ot-qty-chip" title="Lots × lot size = total units sent to broker">= {qtyFmt(qty)} units</span>
+    <!-- Display-only qty suffix (2026-09-30, operator: "suffix lots with
+         qty in brackets... remove the qty which shows units completely")
+         — replaces the old separate "= N units" chip. Purely visual;
+         does not touch the `lots`/`qty` bindable values or the stepper
+         logic above. -->
+    <span class="ot-qty-suffix" title="Lots × lot size = total units sent to broker">({qtyFmt(qty)})</span>
   </div>
 {:else}
   <label class="ot-label" for="ot-qty">Qty</label>
@@ -189,16 +194,12 @@
   .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }
 
-  /* "= N units" conversion chip — read-only annotation next to the stepper */
-  .ot-qty-chip {
+  /* "(N)" qty suffix — read-only annotation right after the stepper,
+     reads as part of the lots control rather than a separate boxed chip
+     (2026-09-30 — replaces the old bordered .ot-qty-chip "= N units"). */
+  .ot-qty-suffix {
     font-size: var(--fs-sm);
     color: var(--text-muted);
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α) background/border;
-       each alpha preserved. */
-    background: color-mix(in srgb, var(--algo-slate) 6%, transparent);
-    border: 1px solid color-mix(in srgb, var(--algo-slate) 12%, transparent);
-    border-radius: 3px;
-    padding: 0.1rem 0.35rem;
     font-family: var(--font-numeric);
     white-space: nowrap;
     flex-shrink: 1;

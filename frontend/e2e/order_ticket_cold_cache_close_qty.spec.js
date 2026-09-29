@@ -28,7 +28,7 @@
  *  3. Stale  — asserts the LIVE resolved qty, not a source-grep proxy
  *  4. Reuse  — both surfaces render the canonical SymbolPanel/OrderTicket,
  *              not a bespoke close dialog
- *  5. UX     — the qty chip (".ot-qty-chip") must read the real contract
+ *  5. UX     — the qty suffix (".ot-qty-suffix") must read the real contract
  *              count, never a lot-multiplied value, by the time the
  *              operator can interact with the form
  *
@@ -90,10 +90,11 @@ test.describe('D2 — close ticket on a cold instruments cache (/pulse)', () => 
     const overlay = page.locator('.canonical-modal-overlay');
     await expect(overlay).toBeVisible({ timeout: 8_000 });
 
-    // Qty chip renders "= {qty} units". Read it once the delayed
-    // instruments call has had time to resolve and OrderTicket's
+    // Qty suffix renders "({qty})" (2026-09-30 — was "= {qty} units",
+    // class renamed .ot-qty-chip -> .ot-qty-suffix). Read it once the
+    // delayed instruments call has had time to resolve and OrderTicket's
     // cache-version-reactive repair effect has had a chance to fire.
-    const qtyChip = page.locator('.ot-qty-chip').first();
+    const qtyChip = page.locator('.ot-qty-suffix').first();
     await expect(qtyChip).toBeVisible({ timeout: 3_000 }).catch(() => {});
     await page.waitForTimeout(5_000); // instruments delay (4s) + settle margin
 
