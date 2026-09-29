@@ -97,7 +97,7 @@
       </form>
 
       <div class="pub-contact-direct">
-        <a href="mailto:contact@ramboquant.com">contact@ramboquant.com</a>
+        Email: <a href="mailto:contact@ramboquant.com">contact@ramboquant.com</a>
         <span class="pub-sep">|</span>
         Registered Office: D8H Regal Palm Garden, Velachery, Chennai 600042, India
       </div>
