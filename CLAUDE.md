@@ -277,6 +277,21 @@ Invariant: `broker_fn` NEVER called when closed. Returns source tags: `'live'` /
 
 **Staleness indicator freeze rule — any degraded/failed fetch must freeze to last-known-good** (2026-09, fixes A1–A4 + B-C) — When any broker data fetch degrades or fails (not just market-close), ALL downstream consumers must show the last-known-good cached value with explicit staleness marking, never silently collapse to 0/blank. Root cause was `backend/brokers/client/sync.py:_fetch_per_account` (A1, lines 51–91) treating HTTP 200 with `accounts=[]` + `errors: [...]` (a genuine failure masked as empty) identically to a real empty-book result. Fix chain: (1) `sync.py:_failed_sentinel()` (lines 42–48) + the `payload.errors` check (lines 77–82) surfaces all degraded responses. (2) `backend/api/routes/positions.py:_is_positions_outage()` (lines 625–651) detects both "all per-account failed" AND "empty list with configured accounts" cases, treating both as outages (A2). (3) `_accounts_flagged_stale()` (lines 654–677) collects stale/failed account codes and passes them to `PositionsResponse.stale_accounts` (line 934, 1021). (4) Frontend `dataStore.svelte.js` (line 135, documented 121–134) adds a `meta` extractor to preserve stale_accounts + source tags across the fetch–parse boundary; consumers (`PositionStrip`, `portfolioStore`) check the metadata to decide between "show last-good + stale badge" (degraded) vs. "show real 0" (confirmed empty). (5) Stale accounts render with CSS class `row-account-stale` (app.css:819–831) — slate desaturation + diagonal hatch — matching the existing `STALE@HH:MM` badge (pulseColumns.js:417). Invariant: any response carrying `stale_accounts` or `source='snapshot-fallback'` is never written to Tier 2 (localStorage) to prevent next page load from poisoning the cache with a masked-failure value. See memory `feedback_market_close_snapshot`.
 
+**Cross-account aggregates must not freeze on single-account degradation (2026-09-29,
+commit bc7526f9)** — The freeze-to-LKG rule applies per-account at the backend
+(`_stale_substitute_frame` per account) but the FRONTEND must implement
+include-not-exclude aggregation: margin/cash totals sum every non-TOTAL row ACTUALLY
+PRESENT in the data (including stale accounts with substituted last-known-good values),
+never freezing the entire cross-account total to a remembered scalar when one account
+goes stale. Old design: degraded account → remembered scalar frozen → whole total
+becomes zero on page-load if any early poll is degraded. New design: sum all rows; a
+missing/absent account simply contributes nothing, yielding a partial total. Returns
+`null` only when `fundRows` itself is null/empty (genuinely unknown, no poll ever
+landed). Implementation: `fundsAggregate.js` helpers (`sumMarginAvail`, `sumMarginTotal`,
+`sumLiveCashTotal`) loop every non-TOTAL row and sum what's there; `PositionStrip.svelte`
+`fmtMoney()` renders `null → '—'`. Invariant: a per-account stale flag never blocks
+the cross-account aggregate or causes a false 0.
+
 **Reactive safety (state_unsafe_mutation prevention)** — Never call `get(store)` directly inside `$derived(...)`. Always wrap in `untrack()` or use `safeRead(store)` from `frontend/src/lib/utils/safeRead.js`. For symbol data, use `liveSnap(sym)` from `symbolStore.svelte.js`. The `state_referenced_locally` compiler warning surfaces these at build time — do NOT suppress it globally; add per-line `svelte-ignore state_referenced_locally` with a one-line justification comment at each suppression site.
 
 **Broker auth health badge** — `BrokerHealthBadge.svelte` (admin/designated navbar, polls 30s 
@@ -297,6 +312,20 @@ Agent condition evaluation enforces three critical invariants via the alert engi
   and `_gf_or_none()` ([`groww.py:1475–1490`](backend/brokers/adapters/groww.py#L1475-L1490))
   respectively — these check `is not None` (not truthiness), so a real `0` on the first
   present key passes through. Kite tolerates `None`-safe lookups from `.get()` natively.
+
+  **Missing-vs-zero convention extended to display routes (2026-09-29, commit bc7526f9,
+  amends existing entry)** — The convention has been extended from adapter + grammar layers
+  to the display route layer (`backend/api/routes/funds.py`). `FundsRow` schema fields
+  `cash`, `avail_margin`, `used_margin`, `collateral`, `live_cash`, `option_premium` are now
+  `float | None` (not blanket float). Backend `_fetch()` applies targeted fillna, excluding
+  funds-meaning columns from blanket zero-fill (see line 172: `[c for c in numeric_cols if c
+  not in _COL_MAP]`). `_append_total_row` aggregation uses Polars `.sum()` which skips nulls,
+  so a TOTAL row is null for a column only when EVERY account is null (never synthesizes
+  false "confirmed zero"). Frontend `fundsAggregate.js` helpers (`sumMarginAvail`,
+  `sumMarginTotal`, `sumLiveCashTotal`) return `null` only when `fundRows` is null/empty
+  (never polled yet); per-field nulls coerce to 0 via `Number(x || 0)` for individual
+  account sums. Invariant: a missing broker field survives the API response and is
+  preserved in `FundsRow`; frontend null-guard (`fmtMoney` line 579) renders `null → '—'`.
   
   **Per-leaf latch model with hysteresis and escalation (fixes #8/#9):** `_V2_LATCH` (keyed by
   `(agent_slug, metric, scope, account)`) tracks one independent latch per LEAF per ACCOUNT.

@@ -4,7 +4,7 @@ Single source of truth for the NavStrip header band behavior across all market s
 and execution modes. The NavStrip is a fixed band pinned below the navbar showing live
 P&L, margin, cash, and holdings aggregates across all broker accounts.
 
-**Version**: 2.0 — 2026-09-22  
+**Version**: 2.1 — 2026-09-29  
 **Owner**: Platform  
 **Linked files**: `frontend/src/lib/PositionStrip.svelte` · `frontend/src/lib/NavBreakdown.svelte` · `frontend/src/lib/BrokerHealthBadge.svelte` · `frontend/src/lib/InfoHint.svelte` · `frontend/src/lib/data/nav.js` · `backend/api/routes/positions.py` · `backend/api/algo/pnl_math.py`
 
@@ -732,7 +732,17 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 
 - Strip retains last-good values from successful poll
 - Stale indicator appears after 2 consecutive failures
-- No blanks or "—"; always shows the last-known state
+- M/C totals now use include-not-exclude logic (2026-09 fix): when any account becomes
+  stale/degraded, margin and cash aggregates sum whatever rows are actually present
+  (including stale accounts with their backend-substituted last-known-good values) rather
+  than freezing to a remembered scalar. Only returns `—` when `fundRows` is null/empty
+  (genuinely unknown state, no poll yet); after the first successful poll, values persist.
+  Accounts with no LKG at all simply absent from the sum, yielding a partial total, never
+  causing the cross-account aggregate to collapse. See `fundsAggregate.js` helpers and
+  `PositionStrip.svelte:fmtMoney` (line 579) for null-guard rendering.
+- Strip-level `ps-stale` CSS indicator (amber tint after 2 poll failures) is separate from
+  per-account `account_stale` row flag (via `fundsStore.meta.degraded`). The former is a
+  poll failure; the latter is a backend-flagged substitution — do not conflate the two.
 
 ### Closed-hours display after restart
 
@@ -805,3 +815,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-09-20 | v1.8 NavBreakdown P-slot per-account day P&L + TOTAL row styling (commits 42b5573b, 27a8e442): (1) **Per-account data source change** (commit 42b5573b): Each NavBreakdown P account row now reads `positionsDayPnlStore.byAccount[acct.toUpperCase()]` (live-LTP-aware via `portfolioStore._posAgg`) instead of computing `baseDayPnlForPosition(p)` on raw broker rows. `portfolioStore.positions.byAccount` accumulates `p._day_pnl` per account in the same pass as `byKey`, keyed uppercase with a `'TOTAL'` entry for grand total. P-slot per-account values now match Pulse positions values exactly, eliminating stale `day_change_val` gaps. (2) **TOTAL row styling** (commit 27a8e442): All four NavBreakdown grids (P, M, C, H) now use `getRowClass: p => p.data?.account === 'TOTAL' ? 'totals-row' : ''` to apply `totals-row` CSS class (amber 22% opacity bg overlay on `#1d2a44` + amber top/bottom borders) to TOTAL rows, matching PerformancePage and Derivatives legs grid styling for visual consistency. Updated §1.2 "Pill label click-to-breakdown" and §6 "Pill label panel popups" subsections with per-account data flow and new TOTAL row styling subsection. |
 | 2026-09-22 | v1.9 NavBreakdown header + BrokerHealthBadge ag-Grid (commit 7ccb2e50): (1) **NavBreakdown modal header** (commit 7ccb2e50): The breakdown panel now uses `canonical-modal-header` bar with slot-mapped title (P → "Positions P&L", M → "Margin", C → "Cash", H → "Holdings"). Close button moved inside header (no longer floating position:absolute). Updated §1.1 "Pill label click-to-breakdown" with header spec. Files: `frontend/src/lib/PositionStrip.svelte`, `frontend/src/lib/NavBreakdown.svelte`. (2) **BrokerHealthBadge modal ag-Grid** (commit 7ccb2e50): Broker connection chip popup now uses ag-Grid instead of hand-rolled CSS grid. Grid includes columns: status dot, Account, Broker, Status badge, Reason, Last Good. Uses `createGrid()` + `ag-theme-quartz ag-theme-algo` + `mkBaseGridOpts()` + `domLayout: 'autoHeight'`. Account column injects `--acct-stripe` via `cellStyle` (DJB2 hash, same PerformancePage palette) → 3px colored left-border stripe per row. `onRowClicked` opens activity modal. New §6 subsection "Broker connection chip popup" documents grid setup and styling. File: `frontend/src/lib/BrokerHealthBadge.svelte`. |
 | 2026-09-22 | v2.0 NavBreakdown column widths + styling (commit 516937c5): (1) **NavBreakdown column widths reduced ~20%** (commit 516937c5): Account column width 76→60, minWidth 60→48, maxWidth 92→74. Flex columns minWidth 80→64. utilPct column minWidth 64→52. Tighter grid optimizes space on smaller viewports while maintaining readability. Updated §1.1 subsection in table layout details. File: `frontend/src/lib/NavBreakdown.svelte`. |
+| 2026-09-29 | v2.1 M/C funds aggregation include-not-exclude fix (commit bc7526f9): Real-money defect where any single stale account froze entire cross-account margin/cash totals to a remembered scalar (or 0 on page-load, hiding real capital). Fix: `fundsAggregate.js` helpers (`sumMarginAvail`, `sumMarginTotal`, `sumLiveCashTotal`) now sum every non-TOTAL row actually present, including stale accounts with backend-substituted last-known-good values. Only returns `null` (displays `—` via `fmtMoney`) when `fundRows` is null/empty (genuinely unknown, no poll yet). Backend `FundsRow` fields now `float\|None` to preserve missing-vs-zero distinction (see CLAUDE.md "Alert evaluation and latching"). Updated §7 "Auth outage or broker connection loss" to document new aggregation semantics and distinguish strip-level `ps-stale` poll-failure indicator from per-account `account_stale` row flag. Files: `frontend/src/lib/data/fundsAggregate.js`, `frontend/src/lib/PositionStrip.svelte`, `backend/api/routes/funds.py`, `backend/api/schemas.py`. |
