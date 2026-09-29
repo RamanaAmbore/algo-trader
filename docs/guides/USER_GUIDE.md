@@ -344,7 +344,7 @@ Edit them from `/automation` — change a threshold, pick notification channels 
 
 ## Order templates — per-position exit rules
 
-Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an option-chain basket order on the **Chain tab**, you pick a template from the dropdown. Once the order fills, the platform automatically places the exit orders on the broker.
+Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an option-chain basket order on the **Chain tab**, a compact toggle controls whether a template attaches. Once the order fills, the platform automatically places the exit orders on the broker.
 
 Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is independent. You can mix and match: TP + SL, or just TP, or SL with a trailing stop that chases the price higher.
 
@@ -352,11 +352,11 @@ Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is indepen
 
 **Templates are available only when placing option-chain basket orders (Chain tab).** The Ticket tab (single-order placement) does not use templates — orders placed there go out with no template/exit-rule attachment.
 
-**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the Chain tab, the dropdown pre-selects your default template, shown as "Default (<template name>)". You don't need to change anything — the default is ready to use.
+**Use the default (most common)** — A toggle labeled "Templ" sits at the end of the Expiry-dropdown row. Flip it ON. This attaches your side-aware default template automatically (the platform picks which saved template applies based on your current BUY/SELL side and whether it's an option). You don't need to change anything — the default is ready to use.
 
-**Per-ticket pick** — Open the Chain tab → click the template dropdown and pick any other template by name from the list. The dropdown updates to show your pick. Use this when you want a different template for a single trade without changing your default.
+**Pick a specific named template** — With the toggle ON, click the small chevron button next to it to expand the template params panel. Inside the expanded view, you'll see a "Specific tmpl" dropdown (alongside the TP% / SL% / Wing override inputs). Pick any template by name from the dropdown. This overrides the automatic default for this trade without changing your default setting.
 
-**No template** — Click the template dropdown and select "None". Order places with no auto exits; you close it manually or with an agent.
+**No template** — Flip the toggle OFF. The control shows "None" and no template/exit-rule attachment fires when the order fills. You'll close it manually or with an agent.
 
 ### Exit mechanics (plain English)
 
