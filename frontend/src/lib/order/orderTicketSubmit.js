@@ -295,17 +295,24 @@ export function formatSubmitLabel(ctx) {
   // Chain tab (basket legs staged) — operator (2026-09-29): "in chain
   // the button label should submit" — plain label, no leg count.
   if (ctx.basketCount > 0) return 'Submit';
+  // Bare fallback for the no-side edge case (button is effectively
+  // inert here — side always defaults to BUY in practice). Only place
+  // this function still returns the word "Submit" at all.
   if (!ctx.side) return 'Submit';
   const cq = Number(ctx.currentQty) || 0;
   // Lot size dropped from the label — operator (2026-09-29): "remove
   // lot size from submit buttons in order ticket". The stepper next to
   // the button already shows qty; repeating it here was redundant.
-  if (cq === 0) return `Submit · ${ctx.side}`;
+  // "Submit" prefix dropped entirely — operator (2026-09-30): "for
+  // order ticket the submit button should not have Submit in the
+  // label". Side/verb alone is sufficient context (SideToggle's own
+  // pills already show the same ADD/CLOSE + BUY/SELL text).
+  if (cq === 0) return ctx.side;
   // ADD = same direction as the existing position; CLOSE = opposite.
   const verb = (cq > 0 ? (ctx.side === 'BUY' ? 'ADD' : 'CLOSE')
                        : (ctx.side === 'BUY' ? 'CLOSE' : 'ADD'));
-  // Verb/side pair uses a slash, not the " · " separator used elsewhere
-  // in this label — operator (2026-09-29): "add . sell should be add/sell,
-  // close . buy as close/buy... the space dot space should be a slash."
-  return `Submit · ${verb}/${ctx.side}`;
+  // Verb/side pair uses a slash — operator (2026-09-29): "add . sell
+  // should be add/sell, close . buy as close/buy... the space dot
+  // space should be a slash."
+  return `${verb}/${ctx.side}`;
 }

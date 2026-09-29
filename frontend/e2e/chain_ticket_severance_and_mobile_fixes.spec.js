@@ -176,6 +176,31 @@ test.describe('Submit button labels', () => {
     expect(SYMBOL_PANEL).not.toMatch(/Submit \(\$\{basketLegs\.length\}\)/);
     expect(SYMBOL_PANEL).not.toMatch(/`Submit \(\$\{basketLegs\.length\}\)`/);
   });
+
+  // 2026-09-30: operator — "chain button to start with shows submit
+  // suffixed by additional text. which should be removed." Root cause:
+  // _submitLabel's Chain branch was keyed on basketLegs.length > 0, not
+  // on the active tab, so an EMPTY Chain basket fell through to the
+  // Ticket-style side/verb label. Fixed by gating on _activeTab directly.
+  test('_submitLabel is unconditionally "Submit" on the Chain tab, even with an empty basket', () => {
+    const fn = SYMBOL_PANEL.match(/const _submitLabel = \$derived\.by\(\(\) => \{[\s\S]*?\n  \}\);/)?.[0] ?? '';
+    expect(fn, '_submitLabel derived').not.toBe('');
+    expect(fn).toMatch(/if \(basketLegs\.length > 0 \|\| _activeTab === 'chain'\) return 'Submit';/);
+  });
+
+  // 2026-09-30: operator — "for order ticket the submit button should
+  // not have Submit in the label." formatSubmitLabel's resolved-side
+  // branches (cq===0 and cq!==0) no longer prefix "Submit · " — only
+  // the side/verb text is returned. The bare-fallback (!ctx.side) case
+  // still returns "Submit" since there's nothing else to show there.
+  test('formatSubmitLabel drops the "Submit" prefix entirely for resolved-side (Ticket) labels', () => {
+    const fn = SUBMIT_HELPERS.match(/export function formatSubmitLabel[\s\S]*?\n\}/)?.[0] ?? '';
+    expect(fn).not.toBe('');
+    expect(fn).toMatch(/if \(cq === 0\) return ctx\.side;/);
+    expect(fn).toMatch(/return `\$\{verb\}\/\$\{ctx\.side\}`;/);
+    expect(fn, 'no "Submit ·" prefix should remain in any resolved-side branch')
+      .not.toMatch(/`Submit · /);
+  });
 });
 
 test.describe('Chase indicator right-alignment', () => {

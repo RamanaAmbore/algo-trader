@@ -75,37 +75,40 @@ describe('formatSubmitLabel (R7 — Submit button reflects the real pending acti
   });
 
   // Lot size dropped from the label — operator (2026-09-29): "remove lot
-  // size from submit buttons in order ticket".
-  it('cold ticket with side — no qty in label', () => {
+  // size from submit buttons in order ticket". "Submit" prefix dropped
+  // entirely — operator (2026-09-30): "for order ticket the submit
+  // button should not have Submit in the label".
+  it('cold ticket with side — no "Submit" prefix, no qty', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 0, qty: 75, basketCount: 0 }))
-      .toBe('Submit · BUY');
+      .toBe('BUY');
   });
 
   it('long position + SELL → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE/SELL');
+      .toBe('CLOSE/SELL');
   });
 
   it('long position + BUY → ADD', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: 75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD/BUY');
+      .toBe('ADD/BUY');
   });
 
   it('short position + BUY → CLOSE', () => {
     expect(formatSubmitLabel({ side: 'BUY', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · CLOSE/BUY');
+      .toBe('CLOSE/BUY');
   });
 
   it('short position + SELL → ADD', () => {
     expect(formatSubmitLabel({ side: 'SELL', currentQty: -75, qty: 75, basketCount: 0 }))
-      .toBe('Submit · ADD/SELL');
+      .toBe('ADD/SELL');
   });
 
   // Regression: this function takes no chase parameter at all — the caller
   // no longer special-cases chase-on tickets to a bare "Submit" (the exact
   // scenario behind "close buy close sell buttons don't work", since chase
-  // is the default for LIMIT/SL tickets).
-  it('label is always descriptive — no bare-Submit carve-out for any state', () => {
+  // is the default for LIMIT/SL tickets). Still true post-2026-09-30: a
+  // resolved side always yields real verb/side text, never a bare "Submit".
+  it('label is always descriptive — no bare-Submit carve-out for any resolved-side state', () => {
     const label = formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 });
     expect(label).not.toBe('Submit');
   });

@@ -9,7 +9,7 @@
  *   - qty  = absolute value of the held qty
  *   - symbol = the position's tradingsymbol
  *   - footer side button labelled "CLOSE BUY" (stacked two-line)
- *   - Submit button labelled "Submit · CLOSE/BUY" (slash separator as of 2026-09-29)
+ *   - Submit button labelled "CLOSE/BUY" (no "Submit" prefix as of 2026-09-30)
  *
  * The test runs against dev.ramboq.com (set PLAYWRIGHT_BASE_URL) or a local
  * dev server.  It DOES NOT actually place an order — it just verifies the

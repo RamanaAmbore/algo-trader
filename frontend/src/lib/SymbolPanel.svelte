@@ -1327,7 +1327,14 @@
   // steppers and side flips made INSIDE the ticket, not just the
   // initial props this modal was opened with.
   const _submitLabel = $derived.by(() => {
-    if (basketLegs.length > 0) return 'Submit';
+    // Chain tab always shows plain "Submit" — operator (2026-09-30):
+    // "chain button to start with shows submit suffixed by additional
+    // text. which should be removed." Before this fix, an EMPTY basket
+    // on the Chain tab fell through to the Ticket-style side/verb label
+    // below (keyed only on basketLegs.length, not the active tab) — the
+    // gate now checks the tab directly so Chain is unconditionally
+    // "Submit" whether or not legs are staged yet.
+    if (basketLegs.length > 0 || _activeTab === 'chain') return 'Submit';
     const liveSide = _ticketState.side || _modalSide;
     const liveQty  = _ticketState.qty || Number(_ticketProps?.qty ?? qty) || 0;
     const cq = Number(_ticketProps?.currentQty ?? currentQty) || 0;
