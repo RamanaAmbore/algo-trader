@@ -2406,7 +2406,7 @@
            blocked at the API layer; surfacing the full picker would
            promise capabilities the visitor doesn't have. -->
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell oes-basket-tpl-row-demo">
-        <span class="oes-basket-tpl-label">Template</span>
+        <span class="oes-basket-tpl-label">Templ</span>
         <span class="oes-basket-tpl-demo-note">Exit rules (TP / SL / Wing) not available in demo.</span>
       </div>
     {:else if _activeTab !== 'chart' && _templates.length > 0 && action === 'open'
@@ -2418,6 +2418,7 @@
         <TemplateBar
           selectedTemplate={_selectedTemplate}
           sideAwareDefault={_sideAwareDefault}
+          nonNoneTemplates={_nonNoneTemplates}
           showsWing={_sharedTplShowsWing}
           shellUsingNone={_shellUsingNone}
           bind:tpOverride={_sharedTpOverride}
@@ -2430,6 +2431,7 @@
           onSelectNone={() => {
             if (_noneTpl) _sharedTemplateId = _noneTpl.id;
           }}
+          onSelectTemplate={(id) => { _sharedTemplateId = id; }}
         />
         <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
              via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on

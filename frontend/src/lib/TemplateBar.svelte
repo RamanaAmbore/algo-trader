@@ -1,18 +1,23 @@
 <script>
+  import Select from '$lib/Select.svelte';
+
   /**
    * TemplateBar — "On fill" template pick + param override row.
    *
-   * Renders the Default / None pill toggle, active-template name chip,
-   * and the TP% / SL% / Wing parameter override inputs.
+   * Renders a single Template dropdown (Default / None / every named
+   * template, 2026-09-29 — was a Default/None two-pill toggle with no
+   * way to pick a specific template by name), the active-template name
+   * chip, and the TP% / SL% / Wing parameter override inputs.
    *
    * The outer shell row <div> and the on-fill preview / cap-warn section
    * are intentionally kept in the parent (SymbolPanel) because they depend
    * on many additional parent-only state variables.
    *
    * @prop {object|null}  selectedTemplate          - current resolved template object (read-only display)
-   * @prop {object|null}  sideAwareDefault          - side-aware default template (null → disables Default btn)
+   * @prop {object|null}  sideAwareDefault          - side-aware default template (null → "Default" resolves to nothing)
+   * @prop {any[]}        nonNoneTemplates          - every active template except the seeded "none" sentinel, for the dropdown's named options
    * @prop {boolean}      showsWing                 - whether wing fields are visible
-   * @prop {boolean}      shellUsingNone            - whether the "None" pill is currently selected
+   * @prop {boolean}      shellUsingNone            - whether "None" is currently selected
    * @prop {number|''}    tpOverride                - TP% override value ($bindable)
    * @prop {number|''}    slOverride                - SL% override value ($bindable)
    * @prop {number|''}    wingStrikeOffsetOverride  - Wing strike offset override ($bindable)
@@ -20,12 +25,14 @@
    * @prop {number|''}    slTrailPctOverride        - Trailing stop % override ($bindable, #30)
    * @prop {'LIMIT'|'MARKET'|''}  tpOrderTypeOverride  - TP order type override ($bindable, #30)
    * @prop {string}       tpScalesJsonOverride      - Scale-out JSON override ($bindable, #30)
-   * @prop {() => void}   onSelectDefault           - called when operator clicks Default
-   * @prop {() => void}   onSelectNone              - called when operator clicks None
+   * @prop {() => void}   onSelectDefault           - called when operator picks "Default" from the dropdown
+   * @prop {() => void}   onSelectNone              - called when operator picks "None" from the dropdown
+   * @prop {(id: number) => void} onSelectTemplate  - called when operator picks a specific named template by id
    */
   let {
     selectedTemplate,
     sideAwareDefault,
+    nonNoneTemplates = /** @type {any[]} */ ([]),
     showsWing,
     shellUsingNone,
     tpOverride       = $bindable(),
@@ -37,7 +44,34 @@
     tpScalesJsonOverride     = $bindable(),
     onSelectDefault,
     onSelectNone,
+    onSelectTemplate,
   } = $props();
+
+  // Dropdown's own selected value: 'default' sentinel only when no
+  // concrete template is resolved yet (nothing armed); once ANY template
+  // is selected (including the side-aware default itself) the dropdown
+  // shows that template's own name as the selected value — the operator
+  // sees exactly what's armed, not a generic "Default" placeholder. This
+  // mirrors the per-leg override editor's dropdown pattern in
+  // SymbolPanel.svelte (same options shape: sentinel + none + named).
+  const _selectValue = $derived(
+    shellUsingNone ? 'none' : (selectedTemplate ? String(selectedTemplate.id) : 'default')
+  );
+  const _options = $derived([
+    {
+      value: 'default',
+      label: sideAwareDefault
+        ? `Default (${sideAwareDefault.name || sideAwareDefault.slug})`
+        : 'Default (none configured)',
+    },
+    { value: 'none', label: 'None — entry only' },
+    ...nonNoneTemplates.map(t => ({ value: String(t.id), label: t.name || t.slug || `#${t.id}` })),
+  ]);
+  function _onDropdownChange(/** @type {string} */ v) {
+    if (v === 'default') { onSelectDefault?.(); }
+    else if (v === 'none') { onSelectNone?.(); }
+    else { onSelectTemplate?.(Number(v)); }
+  }
 
   // Expand/collapse state (#30) — persists within session; resets when
   // the parent clears selectedTemplate (i.e. on modal close/symbol change).
@@ -130,33 +164,17 @@
 </script>
 
 <span class="oes-basket-tpl-pick">
-  <span class="oes-basket-tpl-label">Template</span>
-  <span class="oes-tpl-toggle"
-        class:oes-tpl-toggle-none={shellUsingNone}
-        role="group" aria-label="Template attach">
-    <button type="button"
-            class={'oes-tpl-btn oes-tpl-btn-default' + (!shellUsingNone ? ' on' : '')}
-            disabled={!sideAwareDefault}
-            title={sideAwareDefault
-              ? `Attach ${sideAwareDefault.name} on fill`
-              : 'No side-default template configured for this scope'}
-            onclick={onSelectDefault}>
-      Default
-    </button>
-    <button type="button"
-            class={'oes-tpl-btn oes-tpl-btn-none' + (shellUsingNone ? ' on' : '')}
-            title="No template — entry only, no GTT / no wing"
-            onclick={onSelectNone}>
-      None
-    </button>
+  <span class="oes-basket-tpl-label">Templ</span>
+  <span class="oes-tpl-dropdown-wrap"
+        class:oes-tpl-dropdown-none={shellUsingNone}
+        title={!shellUsingNone && selectedTemplate ? (selectedTemplate.description || '') : ''}>
+    <Select
+      value={_selectValue}
+      options={_options}
+      ariaLabel="Template attach"
+      onValueChange={_onDropdownChange} />
   </span>
   {#if !shellUsingNone && selectedTemplate}
-    <!-- Active template name + description so the operator sees
-         WHICH default Default resolved to (relevant when there
-         are multiple side-defaults seeded). -->
-    <span class="oes-basket-tpl-name" title={selectedTemplate.description || ''}>
-      {selectedTemplate.name || selectedTemplate.slug}
-    </span>
     <!-- #30 expand toggle — reveals the full param set -->
     <button type="button"
             class="oes-tpl-expand-btn"
@@ -275,93 +293,22 @@
   }
   /* .oes-basket-tpl-label intentionally kept in SymbolPanel — also
      used by the demo-mode row outside this component. */
-  /* Default / None two-pill toggle — mirrors the Side toggle in
-     OrderTicket so the operator's mental model is the same: Default
-     attaches the platform-resolved template, None opts out.
-     Distinct color schemes per active state so the operator can tell
-     them apart at a glance. Operator: "for default and none, template
-     values use a different color scheme for text".
-       Default ON → amber (algo primary, "rule is armed")
-       None ON    → slate-gray (neutral, "nothing fires post-fill")
-     The container's border tracks the active pill so the row itself
-     reads as either amber-armed or slate-neutral. */
-  .oes-tpl-toggle {
+  /* Template dropdown (2026-09-29 — replaces the old Default/None
+     two-pill toggle + separate name chip; a real Select now shows
+     Default / None / every named template, and its own selected value
+     already displays whichever template is actually armed, so the
+     supplementary name chip that pill version needed is gone). Border
+     still tracks armed (amber) vs none (slate) so the row reads the
+     same at a glance as it did before. */
+  .oes-tpl-dropdown-wrap {
     display: inline-flex;
-    height: 1.4rem;
-    min-height: 1.4rem;
+    min-width: 9rem;
     border-radius: 3px;
-    overflow: hidden;
-    background: rgba(8, 14, 28, 0.55);
     border: 1px solid rgba(251, 191, 36, 0.55);
-    box-sizing: border-box;
     transition: border-color 0.12s;
   }
-  .oes-tpl-toggle-none {
+  .oes-tpl-dropdown-none {
     border-color: rgba(148, 163, 184, 0.55);
-  }
-  .oes-tpl-btn {
-    flex: 0 0 auto;
-    padding: 0 0.75rem;
-    background: transparent;
-    border: 0;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-    color: color-mix(in srgb, var(--algo-slate) 65%, transparent);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 800;
-    letter-spacing: 0.05em;
-    line-height: 1;
-    cursor: pointer;
-    transition: background 0.12s, color 0.12s, border-color 0.12s;
-  }
-  .oes-tpl-btn + .oes-tpl-btn {
-    border-left: 1px solid rgba(251, 191, 36, 0.30);
-  }
-  .oes-tpl-toggle-none .oes-tpl-btn + .oes-tpl-btn {
-    border-left-color: rgba(148, 163, 184, 0.30);
-  }
-  .oes-tpl-btn-default:hover:not(.on):not([disabled]) {
-    background: rgba(251, 191, 36, 0.08);
-    color: #f1f7ff;
-  }
-  .oes-tpl-btn-none:hover:not(.on):not([disabled]) {
-    background: rgba(148, 163, 184, 0.10);
-    color: #f1f7ff;
-  }
-  .oes-tpl-btn-default.on {
-    background: rgba(251, 191, 36, 0.24);
-    color: var(--algo-amber, var(--c-action));
-    text-shadow: 0 0 8px rgba(251, 191, 36, 0.45);
-  }
-  .oes-tpl-btn-none.on {
-    background: rgba(148, 163, 184, 0.22);
-    /* A3 (2026-09 audit) — was flat hex #cbd5e1 (full opacity); now
-       var(--algo-slate) per the whitening-sweep convention (--algo-slate
-       itself moved pale-blue → white in 2026-09; this site never got
-       migrated). Visible brightening — flagged, consistent with the
-       rest of the sweep. */
-    color: var(--algo-slate);
-    text-shadow: 0 0 6px rgba(148, 163, 184, 0.45);
-  }
-  .oes-tpl-btn:disabled {
-    opacity: 0.35;
-    cursor: not-allowed;
-  }
-  /* Active-template name chip — sits inline next to the Default pill
-     so the operator sees WHICH default Default resolved to (relevant
-     once 4 side-defaults are seeded). */
-  .oes-basket-tpl-name {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 600;
-    /* A3 (2026-09 audit) — was flat hex #f8fafc (full opacity, near-white
-       already); now var(--algo-slate) — same whitening-sweep pattern. */
-    color: var(--algo-slate);
-    background: rgba(251, 191, 36, 0.10);
-    border: 1px solid rgba(251, 191, 36, 0.32);
-    padding: 0.12rem 0.42rem;
-    border-radius: 3px;
-    letter-spacing: 0.02em;
   }
   /* #30 expand toggle button */
   .oes-tpl-expand-btn {
