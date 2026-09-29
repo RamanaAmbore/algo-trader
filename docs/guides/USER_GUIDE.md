@@ -350,11 +350,11 @@ Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is indepen
 
 ### Three ways to use templates
 
-**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the OrderTicket, it's pre-filled. You can override it per-ticket by clicking None.
+**Default template (most common)** — you choose one template as your default in `/admin/templates`. Every time you open the OrderTicket, the dropdown pre-selects your default template, shown as "Default (<template name>)". You don't need to change anything — the default is ready to use.
 
-**Per-ticket pick** — Open OrderTicket → toggle "Default" off, or click "None". Pick a different template for that single trade.
+**Per-ticket pick** — Open OrderTicket → click the template dropdown and pick any other template by name from the list. The dropdown updates to show your pick. Use this when you want a different template for a single trade without changing your default.
 
-**No template** — Leave it as None. Order places with no auto exits; you close it manually or with an agent.
+**No template** — Click the template dropdown and select "None". Order places with no auto exits; you close it manually or with an agent.
 
 ### Exit mechanics (plain English)
 
