@@ -134,6 +134,28 @@ test.describe('Ticket/Chain template severance', () => {
     expect(SYMBOL_PANEL).toContain('sideAwareDefault={_sideAwareDefault}');
   });
 
+  test('side-aware Default falls back to BUY when no side is known yet, without touching _modalSide itself (2026-09-30 fix)', () => {
+    // Bug: a fresh/cold order entry starts with _modalSide === null
+    // (deliberate — see _modalSide's own declaration comment, preserves
+    // the SideToggle's neutral state and the margin-preflight
+    // short-circuit). appliesToFor(null, sym) falls through every
+    // BUY/SELL branch to 'both', and no template has
+    // is_default=true AND applies_to='both' — so Templ rendered
+    // disabled ("No default template configured for this side/type")
+    // on every fresh order, for every symbol, until the operator
+    // explicitly picked a side. Fix: the scope guess (NOT _modalSide
+    // itself) falls back to 'BUY' when nothing else is known yet.
+    const scopeBlock = SYMBOL_PANEL.match(/const _sideAwareDefault = \$derived\.by\([\s\S]{0,2000}?\}\);/)?.[0] ?? '';
+    expect(scopeBlock, '_sideAwareDefault derivation block').not.toBe('');
+    expect(scopeBlock).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
+    // The auto-swap effect (re-resolves the shared template on a side
+    // flip) must use the identical fallback for consistency — otherwise
+    // the initial toggle state and the swap-on-flip state could disagree.
+    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,1200}?_appliesToFor\(sideForScope, symForScope\)/)?.[0] ?? '';
+    expect(swapEffectBlock, 'side-flip auto-swap effect block').not.toBe('');
+    expect(swapEffectBlock).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
+  });
+
   test('Chain tab still owns the shared templateId binding (severance is Ticket-only)', () => {
     expect(SYMBOL_PANEL).toContain('bind:templateId={_sharedTemplateId}');
     // Only one bind:templateId consumer should exist in the shell markup

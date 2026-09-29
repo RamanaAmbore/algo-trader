@@ -3567,18 +3567,19 @@
   }
   .ot-meta { font-size: var(--fs-md); color: var(--text-muted); }
 
-  /* Lots + Limit row — 65 % / 35 % split with NO gap (operator:
-     "lots and limit price should not have gap between them. if
-     required expand both the elements to fill the gap"). Cells
-     expand to exactly 65 / 35 of the row width and sit flush.
-     When Lots is the only child (MARKET order — no limit, no
-     trigger) it takes the full row instead of leaving 35 %
-     whitespace; audit defect #19. */
-  .ot-lots-price-row { gap: 0; align-items: flex-start; }
-  .ot-lots-cell  { flex: 0 0 65%; min-width: 0; }
-  .ot-lots-cell:only-child { flex: 1 1 100%; }
-  .ot-price-cell { flex: 0 0 35%; min-width: 0; }
-  .ot-price-cell .ot-input { width: 100%; }
+  /* Lots + Limit row — compact, left-aligned (2026-09-30, operator:
+     "the elements in the screenshot should be left aligned").
+     SUPERSEDES the prior 65%/35% expand-to-fill rule (operator had
+     previously asked "lots and limit price should not have gap
+     between them... expand both elements to fill the gap" — reversed
+     by explicit confirmation). Cells now shrink to their actual
+     content width and sit left-aligned with a small gap, instead of
+     stretching PRICE's input across 35% of the row to the far right
+     edge. */
+  .ot-lots-price-row { gap: 0.6rem; align-items: flex-start; }
+  .ot-lots-cell  { flex: 0 0 auto; min-width: 0; }
+  .ot-price-cell { flex: 0 0 auto; min-width: 0; }
+  .ot-price-cell .ot-input { width: 9rem; }
 
   .ot-input {
     width: 100%;

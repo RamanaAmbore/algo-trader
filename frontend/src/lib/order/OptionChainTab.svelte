@@ -909,7 +909,7 @@
         <span class="oct-expiry-dte"
               class:oct-expiry-dte-warn={_dte <= 3}
               title="Days until this contract's expiry">
-          {_dte === 0 ? 'expires today' : `${_dte}d to expiry`}
+          {_dte === 0 ? 'expires today' : `${_dte}d`}
         </span>
       {/if}
       <!-- Template toggle — relocated from SymbolPanel's shell-level
@@ -1211,7 +1211,8 @@
     color: rgba(251, 191, 36, 0.7);
     flex-shrink: 0;
   }
-  .oct-expiry-pick { min-width: 11rem; max-width: 16rem; flex: 0 1 auto; }
+  /* Narrowed 20% (2026-09-30, operator request): 11rem/16rem → 8.8rem/12.8rem. */
+  .oct-expiry-pick { min-width: 8.8rem; max-width: 12.8rem; flex: 0 1 auto; }
   /* Days-to-expiry chip — slate-blue resting, amber when ≤ 3 days
      to expiry so the operator sees the imminent roll. */
   .oct-expiry-dte {

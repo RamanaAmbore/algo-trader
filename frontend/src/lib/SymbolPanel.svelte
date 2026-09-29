@@ -974,7 +974,17 @@
     const symForScope = (_localSymbol || '').trim()
       || (_focusedLeg?.sym || '')
       || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
-    const sideForScope = _focusedLeg?.side || _modalSide;
+    // Fall back to 'BUY' ONLY for this scope guess when no side is known
+    // yet (2026-09-30, operator: "by default [templ] should be on...
+    // when on, while placing the order it should take action on the
+    // other order"). Deliberately does NOT touch `_modalSide` itself —
+    // that stays null on a cold open so the SideToggle shows neither
+    // pre-active and margin preflight still short-circuits (see the
+    // `_modalSide` declaration's own comment for why that's load-
+    // bearing). This only affects which template gets PREVIEWED/
+    // toggled-on by default; once the operator picks a real side, this
+    // recomputes to the correct scope automatically (already reactive).
+    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
     const scope = _appliesToFor(sideForScope, symForScope);
     const sideMatch = _templates.find(t =>
       t.is_default && (t.applies_to || '').toLowerCase() === scope
@@ -1113,7 +1123,10 @@
     const symForScope = (_localSymbol || '').trim()
       || (_focusedLeg?.sym || '')
       || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
-    const sideForScope = _focusedLeg?.side || _modalSide;
+    // Same 'BUY' fallback as `_sideAwareDefault` (2026-09-30 fix) — keeps
+    // this effect's scope computation in lockstep with the toggle's own
+    // resolution so they never disagree on a cold open.
+    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
     const scope = _appliesToFor(sideForScope, symForScope);
     if (scope === _lastSideScope) return;
     untrack(() => {
@@ -3108,9 +3121,13 @@
     position: relative;
     display: inline-flex;
     align-items: center;
-    /* Take the remaining row space so Symbol gets the largest slot. */
+    /* Takes remaining row space (largest slot) but capped — was
+       unbounded flex-grow, stretching across the full header width on
+       wide viewports (2026-09-30, operator: "don't expand the width of
+       the symbol to the full width. limit the max width"). */
     flex: 1 1 0;
     min-width: 0;
+    max-width: 20rem;
   }
   .oes-sym-pick :global(.ssi-wrap) { width: 100%; }
   .oes-sym-pick :global(.ssi-input) { width: 100%; min-width: 0; }
@@ -3373,7 +3390,10 @@
     align-items: center;
   }
   .oes-tab-ltp {
-    margin-left: auto;
+    /* Left-aligned (2026-09-30, operator: "even ltp and chase label
+       value pairs should be aligned to left") — supersedes the
+       2026-09-29 margin-left:auto that right-anchored this + CHASE.
+       See .oes-common-chase-label below for the matching change. */
     padding: 0 0.4rem;
     font-size: 0.7rem;
     font-variant-numeric: tabular-nums;
@@ -4403,16 +4423,14 @@
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
-    /* Operator (2026-09-29): "keep chase right aligned for chain like
-       order ticket" — .oes-tab-ltp (the sibling before this one) owns
-       the only margin-left:auto in this row, so CHASE only landed on
-       the right edge when LTP was ALSO rendered (Ticket tab, single
-       committed symbol). Chain tab often has no single-symbol LTP
-       (_ltp stays null while staging multi-leg baskets), so CHASE lost
-       its right anchor and sat immediately after the tab strip instead.
-       Own margin-left:auto here makes the alignment independent of
-       whether LTP renders, on either tab. */
-    margin-left: auto;
+    /* Left-aligned (2026-09-30, operator: "even ltp and chase label
+       value pairs should be aligned to left") — REVERSES the
+       2026-09-29 "keep chase right aligned" decision documented in
+       git history. margin-left:auto removed; CHASE now sits inline
+       right after LTP (or right after the tab strip when LTP isn't
+       rendered — e.g. Chain tab staging a multi-leg basket with no
+       single-symbol LTP), same as every other sibling in .oes-tabs. */
+    margin-left: 0.5rem;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
   /* .oes-tabs has gap:0 (each child owns its own spacing) — the CHASE
