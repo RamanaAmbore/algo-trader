@@ -1012,7 +1012,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1060,7 +1060,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1072,7 +1072,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(ceQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceQ && !ceQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(ceQ?.ask)}</span>{#if ceSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(ceQ.ask - ceQ.bid)} ({((ceQ.ask - ceQ.bid)/((ceQ.ask+ceQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                     <span class="chain-side-action">
                       <span class="chain-btn-pair">
@@ -1120,7 +1120,7 @@
                     <span class="chain-cell-quote">
                       <span class="chain-cell-bid">{_fmtLtp(peQ?.bid)}</span><span
                             class="chain-cell-sep">-</span><span
-                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peQ && !peQ.depthAvail}<span class="chain-cell-no-depth" title="Last traded price — no live depth">(L)</span>{/if}{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
+                            class="chain-cell-ask">{_fmtLtp(peQ?.ask)}</span>{#if peSpreadWide}<span class="chain-cell-spread-warn" title="Wide spread — {_fmtLtp(peQ.ask - peQ.bid)} ({((peQ.ask - peQ.bid)/((peQ.ask+peQ.bid)/2)*100).toFixed(0)}% of mid)">⚠</span>{/if}
                     </span>
                   </span>
                 </td>
@@ -1515,8 +1515,6 @@
   .chain-cell-bid { color: var(--algo-green, var(--c-long)); }
   .chain-cell-ask { color: var(--algo-red, var(--c-short)); }
   .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
-  /* "(L)" suffix shown when depth is absent — using last traded price as bid/ask proxy. */
-  .chain-cell-no-depth { font-size: 0.6rem; color: var(--algo-muted); opacity: 0.5; margin-left: 0.15rem; cursor: default; }
   .chain-side-action { display: inline-flex; align-items: center; }
   /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
      calls were sky-blue (rgba 56,189,248) and ITM puts were orange

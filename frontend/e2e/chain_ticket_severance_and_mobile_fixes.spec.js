@@ -58,6 +58,7 @@ const CHAIN_TAB = readFileSync(path.join(dir, 'src/lib/order/OptionChainTab.svel
 const SUBMIT_HELPERS = readFileSync(path.join(dir, 'src/lib/order/orderTicketSubmit.js'), 'utf8');
 const TEMPLATE_BAR = readFileSync(path.join(dir, 'src/lib/TemplateBar.svelte'), 'utf8');
 const APP_CSS = readFileSync(path.join(dir, 'src/app.css'), 'utf8');
+const CHART_WORKSPACE = readFileSync(path.join(dir, 'src/lib/ChartWorkspace.svelte'), 'utf8');
 
 test.describe('Ticket/Chain template severance', () => {
   test('Templ toggle/note visibility gates only ever fire for the Chain tab, never Ticket', () => {
@@ -325,5 +326,29 @@ test.describe('Guard — no new order-placement call was added to any frontend s
       expect(CHAIN_TAB, `OptionChainTab must not call ${banned}`).not.toContain(banned);
       expect(TEMPLATE_BAR, `TemplateBar must not call ${banned}`).not.toContain(banned);
     }
+  });
+});
+
+// 2026-09-30: operator — "remove (l) from chain". The "(L)" no-live-depth
+// indicator (shown next to a CE/PE quote when depthAvail is false, meaning
+// the price shown is last-traded-price rather than live bid/ask) is removed
+// entirely, all 4 occurrences (CE/PE x ATM/non-ATM rows) plus its CSS.
+test.describe('Chain "(L)" no-depth indicator removed', () => {
+  test('no chain-cell-no-depth markup or CSS remains in OptionChainTab.svelte', () => {
+    expect(CHAIN_TAB).not.toContain('chain-cell-no-depth');
+    expect(CHAIN_TAB).not.toMatch(/>\(L\)</);
+    // depthAvail itself may still exist as a data-shape field (JSDoc type
+    // comment) — only the rendered "(L)" indicator and its CSS are removed.
+    expect(CHAIN_TAB).not.toMatch(/!ceQ\.depthAvail|!peQ\.depthAvail/);
+  });
+});
+
+// 2026-09-30: operator — "you can remove rupee symbol from chart y label".
+test.describe('Chart Y-axis label has no rupee symbol', () => {
+  test('cw-yaxis-label text no longer prefixes priceFmt with ₹', () => {
+    const label = CHART_WORKSPACE.match(/class="cw-yaxis-label"[\s\S]{0,300}?<\/text>/)?.[0] ?? '';
+    expect(label, 'cw-yaxis-label <text> block').not.toBe('');
+    expect(label).not.toContain('₹{priceFmt(tick.v)}');
+    expect(label).toContain('{priceFmt(tick.v)}');
   });
 });

@@ -1990,7 +1990,7 @@
                 text-anchor="end" dominant-baseline="middle"
                 transform="rotate(-45 {CPAD_L - 4} {tick.y})"
                 fill="#ffffff" font-size="12" font-weight="600" font-family="monospace">
-            ₹{priceFmt(tick.v)}
+            {priceFmt(tick.v)}
           </text>
         {/each}
 
