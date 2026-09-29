@@ -1,129 +1,199 @@
-# Plan: Fix false "Margin < 0 -₹999,999,999" alert + unclear alert text
+# Plan: heartbeat contrast revert, Payoff spinner repositioning, Performance-page tab colors, chain submit tooltip
 
 ## Context
 
-Operator reported (with a screenshot) a false-positive alert firing simultaneously
-for every account, each showing the identical, absurd line `Margin < 0
--₹999,999,999` — including two accounts (ZG0790, ZJ6294) that have real positive
-fund balances (₹94.74L / ₹69.83L) shown correctly elsewhere in the same alert.
-Follow-up: "it should clearly tell what the alert is about. it is not clear from
-the alert."
+Five distinct, unrelated visual bugs reported and grounded via 3 parallel research
+agents (facts below, not guesses):
 
-Root-caused via a dedicated research agent (facts below, not a guess):
+1. **PositionStrip heartbeat pulse now invisible against the stale-data state.**
+   A prior-session fix (commit `7445bcdc`, 2026-09-26) unified `.ps-strip.ps-stale`'s
+   `border-bottom-color` from a distinct orange to the SAME amber hue the heartbeat
+   pulse animates through (`@keyframes ps-heartbeat-pulse`, both ~`rgba(251,191,36,…)`
+   at similar alpha, `PositionStrip.svelte:826-849`). The animation still technically
+   wins the CSS cascade while running (confirmed via spec: animations sit in a
+   higher-priority origin than static author rules, no `!important` anywhere in the
+   file) — but because the resting stale border and the pulse's peak color are now
+   nearly identical, and the pulse only lasts 300ms before the class is removed and
+   the static stale border reasserts, the pulse reads as invisible in practice.
+   Operator: "that border us for heart beat. revert it and let the heart beat
+   animate it." — revert the color choice specifically (not the token-consolidation
+   rationale) so the two states are visually distinct again.
 
-- `-999999999` is **not** a broker/funds-fetch fallback value — the "Missing-vs-
-  zero convention" (`_num_or_none` in `grammar.py`, `_eval_leaf`'s `if val is
-  None: continue` in `agent_evaluator.py`) is intact and not implicated.
-- It's a **deliberately hand-authored "always-true" threshold literal** on two
-  built-in, schedule-only informational agents — `market-open-nse` and
-  `market-preclose-mcx` (`backend/api/algo/agent_engine.py:1469,1477`):
-  `{"op": ">=", "scope": "funds.any_acct", "metric": "avail_margin", "value":
-  -999999999}`. Comment at `agent_engine.py:1445-1446` confirms the intent: this
-  makes the condition match every account on every tick, so the REAL trigger is
-  each agent's own `fire_at_time` gate, not this condition.
-- **Two independent display defects compound to produce the confusing alert:**
-  1. `_v2_derive_kind(metric)` (`agent_engine.py:822-834`) maps `metric ==
-     'avail_margin'` to `'negative_margin'` **based on metric name alone,
-     ignoring `op`** — so this `>=` "always-true" trick leaf gets mislabeled
-     exactly the same as a real "margin dropped below floor" breach (e.g. the
-     genuine `loss-funds-negative` agent, which legitimately uses `op: "<"`).
-  2. `_v2_match_to_alertrow` (`agent_engine.py:884-891`) renders the alert's
-     headline number from `match['threshold']` (the fixed, hand-authored
-     literal) instead of `match['value']` (the real per-account fetched
-     margin) — so every account shows the identical fabricated
-     `-₹999,999,999` via `_v2_format_threshold`, even though the real number is
-     already correctly available and shown elsewhere in the same alert as the
-     Funds/FND figure.
+2. **CardHeader.svelte's loading spinner sits BEFORE the title and has no reserved
+   width**, so toggling `loading` shifts the title text (`CardHeader.svelte:101-113`,
+   `{#if loading}<svg class="ch-spin">…</svg>{/if}` then `{#if title}<span
+   class="ch-title">` — spinner is a plain flex child of `.ch-left`, adding/removing
+   its width + the `gap` on every toggle). This is a SHARED component used by every
+   card header in the app (not just "Payoff") — operator named "Payoff" as the
+   example they noticed, but the fix belongs at the component level.
+
+3. **OptionsPayoff.svelte's refresh spinner is positioned in the top-right corner
+   of the chart** (`position: absolute`, `.payoff-loading-ring-corner`), completely
+   separate from the "LTP" label/value it conceptually relates to (which lives in
+   the top-left `.payoff-stats` overlay, `OptionsPayoff.svelte:892-925`). Operator
+   wants it moved to render inline, immediately after the LTP value, not floating
+   in an unrelated corner.
+
+4. **Public `/performance` page's tab colors are inconsistent AND have a real
+   invisible-text bug**, root-caused precisely:
+   - Both tab strips (`PerformancePage.svelte:1501-1511` NAV/Funds,
+     `:1520-1530` Positions/Holdings) reuse the shared `AlgoTabs.svelte` — not
+     bespoke markup, so this is a pure CSS-drift bug, not an intentional
+     inconsistency.
+   - Positions/Holdings strip's cream-theme override (`PerformancePage.svelte:
+     1912-1919`) targets `button[class*="border-primary"]`/`[class*="text-muted"]`
+     — classes from an OLD bespoke Tailwind-button implementation that
+     `AlgoTabs.svelte` never emits (confirmed via `git log`: commit `8b70771f`
+     swapped the markup but left these selectors stale). Dead code — zero effect.
+   - NAV/Funds strip's override (`:1954-1962`) sets `color` for the *selected*
+     state but omits it for the *hover-not-selected* state.
+   - Both gaps fall through to the canonical dark-algo-page rule
+     `app.css:2568`: `.algo-tab:hover { color: var(--algo-slate); }`, and
+     `--algo-slate: #ffffff` (`app.css:43`, explicitly documented "primary text
+     on dark surfaces"). The public page's actual background here is `#fffdf8`
+     (near-white cream) — so hovering/pressing a non-active tab renders white
+     text on a near-white background, i.e. genuinely invisible. This is the
+     exact mechanism behind "text changes to white and not visible."
+
+5. **Chain submit button** — re-verified: the VISIBLE label is already correctly
+   "Submit" (confirmed both in source and live on dev.ramboq.com in this
+   session). The `title` tooltip attribute, however, still reads "Submit all N
+   basket legs" (`SymbolPanel.svelte:2930`) — left as-is in an earlier pass since
+   it's not the visible label. Given the operator has now repeated this complaint
+   multiple times, simplifying the tooltip to match ("Submit") removes any
+   remaining ambiguity, at negligible risk.
 
 ## Fix
 
-### 1. `backend/api/algo/agent_engine.py` — `_v2_derive_kind`
+### 1. `frontend/src/lib/PositionStrip.svelte`
 
-Extend its signature to also take the leaf's `op` (already available on the
-match dict built by `_eval_leaf` in `agent_evaluator.py` — confirm exact key
-during implementation, likely `match['op']` or similar, thread it through the
-one caller). Only classify `metric in ('cash',)` → `'negative_cash'` and
-`metric in ('avail_margin',)` → `'negative_margin'` when `op` is a "below-floor"
-comparison (`<` / `<=`). For any other op (`>=`, `>`, `==`, ...) on the same
-metrics, fall through to whatever this function's existing generic/default kind
-already is for non-special metrics — read the full function first to reuse that
-path rather than invent a new "kind" label.
+Revert `.ps-strip.ps-stale`'s `border-bottom-color` (line ~848) from
+`color-mix(in srgb, var(--algo-amber) 60%, transparent)` back to the original
+`rgba(251, 146, 60, 0.6)` — restores hue contrast against the heartbeat's amber
+pulse so the 300ms animation is perceptible again when both states are active
+together. Update the code comment to explain WHY the color-token-consolidation
+was reverted here specifically (heartbeat-visibility regression), so a future
+pass doesn't "fix" it back to the canonical token without knowing this
+constraint. Leave `BrokerHealthBadge`'s own stale-state color untouched — that
+component has no heartbeat to camouflage against, so the original
+consolidation rationale still applies there.
 
-### 2. `backend/api/algo/agent_engine.py` — `_v2_match_to_alertrow`
+### 2. `frontend/src/lib/CardHeader.svelte`
 
-For a genuine threshold-breach kind, the headline number must come from
-`match['value']` (the real fetched figure), not `match['threshold']`. Read
-`_tg_rule_line` (`backend/shared/helpers/alert_utils.py:1190-1202`) and the
-`_KIND_LABEL` map (`alert_utils.py:1119-1127`) in full to see how other
-"informational"/non-breach kinds are already rendered elsewhere in this file,
-and reuse that existing neutral rendering path for whatever kind
-`market-open-nse`/`market-preclose-mcx`'s trick-leaf now falls into after fix
-#1 — these two agents are pure scheduled reminders, not threshold breaches, so
-their alert text should say what they're actually informing the operator of
-(read each agent's own definition/detail text at `agent_engine.py` around
-lines 1460-1480 to confirm what that informational content already is), not a
-fabricated margin figure.
+Move the `{#if loading}<svg class="ch-spin">…</svg>{/if}` block to render
+AFTER `{#if title}<span class="ch-title">{title}</span>{/if}` (still before
+`timestamp`/`left` snippet, matching the operator's "after the label" ask).
+To satisfy "should not shift text after it": give `.ch-spin` a fixed-width
+wrapper (e.g. reserve `width: 10px` + the `gap` amount via a permanently
+present container that toggles only `visibility`/`opacity` rather than
+mounting/unmounting the SVG itself) OR keep the `{#if}` but reserve the slot
+with a fixed-width invisible placeholder element on the `{:else}` branch —
+prefer whichever keeps the diff smallest while genuinely eliminating layout
+shift (verify by computed-style/bounding-box check in the same viewport,
+loading on vs off, title's `x` position must not change). This is a shared
+component — verify via a quick grep that no OTHER caller relies on the
+spinner being BEFORE the title (unlikely, since `loading` is a generic prop),
+and spot-check one or two other CardHeader usages after the change.
 
-### 3. Defensive guard (belt-and-suspenders, addresses "should clearly tell
-what the alert is about")
+### 3. `frontend/src/lib/OptionsPayoff.svelte`
 
-In `_v2_format_threshold` or `_tg_rule_line`, add a sanity check that refuses
-to render an obviously-nonsensical sentinel magnitude (e.g. `abs(threshold) >=
-1e8`) as if it were a real displayable number — log a warning instead and fall
-back to a neutral label. This is a second, independent line of defense in case
-another agent definition ever reuses a similar "always-true" sentinel trick in
-the future; fix #1/#2 address the root cause, this guard prevents recurrence of
-the SYMPTOM even if a future config regresses the kind-derivation logic.
+Move the refresh-spinner markup (`OptionsPayoff.svelte:892-903`,
+`.payoff-loading-ring-corner`) from its current absolute top-right-corner
+position to render INLINE immediately after the LTP value span inside the
+`.ps-row` for LTP (`OptionsPayoff.svelte:922-926`, after
+`<span class="ps-v ...">{fmtSpot(spot)}</span>`). Drop the
+`position: absolute` / `top`/`right`/`z-index` corner-specific CSS for this
+usage (or introduce a second, non-corner class) since it now flows inline
+within `.payoff-stats`. Same layout-shift concern as #2: `.payoff-stats` uses
+`grid-template-columns: max-content max-content` — toggling an inline icon
+after the value will resize the row's content width; reserve a fixed-width
+slot the same way as #2 so the LTP row's own width doesn't visibly jump when
+`refreshing` toggles. Read the full surrounding `.payoff-stats`/`.ps-row`/
+`.ps-k`/`.ps-v` CSS first to fit the icon into the existing grid/flex
+structure cleanly rather than fighting it.
+
+### 4. `frontend/src/lib/PerformancePage.svelte` + possibly `app.css`
+
+- Positions/Holdings strip (`:1912-1919`): fix the dead selectors to target
+  what `AlgoTabs.svelte` actually renders — `.tabs-row :global(.algo-tab[aria-selected="true"])`
+  for the active state and `.tabs-row :global(.algo-tab:hover:not([aria-selected="true"]))`
+  for hover, mirroring the NAV/Funds strip's own (mostly-working) pattern
+  exactly, including setting `color` explicitly in BOTH states using the same
+  `--card-active-row-text`/`--card-active-border`/`--card-active-row-bg`
+  cream-theme variables the NAV/Funds strip already uses.
+- NAV/Funds strip (`:1954-1962`): add the missing `color` declaration to the
+  hover-not-selected rule (`:1959-1962`) — use a sensible cream-theme-
+  appropriate inactive/hover text color (check what token the surrounding
+  cream theme uses for muted/secondary text on `#fffdf8`, reuse it rather
+  than inventing a new one).
+- End state: both strips render IDENTICAL active/hover color treatment
+  (same variables, same values) — this directly satisfies "active tab colors
+  not consistent" / "hover tab colors not consistent", and eliminates the
+  white-on-near-white invisible-text bug since `color` is now always
+  explicitly set to a cream-appropriate value in every state, never falling
+  through to `--algo-slate`/`#ffffff`.
+
+### 5. `frontend/src/lib/SymbolPanel.svelte`
+
+Simplify the `title` tooltip on `.oes-common-submit` (line ~2930) from
+`` `Submit all ${basketLegs.length} basket leg${basketLegs.length > 1 ? 's' : ''}` ``
+to a plain `'Submit'` for the basket-mode branch, matching the already-correct
+visible label exactly.
 
 ## Explicitly out of scope
 
-- Do not change `market-open-nse`/`market-preclose-mcx`'s underlying
-  "always-true, funds.any_acct scope + fire_at_time gate" trigger mechanism
-  itself — it's a working, intentional pattern for schedule-only agents; only
-  its DOWNSTREAM display classification is wrong. Changing the trigger
-  mechanism is a larger, unrelated architecture change.
-- Do not touch `_num_or_none`, `_eval_leaf`'s None-guard, or any broker/funds-
-  fetch code — confirmed not implicated.
-- Do not touch the genuine `loss-funds-negative` agent or any other real `<`/`<=`
-  margin/cash threshold agent — their existing behavior and display are correct
-  and must not change.
+- Do not touch `BrokerHealthBadge`'s own stale-color token (the Sep 26
+  consolidation is still correct there).
+- Do not change `AlgoTabs.svelte` itself — the shared component's own base
+  styles are correct for its primary (dark algo page) consumers; only the
+  PUBLIC performance page's local override CSS is being fixed.
+- Do not touch any OTHER CardHeader consumer's `loading` semantics — only the
+  spinner's position/layout-stability within the shared component.
 
 ## Tests (mandatory, same commit)
 
-Extend `backend/tests/test_mcx_preclose_agent.py` (already has fixtures using
-`'threshold': -999999999`, lines 113/262/535) and/or add to
-`backend/tests/test_alert_routing.py` (line 765 already references this
-pattern):
-- A match with `metric='avail_margin', op='>=', threshold=-999999999` must NOT
-  produce kind `'negative_margin'` — assert the new neutral kind instead.
-- A match with `metric='avail_margin', op='<', threshold=<real number>` (the
-  genuine `loss-funds-negative` shape) must still correctly produce kind
-  `'negative_margin'` — regression guard, this must not change.
-- `_v2_match_to_alertrow` for a genuine negative-margin breach still renders
-  the real fetched `value` as the headline number (regression guard).
-- The sanity guard: a threshold with `abs() >= 1e8` never appears verbatim in
-  rendered alert text.
+- New/extended Playwright spec (source-scan + live-render mix, following this
+  session's established pattern) covering:
+  - `PositionStrip.svelte`'s `.ps-stale` border-bottom-color is the reverted
+    `rgba(251, 146, 60, 0.6)`, not the color-mix token.
+  - `CardHeader.svelte`: spinner markup renders after `.ch-title` in source
+    order; a live/computed-style check that toggling `loading` does not move
+    `.ch-title`'s bounding-box x-position.
+  - `OptionsPayoff.svelte`: spinner markup no longer has the `-corner`
+    absolute-position class; renders after the LTP value span in source
+    order; a live check that toggling `refreshing` doesn't shift the LTP row's
+    other content.
+  - `PerformancePage.svelte`: both `.tabs-row` and `.funds-nav-tabs` override
+    blocks set an explicit `color` for both active and hover-not-selected
+    states, using the same `--card-*` variables in both strips (byte-level
+    consistency check between the two rule blocks).
+  - `SymbolPanel.svelte`: `.oes-common-submit` title is plain `'Submit'` for
+    basket mode, not the old "Submit all N..." template string.
 
 ## Verification
 
-1. `venv/bin/pytest backend/tests/ -q --tb=line` — full suite green, including
-   new/updated tests above.
-2. Manually trace (or query dev DB / trigger a dry-run) that `market-open-nse`
-   and `market-preclose-mcx` still fire at their scheduled times (this is
-   informational — don't break the actual notification, only its mislabeled
-   display).
-3. Confirm the real `loss-funds-negative` agent's alert rendering is byte-for-
-   byte unchanged for a genuine breach (regression check).
+1. `npx svelte-check --output machine` — 0 errors.
+2. `npx vitest run` — full suite green.
+3. New/updated Playwright spec green.
+4. Live check via local dev server + screenshots: PositionStrip heartbeat
+   visibly pulses distinctly from its stale resting state; CardHeader spinner
+   sits after title with no jump when toggled; Payoff chart LTP row's spinner
+   renders after LTP value with no shift; public `/performance` page's two
+   tab strips show identical, clearly-visible active/hover colors with no
+   white-on-cream invisible text at any point during a click/hover.
+5. Stop the local dev server when done.
 
 ## Commit message (draft)
 
-`fix(alerts): stop schedule-only informational agents' always-true sentinel condition from rendering as a fake "Margin < 0" breach`
+`fix(ui): restore heartbeat/stale contrast, reposition loading spinners without text shift, fix public performance-page tab color drift`
 
 ## Done when
 
-- The `market-open-nse`/`market-preclose-mcx` scheduled reminders no longer
-  render as a fabricated "Margin < 0 -₹999,999,999" line for every account.
-- A genuine margin/cash negative-threshold breach (`loss-funds-negative` or
-  similar) is completely unaffected — same kind, same label, same headline
-  number as before.
-- New/updated tests green; full suite green.
+- Heartbeat pulse is visually distinguishable from the stale resting state.
+- Both CardHeader and OptionsPayoff spinners render after their label/value,
+  with zero layout shift on toggle (verified via bounding-box check, not just
+  visual impression).
+- Public Performance page's two tab strips render byte-identical active/hover
+  color treatment; no white-on-cream text at any interaction state.
+- Chain submit button tooltip matches its visible "Submit" label.
+- svelte-check + vitest + new Playwright spec all green; committed to `workshop`.
