@@ -1,0 +1,239 @@
+/**
+ * order_book_chase_chip_and_session_reset.spec.js
+ *
+ * Covers two OrderBook.svelte changes:
+ *
+ *  1. The "All" status chip is replaced with a "Chase" chip — orders the
+ *     chase engine currently has in flight (status OPEN/TRIGGER_PENDING
+ *     AND `attempts > 0`; a plain resting order the chase engine has
+ *     never touched does NOT count, matching OrderCard.svelte's existing
+ *     `chase:#N` chip precedent).
+ *
+ *  2. Prior-trading-session orders (before today's 08:00 IST boundary)
+ *     are dropped from the Order Book entirely — from the grid AND from
+ *     every status chip count, since both read the same session-
+ *     filtered `orderRows`. Today's terminal rows (filled/rejected/
+ *     cancelled) still show; only rows from a PRIOR session vanish,
+ *     including a still-OPEN row (judgment call — see OrderBook.svelte's
+ *     `_isCurrentSessionRow` call-site comment).
+ *
+ * Mocks GET /api/orders/ (broker book) and GET /api/orders/algo/recent
+ * (algo-tracked book) with a fixed, deterministic dataset, and freezes
+ * the page clock's Date.now()/new Date() (but NOT setTimeout/setInterval
+ * — page.clock.setFixedTime, not .install — so visibleInterval's real
+ * poll timers keep working normally) to a fixed "now" so the 08:00 IST
+ * session-boundary math is deterministic regardless of when the test
+ * actually runs.
+ *
+ * Run:
+ *   cd frontend && npx playwright test \
+ *     e2e/order_book_chase_chip_and_session_reset.spec.js --project=chromium-desktop
+ */
+import { test, expect } from '@playwright/test';
+
+const _AUTH_USER = process.env.PLAYWRIGHT_USER || 'rambo';
+const _AUTH_PASS = process.env.PLAYWRIGHT_PASS || 'admin1234';
+let _cachedAuth = null;
+
+async function authOnce(page) {
+  if (!_cachedAuth) {
+    const envToken = process.env.PLAYWRIGHT_AUTH_TOKEN;
+    let tok = envToken || null;
+    if (!tok) {
+      for (const delay of [0, 20000, 65000]) {
+        if (delay) await new Promise((r) => setTimeout(r, delay));
+        const resp = await page.request.post('/api/auth/login', {
+          data: { username: _AUTH_USER, password: _AUTH_PASS },
+        });
+        if (resp.ok()) { tok = (await resp.json()).access_token; break; }
+        if (resp.status() !== 429) throw new Error(`authOnce: /api/auth/login ${resp.status()}`);
+      }
+    }
+    if (!tok) throw new Error('authOnce: login rate-limited');
+    _cachedAuth = { token: tok, user_id: _AUTH_USER };
+  }
+  const { token, user_id } = _cachedAuth;
+  await page.goto('/');
+  await page.evaluate(({ tok, usr }) => {
+    sessionStorage.setItem('ramboq_token', tok);
+    sessionStorage.setItem('ramboq_user', JSON.stringify({
+      user_id: usr, username: usr, role: 'admin', display_name: usr,
+    }));
+  }, { tok: token, usr: user_id });
+  await page.context().setExtraHTTPHeaders({ Authorization: `Bearer ${token}` });
+}
+
+// Fixed "now" = 2026-09-30 10:00 IST = 2026-09-30T04:30:00Z. Today's
+// 08:00 IST session boundary = 2026-09-30T02:30:00Z.
+const _NOW_ISO = '2026-09-30T04:30:00.000Z';
+
+// ── Broker book (/api/orders/ — OrderRow shape) ─────────────────────────
+const _BROKER_ROWS = [
+  { order_id: 'B1001', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-FRESHOPEN',
+    transaction_type: 'BUY', quantity: 50, pending_quantity: 50, filled_quantity: 0,
+    price: 100, trigger_price: 0, average_price: 0, status: 'OPEN',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:15:00' },
+  { order_id: 'B1002', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-FRESHFILL',
+    transaction_type: 'SELL', quantity: 50, pending_quantity: 0, filled_quantity: 50,
+    price: 100, trigger_price: 0, average_price: 101, status: 'COMPLETE',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:20:00' },
+  { order_id: 'B1003', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-FRESHREJ',
+    transaction_type: 'BUY', quantity: 50, pending_quantity: 0, filled_quantity: 0,
+    price: 100, trigger_price: 0, average_price: 0, status: 'REJECTED',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:05:00' },
+  { order_id: 'B1004', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-FRESHCXL',
+    transaction_type: 'BUY', quantity: 50, pending_quantity: 0, filled_quantity: 0,
+    price: 100, trigger_price: 0, average_price: 0, status: 'CANCELLED',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-30 09:10:00' },
+  // Prior session (yesterday) — must be dropped entirely.
+  { order_id: 'B1005', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-STALEFILL',
+    transaction_type: 'SELL', quantity: 50, pending_quantity: 0, filled_quantity: 50,
+    price: 100, trigger_price: 0, average_price: 101, status: 'COMPLETE',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-29 15:30:00' },
+  // Prior session, still OPEN — judgment call: hidden too (see spec docstring).
+  { order_id: 'B1006', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-STALEOPEN',
+    transaction_type: 'BUY', quantity: 50, pending_quantity: 50, filled_quantity: 0,
+    price: 100, trigger_price: 0, average_price: 0, status: 'OPEN',
+    order_type: 'LIMIT', product: 'MIS', variety: 'regular',
+    order_timestamp: '2026-09-29 18:00:00' },
+];
+
+// ── Algo book (/api/orders/algo/recent — AlgoOrderInfo shape) ──────────
+// created_at mirrors Python's naive-UTC datetime.isoformat() (no 'Z'/offset).
+const _ALGO_ROWS = [
+  { id: 1, account: 'T1', symbol: 'RBQ-CHASE1', exchange: 'NFO', transaction_type: 'BUY',
+    quantity: 50, initial_price: 100, current_limit: 102, fill_price: null,
+    attempts: 3, status: 'OPEN', engine: 'chase', mode: 'live', detail: null,
+    created_at: '2026-09-30T04:00:00' },
+  { id: 2, account: 'T1', symbol: 'RBQ-CHASE2NOATT', exchange: 'NFO', transaction_type: 'BUY',
+    quantity: 50, initial_price: 100, current_limit: 100, fill_price: null,
+    attempts: 0, status: 'OPEN', engine: 'chase', mode: 'live', detail: null,
+    created_at: '2026-09-30T04:10:00' },
+  { id: 3, account: 'T1', symbol: 'RBQ-CHASE3TERM', exchange: 'NFO', transaction_type: 'BUY',
+    quantity: 50, initial_price: 100, current_limit: 100, fill_price: 101,
+    attempts: 2, status: 'COMPLETE', engine: 'chase', mode: 'live', detail: null,
+    created_at: '2026-09-30T03:50:00' },
+  // Prior session — must be dropped entirely, including from the Chase count,
+  // despite attempts > 0 and status OPEN.
+  { id: 4, account: 'T1', symbol: 'RBQ-STALECHASE', exchange: 'NFO', transaction_type: 'BUY',
+    quantity: 50, initial_price: 100, current_limit: 105, fill_price: null,
+    attempts: 5, status: 'OPEN', engine: 'chase', mode: 'live', detail: null,
+    created_at: '2026-09-29T09:00:00' },
+];
+
+async function mockOrdersEndpoints(page) {
+  await page.route('**/api/orders/**', async (route) => {
+    const req = route.request();
+    if (req.method() !== 'GET') { await route.continue(); return; }
+    const url = req.url();
+    if (url.includes('/orders/algo/recent')) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify(_ALGO_ROWS),
+      });
+      return;
+    }
+    if (/\/api\/orders\/?(\?.*)?$/.test(url)) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ rows: _BROKER_ROWS, refreshed_at: new Date().toISOString() }),
+      });
+      return;
+    }
+    await route.continue();
+  });
+}
+
+test.describe('OrderBook — Chase chip + session-boundary reset', () => {
+  test.setTimeout(60_000);
+
+  test('All chip removed, Chase chip present with correct in-flight count', async ({ page }) => {
+    await authOnce(page);
+    await page.clock.setFixedTime(new Date(_NOW_ISO));
+    await mockOrdersEndpoints(page);
+
+    await page.goto('/orders');
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
+    // Let the initial _loadOrders() resolve.
+    await page.waitForTimeout(600);
+
+    const chips = page.locator('.ob-status-bar .ob-sc');
+    await expect(chips).toHaveCount(5);
+
+    // No "All" chip anywhere in the strip.
+    await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^All$/ })).toHaveCount(0);
+
+    // Exactly one "Chase" chip, count = 1 (only id=1 qualifies: OPEN + attempts>0 + today's session).
+    const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
+    await expect(chaseChip).toHaveCount(1);
+    await expect(chaseChip.locator('.ob-sc-n')).toHaveText('1');
+
+    // Open count = 3 (B1001 + algo id1 + algo id2); Complete = 2; Rejected = 1; Cancelled = 1.
+    const openChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Open$/ }) });
+    await expect(openChip.locator('.ob-sc-n')).toHaveText('3');
+    const completeChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Filled$/ }) });
+    await expect(completeChip.locator('.ob-sc-n')).toHaveText('2');
+    const rejectedChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Rejected$/ }) });
+    await expect(rejectedChip.locator('.ob-sc-n')).toHaveText('1');
+    const cancelledChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Cancelled$/ }) });
+    await expect(cancelledChip.locator('.ob-sc-n')).toHaveText('1');
+  });
+
+  test('Clicking Chase filters the grid to only in-flight-chased rows', async ({ page }) => {
+    await authOnce(page);
+    await page.clock.setFixedTime(new Date(_NOW_ISO));
+    await mockOrdersEndpoints(page);
+
+    await page.goto('/orders');
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
+    await page.waitForTimeout(600);
+
+    // Default filter is now 'open' — 3 cards.
+    await expect(page.locator('.oc-book-grid .order-card')).toHaveCount(3);
+
+    const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
+    await chaseChip.click();
+
+    const cards = page.locator('.oc-book-grid .order-card');
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first()).toContainText('RBQ-CHASE1');
+    // Terminal row with attempts>0 must NOT be counted as chase.
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE3TERM' })).toHaveCount(0);
+    // OPEN row with attempts=0 must NOT be counted as chase.
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE2NOATT' })).toHaveCount(0);
+  });
+
+  test('Prior-session orders never appear, in any filter, including a stale still-OPEN row', async ({ page }) => {
+    await authOnce(page);
+    await page.clock.setFixedTime(new Date(_NOW_ISO));
+    await mockOrdersEndpoints(page);
+
+    await page.goto('/orders');
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
+    await page.waitForTimeout(600);
+
+    // Stale rows (including the still-OPEN one) never render, regardless
+    // of which status chip is active.
+    for (const filterLabel of [/^Open$/, /^Filled$/, /^Cancelled$/]) {
+      const chip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: filterLabel }) });
+      await chip.click();
+      await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEFILL' })).toHaveCount(0);
+      await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEOPEN' })).toHaveCount(0);
+      await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALECHASE' })).toHaveCount(0);
+    }
+
+    // A fresh today's-session row (from BEFORE and AFTER the 08:00 IST
+    // boundary within today) does appear under Open.
+    const openChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Open$/ }) });
+    await openChip.click();
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-FRESHOPEN' })).toHaveCount(1);
+  });
+});

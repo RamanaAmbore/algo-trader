@@ -115,14 +115,10 @@
     font-size: var(--fs-xs);
     font-weight: 700;
     cursor: pointer;
-    /* Row-height parity fix (SymbolPanel's .oes-tabs row, variant="panel"
-       is the only consumer of this class) — matches the shared modal
-       control-height token so the L/M/H pills don't render thinner
-       than the TICKET/CHAIN/CHART tab buttons in the same row. */
-    display: inline-flex;
-    align-items: center;
-    min-height: var(--ctl-h, 1.7rem);
-    box-sizing: border-box;
+    /* Row-height parity fix REVERTED (2026-09-30, same day, explicit
+       operator request) — the min-height/box-sizing/display/align-items
+       added to match the tab-strip's --ctl-h token made the L/M/H pills
+       look wrong; reverted back to content-driven sizing. */
   }
   .cap-pill--panel:last-child { border-right: 0; }
   .cap-pill--panel:hover { color: var(--c-action); background: rgba(251,191,36,0.08); }

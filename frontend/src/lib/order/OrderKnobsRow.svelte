@@ -1,12 +1,15 @@
 <script>
-  // Five selector knobs extracted from OrderTicket.svelte:
-  // Type · Product · Exchange · Variety · Validity
+  // Selector knobs extracted from OrderTicket.svelte:
+  // Type · Product · Exchange · Variety
   //
-  // All five live inside the parent's .ot-row-knobs flex container as
+  // These live inside the parent's .ot-row-knobs flex container as
   // sibling knob slots — this component renders a transparent fragment
-  // (no wrapper element) so the flex layout is unaffected.
+  // (no wrapper element) so the flex layout is unaffected. Validity used
+  // to live here too but was moved back into OrderTicket.svelte directly
+  // (2026-09-30) so it could sit in `.ot-lots-price-row` instead — see
+  // that file's own comment on `.ot-knob-validity` for why.
   //
-  // Two-way bindings via $bindable(): type, product, variety, validity.
+  // Two-way bindings via $bindable(): type, product, variety.
   // Exchange is unidirectional: read via `exchange` prop, write via
   // `onExchangeChange` callback so the parent can also set
   // _exchangeTouched alongside the value update.
@@ -22,7 +25,6 @@
     type      = $bindable(),
     product   = $bindable(),
     variety   = $bindable(),
-    validity  = $bindable(),
     exchange,
     onExchangeChange,    // (v: string) => void
     disabled      = false,
@@ -86,17 +88,6 @@
           {disabled}
           options={_varietyOptions} />
 </div>
-<div class="ot-knob">
-  <label class="ot-label" for="ot-validity-sel">Validity</label>
-  <Select id="ot-validity-sel"
-          bind:value={validity}
-          ariaLabel="Validity"
-          {disabled}
-          options={[
-            { value: 'DAY', label: 'DAY' },
-            { value: 'IOC', label: 'IOC' },
-          ]} />
-</div>
 
 <style>
   /* Duplicated from OrderTicket — both files need their own scoped copy
@@ -115,16 +106,18 @@
 
   /* flex-grow: 0 (was `flex: 1 1 5rem` — grow enabled) — mobile SUSPECT
      fix, verified live at 375px. flex-wrap distributes leftover space
-     independently PER WRAPPED LINE, so with grow enabled the same four
-     same-basis knobs (Type/Product/Variety/Validity) rendered at
-     genuinely different widths depending on how many landed on their
-     line (measured: 102px on a 2-up line vs 177px on a 2-up line with
-     more leftover space) — the "wrapped row's columns don't align with
-     the first row's" symptom the plan flagged. Fixed basis (no grow)
-     makes every knob the same width regardless of which line it wraps
-     to; the row simply leaves trailing whitespace on a shorter line
-     instead of stretching to fill it, which reads as intentional
-     (matches how Chip/pill rows elsewhere in the app wrap). */
+     independently PER WRAPPED LINE, so with grow enabled the same
+     same-basis knobs (Type/Product/Variety — Validity was part of this
+     set at the time of the original fix, since moved out, see this
+     file's top-of-script comment) rendered at genuinely different
+     widths depending on how many landed on their line (measured: 102px
+     on a 2-up line vs 177px on a 2-up line with more leftover space) —
+     the "wrapped row's columns don't align with the first row's"
+     symptom the plan flagged. Fixed basis (no grow) makes every knob
+     the same width regardless of which line it wraps to; the row
+     simply leaves trailing whitespace on a shorter line instead of
+     stretching to fill it, which reads as intentional (matches how
+     Chip/pill rows elsewhere in the app wrap). */
   .ot-knob {
     display: flex;
     flex-direction: column;

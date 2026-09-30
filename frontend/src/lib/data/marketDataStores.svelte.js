@@ -41,6 +41,7 @@ import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
 import { marketAwareInterval, visibleInterval, lastRefreshAt } from '$lib/stores';
+import { isNseOpen, isMcxOpen } from '$lib/marketHours';
 // Hardening: dev-only runtime shape assertions on backend responses.
 // Vite dead-code-eliminates the assertion body in production so the
 // operator's browser pays zero cost.
@@ -347,8 +348,6 @@ export const pulseHoldingsStore = createDataStore({
 
 // ── Holdings ──────────────────────────────────────────────────────────────
 
-let _holdingsSnapshotAt = $state(null);
-
 /**
  * Holdings (overnight / long-term book).
  * TTL 15 min — same reasoning as positions.
@@ -362,7 +361,6 @@ export const holdingsStore = createDataStore({
   parse:   (r) => {
     const rows = r?.rows ?? [];
     _publishHoldingsRows(rows);
-    _holdingsSnapshotAt = r?.as_of ?? null;
     return rows;
   },
 });
@@ -751,7 +749,19 @@ async function _tickBookPollers() {
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
     _bookPollerTick++;
     lastRefreshAt.set(Date.now());
-    const _wantMs = _holdingsSnapshotAt != null ? _bookClosedMs : _bookLiveMs;
+    // Slow cadence ONLY when the whole market is closed (no NSE, no MCX).
+    // BUG FIX (2026-09-30, PositionStrip heartbeat investigation): this used
+    // to read `_holdingsSnapshotAt != null` (set whenever /api/holdings
+    // served a daily_book snapshot) as a "market closed" proxy. But the
+    // holdings route gates on NSE hours ONLY (segment_exchanges=["NSE"] in
+    // holdings.py) — so that flag is truthy for the entire 15:30-23:30 IST
+    // window every trading day, whenever NSE has closed but MCX is still
+    // open. During that ~8h daily window the poller was silently collapsing
+    // from 5s to 30min, starving _bookPollerTick / _pollCycleStamp and (as
+    // a direct consequence) PositionStrip's heartbeat pulse — plus leaving
+    // live positions/margin/cash stale for up to 30min at a time while MCX
+    // was actively trading. Now checks BOTH segments directly.
+    const _wantMs = (isNseOpen() || isMcxOpen()) ? _bookLiveMs : _bookClosedMs;
     if (_wantMs !== _bookForegroundMs) setBookPollerInterval(_wantMs);
   } catch (_) { /* defensive — allSettled should never throw, but guard */ }
 }

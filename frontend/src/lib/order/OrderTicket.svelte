@@ -2612,13 +2612,15 @@
          Now: inline `Type:` / `Product:` labels next to compact
          pills, ot-pills nowrap, ot-row nowrap. Pills shrink slightly
          (font 0.6 → 0.55rem, padding tightened) to leave headroom. -->
-    <!-- Type · Product · Variety · Validity — all four order-shape
-         knobs in a single row of compact Selects. Industry analogue:
-         Kite Web's order form puts these inline (not stacked); the
-         earlier pill-rows approach was visually noisy and wasted
-         vertical space (8 pills + 5 pills + 2 pills across 2 rows).
-         Selects keep the density tight on mobile and align cleanly
-         with the rest of the form. -->
+    <!-- Type · Product · Variety — order-shape knobs in a single row
+         of compact Selects. Industry analogue: Kite Web's order form
+         puts these inline (not stacked); the earlier pill-rows
+         approach was visually noisy and wasted vertical space (8
+         pills + 5 pills + 2 pills across 2 rows). Selects keep the
+         density tight on mobile and align cleanly with the rest of
+         the form. Validity used to render here too but was moved
+         into `.ot-lots-price-row` below (2026-09-30) — see that
+         row's own comment for the mobile-fit rationale. -->
     <div class="ot-knobs-price-wrap">
     <div class="ot-row ot-row-knobs">
       <!-- Side toggle sits as the FIRST knob alongside Type / Product
@@ -2644,7 +2646,6 @@
         bind:type={_type}
         bind:product={_product}
         bind:variety={_variety}
-        bind:validity={_validity}
         exchange={_exchange}
         onExchangeChange={(v) => { _exchange = String(v); _exchangeTouched = true; }}
         disabled={_noSymbol}
@@ -2683,10 +2684,34 @@
       {/if}
     </div>
 
-    <!-- Lots/Qty + Limit price (or Trigger when no limit) — single
-         row, 65% / 35% split per operator request. Trigger gets its
-         own row below when both showLimit AND showTrigger (SL). -->
+    <!-- Validity + Lots/Qty + Limit price (or Trigger when no limit) —
+         single row, left-aligned, shrink-to-content (see .ot-lots-
+         price-row below). Validity moved here from the knobs row
+         above (2026-09-30, operator: fit Validity/Lots/Price on one
+         row at Pixel-9a mobile width, ~412px). Measured live: at
+         395px usable content width (embedded ticket, the only real
+         mount — SymbolPanel always passes standalone=false) the three
+         controls + gaps total ~362px, leaving ~33px headroom — fits
+         with room to spare, so the move is unconditional (not
+         viewport-scoped) rather than duplicating the Select behind a
+         media query. Desktop is unaffected in practice: at >=1024px
+         `.ot-knobs-price-wrap` already places the knobs row and this
+         row side by side on one visual line, so Validity simply shifts
+         from "last of row 1" to "first of row 2" — adjacent either
+         way. Trigger gets its own row below when both showLimit AND
+         showTrigger (SL). -->
     <div class="ot-row ot-lots-price-row">
+      <div class="ot-knob ot-knob-validity">
+        <label class="ot-label" for="ot-validity-sel">Validity</label>
+        <Select id="ot-validity-sel"
+                bind:value={_validity}
+                ariaLabel="Validity"
+                disabled={_noSymbol}
+                options={[
+                  { value: 'DAY', label: 'DAY' },
+                  { value: 'IOC', label: 'IOC' },
+                ]} />
+      </div>
       <div class="ot-label-block ot-lots-cell">
         <QtyInput
           bind:lots={_lots}
@@ -3661,11 +3686,13 @@
     overflow-x: auto;
   }
 
-  /* Knobs row — Type · Product · Variety · Validity rendered as
-     four compact Selects in one row. Each Select min-width: 4.5rem
-     so the dropdown triggers don't shrink past their label glyph
-     count. Wraps cleanly on narrow viewports (Select carries its
-     own internal width logic). */
+  /* Knobs row — Type · Product · Variety rendered as compact Selects
+     in one row. Each Select min-width: 4.5rem so the dropdown
+     triggers don't shrink past their label glyph count. Wraps cleanly
+     on narrow viewports (Select carries its own internal width
+     logic). Validity used to render here too — moved into
+     `.ot-lots-price-row` (2026-09-30) so it can share a row with
+     Lots/Price on mobile; see that row's own markup comment. */
   .ot-row-knobs {
     display: flex;
     flex-wrap: wrap;
@@ -3674,15 +3701,18 @@
     margin-bottom: 0.45rem;
   }
   /* flex-grow: 0 (was `flex: 1 1 5rem`) — this rule governs the
-     Strategy knob, a sibling of Side/Type/Product/Variety/Validity in
-     the SAME shared `.ot-row-knobs` flex container (those live in
+     Strategy knob, a sibling of Side/Type/Product/Variety in the SAME
+     shared `.ot-row-knobs` flex container (those live in
      SideToggle.svelte / OrderKnobsRow.svelte, each with their own
      scoped copy of this same rule — Svelte CSS is per-component, but
      the flex CONTAINER and its grow-distribution math is shared across
      all of them). Kept in lockstep with the matching fix in those two
      files (mobile SUSPECT 3 + the desktop over-grow regression it
      caused) — if this one rule were left growing while its siblings
-     were fixed, Strategy would become the new sole space-absorber. */
+     were fixed, Strategy would become the new sole space-absorber.
+     Also reused (unmodified) by `.ot-knob-validity` in
+     `.ot-lots-price-row` — a different flex container, but the same
+     shrink-to-5rem sizing is exactly what that row needs too. */
   .ot-knob {
     display: flex;
     flex-direction: column;
@@ -3945,7 +3975,21 @@
   /* Placed-order summary line — lives inside .ot-footer-info, to the
      left of the Exit button. Compact (no vertical margin, smaller pad
      than the prior block-level version) so the footer doesn't shove
-     the form fields off-screen. */
+     the form fields off-screen.
+     min-width: 0 + max-width: 100% (2026-09-30, mobile overflow audit)
+     — defensive backstop for the classic flexbox trap: a flex item's
+     default `min-width: auto` can refuse to shrink below its content's
+     min-content width even with `word-break: break-word` set, which
+     would let a long placement message (e.g. a long option symbol +
+     order id) push wider than `.ot-footer-info` and bleed past
+     `.ot-modal`'s edge on mobile. Verified live at 412px with an
+     unbroken 90-char token forced into the message (well beyond any
+     real order id) — current Chromium already respects word-break in
+     its automatic-minimum-size calculation here, so this doesn't
+     change today's rendered layout, but it's a correct-by-construction
+     guard against future browser/content changes, not a redundant no-op.
+     box-sizing: border-box keeps max-width: 100% from re-adding the
+     padding + border on top of the constrained width. */
   .ot-ok {
     background: var(--c-long-10);
     border: 1px solid rgba(74,222,128,0.45);
@@ -3956,10 +4000,15 @@
     font-weight: 700;
     line-height: 1.3;
     word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
   }
   /* D3 — indeterminate submit-timeout state. Amber (action color),
      distinct from the green .ot-ok success so an operator scanning the
-     footer can't mistake "still processing" for a confirmed fill. */
+     footer can't mistake "still processing" for a confirmed fill.
+     min-width/max-width/box-sizing — same mobile-overflow backstop as
+     .ot-ok above (2026-09-30); see that rule's comment for rationale. */
   .ot-pending {
     background: var(--c-action-14, rgba(251,191,36,0.14));
     border: 1px solid rgba(251,191,36,0.45);
@@ -3970,6 +4019,9 @@
     font-weight: 700;
     line-height: 1.3;
     word-break: break-word;
+    min-width: 0;
+    max-width: 100%;
+    box-sizing: border-box;
   }
   /* Readonly single-account display — matches the custom Select
      trigger's metrics so single-account vs multi-account UIs sit at

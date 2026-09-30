@@ -202,9 +202,15 @@
        flat solid navy that itself read as a visibly different (darker)
        surface from every other card-like surface in the app
        (.algo-card, .bucket-card, chart wrappers — all --card-bg-gradient).
-       Both this and the Chain tab's grid now use --card-bg-gradient,
-       the app's actual canonical card surface. */
-    background: var(--card-bg-gradient);
+       Both this and the Chain tab's grid moved to --card-bg-gradient,
+       the app's actual canonical card surface.
+       Corrected AGAIN same day — operator: now reads "almost the same
+       as other areas", too blended into generic cards. Both surfaces
+       now share --chain-depth-bg (app.css): --card-bg-gradient with a
+       thin amber wash layered on top — same gradient family, but
+       recognizably a depth-ladder/strike-grid surface, not a plain
+       card. See app.css token comment for the full back-and-forth. */
+    background: var(--chain-depth-bg);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
     /* Match the Chain-tab strike grid height when the parent (the

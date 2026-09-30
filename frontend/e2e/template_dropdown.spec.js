@@ -28,16 +28,18 @@ const SYMBOL_PANEL_PATH = path.resolve(
   '../src/lib/SymbolPanel.svelte',
 );
 
-test.describe('Stale-code: Template label abbreviated to "Templ"', () => {
-  test('TemplateBar.svelte\'s toggle button says "Templ", not "Template"', () => {
+test.describe('Stale-code: Template label spelled out (not abbreviated)', () => {
+  test('TemplateBar.svelte\'s toggle button says "Template", not "Templ"', () => {
     const tplSrc = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
     // The label lives on the toggle button itself since the 2026-09-30
     // single-button redesign — SymbolPanel.svelte no longer carries any
     // Templ-related markup at all (relocated into OptionChainTab →
     // TemplateBar; see the removal comment near .oes-basket-tpl-row-demo
-    // in SymbolPanel.svelte).
-    expect(tplSrc).toMatch(/class="oes-tpl-button"[\s\S]{0,700}?>\s*Templ\s*</);
-    expect(tplSrc).not.toContain('>Template<');
+    // in SymbolPanel.svelte). Spelled out in full (2026-09-30, same day,
+    // explicit operator request: "change Templ to Template") — the
+    // abbreviation read as a typo at a glance.
+    expect(tplSrc).toMatch(/class="oes-tpl-button"[\s\S]{0,700}?>\s*Template\s*</);
+    expect(tplSrc).not.toMatch(/class="oes-tpl-button"[\s\S]{0,700}?>\s*Templ\s*</);
   });
 
   test('SymbolPanel.svelte carries no leftover Templ-label markup (relocated to TemplateBar)', () => {

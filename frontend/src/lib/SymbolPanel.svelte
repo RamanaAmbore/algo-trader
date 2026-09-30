@@ -3072,7 +3072,7 @@
            the card list and prevented other tabs from rendering. -->
       <div class="oes-bottom-panel">
         <OrderBook
-          statusFilter="all"
+          statusFilter="open"
           onSymbolClick={() => {}}
         />
       </div>

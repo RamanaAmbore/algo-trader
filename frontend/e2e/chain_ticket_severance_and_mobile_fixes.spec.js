@@ -641,30 +641,44 @@ test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-sc
 // Both .ot-depth and the Chain grid now reference --card-bg-gradient,
 // the app's actual canonical card surface token.
 test.describe('Depth ladder + tab-strip divider — surface color consistency (2026-09-30)', () => {
-  test('.ot-depth background references --card-bg-gradient (same token as .chain-grid-wrap), not the flat --algo-bg-elev2 hex', () => {
+  // Amended same day — operator: after the --card-bg-gradient switch
+  // (asserted by the original version of these two tests), the chain
+  // grid + depth ladder now read as "almost the same as other areas",
+  // too blended into generic .algo-card surfaces. Settled middle
+  // ground: --chain-depth-bg (app.css) = --card-bg-gradient + a thin
+  // amber wash on top, still shared identically by both surfaces.
+  test('.ot-depth background references --chain-depth-bg (same token as .chain-grid-wrap), not --card-bg-gradient bare or the flat --algo-bg-elev2 hex', () => {
     const rule = ORDER_DEPTH.match(/\.ot-depth\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.ot-depth rule').not.toBe('');
-    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--card-bg-gradient\)/);
     expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     expect(rule).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.18\)/);
     // Cross-reference: the Chain tab's own strike grid wrapper uses the
     // identical token — this is what "surface elevation parity" means.
-    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--card-bg-gradient\)/);
+    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--chain-depth-bg\)/);
     expect(CHAIN_TAB).not.toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--algo-bg-elev2/);
   });
 
-  test('chain-th-ce/-pe/-strike header cells also reference --card-bg-gradient, not the flat --algo-bg-elev2 hex', () => {
+  test('chain-th-ce/-pe/-strike header cells also reference --chain-depth-bg, not bare --card-bg-gradient or the flat --algo-bg-elev2 hex', () => {
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\${sel}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+      expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     }
   });
 
+  test('--chain-depth-bg (app.css) layers a thin amber wash on top of --card-bg-gradient, not a bare re-export', () => {
+    const rule = APP_CSS.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(rule, '--chain-depth-bg declaration').not.toBe('');
+    expect(rule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.04\)/);
+    expect(rule).toMatch(/var\(--card-bg-gradient\)/);
+  });
+
   // Live computed-style proof that the gradient cascade actually
   // resolves in the browser (not `none`, which would happen if the
-  // --card-bg-gradient token were scoped to a theme class that doesn't
+  // --chain-depth-bg token were scoped to a theme class that doesn't
   // reach SymbolPanel's portaled modal) lives in
   // order_ticket_row_height_and_palette.spec.js's "Fix #2" live test —
   // that test already opens the Chain tab with NIFTY seeded (needed for
@@ -676,12 +690,148 @@ test.describe('Depth ladder + tab-strip divider — surface color consistency (2
   // `searchByPrefix()` awaits a per-context `loadInstruments()` full
   // reload every test since Playwright gives each test a fresh browser
   // context with no persisted IndexedDB/cache; this is pre-existing
-  // test-infra cost, not a defect in either fix.)
+  // test-infra cost, not a defect in either fix.) The SAME-value-as-
+  // each-other + distinct-from-.algo-card live proof (2026-09-30,
+  // "middle ground" pass) lives in the same file's new describe block
+  // "Fix #1 (middle-ground pass) — chain-depth-bg live parity".
 
   test('.oes-tabs-divider references the amber accent family, not plain white/gray', () => {
     const rule = SYMBOL_PANEL.match(/\.oes-tabs-divider\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oes-tabs-divider rule').not.toBe('');
     expect(rule).toMatch(/background:\s*rgba\(251,\s*191,\s*36,\s*0\.18\)/);
     expect(rule).not.toMatch(/background:\s*rgba\(255,\s*255,\s*255,/);
+  });
+});
+
+test.describe('Fix #3 (2026-09-30 follow-up) — Expiry toolbar row height audit (source)', () => {
+  // Original finding (superseded): Select trigger + Template toggle
+  // button (both fall through to var(--ctl-h, 1.55rem) with nothing
+  // scoped) rendered at 1.55rem, while the DTE chip + TP%/SL%(/Wing)
+  // override inputs (explicit 1.4rem) rendered smaller — a real,
+  // visible inconsistency in the row (NOT two legitimate tiers as an
+  // earlier pass of this fix mistakenly concluded — recounted with the
+  // Template toggle in its actual default-ON mount state, the 1.4rem
+  // group is the majority: 3-4 controls vs 2). Fixed by scoping
+  // --ctl-h: 1.4rem on .oct-toolbar so the two var(--ctl-h, ...)
+  // consumers drop to match the row's existing majority, instead of
+  // inventing a third value or bumping the minority up.
+  test('.oct-toolbar scopes --ctl-h to 1.4rem, matching the DTE chip / TP%-SL% input tier', () => {
+    const rule = CHAIN_TAB.match(/\.oct-toolbar\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-toolbar rule').not.toBe('');
+    expect(rule).toMatch(/--ctl-h:\s*1\.4rem/);
+  });
+
+  test('.oes-tpl-button and .oct-expiry-pick Select trigger both consume var(--ctl-h, ...) — so the toolbar-scoped token actually reaches them', () => {
+    expect(TEMPLATE_BAR).toMatch(/\.oes-tpl-button\s*\{[\s\S]*?height:\s*var\(--ctl-h,\s*1\.55rem\)/);
+    // Select.svelte is shared app-wide and intentionally untouched —
+    // just confirm it reads the same token name.
+    const SELECT = readFileSync(path.join(dir, 'src/lib/Select.svelte'), 'utf8');
+    expect(SELECT).toMatch(/\.rbq-select-trigger\s*\{[\s\S]*?min-height:\s*var\(--ctl-h,/);
+  });
+
+  // `min-height` is a FLOOR, not a cap — Select's own default padding
+  // (0.25rem top+bottom) plus --fs-sm text needs ~24.4px on its own,
+  // more than the 1.4rem/22.4px floor just added above, so the floor
+  // alone never actually governed and the trigger stayed oversized
+  // (live-measured, confirmed before this second pass). Fixed with a
+  // scoped padding override — Select.svelte itself is untouched; only
+  // Select triggers rendered inside .oct-toolbar (the expiry picker,
+  // and TemplateBar's "Specific tmpl" Select in its expand panel) are
+  // affected.
+  test('.oct-toolbar overrides Select trigger padding-block so the min-height floor actually governs', () => {
+    const rule = CHAIN_TAB.match(/\.oct-toolbar :global\(\.rbq-select-trigger\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-toolbar :global(.rbq-select-trigger) rule').not.toBe('');
+    expect(rule).toMatch(/padding-block:\s*0\.15rem/);
+  });
+
+  test('dead-code check: .oct-mode-btn / .oct-controls / .oct-field-mode / .oct-mode-toggle have CSS rules but no matching markup anywhere in the file', () => {
+    expect(CHAIN_TAB).toMatch(/\.oct-mode-btn\s*\{/);
+    expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-controls\b/);
+    expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-field-mode\b/);
+    expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-mode-toggle\b/);
+    expect(CHAIN_TAB).not.toMatch(/class="[^"]*\boct-mode-btn\b/);
+  });
+});
+
+test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-09-30)', () => {
+  test('live: .chain-grid-wrap and .ot-depth resolve to the identical background, distinct from a plain .algo-card; expiry-toolbar controls share one height tier', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChain(page);
+
+    const gridWrap = page.locator('.chain-grid-wrap').first();
+    await expect(gridWrap).toBeVisible({ timeout: 15_000 });
+    const gridBg = await gridWrap.evaluate((el) => getComputedStyle(el).backgroundImage);
+
+    // Probe element for the plain canonical card surface — injected
+    // rather than relying on one existing on the page, per the two-
+    // layer background composition making a source-text match brittle.
+    const probeBg = await page.evaluate(() => {
+      const el = document.createElement('div');
+      el.className = 'algo-card';
+      el.style.position = 'fixed';
+      el.style.top = '-9999px';
+      document.body.appendChild(el);
+      const bg = getComputedStyle(el).backgroundImage;
+      el.remove();
+      return bg;
+    });
+
+    expect(gridBg, '.chain-grid-wrap background-image').toMatch(/^linear-gradient/);
+    // Two background-image layers (amber wash + card gradient) — a
+    // plain .algo-card only ever has one, so the two must differ.
+    expect(gridBg, 'chain-depth-bg must differ from a plain .algo-card background').not.toBe(probeBg);
+
+    // Expiry-toolbar row height audit (2026-09-30 follow-up) — piggybacks
+    // on this same Chain-tab navigation instead of adding a 5th live
+    // NIFTY-symbol-search test to this file (this file's own comments
+    // above already document intermittent timeouts past the 4th
+    // consecutive one). Measured in BOTH toggle states — TP%/SL% inputs
+    // only exist while ON, so the OFF state only has the always-present
+    // trio (Select trigger / Template button / DTE chip).
+    async function _measureToolbarHeights() {
+      const heights = {};
+      for (const sel of ['.oct-expiry-pick .rbq-select-trigger', '.oes-tpl-button', '.oct-expiry-dte']) {
+        const loc = page.locator(sel).first();
+        await expect(loc, sel).toBeVisible({ timeout: 10_000 });
+        heights[sel] = await loc.evaluate((el) => el.getBoundingClientRect().height);
+      }
+      const tpInput = page.locator('.oes-basket-tpl-param > input').first();
+      if (await tpInput.count()) {
+        await expect(tpInput).toBeVisible({ timeout: 5_000 });
+        heights['.oes-basket-tpl-param > input'] = await tpInput.evaluate((el) => el.getBoundingClientRect().height);
+      }
+      return heights;
+    }
+    function _assertTight(heights, label) {
+      const values = Object.values(heights);
+      const maxDelta = Math.max(...values) - Math.min(...values);
+      expect(maxDelta, `${label} — expiry-toolbar control heights should be within 1px of each other: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
+    }
+
+    const toggle = page.locator('.oes-tpl-button').first();
+    await expect(toggle).toBeVisible({ timeout: 10_000 });
+    const mountedActive = await toggle.evaluate((el) => el.classList.contains('active'));
+
+    _assertTight(await _measureToolbarHeights(), mountedActive ? 'ON (default mount)' : 'OFF (default mount)');
+
+    await toggle.click();
+    await page.waitForFunction(
+      (wasActive) => {
+        const el = document.querySelector('.oes-tpl-button');
+        return !!el && el.classList.contains('active') !== wasActive;
+      },
+      mountedActive,
+      { timeout: 10_000 }
+    );
+    _assertTight(await _measureToolbarHeights(), mountedActive ? 'OFF (after toggle click)' : 'ON (after toggle click)');
+
+    const ticketTab = page.getByRole('tab', { name: /Ticket/i }).first();
+    await ticketTab.click();
+    const depth = page.locator('.ot-depth').first();
+    await expect(depth).toBeVisible({ timeout: 15_000 });
+    const depthBg = await depth.evaluate((el) => getComputedStyle(el).backgroundImage);
+
+    expect(depthBg, '.ot-depth background-image').toBe(gridBg);
+    expect(depthBg, '.ot-depth must also differ from a plain .algo-card background').not.toBe(probeBg);
   });
 });

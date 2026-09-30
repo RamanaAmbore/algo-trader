@@ -91,7 +91,19 @@
   // poll of the new session lands (_pollCycleStamp > the snapshot).
   let _openTransitionStamp = $state(-1);
 
-  // Data-change detector — drives heartbeat/poll-pulse animation.
+  // Data-change detector — was intended to fully DRIVE the heartbeat/
+  // poll-pulse animation (replacing _pollCycleStamp per the "Replaces"
+  // note below), but the heartbeat/poll-pulse $effects further down
+  // still read `void _pollCycleStamp` as their trigger and only use
+  // this as a gate (`=== 0`), not a driver. Since `_load()` (the only
+  // place this increments on a non-fill tick) is no longer called on
+  // every 5s book-poller cycle (see Fix 4 note near onMount), this
+  // counter now only advances on fill events (bookChanged) and mode/
+  // session-boundary transitions — never on an ordinary poll. That's
+  // fine as a one-time gate (stays >0 forever once any data has ever
+  // loaded) but the "drives" framing below is stale — flagging for a
+  // future pass rather than changing behaviour here (2026-09-30).
+  //
   // Incremented immediately on fill events (bookChanged) for responsive
   // UX, then again after _load() when the fingerprint differs. On a fill
   // this causes two pulses; on a cache-hit book-poll it causes zero.
@@ -620,6 +632,20 @@
   // thinking live prices are updating. _mktTick is a $state that flips
   // on every session-boundary tick from the visibleInterval above,
   // so the effect re-evaluates automatically at market open/close.
+  //
+  // ROOT CAUSE FOUND (2026-09-30) — this effect's own wiring was always
+  // correct (verify: _pollCycleStamp is genuine $state fed by
+  // bookPollerTick every poll; _dataChangedTick leaves 0 on the very
+  // first _load(); an @keyframes animation beats a plain declaration of
+  // the same property in the cascade, so .ps-stale never suppressed it).
+  // The actual bug lived upstream in marketDataStores.svelte.js: the
+  // book-poller cadence was silently collapsing from 5s to 30min for the
+  // entire NSE-closed/MCX-open window (15:30-23:30 IST, ~8h/day) because
+  // it used the NSE-only holdings snapshot flag as a "market closed"
+  // proxy. With bookPollerTick stalled at 30min, _pollCycleStamp barely
+  // moved, so this effect (and live positions/margin/cash refresh) went
+  // quiet for long stretches. Fixed at the source — see
+  // marketDataStores.svelte.js's _tickBookPollers() _wantMs comment.
   let _heartbeatOn = $state(false);
   /** @type {ReturnType<typeof setTimeout> | null} */
   let _heartbeatTimer = null;
@@ -834,6 +860,22 @@
     overflow-y: visible;
     -webkit-overflow-scrolling: touch;
     scrollbar-width: none;
+    /* Mobile fix (2026-09-30) — operator: "page shifts right / content
+       gets partially hidden instead of scrolling within itself". The
+       strip's own box model was already correctly constrained (fixed +
+       left:0/right:0, no min-width anywhere in the cascade including the
+       @media overrides below), so it cannot itself widen past the
+       viewport. The reported shift is a touch-scroll-chaining artifact:
+       once this element's own overflow-x:auto scroll hits its edge, a
+       continuing swipe hands momentum off to the document, which has no
+       overflow-x guard anywhere in app.css — the resulting page-level
+       horizontal pan then visually drags this fixed strip along with it.
+       `overscroll-behavior-x: contain` stops the handoff at the strip's
+       own boundary so the swipe simply stops instead of chaining to the
+       page, without restricting the strip's intended internal scroll or
+       blocking vertical page scroll started on the strip (unlike
+       touch-action: pan-x, deliberately not used here). */
+    overscroll-behavior-x: contain;
   }
   .ps-strip::-webkit-scrollbar { display: none; }
   /* Heartbeat — fires on every successful 30s poll completion via a

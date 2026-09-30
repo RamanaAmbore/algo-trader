@@ -10,10 +10,11 @@
    *   accountFilter? — optional external account filter (bindable)
    *   title?         — header label (default 'Order Book')
    *   pollMs?        — polling cadence in ms (default 3000)
-   *   statusFilter?  — 'all'|'open'|'complete'|'rejected'|'cancelled'
+   *   statusFilter?  — 'chase'|'open'|'complete'|'rejected'|'cancelled'
    */
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, formatDualTz } from '$lib/stores';
+  import { isCurrentTradingSession } from '$lib/dateFormat.js';
   import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder } from '$lib/api';
   import OrderCard from '$lib/order/OrderCard.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
@@ -26,7 +27,7 @@
    *   accountFilter?: string[],
    *   title?: string,
    *   pollMs?: number,
-   *   statusFilter?: 'all'|'open'|'complete'|'rejected'|'cancelled',
+   *   statusFilter?: 'chase'|'open'|'complete'|'rejected'|'cancelled',
    *   onSymbolClick?: ((ord: any) => void) | null,
    *   isCollapsed?: boolean,
    *   isFullscreen?: boolean,
@@ -36,7 +37,7 @@
     accountFilter = /** @type {string[]} */ ([]),
     title         = 'Order Book',
     pollMs        = 3000,
-    statusFilter  = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
+    statusFilter  = /** @type {'chase'|'open'|'complete'|'rejected'|'cancelled'} */ ('open'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
     isCollapsed   = $bindable(false),
     isFullscreen  = $bindable(false),
@@ -48,6 +49,47 @@
 
   let _internalStatus = $state(/** @type {string|null} */ (null));
   const _activeStatus = $derived(_internalStatus ?? statusFilter);
+
+  /**
+   * Row timestamp → epoch-ms, tolerant of both source field conventions
+   * this merged view carries: Kite's `order_timestamp` ("YYYY-MM-DD
+   * HH:MM:SS", IST, no offset — Safari's Date.parse rejects the
+   * space-separated non-ISO form outright, so normalize to ISO+offset
+   * explicitly rather than passing the raw string through) and
+   * AlgoOrder's `created_at` (naive UTC `isoformat()`, no trailing 'Z' —
+   * Date.parse without an explicit offset is spec'd as LOCAL time, so
+   * append 'Z' explicitly rather than relying on engine defaults).
+   * Returns NaN when unparseable.
+   */
+  function _rowTsMs(/** @type {any} */ o) {
+    if (o?.order_timestamp) {
+      const s = String(o.order_timestamp).trim();
+      const m = s.match(/^(\d{4}-\d{2}-\d{2})[ T](\d{2}:\d{2}:\d{2})/);
+      return m ? Date.parse(`${m[1]}T${m[2]}+05:30`) : Date.parse(s);
+    }
+    if (o?.created_at) {
+      const s = String(o.created_at).trim();
+      if (!s) return NaN;
+      return /[Zz]|[+-]\d{2}:\d{2}$/.test(s) ? Date.parse(s) : Date.parse(`${s}Z`);
+    }
+    return NaN;
+  }
+
+  /**
+   * Drops rows from a PRIOR trading session (08:00 IST rollover — see
+   * `isCurrentTradingSession`). This is a display-only filter applied
+   * upstream to `orderRows` itself (not just the rendered grid) so every
+   * downstream consumer — status counts, the active status filter, CSV
+   * export — automatically only ever sees today's-session orders with no
+   * separate/duplicate filtering logic. Terminal AND still-open rows are
+   * both dropped once stale — see this function's call site for the
+   * judgment-call note on still-OPEN prior-session rows.
+   */
+  function _isCurrentSessionRow(/** @type {any} */ o) {
+    const ms = _rowTsMs(o);
+    if (!Number.isFinite(ms)) return true; // can't judge — keep, don't hide data we can't classify
+    return isCurrentTradingSession(ms);
+  }
 
   async function _loadOrders() {
     // Merge broker orders + algo orders so the book carries the same data
@@ -83,10 +125,20 @@
         const oid = String(o?.order_id || o?.id || '');
         return !brokerIds.has(oid);
       });
-      const merged = [...brokerRows, ...algoOnly];
+      // Session-boundary filter applied HERE (before assigning orderRows,
+      // not down in the filteredOrderRows derived chain) — a still-OPEN
+      // order resting since a prior session (rare — e.g. a GTT-adjacent
+      // order) is judgment-called to hide here too, same as terminal
+      // rows. No clear precedent in this app scopes to "keep showing a
+      // stale resting order in a live order-book grid" (expiry_freeze.py's
+      // position-freeze precedent is about serving the last-known
+      // POSITION snapshot when data is otherwise unavailable, a different
+      // situation from a live, always-available order feed) — flagged for
+      // reversal if the operator wants stale-OPEN rows to stay visible.
+      const merged = [...brokerRows, ...algoOnly].filter(_isCurrentSessionRow);
       merged.sort((a, b) => {
-        const ta = Date.parse(a.order_timestamp || a.created_at || '') || 0;
-        const tb = Date.parse(b.order_timestamp || b.created_at || '') || 0;
+        const ta = _rowTsMs(a) || 0;
+        const tb = _rowTsMs(b) || 0;
         return tb - ta;
       });
       orderRows = merged;
@@ -135,8 +187,6 @@
   });
 
   // ── Filter predicates (mirrors LogPanel exactly) ───────────────────────
-  const _TERMINAL_STATUSES = new Set(['COMPLETE', 'CANCELLED', 'REJECTED', 'EXPIRED']);
-
   /** @type {Record<string, (st: string) => boolean>} */
   const _STATUS_PREDICATES = {
     open:      st => st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING',
@@ -145,6 +195,18 @@
     cancelled: st => st === 'CANCELLED',
   };
 
+  /**
+   * "Chase in flight" = still working (OPEN/TRIGGER PENDING) AND the
+   * chase engine has cancelled-and-replaced it at least once
+   * (`attempts > 0`). A plain resting order the chase engine has never
+   * touched doesn't count — mirrors `OrderCard.svelte`'s existing
+   * `chase:#N` chip precedent (`order.attempts != null && order.attempts > 0`).
+   */
+  function _isChaseInFlight(/** @type {any} */ o) {
+    if (!_STATUS_PREDICATES.open((o?.status || '').toUpperCase())) return false;
+    return Number(o?.attempts || 0) > 0;
+  }
+
   function _applyAccountFilter(rows, /** @type {string[]} */ filter) {
     if (!filter || filter.length === 0) return rows;
     const want = new Set(filter);
@@ -152,26 +214,11 @@
   }
 
   function _applyStatusFilter(rows, /** @type {string|null|undefined} */ filter) {
-    if (!filter || filter === 'all') return rows;
+    if (!filter) return rows;
+    if (filter === 'chase') return rows.filter(_isChaseInFlight);
     const pred = _STATUS_PREDICATES[filter];
     if (!pred) return rows;
     return rows.filter(o => pred((o?.status || '').toUpperCase()));
-  }
-
-  function _applyDateFilter(rows) {
-    const istNow = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
-    const today = istNow.toISOString().slice(0, 10);
-    return rows.filter(o => {
-      let ts = '';
-      if (o.order_timestamp) {
-        ts = String(o.order_timestamp).slice(0, 10);
-      } else if (o.created_at) {
-        ts = new Date(new Date(o.created_at).getTime() + 5.5 * 60 * 60 * 1000)
-               .toISOString().slice(0, 10);
-      }
-      const term = _TERMINAL_STATUSES.has((o.status || '').toUpperCase());
-      return !(ts && ts !== today && term);
-    });
   }
 
   function _applyOrderIdFilter(rows, /** @type {string|null} */ id) {
@@ -186,7 +233,6 @@
     let rows = orderRows || [];
     rows = _applyAccountFilter(rows, accountFilter);
     rows = _applyStatusFilter(rows, _activeStatus);
-    rows = _applyDateFilter(rows);
     rows = _applyOrderIdFilter(rows, orderId);
     return rows;
   });
@@ -256,8 +302,11 @@
   }
 
   // ── Status counts (computed once per render, not 5× inline) ─────────
+  // Reads orderRows directly — already session-boundary-filtered in
+  // _loadOrders — so every count here is scoped to today's session only,
+  // matching the grid it labels.
   const _statusCounts = $derived.by(() => ({
-    all:       orderRows.length,
+    chase:     orderRows.filter(_isChaseInFlight).length,
     open:      orderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
     complete:  orderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
     rejected:  orderRows.filter(o => _STATUS_PREDICATES.rejected((o.status || '').toUpperCase())).length,
@@ -292,7 +341,7 @@
 {#if !isCollapsed}
   <div class="ob-status-bar">
     {#each [
-      { id: 'all',       label: 'All',       status: 'inactive',  count: _statusCounts.all },
+      { id: 'chase',     label: 'Chase',     status: 'chase',     count: _statusCounts.chase },
       { id: 'open',      label: 'Open',      status: 'running',   count: _statusCounts.open },
       { id: 'complete',  label: 'Filled',    status: 'active',    count: _statusCounts.complete },
       { id: 'rejected',  label: 'Rejected',  status: 'error',     count: _statusCounts.rejected },
@@ -546,8 +595,17 @@
       linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
     border-color: rgba(251, 146, 60, 0.55);
   }
-  .ob-sc[data-status="inactive"] {
-    border-color: rgba(126, 151, 184, 0.45);
+  /* Chase chip — sky/info tint, deliberately distinct from Open's amber
+     so "resting, untouched" vs "actively being re-quoted by the chase
+     engine" read apart at a glance. */
+  .ob-sc[data-status="chase"] {
+    background:
+      linear-gradient(180deg,
+        rgba(125, 211, 252, 0.18) 0%,
+        rgba(125, 211, 252, 0.05) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(125, 211, 252, 0.55);
   }
 
   /* Count number — bigger + color-coded by status. 2026-09 font-size
@@ -569,6 +627,7 @@
   .ob-sc[data-status="active"]    .ob-sc-n { color: var(--c-long, #4ade80); }
   .ob-sc[data-status="error"]     .ob-sc-n { color: var(--c-short, #f87171); }
   .ob-sc[data-status="cancelled"] .ob-sc-n { color: #fb923c; }
+  .ob-sc[data-status="chase"]     .ob-sc-n { color: var(--algo-sky, #7dd3fc); }
 
   .ob-sc-l {
     font-size: var(--fs-xs, 0.6rem);

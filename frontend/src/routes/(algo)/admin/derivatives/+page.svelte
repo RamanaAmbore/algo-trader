@@ -7230,11 +7230,27 @@
        the whole grid sliding up. Pinned to top of .cand-scroll (the
        overflow-y container); the card-bottom navy of the parent card
        gradient is reused as a solid fill so data rows don't bleed
-       through, and z-index lifts the header above .cand-row hovers. */
+       through, and z-index lifts the header above .cand-row hovers.
+       Fixed (2026-09-30) — operator: "in legs, when you scroll, the
+       rows are visible behind the header... because of transparency."
+       Confirmed: the comment above claimed a "solid fill" but the
+       actual value was rgba(15,23,42,0.65) — 65% alpha, not opaque —
+       so scrolled .cand-row content genuinely showed through the
+       sticky header. Root cause: this header copied the color choice
+       from the non-sticky .byund-headrow (Snapshot grid, plain
+       display:contents row, never scrolls under anything, so alpha
+       was harmless there) without accounting for the fact that THIS
+       header is actually position:sticky over a scrolling body.
+       Fix: layer the same tint over an opaque base (#1d2a44, matching
+       the parent .opt-legs-card's --card-bg-gradient top stop and the
+       same two-layer composition already used by .cand-row-total
+       above) so the header is genuinely solid. */
     position: sticky;
     top: 0;
     z-index: 2;
-    background: rgba(15,23,42,0.65);  /* matches History / ag-theme-algo */
+    background:
+      linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)),
+      #1d2a44;
   }
   /* Numeric column cells — right-aligned (industry-standard for
      trade panels) so digits in different rows line up cleanly under

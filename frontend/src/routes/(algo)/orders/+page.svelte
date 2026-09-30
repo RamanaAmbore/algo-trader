@@ -169,8 +169,8 @@
   // and modals."
   /** @type {string[]} */
   let _actAccountFilter = $state([]);
-  /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */
-  let _statusFilter = $state('all');
+  /** @type {'chase'|'open'|'complete'|'rejected'|'cancelled'} */
+  let _statusFilter = $state('open');
 
   // Activity-card tab state. Order Book (card grid) is the default —
   // matches the LogPanel Orders tab format shown in every other

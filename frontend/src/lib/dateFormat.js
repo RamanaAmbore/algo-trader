@@ -36,14 +36,36 @@ export function startOfTodayIST() {
  * before market close even finishes for some segments, which is too early
  * for that kind of decision.
  *
+ * @param {number} [nowMs] epoch-ms to evaluate (defaults to `Date.now()`) —
+ *   accepting this lets callers ask "what trading-session-date does THIS
+ *   timestamp belong to", not just "today's", so the same 08:00 IST
+ *   rollover rule can classify an arbitrary row timestamp (see
+ *   `isCurrentTradingSession` below).
  * @returns {string} YYYY-MM-DD
  */
-export function tradingSessionDateIST() {
-  const shifted = new Date(Date.now() - 8 * 60 * 60 * 1000);
+export function tradingSessionDateIST(nowMs = Date.now()) {
+  const shifted = new Date(nowMs - 8 * 60 * 60 * 1000);
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric', month: '2-digit', day: '2-digit',
   }).format(shifted);
+}
+
+/**
+ * True when an epoch-ms timestamp falls in the CURRENT trading session —
+ * same trading-session-date as `tradingSessionDateIST()`'s 08:00 IST
+ * rollover convention (this app's session boundary; see CLAUDE.md "Market
+ * daily window" and `positions.py`'s `_SESSION_ANCHOR_CUTOFF_TS_SQL`).
+ * Used to drop stale prior-session rows from live views (e.g. Order Book)
+ * without re-deriving the boundary per-caller.
+ *
+ * @param {number} ms epoch-ms
+ * @returns {boolean} false for unparseable/NaN input — caller decides
+ *   whether "can't tell" should mean keep or drop.
+ */
+export function isCurrentTradingSession(ms) {
+  if (!Number.isFinite(ms)) return false;
+  return tradingSessionDateIST(ms) === tradingSessionDateIST();
 }
 
 /** @param {Date|string|number} d @returns {string} e.g. "21 Jul" */

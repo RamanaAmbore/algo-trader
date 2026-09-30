@@ -1202,8 +1202,30 @@
     margin: 0 0 0.4rem;
   }
   /* Expiry toolbar — sits above the futures row + strike grid so
-     operator picks the contract month BEFORE scanning strikes. */
+     operator picks the contract month BEFORE scanning strikes.
+     --ctl-h scoped here (2026-09-30 height audit) — the row's boxed
+     controls were split across two heights: the Select trigger +
+     TemplateBar's toggle button (both read var(--ctl-h, 1.55rem), so
+     with nothing declared here they fell through to that 1.55rem
+     fallback) vs the DTE chip + TP%/SL%(/Wing) override inputs
+     (explicit 1.4rem, rendered whenever the toggle is ON — which is
+     the default mount state). Live count in the default-ON state:
+     3-4 controls at 1.4rem vs 2 at 1.55rem — 1.4rem is the majority,
+     so pin --ctl-h to it here rather than inventing a third value.
+     TemplateBar's button uses a rigid `height`, so it shrinks to match
+     exactly. Select.svelte's trigger only sets `min-height` (a floor,
+     by design — shared app-wide, its own fallback is deliberately
+     untouched per an earlier fix's test comment) — its DEFAULT vertical
+     padding (0.25rem top+bottom) plus --fs-sm text needs ~24.4px on
+     its own, which is MORE than the 1.4rem/22.4px floor, so the floor
+     never actually governs and the trigger stays oversized. The
+     `:global(.rbq-select-trigger)` padding override just below closes
+     that gap (0.15rem — the same value the DTE chip already uses)
+     without touching Select.svelte itself; only Selects rendered
+     inside THIS toolbar (the expiry picker, and TemplateBar's own
+     "Specific tmpl" Select inside its expand panel) are affected. */
   .oct-toolbar {
+    --ctl-h: 1.4rem;
     display: flex;
     align-items: center;
     gap: 0.4rem;
@@ -1211,6 +1233,9 @@
     margin-bottom: 0.25rem;
     border-bottom: 1px dashed rgba(251, 191, 36, 0.10);
     flex-wrap: wrap;
+  }
+  .oct-toolbar :global(.rbq-select-trigger) {
+    padding-block: 0.15rem;
   }
   .oct-toolbar-label {
     font-family: var(--font-numeric);
@@ -1238,8 +1263,12 @@
     /* Height parity with TemplateBar's TP%/SL%/Wing override inputs
        (.oes-basket-tpl-param > input, height: 1.4rem) — this chip sits
        in the same Expiry toolbar row and was visibly shorter with no
-       explicit height. 1.4rem is the local value here (a size tier
-       below the main row controls), not the shared --ctl-h token. */
+       explicit height. 1.4rem is a local, hardcoded value here — kept
+       that way even after the 2026-09-30 audit made .oct-toolbar's
+       --ctl-h equal 1.4rem too (see that rule's own comment): this
+       chip and the TP%/SL% inputs were the reference the row's OTHER
+       controls (Select trigger, Template toggle) were pulled DOWN to
+       match, not consumers of --ctl-h themselves. */
     min-height: 1.4rem;
     box-sizing: border-box;
     display: inline-flex;
@@ -1399,8 +1428,14 @@
        that read as a visibly DIFFERENT (darker) surface from every
        other card-like surface in the app (.algo-card, .bucket-card,
        chart wrappers), which all use --card-bg-gradient. Switched to
-       the app's actual canonical card surface token instead. */
-    background: var(--card-bg-gradient);
+       the app's actual canonical card surface token instead.
+       Corrected AGAIN same day — operator: now reads "almost the same
+       as other areas", too blended into generic cards, lost the cue
+       that this is a strike-grid surface specifically. --chain-depth-bg
+       (app.css) is the settled middle ground: --card-bg-gradient with a
+       thin amber wash on top — same family as every other card, but
+       recognizably its own tier. See app.css for the full history. */
+    background: var(--chain-depth-bg);
     /* Operator: "order ticket window is wider than viewport mobile
        sometimes" — root-caused to THIS table: table-layout defaults to
        `auto`, which sizes columns off cell content's natural minimum
@@ -1462,14 +1497,18 @@
      through underneath it; reads as part of the same surface as
      .chain-grid-wrap below it, not a separate darker band.
      Corrected (2026-09-30) — was --algo-bg-elev2 (flat solid navy,
-     mismatched the app's actual card-surface token). Now uses
+     mismatched the app's actual card-surface token). Then briefly
      --card-bg-gradient, same token as .chain-grid-wrap, matching the
      app's every other card-like surface (.algo-card, .bucket-card,
-     chart wrappers). Each sticky header cell paints its own short
-     gradient run rather than sharing one continuous gradient with the
-     taller wrap behind it, so the two won't be pixel-identical at
-     every y-offset — this is the same tradeoff every other sticky
-     header + scroll-body pairing in the app already accepts. */
+     chart wrappers) — reverted again same day, too blended into
+     generic cards. Settled on --chain-depth-bg (app.css): same
+     gradient family, thin amber wash on top so the header still reads
+     as part of a distinct strike-grid surface. Each sticky header cell
+     paints its own short gradient run rather than sharing one
+     continuous gradient with the taller wrap behind it, so the two
+     won't be pixel-identical at every y-offset — this is the same
+     tradeoff every other sticky header + scroll-body pairing in the
+     app already accepts. */
   /* Operator (2026-09-30): CE/PE header text sat on the OPPOSITE
      side from the +/- buttons — .chain-cell-row-ce/-pe (below,
      deliberately unchanged) push the quote+buttons block toward the
@@ -1478,14 +1517,14 @@
      header labels sit over their own row's actual content. Border
      bumped 0.05 -> 0.18 so the header row visibly separates from
      the strike rows below it. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
