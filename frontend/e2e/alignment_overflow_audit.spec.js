@@ -621,4 +621,48 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(bg, '.ot-depth-h background-color').not.toBe('rgba(0, 0, 0, 0)');
     expect(parseFloat(borderBottom), '.ot-depth-h border-bottom-width').toBeGreaterThan(0);
   });
+
+  test('.ot-depth-diag renders raw depth-level counts and raw volume below the grid, inside .ot-depth (2026-09-30)', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-diag') ?? '';
+    expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
+    expect(content).toMatch(/<div class="ot-depth-diag"/);
+    expect(content).toMatch(/depth_buy\?\.length/);
+    expect(content).toMatch(/depth_sell\?\.length/);
+    expect(content).toMatch(/Vol \(raw\)\s*\{q\.volume/);
+    // Diagnostic row must be AFTER .ot-depth-grid in markup (below the
+    // bid/ask ladder), still inside the same .ot-depth container.
+    const gridIdx = content.indexOf('<div class="ot-depth-grid">');
+    const diagIdx = content.indexOf('<div class="ot-depth-diag"');
+    expect(gridIdx, '.ot-depth-grid markup').toBeGreaterThan(-1);
+    expect(diagIdx, '.ot-depth-diag markup').toBeGreaterThan(gridIdx);
+  });
+
+  test('live: .ot-depth-diag is visible below the bid/ask grid and reports numeric level counts', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    const symInput = page.locator('.ssi-input').first();
+    const visible = await symInput.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!visible) {
+      test.info().annotations.push({ type: 'skip', description: 'symbol input not visible' });
+      return;
+    }
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    const suggVisible = await sugg.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (!suggVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'no suggestions' });
+      return;
+    }
+    await sugg.click({ force: true });
+    const diag = page.locator('.ot-depth-diag').first();
+    const diagVisible = await diag.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!diagVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-diag not rendered (no quote)' });
+      return;
+    }
+    const text = await diag.innerText();
+    expect(text, '.ot-depth-diag text').toMatch(/Levels \d+B\/\d+S/);
+    expect(text, '.ot-depth-diag text').toMatch(/Vol \(raw\)/);
+  });
 });

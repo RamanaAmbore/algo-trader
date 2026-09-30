@@ -189,6 +189,18 @@
       <span class="ot-depth-cell ot-depth-ask-qty">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
+  <!-- Raw response diagnostic (2026-09-30, operator request) — surfaces
+       exactly what the /api/quote response actually carries, so "is
+       this field really populated?" never needs a code read again.
+       Levels count is the UNPADDED depth_buy/depth_sell length (0-5),
+       distinct from buyRows/sellRows above which always render 5 rows
+       (null-padded for visual alignment). -->
+  {#if q}
+    <div class="ot-depth-diag" title="Raw /api/quote response — depth level counts and volume as returned by the broker, unpadded">
+      <span class="ot-depth-diag-item">Levels {q.depth_buy?.length ?? 0}B/{q.depth_sell?.length ?? 0}S</span>
+      <span class="ot-depth-diag-item">Vol (raw) {q.volume ?? '—'}</span>
+    </div>
+  {/if}
 </div>
 
 <style>
@@ -340,5 +352,25 @@
   }
   .ot-depth-spread {
     color: var(--algo-sky, #7dd3fc);
+  }
+
+  /* Raw response diagnostic row (2026-09-30) — deliberately plainer/
+     smaller than .ot-depth-stats (muted, italic, no color-coding) so
+     it reads as "debug info", not another market-data stat the
+     operator should act on. */
+  .ot-depth-diag {
+    display: flex;
+    gap: 0.6rem;
+    margin-top: 0.35rem;
+    padding-top: 0.25rem;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    font-size: var(--fs-2xs);
+    color: var(--algo-muted);
+    font-style: italic;
+    opacity: 0.65;
+  }
+  .ot-depth-diag-item {
+    font-family: var(--font-numeric);
+    font-variant-numeric: tabular-nums;
   }
 </style>
