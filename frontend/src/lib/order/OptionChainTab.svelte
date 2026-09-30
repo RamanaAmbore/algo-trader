@@ -1638,9 +1638,24 @@
   /* Very-subtle pass (2026-09-29) — dropped below the -06 token tier
      (lowest pre-existing c-long/c-short alpha) to a bespoke ~3%
      wash; operator wants the ITM tint barely-there, not a design-
-     system-standard "soft" fill. */
-  .chain-row-itm-call > td { background: rgba(74,222,128,0.03); }
-  .chain-row-itm-put  > td { background: rgba(248,113,113,0.03); }
+     system-standard "soft" fill.
+     Per-side ITM/OTM split (2026-09-30, operator: "ITM and OTM calls
+     can have different background... ITM and OTM puts can have
+     different background... they can mirror calls in opposite
+     direction... very subtle"). `dir` ('itm-call' when strike < spot,
+     'itm-put' when strike > spot) already tells us unambiguously which
+     SIDE is ITM at this strike — the other side is the OTM one. Each
+     side keeps its own established color family (CE=green, matching
+     .chain-th-ce's --c-long; PE=red, matching .chain-th-pe's
+     --c-short) at every strike, but the ITM side of that family washes
+     in stronger (0.05) than the OTM side (0.015) — so as you scan down
+     the strike column, the CE cell's green fades while the PE cell's
+     red strengthens (and vice versa above spot): a genuine mirror,
+     not just "ITM has a tint, OTM has none". */
+  .chain-row-itm-call .chain-td-ce { background: rgba(74,222,128,0.05); }
+  .chain-row-itm-call .chain-td-pe { background: rgba(248,113,113,0.015); }
+  .chain-row-itm-put  .chain-td-pe { background: rgba(248,113,113,0.05); }
+  .chain-row-itm-put  .chain-td-ce { background: rgba(74,222,128,0.015); }
   /* Softened 2026-09-29 — operator: the top+bottom amber border read
      as an "overpowering underline" at 0.55 alpha. Same mechanism,
      gentler weight; still reads clearly as "this is the ATM row"

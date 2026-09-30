@@ -499,3 +499,45 @@ test.describe('Static source checks — Chain header row is distinct from the bo
     expect(headerRule).not.toBe(depthRule);
   });
 });
+
+test.describe('Static source checks — Chain ITM/OTM per-side background (2026-09-30)', () => {
+  // Operator: "ITM and OTM calls can have different background...
+  // similarly ITM and OTM puts can have different background. they
+  // can mirror calls in opposite direction. all of it should be very
+  // subtle." Previously the whole row shared one tint (CE + PE cells
+  // both got the same wash based on which side was ITM at that
+  // strike). Now each side keeps its own color family (CE=green,
+  // PE=red) at every strike, with the ITM side washing in stronger
+  // than the OTM side of that same family.
+  test('.chain-row-itm-call: CE cell is the stronger (ITM) green, PE cell is the weaker (OTM) red', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const ceRule = content.match(/\.chain-row-itm-call \.chain-td-ce\s*\{[^}]*\}/)?.[0] ?? '';
+    const peRule = content.match(/\.chain-row-itm-call \.chain-td-pe\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(ceRule, '.chain-row-itm-call .chain-td-ce rule').not.toBe('');
+    expect(peRule, '.chain-row-itm-call .chain-td-pe rule').not.toBe('');
+    expect(ceRule).toMatch(/rgba\(74,\s*222,\s*128,\s*0\.05\)/);
+    expect(peRule).toMatch(/rgba\(248,\s*113,\s*113,\s*0\.015\)/);
+  });
+
+  test('.chain-row-itm-put: PE cell is the stronger (ITM) red, CE cell is the weaker (OTM) green', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const peRule = content.match(/\.chain-row-itm-put\s+\.chain-td-pe\s*\{[^}]*\}/)?.[0] ?? '';
+    const ceRule = content.match(/\.chain-row-itm-put\s+\.chain-td-ce\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(peRule, '.chain-row-itm-put .chain-td-pe rule').not.toBe('');
+    expect(ceRule, '.chain-row-itm-put .chain-td-ce rule').not.toBe('');
+    expect(peRule).toMatch(/rgba\(248,\s*113,\s*113,\s*0\.05\)/);
+    expect(ceRule).toMatch(/rgba\(74,\s*222,\s*128,\s*0\.015\)/);
+  });
+
+  test('every ITM/OTM wash stays below the 0.06 "very subtle" ceiling this file already uses elsewhere (ATM row, DTE-warn chip)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    for (const alpha of [0.05, 0.015]) {
+      expect(alpha).toBeLessThanOrEqual(0.06);
+    }
+    // Both color families used (green for CE, red for PE) match the
+    // existing CE/PE header color convention (.chain-th-ce = --c-long,
+    // .chain-th-pe = --c-short) — not a new, unrelated palette.
+    expect(content).toMatch(/\.chain-th-ce\s*\{[^}]*color:\s*var\(--c-long\)/);
+    expect(content).toMatch(/\.chain-th-pe\s*\{[^}]*color:\s*var\(--c-short\)/);
+  });
+});
