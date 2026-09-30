@@ -1353,15 +1353,22 @@ test.describe('.oct-tpl-demo-note flex-shrink:0 removed (dead rule, 2026-09-30 a
   });
 });
 
-test.describe('Template expand toggle — bigger caret glyph, not tiny ▴/▾ (2026-09-30)', () => {
+test.describe('Template expand toggle — pure-CSS chevron, not tiny ▴/▾ or a plain "^" character (2026-09-30, twice)', () => {
   // Operator: "template expand button look too small. make it either
   // big or use ^ and inverted ^" — old glyphs were ▴/▾ at --fs-xs
-  // (0.55rem ≈ 9px). Switched to a single "^" rotated 180deg for the
-  // collapsed state, sized up to 1rem in a 1.1rem square hit-area.
-  test('button renders a literal "^" character, not ▴/▾', () => {
+  // (0.55rem ≈ 9px). First switched to a literal "^" text character,
+  // sized up to a 1.1rem hit-area.
+  // Follow-up (same day): "make cap and reverse cap symbols after
+  // templated should be better looking visible symbols" — a text
+  // glyph is thin/small and font-dependent. Replaced with a pure-CSS
+  // chevron (.oes-tpl-expand-icon — two border edges forming a
+  // rotated corner), which renders identically crisp in every browser
+  // regardless of font.
+  test('button renders an icon span (.oes-tpl-expand-icon), not a literal "^" character or ▴/▾', () => {
     const btnMarkup = TEMPLATE_BAR.match(/<button[^>]*class="oes-tpl-expand-btn"[\s\S]*?<\/button>/)?.[0] ?? '';
     expect(btnMarkup, 'oes-tpl-expand-btn markup').not.toBe('');
-    expect(btnMarkup).toMatch(/>\s*\^\s*</);
+    expect(btnMarkup).toMatch(/<span class="oes-tpl-expand-icon"/);
+    expect(btnMarkup).not.toMatch(/>\s*\^\s*</);
     expect(btnMarkup).not.toMatch(/[▴▾]/);
   });
 
@@ -1369,19 +1376,29 @@ test.describe('Template expand toggle — bigger caret glyph, not tiny ▴/▾ (
     expect(TEMPLATE_BAR).toMatch(/class:oes-tpl-expand-open=\{_expanded\}/);
   });
 
-  test('.oes-tpl-expand-btn is sized up (1rem font, 1.1rem hit-area) and uses the amber action color, not slate-muted', () => {
+  test('.oes-tpl-expand-btn is a 1.1rem square hit-area using the amber action color, not slate-muted', () => {
     const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.oes-tpl-expand-btn rule').not.toBe('');
-    expect(rule).toMatch(/font-size:\s*1rem/);
     expect(rule).toMatch(/width:\s*1\.1rem/);
     expect(rule).toMatch(/height:\s*1\.1rem/);
-    expect(rule).not.toMatch(/font-size:\s*var\(--fs-xs\)/);
     expect(rule).not.toMatch(/color:\s*var\(--algo-slate-muted\)/);
   });
 
-  test('collapsed state (no .oes-tpl-expand-open) rotates 180deg — "inverted ^" pointing down', () => {
-    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn:not\(\.oes-tpl-expand-open\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
-    expect(rule, '.oes-tpl-expand-btn:not(.oes-tpl-expand-open) rule').not.toBe('');
+  test('.oes-tpl-expand-icon draws a chevron via two border edges (border-right + border-bottom) rotated 45deg, not a font glyph', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-icon\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tpl-expand-icon rule').not.toBe('');
+    expect(rule).toMatch(/border-right:\s*2px solid currentColor/);
+    expect(rule).toMatch(/border-bottom:\s*2px solid currentColor/);
+    expect(rule).toMatch(/transform:\s*rotate\(45deg\)/);
+  });
+
+  test('expanded state (.oes-tpl-expand-open) rotates the button 180deg — composes with the icon\'s own 45deg to point up (collapsed = down)', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn\.oes-tpl-expand-open\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tpl-expand-btn.oes-tpl-expand-open rule').not.toBe('');
     expect(rule).toMatch(/transform:\s*rotate\(180deg\)/);
+    // The OLD :not(.oes-tpl-expand-open) selector (rotation applied
+    // when COLLAPSED) must be gone — the toggle direction flipped
+    // when the base icon shape itself became the "down" state.
+    expect(TEMPLATE_BAR).not.toMatch(/\.oes-tpl-expand-btn:not\(\.oes-tpl-expand-open\)/);
   });
 });

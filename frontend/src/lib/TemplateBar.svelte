@@ -189,16 +189,24 @@
          Operator (2026-09-30): "template expand button look too
          small. make it either big or use ^ and inverted ^" — the old
          ▴/▾ glyphs at --fs-xs (0.55rem ≈ 9px) read as barely-visible
-         specks. Switched to a plain "^" character, rotated 180deg via
-         the .oes-tpl-expand-open class when expanded (inverted ^ =
-         pointing down = "click to collapse"), sized up substantially
-         below. -->
+         specks.
+         Follow-up (2026-09-30, same day): "make cap and reverse cap
+         symbols after templated should be better looking visible
+         symbols" — a literal "^" text character rendered thin, small,
+         and font-dependent (no reliable crisp "caret" glyph across
+         fonts). Replaced with a pure-CSS chevron (.oes-tpl-expand-icon
+         below — two border edges meeting at a corner, rotated), which
+         renders identically and crisply in every browser regardless
+         of font, and scales cleanly with border-width instead of
+         relying on glyph hinting. Rotated 180deg via the
+         .oes-tpl-expand-open class when expanded (inverted chevron =
+         pointing up = "click to collapse"). -->
     <button type="button"
             class="oes-tpl-expand-btn"
             class:oes-tpl-expand-open={_expanded}
             title={_expanded ? 'Collapse template params' : 'Expand all template params'}
             onclick={() => { _expanded = !_expanded; }}>
-      ^
+      <span class="oes-tpl-expand-icon" aria-hidden="true"></span>
     </button>
   {/if}
 </span>
@@ -396,17 +404,13 @@
      convention and weren't the inconsistency. The toggle above (added
      2026-09-30) follows the same convention from the start. */
   /* #30 expand toggle button — bumped from --fs-xs (0.55rem, "too
-     small") to 1rem, brightened from slate-muted to the amber action
-     color so it actually reads as a clickable affordance, and given
-     an explicit square hit-area (1.1rem) instead of relying on the
-     glyph's own tiny intrinsic size for touch/click target (2026-09-30,
-     operator request). */
+     small") to a 1.1rem square hit-area, brightened from slate-muted
+     to the amber action color so it actually reads as a clickable
+     affordance (2026-09-30, operator request). */
   .oes-tpl-expand-btn {
     background: transparent;
     border: none;
     color: var(--c-action, var(--algo-amber));
-    font-size: 1rem;
-    font-weight: 700;
     width: 1.1rem;
     height: 1.1rem;
     display: inline-flex;
@@ -415,16 +419,40 @@
     padding: 0;
     cursor: pointer;
     line-height: 1;
-    transition: color 0.12s, transform 0.15s;
+    transition: color 0.12s;
   }
   .oes-tpl-expand-btn:hover {
     color: var(--algo-amber-bright, #fcd34d);
   }
-  /* Inverted ^ (rotated 180deg) = pointing down = collapsed state,
-     inviting "click to expand downward" — plain ^ = expanded state,
-     inviting "click to collapse back up". Mirrors the old ▴/▾
-     semantics with a much more visible glyph. */
-  .oes-tpl-expand-btn:not(.oes-tpl-expand-open) {
+  /* Pure-CSS chevron (2026-09-30, operator: "make cap and reverse cap
+     symbols after templated should be better looking visible
+     symbols") — replaces the plain "^" text character, which
+     rendered thin/small and depended on the browser's font for how
+     crisp/visible it looked. Classic two-border-corner technique:
+     a box with only its right+bottom edges visible forms an "L"
+     corner; rotating that corner points it in any direction with a
+     perfectly crisp, font-independent line. rotate(45deg) here is
+     the base "point down" shape (0.65rem across the two visible
+     edges, matching the 2px stroke weight used by other icon-style
+     affordances in this app). */
+  .oes-tpl-expand-icon {
+    display: inline-block;
+    width: 0.4rem;
+    height: 0.4rem;
+    border-right: 2px solid currentColor;
+    border-bottom: 2px solid currentColor;
+    transform: rotate(45deg);
+    /* Nudges the rotated box back to the button's optical center —
+       a plain rotate(45deg) box's bounding area sits slightly high
+       relative to its visual corner. */
+    margin-top: -0.1rem;
+  }
+  /* Down-pointing chevron (45deg base, above) = collapsed state,
+     inviting "click to expand downward". Adding 180deg on the BUTTON
+     (composes with the icon's own fixed 45deg -> 225deg = pointing
+     up) = expanded state, inviting "click to collapse back up".
+     Mirrors the old ▴/▾ semantics with a crisper, more visible icon. */
+  .oes-tpl-expand-btn.oes-tpl-expand-open {
     transform: rotate(180deg);
   }
   /* Parameter override row — sits inline with the Select. Each
