@@ -152,30 +152,6 @@
     </div>
   {/if}
 
-  <!-- B2/B3/B4: OI · Spread · Volume stats row — Volume moved to the
-       end (2026-09-30, operator request); was OI/Volume/Spread. -->
-  {#if q && (q.oi != null || q.volume != null || _spread != null)}
-    <div class="ot-depth-stats">
-      {#if q.oi != null && q.oi > 0}
-        <span class="ot-depth-stat">
-          <span class="ot-depth-stat-lbl">OI</span>
-          <span class="ot-depth-stat-val">{fmtLakh(q.oi)}</span>
-        </span>
-      {/if}
-      {#if _spread != null && _spread >= 0}
-        <span class="ot-depth-stat">
-          <span class="ot-depth-stat-lbl">Spd</span>
-          <span class="ot-depth-stat-val ot-depth-spread">{priceFmt(_spread)}</span>
-        </span>
-      {/if}
-      {#if q.volume != null && q.volume > 0}
-        <span class="ot-depth-stat">
-          <span class="ot-depth-stat-lbl">Vol</span>
-          <span class="ot-depth-stat-val">{fmtLakh(q.volume)}</span>
-        </span>
-      {/if}
-    </div>
-  {/if}
   <div class="ot-depth-grid">
     <div class="ot-depth-header-bg" aria-hidden="true"></div>
     <span class="ot-depth-label">Bid qty</span>
@@ -190,14 +166,36 @@
       <span class="ot-depth-cell ot-depth-ask-qty">{a ? qtyFmt(a.quantity) : '—'}</span>
     {/each}
   </div>
-  <!-- Raw response diagnostic (2026-09-30, operator request) — surfaces
-       exactly what the /api/quote response actually carries, so "is
-       this field really populated?" never needs a code read again.
-       Levels count is the UNPADDED depth_buy/depth_sell length (0-5),
-       distinct from buyRows/sellRows above which always render 5 rows
-       (null-padded for visual alignment). -->
+  <!-- Additional-info strip (2026-09-30, operator: "use your judgement
+       on how to show the additional info order ticket. get inspired
+       from chain to quote depth in order ticket") — CONSOLIDATED from
+       two separate strips (an OI/Spread/Volume row ABOVE the grid, and
+       a Buy levels/Sell levels/Volume(raw) diagnostic row BELOW it)
+       into this single row below the grid. Chain doesn't sandwich its
+       strike grid between two separate info bands; one clean strip
+       after the data reads more like that. The compact "Vol" stat
+       (e.g. "13K") is dropped per explicit operator request — OI and
+       Spread are the genuinely useful at-a-glance numbers; the raw,
+       unformatted Volume further below is a distinct value (exact
+       broker figure, not compact-rounded) kept for the diagnostic
+       "is this field really populated?" purpose it was originally
+       added for. Levels count is the UNPADDED depth_buy/depth_sell
+       length (0-5), distinct from buyRows/sellRows above which always
+       render 5 rows (null-padded for visual alignment). -->
   {#if q}
-    <div class="ot-depth-diag" title="Raw /api/quote response — depth level counts and volume as returned by the broker, unpadded">
+    <div class="ot-depth-diag" title="Depth stats + raw /api/quote response — depth level counts and volume as returned by the broker, unpadded">
+      {#if q.oi != null && q.oi > 0}
+        <span class="ot-depth-diag-item">
+          <span class="ot-depth-diag-lbl">OI</span>
+          <span class="ot-depth-diag-val">{fmtLakh(q.oi)}</span>
+        </span>
+      {/if}
+      {#if _spread != null && _spread >= 0}
+        <span class="ot-depth-diag-item">
+          <span class="ot-depth-diag-lbl">Spd</span>
+          <span class="ot-depth-diag-val ot-depth-spread">{priceFmt(_spread)}</span>
+        </span>
+      {/if}
       <span class="ot-depth-diag-item">
         <span class="ot-depth-diag-lbl">Buy levels</span>
         <span class="ot-depth-diag-val">{q.depth_buy?.length ?? 0}</span>
@@ -338,6 +336,16 @@
   .ot-depth-label:nth-child(2) { color: var(--algo-green, var(--c-long)); opacity: 0.8; }
   .ot-depth-label:nth-child(3),
   .ot-depth-label:nth-child(4) { color: var(--algo-red, var(--c-short)); opacity: 0.8; }
+  /* Central Bid|Ask divider (2026-09-30, operator: "apply column
+     borders of chain to quote depth headings and quotes") — mirrors
+     Chain's Strike-column divider (.chain-th-strike /
+     .chain-row>td.chain-td-strike, OptionChainTab.svelte), same
+     0.03-alpha "whisper-quiet" weight. Chain has a real middle column
+     (Strike) to hang left+right borders off; the depth ladder's
+     natural equivalent split is the Bid/Ask boundary itself (columns
+     2 and 3), so one divider there rather than one per column. */
+  .ot-depth-label:nth-child(2) { border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
+  .ot-depth-label:nth-child(3) { border-left: 1px solid rgba(255,255,255,0.03); padding-left: 0.3rem; }
   /* Header row band (2026-09-30, operator: "let the row [with BID QTY
      / BID / ASK / ASK QTY] have a lower border end to end and a
      slightly different background to show this [as] a header") — a
@@ -349,20 +357,29 @@
      earlier same-day fix, so 4 separate per-label backgrounds would
      leave visible gaps between them) — one element spanning the
      whole row is genuinely edge-to-edge, not four disconnected
-     chips. */
+     chips.
+     Restyled to match Chain's header format (2026-09-30, operator:
+     "now apply this header format to ticker bid qty, bid, ask, ask
+     qty in order ticket") — background switched from a flat white
+     wash to --card-bg-elevated (the same genuinely-lighter navy tier
+     Chain's .chain-th-ce/-pe/-strike use, app.css), and the
+     border-bottom dialed from plain white to the same 0.18-alpha
+     amber Chain settled on. No sticky/border-collapse risk here
+     (this is a plain CSS grid, not a <table>), so border-bottom is
+     safe to use directly — no box-shadow workaround needed. */
   .ot-depth-header-bg {
     grid-column: 1 / -1;
     grid-row: 1;
-    background: rgba(255,255,255,0.04);
-    border-bottom: 1px solid rgba(255,255,255,0.14);
+    background: var(--card-bg-elevated);
+    border-bottom: 1px solid rgba(251,191,36,0.18);
   }
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
   }
-  .ot-depth-bid     { color: var(--algo-green, var(--c-long)); }
+  .ot-depth-bid     { color: var(--algo-green, var(--c-long)); border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
   .ot-depth-bid-qty { color: var(--algo-green, var(--c-long)); opacity: 0.7; }
-  .ot-depth-ask     { color: var(--algo-red, var(--c-short)); }
+  .ot-depth-ask     { color: var(--algo-red, var(--c-short)); border-left: 1px solid rgba(255,255,255,0.03); padding-left: 0.3rem; }
   .ot-depth-ask-qty { color: var(--algo-red, var(--c-short)); opacity: 0.7; }
 
   /* Stale indicator — shows when error exists but old q is preserved */
@@ -374,41 +391,25 @@
     letter-spacing: 0.04em;
   }
 
-  /* B2/B3/B4: OI · Volume · Spread stats strip */
-  .ot-depth-stats {
-    display: flex;
-    gap: 0.6rem;
-    flex-wrap: wrap;
-    margin-bottom: 0.3rem;
-    font-size: var(--fs-2xs);
-  }
-  .ot-depth-stat {
-    display: inline-flex;
-    align-items: baseline;
-    gap: 0.2rem;
-  }
-  .ot-depth-stat-lbl {
-    color: var(--algo-muted);
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-  }
-  .ot-depth-stat-val {
-    color: var(--algo-slate);
-    font-variant-numeric: tabular-nums;
-    font-family: var(--font-numeric);
-  }
+  /* B4: Spread value gets its own accent color within the
+     consolidated .ot-depth-diag row below (2026-09-30) — the
+     .ot-depth-stats/.ot-depth-stat/.ot-depth-stat-lbl/.ot-depth-stat-val
+     strip this used to belong to was removed (folded into
+     .ot-depth-diag, see markup comment above); this one rule survives
+     since it's still referenced. */
   .ot-depth-spread {
     color: var(--algo-sky, #7dd3fc);
   }
 
-  /* Raw response diagnostic row (2026-09-30) — plainer than
-     .ot-depth-stats (no color-coding), but NOT so faint it's hard to
-     notice: the original 0.65-opacity italic treatment read as
-     "not showing" (operator report) even though it was technically
-     rendering. Dropped the opacity/italic, kept it visually distinct
-     via smaller font + muted (not faded) color + explicit label/value
-     pairs (matching .ot-depth-stat's own label+value pattern) instead
-     of one run-on text string per item. */
+  /* Additional-info row (2026-09-30) — the original 0.65-opacity
+     italic treatment read as "not showing" (operator report) even
+     though it was technically rendering. Dropped the opacity/italic,
+     kept it visually distinct via smaller font + muted (not faded)
+     color + explicit label/value pairs instead of one run-on text
+     string per item. Later consolidated (2026-09-30, same day) to
+     also carry OI + Spread, folded in from the separate
+     .ot-depth-stats strip that used to sit above the grid — see the
+     markup comment near this row for the full rationale. */
   .ot-depth-diag {
     /* inline-flex (was flex) — (2026-09-30, operator: "the border
        above should be limited to the content") — a block-level `flex`

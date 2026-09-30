@@ -185,12 +185,20 @@
     Template
   </button>
   {#if !shellUsingNone && selectedTemplate}
-    <!-- #30 expand toggle — reveals the full param set -->
+    <!-- #30 expand toggle — reveals the full param set.
+         Operator (2026-09-30): "template expand button look too
+         small. make it either big or use ^ and inverted ^" — the old
+         ▴/▾ glyphs at --fs-xs (0.55rem ≈ 9px) read as barely-visible
+         specks. Switched to a plain "^" character, rotated 180deg via
+         the .oes-tpl-expand-open class when expanded (inverted ^ =
+         pointing down = "click to collapse"), sized up substantially
+         below. -->
     <button type="button"
             class="oes-tpl-expand-btn"
+            class:oes-tpl-expand-open={_expanded}
             title={_expanded ? 'Collapse template params' : 'Expand all template params'}
             onclick={() => { _expanded = !_expanded; }}>
-      {_expanded ? '▴' : '▾'}
+      ^
     </button>
   {/if}
 </span>
@@ -387,19 +395,37 @@
      untouched — those already matched the rest of the app's error/warn
      convention and weren't the inconsistency. The toggle above (added
      2026-09-30) follows the same convention from the start. */
-  /* #30 expand toggle button */
+  /* #30 expand toggle button — bumped from --fs-xs (0.55rem, "too
+     small") to 1rem, brightened from slate-muted to the amber action
+     color so it actually reads as a clickable affordance, and given
+     an explicit square hit-area (1.1rem) instead of relying on the
+     glyph's own tiny intrinsic size for touch/click target (2026-09-30,
+     operator request). */
   .oes-tpl-expand-btn {
     background: transparent;
     border: none;
-    color: var(--algo-slate-muted);
-    font-size: var(--fs-xs);
-    padding: 0 0.2rem;
+    color: var(--c-action, var(--algo-amber));
+    font-size: 1rem;
+    font-weight: 700;
+    width: 1.1rem;
+    height: 1.1rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0;
     cursor: pointer;
     line-height: 1;
-    transition: color 0.12s;
+    transition: color 0.12s, transform 0.15s;
   }
   .oes-tpl-expand-btn:hover {
-    color: var(--algo-slate);
+    color: var(--algo-amber-bright, #fcd34d);
+  }
+  /* Inverted ^ (rotated 180deg) = pointing down = collapsed state,
+     inviting "click to expand downward" — plain ^ = expanded state,
+     inviting "click to collapse back up". Mirrors the old ▴/▾
+     semantics with a much more visible glyph. */
+  .oes-tpl-expand-btn:not(.oes-tpl-expand-open) {
+    transform: rotate(180deg);
   }
   /* Parameter override row — sits inline with the Select. Each
      param is a tight label+input pair. The input is bare-monospace

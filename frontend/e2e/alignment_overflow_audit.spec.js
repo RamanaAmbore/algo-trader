@@ -160,17 +160,36 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(content).toMatch(/\.ot-depth-label:nth-child\(3\),\s*\n?\s*\.ot-depth-label:nth-child\(4\)\s*\{[^}]*color:\s*var\(--algo-red/);
   });
 
-  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border, end-to-end (2026-09-30 follow-up)', () => {
+  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border, end-to-end (2026-09-30 follow-up, restyled to match Chain same day)', () => {
     // A per-label background/border would leave visible gaps at the
     // grid's column-gap seams (columns are content-sized, not
     // stretched) — a single element spanning grid-column: 1 / -1 is
     // genuinely continuous across the whole label row instead.
+    // Background/border restyled (2026-09-30, operator: "apply this
+    // header format to ticker bid qty, bid, ask, ask qty") to match
+    // Chain's header cells: --card-bg-elevated + amber box-shadow-
+    // equivalent border-bottom (no sticky/border-collapse risk here,
+    // so plain border-bottom is safe, unlike Chain's <th>).
     expect(content).toMatch(/<div class="ot-depth-header-bg"/);
     const body = ruleBody(content, '.ot-depth-header-bg');
     expect(body, '.ot-depth-header-bg rule must exist').not.toBeNull();
     expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
-    expect(body).toMatch(/background:\s*rgba\(/);
-    expect(body).toMatch(/border-bottom:\s*1px solid/);
+    expect(body).toMatch(/background:\s*var\(--card-bg-elevated\)/);
+    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.18\)/);
+  });
+
+  test('.ot-depth-label/.ot-depth-bid/.ot-depth-ask carry a subtle Bid|Ask divider, matching Chain\'s column-border treatment (2026-09-30, operator: "apply column borders of chain to quote depth headings and quotes")', () => {
+    expect(content).toMatch(/\.ot-depth-label:nth-child\(2\)\s*\{[^}]*border-right:\s*1px solid rgba\(255,255,255,0\.03\)/);
+    expect(content).toMatch(/\.ot-depth-label:nth-child\(3\)\s*\{[^}]*border-left:\s*1px solid rgba\(255,255,255,0\.03\)/);
+    // Anchored to `.ot-depth-bid {` / `.ot-depth-ask {` specifically
+    // (not `.ot-depth-bid-qty` / `.ot-depth-ask-qty`, which also start
+    // with the same prefix) via a trailing space before the brace.
+    const bidRule = content.match(/\.ot-depth-bid\s*\{[^}]*\}/)?.[0] ?? '';
+    const askRule = content.match(/\.ot-depth-ask\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(bidRule, '.ot-depth-bid rule').not.toBe('');
+    expect(askRule, '.ot-depth-ask rule').not.toBe('');
+    expect(bidRule).toMatch(/border-right:\s*1px solid rgba\(255,255,255,0\.03\)/);
+    expect(askRule).toMatch(/border-left:\s*1px solid rgba\(255,255,255,0\.03\)/);
   });
 });
 
@@ -706,15 +725,28 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(rule).not.toMatch(/border-bottom:\s*1px solid/);
   });
 
-  test('Volume stat renders AFTER Spread in the stats row markup (was OI/Volume/Spread, now OI/Spread/Volume)', () => {
+  test('.ot-depth-stats strip no longer exists — OI/Spread folded into .ot-depth-diag, compact Vol stat removed (2026-09-30, operator: "remove vol 13k at the top left")', () => {
     const content = readFile('src/lib/order/OrderDepth.svelte');
-    const statsBlock = content.match(/<div class="ot-depth-stats">[\s\S]*?<\/div>/)?.[0] ?? '';
-    expect(statsBlock, '.ot-depth-stats markup block').not.toBe('');
-    const volIdx = statsBlock.indexOf('q.volume');
-    const spreadIdx = statsBlock.indexOf('_spread');
-    expect(volIdx, 'q.volume reference').toBeGreaterThan(-1);
+    expect(content).not.toMatch(/<div class="ot-depth-stats">/);
+    // The compact, aggCompact-formatted Volume stat (e.g. "13K") is
+    // gone entirely — distinct from the still-present RAW volume value
+    // inside .ot-depth-diag (q.volume ?? '—', an exact unformatted
+    // number, kept for the diagnostic purpose it was added for).
+    expect(content).not.toMatch(/<span class="ot-depth-stat-lbl">Vol<\/span>/);
+  });
+
+  test('OI and Spread now render inside .ot-depth-diag, ahead of Buy levels/Sell levels/Volume (raw) (2026-09-30 consolidation)', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const diagBlock = content.match(/<div class="ot-depth-diag"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? '';
+    expect(diagBlock, '.ot-depth-diag markup block').not.toBe('');
+    const oiIdx = diagBlock.indexOf('q.oi');
+    const spreadIdx = diagBlock.indexOf('_spread');
+    const buyLevelsIdx = diagBlock.indexOf('Buy levels');
+    expect(oiIdx, 'q.oi reference').toBeGreaterThan(-1);
     expect(spreadIdx, '_spread reference').toBeGreaterThan(-1);
-    expect(volIdx, 'Volume must render after Spread in DOM order').toBeGreaterThan(spreadIdx);
+    expect(buyLevelsIdx, 'Buy levels reference').toBeGreaterThan(-1);
+    expect(oiIdx, 'OI must render before Spread').toBeLessThan(spreadIdx);
+    expect(spreadIdx, 'Spread must render before Buy levels').toBeLessThan(buyLevelsIdx);
   });
 
   test('live: .ot-depth-h renders with a non-transparent background and NO border-bottom (2026-09-30, reversed same day)', async ({ page }) => {

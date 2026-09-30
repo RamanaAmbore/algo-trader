@@ -1349,3 +1349,36 @@ test.describe('.oct-tpl-demo-note flex-shrink:0 removed (dead rule, 2026-09-30 a
     expect(rule).not.toMatch(/^\s*flex-shrink:\s*0;/m);
   });
 });
+
+test.describe('Template expand toggle — bigger caret glyph, not tiny ▴/▾ (2026-09-30)', () => {
+  // Operator: "template expand button look too small. make it either
+  // big or use ^ and inverted ^" — old glyphs were ▴/▾ at --fs-xs
+  // (0.55rem ≈ 9px). Switched to a single "^" rotated 180deg for the
+  // collapsed state, sized up to 1rem in a 1.1rem square hit-area.
+  test('button renders a literal "^" character, not ▴/▾', () => {
+    const btnMarkup = TEMPLATE_BAR.match(/<button[^>]*class="oes-tpl-expand-btn"[\s\S]*?<\/button>/)?.[0] ?? '';
+    expect(btnMarkup, 'oes-tpl-expand-btn markup').not.toBe('');
+    expect(btnMarkup).toMatch(/>\s*\^\s*</);
+    expect(btnMarkup).not.toMatch(/[▴▾]/);
+  });
+
+  test('button toggles class:oes-tpl-expand-open, which is what flips the rotation (not a conditional glyph)', () => {
+    expect(TEMPLATE_BAR).toMatch(/class:oes-tpl-expand-open=\{_expanded\}/);
+  });
+
+  test('.oes-tpl-expand-btn is sized up (1rem font, 1.1rem hit-area) and uses the amber action color, not slate-muted', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tpl-expand-btn rule').not.toBe('');
+    expect(rule).toMatch(/font-size:\s*1rem/);
+    expect(rule).toMatch(/width:\s*1\.1rem/);
+    expect(rule).toMatch(/height:\s*1\.1rem/);
+    expect(rule).not.toMatch(/font-size:\s*var\(--fs-xs\)/);
+    expect(rule).not.toMatch(/color:\s*var\(--algo-slate-muted\)/);
+  });
+
+  test('collapsed state (no .oes-tpl-expand-open) rotates 180deg — "inverted ^" pointing down', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-tpl-expand-btn:not\(\.oes-tpl-expand-open\)\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tpl-expand-btn:not(.oes-tpl-expand-open) rule').not.toBe('');
+    expect(rule).toMatch(/transform:\s*rotate\(180deg\)/);
+  });
+});
