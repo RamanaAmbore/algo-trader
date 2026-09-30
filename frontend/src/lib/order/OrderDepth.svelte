@@ -152,7 +152,8 @@
     </div>
   {/if}
 
-  <!-- B2/B3/B4: OI · Volume · Spread stats row -->
+  <!-- B2/B3/B4: OI · Spread · Volume stats row — Volume moved to the
+       end (2026-09-30, operator request); was OI/Volume/Spread. -->
   {#if q && (q.oi != null || q.volume != null || _spread != null)}
     <div class="ot-depth-stats">
       {#if q.oi != null && q.oi > 0}
@@ -161,16 +162,16 @@
           <span class="ot-depth-stat-val">{fmtLakh(q.oi)}</span>
         </span>
       {/if}
-      {#if q.volume != null && q.volume > 0}
-        <span class="ot-depth-stat">
-          <span class="ot-depth-stat-lbl">Vol</span>
-          <span class="ot-depth-stat-val">{fmtLakh(q.volume)}</span>
-        </span>
-      {/if}
       {#if _spread != null && _spread >= 0}
         <span class="ot-depth-stat">
           <span class="ot-depth-stat-lbl">Spd</span>
           <span class="ot-depth-stat-val ot-depth-spread">{priceFmt(_spread)}</span>
+        </span>
+      {/if}
+      {#if q.volume != null && q.volume > 0}
+        <span class="ot-depth-stat">
+          <span class="ot-depth-stat-lbl">Vol</span>
+          <span class="ot-depth-stat-val">{fmtLakh(q.volume)}</span>
         </span>
       {/if}
     </div>
@@ -194,23 +195,17 @@
   .ot-depth {
     margin-top: 0.4rem;
     padding: 0.45rem 0.5rem;
-    /* Surface-elevation parity with the Chain tab's strike grid
-       (OptionChainTab.svelte's .chain-grid-wrap / .chain-th-* — same
-       token) — was a generic black overlay that read as a different
-       surface from the rest of the order-entry chrome.
-       Corrected (2026-09-30) — the shared token was --algo-bg-elev2, a
-       flat solid navy that itself read as a visibly different (darker)
-       surface from every other card-like surface in the app
-       (.algo-card, .bucket-card, chart wrappers — all --card-bg-gradient).
-       Both this and the Chain tab's grid moved to --card-bg-gradient,
-       the app's actual canonical card surface.
-       Corrected AGAIN same day — operator: now reads "almost the same
-       as other areas", too blended into generic cards. Both surfaces
-       now share --chain-depth-bg (app.css): --card-bg-gradient with a
-       thin amber wash layered on top — same gradient family, but
-       recognizably a depth-ladder/strike-grid surface, not a plain
-       card. See app.css token comment for the full back-and-forth. */
-    background: var(--chain-depth-bg);
+    /* Surface background history: generic black overlay -> --algo-bg-elev2
+       (too dark/different from other cards) -> --card-bg-gradient (too
+       blended into generic cards) -> --chain-depth-bg (parity with the
+       Chain tab's strike grid). REVERSED AGAIN (2026-09-30, same day,
+       operator: "keep the order quote depth in sync with chart
+       background") — the price chart itself was reverted off
+       --chain-depth-bg back to plain --card-bg-gradient the same day;
+       this now follows the chart's own token instead of Chain's, per
+       explicit operator instruction. See app.css token comments for
+       the full back-and-forth. */
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
     /* Match the Chain-tab strike grid height when the parent (the
@@ -234,7 +229,17 @@
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    margin-bottom: 0.3rem;
+    /* Highlighted header band (2026-09-30, operator: "header
+       highlighted... slightly different color underlined") — a
+       subtle amber wash + underline so this row reads as the
+       ladder's own distinct header, not just plain text floating
+       above the bid/ask grid. Negative side margins pull the wash
+       out to the card's own edges (undoing .ot-depth's padding) so
+       the highlight reads as a full-width band, not an inset strip. */
+    margin: -0.45rem -0.5rem 0.3rem;
+    padding: 0.25rem 0.5rem;
+    background: rgba(251,191,36,0.05);
+    border-bottom: 1px solid rgba(251,191,36,0.16);
   }
   .ot-depth-meta {
     color: var(--algo-muted);

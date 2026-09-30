@@ -540,3 +540,67 @@ test.describe('Static source checks — Chain ITM/OTM per-side background (2026-
     expect(content).toMatch(/\.chain-th-pe\s*\{[^}]*color:\s*var\(--c-short\)/);
   });
 });
+
+test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order ticket)', () => {
+  // Operator: "keep the order quote depth in sync with chart background.
+  // volume at the end quote depth not at the beginning. header slighly
+  // different color underlined. I am referring to order ticket."
+  test('.ot-depth references plain --card-bg-gradient (in sync with the price chart), not --chain-depth-bg', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth') ?? '';
+    expect(rule, '.ot-depth rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
+  });
+
+  test('.ot-depth-h (header band) has a highlight background and an underline border-bottom', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-h') ?? '';
+    expect(rule, '.ot-depth-h rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*rgba\(/);
+    expect(rule).toMatch(/border-bottom:\s*1px solid/);
+  });
+
+  test('Volume stat renders AFTER Spread in the stats row markup (was OI/Volume/Spread, now OI/Spread/Volume)', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const statsBlock = content.match(/<div class="ot-depth-stats">[\s\S]*?<\/div>/)?.[0] ?? '';
+    expect(statsBlock, '.ot-depth-stats markup block').not.toBe('');
+    const volIdx = statsBlock.indexOf('q.volume');
+    const spreadIdx = statsBlock.indexOf('_spread');
+    expect(volIdx, 'q.volume reference').toBeGreaterThan(-1);
+    expect(spreadIdx, '_spread reference').toBeGreaterThan(-1);
+    expect(volIdx, 'Volume must render after Spread in DOM order').toBeGreaterThan(spreadIdx);
+  });
+
+  test('live: .ot-depth-h renders with a non-transparent background and a visible border-bottom', async ({ page }) => {
+    await page.setViewportSize({ width: 412, height: 919 });
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    const symInput = page.locator('.ssi-input').first();
+    const visible = await symInput.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!visible) {
+      test.info().annotations.push({ type: 'skip', description: 'symbol input not visible' });
+      return;
+    }
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    const suggVisible = await sugg.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (!suggVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'no suggestions' });
+      return;
+    }
+    await sugg.click({ force: true });
+    const header = page.locator('.ot-depth-h').first();
+    const headerVisible = await header.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!headerVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-h not rendered (no quote)' });
+      return;
+    }
+    const { bg, borderBottom } = await header.evaluate((el) => {
+      const cs = getComputedStyle(el);
+      return { bg: cs.backgroundColor, borderBottom: cs.borderBottomWidth };
+    });
+    expect(bg, '.ot-depth-h background-color').not.toBe('rgba(0, 0, 0, 0)');
+    expect(parseFloat(borderBottom), '.ot-depth-h border-bottom-width').toBeGreaterThan(0);
+  });
+});
