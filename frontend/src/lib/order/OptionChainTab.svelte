@@ -1454,8 +1454,21 @@
        that this is a strike-grid surface specifically. --chain-depth-bg
        (app.css) is the settled middle ground: --card-bg-gradient with a
        thin amber wash on top — same family as every other card, but
-       recognizably its own tier. See app.css for the full history. */
-    background: var(--chain-depth-bg);
+       recognizably its own tier. See app.css for the full history.
+       REVERSED YET AGAIN (2026-09-30, operator: "keep the chain
+       background colors in sync with price chart background with
+       the exception of in the money call and in the put area") — the
+       price chart and the order ticket's depth ladder (.ot-depth) had
+       both already moved to bare --card-bg-gradient earlier the same
+       day; this grid-wrap was the one surface still left on
+       --chain-depth-bg. Switched to match. The sticky header
+       (.chain-th-ce/-pe/-strike, below) intentionally KEEPS its own
+       --chain-header-bg — operator confirmed the header/body contrast
+       should survive this change. ITM call/put washes
+       (.chain-row-itm-call/-put, further below) are untouched; they
+       layer on top of whatever base background this rule sets, so
+       they remain visually distinct regardless of this token. */
+    background: var(--card-bg-gradient);
     /* Operator: "order ticket window is wider than viewport mobile
        sometimes" — root-caused to THIS table: table-layout defaults to
        `auto`, which sizes columns off cell content's natural minimum

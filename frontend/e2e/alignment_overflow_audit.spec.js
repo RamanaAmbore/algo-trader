@@ -531,17 +531,20 @@ test.describe('Static source checks — Chain header row is distinct from the bo
   // Operator: "chain header background should not be same as chain
   // [body]... slight variation for contrast" — reverses the earlier
   // same-day decision to pixel-match header and body.
-  test('.chain-th-ce/-pe/-strike reference --chain-header-bg, not --chain-depth-bg (the body wrap\'s token)', () => {
+  test('.chain-th-ce/-pe/-strike reference --chain-header-bg, distinct from the body wrap\'s background (2026-09-30, header/body contrast still holds after body synced to price chart)', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
       expect(rule).toMatch(/background:\s*var\(--chain-header-bg\)/);
-      expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
     }
+    // .chain-grid-wrap itself moved OFF --chain-depth-bg onto bare
+    // --card-bg-gradient (see the dedicated describe block below) —
+    // the header's own --chain-header-bg token must still differ from
+    // whatever the body now uses, so the contrast survives.
     const wrapRule = ruleBody(content, '.chain-grid-wrap') ?? '';
     expect(wrapRule, '.chain-grid-wrap rule').not.toBe('');
-    expect(wrapRule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+    expect(wrapRule).not.toMatch(/background:\s*var\(--chain-header-bg\)/);
   });
 
   test('--chain-header-bg (app.css) is a distinct token from --chain-depth-bg, same --card-bg-gradient family', () => {
@@ -551,6 +554,36 @@ test.describe('Static source checks — Chain header row is distinct from the bo
     expect(headerRule).toMatch(/var\(--card-bg-gradient\)/);
     const depthRule = appCss.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
     expect(headerRule).not.toBe(depthRule);
+  });
+});
+
+test.describe('Static source checks — Chain body background synced with price chart, header + ITM/OTM excepted (2026-09-30)', () => {
+  // Operator: "keep the chain background colors in sync with price
+  // chart background with the exception of in the money call and in
+  // the put area." .chain-grid-wrap was the one surface still left on
+  // --chain-depth-bg after the price chart / payoff chart / order
+  // ticket depth ladder had all already moved to bare
+  // --card-bg-gradient earlier the same day. Header (--chain-header-bg,
+  // confirmed distinct above) and the ITM/OTM td washes (below) are
+  // the explicit exceptions and stay untouched.
+  test('.chain-grid-wrap references bare --card-bg-gradient (matching .cw-root / .payoff-chart / .ot-depth), not --chain-depth-bg', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const rule = ruleBody(content, '.chain-grid-wrap') ?? '';
+    expect(rule, '.chain-grid-wrap rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
+  });
+
+  test('ITM call/put cell washes are untouched by the body background sync', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const ceItmCall = content.match(/\.chain-row-itm-call \.chain-td-ce\s*\{[^}]*\}/)?.[0] ?? '';
+    const peItmCall = content.match(/\.chain-row-itm-call \.chain-td-pe\s*\{[^}]*\}/)?.[0] ?? '';
+    const peItmPut = content.match(/\.chain-row-itm-put\s+\.chain-td-pe\s*\{[^}]*\}/)?.[0] ?? '';
+    const ceItmPut = content.match(/\.chain-row-itm-put\s+\.chain-td-ce\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(ceItmCall).toMatch(/rgba\(74,\s*222,\s*128,\s*0\.05\)/);
+    expect(peItmCall).toMatch(/rgba\(248,\s*113,\s*113,\s*0\.015\)/);
+    expect(peItmPut).toMatch(/rgba\(248,\s*113,\s*113,\s*0\.05\)/);
+    expect(ceItmPut).toMatch(/rgba\(74,\s*222,\s*128,\s*0\.015\)/);
   });
 });
 
