@@ -4947,6 +4947,15 @@
         }, 200);
         return;
       }
+      if (msg?.event === 'positions_refreshed') {
+        // Backend confirms the broker book is genuinely fresh (e.g. after
+        // a postback fan-out or reconcile sweep) — refresh immediately
+        // rather than waiting for the 5 s book-poller cycle. Mirrors
+        // MarketPulse.svelte / PerformancePage.svelte's own handling of
+        // this event.
+        loadPositions({ fresh: true });
+        return;
+      }
       if (msg?.event !== 'position_filled') return;
       const orderId = String(msg.order_id || '');
       const matched = orderId ? _markToastFilled(orderId, Number(msg.fill_price || 0)) : false;
@@ -6315,14 +6324,23 @@
     .opt-field { flex: 1 1 0; }
   }
   @media (min-width: 900px) {
-    /* All fields content-sized (`flex: 0 0 auto`, no min-width) so the
-       row reads as one tight left-flush cluster: Account → Underlying
-       → Expiry → Chain. Operator: "left align all the fields accounts,
-       underlying, expiry and chain" — every field hugs its trigger,
-       1px gap between, empty space trails on the right. */
+    /* All fields content-sized so the row reads as one tight
+       left-flush cluster: Account → Underlying → Expiry → Chain.
+       Operator: "left align all the fields accounts, underlying,
+       expiry and chain" — every field hugs its trigger, 1px gap
+       between, empty space trails on the right.
+       `flex: 0 1 auto` (not `0 0 auto`) — allow shrinking so Account/
+       Underlying/Expiry/chip together can't overflow a ≥900px
+       viewport that also has a sidebar. Account (`.opt-field-grow`,
+       nth-of-type(1)) carries its own always-on `flex: 0 0 auto` —
+       override it here too via the higher-specificity `.opt-picker
+       .opt-field-grow` selector, or Account alone would stay rigid
+       at every width ≥900px while Underlying/Expiry shrink. */
     .opt-picker .opt-field:nth-of-type(2),
-    .opt-picker .opt-field:nth-of-type(3) {
-      flex: 0 0 auto;
+    .opt-picker .opt-field:nth-of-type(3),
+    .opt-picker .opt-field-grow {
+      flex: 0 1 auto;
+      min-width: 0;
     }
   }
 
@@ -6420,7 +6438,6 @@
     color: var(--text-muted);
     font-weight: 400;
     font-size: var(--fs-md);
-    margin-left: auto;
   }
 
   /* Default: legacy stacked aside (column of cards). Used when the
@@ -6497,8 +6514,10 @@
     color: var(--algo-slate);
     font-size: var(--fs-lg);
     font-weight: 600;
-    margin-left: auto;          /* push value to the right of pair */
-    text-align: right;
+    /* Left-aligned by default — label-value pairs, not a numeric-grid
+       column. Right-flushing broke this app's "left-align unless
+       header/card-button-group" convention AND was inconsistent with
+       the Greeks card's own (correct) left-aligned .kv-v override. */
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -6531,6 +6550,30 @@
     margin-left: 0.15rem;
     margin-right: 0.5rem;
     text-align: left;
+  }
+  /* Narrow viewports (<600px): `max-content` tracks can't shrink, and
+     five Greek pairs with large portfolio Θ/Vega values can overflow
+     a card with no overflow handling (.opt-block). Switch to a
+     flex-wrap layout instead of a rigid 5-pair single row grid. */
+  @media (max-width: 600px) {
+    /* `repeat(auto-fit, minmax(0, max-content) auto)` is invalid CSS —
+       `auto-fit`/`auto-fill` require every track in the repeated
+       pattern to be a FIXED size (a bare `auto` track disqualifies
+       it), so browsers drop the whole declaration and silently keep
+       the rigid 5-pair grid. Switch display modes instead: flex-wrap
+       lets pairs wrap onto multiple lines, and undoing `display:
+       contents` on `.kv-pair` (below) keeps each pair's label+value
+       together as one wrapping unit instead of splitting them onto
+       different lines. */
+    .opt-kv-greeks {
+      display: flex;
+      flex-wrap: wrap;
+      column-gap: 0.45rem;
+      row-gap: 0.3rem;
+    }
+    .opt-kv-greeks .kv-pair {
+      display: flex;
+    }
   }
   /* Risk block: single row on desktop */
   @media (min-width: 1180px) {
@@ -6769,14 +6812,13 @@
     font-size: var(--fs-md);
     color: var(--c-muted);
     font-style: italic;
-    text-align: center;
     align-self: start;
   }
   .cand-empty.cand-loading {
     align-self: stretch;
     display: flex;
     align-items: center;
-    justify-content: center;
+    justify-content: flex-start;
     min-height: 8rem;
   }
 
@@ -6968,7 +7010,6 @@
     font-size: var(--fs-md);
     color: var(--c-muted);
     font-style: italic;
-    text-align: center;
   }
 
   :global(.fs-card-on) .cand-scroll {
@@ -7802,7 +7843,6 @@
     font-family: monospace;
     font-size: var(--fs-md);
     font-weight: 700;
-    text-align: center;
     animation: chain-quick-fade 2.2s ease-out forwards;
   }
 

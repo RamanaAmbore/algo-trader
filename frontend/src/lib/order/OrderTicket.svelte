@@ -3321,6 +3321,7 @@
     align-items: center;
     gap: 0.5rem;
     margin: 0.3rem 0 0.2rem;
+    flex-wrap: wrap;
   }
 
   /* D2: wing warning */
@@ -3867,12 +3868,12 @@
   .ot-mode-hint-shadow { color: #fb923c; border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
   .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: var(--fs-xs); }
 
-  /* Chase toggle — pushed to the row's far right (margin-left: auto)
-     so it sits opposite the mode pills. Native checkbox + label
-     pill; the label tints amber when ON to match the rest of the
-     ticket's "active state" treatment. */
+  /* Chase toggle — left-aligned per the site-wide alignment rule
+     (2026-09 audit): only header-group / expand-collapse / full-
+     screen / default-size elements are right-anchored. Native
+     checkbox + label pill; the label tints amber when ON to match
+     the rest of the ticket's "active state" treatment. */
   .ot-chase-toggle {
-    margin-left: auto;
     display: inline-flex;
     align-items: center;
     gap: 0.3rem;
@@ -4120,7 +4121,7 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: flex-start;
   }
   .ot-footer-info {
     display: flex;
@@ -4386,7 +4387,7 @@
     font-size: var(--fs-md);
   }
   .ot-demo-cta {
-    display: flex; gap: 0.5rem; justify-content: flex-end;
+    display: flex; gap: 0.5rem; justify-content: flex-start;
     margin-top: 0.85rem;
     padding-top: 0.7rem;
     border-top: 1px solid rgba(126, 151, 184, 0.18);

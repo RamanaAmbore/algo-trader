@@ -15,6 +15,7 @@
 
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
+import { readFileSync } from 'fs';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 
@@ -373,5 +374,66 @@ test.describe('Provisional Position — WebSocket position_filled events', () =>
 
     // At least one should be present
     expect(hasQtyCol || hasLotsCol).toBe(true);
+  });
+});
+
+/**
+ * Regression guard (2026-09-30): `positions_refreshed` reload must bust the
+ * backend's 30 s route-level cache (`?fresh=1`), not just createDataStore's
+ * in-flight dedup (`force`). Both MarketPulse.svelte and PerformancePage.svelte
+ * previously reloaded with `force`/no-arg only, which could still land on
+ * the same stale cached frame after a fill. See derivatives_positions_fresh_load.spec.js
+ * Test 5 for a live-browser network-level proof of the same fix on the
+ * derivatives page; these are source-level checks for the other two surfaces
+ * (both gate their WS subscription behind slower async onMount chains that
+ * make a reliable live-injection timing window impractical here).
+ */
+test.describe('positions_refreshed cache-bust — MarketPulse + PerformancePage', () => {
+  test('MarketPulse: loadPulse({force:true}) on positions_refreshed also passes fresh:true', () => {
+    const src = readFileSync(
+      '/Users/ramanambore/projects/ramboq/frontend/src/lib/MarketPulse.svelte',
+      'utf-8'
+    );
+    // The positions_refreshed branch must call loadPulse with BOTH force
+    // and fresh — force alone only bypasses createDataStore's in-flight
+    // dedup, not the backend's route-level TTL cache.
+    const branchMatch = src.match(/event\s*===\s*['"]positions_refreshed['"][\s\S]{0,1200}/);
+    expect(branchMatch, 'positions_refreshed branch should exist in MarketPulse.svelte').not.toBeNull();
+    expect(
+      /loadPulse\s*\(\s*\{\s*force:\s*true,\s*fresh:\s*true\s*\}\s*\)/.test(branchMatch[0]),
+      'positions_refreshed branch should call loadPulse({ force: true, fresh: true })'
+    ).toBe(true);
+
+    // loadPulse itself must thread `fresh` through to both the store loads
+    // and the showSummary raw fetches — otherwise the flag is a no-op.
+    const fnMatch = src.match(/async function loadPulse\s*\([\s\S]{0,2000}/);
+    expect(fnMatch, 'loadPulse function should exist').not.toBeNull();
+    expect(
+      /pulsePositionsStore\.load\s*\(\s*\{\s*skipLtp,\s*fresh\s*\}/.test(fnMatch[0]),
+      'loadPulse should thread fresh into pulsePositionsStore.load()'
+    ).toBe(true);
+    expect(
+      /pulseHoldingsStore\.load\s*\(\s*\{\s*skipLtp,\s*fresh\s*\}/.test(fnMatch[0]),
+      'loadPulse should thread fresh into pulseHoldingsStore.load()'
+    ).toBe(true);
+  });
+
+  test('PerformancePage: loadAll() on positions_refreshed passes fresh:true', () => {
+    const src = readFileSync(
+      '/Users/ramanambore/projects/ramboq/frontend/src/lib/PerformancePage.svelte',
+      'utf-8'
+    );
+    const branchMatch = src.match(/event\s*===\s*['"]positions_refreshed['"][\s\S]{0,700}/);
+    expect(branchMatch, 'positions_refreshed branch should exist in PerformancePage.svelte').not.toBeNull();
+    expect(
+      /loadAll\s*\(\s*\{\s*fresh:\s*true\s*\}\s*\)/.test(branchMatch[0]),
+      'positions_refreshed branch should call loadAll({ fresh: true })'
+    ).toBe(true);
+
+    // loadAll itself must thread fresh into fetchPositions/fetchHoldings/fetchFunds.
+    const fnMatch = src.match(/async function loadAll\s*\([\s\S]{0,600}/);
+    expect(fnMatch, 'loadAll function should exist').not.toBeNull();
+    expect(/fetchPositions\s*\(\s*\{\s*fresh\s*\}\s*\)/.test(fnMatch[0])).toBe(true);
+    expect(/fetchHoldings\s*\(\s*\{\s*fresh\s*\}\s*\)/.test(fnMatch[0])).toBe(true);
   });
 });

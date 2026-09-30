@@ -1317,7 +1317,11 @@
         // Broker book is fully up to date — clear all provisional rows
         // (positions_refreshed has no per-symbol payload).
         clearAllProvisional();
-        loadAll();
+        // fresh=true: bypass the backend's 30s route-level TTL cache so
+        // this reload doesn't land on the same stale cached frame — a
+        // plain loadAll() threads fresh=false through to fetchHoldings/
+        // fetchPositions/fetchFunds (see loadAll's signature above).
+        loadAll({ fresh: true });
       } else {
         loadAll();
       }

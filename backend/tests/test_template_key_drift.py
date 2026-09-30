@@ -156,6 +156,11 @@ class TestTemplateGttKeyConsistency:
 
         mock_result = MagicMock()
         mock_result.sibling_pairs = []  # no OCO sibling — the common case
+        # 2026-09-30 — explicit no-wing, so a MagicMock's default (truthy,
+        # auto-created) attribute doesn't make _opp_build_attach_entries'
+        # wing-entry check add an unrelated second entry; this test is
+        # about GTT trail-field population, not wing handling.
+        mock_result.wing_order_id = None
         mock_spec = MagicMock()
         mock_spec.placed_id = "gtt_c6"
         mock_spec.label = "SL"

@@ -76,7 +76,11 @@ def test_chase_terminal_guard_uses_final_not_terminal_set():
 
 def _row(status: str, **extra) -> SimpleNamespace:
     base = dict(id=1, status=status, fill_price=None, filled_at=None,
-                detail=None, created_at=None)
+                detail=None, created_at=None,
+                # 2026-09-30 fix: both postback writers now stamp
+                # filled_quantity = quantity on a FILLED transition —
+                # this fixture must carry both attributes.
+                quantity=100, filled_quantity=0)
     base.update(extra)
     return SimpleNamespace(**base)
 
@@ -456,6 +460,216 @@ class TestChaseTemplateAttachOffsettingGuard:
         snap = _chase_snapshot_algo_row(row, "bo-1")
         assert snap["intent"] == "close"
         assert snap["is_close_intent"] is False   # getattr default, not a model column
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# 2026-09-30 audit fix (Bug 1) — offsetting-position check must use a
+# genuine PRE-fill snapshot, not a post-fill (cached or fresh) re-read.
+#
+# Root cause: `_is_offsetting_position` reads the CURRENT broker position.
+# For a FULL close, the position is flat/zero by the time this check runs
+# (the fill already landed) — indistinguishable from "no prior position
+# at all". A fresh post-fill read is just as wrong as a stale cached one
+# here; freshness only changes WHICH wrong answer you get, not whether
+# it's wrong. The fix captures the signed net position ONCE in
+# chase_order() before any order is placed and threads it through to the
+# terminal snapshot via `_CH_PRE_FILL_NET_QTY`.
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestChaseIsOffsettingSign:
+    def test_buy_closes_short(self):
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(-50, "BUY") is True
+
+    def test_sell_closes_long(self):
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(50, "SELL") is True
+
+    def test_buy_against_long_is_not_offsetting(self):
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(50, "BUY") is False
+
+    def test_sell_against_short_is_not_offsetting(self):
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(-50, "SELL") is False
+
+    def test_none_fails_open(self):
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(None, "SELL") is False
+        assert _ch_is_offsetting_sign(None, "BUY") is False
+
+    def test_flat_is_not_offsetting(self):
+        # A genuinely flat PRE-fill position (this really was a new open)
+        # must not be misclassified as offsetting either.
+        from backend.api.algo.chase import _ch_is_offsetting_sign
+        assert _ch_is_offsetting_sign(0, "BUY") is False
+        assert _ch_is_offsetting_sign(0, "SELL") is False
+
+
+class TestChaseTemplateAttachUsesPreFillSnapshot:
+    @pytest.mark.asyncio
+    async def test_full_close_correctly_classified_even_though_post_fill_read_is_flat(self):
+        """THE regression test for Bug 1.
+
+        Pre-fill snapshot shows the account was long 50 (`pre_fill_net_qty
+        =50`) before this SELL fill closed it out. A naive post-fill
+        broker read (mocked here via `_is_offsetting_position`) would see
+        the now-flat position and return False ("not offsetting") — that
+        is exactly the pre-fix bug. Proves the fix by asserting BOTH that
+        exit orders are never armed on the close AND that the post-fill
+        broker call is never even made when a pre-fill snapshot exists —
+        the decision is made from `snap["pre_fill_net_qty"]` alone.
+        """
+        from backend.api.algo import chase as m
+        with patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=AsyncMock(return_value=False)) as mock_post_fill, \
+             patch("backend.api.routes.orders._fire_template_attach_on_fill",
+                   new=AsyncMock()) as mock_fire:
+            await m._ch_check_and_fire_template_attach(
+                _snap(pre_fill_net_qty=50), 100.0,
+            )
+        mock_fire.assert_not_called()
+        mock_post_fill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_positive_control_new_open_with_pre_fill_flat_still_fires(self):
+        """Sanity check the other direction: a genuine new open (no prior
+        position, `pre_fill_net_qty=None`) must still correctly fire."""
+        from backend.api.algo import chase as m
+        with patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=AsyncMock()) as mock_post_fill, \
+             patch("backend.api.routes.orders._fire_template_attach_on_fill",
+                   new=AsyncMock()) as mock_fire:
+            await m._ch_check_and_fire_template_attach(
+                _snap(pre_fill_net_qty=None, transaction_type="BUY"), 100.0,
+            )
+        mock_fire.assert_awaited_once()
+        mock_post_fill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_partial_close_still_offsetting_via_pre_fill_snapshot(self):
+        """A partial close (still long 20 after partially selling out of
+        50) must also be recognised as offsetting from the pre-fill sign
+        alone — no dependency on the post-fill magnitude at all."""
+        from backend.api.algo import chase as m
+        with patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=AsyncMock()) as mock_post_fill, \
+             patch("backend.api.routes.orders._fire_template_attach_on_fill",
+                   new=AsyncMock()) as mock_fire:
+            await m._ch_check_and_fire_template_attach(
+                _snap(pre_fill_net_qty=50, transaction_type="SELL",
+                      filled_quantity=30, quantity=30), 100.0,
+            )
+        mock_fire.assert_not_called()
+        mock_post_fill.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_falls_back_to_legacy_post_fill_check_when_no_snapshot_key(self):
+        """Legacy-caller safety net: when `pre_fill_net_qty` was never
+        seeded onto the snapshot (e.g. algo_order_id was None), the guard
+        must still fall back to the original post-fill
+        `_is_offsetting_position` call rather than silently treating it
+        as unknown/never-offsetting — preserves pre-existing behaviour
+        for that edge case and keeps the original #6 tests' contract."""
+        from backend.api.algo import chase as m
+        assert "pre_fill_net_qty" not in _snap()
+        with patch("backend.api.routes.orders_place._is_offsetting_position",
+                   new=AsyncMock(return_value=True)) as mock_post_fill, \
+             patch("backend.api.routes.orders._fire_template_attach_on_fill",
+                   new=AsyncMock()) as mock_fire:
+            await m._ch_check_and_fire_template_attach(_snap(), 100.0)
+        mock_post_fill.assert_awaited_once()
+        mock_fire.assert_not_called()
+
+
+class TestChaseApplyPreFillNetQtyToSnap:
+    def test_pops_and_injects_value(self):
+        from backend.api.algo import chase as m
+        m._CH_PRE_FILL_NET_QTY[101] = 50.0
+        row_snap = {"id": 101}
+        m._ch_apply_pre_fill_net_qty_to_snap(101, row_snap)
+        assert row_snap["pre_fill_net_qty"] == 50.0
+        assert 101 not in m._CH_PRE_FILL_NET_QTY, "must pop, never leak the entry"
+
+    def test_noop_when_algo_order_id_none(self):
+        from backend.api.algo import chase as m
+        row_snap = {"id": 1}
+        m._ch_apply_pre_fill_net_qty_to_snap(None, row_snap)
+        assert "pre_fill_net_qty" not in row_snap
+
+    def test_noop_when_row_snap_none(self):
+        from backend.api.algo import chase as m
+        m._CH_PRE_FILL_NET_QTY[202] = 10.0
+        m._ch_apply_pre_fill_net_qty_to_snap(202, None)
+        # still pops (cleanup) even though there's nowhere to inject
+        assert 202 not in m._CH_PRE_FILL_NET_QTY
+
+    def test_noop_when_nothing_was_ever_captured(self):
+        from backend.api.algo import chase as m
+        row_snap = {"id": 303}
+        m._ch_apply_pre_fill_net_qty_to_snap(303, row_snap)
+        assert "pre_fill_net_qty" not in row_snap
+
+
+@pytest.mark.asyncio
+async def test_emit_chase_terminal_threads_pre_fill_snapshot_into_row_snap():
+    """End-to-end through `_emit_chase_terminal`: the value captured at
+    chase_order() entry (simulated here by seeding the module dict
+    directly) must land on the row snapshot passed to the fill hooks, and
+    must be popped so it can't leak into a later, unrelated chase for the
+    same algo_order_id."""
+    from backend.api.algo import chase as m
+
+    mock_row = MagicMock()
+    mock_row.id = 55
+    mock_row.status = "OPEN"
+    mock_row.agent_id = None
+    mock_row.target_pct = None
+    mock_row.target_abs = None
+    mock_row.parent_order_id = None
+    mock_row.template_id = 9
+    mock_row.account = "ZG0790"
+    mock_row.symbol = "NIFTY24APR25000CE"
+    mock_row.exchange = "NFO"
+    mock_row.transaction_type = "SELL"
+    mock_row.product = "NRML"
+    mock_row.mode = "live"
+    mock_row.filled_quantity = 50
+    mock_row.quantity = 50
+    mock_row.intent = ""
+    mock_row.is_close_intent = False
+
+    _result = MagicMock()
+    _result.scalar_one_or_none.return_value = mock_row
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=_result)
+    mock_session.commit = AsyncMock()
+
+    m._CH_PRE_FILL_NET_QTY[55] = 50.0
+
+    captured_snap: dict = {}
+
+    def _capture_hooks(row_snap, outcome, final_price):
+        captured_snap.update(row_snap or {})
+
+    with patch("backend.api.algo.chase._async_session", return_value=mock_session), \
+         patch("backend.api.algo.agent_engine.record_chase_terminal",
+               new=AsyncMock()), \
+         patch("backend.api.routes.orders_postback._pb_write_ledger_fills",
+               new=AsyncMock()), \
+         patch("backend.api.algo.chase._chase_terminal_fire_fill_hooks",
+               side_effect=_capture_hooks) as mock_hooks:
+        await m._emit_chase_terminal(
+            "bo-55", "chase_fill", "NIFTY24APR25000CE", "SELL", 50,
+            final_price=100.0, attempts=1, algo_order_id=55,
+        )
+
+    mock_hooks.assert_called_once()
+    assert captured_snap.get("pre_fill_net_qty") == 50.0
+    assert 55 not in m._CH_PRE_FILL_NET_QTY, "entry must be popped, not leaked"
 
 
 # ─────────────────────────────────────────────────────────────────────────

@@ -235,6 +235,91 @@ def test_fetch_route_calls_ticker_ltp_override():
     )
 
 
+class TestFetchForceRefreshThreading:
+    """2026-09-30 conn-service cache-bypass fix — `_fetch()` and
+    `_resolve_positions_source`'s `_broker_fn` must thread an explicit
+    force-refresh signal all the way into `broker_apis.fetch_positions()`,
+    not just bust the route-level `get_or_fetch('positions', ...)` cache.
+    Without this, conn_service's OWN independent `_POSITIONS_SSOT_TTL`
+    cache (broker_apis.py, running in the separate conn process under
+    RAMBOQ_USE_CONN_SERVICE=1) could still serve a stale result to an
+    operator-explicit `?fresh=1` request."""
+
+    @pytest.mark.asyncio
+    async def test_fetch_forwards_force_refresh_true_to_broker_apis(self):
+        from backend.api.routes.positions import _fetch
+
+        with patch(
+            "backend.api.routes.positions.broker_apis.fetch_positions"
+        ) as mock_fetch:
+            mock_fetch.return_value = [pd.DataFrame()]
+            await _fetch(force_refresh=True)
+
+        mock_fetch.assert_called_once_with(force_refresh=True)
+
+    @pytest.mark.asyncio
+    async def test_fetch_default_does_not_force_refresh(self):
+        """Default call (no explicit signal) must NOT force — poll-cadence
+        callers keep today's TTL-governed cadence unchanged."""
+        from backend.api.routes.positions import _fetch
+
+        with patch(
+            "backend.api.routes.positions.broker_apis.fetch_positions"
+        ) as mock_fetch:
+            mock_fetch.return_value = [pd.DataFrame()]
+            await _fetch()
+
+        mock_fetch.assert_called_once_with(force_refresh=False)
+
+    @pytest.mark.asyncio
+    async def test_broker_fn_fresh_true_reaches_fetch_with_force(self):
+        """`_resolve_positions_source(fresh=True)` → `_broker_fn()` must
+        call `_fetch(force_refresh=True)` (via the get_or_fetch closure),
+        which in turn calls `broker_apis.fetch_positions(force_refresh=True)`."""
+        from backend.api.cache import invalidate as _cache_invalidate
+        from backend.api.routes.positions import _resolve_positions_source
+
+        # get_or_fetch("positions", ...) is a module-level TTL cache shared
+        # across tests — a prior test's cache hit would silently skip the
+        # fetcher entirely and make this assertion vacuous.
+        _cache_invalidate("positions")
+
+        with patch(
+            "backend.api.routes.positions.broker_apis.fetch_positions"
+        ) as mock_fetch, \
+             patch("backend.api.routes.positions.invalidate"), \
+             patch("backend.brokers.broker_apis._raw_cache_invalidate"), \
+             patch("backend.brokers.broker_apis._use_conn_service", return_value=False), \
+             patch("backend.brokers.broker_apis.dhan_next_poll_clear"):
+            mock_fetch.return_value = [pd.DataFrame()]
+            request = MagicMock()
+            await _resolve_positions_source(request, fresh=True, skip_ltp=False)
+
+        mock_fetch.assert_called_once_with(force_refresh=True)
+
+    @pytest.mark.asyncio
+    async def test_broker_fn_not_fresh_does_not_force(self):
+        """A non-fresh broker-path call (e.g. skip_ltp during market hours)
+        must NOT force conn_service's own cache to bypass."""
+        from backend.api.cache import invalidate as _cache_invalidate
+        from backend.api.routes.positions import _resolve_positions_source
+
+        _cache_invalidate("positions")
+
+        with patch(
+            "backend.api.routes.positions.broker_apis.fetch_positions"
+        ) as mock_fetch, \
+             patch(
+                 "backend.api.routes.positions._any_segment_open",
+                 return_value=True,
+             ):
+            mock_fetch.return_value = [pd.DataFrame()]
+            request = MagicMock()
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+
+        mock_fetch.assert_called_once_with(force_refresh=False)
+
+
 def test_paper_positions_response_still_calls_ticker_ltp_override():
     """`_build_paper_positions_response` must still call
     _override_stale_ltp_from_ticker — paper positions have no broker book to

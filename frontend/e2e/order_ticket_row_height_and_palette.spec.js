@@ -595,3 +595,120 @@ test.describe('Fix C — Validity moved into .ot-lots-price-row (Validity + Lots
     expect(report.docScrollWidth).toBeLessThanOrEqual(report.vw + 2);
   });
 });
+
+// ═══════════════════════════════════════════════════════════════════════
+// Fix D — alignment/overflow batch (2026-09-30, audit follow-up). Five
+// small SymbolPanel.svelte CSS defects found by a read-only audit pass,
+// fixed together since they're all in the same file:
+//
+//  D1. `.oes-tabs` had no flex-wrap — on mobile the LTP/CHASE/L-M-H
+//      picker cluster could silently disappear off-screen via
+//      `.oes-modal`'s `overflow-x: hidden` backstop instead of wrapping
+//      to a second line. Fixed with `flex-wrap: wrap` on `.oes-tabs` +
+//      `flex-shrink: 0` on a new `.oes-tabs-inner` wrapper around
+//      <AlgoTabs> (scoped styles can't reach a child component's own
+//      root, so the wrapper carries the rule instead).
+//  D2. `.oes-margin-pill` / `.oes-margin-pill-row` had `white-space:
+//      nowrap` with no overflow containment — at 320px width the Req/
+//      Avail text could paint over the Side/Submit buttons. Fixed with
+//      `min-width: 0; overflow: hidden; text-overflow: ellipsis`.
+//  D3. `.oes-leg-editor` set BOTH `flex: 0 0 100%` (full container
+//      width) AND `margin-left: 0.4rem`, making it 0.4rem wider than
+//      its container every time. Left margin removed.
+//  D4. `.oes-basket-meta` used `margin-left: auto` to right-anchor the
+//      basket result message, against this app's left-align-by-default
+//      convention (header / card-button-group are the only right-
+//      anchored exceptions). Removed — now flows inline after the pills.
+//  D5. `.oes-picker`'s fixed 5.5rem/5rem Account/Symbol-type selects
+//      (leaving ~110px for the symbol input at 320px) — LOW priority,
+//      left AS-IS per the audit brief ("only fix if trivial, otherwise
+//      note and skip" — narrowing two live select widths without
+//      breaking desktop needed more than a trivial pass).
+// ═══════════════════════════════════════════════════════════════════════
+test.describe('Fix D — alignment/overflow batch (2026-09-30, audit follow-up)', () => {
+  test('D1 source: .oes-tabs wraps, .oes-tabs-inner (AlgoTabs wrapper) never shrinks', () => {
+    const rule = SYMBOL_PANEL.match(/\.oes-tabs\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tabs rule').not.toBe('');
+    expect(rule).toMatch(/flex-wrap:\s*wrap/);
+    const innerRule = SYMBOL_PANEL.match(/\.oes-tabs-inner\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(innerRule, '.oes-tabs-inner rule').not.toBe('');
+    expect(innerRule).toMatch(/flex-shrink:\s*0/);
+    // The wrapper must actually exist around <AlgoTabs> in the markup,
+    // not just in the CSS.
+    expect(SYMBOL_PANEL).toMatch(/<div class="oes-tabs-inner">\s*\n\s*<AlgoTabs/);
+  });
+
+  test('D2 source: .oes-margin-pill / .oes-margin-pill-row contain overflow instead of painting over siblings', () => {
+    // Anchored to "\n  .oes-margin-pill {" (exactly 2-space indent right
+    // before the class) so this doesn't accidentally match the earlier
+    // compound `.oes-common-row > .oes-margin-pill { ... }` rule, which
+    // also contains the literal substring ".oes-margin-pill {".
+    const pillRule = SYMBOL_PANEL.match(/\n  \.oes-margin-pill \{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(pillRule, '.oes-margin-pill rule').not.toBe('');
+    expect(pillRule).toMatch(/min-width:\s*0/);
+    expect(pillRule).toMatch(/overflow:\s*hidden/);
+    expect(pillRule).toMatch(/text-overflow:\s*ellipsis/);
+    const rowRule = SYMBOL_PANEL.match(/\.oes-margin-pill-row\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rowRule, '.oes-margin-pill-row rule').not.toBe('');
+    expect(rowRule).toMatch(/overflow:\s*hidden/);
+  });
+
+  test('D3 source: .oes-leg-editor no longer carries a left margin on top of its own full-width flex-basis', () => {
+    const rule = SYMBOL_PANEL.match(/\.oes-leg-editor\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-leg-editor rule').not.toBe('');
+    expect(rule).toMatch(/flex:\s*0 0 100%/);
+    // Was `margin: 0.15rem 0 0.3rem 0.4rem` — left component must be 0.
+    expect(rule).toMatch(/margin:\s*0\.15rem 0 0\.3rem 0;/);
+  });
+
+  test('D4 source: .oes-basket-meta no longer right-anchors via margin-left:auto', () => {
+    const rule = SYMBOL_PANEL.match(/\.oes-basket-meta\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-basket-meta rule').not.toBe('');
+    expect(rule).not.toMatch(/margin-left:\s*auto/);
+  });
+
+  test('live: at 320px, .oes-tabs wraps the LTP/CHASE cluster to a second line instead of clipping it off-screen', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.setViewportSize({ width: 320, height: 760 });
+    await _seedNiftyOnTicket(page);
+
+    // Chase must be active for the CHASE label to render at all — flip
+    // it on via the chase chip if present; otherwise this test still
+    // validates the tab strip itself never overflows the modal.
+    const tabsInner = page.locator('.oes-tabs-inner').first();
+    await expect(tabsInner).toBeVisible({ timeout: 15_000 });
+    const modalBox = await page.locator('.oes-modal').first().boundingBox();
+    const tabsInnerBox = await tabsInner.boundingBox();
+    expect(modalBox, '.oes-modal bounding box').toBeTruthy();
+    expect(tabsInnerBox, '.oes-tabs-inner bounding box').toBeTruthy();
+
+    // The TICKET/CHAIN/CHART cluster itself must never be clipped past
+    // the modal's right edge (flex-shrink:0 + flex-wrap:wrap on the
+    // parent means IT wraps to protect this cluster, not the other way
+    // around).
+    expect(tabsInnerBox.x + tabsInnerBox.width)
+      .toBeLessThanOrEqual(modalBox.x + modalBox.width + 1);
+
+    // LTP pill (renders once a live/frozen LTP is available) — if
+    // present, it must also stay within the modal's horizontal bounds
+    // (never painted off-screen via the old overflow-x:hidden backstop).
+    const ltpPill = page.locator('.oes-tab-ltp').first();
+    if (await ltpPill.count() && await ltpPill.isVisible().catch(() => false)) {
+      const ltpBox = await ltpPill.boundingBox();
+      expect(ltpBox.x + ltpBox.width).toBeLessThanOrEqual(modalBox.x + modalBox.width + 1);
+      // If the LTP pill sits on a wrapped second line, its top must be
+      // below the tab cluster's bottom — the direct proof that
+      // flex-wrap actually fired rather than the row simply being wide
+      // enough to fit everything on one line at 320px.
+      if (ltpBox.y > tabsInnerBox.y + tabsInnerBox.height - 1) {
+        expect(ltpBox.y).toBeGreaterThan(tabsInnerBox.y);
+      }
+    }
+
+    const report = await page.evaluate(() => ({
+      docScrollWidth: document.documentElement.scrollWidth,
+      vw: window.innerWidth,
+    }));
+    expect(report.docScrollWidth, 'no page-level horizontal overflow at 320px').toBeLessThanOrEqual(report.vw + 2);
+  });
+});

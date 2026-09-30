@@ -613,6 +613,10 @@
     // sticky banner so it doesn't outlive the basket it described.
     if (_stickyResultTimer) { clearTimeout(_stickyResultTimer); _stickyResultTimer = null; }
     _stickyResultMsg = ''; _stickyResultLevel = '';
+    // Bug fix (2026-09-30) — a cleared basket is a genuinely NEW order;
+    // drop the in-session explicit-choice flag so the next order's
+    // first scope resolution can read remembered per-scope prefs again.
+    _templExplicitThisSession = false;
   }
   // Parent-driven clear — bumping triggerClearBasket from /orders fires
   // the same path the in-modal Clear button does. Skip the initial 0
@@ -973,9 +977,25 @@
    *  `_sideAwareDefault`, the side-flip auto-swap effect, and the
    *  Templ-pref persistence call sites so they never disagree. */
   function _currentScope() {
-    const symForScope = (_localSymbol || '').trim()
-      || (_focusedLeg?.sym || '')
+    // Bug fix (2026-09-30): on the Chain tab `_localSymbol` is always the
+    // ROOT symbol (`_parseRoot` strips from the first digit, e.g.
+    // "CRUDEOIL26OCTFUT" → "CRUDEOIL") — never the specific option
+    // contract — so preferring it here meant `appliesToFor()` could
+    // never see a real "...CE"/"...PE" tradingsymbol and silently
+    // collapsed every Chain scope to buy_any/sell_any, never buy_option/
+    // sell_option. Whenever there's a real leg to derive the option-
+    // specific symbol from (Chain tab active, or any basket leg staged
+    // regardless of tab), prefer the focused/last leg's own `.sym` —
+    // only fall back to `_localSymbol` on Ticket with no legs yet.
+    // Fallback ladder preserved, just reordered conditionally: every
+    // consumer (`_sideAwareDefault`, the `_lastSideScope` effect, the
+    // three template-pref persistence call sites) shares this function.
+    const legSym = (_focusedLeg?.sym || '')
       || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
+    const preferLeg = _activeTab === 'chain' || basketLegs.length > 0;
+    const symForScope = preferLeg
+      ? (legSym || (_localSymbol || '').trim())
+      : ((_localSymbol || '').trim() || legSym);
     const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
     return _appliesToFor(sideForScope, symForScope);
   }
@@ -1169,6 +1189,23 @@
   // This effect only READS the remembered pref — it never writes one
   // (writes happen at the three onSelect* call sites below).
   let _lastSideScope = '';
+  // Bug fix (2026-09-30): true once the operator has made an EXPLICIT
+  // Templ choice (Default / None / a specific template, via the three
+  // onSelect* call sites below) during the CURRENT order-building
+  // session. Adding a leg with a different side re-triggers this effect
+  // for the NEW scope — without this flag, the remembered per-scope
+  // pref (`_readTemplPref`) for that new scope would be consulted fresh
+  // and could silently apply an unrelated stale 'none' from a
+  // completely different order/session, discarding the choice the
+  // operator just made for THIS order. When the flag is set, the pref
+  // lookup below is skipped entirely and control falls straight to the
+  // existing "current selection" fallback ladder, which already knows
+  // how to carry an explicit None / specific-template / still-fitting
+  // default forward across a scope change. Reset at every genuine
+  // fresh-order boundary — `clearBasket()` and `submitBasket()`'s
+  // success branch — so a later, unrelated order starts clean and can
+  // read remembered prefs normally again.
+  let _templExplicitThisSession = $state(false);
   $effect(() => {
     // action='modify' and 'cancel' don't need template auto-swap —
     // the template is irrelevant for those actions. All other actions
@@ -1183,7 +1220,7 @@
     if (scope === _lastSideScope) return;
     untrack(() => {
       _lastSideScope = scope;
-      const pref = _readTemplPref(scope);
+      const pref = _templExplicitThisSession ? undefined : _readTemplPref(scope);
       if (pref === 'none') {
         if (_noneTpl) _sharedTemplateId = _noneTpl.id;
         return;
@@ -1192,7 +1229,9 @@
         _sharedTemplateId = pref;
         return;
       }
-      // pref === 'on', undefined (nothing remembered yet), or a stale/
+      // pref === 'on', undefined (nothing remembered yet, or skipped
+      // because the operator already made an explicit choice this
+      // session — see `_templExplicitThisSession` above), or a stale/
       // deleted numeric id — fall through to the side-aware-default
       // auto-swap. Don't override an explicit operator pick still in
       // effect this session — "none" stays "none"; a non-default
@@ -1946,6 +1985,11 @@
       _basketMarginRows = [];
       // Reset the symbol picker so the next session starts clean.
       _localSymbol = '';
+      // Bug fix (2026-09-30) — a fully-placed basket is a genuinely NEW
+      // order boundary; drop the in-session explicit-choice flag (see
+      // `clearBasket()`'s matching reset — this branch doesn't call
+      // clearBasket() itself, so it needs its own reset here).
+      _templExplicitThisSession = false;
       _stickyResultMsg = msg;
       _stickyResultLevel = 'ok';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
@@ -2254,29 +2298,36 @@
          two-way bound `activeTab` either way. -->
     {#if !tabsExternal}
     <div class="oes-tabs" style="border-bottom: 1px solid rgba(255,255,255,0.08);">
-      <AlgoTabs
-        tabs={TABS.map(t => ({
-          id: t.id,
-          label: t.label,
-          badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
-          /* Operator (2026-07-01): "active tab text color must be
-             consistent". Ticket / chain / panel previously took
-             amber / green / sky variants to distinguish flow; now
-             every tab is amber. Chain still carries a badge for the
-             leg count, which conveys the semantic distinction
-             without breaking the uniform active state. */
-          color: /** @type {const} */ ('amber'),
-          disabled: t.id === 'chain' ? chainDisabled : false,
-          disabledTitle: t.id === 'chain' && chainDisabled
-            ? 'No F&O for this root — chain unavailable'
-            : undefined,
-        }))}
-        value={_activeTab}
-        onChange={(id) => {
-          if (id === 'chain' && chainDisabled) return;
-          _setActiveTab(/** @type {any} */ (id));
-        }}
-      />
+      <!-- Wrapper div (2026-09-30, alignment fix) — Svelte scoped styles
+           can't reach AlgoTabs' own component root from here, so
+           `flex-shrink: 0` is applied to this wrapper instead; keeps the
+           TICKET/CHAIN/CHART cluster intact (never compressed) when
+           `.oes-tabs` wraps onto a second line on narrow viewports. -->
+      <div class="oes-tabs-inner">
+        <AlgoTabs
+          tabs={TABS.map(t => ({
+            id: t.id,
+            label: t.label,
+            badge: t.id === 'chain' && basketLegs.length > 0 ? basketLegs.length : undefined,
+            /* Operator (2026-07-01): "active tab text color must be
+               consistent". Ticket / chain / panel previously took
+               amber / green / sky variants to distinguish flow; now
+               every tab is amber. Chain still carries a badge for the
+               leg count, which conveys the semantic distinction
+               without breaking the uniform active state. */
+            color: /** @type {const} */ ('amber'),
+            disabled: t.id === 'chain' ? chainDisabled : false,
+            disabledTitle: t.id === 'chain' && chainDisabled
+              ? 'No F&O for this root — chain unavailable'
+              : undefined,
+          }))}
+          value={_activeTab}
+          onChange={(id) => {
+            if (id === 'chain' && chainDisabled) return;
+            _setActiveTab(/** @type {any} */ (id));
+          }}
+        />
+      </div>
       <!-- Vertical divider (2026-09-30, operator: "add vertical after
            chart tab to differentiate the label values showing after") —
            separates the TICKET/CHAIN/CHART tab strip from the LTP/CHASE
@@ -2438,17 +2489,23 @@
             if (_sideAwareDefault) {
               _sharedTemplateId = _sideAwareDefault.id;
               _writeTemplPref(_currentScope(), 'on');
+              // Bug fix (2026-09-30) — mark this an explicit in-session
+              // choice so a later scope change (new leg, different side)
+              // doesn't silently re-consult an unrelated remembered pref.
+              _templExplicitThisSession = true;
             }
           }}
           onSelectNone={() => {
             if (_noneTpl) {
               _sharedTemplateId = _noneTpl.id;
               _writeTemplPref(_currentScope(), 'none');
+              _templExplicitThisSession = true;
             }
           }}
           onSelectTemplate={(id) => {
             _sharedTemplateId = id;
             _writeTemplPref(_currentScope(), id);
+            _templExplicitThisSession = true;
           }}
           {accounts}
           refreshKey={_chainBump}
@@ -3135,7 +3192,13 @@
      visually bleed past the modal edge and force page-level horizontal
      scroll. Each inner row already manages its own overflow-x
      (auto-scroll or flex-wrap) independently — this is a containment
-     backstop on the outer shell only, not a replacement for those. */
+     backstop on the outer shell only, not a replacement for those.
+     Alignment fix (2026-09-30) — `.oes-tabs` now sets `flex-wrap: wrap`
+     precisely so its children drop to a second line instead of relying
+     on THIS backstop to hide an off-screen overflow. Breakpoint note:
+     this file uses 720px here; OptionChainTab.svelte uses 760px for a
+     related mobile rule — out of scope to reconcile in this pass, flagged
+     for a future cleanup. */
   @media (max-width: 720px) {
     .oes-modal { overflow-x: hidden; }
   }
@@ -3465,6 +3528,17 @@
     padding: 0 0.4rem;
     flex-shrink: 0;
     align-items: center;
+    /* Alignment fix (2026-09-30) — no wrap + .oes-modal's
+       `overflow-x: hidden` backstop meant the LTP/CHASE/L-M-H picker
+       cluster could silently clip off-screen on mobile instead of
+       dropping to a second line. */
+    flex-wrap: wrap;
+  }
+  /* See the `<div class="oes-tabs-inner">` wrapper note at the markup
+     site — flex-shrink:0 has to land on a real element here since
+     scoped styles can't reach AlgoTabs' own component root. */
+  .oes-tabs-inner {
+    flex-shrink: 0;
   }
   /* Divider between the TICKET/CHAIN/CHART tab strip and the LTP/CHASE
      label-value pairs (2026-09-30, operator: "add vertical after chart
@@ -3748,7 +3822,11 @@
     display: inline-flex;
     align-items: center;
     gap: 0.4rem;
-    margin-left: auto;
+    /* Alignment fix (2026-09-30) — this rule used to right-anchor the
+       basket result message with an auto left margin, against this
+       app's convention that elements flow left-aligned except the
+       header / card-button-group. That rule is removed so the message
+       flows inline after the pills instead. */
   }
   /* .oes-basket-actions retired with the Submit/Clear lift to the
      common footer (656be671). Audit defect #12. */
@@ -4020,7 +4098,11 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 0.35rem;
-    margin: 0.15rem 0 0.3rem 0.4rem;
+    /* Alignment fix (2026-09-30) — `flex: 0 0 100%` already sizes this
+       to its container's full width; the left margin on top of that
+       made it 0.4rem wider than the container every time. Removed
+       (was `margin: 0.15rem 0 0.3rem 0.4rem`). */
+    margin: 0.15rem 0 0.3rem 0;
     padding: 0.3rem 0.5rem;
     background: rgba(34, 211, 238, 0.06);
     border: 1px solid rgba(34, 211, 238, 0.30);
@@ -4672,6 +4754,17 @@
     background: rgba(126, 151, 184, 0.10);
     color: var(--algo-slate);
     white-space: nowrap;
+    /* Alignment fix (2026-09-30) — at 320px width the Req/Avail text had
+       no truncation, so it could paint over the Side/Submit buttons in
+       the same row. `min-width: 0` is required alongside `overflow:
+       hidden` because flex items default to `min-width: auto`, which
+       would otherwise keep the pill at its content width regardless of
+       the ellipsis rule (`.oes-common-row > .oes-margin-pill` already
+       sets `min-width: 0` for that specific context; set it here too so
+       the base class is safe in any flex context). */
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   /* Stacked variant — two rows (Req / Avail) one above the other.
      Pinned to the shared --ctl-h (item 9) with tight padding/line-
@@ -4698,6 +4791,12 @@
     gap: 0.3rem;
     width: 100%;
     justify-content: space-between;
+    /* Alignment fix (2026-09-30) — paired with the parent
+       `.oes-margin-pill`'s overflow:hidden so an overlong Req/Avail
+       value inside this row is clipped, not painted past the pill's
+       own edge. */
+    min-width: 0;
+    overflow: hidden;
   }
   .oes-margin-pill-key {
     text-transform: uppercase;

@@ -223,11 +223,19 @@
     }
   }
 
-  function _age(/** @type {string} */ iso) {
+  // Total time-in-flight since the chase was created. `created_at` is an
+  // ISO string from a tz-aware DateTime column — Date.parse handles it
+  // correctly. (`last_attempt_at` is a backend epoch-SECONDS float, not an
+  // ISO string — Date.parse on it returns NaN, and even if parsed it would
+  // be the wrong anchor since it resets on every re-quote instead of
+  // growing monotonically.) `nowSec` is threaded in from the component's
+  // existing 1-second `_nowSec` clock so this ticks every second in sync
+  // with the countdown display, instead of freezing between polls.
+  function _age(/** @type {string} */ iso, /** @type {number} */ nowSec) {
     if (!iso) return '—';
     const t = Date.parse(iso);
     if (!Number.isFinite(t)) return '—';
-    const s = Math.max(0, Math.floor((Date.now() - t) / 1000));
+    const s = Math.max(0, Math.floor(nowSec - t / 1000));
     if (s < 60)    return `${s}s`;
     if (s < 3600)  return `${Math.floor(s / 60)}m`;
     if (s < 86400) return `${Math.floor(s / 3600)}h`;
@@ -346,7 +354,7 @@
               <span class="cc-countdown cc-requoting" title="Re-quoting now"> · re-quoting…</span>
             {/if}
           {/if}</span>
-        <span class="cc-col cc-col-age">{_age(row.last_attempt_at || row.created_at)}</span>
+        <span class="cc-col cc-col-age">{_age(row.created_at, _nowSec)}</span>
         {#if !compact}
           <span class="cc-col {_modeCls(row.mode)}">{(row.mode || '?').toUpperCase()}</span>
         {/if}

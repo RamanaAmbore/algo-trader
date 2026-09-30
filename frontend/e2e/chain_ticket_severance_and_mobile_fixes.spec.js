@@ -12,6 +12,17 @@
  *     was invisible on mobile because .chain-grid-wrap's unbounded
  *     flex-grow starved every sibling below it (including the Templ
  *     row) of any box height. Fixed with a mobile max-height cap.
+ *     SUPERSEDED (2026-09-30 audit) — the Templ toggle moved INTO the
+ *     expiry toolbar row ABOVE the grid the same day (item 7 below),
+ *     so the cap no longer protected anything; it just silently
+ *     wasted ~200px of real strike-grid space on a typical phone
+ *     (measured 412×919: capped wrap height 256px / clientHeight
+ *     254px vs a real chain's scrollHeight ~2779px). The cap is
+ *     removed entirely; the mobile breakpoint for this rule is also
+ *     corrected from 760px to 720px to match SymbolPanel.svelte's
+ *     `--chain-depth-h` / `.oct-root` mobile breakpoint exactly. See
+ *     the updated tests in the "Mobile chain height cap..." describe
+ *     block below (now "Mobile chain height cap REMOVED...").
  *  3. Desktop chain row gap — removing the row border-bottom (an
  *     earlier declutter fix) left rows with zero vertical padding on
  *     desktop, reading as "very close". Fixed with restored padding.
@@ -81,6 +92,41 @@ async function _seedNiftyAndOpenChain(page) {
   await expect(sugg).toBeVisible({ timeout: 10_000 });
   await sugg.click({ force: true });
   await page.waitForTimeout(500);
+
+  const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+  await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+  await chainTab.click();
+}
+
+/**
+ * Open the REAL popup order-entry modal (`.canonical-modal-panel` +
+ * `.oes-modal`, a genuinely viewport-bounded fixed-height box — NOT the
+ * always-visible `inline` SymbolPanel that `_seedNiftyAndOpenChain` above
+ * drives on /orders, whose height is content-driven and grows with the
+ * page). This is the actual context the mobile max-height cap bug lived
+ * in: `.oes-body` here has a real, fixed available-height budget (bounded
+ * by the modal's own `height: calc(100dvh - ...)`), so a height-vs-
+ * available-space comparison is meaningful — unlike the inline panel,
+ * where both grow together and the comparison is trivially satisfied.
+ * Reached via the `.pha-order` ticket button on /dashboard (same trigger
+ * as the `t` keyboard shortcut).
+ * @param {import('@playwright/test').Page} page
+ */
+async function _openPopupChainOnDashboard(page) {
+  await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const orderBtn = page.locator('button.pha-order').first();
+  await expect(orderBtn).toBeVisible({ timeout: 15_000 });
+  await orderBtn.click({ force: true });
+
+  const modal = page.locator('.oes-modal').first();
+  await expect(modal).toBeVisible({ timeout: 15_000 });
+
+  const symInput = page.locator('.ssi-input').first();
+  await expect(symInput).toBeVisible({ timeout: 15_000 });
+  await symInput.fill('NIFTY');
+  const sugg = page.locator('.ssi-drop .ssi-row').first();
+  await expect(sugg).toBeVisible({ timeout: 10_000 });
+  await sugg.click({ force: true });
 
   const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
   await expect(chainTab).toBeEnabled({ timeout: 15_000 });
@@ -196,7 +242,11 @@ test.describe('Ticket/Chain template severance', () => {
     // reused by `_sideAwareDefault`, the side-flip auto-swap effect,
     // and the three Templ onSelect* persistence call sites, so they
     // can never disagree on the fallback.
-    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    // Limit bumped 400 → 1800 (2026-09-30, bug-1 fix) — `_currentScope()`
+    // grew a documentation block explaining the Chain-tab leg-symbol
+    // preference reorder (root symbol was never option-suffixed, so
+    // appliesToFor() could never resolve to buy_option/sell_option).
+    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,1800}?\n  \}/)?.[0] ?? '';
     expect(scopeFn, '_currentScope() helper').not.toBe('');
     expect(scopeFn).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
     expect(scopeFn).toMatch(/_appliesToFor\(sideForScope, symForScope\)/);
@@ -205,7 +255,12 @@ test.describe('Ticket/Chain template severance', () => {
     const sideAwareDefaultBlock = SYMBOL_PANEL.match(/const _sideAwareDefault = \$derived\.by\([\s\S]{0,1400}?\n  \}\);/)?.[0] ?? '';
     expect(sideAwareDefaultBlock, '_sideAwareDefault derivation block').not.toBe('');
     expect(sideAwareDefaultBlock).toMatch(/_currentScope\(\)/);
-    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,2400}?\n  \}\);/)?.[0] ?? '';
+    // Limit bumped 2400 → 5000 (2026-09-30, bug-2 fix) — the effect grew
+    // the `_templExplicitThisSession` session-scoped explicit-choice
+    // flag + its gating comment (prevents a scope change from silently
+    // re-applying an unrelated remembered "none" pref over an explicit
+    // in-session operator choice).
+    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,5000}?\n  \}\);/)?.[0] ?? '';
     expect(swapEffectBlock, 'side-flip auto-swap effect block').not.toBe('');
     expect(swapEffectBlock).toMatch(/_currentScope\(\)/);
   });
@@ -219,11 +274,128 @@ test.describe('Ticket/Chain template severance', () => {
   });
 });
 
-test.describe('Mobile chain height cap + desktop row gap', () => {
-  test('chain-grid-wrap has a mobile max-height so siblings below it (Templ row) get box height', () => {
-    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,80}/)?.[0] ?? '';
-    expect(mobileBlock, 'mobile .chain-grid-wrap max-height rule').not.toBe('');
-    expect(mobileBlock).toMatch(/max-height:\s*16rem/);
+test.describe('Mobile chain height cap REMOVED (2026-09-30 audit) + desktop row gap', () => {
+  // SUPERSEDED — the Templ toggle this cap protected moved into the
+  // expiry toolbar row ABOVE the grid the same day (2026-09-30), so the
+  // cap had nothing left to protect. It was silently wasting ~200px of
+  // real strike-grid space on a typical phone (measured 412×919: capped
+  // wrap height 256px / clientHeight 254px vs a real chain's scrollHeight
+  // ~2779px for NIFTY). Also fixes the breakpoint mismatch against
+  // SymbolPanel.svelte's own `--chain-depth-h` / `.oct-root` mobile
+  // override, which uses 720px, not 760px — between 721-760px the grid
+  // could end up BOTH capped and un-min-height'd, forcing the wrong size.
+  test('chain-grid-wrap has NO mobile max-height — the cap is gone entirely', () => {
+    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 720px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,200}?\n  \}/)?.[0] ?? '';
+    expect(mobileBlock, 'mobile .chain-grid-wrap rule').not.toBe('');
+    expect(mobileBlock).not.toMatch(/max-height/);
+    expect(mobileBlock).toMatch(/flex:\s*1 1 auto/);
+  });
+
+  test('mobile .chain-grid-wrap breakpoint is 720px, matching SymbolPanel.svelte exactly (not 760px)', () => {
+    // Scoped to THIS rule only — .chain-row > td's own mobile padding
+    // override (a separate, unrelated block) is deliberately left at
+    // 760px; only the .chain-grid-wrap breakpoint was implicated in the
+    // 721-760px mismatch bug.
+    expect(CHAIN_TAB).toMatch(/@media \(max-width: 720px\) \{\s*\.chain-grid-wrap \{/);
+    expect(CHAIN_TAB).not.toMatch(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{/);
+  });
+
+  test('live: .chain-grid-wrap resolves max-height: none at a mobile viewport (412px)', async ({ page }) => {
+    await page.setViewportSize({ width: 412, height: 919 });
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChain(page);
+
+    const wrap = page.locator('.chain-grid-wrap').first();
+    await expect(wrap).toBeVisible({ timeout: 15_000 });
+    await expect(wrap).toHaveCSS('max-height', 'none');
+  });
+
+  // Mandatory real height-comparison — a source/flex-value check alone
+  // cannot catch "capped at 256px while its parent has 467px of genuinely
+  // available fixed space" (exactly what let three earlier same-day flex-
+  // tuning attempts ship without anyone noticing the cap was the actual
+  // ceiling). Uses the REAL popup modal (_openPopupChainOnDashboard) —
+  // .oes-body there has a real fixed-height budget (bounded by the
+  // canonical-modal-panel), unlike the inline /orders panel where both
+  // grow together and this comparison would be trivially satisfied.
+  test('live: .chain-grid-wrap fills its available .oes-body space (within ~40px), scrolls internally, and the submit footer stays fully visible', async ({ page }) => {
+    await page.setViewportSize({ width: 412, height: 919 });
+    await loginAsAdmin(page);
+    await _openPopupChainOnDashboard(page);
+
+    // Real chain data must actually be loaded — an empty chain gives
+    // .oct-root nothing to grow into and would make this comparison
+    // meaningless (pass by accident).
+    await expect(async () => {
+      const n = await page.locator('.chain-row').count();
+      expect(n, 'strike rows loaded').toBeGreaterThanOrEqual(15);
+    }).toPass({ timeout: 20_000 });
+
+    const oesBody = page.locator('.oes-body').first();
+    const toolbar = page.locator('.oct-toolbar').first();
+    const wrap = page.locator('.chain-grid-wrap').first();
+    await expect(wrap).toBeVisible({ timeout: 10_000 });
+
+    const [oesBodyBox, toolbarBox, wrapBox] = await Promise.all([
+      oesBody.boundingBox(),
+      toolbar.boundingBox(),
+      wrap.boundingBox(),
+    ]);
+    expect(oesBodyBox, '.oes-body box').toBeTruthy();
+    expect(toolbarBox, '.oct-toolbar box').toBeTruthy();
+    expect(wrapBox, '.chain-grid-wrap box').toBeTruthy();
+
+    // .oes-body's own box is the true available-height budget (it's the
+    // fixed-height flex region in the real popup modal); the grid's
+    // budget is that minus the toolbar row above it. A small residual
+    // (.oct-root's own flex `gap: 0.5rem` + .oct-toolbar's own
+    // margin-bottom/border — measured ~42px) is expected and NOT the bug
+    // being guarded against here (the original cap wasted ~200px+).
+    const available = oesBodyBox.y + oesBodyBox.height - (toolbarBox.y + toolbarBox.height);
+    const deadSpace = available - wrapBox.height;
+    expect(deadSpace, `dead space below/around the grid (available=${available.toFixed(0)}px, wrap=${wrapBox.height.toFixed(0)}px)`)
+      .toBeLessThanOrEqual(60);
+    expect(deadSpace, 'grid must not overflow its own available budget either').toBeGreaterThanOrEqual(-60);
+
+    // The grid must be doing its OWN internal scrolling for the 100+-row
+    // real chain (it fills the available box rather than expanding past
+    // it) — confirms flex:1 1 auto + overflow-y:auto are both doing real
+    // work post-fix, not just "no cap" turning into "unbounded growth".
+    const scrollInfo = await wrap.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+    expect(scrollInfo.scrollHeight, 'grid content must exceed its own box (real internal scroll)').toBeGreaterThan(scrollInfo.clientHeight);
+
+    // The submit footer (a modal-level sibling of .oes-body, not nested
+    // inside it) must keep its own real, non-zero, on-screen slot — the
+    // exact thing the original (now-superseded) max-height cap claimed to
+    // protect. Confirms removing the cap did not starve it.
+    const submit = page.locator('.oes-common-submit').first();
+    await expect(submit).toBeVisible({ timeout: 10_000 });
+    const submitBox = await submit.boundingBox();
+    expect(submitBox, '.oes-common-submit box').toBeTruthy();
+    expect(submitBox.height, 'submit button must have real height, not starved to 0').toBeGreaterThan(10);
+    const modalBox = await page.locator('.oes-modal').first().boundingBox();
+    expect(submitBox.y + submitBox.height, 'submit button bottom must stay within the modal viewport')
+      .toBeLessThanOrEqual(modalBox.y + modalBox.height + 2);
+  });
+
+  // Breakpoint, computed-style — proves the 720px threshold actually
+  // governs the cascade, not just that the source text says 720px.
+  // .chain-grid-wrap's BASE rule is `flex: 1 1 0` (flex-basis: 0px); the
+  // mobile override (<=720px) changes only the flex shorthand to
+  // `1 1 auto` (flex-basis: auto) — this is a stronger signal than
+  // max-height alone because it distinguishes "the media query didn't
+  // fire" from "it fired but this property happens to look the same".
+  test('live: flex-basis flips exactly at the 720px threshold (740px desktop vs 712px mobile)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChain(page);
+    const wrap = page.locator('.chain-grid-wrap').first();
+    await expect(wrap).toBeVisible({ timeout: 15_000 });
+
+    await page.setViewportSize({ width: 740, height: 900 });
+    await expect(wrap).toHaveCSS('flex-basis', '0px');
+
+    await page.setViewportSize({ width: 712, height: 900 });
+    await expect(wrap).toHaveCSS('flex-basis', 'auto');
   });
 
   test('desktop chain rows have restored vertical padding after border-bottom removal', () => {
@@ -348,7 +520,9 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
   // only ever relocated that gap. Fix: `.oct-root` drops its forced
   // full-stretch on mobile (`flex: 0 1 auto`), and `.chain-grid-wrap`
   // is reverted back to `flex: 1 1 auto` so the grid itself grows into
-  // genuinely available leftover space (still capped at 16rem).
+  // genuinely available leftover space (at the time, still capped at
+  // 16rem — that cap is separately removed, see the "Mobile chain
+  // height cap REMOVED" describe block above).
   test('mobile: .oct-root drops forced full-stretch, .chain-grid-wrap reverts to flex: 1 1 auto (2026-09-30 root-cause fix)', () => {
     const octRootMobileBlock = SYMBOL_PANEL.match(/@media \(max-width: 720px\) \{\s*\.oes-body :global\(\.oct-root\) \{[\s\S]{0,200}?\}/)?.[0] ?? '';
     expect(octRootMobileBlock, 'mobile .oct-root override block').not.toBe('');
@@ -357,9 +531,11 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     // — the Ticket tab's own depth ladder handles mobile differently.
     expect(octRootMobileBlock).not.toContain('oes-ticket-body');
 
-    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,1200}?\}/)?.[0] ?? '';
+    // .chain-grid-wrap's own mobile breakpoint is 720px (corrected from
+    // 760px, 2026-09-30 audit) and no longer carries a max-height cap.
+    const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 720px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,1200}?\}/)?.[0] ?? '';
     expect(mobileBlock, 'mobile .chain-grid-wrap block').not.toBe('');
-    expect(mobileBlock).toMatch(/max-height:\s*16rem/);
+    expect(mobileBlock).not.toMatch(/max-height/);
     expect(mobileBlock).toMatch(/\n\s*flex:\s*1 1 auto;/);
     expect(mobileBlock).not.toMatch(/\n\s*flex:\s*0 1 auto;/);
   });
@@ -581,9 +757,13 @@ test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-sc
     expect(SYMBOL_PANEL).toMatch(/const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1'/);
     expect(SYMBOL_PANEL).toMatch(/function _readTemplPref\(scope\)/);
     expect(SYMBOL_PANEL).toMatch(/function _writeTemplPref\(scope, value\)/);
-    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
-    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
-    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
+    // Limits bumped 220 → 600 (2026-09-30, bug-2 fix) — each handler
+    // grew a `_templExplicitThisSession = true;` write (+ a comment on
+    // the Default handler) marking the operator's explicit in-session
+    // choice so a later scope change doesn't silently override it.
+    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
     expect(onSelectDefaultBlock, 'onSelectDefault handler').not.toBe('');
     expect(onSelectNoneBlock, 'onSelectNone handler').not.toBe('');
     expect(onSelectTemplateBlock, 'onSelectTemplate handler').not.toBe('');
@@ -592,7 +772,9 @@ test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-sc
     expect(onSelectTemplateBlock).toMatch(/_writeTemplPref\(_currentScope\(\), id\)/);
     // The scope-resolution effect only READS the pref — it never writes
     // one (writes are confined to the three handlers above).
-    const effectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,2400}?\n  \}\);/)?.[0] ?? '';
+    // Limit bumped 2400 → 5000 (2026-09-30, bug-2 fix) — see matching
+    // note above the sibling `swapEffectBlock` match.
+    const effectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,5000}?\n  \}\);/)?.[0] ?? '';
     expect(effectBlock, 'side-flip/pref-resolution effect').not.toBe('');
     expect(effectBlock).toMatch(/_readTemplPref\(scope\)/);
     expect(effectBlock).not.toMatch(/_writeTemplPref/);
@@ -833,5 +1015,277 @@ test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-
 
     expect(depthBg, '.ot-depth background-image').toBe(gridBg);
     expect(depthBg, '.ot-depth must also differ from a plain .algo-card background').not.toBe(probeBg);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// 2026-09-30 audit fixes — Bug 1 (scope-detection always resolving to the
+// root symbol on Chain, never buy_option/sell_option) and Bug 2 (a
+// remembered template pref could silently flip Templ OFF mid-order on a
+// scope change, discarding the operator's just-made explicit choice).
+// ═══════════════════════════════════════════════════════════════════════
+
+/**
+ * Poll for an ENABLED option CE/PE buy or sell button in the live chain
+ * grid (disabled === no live/frozen bid+ask for that strike — see
+ * OptionChainTab.svelte's `disabled={!(q?.bid > 0 || q?.ask > 0)}`).
+ * Returns the Locator, or null if none appear within the poll window —
+ * callers soft-skip rather than fail, matching this repo's established
+ * convention for chain-quote-dependent live tests (chain_tab_api_driven
+ * .spec.js, option_chain_order.spec.js: "market-close renders gracefully,
+ * tests skip rather than fail" — whether frozen EOD quotes populate
+ * bid/ask for any given strike varies run to run and is not something a
+ * test should assert control over).
+ * @param {import('@playwright/test').Page} page
+ * @param {'buy'|'sell'} side
+ * @param {'CE'|'PE'} optType
+ */
+async function _findEnabledOptionButton(page, side, optType) {
+  const locator = page.locator(`.chain-btn-${side}[title*="${optType}"]:not([disabled])`);
+  for (let i = 0; i < 6; i++) {
+    if (await locator.count()) return locator.first();
+    await page.waitForTimeout(500);
+  }
+  return null;
+}
+
+test.describe('Bug 1 (2026-09-30) — Chain scope-detection prefers the leg symbol over the root symbol', () => {
+  test('source: _currentScope() prefers _focusedLeg/last-basket-leg sym ahead of _localSymbol whenever a leg exists or Chain is active', () => {
+    // Limit matches the bump applied above in the earlier fallback test
+    // (400 → 1800) for the same function.
+    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,1800}?\n  \}/)?.[0] ?? '';
+    expect(scopeFn, '_currentScope() helper').not.toBe('');
+    // The leg symbol (option contract, e.g. "...CE"/"...PE") must be
+    // computed and consulted AHEAD of _localSymbol (root symbol on
+    // Chain — _parseRoot strips from the first digit) whenever there's
+    // a real leg to derive it from.
+    expect(scopeFn).toMatch(/const legSym = \(_focusedLeg\?\.sym \|\| ''\)/);
+    expect(scopeFn).toMatch(/preferLeg = _activeTab === 'chain' \|\| basketLegs\.length > 0/);
+    // Fallback ladder preserved — legSym still falls back to
+    // _localSymbol when preferLeg is true and no leg symbol exists yet,
+    // and _localSymbol still falls back to legSym on Ticket with legs.
+    expect(scopeFn).toMatch(/preferLeg\s*\n\s*\? \(legSym \|\| \(_localSymbol \|\| ''\)\.trim\(\)\)\s*\n\s*: \(\(_localSymbol \|\| ''\)\.trim\(\) \|\| legSym\)/);
+  });
+
+  test('live: staging a SELL CE (or PE) option leg on Chain resolves the Templ default to a sell_option-scoped template (wing-eligible), not the buy_any/sell_any fallback', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.addInitScript(() => localStorage.removeItem('ramboq_templ_pref_v1'));
+    await _seedNiftyAndOpenChain(page);
+
+    const tplBtn = page.locator('.oes-tpl-button').first();
+    await expect(tplBtn).toBeVisible({ timeout: 15_000 });
+    const titleBeforeAnyLeg = await tplBtn.getAttribute('title');
+    // Cold mount, no legs yet, root symbol NIFTY (non-option) → buy_any
+    // scope. Confirms the baseline this test flips away from.
+    expect(titleBeforeAnyLeg || '', 'cold-mount Templ title').toMatch(/buy_any/);
+
+    const sellCe = await _findEnabledOptionButton(page, 'sell', 'CE');
+    const sellPe = sellCe ? null : await _findEnabledOptionButton(page, 'sell', 'PE');
+    const sellBtn = sellCe || sellPe;
+    if (!sellBtn) {
+      test.skip(true, 'No enabled (live/frozen-quote) CE or PE sell button found — chain quotes unavailable right now');
+      return;
+    }
+    await sellBtn.scrollIntoViewIfNeeded();
+    await sellBtn.click({ force: true });
+    await page.waitForTimeout(800);
+
+    const pill = page.locator('.oes-basket-pill-sell').first();
+    await expect(pill, 'a SELL leg pill must land in the basket').toBeVisible({ timeout: 5_000 });
+
+    // Bug-1 fix's observable effect: _sideAwareDefault now resolves a
+    // sell_option-scoped template — the description below is this
+    // environment's actual sell_option is_default template body, which
+    // explicitly mentions the protective-wing auto-pick (the ONE thing
+    // that's only ever true for sell_option, per templateScope.js's own
+    // docstring: "the only scope that wants a protective wing").
+    await expect(tplBtn).toHaveAttribute('title', /wing/i, { timeout: 5_000 });
+    const titleAfter = await tplBtn.getAttribute('title');
+    expect(titleAfter || '', 'post-SELL-leg Templ title').not.toMatch(/buy_any|non-option/i);
+  });
+});
+
+test.describe('Bug 2 (2026-09-30) — explicit in-session Templ choice survives a mid-order scope change', () => {
+  test('source: _templExplicitThisSession flag gates the remembered-pref lookup and is set by all three onSelect* handlers', () => {
+    expect(SYMBOL_PANEL).toMatch(/let _templExplicitThisSession = \$state\(false\)/);
+    // The pref lookup is skipped (treated as `undefined`) once the
+    // operator has made an explicit choice this session.
+    expect(SYMBOL_PANEL).toMatch(
+      /const pref = _templExplicitThisSession \? undefined : _readTemplPref\(scope\)/
+    );
+    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,600}?\}\}/)?.[0] ?? '';
+    expect(onSelectDefaultBlock).toMatch(/_templExplicitThisSession = true/);
+    expect(onSelectNoneBlock).toMatch(/_templExplicitThisSession = true/);
+    expect(onSelectTemplateBlock).toMatch(/_templExplicitThisSession = true/);
+  });
+
+  test('source: the flag resets at every genuine fresh-order boundary (clearBasket + submitBasket success), not mid-order', () => {
+    const clearBasketFn = SYMBOL_PANEL.match(/function clearBasket\(\) \{[\s\S]{0,1200}?\n  \}/)?.[0] ?? '';
+    expect(clearBasketFn, 'clearBasket() body').not.toBe('');
+    expect(clearBasketFn).toMatch(/_templExplicitThisSession = false/);
+    const submitSuccessBlock = SYMBOL_PANEL.match(/basket cleared`;[\s\S]{0,600}?_stickyResultMsg = msg;/)?.[0] ?? '';
+    expect(submitSuccessBlock, 'submitBasket() success branch').not.toBe('');
+    expect(submitSuccessBlock).toMatch(/_templExplicitThisSession = false/);
+  });
+
+  test('live: Templ toggled ON explicitly for a BUY option leg stays ON after adding a SELL option leg, even with a stale remembered "none" for the new scope', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.addInitScript(() => {
+      // A completely unrelated prior session explicitly turned Templ
+      // OFF for sell_option. This must NOT silently apply mid-order
+      // once the operator has made their own explicit choice this
+      // session (the Bug-2 fix under test).
+      localStorage.setItem('ramboq_templ_pref_v1', JSON.stringify({ sell_option: 'none' }));
+    });
+    await _seedNiftyAndOpenChain(page);
+
+    const buyCe = await _findEnabledOptionButton(page, 'buy', 'CE');
+    if (!buyCe) {
+      test.skip(true, 'No enabled (live/frozen-quote) CE buy button found — chain quotes unavailable right now');
+      return;
+    }
+    await buyCe.scrollIntoViewIfNeeded();
+    await buyCe.click({ force: true });
+    await page.waitForTimeout(600);
+
+    const tplBtn = page.locator('.oes-tpl-button').first();
+    await expect(tplBtn).toBeVisible({ timeout: 10_000 });
+    // Explicit off → on cycle so the operator's choice is unambiguous
+    // (this session's mount may have already auto-selected a default —
+    // clicking twice guarantees an EXPLICIT onSelectNone then
+    // onSelectDefault call, setting `_templExplicitThisSession`).
+    await tplBtn.click();
+    await expect(tplBtn).not.toHaveClass(/active/, { timeout: 3_000 });
+    await tplBtn.click();
+    await expect(tplBtn).toHaveClass(/active/, { timeout: 3_000 });
+
+    const sellPe = await _findEnabledOptionButton(page, 'sell', 'PE');
+    if (!sellPe) {
+      test.skip(true, 'No enabled (live/frozen-quote) PE sell button found — chain quotes unavailable right now');
+      return;
+    }
+    await sellPe.scrollIntoViewIfNeeded();
+    await sellPe.click({ force: true });
+    await page.waitForTimeout(800);
+
+    // Bug-2 assertion: the scope flip (buy_option → sell_option) must
+    // NOT silently apply the seeded stale 'none' pref over the
+    // operator's just-made explicit choice.
+    await expect(tplBtn, 'Templ must stay ON across the scope-changing leg add').toHaveClass(/active/);
+  });
+});
+
+// 2026-09-30 audit — CE/PE quote-vs-stepper overflow at narrow (320-375px)
+// widths. .chain-grid-wrap's overflow-x:hidden is a deliberate clipping
+// backstop for table-layout:fixed (see that rule's own comment) — but
+// without ANY shrink allowance, a CE/PE column's real content (quote text
+// + gap + +/- stepper pair) could exceed the column's fixed % width and
+// get clipped, sometimes eating into the steppers themselves rather than
+// just the quote text. Fixed with `.chain-cell-quote { min-width: 0;
+// overflow: hidden; text-overflow: ellipsis; }` (was a fixed `min-width:
+// 3.4rem` floor that could never give way) + `.chain-side-action {
+// flex-shrink: 0; }` so the buttons are never the side that gives.
+test.describe('CE/PE quote/stepper overflow fix — min-width:0 shrink, not overflow-x:auto (2026-09-30 audit)', () => {
+  test('source: .chain-cell-quote allows shrink (min-width: 0) with ellipsis truncation, .chain-side-action never shrinks', () => {
+    const quoteRule = CHAIN_TAB.match(/\.chain-cell-quote\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(quoteRule, '.chain-cell-quote rule').not.toBe('');
+    expect(quoteRule).toMatch(/min-width:\s*0/);
+    expect(quoteRule).toMatch(/overflow:\s*hidden/);
+    expect(quoteRule).toMatch(/text-overflow:\s*ellipsis/);
+    // The old fixed floor must be gone — a 3.4rem min-width would defeat
+    // the shrink allowance above it in source order. Anchored to an
+    // actual declaration line (not the explanatory comment above it,
+    // which mentions the old value in prose).
+    expect(quoteRule).not.toMatch(/^\s*min-width:\s*3\.4rem;/m);
+
+    const actionRule = CHAIN_TAB.match(/\.chain-side-action\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(actionRule, '.chain-side-action rule').not.toBe('');
+    expect(actionRule).toMatch(/flex-shrink:\s*0/);
+
+    // .chain-grid-wrap's overflow-x:hidden is deliberately UNCHANGED —
+    // CE cells use justify-content:flex-end (content right-anchored), so
+    // overflow-x:auto would let content spill past the unreachable LEFT
+    // edge on that side; the min-width:0 shrink approach was chosen
+    // instead specifically to avoid that asymmetry.
+    const wrapRule = CHAIN_TAB.match(/\.chain-grid-wrap\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(wrapRule).toMatch(/overflow-x:\s*hidden/);
+  });
+
+  // Live, worst-case content injection — real quotes may be short/empty
+  // in a test environment, so this forces the exact squeeze scenario the
+  // audit flagged (long bid/ask digits) rather than hoping live data
+  // happens to be wide enough to exercise the fix.
+  for (const width of [320, 340, 375]) {
+    test(`live @ ${width}px: injected long CE/PE quotes never overlap or cover the +/- steppers`, async ({ page }) => {
+      await page.setViewportSize({ width, height: 800 });
+      await loginAsAdmin(page);
+      await _seedNiftyAndOpenChain(page);
+
+      const ceRow = page.locator('.chain-cell-row-ce').first();
+      const peRow = page.locator('.chain-cell-row-pe').first();
+      await expect(ceRow).toBeVisible({ timeout: 15_000 });
+      await expect(peRow).toBeVisible({ timeout: 10_000 });
+
+      // Inject worst-case long bid/ask text directly into the first
+      // CE and PE quote cells (real long-symbol strike scenario).
+      await page.evaluate(() => {
+        const ceQuote = document.querySelector('.chain-cell-row-ce .chain-cell-quote');
+        const peQuote = document.querySelector('.chain-cell-row-pe .chain-cell-quote');
+        const set = (root, cls, txt) => { const el = root?.querySelector(cls); if (el) el.textContent = txt; };
+        set(ceQuote, '.chain-cell-bid', '123456789.50');
+        set(ceQuote, '.chain-cell-ask', '123456789.25');
+        set(peQuote, '.chain-cell-bid', '123456789.50');
+        set(peQuote, '.chain-cell-ask', '123456789.25');
+      });
+
+      const wrapBox = await page.locator('.chain-grid-wrap').first().boundingBox();
+      const ceQuoteBox = await ceRow.locator('.chain-cell-quote').boundingBox();
+      const ceActionBox = await ceRow.locator('.chain-side-action').boundingBox();
+      const peQuoteBox = await peRow.locator('.chain-cell-quote').boundingBox();
+      const peActionBox = await peRow.locator('.chain-side-action').boundingBox();
+
+      function intersects(a, b) {
+        return !(a.x + a.width <= b.x || b.x + b.width <= a.x || a.y + a.height <= b.y || b.y + b.height <= a.y);
+      }
+      expect(intersects(ceQuoteBox, ceActionBox), 'CE quote must not overlap its own +/- steppers').toBe(false);
+      expect(intersects(peQuoteBox, peActionBox), 'PE quote must not overlap its own +/- steppers').toBe(false);
+      // Quote box must stay within the wrap's horizontal bounds (the
+      // clipping backstop still applies — this proves the shrink, not
+      // the backstop, is what's actually preventing the overlap above).
+      expect(ceQuoteBox.x, 'CE quote left edge within wrap').toBeGreaterThanOrEqual(wrapBox.x - 1);
+      expect(peQuoteBox.x + peQuoteBox.width, 'PE quote right edge within wrap').toBeLessThanOrEqual(wrapBox.x + wrapBox.width + 1);
+
+      // elementFromPoint at each stepper's own center must resolve to
+      // that actual button — proves the steppers are truly reachable/
+      // clickable, not just visually un-overlapped underneath something.
+      const buttons = await page.locator('.chain-row').first().locator('.chain-btn').all();
+      for (const btn of buttons) {
+        const box = await btn.boundingBox();
+        const cls = await btn.getAttribute('class');
+        const cx = box.x + box.width / 2;
+        const cy = box.y + box.height / 2;
+        const hitClass = await page.evaluate(({ cx, cy }) => document.elementFromPoint(cx, cy)?.className ?? null, { cx, cy });
+        expect(String(hitClass), `stepper (${cls}) must be the hit target at its own center`).toContain('chain-btn');
+      }
+    });
+  }
+});
+
+// 2026-09-30 audit — .oct-tpl-demo-note's flex-shrink:0 was flagged as a
+// dead/incorrect rule (the wrap-to-its-own-line behavior it was presumed
+// to control is actually governed by the item's max-content width vs
+// the CURRENT line's remaining space, independent of flex-shrink).
+// Removed after an isolated before/after render confirmed it's a true
+// no-op at every realistic phone viewport (320/375/412px) and an
+// improvement below that (180/250px — see the rule's own comment).
+test.describe('.oct-tpl-demo-note flex-shrink:0 removed (dead rule, 2026-09-30 audit)', () => {
+  test('source: flex-shrink: 0 is gone from .oct-tpl-demo-note', () => {
+    const rule = CHAIN_TAB.match(/\.oct-tpl-demo-note\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oct-tpl-demo-note rule').not.toBe('');
+    // Anchored to an actual declaration line — the removal comment
+    // itself mentions "flex-shrink: 0" / "flex-shrink:0" in prose.
+    expect(rule).not.toMatch(/^\s*flex-shrink:\s*0;/m);
   });
 });

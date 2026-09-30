@@ -103,4 +103,92 @@ test.describe('Derivatives positions fresh load', () => {
 
     console.log('[derivatives_positions_fresh_load] Source code pattern verified (no bare .load() calls)');
   });
+
+  // ── Test 4: Source-check — `positions_refreshed` WS event is handled ────
+  // Defect fix (2026-09-30): the derivatives page's own socket handler
+  // (createPerformanceSocket callback) ignored `positions_refreshed`
+  // entirely — MarketPulse.svelte / PerformancePage.svelte already react
+  // to this event, but the derivatives page silently waited for its own
+  // 5 s book-poller cycle instead of refreshing immediately once the
+  // backend confirms a genuinely fresh positions read after a fill.
+  test('4-SSOT: derivatives page socket handler reacts to positions_refreshed', () => {
+    const derivativesPagePath = '/Users/ramanambore/projects/ramboq/frontend/src/routes/(algo)/admin/derivatives/+page.svelte';
+    let source = '';
+    try {
+      source = readFileSync(derivativesPagePath, 'utf-8');
+    } catch (e) {
+      test.skip(true, `Could not read derivatives page: ${e.message}`);
+      return;
+    }
+
+    // The socket handler must check for msg.event === 'positions_refreshed'
+    // and react with a fresh loadPositions() call — matching the exact
+    // loadPositions({ fresh: true }) pattern already used elsewhere in the
+    // same handler for order_update/position_filled.
+    const hasPositionsRefreshedBranch = /msg\?\.event\s*===\s*['"]positions_refreshed['"]/.test(source);
+    expect(hasPositionsRefreshedBranch, 'Socket handler should check for positions_refreshed event').toBe(true);
+
+    // Verify the branch calls loadPositions({ fresh: true }), not a bare
+    // loadPositions() (which would still serve the stale route cache).
+    const branchMatch = source.match(/msg\?\.event\s*===\s*['"]positions_refreshed['"][\s\S]{0,600}/);
+    expect(branchMatch, 'positions_refreshed branch should exist').not.toBeNull();
+    expect(
+      /loadPositions\s*\(\s*\{\s*fresh:\s*true\s*\}\s*\)/.test(branchMatch[0]),
+      'positions_refreshed branch should call loadPositions({ fresh: true })'
+    ).toBe(true);
+
+    console.log('[derivatives_positions_fresh_load] positions_refreshed handler verified in source');
+  });
+
+  // ── Test 5: Live WS injection — positions_refreshed triggers a ?fresh=1
+  //    /positions request ─────────────────────────────────────────────────
+  // Simulates the backend pushing `positions_refreshed` over /ws/performance
+  // (e.g. after a postback fan-out or reconcile sweep) and asserts a new
+  // network request to /positions/ with fresh=1 fires as a direct result —
+  // not merely on the next 5 s book-poller tick.
+  test('5-Perf: positions_refreshed WS event fires a fresh positions fetch', async ({ page }) => {
+    /** @type {import('@playwright/test').WebSocketRoute | null} */
+    let wsRoute = null;
+    await page.routeWebSocket('**/ws/performance', (ws) => {
+      wsRoute = ws;
+      // Mock mode — no connectToServer() call — Playwright auto-opens the
+      // WebSocket inside the page. Real heartbeat pings from the page are
+      // simply dropped (no assertions depend on them).
+    });
+
+    await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
+
+    // The WebSocket connects during hydration (after domcontentloaded) —
+    // poll briefly for the route to register before giving up.
+    for (let i = 0; i < 25 && !wsRoute; i++) {
+      await page.waitForTimeout(200);
+    }
+    if (!wsRoute) {
+      test.skip(true, 'WebSocket to /ws/performance never connected — cannot inject test event');
+      return;
+    }
+
+    // Arm the request listener BEFORE sending the message to avoid a race.
+    let resolved = false;
+    const freshRequestPromise = page.waitForRequest(
+      (req) => req.url().includes('/positions/') && req.url().includes('fresh=1'),
+      { timeout: 15_000 }
+    ).then((r) => { resolved = true; return r; }).catch(() => null);
+
+    // The derivatives page's onMount awaits `loadInstruments()` (cold-cache
+    // network round trip) BEFORE its `createPerformanceSocket` subscription
+    // registers, so the WS handler isn't necessarily live yet a fixed short
+    // delay after navigation — re-send every ~1.2 s (idempotent; each
+    // delivery just re-triggers loadPositions({fresh:true})) until either
+    // the subscription catches one or the overall 15 s window elapses.
+    for (let i = 0; i < 10 && !resolved; i++) {
+      try { wsRoute.send(JSON.stringify({ event: 'positions_refreshed' })); } catch (_) { /* route closed — stop */ }
+      await page.waitForTimeout(1200);
+    }
+
+    const freshRequest = await freshRequestPromise;
+    expect(freshRequest, 'positions_refreshed should trigger a ?fresh=1 /positions/ request').not.toBeNull();
+
+    console.log('[derivatives_positions_fresh_load] positions_refreshed → fresh positions fetch confirmed:', freshRequest?.url());
+  });
 });

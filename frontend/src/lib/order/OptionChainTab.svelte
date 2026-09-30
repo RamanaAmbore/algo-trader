@@ -1294,7 +1294,21 @@
     font-size: var(--fs-xs);
     color: rgba(180, 200, 230, 0.65);
     font-style: italic;
-    flex-shrink: 0;
+    /* Audit fix (2026-09-30) — flex-shrink: 0 removed. Verified via an
+       isolated render (this rule's exact flex siblings + values) that
+       it was a no-op at every realistic viewport (320/375/412/600px):
+       the wrap-to-its-own-line decision is governed by this item's
+       max-content width vs the remaining space on the CURRENT line,
+       which is independent of flex-shrink — so the wrap behavior
+       operators already approved ("happens to look fine") is
+       unaffected at those widths. Below the realistic phone-viewport
+       floor (tested 180/250px) flex-shrink:0 actively made it WORSE:
+       the sentence's box stayed pinned to its full single-line width
+       and bled past the toolbar/viewport edge (the exact horizontal-
+       overflow class of bug .oes-modal's own mobile overflow-x:hidden
+       backstop exists to guard against) instead of wrapping in place.
+       Removing it lets the text wrap within its own box at any width
+       that's actually too narrow to hold it on one line. */
   }
   .oct-acct-single {
     font-family: monospace;
@@ -1582,18 +1596,39 @@
   .chain-cell-quote {
     display: inline-flex;
     align-items: baseline;
-    min-width: 3.4rem;
+    /* Audit fix (2026-09-30) — was `min-width: 3.4rem`. At 320-375px a
+       CE/PE column's real content (quote text + gap + +/- stepper
+       pair) can exceed the column's fixed % width. .chain-grid-wrap's
+       overflow-x:hidden is a deliberate clipping backstop (see that
+       rule's own comment) — but a fixed 3.4rem floor meant this box
+       could never give way, so the overflow clipped whichever end sat
+       outside the wrap, sometimes eating into the steppers themselves
+       rather than just the quote. `min-width: 0` is a PERMISSION, not
+       a forced width — flexbox never shrinks an item below its content
+       size unless the container is actually narrower than its
+       children's combined hypothetical size, so this is a no-op on
+       every viewport wide enough to fit both boxes at full size.
+       Paired with overflow/ellipsis so a genuine squeeze costs quote-
+       text precision (a trailing digit) rather than a hard character
+       clip. .chain-side-action (below) is marked flex-shrink: 0 so the
+       +/- buttons are never the side that gives. */
+    min-width: 0;
     font-family: monospace;
     font-size: var(--fs-sm);
     font-weight: 600;
     white-space: nowrap;
     text-align: center;
     font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
   }
   .chain-cell-bid { color: var(--algo-green, var(--c-long)); }
   .chain-cell-ask { color: var(--algo-red, var(--c-short)); }
   .chain-cell-sep { color: var(--algo-muted); opacity: 0.7; margin: 0 0.18rem; }
-  .chain-side-action { display: inline-flex; align-items: center; }
+  /* flex-shrink: 0 — the +/- buttons + leg badge must never be the
+     side that gives under a narrow squeeze; .chain-cell-quote (above)
+     is the one permitted to shrink. See that rule's own comment. */
+  .chain-side-action { display: inline-flex; align-items: center; flex-shrink: 0; }
   /* Audit fix — align ITM row tints to CE/PE palette. Pre-fix ITM
      calls were sky-blue (rgba 56,189,248) and ITM puts were orange
      (rgba 251,146,60), inverting the CE=green / PE=red convention
@@ -1914,10 +1949,36 @@
      rule's own comment), `flex: 1 1 auto` here lets the grid genuinely
      grow into leftover space without an outer container adding extra
      dead space beyond what the grid needs. Future passes: check the
-     PARENT (.oct-root) before re-flipping this value again. */
-  @media (max-width: 760px) {
+     PARENT (.oct-root) before re-flipping this value again.
+     max-height: 16rem REMOVED (2026-09-30 audit) — this cap was a
+     leftover from the very first pass above ("Capping this wrapper's
+     height on mobile guarantees .oes-body has leftover room to lay out
+     that content below it" — the Templ row, at the time a flex sibling
+     BELOW this wrapper). The Templ toggle moved INTO the expiry toolbar
+     row ABOVE the grid later the same day (see the comment two
+     paragraphs up), so that sibling no longer exists to starve, and the
+     cap had nothing left to protect — it just silently wasted ~200px of
+     real strike-grid space on a typical phone (measured via headless
+     browser: 412×919 → wrap height capped at 256px with clientHeight
+     254px vs scrollHeight ~2779px for a real 100+-row NIFTY chain,
+     i.e. the operator saw only ~5 strike rows and had to scroll inside
+     a tiny sub-box). `.oct-root`'s own mobile override (`flex: 0 1
+     auto`, SymbolPanel.svelte) still sizes the grid's parent to content,
+     and `.oes-body`'s fixed-height flex-shrink math (min-height: 0,
+     between a fixed header and a fixed footer row) is what actually
+     protects the basket-bar/submit footer below — NOT this cap — so
+     removing it does not resurrect the original starvation bug. No
+     flex-value tuning here or on `.oct-root` can grow a box past its
+     own max-height; that's why three same-day attempts to fix this via
+     flex values alone never worked. `flex: 1 1 auto` is kept — still
+     correct (confirmed by the same measurement) once the ceiling is
+     gone. Breakpoint changed 760px -> 720px to match `--chain-depth-h`
+     / `.oct-root`'s own mobile breakpoint in SymbolPanel.svelte exactly
+     — between 721-760px the mismatch previously meant `min-height: 22rem`
+     (desktop `--chain-depth-h`, not yet dropped to `auto`) combined with
+     no max-height would force the grid to stretch its parent. */
+  @media (max-width: 720px) {
     .chain-grid-wrap {
-      max-height: 16rem;
       flex: 1 1 auto;
     }
   }

@@ -485,6 +485,7 @@
   .oes-tpl-errors {
     display: flex;
     flex-wrap: wrap;
+    flex-basis: 100%;
     gap: 0.3rem;
     margin-left: 0.4rem;
     margin-top: 0.15rem;
@@ -511,6 +512,7 @@
   .oes-tpl-expanded {
     display: flex;
     flex-wrap: wrap;
+    flex-basis: 100%;
     align-items: flex-start;
     gap: 0.5rem 0.6rem;
     margin-left: 0.4rem;
@@ -572,7 +574,7 @@
   }
   .oes-tpl-scales-input {
     width: 100%;
-    min-width: 14rem;
+    min-width: min(14rem, 100%);
     max-width: 26rem;
     padding: 0.3rem 0.45rem;
     background: rgba(12, 18, 32, 0.82);

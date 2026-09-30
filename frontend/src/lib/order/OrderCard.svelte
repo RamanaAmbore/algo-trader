@@ -167,8 +167,8 @@
   onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onCardClick?.(order); } }}
   class="algo-status-card text-left p-2.5 transition order-card"
   data-status={_statusDataAttr(order.status)}>
-  <div class="flex items-center justify-between mb-0.5 gap-1">
-    <span class="font-semibold text-xs">
+  <div class="flex items-center justify-start gap-2 mb-0.5">
+    <span class="font-semibold text-xs min-w-0 truncate">
       <span style={_txnStyle(order.transaction_type)}>{order.transaction_type}</span>
       <span class="oc-acct" style={order.account ? `--acct-color: ${acctColor(order.account) || 'transparent'};` : ''}>{order.account}</span>
       <!-- svelte-ignore a11y_interactive_supports_focus -->
@@ -184,8 +184,9 @@
     <!-- Status pill — color driven by parent .algo-status-card[data-status]
          via --st-fg / --st-bg / --st-border CSS vars. CANCEL_FAILED gets
          a ⚠ prefix and tooltip so the operator can distinguish it from a
-         clean CANCELLED row. -->
-    <span class="algo-status-pill"
+         clean CANCELLED row. ml-auto pushes it to the right edge now that
+         the container is justify-start (was justify-between). -->
+    <span class="algo-status-pill ml-auto flex-shrink-0"
       title={order.status === 'CANCEL_FAILED'
         ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
         : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>

@@ -171,6 +171,13 @@ def _sync_apply_row_status(
             _r.fill_price = float(price) if price else _r.fill_price
         except (TypeError, ValueError):
             pass
+        # Bug fix (2026-09-30): same gap as the Kite postback path
+        # (_pb_apply_status_to_row) — this branch only fires when the
+        # broker's own status maps to a fill token (Dhan "TRADED", etc,
+        # via _broker_is_fill_status), which this codebase treats as a
+        # full fill. filled_quantity was never written, permanently
+        # blocking the same downstream full-fill gates.
+        _r.filled_quantity = int(_r.quantity or 0)
         _r.filled_at = datetime.now(timezone.utc)
     _r.detail = (
         (_r.detail or "")[:200]
@@ -489,6 +496,22 @@ def _pb_apply_status_to_row(_r, *, new_status: str | None, price) -> bool:
         )
         return False
     _r.status = new_status
+    if new_status == "FILLED":
+        # Bug fix (2026-09-30): stamp filled_quantity as soon as the row
+        # becomes FILLED — status is set unconditionally above, so even a
+        # price-less COMPLETE postback (the `not price` branch below
+        # returns early) must not leave a FILLED row stuck at
+        # filled_quantity=0 forever (FILLED is a final status — see
+        # ALGO_ORDER_FINAL_STATUSES — so no later postback can retry
+        # this). This branch is only reached when Kite's postback status
+        # maps to FILLED (COMPLETE) — by definition a full fill, since a
+        # genuine partial fill leaves the order OPEN with an increasing
+        # filled_quantity until COMPLETE fires. Previously never written
+        # here at all, permanently blocking every downstream full-fill
+        # gate (_pb_wants_template_attach,
+        # _maybe_fire_template_attach_for_reconcile) since
+        # `filled < quantity` was always true.
+        _r.filled_quantity = int(_r.quantity or 0)
     if new_status != "FILLED" or not price:
         return False
     try:

@@ -1185,15 +1185,23 @@ async def _patch_raw_positions(raw: "pd.DataFrame") -> "pd.DataFrame":
     return raw
 
 
-async def _fetch() -> PositionsResponse:
+async def _fetch(force_refresh: bool = False) -> PositionsResponse:
     # Three sync broker_apis calls below — each holds the event loop
     # (~50ms each typical, up to 500-1000ms on cold UDS hits). Wrap
     # in asyncio.to_thread so concurrent SSE heartbeats + other
     # routes keep responding while the cache misses are in flight.
     # cache.py awaits this coroutine directly (not via to_thread)
     # since it's already async — we do the off-loop hop here.
+    #
+    # force_refresh threads _broker_fn's `fresh` flag (an operator-
+    # explicit ?fresh=1) all the way into broker_apis.fetch_positions(),
+    # which under RAMBOQ_USE_CONN_SERVICE=1 forwards it to conn_service's
+    # OWN independent _POSITIONS_SSOT_TTL cache — see broker_apis.py's
+    # fetch_positions() docstring. Default False so every other caller
+    # of get_or_fetch("positions", ...) keeps today's cadence-only
+    # behaviour unchanged.
     import asyncio as _asyncio
-    per_acct = await _asyncio.to_thread(broker_apis.fetch_positions)
+    per_acct = await _asyncio.to_thread(broker_apis.fetch_positions, force_refresh=force_refresh)
     # Outage detection: raise when every per-account call failed OR when
     # per_acct itself is an empty list while accounts are configured. An
     # empty result with neither shape is a legitimate "no positions"
@@ -2132,7 +2140,18 @@ async def _resolve_positions_source(
                     dhan_next_poll_clear()
             except Exception:
                 pass
-        return await get_or_fetch("positions", _fetch, ttl_seconds=_TTL)
+
+        # get_or_fetch() calls `fetcher()` with no args and checks
+        # asyncio.iscoroutinefunction(fetcher) to decide whether to await
+        # it directly or offload to a thread — a plain lambda wrapping
+        # _fetch(...) would fail that check (it's a sync callable
+        # returning a coroutine object) and get sent through
+        # asyncio.to_thread, caching the un-awaited coroutine itself as
+        # the "result". Must be a real `async def` closure.
+        async def _fetch_scoped() -> PositionsResponse:
+            return await _fetch(force_refresh=fresh)
+
+        return await get_or_fetch("positions", _fetch_scoped, ttl_seconds=_TTL)
 
     # ?skip_ltp=1 — RefreshButton's both-closed click. Runs the
     # normal broker path so metadata (qty / avg_cost / product /

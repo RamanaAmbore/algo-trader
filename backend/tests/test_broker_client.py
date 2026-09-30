@@ -669,6 +669,43 @@ class TestSyncClientFunctions:
             assert len(result) == 1
             assert isinstance(result[0], pd.DataFrame)
 
+    def test_sync_fetch_positions_force_refresh_appends_query_param(self):
+        """2026-09-30 fix: force_refresh=True must append `?force=1` so
+        conn_service's own /internal/positions handler bypasses ITS
+        independent _POSITIONS_SSOT_TTL cache — not just the caller's."""
+        from backend.brokers.client import sync
+
+        with patch('backend.brokers.client.sync._get_client') as mock_get_client:
+            mock_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.content = b'{"accounts": [], "errors": []}'
+            mock_resp.raise_for_status = MagicMock()
+            mock_client.get = MagicMock(return_value=mock_resp)
+            mock_get_client.return_value = mock_client
+
+            sync.fetch_positions(force_refresh=True)
+
+            mock_client.get.assert_called_once_with("/internal/positions?force=1")
+
+    def test_sync_fetch_positions_default_no_query_param(self):
+        """Default (no force_refresh) must NOT append ?force=1 — every
+        existing caller (sim/driver.seed_live, expiry.OptionPosition
+        class methods, broker_apis's normal poll path) keeps today's
+        behaviour unchanged."""
+        from backend.brokers.client import sync
+
+        with patch('backend.brokers.client.sync._get_client') as mock_get_client:
+            mock_client = MagicMock()
+            mock_resp = MagicMock()
+            mock_resp.content = b'{"accounts": [], "errors": []}'
+            mock_resp.raise_for_status = MagicMock()
+            mock_client.get = MagicMock(return_value=mock_resp)
+            mock_get_client.return_value = mock_client
+
+            sync.fetch_positions()
+
+            mock_client.get.assert_called_once_with("/internal/positions")
+
     def test_sync_fetch_margins_success(self):
         """fetch_margins() (sync) returns list of margin DataFrames."""
         from backend.brokers.client import sync

@@ -636,6 +636,23 @@ def _opp_build_attach_entries(
             entry["parent_account"]  = str(result.plan.parent_account)
             entry["parent_product"]  = str(parent_product or "NRML")
         attached.append(entry)
+    # Bug fix (2026-09-30) — this loop only ever iterated result.plan.gtts,
+    # dropping the wing leg entirely. For a wing-only plan (or when every
+    # GTT failed but the wing itself placed), `attached` came back empty,
+    # so the caller's `if attached:` guard skipped persisting
+    # attached_gtts_json — it stayed NULL, not even "[]" — which made the
+    # idempotency check in _opp_load_row_for_attach (`if
+    # _row.attached_gtts_json: return None`) treat the row as "never
+    # attached," letting a second trigger (chase + postback racing, or a
+    # manual Re-attach) place a SECOND live wing order. Mirrors
+    # _retry_build_attached_payload's existing wing handling (orders.py)
+    # field-for-field.
+    if result.wing_order_id:
+        attached.append({
+            "kind":  "wing",
+            "label": "Wing",
+            "id":    result.wing_order_id,
+        })
     return attached
 
 

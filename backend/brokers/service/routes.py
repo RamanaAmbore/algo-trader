@@ -267,12 +267,22 @@ class InternalBrokerController(Controller):
             return InternalPerAccountResp(accounts=[], errors=[str(e)[:300]])
 
     @get("/positions")
-    async def positions(self) -> InternalPerAccountResp:
-        """Multi-broker positions fetch (Kite + Dhan + Groww)."""
+    async def positions(self, force: bool = False) -> InternalPerAccountResp:
+        """Multi-broker positions fetch (Kite + Dhan + Groww).
+
+        `?force=1` — forwarded from the main API's
+        conn_sync.fetch_positions(force_refresh=True) — bypasses
+        broker_apis.fetch_positions()'s own _POSITIONS_SSOT_TTL cache
+        INSIDE THIS (conn_service) process. Without this, an
+        operator-explicit ?fresh=1 request on the API side only ever
+        cleared the API process's own cache; this conn process's
+        independent 30 s TTL could still silently serve a stale cached
+        result for up to another _POSITIONS_SSOT_TTL window. Default
+        False — normal poll-cadence calls are unaffected."""
         from backend.brokers.broker_apis import fetch_positions
 
         try:
-            dfs = await asyncio.to_thread(fetch_positions)
+            dfs = await asyncio.to_thread(fetch_positions, force_refresh=force)
             return InternalPerAccountResp(
                 accounts=_df_list_to_per_account(dfs), errors=[]
             )

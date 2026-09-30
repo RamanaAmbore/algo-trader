@@ -1590,7 +1590,12 @@
           // (e.g. after a postback fan-out or reconcile sweep) — force
           // a full re-fetch so the grid reflects the updated state
           // immediately rather than waiting for the next poll tick.
-          loadPulse({ force: true });
+          // fresh=true: `force` only bypasses createDataStore's in-flight
+          // dedup, NOT the backend's 30s route-level TTL cache — without
+          // `fresh` this can still land on the same stale cached frame
+          // (matches loadPositions({ fresh: true }) used elsewhere for
+          // the same event in derivatives/+page.svelte).
+          loadPulse({ force: true, fresh: true });
         }
       });
     }
@@ -2797,22 +2802,27 @@
   //
   // Heavy logic extracted to pulseLoad.js helpers:
   //   collectUnderlyings, assembleQuoteKeys, buildQuoteMaps, planAccountSeeding.
-  async function loadPulse(/** @type {{ force?: boolean, skipLtp?: boolean }} */ { force = false, skipLtp = false } = {}) {
+  async function loadPulse(/** @type {{ force?: boolean, skipLtp?: boolean, fresh?: boolean }} */ { force = false, skipLtp = false, fresh = false } = {}) {
     try {
       if (force) {
         // showSummary (dashboard mode) needs raw .summary from the API response;
         // the shared store discards it. Fetch in parallel with the store loads.
         // skipLtp (Jul 2026) — RefreshButton's both-markets-closed path.
+        // fresh (2026-09) — `force` only bypasses createDataStore's in-flight
+        // dedup; it does NOT bust the backend's 30s route-level TTL cache
+        // (that's `?fresh=1`, threaded through fetchPositions/fetchHoldings).
+        // Defaults false so existing force-only callers (RefreshButton, mount,
+        // bookChanged bus) keep their current behaviour unchanged.
         const summaryP = showSummary
           ? Promise.allSettled([
-              fetchPositions({ skipLtp }).catch(() => null),
-              fetchHoldings({ skipLtp }).catch(() => null),
+              fetchPositions({ skipLtp, fresh }).catch(() => null),
+              fetchHoldings({ skipLtp, fresh }).catch(() => null),
             ])
           : Promise.resolve(null);
 
         await Promise.allSettled([
-          pulsePositionsStore.load({ skipLtp }, { force: true }),
-          pulseHoldingsStore.load({ skipLtp }, { force: true }),
+          pulsePositionsStore.load({ skipLtp, fresh }, { force: true }),
+          pulseHoldingsStore.load({ skipLtp, fresh }, { force: true }),
         ]);
 
         if (showSummary) {
@@ -5368,9 +5378,9 @@
   .mp-section-with-picker {
     display: flex;
     align-items: center;
-    justify-content: space-between;
+    justify-content: flex-start;
     flex-wrap: wrap;
-    gap: 0.5rem;
+    gap: 0.75rem;
   }
   /* Standalone wrapper used ONLY on /pulse (showSummary + showFunds
      both false → no "Symbols" header to host the picker inline).

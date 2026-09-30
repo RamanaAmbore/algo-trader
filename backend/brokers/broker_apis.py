@@ -1463,11 +1463,28 @@ def _fetch_holdings_cached() -> list[pd.DataFrame]:
 
 
 @ssot_fetch(mode="coalesce", key="positions")
-def _fetch_positions_cached() -> list[pd.DataFrame]:
-    """Coalesced zero-arg positions fetch."""
+def _fetch_positions_cached(_upstream_force: bool = False) -> list[pd.DataFrame]:
+    """Coalesced zero-arg positions fetch.
+
+    `_upstream_force` is a plain pass-through parameter — NOT the
+    ssot_fetch decorator's own injected `force_refresh` kwarg. That one
+    is consumed by the wrapper (`sync_wrapper(*args, force_refresh=False,
+    **kwargs)`) to decide whether to evict THIS function's own
+    API-process-local result cache; it is never forwarded into `fn`, so
+    this function's body previously had no way to know a fetch was an
+    explicit force. `fetch_positions()` below threads its own
+    `explicit` flag (the caller's literal force_refresh=True — NOT the
+    TTL-driven auto-force) into `_upstream_force`, so it reaches one
+    layer further down, into conn_sync.fetch_positions(). Without this,
+    an operator-explicit ?fresh=1 request only ever invalidated the
+    API-process's cache — conn_service's OWN independent
+    _POSITIONS_SSOT_TTL cache (same 30 s window, running in the separate
+    conn process) was never told to bypass, so the "force refresh" could
+    still silently serve up to another _POSITIONS_SSOT_TTL of staleness
+    under RAMBOQ_USE_CONN_SERVICE=1."""
     if _use_conn_service():
         from backend.brokers.client import sync as conn_sync
-        result = conn_sync.fetch_positions()
+        result = conn_sync.fetch_positions(force_refresh=_upstream_force)
     else:
         result = _fetch_positions_local()
     backfilled = _apply_backfill_to_list(result)
@@ -2054,13 +2071,27 @@ def fetch_positions(*args, force_refresh: bool = False, **kwargs):
     The `force_refresh` parameter is keyword-only (after *args) so
     single-account internal calls (`fetch_positions(account=…, kite=…)`)
     continue to fall through to _fetch_positions_local unchanged.
+
+    `explicit` (the caller's literal force_refresh=True, captured BEFORE
+    the TTL-driven auto-force mutation below) is threaded down to
+    _fetch_positions_cached as `_upstream_force` — but ONLY when the
+    caller explicitly asked for it. A plain TTL-expiry auto-force must
+    NOT also force conn_service's own independent cache to bypass on
+    every normal poll; that would double the broker round-trips on
+    conn_service (shared by both the prod and dev API processes) for no
+    operator-visible benefit. Only a genuine explicit ?fresh=1 request
+    needs an immediate, guaranteed-fresh broker round-trip end-to-end.
     """
     global _positions_ssot_refresh_at
     if not args and not kwargs:
+        explicit = force_refresh
         now = _time.monotonic()
         if not force_refresh and (now - _positions_ssot_refresh_at) > _POSITIONS_SSOT_TTL:
             force_refresh = True
-        result = _fetch_positions_cached(force_refresh=force_refresh)
+        if explicit:
+            result = _fetch_positions_cached(force_refresh=force_refresh, _upstream_force=True)
+        else:
+            result = _fetch_positions_cached(force_refresh=force_refresh)
         if result is not None:
             _positions_ssot_refresh_at = _time.monotonic()
         return result

@@ -228,7 +228,7 @@
   .ot-depth-h {
     display: flex;
     align-items: baseline;
-    justify-content: space-between;
+    justify-content: flex-start;
     gap: 0.4rem;
     font-size: var(--fs-xs);
     color: var(--algo-muted);
@@ -289,7 +289,6 @@
     opacity: 0.7;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    margin-left: auto;
   }
 
   /* B2/B3/B4: OI · Volume · Spread stats strip */

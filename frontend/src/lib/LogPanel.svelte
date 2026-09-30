@@ -920,7 +920,11 @@
   /** @type {Record<string, (st: string) => boolean>} */
   const _STATUS_PREDICATES = {
     open:      st => st === 'OPEN' || st === 'TRIGGER PENDING',
-    complete:  st => st === 'COMPLETE',
+    // 'COMPLETE' = broker (Kite) vocabulary, 'FILLED' = AlgoOrder vocabulary
+    // (ALGO_ORDER_FINAL_STATUSES in backend/api/models.py) — algo-only fills
+    // (paper/sim/replay/shadow, or an algo-tracked live order before the
+    // broker's own COMPLETE status lands) never carry 'COMPLETE'.
+    complete:  st => st === 'COMPLETE' || st === 'FILLED',
     rejected:  st => st === 'REJECTED',
     cancelled: st => st === 'CANCELLED',
   };
@@ -1676,7 +1680,7 @@
         {/each}
       </div>
     {:else}
-      <div class="log-debug py-2 text-center">No orders today.</div>
+      <div class="log-debug py-2 text-left">No orders today.</div>
     {/if}
   </div>
 {:else}

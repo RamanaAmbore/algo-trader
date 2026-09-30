@@ -427,6 +427,17 @@
   }
   a { text-decoration: none; }
   img { -webkit-user-drag: none; }
+  /* Site-wide overflow backstop (2026-09-30 alignment audit) — no
+     element anywhere should be able to pan the whole page
+     horizontally. `clip` (not `hidden`) so it doesn't break
+     `position: sticky` elements elsewhere in the app. This is a
+     BACKSTOP only: it doesn't fix any individual overflow source,
+     it just stops any remaining/future one from chaining into a
+     page-level horizontal pan (see PositionStrip.svelte's
+     .ps-strip comment for the touch-scroll-chaining root cause). */
+  html, body {
+    overflow-x: clip;
+  }
 }
 
 /* ── Canonical modal frame ──────────────────────────────────────────────── */
@@ -1772,6 +1783,8 @@
   font-weight: 600;
   letter-spacing: 0.01em;
   vertical-align: baseline;
+  overflow-wrap: anywhere;
+  max-width: 100%;
 }
 .log-chip-key,
 .log-panel .log-chip-key {

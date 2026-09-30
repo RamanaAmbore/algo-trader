@@ -39,6 +39,108 @@ _OUTCOME_TO_STATUS: dict[str, str] = {
 }
 
 
+# 2026-09-30 audit fix (Bug 1) — offsetting-position check staleness.
+# `_ch_check_and_fire_template_attach` decides whether a fill "offsets"
+# (closes/reduces) an existing position by re-reading the broker position
+# AFTER the fill has already landed. For a FULL close this always reads
+# flat/zero — indistinguishable from "no prior position at all" — so the
+# post-fill read misclassifies a plain close as a brand-new open and
+# incorrectly arms exit orders on it, regardless of whether the 30s
+# positions cache happens to be stale or freshly refreshed at that moment
+# (a fresh post-fill read is just as wrong as a stale one here — freshness
+# does not fix this, it can only change WHICH wrong answer you get).
+#
+# Fix: capture the signed net position ONCE in `chase_order()` before the
+# FIRST order of this chase is placed — a genuine pre-fill snapshot, not a
+# cache-timing gamble — and thread it through to the terminal-fill
+# snapshot via this module-level dict (keyed by algo_order_id, the same
+# key `_emit_chase_terminal` already receives explicitly). Popped (not
+# just read) in `_emit_chase_terminal` on every terminal outcome so an
+# entry never lingers past the chase that created it.
+_CH_PRE_FILL_NET_QTY: dict[int, float | None] = {}
+
+
+async def _ch_capture_pre_fill_net_qty(
+    account: str, exchange: str, symbol: str,
+) -> float | None:
+    """Snapshot the signed net held quantity for (account, symbol) BEFORE
+    this chase places its first order.
+
+    Forces a fresh (non-cached) broker read so a chase that starts
+    moments after an unrelated earlier fill doesn't inherit a stale
+    value either way. Fails open (returns None) on any error — callers
+    treat a missing/None pre-fill snapshot as "not offsetting", matching
+    `_is_offsetting_position`'s own existing fail-open contract.
+    """
+    try:
+        from backend.brokers.broker_apis import _raw_cache_invalidate
+        _raw_cache_invalidate("positions")
+    except Exception:
+        pass
+    try:
+        from backend.api.routes.orders_place import _fetch_net_position_qty
+        return await _fetch_net_position_qty(symbol, exchange, account)
+    except Exception as _e:
+        logger.warning("[CHASE] pre-fill position capture failed: %s", _e)
+        return None
+
+
+async def _ch_seed_pre_fill_net_qty(
+    algo_order_id: int | None, account: str, exchange: str, symbol: str,
+) -> None:
+    """Capture + store the pre-fill net position for `algo_order_id`,
+    guarded no-op when there's no id to key the snapshot by (only
+    templated chases, which always pass algo_order_id, can reach the
+    downstream offsetting check). Extracted so `chase_order()` calls this
+    unconditionally as a single statement — keeps the None-guard out of
+    `chase_order`'s own already-high cyclomatic complexity.
+    """
+    if algo_order_id is None:
+        return
+    _CH_PRE_FILL_NET_QTY[algo_order_id] = await _ch_capture_pre_fill_net_qty(
+        account, exchange, symbol,
+    )
+
+
+_SENTINEL_NO_CAPTURE = object()
+
+
+def _ch_apply_pre_fill_net_qty_to_snap(
+    algo_order_id: int | None, row_snap: dict | None,
+) -> None:
+    """Pop the pre-fill net position captured at chase_order() entry (if
+    any) and thread it onto `row_snap["pre_fill_net_qty"]` so
+    `_ch_check_and_fire_template_attach` can use genuine pre-fill state
+    instead of a post-fill broker re-read (Bug 1 fix, 2026-09-30).
+
+    Pops unconditionally on every terminal outcome (not just chase_fill)
+    so a cancelled/failed/unfilled chase never leaves a stale entry in
+    `_CH_PRE_FILL_NET_QTY`. No-op when there's nothing to pop or nowhere
+    to put it — extracted so `_emit_chase_terminal` calls this as a
+    single unconditional statement.
+    """
+    if algo_order_id is None:
+        return
+    pre_fill_net_qty = _CH_PRE_FILL_NET_QTY.pop(algo_order_id, _SENTINEL_NO_CAPTURE)
+    if pre_fill_net_qty is _SENTINEL_NO_CAPTURE or row_snap is None:
+        return
+    row_snap["pre_fill_net_qty"] = pre_fill_net_qty
+
+
+def _ch_is_offsetting_sign(net_qty: float | None, side: str) -> bool:
+    """Sign-only offsetting test — mirrors
+    `orders_place._is_offsetting_position`'s own logic, applied to an
+    already-captured net quantity instead of a fresh broker call.
+    """
+    if net_qty is None:
+        return False
+    if side.upper() == "BUY" and net_qty < 0:
+        return True   # BUY closes a SHORT
+    if side.upper() == "SELL" and net_qty > 0:
+        return True   # SELL closes a LONG
+    return False
+
+
 def _chase_apply_terminal_mutation(
     row,
     new_status: str,
@@ -206,14 +308,32 @@ async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> 
     path's guards: explicit close-intent (matching
     _opl_reconcile_attach_eligible) and the sign-only
     _is_offsetting_position check.
+
+    2026-09-30 audit fix (Bug 1): the sign-only check used to call
+    `_is_offsetting_position`, which reads the broker position AFTER this
+    fill has already landed — for a full close that read is always flat/
+    zero, indistinguishable from "no prior position", so it misclassified
+    a plain close as a new open regardless of cache freshness. When a
+    genuine PRE-fill snapshot was captured at chase_order() entry (see
+    `_CH_PRE_FILL_NET_QTY` / `_ch_capture_pre_fill_net_qty`), use that
+    instead via the sign-only `_ch_is_offsetting_sign` helper. Falls back
+    to the legacy post-fill `_is_offsetting_position` call only when no
+    pre-fill snapshot is present on `snap` (e.g. a legacy caller that
+    never set `algo_order_id`), preserving prior behaviour for that edge.
     """
     if (snap.get("intent") or "").lower() == "close" or snap.get("is_close_intent"):
         return
-    from backend.api.routes.orders_place import _is_offsetting_position
-    if await _is_offsetting_position(
-        sym=snap["symbol"], exchange=snap["exchange"],
-        side=snap["transaction_type"], account=snap["account"],
-    ):
+    if "pre_fill_net_qty" in snap:
+        is_offsetting = _ch_is_offsetting_sign(
+            snap["pre_fill_net_qty"], snap["transaction_type"],
+        )
+    else:
+        from backend.api.routes.orders_place import _is_offsetting_position
+        is_offsetting = await _is_offsetting_position(
+            sym=snap["symbol"], exchange=snap["exchange"],
+            side=snap["transaction_type"], account=snap["account"],
+        )
+    if is_offsetting:
         logger.info(
             "[CHASE] skipping template attach — order offsets existing "
             "position for #%s %s", snap["id"], snap["symbol"],
@@ -309,6 +429,10 @@ async def _emit_chase_terminal(
         agent_id, _row_snap = await _chase_terminal_update_db(
             algo_order_id, broker_order_id, outcome, attempts, final_price, error
         )
+
+        # Bug 1 fix (2026-09-30) — thread the pre-fill net position
+        # captured at chase_order() entry onto the row snapshot.
+        _ch_apply_pre_fill_net_qty_to_snap(algo_order_id, _row_snap)
 
         await record_chase_terminal(
             agent_id=agent_id,
@@ -1735,6 +1859,13 @@ async def chase_order(
             )
     except Exception as _mh_e:
         logger.warning("[CHASE] market-hours check failed (proceeding): %s", _mh_e)
+
+    # Bug 1 fix (2026-09-30) — capture the PRE-fill net position now,
+    # before the first order of this chase is placed, so the downstream
+    # offsetting-position check (fired after a fill) can compare against
+    # genuine pre-fill state instead of re-reading a post-fill snapshot.
+    # No-op when algo_order_id is None (see _ch_seed_pre_fill_net_qty).
+    await _ch_seed_pre_fill_net_qty(algo_order_id, account, cfg.exchange, symbol)
 
     result = ChaseResult(
         account=account, symbol=symbol,

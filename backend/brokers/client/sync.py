@@ -95,8 +95,19 @@ def fetch_holdings() -> list[pd.DataFrame]:
     return _fetch_per_account("/internal/holdings")
 
 
-def fetch_positions() -> list[pd.DataFrame]:
-    return _fetch_per_account("/internal/positions")
+def fetch_positions(force_refresh: bool = False) -> list[pd.DataFrame]:
+    """`force_refresh=True` appends `?force=1`, telling conn_service's
+    own /internal/positions handler to bypass ITS independent
+    _POSITIONS_SSOT_TTL cache (broker_apis.py) and run a genuine broker
+    round-trip right now — not just invalidate the caller's own
+    API-process-side cache. Default False, so every existing caller
+    (sim/driver.seed_live, expiry.OptionPosition._fetch_* class methods,
+    broker_apis._fetch_positions_cached's normal poll path) keeps
+    today's behaviour unchanged."""
+    path = "/internal/positions"
+    if force_refresh:
+        path = f"{path}?force=1"
+    return _fetch_per_account(path)
 
 
 def fetch_margins() -> list[pd.DataFrame]:

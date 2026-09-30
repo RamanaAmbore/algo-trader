@@ -209,7 +209,11 @@
   /** @type {Record<string, (st: string) => boolean>} */
   const _STATUS_PREDICATES = {
     open:      st => st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING',
-    complete:  st => st === 'COMPLETE',
+    // 'COMPLETE' = broker (Kite) vocabulary, 'FILLED' = AlgoOrder vocabulary
+    // (ALGO_ORDER_FINAL_STATUSES in backend/api/models.py) — algo-only fills
+    // (paper/sim/replay/shadow, or an algo-tracked live order before the
+    // broker's own COMPLETE status lands) never carry 'COMPLETE'.
+    complete:  st => st === 'COMPLETE' || st === 'FILLED',
     rejected:  st => st === 'REJECTED',
     cancelled: st => st === 'CANCELLED',
   };
@@ -535,7 +539,7 @@
 
   .ob-status-bar {
     display: grid;
-    grid-template-columns: repeat(5, 1fr);
+    grid-template-columns: repeat(5, minmax(0, 1fr));
     gap: 0.25rem;
     padding: 0.3rem 0.4rem 0.2rem;
   }
@@ -550,6 +554,7 @@
     justify-content: center;
     gap: 0.15rem;
     padding: 0.45rem 0.6rem;
+    min-width: 0;
     background:
       linear-gradient(180deg,
         rgba(255, 255, 255, 0.04) 0%,
@@ -655,5 +660,18 @@
     text-transform: uppercase;
     color: var(--algo-muted, rgba(255,255,255,0.4));
     line-height: 1;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* 5 status chips (Chase/Open/Filled/Rejected/Cancelled) need to fit a
+     320-375px phone viewport without forcing the grid wider than the
+     card — tighten padding + letter-spacing below 600px so the labels
+     truncate gracefully instead of overflowing. */
+  @media (max-width: 600px) {
+    .ob-sc { padding: 0.35rem 0.2rem; }
+    .ob-sc-l { font-size: 0.55rem; letter-spacing: 0.03em; }
   }
 </style>

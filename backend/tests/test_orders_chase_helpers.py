@@ -21,6 +21,10 @@ def _row(**kw):
     """Minimal AlgoOrder stand-in. status/detail default to sensible values."""
     kw.setdefault("status", "OPEN")
     kw.setdefault("detail", "")
+    # 2026-09-30 fix: _rco_apply_fill_price now stamps
+    # filled_quantity = quantity on a FILLED transition.
+    kw.setdefault("quantity", 100)
+    kw.setdefault("filled_quantity", 0)
     return SimpleNamespace(**kw)
 
 

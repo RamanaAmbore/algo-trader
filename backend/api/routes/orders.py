@@ -198,12 +198,21 @@ def _chase_process_paper_row(r, _paper_open_ids: set) -> tuple[bool, int]:
 def _rco_apply_fill_price(r, bo: dict) -> None:
     """Stamp fill_price + filled_at on a row that just transitioned to FILLED.
     Silently skips when average_price is absent or unconvertible.
+
+    Bug fix (2026-09-30): also stamps filled_quantity = quantity. The
+    caller only reaches this helper when the broker's status has mapped
+    to FILLED (Kite COMPLETE via _CHASE_KITE_TO_ALGO) — by definition a
+    full fill, since a genuine partial fill leaves the order OPEN until
+    COMPLETE fires. filled_quantity was never written here, which
+    permanently blocked the reconcile-path template-attach full-fill gate
+    (_maybe_fire_template_attach_for_reconcile).
     """
     if bo.get("average_price"):
         try:
             r.fill_price = float(bo["average_price"])
         except (TypeError, ValueError):
             pass
+    r.filled_quantity = int(r.quantity or 0)
     r.filled_at = datetime.now(timezone.utc)
 
 
@@ -600,6 +609,30 @@ async def _positions_refresh_after_fill(
                 changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None and initial_qty > 0)
                 if changed:
                     _raw_cache_invalidate("positions")
+                    # Bug fix (2026-09-30): only the raw broker-DataFrame
+                    # cache was busted here, not the 30s route-level cache
+                    # (get_or_fetch("positions", ...) in positions.py). The
+                    # frontend's own loadPositions({fresh:true}) call fires
+                    # ~0-1s after the fill event — before the broker has
+                    # propagated it — and repopulates the route cache with
+                    # a stale pre-fill frame under a fresh 30s TTL. Busting
+                    # only the raw cache at that point does nothing for the
+                    # route cache, so Payoff/Legs stayed stale for up to
+                    # 30s. Also invalidate "holdings" the same way — a CNC
+                    # sell fill moves qty from holdings to positions, and
+                    # _rco_invalidate_terminal_caches() already treats the
+                    # two as a paired invalidation set for every COMPLETE
+                    # fill (see that function, same file), so this is the
+                    # genuine parallel case, not a guess. Busts BOTH cache
+                    # layers for holdings (raw + route), matching the two
+                    # existing precedents in this codebase
+                    # (_rco_invalidate_terminal_caches, lines above, and
+                    # holdings.py's own fresh-read path) — a route-only
+                    # clear would still serve a stale raw-cache frame on
+                    # the very next /api/holdings request.
+                    invalidate("positions")
+                    invalidate("holdings")
+                    _raw_cache_invalidate("holdings")
                     broadcast(json.dumps({
                         "event": "positions_refreshed",
                         "tradingsymbol": tradingsymbol,
@@ -1091,15 +1124,23 @@ _RECONCILE_KITE_TO_ALGO = {
 def _rco_stamp_fill_price(r, bo: dict) -> None:
     """Write fill_price + filled_at from broker order dict onto AlgoOrder row.
     Uses average_price, falls back to price; silently skips on bad value.
+
+    Bug fix (2026-09-30): also stamps filled_quantity = quantity. This
+    writer only ever runs when `_rco_reconcile_one_row` has already mapped
+    the broker's own order status to FILLED (Kite COMPLETE via
+    _RECONCILE_KITE_TO_ALGO) — by definition a full fill. filled_quantity
+    was never written here, which permanently blocked the bulk-reconcile
+    template-attach full-fill gate.
     """
     from datetime import datetime, timezone
     try:
         ap = bo.get("average_price") or bo.get("price")
         if ap is not None:
             r.fill_price = float(ap)
-        r.filled_at = datetime.now(timezone.utc)
     except (TypeError, ValueError):
         pass
+    r.filled_quantity = int(r.quantity or 0)
+    r.filled_at = datetime.now(timezone.utc)
 
 
 def _rco_reconcile_one_row(r, by_id: dict, _attach_queue: list) -> tuple[int, int]:
@@ -1210,11 +1251,27 @@ def _rco_validate_preflight_params(
 def _rco_reconcile_apply_target(r, bo: Optional[dict], kite_status: Optional[str], target: str) -> tuple[bool, str, bool]:
     """Apply a known target status onto an AlgoOrder row (both row and broker order present).
     Returns (updated, note, attach_after_commit).
+
+    Bug fix (2026-09-30, same class as _rco_apply_fill_price /
+    _rco_stamp_fill_price): also stamps filled_quantity = quantity when
+    flipping to FILLED. `target` only resolves to "FILLED" when the
+    broker's own status maps via _RECONCILE_KITE_TO_ALGO (Kite COMPLETE)
+    — by definition a full fill — so filled_quantity was never written
+    here, permanently blocking the per-order reconcile template-attach
+    full-fill gate.
     """
     from datetime import datetime, timezone
 
     if r.status != target:
         r.status = target
+        if target == "FILLED":
+            # Stamp filled_quantity as soon as the row becomes FILLED,
+            # not only when bo carries a usable average_price — FILLED
+            # is a final status (ALGO_ORDER_FINAL_STATUSES), so a row
+            # that takes the no-average_price branch below would
+            # otherwise be stuck at filled_quantity=0 forever with no
+            # later reconcile able to retry it.
+            r.filled_quantity = int(r.quantity or 0)
         if target == "FILLED" and bo and bo.get("average_price"):
             try:
                 r.fill_price = float(bo["average_price"])

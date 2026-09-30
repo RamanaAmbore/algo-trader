@@ -155,8 +155,10 @@ def test_fetch_positions_ttl_boundary_exactly_30s():
 # ---------------------------------------------------------------------------
 
 def test_fetch_positions_force_refresh_true_bypasses_ttl():
-    """force_refresh=True always calls _fetch_positions_cached(force_refresh=True)
-    regardless of elapsed time."""
+    """force_refresh=True always calls _fetch_positions_cached(force_refresh=True),
+    and — because this is an EXPLICIT caller request, not a TTL auto-force —
+    also passes _upstream_force=True so conn_service's own independent
+    cache gets told to bypass too, regardless of elapsed time."""
     _reset_ttl_state()
 
     sentinel = [object()]
@@ -175,21 +177,28 @@ def test_fetch_positions_force_refresh_true_bypasses_ttl():
 
     assert mock_cached.call_count == 2
     calls = mock_cached.call_args_list
-    assert calls[1] == call(force_refresh=True), (
-        f"force_refresh=True should always pass force_refresh=True downstream, got {calls[1]}"
+    assert calls[1] == call(force_refresh=True, _upstream_force=True), (
+        f"explicit force_refresh=True should also pass _upstream_force=True "
+        f"so conn_service's own cache bypasses too, got {calls[1]}"
     )
     assert result is sentinel
 
 
 def test_fetch_positions_force_refresh_always_fires_even_when_fresh():
-    """force_refresh=True works even immediately after a fetch (0 s elapsed)."""
+    """force_refresh=True works even immediately after a fetch (0 s elapsed).
+
+    Also confirms _upstream_force is threaded ONLY on the explicit-caller
+    call, not on the TTL-driven auto-force call — an auto-force must not
+    also force conn_service's own independent cache to bypass, or every
+    normal poll would double the broker round-trips on conn_service
+    (shared by both prod and dev API processes)."""
     _reset_ttl_state()
 
     sentinel = [object()]
     call_log = []
 
-    def fake_cached(force_refresh=False):
-        call_log.append(force_refresh)
+    def fake_cached(force_refresh=False, _upstream_force=False):
+        call_log.append((force_refresh, _upstream_force))
         return sentinel
 
     with patch.object(broker_apis, '_fetch_positions_cached', side_effect=fake_cached), \
@@ -201,8 +210,9 @@ def test_fetch_positions_force_refresh_always_fires_even_when_fresh():
         mock_time.monotonic.return_value = 500.0  # same moment → TTL not expired
         broker_apis.fetch_positions(force_refresh=True)
 
-    assert call_log == [True, True], (
-        f"Expected [True, True] (first: TTL expired from 0; second: explicit force). Got {call_log}"
+    assert call_log == [(True, False), (True, True)], (
+        f"Expected [(True, False), (True, True)] (first: TTL expired from 0, "
+        f"not explicit; second: explicit force, _upstream_force=True). Got {call_log}"
     )
 
 

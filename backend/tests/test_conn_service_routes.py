@@ -156,6 +156,38 @@ def test_positions_endpoint_aggregates_multi_broker(conn_app):
             assert len(data["accounts"]) >= 1
 
 
+def test_positions_endpoint_force_query_param_forwards_force_refresh(conn_app):
+    """2026-09-30 fix: GET /internal/positions?force=1 must call
+    broker_apis.fetch_positions(force_refresh=True) inside conn_service —
+    this is what lets an operator-explicit ?fresh=1 on the main API side
+    bypass conn_service's OWN independent _POSITIONS_SSOT_TTL cache, not
+    just the API process's own cache layer."""
+    with TestClient(app=conn_app) as client:
+        with patch('backend.brokers.broker_apis.fetch_positions') as mock_fetch:
+            df1 = pd.DataFrame([{"account": "ZG0790", "symbol": "RELIANCE", "quantity": 1}])
+            mock_fetch.return_value = [df1]
+
+            resp = client.get("/internal/positions?force=1")
+
+            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+            mock_fetch.assert_called_once_with(force_refresh=True)
+
+
+def test_positions_endpoint_default_does_not_force_refresh(conn_app):
+    """Default GET /internal/positions (no query param) must call
+    fetch_positions(force_refresh=False) — normal poll cadence is
+    unaffected by this fix."""
+    with TestClient(app=conn_app) as client:
+        with patch('backend.brokers.broker_apis.fetch_positions') as mock_fetch:
+            df1 = pd.DataFrame([{"account": "ZG0790", "symbol": "RELIANCE", "quantity": 1}])
+            mock_fetch.return_value = [df1]
+
+            resp = client.get("/internal/positions")
+
+            assert resp.status_code == 200, f"Expected 200, got {resp.status_code}"
+            mock_fetch.assert_called_once_with(force_refresh=False)
+
+
 def test_margins_endpoint_aggregates_multi_broker(conn_app):
     """GET /internal/margins returns per-account margins envelopes."""
     with TestClient(app=conn_app) as client:
