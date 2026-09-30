@@ -812,7 +812,13 @@ test.describe('SPEC 6: CandidateLegRow LTP reactivity', () => {
     }
 
     // Check that LTP values in leg rows are numeric (not "—" or blank)
-    const ltpCells = page.locator('[class*="ltp"], td:has-text(/\d+(\.\d+)?/)');
+    // `:has-text(/regex/)` is not valid Playwright CSS selector syntax —
+    // regex literals only work via filter({ hasText }) or the text=
+    // selector engine, not embedded in a CSS pseudo-class. Union via
+    // .or() instead of a comma-joined CSS selector string.
+    const ltpCells = page.locator('[class*="ltp"]').or(
+      page.locator('td').filter({ hasText: /\d+(\.\d+)?/ })
+    );
     const ltpCount = await ltpCells.count();
 
     if (ltpCount === 0) {

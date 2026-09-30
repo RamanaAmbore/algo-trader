@@ -385,7 +385,13 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
 
     // Find the EXP cell in the TOTAL row
     // Typically the last numeric cell
-    const numCells = snapTotalRow.locator('[class*="num"], span:has-text(/[₹\d]/)');
+    // `:has-text(/regex/)` is not valid Playwright CSS selector syntax —
+    // regex literals only work via the filter({ hasText }) option or the
+    // text= selector engine, not embedded in a CSS pseudo-class. Union
+    // via .or() instead of a comma-joined CSS selector string.
+    const numCells = snapTotalRow.locator('[class*="num"]').or(
+      snapTotalRow.locator('span').filter({ hasText: /[₹\d]/ })
+    );
     const cellCount = await numCells.count();
 
     if (cellCount === 0) {
@@ -428,7 +434,11 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
 
     // Check the first data row's EXP cell
     const firstRow = snapRows.first();
-    const numCells = firstRow.locator('[class*="num"], span:has-text(/[₹\d]/)');
+    // See the identical fix + comment above (TC5.1) — :has-text(/regex/)
+    // is invalid CSS selector syntax; union via .or() instead.
+    const numCells = firstRow.locator('[class*="num"]').or(
+      firstRow.locator('span').filter({ hasText: /[₹\d]/ })
+    );
     const cellCount = await numCells.count();
 
     if (cellCount === 0) {
@@ -576,7 +586,10 @@ test.describe('EXP P&L edge cases — closed legs, partial closes, realised comp
     }
 
     // Count the values in the P pill (should be 3: day, lifetime, EXP)
-    const values = pPill.locator('[class*="ps-agg"], [class*="value"], span:has-text(/[₹\d]/)');
+    // Same :has-text(/regex/) fix as TC5.1/TC5.2 above — union via .or().
+    const values = pPill.locator('[class*="ps-agg"], [class*="value"]').or(
+      pPill.locator('span').filter({ hasText: /[₹\d]/ })
+    );
     const valueCount = await values.count();
 
     // Expect at least 3 values (day, lifetime, EXP) in the P pill
