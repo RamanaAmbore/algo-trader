@@ -76,16 +76,22 @@
   }
 
   /**
-   * Drops rows from a PRIOR trading session (08:00 IST rollover — see
-   * `isCurrentTradingSession`). This is a display-only filter applied
+   * Drops TERMINAL rows from a PRIOR trading session (08:00 IST rollover —
+   * see `isCurrentTradingSession`). This is a display-only filter applied
    * upstream to `orderRows` itself (not just the rendered grid) so every
    * downstream consumer — status counts, the active status filter, CSV
-   * export — automatically only ever sees today's-session orders with no
-   * separate/duplicate filtering logic. Terminal AND still-open rows are
-   * both dropped once stale — see this function's call site for the
-   * judgment-call note on still-OPEN prior-session rows.
+   * export — automatically only ever sees today's-session terminal orders
+   * with no separate/duplicate filtering logic.
+   *
+   * Still-working rows (OPEN/TRIGGER PENDING) are NEVER dropped by this
+   * filter regardless of age — operator explicit instruction (2026-09-30,
+   * reversing the initial default): "keep them visible until reconciled."
+   * A resting order from a prior session is exactly the kind of thing an
+   * operator needs to SEE and act on (cancel / reconcile), not have
+   * silently disappear at the next 08:00 rollover.
    */
   function _isCurrentSessionRow(/** @type {any} */ o) {
+    if (_STATUS_PREDICATES.open((o?.status || '').toUpperCase())) return true;
     const ms = _rowTsMs(o);
     if (!Number.isFinite(ms)) return true; // can't judge — keep, don't hide data we can't classify
     return isCurrentTradingSession(ms);

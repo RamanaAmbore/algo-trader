@@ -9,13 +9,16 @@
  *     never touched does NOT count, matching OrderCard.svelte's existing
  *     `chase:#N` chip precedent).
  *
- *  2. Prior-trading-session orders (before today's 08:00 IST boundary)
- *     are dropped from the Order Book entirely — from the grid AND from
- *     every status chip count, since both read the same session-
+ *  2. Prior-trading-session TERMINAL orders (before today's 08:00 IST
+ *     boundary) are dropped from the Order Book entirely — from the grid
+ *     AND from every status chip count, since both read the same session-
  *     filtered `orderRows`. Today's terminal rows (filled/rejected/
- *     cancelled) still show; only rows from a PRIOR session vanish,
- *     including a still-OPEN row (judgment call — see OrderBook.svelte's
- *     `_isCurrentSessionRow` call-site comment).
+ *     cancelled) still show; only terminal rows from a PRIOR session
+ *     vanish. A still-OPEN row from a prior session is NEVER dropped by
+ *     this filter, regardless of age — operator explicit instruction
+ *     (2026-09-30, reversing the initial default): "keep them visible
+ *     until reconciled" (see OrderBook.svelte's `_isCurrentSessionRow`
+ *     call-site comment).
  *
  * Mocks GET /api/orders/ (broker book) and GET /api/orders/algo/recent
  * (algo-tracked book) with a fixed, deterministic dataset, and freezes
@@ -95,7 +98,7 @@ const _BROKER_ROWS = [
     price: 100, trigger_price: 0, average_price: 101, status: 'COMPLETE',
     order_type: 'LIMIT', product: 'MIS', variety: 'regular',
     order_timestamp: '2026-09-29 15:30:00' },
-  // Prior session, still OPEN — judgment call: hidden too (see spec docstring).
+  // Prior session, still OPEN — NEVER hidden by the session filter (see spec docstring).
   { order_id: 'B1006', account: 'T1', exchange: 'NFO', tradingsymbol: 'RBQ-STALEOPEN',
     transaction_type: 'BUY', quantity: 50, pending_quantity: 50, filled_quantity: 0,
     price: 100, trigger_price: 0, average_price: 0, status: 'OPEN',
@@ -118,8 +121,8 @@ const _ALGO_ROWS = [
     quantity: 50, initial_price: 100, current_limit: 100, fill_price: 101,
     attempts: 2, status: 'COMPLETE', engine: 'chase', mode: 'live', detail: null,
     created_at: '2026-09-30T03:50:00' },
-  // Prior session — must be dropped entirely, including from the Chase count,
-  // despite attempts > 0 and status OPEN.
+  // Prior session, still OPEN + attempts > 0 — NEVER hidden (still-working
+  // rows are exempt from the session filter) and DOES count as Chase.
   { id: 4, account: 'T1', symbol: 'RBQ-STALECHASE', exchange: 'NFO', transaction_type: 'BUY',
     quantity: 50, initial_price: 100, current_limit: 105, fill_price: null,
     attempts: 5, status: 'OPEN', engine: 'chase', mode: 'live', detail: null,
@@ -169,14 +172,20 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     // No "All" chip anywhere in the strip.
     await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^All$/ })).toHaveCount(0);
 
-    // Exactly one "Chase" chip, count = 1 (only id=1 qualifies: OPEN + attempts>0 + today's session).
+    // Exactly one "Chase" chip, count = 2: id=1 (OPEN + attempts>0, today's
+    // session) AND id=4/RBQ-STALECHASE (OPEN + attempts>0, prior session —
+    // still-working rows are exempt from the session filter).
     const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
     await expect(chaseChip).toHaveCount(1);
-    await expect(chaseChip.locator('.ob-sc-n')).toHaveText('1');
+    await expect(chaseChip.locator('.ob-sc-n')).toHaveText('2');
 
-    // Open count = 3 (B1001 + algo id1 + algo id2); Complete = 2; Rejected = 1; Cancelled = 1.
+    // Open count = 5: B1001 + algo id1 + algo id2 (today's session) +
+    // B1006/RBQ-STALEOPEN + algo id4/RBQ-STALECHASE (prior session, both
+    // still OPEN, both exempt from the session filter — Chase is a SUBSET
+    // of Open, not mutually exclusive, so id4 counts in both chips).
+    // Complete = 2; Rejected = 1; Cancelled = 1.
     const openChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Open$/ }) });
-    await expect(openChip.locator('.ob-sc-n')).toHaveText('3');
+    await expect(openChip.locator('.ob-sc-n')).toHaveText('5');
     const completeChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Filled$/ }) });
     await expect(completeChip.locator('.ob-sc-n')).toHaveText('2');
     const rejectedChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Rejected$/ }) });
@@ -195,22 +204,26 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    // Default filter is now 'open' — 3 cards.
-    await expect(page.locator('.oc-book-grid .order-card')).toHaveCount(3);
+    // Default filter is now 'open' — 5 cards (includes both prior-session
+    // still-OPEN rows, RBQ-STALEOPEN and RBQ-STALECHASE, which the
+    // session filter exempts).
+    await expect(page.locator('.oc-book-grid .order-card')).toHaveCount(5);
 
     const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
     await chaseChip.click();
 
     const cards = page.locator('.oc-book-grid .order-card');
-    await expect(cards).toHaveCount(1);
-    await expect(cards.first()).toContainText('RBQ-CHASE1');
+    await expect(cards).toHaveCount(2);
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE1' })).toHaveCount(1);
+    // Prior-session still-OPEN + attempts>0 row DOES count as chase now.
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALECHASE' })).toHaveCount(1);
     // Terminal row with attempts>0 must NOT be counted as chase.
     await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE3TERM' })).toHaveCount(0);
     // OPEN row with attempts=0 must NOT be counted as chase.
     await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE2NOATT' })).toHaveCount(0);
   });
 
-  test('Prior-session orders never appear, in any filter, including a stale still-OPEN row', async ({ page }) => {
+  test('Prior-session TERMINAL orders never appear, but a prior-session still-OPEN row stays visible until reconciled', async ({ page }) => {
     await authOnce(page);
     await page.clock.setFixedTime(new Date(_NOW_ISO));
     await mockOrdersEndpoints(page);
@@ -220,14 +233,12 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    // Stale rows (including the still-OPEN one) never render, regardless
-    // of which status chip is active.
-    for (const filterLabel of [/^Open$/, /^Filled$/, /^Cancelled$/]) {
+    // Terminal stale row never renders, regardless of which status chip
+    // is active.
+    for (const filterLabel of [/^Open$/, /^Filled$/, /^Cancelled$/, /^Chase$/]) {
       const chip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: filterLabel }) });
       await chip.click();
       await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEFILL' })).toHaveCount(0);
-      await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEOPEN' })).toHaveCount(0);
-      await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALECHASE' })).toHaveCount(0);
     }
 
     // A fresh today's-session row (from BEFORE and AFTER the 08:00 IST
@@ -235,5 +246,14 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     const openChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Open$/ }) });
     await openChip.click();
     await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-FRESHOPEN' })).toHaveCount(1);
+
+    // The prior-session still-OPEN row stays visible under Open — operator
+    // instruction: "keep them visible until reconciled."
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEOPEN' })).toHaveCount(1);
+
+    // ...and its chase-tracked sibling (attempts>0) shows under Chase too.
+    const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
+    await chaseChip.click();
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALECHASE' })).toHaveCount(1);
   });
 });
