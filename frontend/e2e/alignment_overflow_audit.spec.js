@@ -654,7 +654,7 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.chain-th-ce/-pe/-strike bottom edge is a 0.35-alpha white box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix)', () => {
+  test('.chain-th-ce/-pe/-strike bottom edge is a 0.18-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, later dialed to amber)', () => {
     // box-shadow: inset instead of border-bottom (2026-09-30, operator:
     // "again the border shows and disappears" / "...in the money calls
     // and puts, it disappears") — sticky <th> + border-collapse:collapse
@@ -662,11 +662,16 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     // repaint (exactly what the ITM/OTM background-wash switch-on is).
     // box-shadow isn't part of table border-collapse semantics, so it's
     // immune to this bug class.
+    // Color/alpha dialed white 0.35 -> amber 0.18 same day (operator:
+    // "reduce the thickness of the border... if the border thinner
+    // with amber shade it may look better") — matches the existing
+    // --algo-amber divider convention (.chain-row-atm's own
+    // border-bottom) instead of a new one-off value.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(255,\s*255,\s*255,\s*0\.35\)/);
+      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.18\)/);
       // Single-line rule — ruleBody's captured [^}]* contains only the
       // literal declarations between { and }, no surrounding comments,
       // so a bare substring check here is safe (unlike the multi-line
@@ -942,5 +947,54 @@ test.describe('Static source checks — Chain "Fetching live prices" no longer s
     const th = page.locator('.chain-th-ce').first();
     await expect(th).toBeVisible({ timeout: 15_000 });
     await expect(th).toHaveText('CE');
+  });
+});
+
+test.describe('Static source checks — Chain Strike column widened to separate CE/PE (2026-09-30)', () => {
+  // Operator: "move ce pe away from strike". CE/PE content is
+  // flex-end/flex-start aligned toward the Strike column (see
+  // .chain-cell-row-ce/-pe), so the visible gap between them is the
+  // Strike cell's own left/right padding. Widened 0.1rem -> 0.4rem.
+  test('.chain-row > td.chain-td-strike padding widened to 0.4rem (was 0.1rem)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const rule = content.match(/\.chain-row\s*>\s*td\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule, '.chain-row > td.chain-td-strike rule').not.toBe('');
+    expect(rule).toMatch(/padding-left:\s*0\.4rem/);
+    expect(rule).toMatch(/padding-right:\s*0\.4rem/);
+    expect(rule).not.toMatch(/padding-left:\s*0\.1rem/);
+    expect(rule).not.toMatch(/padding-right:\s*0\.1rem/);
+  });
+
+  test('live: strike cell gains extra horizontal separation from the CE/PE columns without misaligning the header label', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(500);
+
+    const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+    await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+    await chainTab.click();
+
+    const firstStrikeTd = page.locator('.chain-row > td.chain-td-strike').first();
+    await expect(firstStrikeTd).toBeVisible({ timeout: 15_000 });
+    const pl = await firstStrikeTd.evaluate((el) => getComputedStyle(el).paddingLeft);
+    expect(pl, 'chain-td-strike computed padding-left').toBe('6.4px');
+
+    // Header "Strike" label and a data-row strike number must still
+    // share the same horizontal center (widening padding must not
+    // have knocked the column out of alignment).
+    const headerStrike = page.locator('.chain-th-strike').first();
+    const [headerBox, cellBox] = await Promise.all([
+      headerStrike.boundingBox(),
+      firstStrikeTd.boundingBox(),
+    ]);
+    const headerCenter = headerBox.x + headerBox.width / 2;
+    const cellCenter = cellBox.x + cellBox.width / 2;
+    expect(Math.abs(headerCenter - cellCenter), 'header/body Strike column centers must align').toBeLessThanOrEqual(1);
   });
 });

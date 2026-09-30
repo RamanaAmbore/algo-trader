@@ -1613,9 +1613,17 @@
      collapse semantics at all, so it is unaffected by this bug and
      renders reliably through any repaint. This is the standard fix
      recommended for this exact "sticky thead border disappears" bug
-     class. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     class.
+     Dialed back 0.35 white -> 0.18 amber (2026-09-30, operator:
+     "reduce the thickness of the border... if the border thinner
+     with amber shade it may look better") — a 1px line can't get
+     visually thinner than 1px, so "thinner" here is read as lower
+     opacity / warmer color rather than sub-pixel width. 0.18 amber
+     matches the existing --algo-amber divider convention already
+     used elsewhere in this file (.chain-row-atm's own border-bottom,
+     below) instead of introducing a new one-off value. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
@@ -1625,7 +1633,7 @@
      bottom edge (2026-09-30, same border-collapse/sticky fix as
      .chain-th-ce/-pe above) instead of separate border-left/-right
      declarations, for the same repaint-reliability reason. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1663,8 +1671,19 @@
     color: var(--algo-slate);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    padding-left: 0.1rem;
-    padding-right: 0.1rem;
+    /* Widened 0.1rem -> 0.4rem (2026-09-30, operator: "move ce pe
+       away from strike") — CE/PE content is flex-end/flex-start
+       aligned toward this column (see .chain-cell-row-ce/-pe above),
+       so the visible gap between CE/PE and Strike is this cell's own
+       left/right padding; the earlier 0.1rem was tightened for a
+       different reason ("reduce the space before and after strike")
+       and read as too close once CE/PE content butted right up
+       against it. text-align: center keeps "Strike"/the numbers
+       centered in the column regardless of this padding value, so
+       widening it doesn't misalign the header label against the data
+       rows below. */
+    padding-left: 0.4rem;
+    padding-right: 0.4rem;
     /* Subtle column divider between CE | Strike | PE — same
        whisper-quiet weight as the row dividers above, completing
        the "grid" reading operator asked for without adding visual

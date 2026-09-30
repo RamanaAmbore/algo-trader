@@ -44,9 +44,14 @@ test.describe('Stale-code: chain grid has subtle column dividers', () => {
   test('Strike column (header + body) carries a subtle left/right border', () => {
     const src = readFileSync(CHAIN_TAB_PATH, 'utf8');
 
+    // .chain-th-strike's left/right border was folded into box-shadow:
+    // inset (2026-09-30, commit 905c0c08 — sticky <th> + border-collapse
+    // repaint-bug fix) alongside its bottom edge; still a border,
+    // functionally, just expressed as box-shadow so it survives the
+    // same repaint that used to drop border-bottom.
     const thRule = src.match(/\.chain-th-strike\s*\{[^}]*\}/)?.[0] ?? '';
-    expect(thRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
-    expect(thRule).toMatch(/border-right:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);
+    expect(thRule).toMatch(/box-shadow:[^;]*inset 1px 0 0 rgba\(255,\s*255,\s*255,\s*0\.03\)/);
+    expect(thRule).toMatch(/box-shadow:[^;]*inset -1px 0 0 rgba\(255,\s*255,\s*255,\s*0\.03\)/);
 
     const tdRule = src.match(/\.chain-row\s*>\s*td\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
     expect(tdRule).toMatch(/border-left:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.03\)/);

@@ -487,7 +487,7 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a visibly bright bottom edge via box-shadow:inset, 0.35 alpha (SUPERSEDED 2026-09-30 — border-bottom replaced by box-shadow to fix sticky+border-collapse repaint bug)', () => {
+  test('chain header cells have a subtle amber bottom edge via box-shadow:inset, 0.18 alpha (SUPERSEDED 2026-09-30, twice — border-bottom replaced by box-shadow to fix a repaint bug, then dialed from white/0.35 to amber/0.18 for a thinner look)', () => {
     // Was border-bottom (brightened from 0.18 to 0.35 alpha same day),
     // then changed to box-shadow: inset (operator: "again the border
     // shows and disappears" / "...in the money calls and puts, it
@@ -496,10 +496,14 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     // ITM/OTM background-wash switch-on (elsewhere in this file) is
     // exactly that kind of repaint. box-shadow isn't part of table
     // border-collapse semantics, so it's immune.
+    // Then dialed white 0.35 -> amber 0.18 same day (operator: "reduce
+    // the thickness of the border... if the border thinner with amber
+    // shade it may look better") — matches the existing --algo-amber
+    // divider convention (.chain-row-atm's own border-bottom).
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(255,255,255,0\.35\)/);
+      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,191,36,0\.18\)/);
       expect(rule, `${sel} must not use border-bottom`).not.toMatch(/border-bottom:\s*\S/);
     }
   });
