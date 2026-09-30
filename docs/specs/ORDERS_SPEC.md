@@ -862,6 +862,22 @@ OPEN chase order.
 - Kite delivery retries can fire the same postback multiple times
 - Guard ensures one-time execution
 
+### Fill Status Recording
+
+**filled_quantity contract** (2026-09-30):
+- Must be written whenever a row transitions to FILLED status
+- Value: the row's own `quantity` field (contracts), never broker's raw filled-qty
+- Note: broker's filled-qty is in lots for MCX/NCO; copying contracts avoids unit mismatch
+- Applies to all 6 fill-detection paths: Kite postback, Dhan/Groww postback, chase terminal,
+  admin reconcile, paper engine, and manual retry
+- Already-terminal FILLED rows do not self-heal; require explicit Retry-attach click
+
+**Wing order recorded in attached_gtts_json** (2026-09-30):
+- When a wing order is placed, a `{"kind":"wing",...}` entry must be appended to
+  `attached_gtts_json` at the same time as the primary GTT
+- Prevents duplicate live wing orders on retry/race conditions
+- Applied in all template-attach code paths
+
 ### Mode Gate (Non-Live Fills)
 
 **Rule**: Template attach only fires for `mode='live'` orders. Paper/sim/replay/shadow 
@@ -1286,6 +1302,7 @@ List concrete things to verify in an audit:
 
 **Re-attach button**:
 - Visible only when template_id + FILLED + no attached_gtts_json
+- Recognizes both broker COMPLETE and algo FILLED status (2026-09-30)
 - Clicking fires request + shows spinner
 - Success message appears + disappears after poll
 

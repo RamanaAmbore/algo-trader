@@ -667,6 +667,72 @@ Invariant: `_fire_template_attach_on_fill` (and anything that could reach
 `apply_plan_live`) must never run for a non-'live' AlgoOrder — 
 paper/sim/replay/shadow fills never place real broker orders.
 
+**Chain template scope and remembered preference (2026-09-30, commit b8bd1b7b)** —
+Two UI defects blocked option-specific template selection on Chain:
+- Scope detection always resolved to the root symbol, never buy_option/sell_option,
+  so wing-eligible option-specific templates could never be picked when placing
+  from Chain. Fixed: `_currentScope()` in `SymbolPanel.svelte` now prefers the
+  focused leg's real option-contract symbol on Chain instead of the root.
+- Adding a leg could silently flip Template back to OFF using a stale remembered
+  preference from an unrelated scope, even after the operator explicitly turned
+  it on in the current session. Fixed: an explicit in-session choice now
+  overrides the remembered-preference lookup until the next genuinely fresh
+  order.
+Invariant: template scope resolution must track the actual focused leg symbol,
+not the root, and explicit in-session preference must survive leg additions.
+
+**Fill bookkeeping completeness — filled_quantity and attached GTT entries
+(2026-09-30, commit b8bd1b7b)** — Three linked postback/reconcile defects
+prevented template attach's full-fill gate from firing for ordinary fills:
+
+- **filled_quantity field was never set** — Postback and reconcile writers never
+  set `filled_quantity`, structurally blocking template attach's full-fill gate.
+  Fixed in all 6 writer locations: `_rco_apply_fill_price` (orders.py:198),
+  `_rco_stamp_fill_price` (orders.py:1124), `_rco_reconcile_apply_target`
+  (orders.py:1251), `_pb_apply_status_to_row` (orders_postback.py:475),
+  `_sync_apply_row_status` (orders_postback.py:134), and chase.py's
+  Dhan/Groww-specific writer. Note: `filled_quantity` is always copied from
+  the row's own `quantity` field (contracts), never the broker's raw filled-qty
+  (which is in lots for MCX/NCO — a unit mismatch trap). Already-stuck prod
+  rows with FILLED status do not self-heal and need an explicit Retry-attach
+  click.
+- **Wing orders never recorded in attached_gtts_json** — A second trigger
+  (chase/postback race, or manual retry) could place a duplicate live wing
+  order. Fixed: `_opp_build_attach_entries` (orders_place.py:579) now appends
+  a `{"kind":"wing",...}` entry when `result.wing_order_id` is set.
+- **"Filled" status predicate missed FILLED vocabulary** — OrderBook/LogPanel
+  checked broker vocabulary (COMPLETE) but AlgoOrder rows use FILLED, blocking
+  the Filled chip, template chip, and Re-attach button for algo-only fills.
+  Fixed in both OrderBook.svelte and LogPanel.svelte: `st === 'COMPLETE' || st
+  === 'FILLED'`.
+
+Invariant: filled_quantity must be written whenever a row transitions to FILLED,
+copied from the row's own contracts quantity; wing orders must appear in
+attached_gtts_json; and status-display predicates must recognize both broker
+(COMPLETE) and algo (FILLED) vocabulary.
+
+**Post-fill position freshness (2026-09-30, commit b8bd1b7b, amends existing
+entry)** — The "Position-refresh immediacy" entry (line 431) already documents
+the polling loop + force_refresh pattern. Amending with two gaps closed in this
+batch:
+- The post-fill refresh busted only the raw broker-DataFrame cache, not the 30s
+  route-level cache, so Payoff/Legs/Holdings routes could stay stale for up to
+  30s. Fixed by also calling `invalidate("positions")` and `invalidate("holdings")`
+  (orders.py:633-634) alongside the existing raw-cache busts.
+- In production, the conn-service process has its own separate 30s cache that
+  was never busted, adding another 30s of staleness and silently defeating the
+  "Position-refresh immediacy" design. Fixed by threading an explicit
+  `force_refresh` flag from `broker_apis.fetch_positions()` through
+  `sync_wrapper` all the way to the conn service's own `/internal/positions?force=1`
+  endpoint. Important nuance preserved: a routine TTL-expiry auto-force (line
+  1540 in broker_apis.py) must NOT also force the conn-service hop — that would
+  double every ordinary poll's broker load. Only an EXPLICIT `force_refresh=True`
+  call (from `_positions_refresh_after_fill`) does.
+Invariant: post-fill position refresh must invalidate both raw broker-cache and
+route-level cache, and must thread an explicit force-refresh flag through the
+conn-service to bust its own TTL; TTL-expiry auto-forces must not compound
+with conn-service forces.
+
 **Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
 Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 
 `date` column, not from the batch's own `captured_at` timestamp. When a close-reset write 
