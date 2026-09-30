@@ -986,13 +986,25 @@
     </div>
   {/if}
 
-  {#if _pricesFetching && chainStrikes.length && !chainQuotesMap}
-    <div class="oct-empty">Fetching live prices…</div>
-  {/if}
-
   <!-- Strike grid -->
   {#if chainKinds.includes('opt') && chainStrikes.length}
     <div class="chain-grid-wrap">
+      {#if _pricesFetching && !chainQuotesMap}
+        <!-- Operator (2026-09-30): "the bottom border shows up below the
+             header and disappears" — root cause: this message used to be
+             a SIBLING block rendered BEFORE .chain-grid-wrap in normal
+             flow, so for the ~200-300ms window before live quotes arrive
+             it pushed the entire grid (header + border included) down by
+             its own line-height; once quotes landed and the message
+             unmounted, the grid jumped back up to fill that gap — read as
+             the header's border "appearing, then disappearing" as it
+             visibly relocated. Fixed by moving it INSIDE .chain-grid-wrap
+             as an absolutely-positioned overlay (.chain-grid-wrap now has
+             position: relative below) so it floats on top of the
+             already-rendered grid instead of occupying flow space that
+             later collapses. -->
+        <div class="oct-empty chain-fetching-overlay">Fetching live prices…</div>
+      {/if}
       <table class="chain-grid">
         <colgroup>
           <col class="chain-col-ce" />
@@ -1436,6 +1448,10 @@
      + ATM gauge above. Operator gets a full-height chain without
      forcing a second internal scroll. */
   .chain-grid-wrap {
+    /* position: relative (2026-09-30) so .chain-fetching-overlay (below)
+       can absolutely position itself against THIS box instead of the
+       page — see the markup comment above for why this overlay exists. */
+    position: relative;
     overflow-y: auto;
     /* Operator (2026-09-29): "give overall background to chain area
        consistent with overall color scheme on mobile and desktop" —
@@ -1498,6 +1514,22 @@
     min-height: var(--chain-depth-h, 22rem);
     border: 1px solid rgba(255,255,255,0.07);
     border-radius: 3px;
+  }
+  /* Floats over the already-rendered grid instead of occupying flow
+     space — see the markup comment at this element's {#if} for the
+     layout-shift bug this fixes. z-index above the sticky header
+     (z-index: 2) so it's actually visible on top while shown. */
+  .chain-fetching-overlay {
+    position: absolute;
+    /* Cleared below the sticky header (measured ~1.33rem tall) so this
+       overlay sits over the first data rows, not on top of the CE /
+       Strike / PE labels — an earlier version at top: 0.35rem visually
+       covered the header text for the ~200-300ms this is shown. */
+    top: 1.5rem;
+    left: 0.5rem;
+    z-index: 1;
+    margin: 0;
+    pointer-events: none;
   }
   /* Operator (2026-09-29): "mobile chain looks better than desktop
      chain which looks very cluttered" was FIRST fixed by capping the

@@ -844,3 +844,92 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(parseFloat(opacity), '.ot-depth-diag must be fully opaque, not faded').toBe(1);
   });
 });
+
+test.describe('Static source checks — Chain "Fetching live prices" no longer shifts the grid on load (2026-09-30)', () => {
+  // Operator: "the bottom border shows up below the header and
+  // disappears" — root cause: the "Fetching live prices…" message was a
+  // SIBLING block rendered BEFORE .chain-grid-wrap in normal flow, so it
+  // pushed the whole grid (header + border included) down for the
+  // ~200-300ms before live quotes arrive, then the grid jumped back up
+  // once the message unmounted — read as the header's border visibly
+  // relocating. Fixed by moving the message INSIDE .chain-grid-wrap as
+  // an absolutely-positioned overlay, so it no longer occupies flow
+  // space that later collapses.
+  test('the "Fetching live prices" message is NOT a sibling before .chain-grid-wrap', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    // The old pattern: an {#if}-guarded sibling block immediately
+    // followed by the chain-grid-wrap {#if}, with nothing between them.
+    expect(content).not.toMatch(
+      /Fetching live prices[\s\S]{0,40}\{\/if\}\s*\n\s*<!-- Strike grid -->\s*\n\s*\{#if chainKinds\.includes\('opt'\)/
+    );
+  });
+
+  test('.chain-fetching-overlay is absolutely positioned inside .chain-grid-wrap (position: relative)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const overlayRule = ruleBody(content, '.chain-fetching-overlay') ?? '';
+    expect(overlayRule, '.chain-fetching-overlay rule').not.toBe('');
+    expect(overlayRule).toMatch(/position:\s*absolute/);
+    const wrapRule = ruleBody(content, '.chain-grid-wrap') ?? '';
+    expect(wrapRule, '.chain-grid-wrap rule').not.toBe('');
+    expect(wrapRule).toMatch(/position:\s*relative/);
+  });
+
+  test('.chain-fetching-overlay is positioned to clear the sticky header, not cover the CE/Strike/PE labels', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const overlayRule = ruleBody(content, '.chain-fetching-overlay') ?? '';
+    // Header cell measured ~1.33rem tall live; overlay must clear it
+    // (an earlier version at top: 0.35rem sat directly on top of the
+    // header text, hiding the CE/Strike/PE labels while shown).
+    const topMatch = overlayRule.match(/\n\s*top:\s*([\d.]+)rem;/);
+    expect(topMatch, 'overlay must declare a top offset in rem').not.toBeNull();
+    expect(parseFloat(topMatch[1])).toBeGreaterThanOrEqual(1.33);
+  });
+
+  test('live: .chain-th-ce position never shifts across the fetching-prices transition', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(500);
+
+    const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+    await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+    await chainTab.click();
+
+    const th = page.locator('.chain-th-ce').first();
+    await expect(th).toBeVisible({ timeout: 15_000 });
+
+    const rectAt = async () => th.evaluate((el) => el.getBoundingClientRect().top);
+    const samples = [];
+    for (const wait of [0, 100, 200, 400, 800]) {
+      if (wait) await page.waitForTimeout(wait);
+      samples.push(await rectAt());
+    }
+    const maxDelta = Math.max(...samples) - Math.min(...samples);
+    expect(maxDelta, `header top position must not shift across load: ${JSON.stringify(samples)}`).toBeLessThanOrEqual(1);
+  });
+
+  test('live: CE/Strike/PE header labels stay visible (not covered by the overlay) while "Fetching live prices" shows', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(500);
+
+    const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+    await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+    await chainTab.click();
+
+    const th = page.locator('.chain-th-ce').first();
+    await expect(th).toBeVisible({ timeout: 15_000 });
+    await expect(th).toHaveText('CE');
+  });
+});
