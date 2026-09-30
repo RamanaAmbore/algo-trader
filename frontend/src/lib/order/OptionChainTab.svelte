@@ -1595,15 +1595,37 @@
      bumped 0.05 -> 0.18, then -> 0.35 (2026-09-30, operator: "below
      it there is no white border" — 0.18-alpha white on a dark navy
      background wasn't reading as a visible line) so the header row
-     clearly separates from the strike rows below it. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     clearly separates from the strike rows below it.
+     CHANGED border-bottom -> box-shadow: inset (2026-09-30, operator:
+     "again the border shows and disappears" / "when it shows the
+     background colors for in the money calls and puts, it
+     disappears") — root cause: `position: sticky` `<th>` elements
+     inside a `border-collapse: collapse` table (.chain-grid, below)
+     are a well-documented Chrome/WebKit bug class where the browser
+     can drop the sticky element's own border on repaint, because
+     collapsed borders are painted on the table's shared border layer
+     rather than each cell's own box, which doesn't composite reliably
+     with a stickied element's own layer. A large simultaneous repaint
+     — exactly what happens when chainSpot resolves and every ITM/OTM
+     .chain-td-ce/-pe cell's background wash switches on at once (see
+     .chain-row-itm-call/-put below) — is precisely the kind of trigger
+     that surfaces it. `box-shadow: inset` is not part of table border-
+     collapse semantics at all, so it is unaffected by this bug and
+     renders reliably through any repaint. This is the standard fix
+     recommended for this exact "sticky thead border disappears" bug
+     class. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
-     from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     from 16% to 12%, giving CE/PE the reclaimed width.
+     Left/right borders folded into the same box-shadow: inset as the
+     bottom edge (2026-09-30, same border-collapse/sticky fix as
+     .chain-th-ce/-pe above) instead of separate border-left/-right
+     declarations, for the same repaint-reliability reason. */
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(255,255,255,0.35), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button

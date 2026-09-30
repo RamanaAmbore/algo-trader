@@ -654,13 +654,24 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.chain-th-ce/-pe/-strike border-bottom brightened to 0.35 alpha white (was 0.18)', () => {
+  test('.chain-th-ce/-pe/-strike bottom edge is a 0.35-alpha white box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix)', () => {
+    // box-shadow: inset instead of border-bottom (2026-09-30, operator:
+    // "again the border shows and disappears" / "...in the money calls
+    // and puts, it disappears") — sticky <th> + border-collapse:collapse
+    // is a known Chrome/WebKit bug where the border can drop on a big
+    // repaint (exactly what the ITM/OTM background-wash switch-on is).
+    // box-shadow isn't part of table border-collapse semantics, so it's
+    // immune to this bug class.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.35\)/);
-      expect(rule).not.toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.18\)/);
+      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(255,\s*255,\s*255,\s*0\.35\)/);
+      // Single-line rule — ruleBody's captured [^}]* contains only the
+      // literal declarations between { and }, no surrounding comments,
+      // so a bare substring check here is safe (unlike the multi-line
+      // comment-collision cases documented elsewhere in this file).
+      expect(rule).not.toMatch(/border-bottom:\s*\S/);
     }
   });
 });

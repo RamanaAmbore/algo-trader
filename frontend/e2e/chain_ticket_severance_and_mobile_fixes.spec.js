@@ -487,11 +487,20 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a visibly bright border-bottom (0.35 alpha, brightened from 0.18 on 2026-09-30 — operator: "below it there is no white border")', () => {
+  test('chain header cells have a visibly bright bottom edge via box-shadow:inset, 0.35 alpha (SUPERSEDED 2026-09-30 — border-bottom replaced by box-shadow to fix sticky+border-collapse repaint bug)', () => {
+    // Was border-bottom (brightened from 0.18 to 0.35 alpha same day),
+    // then changed to box-shadow: inset (operator: "again the border
+    // shows and disappears" / "...in the money calls and puts, it
+    // disappears") — sticky <th> + border-collapse:collapse is a known
+    // Chrome/WebKit bug where the border drops on a big repaint; the
+    // ITM/OTM background-wash switch-on (elsewhere in this file) is
+    // exactly that kind of repaint. box-shadow isn't part of table
+    // border-collapse semantics, so it's immune.
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule, `${sel} border-bottom alpha`).toMatch(/border-bottom:\s*1px solid rgba\(255,255,255,0\.35\)/);
+      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(255,255,255,0\.35\)/);
+      expect(rule, `${sel} must not use border-bottom`).not.toMatch(/border-bottom:\s*\S/);
     }
   });
 
