@@ -400,14 +400,23 @@
      pairs (matching .ot-depth-stat's own label+value pattern) instead
      of one run-on text string per item. */
   .ot-depth-diag {
-    display: flex;
-    /* Centered to align with .ot-depth-grid above it (2026-09-30,
-       operator: "I want the additional info to be centered below the
-       market depth aligning market depth") — the grid's own columns
-       are content-sized + centered (not stretched full-width), so a
-       left-aligned diagnostic row sat under the left edge of that
-       narrower, centered grid instead of lining up with it. */
-    justify-content: center;
+    /* inline-flex (was flex) — (2026-09-30, operator: "the border
+       above should be limited to the content") — a block-level `flex`
+       container takes its PARENT's full width by default, so
+       border-top spanned the whole card even though justify-content:
+       center only centered the TEXT within that full-width box.
+       inline-flex shrinks the container itself to fit its own content
+       (the 3 labeled items), so the border-top is exactly as wide as
+       "Buy levels 0 · Sell levels 0 · Volume (raw) 0" — genuinely
+       limited to the content, not stretching edge to edge.
+       align-self: center (replaces the old justify-content: center,
+       now redundant on a content-sized box) centers that content-
+       sized box within .ot-depth's column, aligning it with
+       .ot-depth-grid's own centered column group above it (2026-09-30
+       earlier same-day request: "additional info... centered below
+       the market depth aligning market depth"). */
+    display: inline-flex;
+    align-self: center;
     gap: 0.7rem;
     flex-wrap: wrap;
     margin-top: 0.35rem;

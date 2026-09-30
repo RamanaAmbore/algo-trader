@@ -686,6 +686,59 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(diagIdx, '.ot-depth-diag markup').toBeGreaterThan(gridIdx);
   });
 
+  test('.ot-depth-diag is content-sized (inline-flex + align-self: center), not a full-width flex container (2026-09-30 follow-up)', () => {
+    // Operator: "the border above should be limited to the content" —
+    // a block-level `display: flex` container takes its parent's full
+    // width by default, so border-top spanned the whole card even
+    // though justify-content: center only centered the TEXT inside
+    // that full-width box. inline-flex shrinks the box itself to fit
+    // the 3 labeled items, so border-top is genuinely content-width.
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-diag') ?? '';
+    expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
+    // Match on real declaration lines only (leading whitespace, no
+    // trailing prose) — the explanatory comment above these two
+    // declarations deliberately discusses the OLD values in prose
+    // ("justify-content: center", "display: flex") as part of
+    // explaining the change, which would false-match a bare
+    // substring search.
+    expect(rule).toMatch(/\n\s*display:\s*inline-flex;/);
+    expect(rule).toMatch(/\n\s*align-self:\s*center;/);
+    expect(rule).not.toMatch(/\n\s*display:\s*flex;/);
+    expect(rule).not.toMatch(/\n\s*justify-content:\s*center;/);
+  });
+
+  test('live: .ot-depth-diag\'s own box (and its border-top) is narrower than .ot-depth-grid\'s card, not full-width', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    const symInput = page.locator('.ssi-input').first();
+    const visible = await symInput.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!visible) {
+      test.info().annotations.push({ type: 'skip', description: 'symbol input not visible' });
+      return;
+    }
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    const suggVisible = await sugg.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (!suggVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'no suggestions' });
+      return;
+    }
+    await sugg.click({ force: true });
+    const diag = page.locator('.ot-depth-diag').first();
+    const diagVisible = await diag.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!diagVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-diag not rendered (no quote)' });
+      return;
+    }
+    const card = page.locator('.ot-depth').first();
+    const [diagWidth, cardWidth] = await Promise.all([
+      diag.evaluate((el) => el.getBoundingClientRect().width),
+      card.evaluate((el) => el.getBoundingClientRect().width),
+    ]);
+    expect(diagWidth, `.ot-depth-diag width (${diagWidth}px) must be narrower than .ot-depth's card width (${cardWidth}px) — content-sized, not full-width`).toBeLessThan(cardWidth);
+  });
+
   test('live: .ot-depth-diag is visible below the bid/ask grid with labeled Buy levels / Sell levels / Volume (raw) values', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
