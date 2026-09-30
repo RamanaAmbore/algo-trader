@@ -169,13 +169,15 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     // header format to ticker bid qty, bid, ask, ask qty") to match
     // Chain's header cells: --card-bg-elevated + amber box-shadow-
     // equivalent border-bottom (no sticky/border-collapse risk here,
-    // so plain border-bottom is safe, unlike Chain's <th>).
+    // so plain border-bottom is safe, unlike Chain's <th>). Amber
+    // alpha bumped 0.18 -> 0.28 same day (operator: "the border color
+    // should be a little strong"), kept in sync with Chain's own bump.
     expect(content).toMatch(/<div class="ot-depth-header-bg"/);
     const body = ruleBody(content, '.ot-depth-header-bg');
     expect(body, '.ot-depth-header-bg rule must exist').not.toBeNull();
     expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
     expect(body).toMatch(/background:\s*var\(--card-bg-elevated\)/);
-    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.18\)/);
+    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.28\)/);
   });
 
   test('.ot-depth-label/.ot-depth-bid/.ot-depth-ask carry a subtle Bid|Ask divider, matching Chain\'s column-border treatment (2026-09-30, operator: "apply column borders of chain to quote depth headings and quotes")', () => {
@@ -673,7 +675,7 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.chain-th-ce/-pe/-strike bottom edge is a 0.18-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, later dialed to amber)', () => {
+  test('.chain-th-ce/-pe/-strike bottom edge is a 0.28-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, dialed to amber, then strengthened)', () => {
     // box-shadow: inset instead of border-bottom (2026-09-30, operator:
     // "again the border shows and disappears" / "...in the money calls
     // and puts, it disappears") — sticky <th> + border-collapse:collapse
@@ -681,16 +683,18 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     // repaint (exactly what the ITM/OTM background-wash switch-on is).
     // box-shadow isn't part of table border-collapse semantics, so it's
     // immune to this bug class.
-    // Color/alpha dialed white 0.35 -> amber 0.18 same day (operator:
-    // "reduce the thickness of the border... if the border thinner
-    // with amber shade it may look better") — matches the existing
-    // --algo-amber divider convention (.chain-row-atm's own
-    // border-bottom) instead of a new one-off value.
+    // Color/alpha dialed white 0.35 -> amber 0.18 (operator: "reduce
+    // the thickness of the border... if the border thinner with amber
+    // shade it may look better"), then 0.18 -> 0.28 (operator: "the
+    // border color should be a little strong") — same day, matches the
+    // --algo-amber divider convention already used elsewhere in this
+    // file (.chain-row-atm's border-bottom at 0.18, .oct-acct-warn's
+    // border at 0.28) instead of new one-off values.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.18\)/);
+      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.28\)/);
       // Single-line rule — ruleBody's captured [^}]* contains only the
       // literal declarations between { and }, no surrounding comments,
       // so a bare substring check here is safe (unlike the multi-line

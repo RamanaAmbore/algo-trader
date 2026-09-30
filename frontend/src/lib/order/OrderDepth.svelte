@@ -363,15 +363,21 @@
      qty in order ticket") — background switched from a flat white
      wash to --card-bg-elevated (the same genuinely-lighter navy tier
      Chain's .chain-th-ce/-pe/-strike use, app.css), and the
-     border-bottom dialed from plain white to the same 0.18-alpha
-     amber Chain settled on. No sticky/border-collapse risk here
-     (this is a plain CSS grid, not a <table>), so border-bottom is
-     safe to use directly — no box-shadow workaround needed. */
+     border-bottom dialed from plain white to the same amber Chain
+     settled on. No sticky/border-collapse risk here (this is a plain
+     CSS grid, not a <table>), so border-bottom is safe to use
+     directly — no box-shadow workaround needed.
+     Amber alpha bumped 0.18 -> 0.28 (2026-09-30, operator: "the
+     border color should be a little strong") — kept in sync with the
+     matching bump on Chain's own .chain-th-ce/-pe/-strike, same
+     reasoning: 0.28 already exists elsewhere in the app as a border
+     alpha (e.g. .oct-acct-warn, OptionChainTab.svelte) rather than a
+     new one-off value. */
   .ot-depth-header-bg {
     grid-column: 1 / -1;
     grid-row: 1;
     background: var(--card-bg-elevated);
-    border-bottom: 1px solid rgba(251,191,36,0.18);
+    border-bottom: 1px solid rgba(251,191,36,0.28);
   }
   .ot-depth-cell {
     text-align: right;

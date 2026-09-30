@@ -1619,11 +1619,15 @@
      with amber shade it may look better") — a 1px line can't get
      visually thinner than 1px, so "thinner" here is read as lower
      opacity / warmer color rather than sub-pixel width. 0.18 amber
-     matches the existing --algo-amber divider convention already
+     matched the existing --algo-amber divider convention already
      used elsewhere in this file (.chain-row-atm's own border-bottom,
-     below) instead of introducing a new one-off value. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     below) instead of introducing a new one-off value.
+     Bumped again 0.18 -> 0.28 (2026-09-30, operator: "the border
+     color should be a little strong") — 0.28 also already exists
+     elsewhere in this file as a border alpha (.oct-acct-warn, above)
+     rather than a new one-off value. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
@@ -1633,7 +1637,7 @@
      bottom edge (2026-09-30, same border-collapse/sticky fix as
      .chain-th-ce/-pe above) instead of separate border-left/-right
      declarations, for the same repaint-reliability reason. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.18), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
