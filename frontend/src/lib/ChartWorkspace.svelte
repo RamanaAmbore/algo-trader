@@ -2426,12 +2426,11 @@
     flex: 1 1 0;
     min-height: 0;
     box-sizing: border-box;
-    /* Synced with Chain grid / order-ticket depth ladder (2026-09-30,
-       operator request) — was plain --card-bg-gradient, same as every
-       other generic card; now shares --chain-depth-bg (app.css) so
-       Chart, Payoff, Chain, and Depth all read as one family of
-       "live market surface" panels. */
-    background: var(--chain-depth-bg);
+    /* REVERTED (2026-09-30, same day, explicit operator request) — was
+       briefly switched to --chain-depth-bg to match Chain/Depth; back
+       to the plain canonical card surface every other generic card
+       uses. */
+    background: var(--card-bg-gradient);
     border: 1.5px solid rgba(255, 255, 255, 0.10);
     border-radius: 6px;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.35), inset 0 1px 0 rgba(255, 255, 255, 0.08);

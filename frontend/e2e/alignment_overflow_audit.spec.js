@@ -451,25 +451,24 @@ test.describe('Live — .opt-picker does not overflow a narrow-ish ≥900px view
   });
 });
 
-test.describe('Static source checks — price chart / payoff chart background sync (2026-09-30)', () => {
-  // Operator: "i am referring to any changes to price chart background
-  // to keep it in sync with chain and quote depth" — Chart + Payoff now
-  // share --chain-depth-bg with .chain-grid-wrap / .ot-depth, instead of
-  // the plain --card-bg-gradient every other generic card uses.
-  test('.cw-root (price chart) references --chain-depth-bg, not bare --card-bg-gradient', () => {
+test.describe('Static source checks — price chart / payoff chart background (reverted 2026-09-30, same day)', () => {
+  // REVERTED — the sync-with-Chain/Depth change was undone same day per
+  // explicit operator request. Both charts are back on the plain
+  // canonical card surface every other generic card uses.
+  test('.cw-root (price chart) references bare --card-bg-gradient, not --chain-depth-bg', () => {
     const content = readFile('src/lib/ChartWorkspace.svelte');
     const rule = ruleBody(content, '.cw-root') ?? '';
     expect(rule, '.cw-root rule').not.toBe('');
-    expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
-    expect(rule).not.toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
   });
 
-  test('.payoff-chart (payoff chart) references --chain-depth-bg, not bare --card-bg-gradient', () => {
+  test('.payoff-chart (payoff chart) references bare --card-bg-gradient, not --chain-depth-bg', () => {
     const content = readFile('src/lib/OptionsPayoff.svelte');
     const rule = ruleBody(content, '.payoff-chart') ?? '';
     expect(rule, '.payoff-chart rule').not.toBe('');
-    expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
-    expect(rule).not.toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
   });
 });
 
