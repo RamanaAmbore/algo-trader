@@ -331,11 +331,60 @@
        the label text paints over the header band's background. */
     position: relative;
     z-index: 1;
+    /* grid-row: 1 EXPLICIT (2026-09-30, operator: "why border shows
+       above the header row and not decorate like the header in
+       chain") — root cause: .ot-depth-header-bg (the element right
+       before these labels in the DOM) explicitly claims grid-row: 1
+       across ALL 4 columns. CSS Grid auto-placement treats an
+       explicitly-placed item's cells as OCCUPIED and skips them for
+       any later item with no explicit position — so these 4 labels,
+       having no grid-row of their own, got silently auto-placed into
+       row 2, not row 1. That left row 1 containing ONLY the empty
+       header-bg div (background + border-bottom, no text), rendering
+       as a thin colored band ABOVE the actual "Bid qty/Bid/Ask/Ask
+       qty" text (which was really sitting in row 2) instead of
+       BEHIND it as intended. Chain's header never had this problem —
+       its <th> cells are real table cells inside <thead>, not
+       CSS-Grid auto-placed items, so there's no equivalent collision
+       to dodge.
+       First attempt (grid-row: 1 ALONE, still auto column) made it
+       WORSE, live-verified: with row fixed but column left to
+       auto-placement, the algorithm found every column in row 1
+       already "occupied" by header-bg and — rather than overlapping —
+       created 4 brand-new IMPLICIT columns past the original 4 to
+       place the labels into, splitting labels and data cells into
+       two non-aligned column groups entirely (confirmed via
+       getBoundingClientRect: labels landed around x=750-916,
+       data cells stayed at x=483-675 — completely disjoint). Explicit
+       placement only avoids/overlaps correctly on axes it actually
+       specifies; the auto column axis still dodges occupied cells by
+       creating new tracks. Fix: also give each label its own explicit
+       grid-column (1-4, via the nth-of-type block below) so BOTH axes
+       are explicit and the labels land in the exact same cells as
+       header-bg — true overlap, painted on top per the z-index
+       above — instead of auto-placement inventing new columns. */
+    grid-row: 1;
   }
-  .ot-depth-label:nth-child(1),
-  .ot-depth-label:nth-child(2) { color: var(--algo-green, var(--c-long)); opacity: 0.8; }
-  .ot-depth-label:nth-child(3),
-  .ot-depth-label:nth-child(4) { color: var(--algo-red, var(--c-short)); opacity: 0.8; }
+  .ot-depth-label:nth-of-type(1) { grid-column: 1; }
+  .ot-depth-label:nth-of-type(2) { grid-column: 2; }
+  .ot-depth-label:nth-of-type(3) { grid-column: 3; }
+  .ot-depth-label:nth-of-type(4) { grid-column: 4; }
+  /* nth-of-type, NOT nth-child (2026-09-30, operator: "I think there
+     is some hidden header" — diagnosed from a live screenshot: the
+     Bid|Ask divider was rendering after "Bid qty" instead of after
+     "Bid", and "Bid" itself showed the wrong (red) color). Root
+     cause: .ot-depth-header-bg (a <div>, placed first, immediately
+     above) is counted by :nth-child since it counts ALL siblings —
+     silently shifting every label's index by one ("Bid qty" became
+     nth-child(2) instead of (1), etc.), with "Ask qty" landing on
+     nth-child(5) and matching no rule at all. :nth-of-type only
+     counts same-TAG siblings, so the <div> (a different tag from
+     these <span> labels) doesn't participate in the count — index 1
+     is genuinely the first <span>, "Bid qty". */
+  .ot-depth-label:nth-of-type(1),
+  .ot-depth-label:nth-of-type(2) { color: var(--algo-green, var(--c-long)); opacity: 0.8; }
+  .ot-depth-label:nth-of-type(3),
+  .ot-depth-label:nth-of-type(4) { color: var(--algo-red, var(--c-short)); opacity: 0.8; }
   /* Central Bid|Ask divider (2026-09-30, operator: "apply column
      borders of chain to quote depth headings and quotes") — mirrors
      Chain's Strike-column divider (.chain-th-strike /
@@ -344,8 +393,8 @@
      (Strike) to hang left+right borders off; the depth ladder's
      natural equivalent split is the Bid/Ask boundary itself (columns
      2 and 3), so one divider there rather than one per column. */
-  .ot-depth-label:nth-child(2) { border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
-  .ot-depth-label:nth-child(3) { border-left: 1px solid rgba(255,255,255,0.03); padding-left: 0.3rem; }
+  .ot-depth-label:nth-of-type(2) { border-right: 1px solid rgba(255,255,255,0.03); padding-right: 0.3rem; }
+  .ot-depth-label:nth-of-type(3) { border-left: 1px solid rgba(255,255,255,0.03); padding-left: 0.3rem; }
   /* Header row band (2026-09-30, operator: "let the row [with BID QTY
      / BID / ASK / ASK QTY] have a lower border end to end and a
      slightly different background to show this [as] a header") — a
