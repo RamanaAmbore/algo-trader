@@ -117,6 +117,24 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     const cellBody = ruleBody(content, '.ot-depth-cell');
     expect(cellBody).toMatch(/text-align:\s*right/);
   });
+
+  test('.ot-depth-grid columns are content-sized and centered, not stretched to fill the card width (2026-09-30)', () => {
+    const body = ruleBody(content, '.ot-depth-grid');
+    expect(body, '.ot-depth-grid rule must exist').not.toBeNull();
+    expect(body).toMatch(/grid-template-columns:\s*repeat\(4,\s*max-content\)/);
+    expect(body).not.toMatch(/grid-template-columns:\s*1fr\s+1fr\s+1fr\s+1fr/);
+    expect(body).toMatch(/justify-content:\s*center/);
+  });
+
+  test('.ot-depth-label column headers have a lower border and tint toward their own data column color (2026-09-30)', () => {
+    const body = ruleBody(content, '.ot-depth-label');
+    expect(body, '.ot-depth-label rule must exist').not.toBeNull();
+    expect(body).toMatch(/border-bottom:\s*1px solid/);
+    // Bid/Bid-qty labels (1st/2nd column) tint green; Ask/Ask-qty
+    // labels (3rd/4th column) tint red — matching their data cells.
+    expect(content).toMatch(/\.ot-depth-label:nth-child\(1\),\s*\n?\s*\.ot-depth-label:nth-child\(2\)\s*\{[^}]*color:\s*var\(--algo-green/);
+    expect(content).toMatch(/\.ot-depth-label:nth-child\(3\),\s*\n?\s*\.ot-depth-label:nth-child\(4\)\s*\{[^}]*color:\s*var\(--algo-red/);
+  });
 });
 
 test.describe('Static source checks — PositionStrip.svelte', () => {

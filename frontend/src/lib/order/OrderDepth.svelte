@@ -261,7 +261,13 @@
   }
   .ot-depth-grid {
     display: grid;
-    grid-template-columns: 1fr 1fr 1fr 1fr;
+    /* Content-sized columns, centered as a group (2026-09-30, operator:
+       "the columns should be centered in the middle instead of
+       expanding to the available width") — was `1fr 1fr 1fr 1fr`,
+       stretching each column to fill the full card width regardless of
+       how narrow the actual bid/ask/qty text is. */
+    grid-template-columns: repeat(4, max-content);
+    justify-content: center;
     gap: 0.15rem 0.4rem;
     font-family: var(--font-numeric);
     /* Audit fix — explicit tabular-nums on the price/qty cells. The
@@ -277,7 +283,20 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     text-align: right;
+    /* Lower border + per-column color (2026-09-30, operator: "the
+       header with values BID QTY / BID / ASK / ASK QTY to be in a
+       slightly different color scheme with lower border") — each
+       label now tints toward its own data column's color (green for
+       Bid/Bid-qty, red for Ask/Ask-qty) instead of uniform muted gray,
+       plus a subtle underline separating the label row from the price
+       rows beneath it. */
+    padding-bottom: 0.2rem;
+    border-bottom: 1px solid rgba(255,255,255,0.10);
   }
+  .ot-depth-label:nth-child(1),
+  .ot-depth-label:nth-child(2) { color: var(--algo-green, var(--c-long)); opacity: 0.8; }
+  .ot-depth-label:nth-child(3),
+  .ot-depth-label:nth-child(4) { color: var(--algo-red, var(--c-short)); opacity: 0.8; }
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
