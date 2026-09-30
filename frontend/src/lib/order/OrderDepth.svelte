@@ -294,8 +294,18 @@
        "the columns should be centered in the middle instead of
        expanding to the available width") — was `1fr 1fr 1fr 1fr`,
        stretching each column to fill the full card width regardless of
-       how narrow the actual bid/ask/qty text is. */
-    grid-template-columns: repeat(4, max-content);
+       how narrow the actual bid/ask/qty text is.
+       Defined minimum width added (2026-09-30 follow-up, operator: "the
+       columns should have a defined width to accommodate the quote
+       numbers") — bare `max-content` sizes each column to WHATEVER the
+       current quote happens to need, so the grid visibly resized/
+       jumped on every poll tick as bid/ask/qty digit counts changed
+       (e.g. "99.50" -> "105.25" -> "1050.75"). A shared 3.4rem floor
+       keeps all 4 columns visually stable at rest — comfortably fits
+       typical price/qty values without truncation — while max-content
+       still lets a genuinely longer value grow the column rather than
+       clip. */
+    grid-template-columns: repeat(4, minmax(3.4rem, max-content));
     justify-content: center;
     /* Column-gap widened 0.4rem -> 0.9rem (2026-09-30, operator: "the
        columns are too close. keep them away to accommodate the

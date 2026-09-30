@@ -135,10 +135,15 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(cellBody).toMatch(/text-align:\s*right/);
   });
 
-  test('.ot-depth-grid columns are content-sized and centered, with a widened column-gap (2026-09-30, twice same day)', () => {
+  test('.ot-depth-grid columns have a defined minimum width, centered, with a widened column-gap (2026-09-30, three times same day)', () => {
     const body = ruleBody(content, '.ot-depth-grid');
     expect(body, '.ot-depth-grid rule must exist').not.toBeNull();
-    expect(body).toMatch(/grid-template-columns:\s*repeat\(4,\s*max-content\)/);
+    // minmax(3.4rem, max-content) — was bare repeat(4, max-content),
+    // which resized the grid on every poll tick as bid/ask/qty digit
+    // counts changed (operator: "the columns should have a defined
+    // width to accommodate the quote numbers").
+    expect(body).toMatch(/grid-template-columns:\s*repeat\(4,\s*minmax\(3\.4rem,\s*max-content\)\)/);
+    expect(body).not.toMatch(/grid-template-columns:\s*repeat\(4,\s*max-content\)\)?;/);
     expect(body).not.toMatch(/grid-template-columns:\s*1fr\s+1fr\s+1fr\s+1fr/);
     expect(body).toMatch(/justify-content:\s*center/);
     // Widened from 0.4rem -> 0.9rem after "columns too close" feedback
