@@ -59,13 +59,12 @@
   // severance fix) so the toggle never reads "ON" while nothing is
   // actually armed to attach on fill.
   const _toggleOn = $derived(!shellUsingNone && !!selectedTemplate);
-  // Clicking to activate with no side-aware default configured would be
-  // a silent no-op (onSelectDefault() itself no-ops without one) —
-  // disable the button and explain why via title instead. Only disabled
-  // while INACTIVE and there's nothing to activate to; always clickable
-  // while active (deactivating to None never needs a default).
-  const _toggleOnDisabled = $derived(!sideAwareDefault);
-  const _templBtnDisabled = $derived(!_toggleOn && _toggleOnDisabled);
+  // Button is ALWAYS clickable (2026-09-30, operator: "make Templ
+  // always clickable/enabled — never visually disabled"). Clicking to
+  // activate with no side-aware default configured is a silent no-op
+  // (onSelectDefault() itself no-ops without one) — kept as a plain
+  // no-op rather than a disabled affordance; the title still explains
+  // the state via `_toggleOnLabel` below.
   const _toggleOnLabel = $derived(
     _toggleOn
       ? (selectedTemplate.name || selectedTemplate.slug || 'Default')
@@ -178,12 +177,9 @@
   <button type="button"
           class="oes-tpl-button"
           class:active={_toggleOn}
-          disabled={_templBtnDisabled}
-          title={_templBtnDisabled
-            ? 'No default template configured for this side/type'
-            : (_toggleOn
-                ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
-                : 'No template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)')}
+          title={_toggleOn
+            ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
+            : 'No template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)'}
           onclick={() => { if (_toggleOn) { onSelectNone?.(); } else { onSelectDefault?.(); } }}>
     <span class="oes-tpl-button-dot" aria-hidden="true"></span>
     Templ
@@ -355,7 +351,7 @@
     box-sizing: border-box;
     transition: background 0.12s, color 0.12s, border-color 0.12s;
   }
-  .oes-tpl-button:hover:not(.active):not(:disabled) {
+  .oes-tpl-button:hover:not(.active) {
     color: var(--algo-slate);
     background: rgba(148, 163, 184, 0.18);
     border-color: rgba(148, 163, 184, 0.5);
@@ -365,10 +361,9 @@
     border-color: rgba(251, 191, 36, 0.55);
     color: var(--algo-amber, var(--c-action));
   }
-  .oes-tpl-button:disabled {
-    opacity: 0.4;
-    cursor: not-allowed;
-  }
+  /* Button is always clickable/enabled (2026-09-30) — the old
+     :disabled rule (dimmed opacity + not-allowed cursor) is gone since
+     the `disabled` HTML attribute is never set. */
   /* Status dot — small colored circle, amber when ON, slate when OFF,
      for an at-a-glance cue independent of the text/border color. */
   .oes-tpl-button-dot {

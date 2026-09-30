@@ -1834,19 +1834,24 @@
      grid. `flex: 1 1 auto` lets it grow to actually use that leftover
      space (still capped at 16rem, still shrinkable), without
      reintroducing the original starvation problem since there's
-     nothing left below it to starve. */
+     nothing left below it to starve.
+     ROOT-CAUSE FIX (2026-09-30, same day) — flipping this value alone
+     never actually fixed the "empty space below chain" complaint; it
+     only relocated the same gap between "inside the grid, below the
+     last row" (flex:0) and "inside .oct-root, below the grid" (flex:1)
+     because the REAL cause was the parent: SymbolPanel.svelte's
+     `.oes-body :global(.oct-root)` was unconditionally forcing
+     `flex: 1 1 0` (full-stretch) on mobile too, with no override next
+     to its own `--chain-depth-h: auto` mobile exception. Now that
+     `.oct-root` drops its forced full-stretch on mobile (see that
+     rule's own comment), `flex: 1 1 auto` here lets the grid genuinely
+     grow into leftover space without an outer container adding extra
+     dead space beyond what the grid needs. Future passes: check the
+     PARENT (.oct-root) before re-flipping this value again. */
   @media (max-width: 760px) {
     .chain-grid-wrap {
       max-height: 16rem;
-      /* flex-grow:0 (was 1) — 2026-09-30, operator: "why empty space
-         below chain on mobile". flex:1 1 auto still STRETCHED the
-         wrapper to consume all leftover space in its flex-column parent
-         up to the 16rem cap, even when the actual strike-row content
-         was naturally shorter than that — leaving visible empty space
-         inside the (now taller-than-needed) wrapper, below the last
-         real row, before the on-fill notice/Submit bar. Shrink-to-
-         content (up to the same 16rem cap) instead. */
-      flex: 0 1 auto;
+      flex: 1 1 auto;
     }
   }
 </style>

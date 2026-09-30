@@ -50,7 +50,9 @@
 import { test, expect } from '@playwright/test';
 import { readFileSync } from 'fs';
 import path from 'path';
+import { loginAsAdmin } from './fixtures/auth.js';
 
+const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
 const dir = path.resolve(import.meta.dirname ?? new URL('.', import.meta.url).pathname, '..');
 const SYMBOL_PANEL = readFileSync(path.join(dir, 'src/lib/SymbolPanel.svelte'), 'utf8');
 const ORDER_TICKET = readFileSync(path.join(dir, 'src/lib/order/OrderTicket.svelte'), 'utf8');
@@ -59,21 +61,51 @@ const SUBMIT_HELPERS = readFileSync(path.join(dir, 'src/lib/order/orderTicketSub
 const TEMPLATE_BAR = readFileSync(path.join(dir, 'src/lib/TemplateBar.svelte'), 'utf8');
 const APP_CSS = readFileSync(path.join(dir, 'src/app.css'), 'utf8');
 const CHART_WORKSPACE = readFileSync(path.join(dir, 'src/lib/ChartWorkspace.svelte'), 'utf8');
+const ORDER_DEPTH = readFileSync(path.join(dir, 'src/lib/order/OrderDepth.svelte'), 'utf8');
+
+/**
+ * Navigate to /orders, type an F&O-eligible symbol (NIFTY — index with
+ * NFO weekly options, so the Chain tab's own `chainDisabled` root-
+ * eligibility gate never fires — a bare/empty symbol trivially has NO
+ * F&O coverage and disables Chain entirely, so "no symbol" isn't a
+ * reachable Chain-tab state to test against), then switch to the
+ * Chain tab. Shared by the live browser tests below.
+ * @param {import('@playwright/test').Page} page
+ */
+async function _seedNiftyAndOpenChain(page) {
+  await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  const symInput = page.locator('.ssi-input').first();
+  await expect(symInput).toBeVisible({ timeout: 15_000 });
+  await symInput.fill('NIFTY');
+  const sugg = page.locator('.ssi-drop .ssi-row').first();
+  await expect(sugg).toBeVisible({ timeout: 10_000 });
+  await sugg.click({ force: true });
+  await page.waitForTimeout(500);
+
+  const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+  await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+  await chainTab.click();
+}
 
 test.describe('Ticket/Chain template severance', () => {
   test('Templ toggle/note visibility gates only ever fire for the Chain tab, never Ticket', () => {
     // 2026-09-30 — the shell-level demo/live if-else-if branch that used
     // to render <TemplateBar> directly was replaced by two $derived
-    // booleans (_showTemplateBar / _showDemoTplNote), both scoped to
-    // `_activeTab === 'chain'` inside their own definitions, threaded
-    // down into <OptionChainTab> as plain props. Assert the gates
-    // themselves still only ever apply to the Chain tab.
-    const showTemplateBarDef = SYMBOL_PANEL.match(/const _showTemplateBar = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
+    // booleans (_showTemplateBar / _showDemoTplNote), threaded down
+    // into <OptionChainTab> as plain props; the ENCLOSING mount gate
+    // (`{#if _activeTab === 'chain'}` around <OptionChainTab> itself)
+    // is what scopes both to the Chain tab, not either variable's own
+    // definition. `_showDemoTplNote` still has real content gating
+    // (demo + action='open' + symbol-or-legs). `_showTemplateBar` was
+    // made UNCONDITIONALLY true (2026-09-30 follow-up, operator: "Templ
+    // toggle should show unconditionally in Chain") — see the separate
+    // `_showTemplatePreview` test below for the preserved old gating on
+    // the shell-level preview/cap-warn strip (a different consumer).
+    const showTemplateBarDef = SYMBOL_PANEL.match(/const _showTemplateBar = \$derived\([\s\S]{0,60}?\);/)?.[0] ?? '';
     const showDemoNoteDef = SYMBOL_PANEL.match(/const _showDemoTplNote = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
     expect(showTemplateBarDef, '_showTemplateBar definition').not.toBe('');
     expect(showDemoNoteDef, '_showDemoTplNote definition').not.toBe('');
-    expect(showTemplateBarDef).toMatch(/_templates\.length > 0/);
-    expect(showTemplateBarDef).toMatch(/action === 'open'/);
+    expect(showTemplateBarDef).toMatch(/\$derived\(true\)/);
     expect(showDemoNoteDef).toMatch(/_isDemo/);
     expect(showDemoNoteDef).toMatch(/action === 'open'/);
     // Both gates are threaded into <OptionChainTab>, which only ever
@@ -87,6 +119,20 @@ test.describe('Ticket/Chain template severance', () => {
     expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-row-demo\s*\{/);
     expect(SYMBOL_PANEL).not.toMatch(/\.oes-basket-tpl-demo-note\s*\{/);
     expect(SYMBOL_PANEL).not.toMatch(/class="oes-basket-tpl-row-demo"/);
+  });
+
+  test('_showTemplatePreview keeps the OLD gating for the shell-level on-fill preview + cap-warn strip', () => {
+    // A SEPARATE consumer from the toggle above — genuinely needs
+    // templates loaded / action='open' / a real symbol-or-legs before
+    // it has anything to preview; making the toggle unconditional must
+    // not also make this strip render with nothing to show.
+    const def = SYMBOL_PANEL.match(/const _showTemplatePreview = \$derived\([\s\S]{0,220}?\);/)?.[0] ?? '';
+    expect(def, '_showTemplatePreview definition').not.toBe('');
+    expect(def).toMatch(/_templates\.length > 0/);
+    expect(def).toMatch(/action === 'open'/);
+    expect(SYMBOL_PANEL).toMatch(/\{#if _showTemplatePreview && !_isDemo && !_shellUsingNone\}/);
+    // The old variable name must not still be used for this gate.
+    expect(SYMBOL_PANEL).not.toMatch(/\{#if _showTemplateBar && !_isDemo/);
   });
 
   test('Templ toggle mounts inside OptionChainTab, never SymbolPanel', () => {
@@ -145,15 +191,23 @@ test.describe('Ticket/Chain template severance', () => {
     // on every fresh order, for every symbol, until the operator
     // explicitly picked a side. Fix: the scope guess (NOT _modalSide
     // itself) falls back to 'BUY' when nothing else is known yet.
-    const scopeBlock = SYMBOL_PANEL.match(/const _sideAwareDefault = \$derived\.by\([\s\S]{0,2000}?\}\);/)?.[0] ?? '';
-    expect(scopeBlock, '_sideAwareDefault derivation block').not.toBe('');
-    expect(scopeBlock).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
-    // The auto-swap effect (re-resolves the shared template on a side
-    // flip) must use the identical fallback for consistency — otherwise
-    // the initial toggle state and the swap-on-flip state could disagree.
-    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,1200}?_appliesToFor\(sideForScope, symForScope\)/)?.[0] ?? '';
+    // The fallback ladder was factored into a single shared
+    // `_currentScope()` helper (2026-09-30, remember-per-scope fix) —
+    // reused by `_sideAwareDefault`, the side-flip auto-swap effect,
+    // and the three Templ onSelect* persistence call sites, so they
+    // can never disagree on the fallback.
+    const scopeFn = SYMBOL_PANEL.match(/function _currentScope\(\) \{[\s\S]{0,400}?\n  \}/)?.[0] ?? '';
+    expect(scopeFn, '_currentScope() helper').not.toBe('');
+    expect(scopeFn).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
+    expect(scopeFn).toMatch(/_appliesToFor\(sideForScope, symForScope\)/);
+    // Both consumers call the shared helper rather than re-inlining the
+    // fallback ladder themselves.
+    const sideAwareDefaultBlock = SYMBOL_PANEL.match(/const _sideAwareDefault = \$derived\.by\([\s\S]{0,1400}?\n  \}\);/)?.[0] ?? '';
+    expect(sideAwareDefaultBlock, '_sideAwareDefault derivation block').not.toBe('');
+    expect(sideAwareDefaultBlock).toMatch(/_currentScope\(\)/);
+    const swapEffectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,2400}?\n  \}\);/)?.[0] ?? '';
     expect(swapEffectBlock, 'side-flip auto-swap effect block').not.toBe('');
-    expect(swapEffectBlock).toMatch(/_focusedLeg\?\.side \|\| _modalSide \|\| 'BUY'/);
+    expect(swapEffectBlock).toMatch(/_currentScope\(\)/);
   });
 
   test('Chain tab still owns the shared templateId binding (severance is Ticket-only)', () => {
@@ -281,24 +335,53 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(sellRule).not.toMatch(/border-color:\s*var\(--c-short-\d/);
   });
 
-  // 2026-09-30: operator — "empty space below chain strikes, chain is not
-  // fully using available space". flex: 0 1 auto (content-only sizing) was
-  // reversed to flex: 1 1 auto now that the Templ toggle it was protecting
-  // has moved above the grid (into the expiry row) — nothing left below
-  // the grid to starve, so it can grow to fill real leftover space again.
-  test('mobile .chain-grid-wrap shrinks to content (flex: 0 1 auto), still capped at 16rem (2026-09-30 fix)', () => {
-    // Was flex: 1 1 auto — grow:1 stretched the wrapper to consume all
-    // leftover space in its flex-column parent up to the 16rem cap, even
-    // when the actual strike-row content was shorter, leaving visible
-    // empty space below the last row (operator: "why empty space below
-    // chain on mobile"). Shrink-to-content instead.
+  // 2026-09-30 ROOT-CAUSE FIX (supersedes the same-day flex:0 1 auto
+  // reversal above): operator reported "no change" on the empty-space
+  // complaint even after that flip. Root cause was the PARENT —
+  // SymbolPanel.svelte's `.oes-body :global(.oct-root)` was
+  // unconditionally forcing `flex: 1 1 0` (full-stretch) on mobile too,
+  // with no override next to its own `--chain-depth-h: auto` mobile
+  // exception. Whatever `.chain-grid-wrap` did with its own flex value,
+  // the leftover slack between the grid's real content height and
+  // `.oct-root`'s forced full height had to show up as blank space
+  // SOMEWHERE inside `.oct-root` — flipping `.chain-grid-wrap` alone
+  // only ever relocated that gap. Fix: `.oct-root` drops its forced
+  // full-stretch on mobile (`flex: 0 1 auto`), and `.chain-grid-wrap`
+  // is reverted back to `flex: 1 1 auto` so the grid itself grows into
+  // genuinely available leftover space (still capped at 16rem).
+  test('mobile: .oct-root drops forced full-stretch, .chain-grid-wrap reverts to flex: 1 1 auto (2026-09-30 root-cause fix)', () => {
+    const octRootMobileBlock = SYMBOL_PANEL.match(/@media \(max-width: 720px\) \{\s*\.oes-body :global\(\.oct-root\) \{[\s\S]{0,200}?\}/)?.[0] ?? '';
+    expect(octRootMobileBlock, 'mobile .oct-root override block').not.toBe('');
+    expect(octRootMobileBlock).toMatch(/\n\s*flex:\s*0 1 auto;/);
+    // .oes-ticket-body is deliberately NOT part of this mobile override
+    // — the Ticket tab's own depth ladder handles mobile differently.
+    expect(octRootMobileBlock).not.toContain('oes-ticket-body');
+
     const mobileBlock = CHAIN_TAB.match(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{[\s\S]{0,1200}?\}/)?.[0] ?? '';
     expect(mobileBlock, 'mobile .chain-grid-wrap block').not.toBe('');
     expect(mobileBlock).toMatch(/max-height:\s*16rem/);
-    // The real CSS declaration (not the explanatory comment prose above
-    // it, which legitimately mentions the old value in passing).
-    expect(mobileBlock).toMatch(/\n\s*flex:\s*0 1 auto;/);
-    expect(mobileBlock).not.toMatch(/\n\s*flex:\s*1 1 auto;/);
+    expect(mobileBlock).toMatch(/\n\s*flex:\s*1 1 auto;/);
+    expect(mobileBlock).not.toMatch(/\n\s*flex:\s*0 1 auto;/);
+  });
+
+  // Live-browser computed-style check — the source-scan above proves
+  // the CSS rules exist; this proves the cascade actually resolves as
+  // intended at a real mobile viewport (mobile-portrait project is
+  // 360×800, already <720px/<760px so both media queries are active
+  // by default — explicit setViewportSize kept anyway for clarity and
+  // so this test is meaningful even when run under chromium-desktop).
+  test('live: .oct-root computes flex-grow:0 and .chain-grid-wrap computes flex-grow:1 at mobile viewport width', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 800 });
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChain(page);
+
+    const octRoot = page.locator('.oct-root').first();
+    await expect(octRoot).toBeVisible({ timeout: 30_000 });
+    await expect(octRoot).toHaveCSS('flex-grow', '0');
+
+    const chainGridWrap = page.locator('.chain-grid-wrap').first();
+    await expect(chainGridWrap).toBeVisible({ timeout: 10_000 });
+    await expect(chainGridWrap).toHaveCSS('flex-grow', '1');
   });
 });
 
@@ -339,7 +422,11 @@ test.describe('TemplateBar — single toggle button replaces the primary dropdow
     expect(btn).toContain('onSelectDefault?.()');
     expect(btn).toContain('onSelectNone?.()');
     expect(btn).toMatch(/if\s*\(_toggleOn\)/);
-    expect(btn).toMatch(/disabled=\{_templBtnDisabled\}/);
+    // Button is always clickable/enabled (2026-09-30 follow-up,
+    // operator: "make Templ always clickable/enabled — never visually
+    // disabled") — the old `disabled={_templBtnDisabled}` attribute
+    // is gone; clicking with nothing to activate to is a silent no-op.
+    expect(btn).not.toMatch(/disabled=/);
     expect(btn).not.toContain('_debugToggleClick');
     expect(TEMPLATE_BAR).not.toMatch(/let _debugOn/);
     // ON/active display state guards against a null _sharedTemplateId
@@ -474,5 +561,91 @@ test.describe('TemplateBar mount gate — real showDemoTplNote/showTemplateBar c
     expect(precedingText).toMatch(/\{:else if showTemplateBar\}/);
     expect(CHAIN_TAB).toMatch(/showTemplateBar\s*=\s*false/);
     expect(CHAIN_TAB).toMatch(/showDemoTplNote\s*=\s*false/);
+  });
+});
+
+// 2026-09-30: Templ toggle batch — (1) remove the disabled gate so the
+// button is always clickable, (2) show unconditionally in Chain +
+// remember the operator's last on/off/specific-template choice per
+// side-scope, persisted to localStorage across sessions.
+test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-scope remembered pref (2026-09-30)', () => {
+  test('source: button never renders a `disabled` attribute anywhere in TemplateBar.svelte', () => {
+    expect(TEMPLATE_BAR).not.toMatch(/disabled=/);
+    expect(TEMPLATE_BAR).not.toContain('_templBtnDisabled');
+    expect(TEMPLATE_BAR).not.toContain('_toggleOnDisabled');
+  });
+
+  test('source: _readTemplPref/_writeTemplPref exist and are wired into all three onSelect* handlers + the scope-resolution effect', () => {
+    expect(SYMBOL_PANEL).toMatch(/const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1'/);
+    expect(SYMBOL_PANEL).toMatch(/function _readTemplPref\(scope\)/);
+    expect(SYMBOL_PANEL).toMatch(/function _writeTemplPref\(scope, value\)/);
+    const onSelectDefaultBlock = SYMBOL_PANEL.match(/onSelectDefault=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
+    const onSelectNoneBlock = SYMBOL_PANEL.match(/onSelectNone=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
+    const onSelectTemplateBlock = SYMBOL_PANEL.match(/onSelectTemplate=\{[\s\S]{0,220}?\}\}/)?.[0] ?? '';
+    expect(onSelectDefaultBlock, 'onSelectDefault handler').not.toBe('');
+    expect(onSelectNoneBlock, 'onSelectNone handler').not.toBe('');
+    expect(onSelectTemplateBlock, 'onSelectTemplate handler').not.toBe('');
+    expect(onSelectDefaultBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'on'\)/);
+    expect(onSelectNoneBlock).toMatch(/_writeTemplPref\(_currentScope\(\), 'none'\)/);
+    expect(onSelectTemplateBlock).toMatch(/_writeTemplPref\(_currentScope\(\), id\)/);
+    // The scope-resolution effect only READS the pref — it never writes
+    // one (writes are confined to the three handlers above).
+    const effectBlock = SYMBOL_PANEL.match(/let _lastSideScope[\s\S]{0,2400}?\n  \}\);/)?.[0] ?? '';
+    expect(effectBlock, 'side-flip/pref-resolution effect').not.toBe('');
+    expect(effectBlock).toMatch(/_readTemplPref\(scope\)/);
+    expect(effectBlock).not.toMatch(/_writeTemplPref/);
+  });
+
+  test('live: a remembered "none" pref for the resolved scope makes the toggle mount OFF (localStorage seeded before load)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.addInitScript(() => {
+      // BUY + a non-CE/PE symbol (NIFTY, the underlying — the actual
+      // Chain leg picks are CE/PE, but the shell's own scope guess
+      // falls through _localSymbol first) resolves to 'buy_any' (see
+      // _currentScope()'s fallback ladder). Seed that scope's pref to
+      // the explicit opt-out sentinel.
+      localStorage.setItem('ramboq_templ_pref_v1', JSON.stringify({ buy_any: 'none' }));
+    });
+    await _seedNiftyAndOpenChain(page);
+
+    const toggle = page.locator('.oes-tpl-button').first();
+    await expect(toggle).toBeVisible({ timeout: 15_000 });
+    await expect(toggle).not.toHaveClass(/active/);
+  });
+
+  test('live: Templ toggle renders unconditionally on Chain tab (visible + enabled), with nothing remembered', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.addInitScript(() => {
+      localStorage.removeItem('ramboq_templ_pref_v1');
+    });
+    await _seedNiftyAndOpenChain(page);
+
+    const toggle = page.locator('.oes-tpl-button').first();
+    await expect(toggle).toBeVisible({ timeout: 15_000 });
+    await expect(toggle).toBeEnabled();
+    await expect(toggle).not.toHaveAttribute('disabled', '');
+  });
+});
+
+// 2026-09-30: Order Depth / Chain strike background color consistency —
+// .ot-depth (Ticket tab's depth ladder) used a generic black overlay
+// instead of the app's actual elevation token; .oes-tabs-divider used
+// plain white/gray instead of this surface's amber accent family.
+test.describe('Depth ladder + tab-strip divider — surface color consistency (2026-09-30)', () => {
+  test('.ot-depth background references --algo-bg-elev2 (same token as .chain-grid-wrap), not a hardcoded black rgba', () => {
+    const rule = ORDER_DEPTH.match(/\.ot-depth\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.ot-depth rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*var\(--algo-bg-elev2,\s*#0d1829\)/);
+    expect(rule).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.18\)/);
+    // Cross-reference: the Chain tab's own strike grid wrapper uses the
+    // identical token — this is what "surface elevation parity" means.
+    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--algo-bg-elev2,\s*#0d1829\)/);
+  });
+
+  test('.oes-tabs-divider references the amber accent family, not plain white/gray', () => {
+    const rule = SYMBOL_PANEL.match(/\.oes-tabs-divider\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-tabs-divider rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*rgba\(251,\s*191,\s*36,\s*0\.18\)/);
+    expect(rule).not.toMatch(/background:\s*rgba\(255,\s*255,\s*255,/);
   });
 });

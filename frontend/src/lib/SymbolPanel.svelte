@@ -63,6 +63,37 @@
   import { liveSnap } from '$lib/data/symbolStore.svelte.js';
   import RefreshButton from '$lib/RefreshButton.svelte';
 
+  // Templ toggle — remembers the operator's last on/off/specific-
+  // template choice PER SIDE-SCOPE (buy_option / sell_option / buy_any
+  // / sell_any / both — see `$lib/data/templateScope.js`), persisted
+  // across page reloads. Shape: a flat object keyed by scope string,
+  // value is `'on'` (follow the side-aware default), `'none'`
+  // (explicit off), or a number (a specific named template id).
+  // Best-effort — a read/write failure (private-mode localStorage,
+  // corrupt JSON) silently falls back to "nothing remembered" rather
+  // than throwing.
+  const _TEMPL_PREF_KEY = 'ramboq_templ_pref_v1';
+  /** @param {string} scope
+   *  @returns {'none'|number|undefined} */
+  function _readTemplPref(scope) {
+    try {
+      const raw = localStorage.getItem(_TEMPL_PREF_KEY);
+      if (!raw) return undefined;
+      const obj = JSON.parse(raw);
+      return obj?.[scope];
+    } catch { return undefined; }
+  }
+  /** @param {string} scope
+   *  @param {'none'|'on'|number} value */
+  function _writeTemplPref(scope, value) {
+    try {
+      const raw = localStorage.getItem(_TEMPL_PREF_KEY);
+      const obj = raw ? JSON.parse(raw) : {};
+      obj[scope] = value;
+      localStorage.setItem(_TEMPL_PREF_KEY, JSON.stringify(obj));
+    } catch { /* best-effort; ok to lose the remembered pref in private mode etc */ }
+  }
+
   // Pinned anchors: no hardcoded list — SymbolSearchInput's own
   // _autoLoadPins() fires when no `pins` prop is supplied and loads
   // from loadWatchlistSymbols(). Drop _DEFAULT_PINS / _PIN_LABELS /
@@ -907,21 +938,29 @@
   const _shellUsingNone = $derived(
     !!(_noneTpl && _sharedTemplateId === _noneTpl.id)
   );
-  // Templ-row visibility gates (2026-09-30) — the toggle itself now
-  // renders inside OptionChainTab's expiry row, so these are computed
-  // here (where `_templates`/`action`/`_localSymbol`/`basketLegs` all
-  // already live) and passed down as plain booleans instead of
-  // OptionChainTab re-deriving them. Exact parity with the original
-  // if/else-if gate: `_showDemoTplNote` wins whenever both would be
-  // true (OptionChainTab renders it via `{#if showDemoTplNote}...
-  // {:else if showTemplateBar}`), matching the old branch's demo-first
-  // precedence.
-  const _showTemplateBar = $derived(
-    _templates.length > 0 && action === 'open'
-    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
-  );
+  // Templ toggle visibility (2026-09-30 → unconditional 2026-09-30
+  // follow-up, operator: "Templ toggle should show unconditionally in
+  // Chain"). The toggle itself renders inside OptionChainTab's expiry
+  // row (via `{#if showDemoTplNote}...{:else if showTemplateBar}`,
+  // which only ever mounts for the Chain tab), so "unconditional" here
+  // just means dropping the old templates-loaded / action / symbol-or-
+  // legs gating that used to hide the toggle for e.g. a close/modify
+  // action or an empty basket. `_showDemoTplNote` is untouched and
+  // still wins whenever both would apply (demo-first precedence).
+  const _showTemplateBar = $derived(true);
   const _showDemoTplNote = $derived(
     _isDemo && action === 'open'
+    && !!((_localSymbol || '').trim() || basketLegs.length > 0)
+  );
+  // Shell-level on-fill preview + cap-warning strip visibility — a
+  // SEPARATE consumer from the toggle above (see the `_showTemplateBar`
+  // history note): this block sits at shell level, visible from BOTH
+  // tabs, and genuinely needs templates loaded / action='open' / a
+  // real symbol-or-legs before it has anything to preview. Kept at the
+  // OLD `_showTemplateBar` expression so making the toggle unconditional
+  // doesn't also make this strip render with nothing to show.
+  const _showTemplatePreview = $derived(
+    _templates.length > 0 && action === 'open'
     && !!((_localSymbol || '').trim() || basketLegs.length > 0)
   );
   // Side-scope helper — mirrors OrderTicket's `_appliesToFor` so the
@@ -929,6 +968,17 @@
   // current direction. Returns 'sell_option' for SELL CE/PE legs (the
   // only scope that wants a protective wing), 'sell_any' / 'buy_any'
   // for the directional defaults, and 'both' as a no-op catch.
+  /** Current side+symbol scope string ('buy_option' / 'sell_option' /
+   *  'buy_any' / 'sell_any' / 'both') — single source shared by
+   *  `_sideAwareDefault`, the side-flip auto-swap effect, and the
+   *  Templ-pref persistence call sites so they never disagree. */
+  function _currentScope() {
+    const symForScope = (_localSymbol || '').trim()
+      || (_focusedLeg?.sym || '')
+      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
+    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
+    return _appliesToFor(sideForScope, symForScope);
+  }
   // Shell-level template parameter overrides. Editing these in the
   // "On fill" row updates them; OrderTicket binds them so its own
   // submit carries the values. Operator: "on fill selected, if there
@@ -972,26 +1022,20 @@
   // both the pill state and the rendered template params.
   const _sideAwareDefault = $derived.by(() => {
     if (_templates.length === 0) return null;
-    // Symbol used for the CE/PE regex check. Prefer _localSymbol (the
-    // header / Ticket form), but fall back to the focused (or last)
-    // basket leg's symbol when the operator built the basket from the
-    // Chain tab without typing a header symbol. Falling through to
-    // _modalSide for the side itself, which is shell-global.
-    const symForScope = (_localSymbol || '').trim()
-      || (_focusedLeg?.sym || '')
-      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
-    // Fall back to 'BUY' ONLY for this scope guess when no side is known
-    // yet (2026-09-30, operator: "by default [templ] should be on...
-    // when on, while placing the order it should take action on the
-    // other order"). Deliberately does NOT touch `_modalSide` itself —
-    // that stays null on a cold open so the SideToggle shows neither
-    // pre-active and margin preflight still short-circuits (see the
-    // `_modalSide` declaration's own comment for why that's load-
-    // bearing). This only affects which template gets PREVIEWED/
-    // toggled-on by default; once the operator picks a real side, this
-    // recomputes to the correct scope automatically (already reactive).
-    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
-    const scope = _appliesToFor(sideForScope, symForScope);
+    // Scope computed by the shared `_currentScope()` helper — same
+    // _localSymbol/_focusedLeg/basketLegs/_modalSide fallback ladder
+    // (prefers _localSymbol, falls back through the focused/last
+    // basket leg, then 'BUY' when no side is known yet — 2026-09-30,
+    // operator: "by default [templ] should be on... when on, while
+    // placing the order it should take action on the other order").
+    // Deliberately does NOT touch `_modalSide` itself — that stays
+    // null on a cold open so the SideToggle shows neither pre-active
+    // and margin preflight still short-circuits (see the `_modalSide`
+    // declaration's own comment for why that's load-bearing). This
+    // only affects which template gets PREVIEWED/toggled-on by
+    // default; once the operator picks a real side, this recomputes
+    // to the correct scope automatically (already reactive).
+    const scope = _currentScope();
     const sideMatch = _templates.find(t =>
       t.is_default && (t.applies_to || '').toLowerCase() === scope
     );
@@ -1104,16 +1148,26 @@
       });
     }
   });
-  // Side-aware template auto-swap. When the operator flips BUY → SELL
-  // (or symbol changes from option to non-option), the currently-
-  // selected template's `applies_to` may no longer match the new
-  // direction (e.g. a long-call template on a SELL submit places a
-  // wrong-direction TP/SL). Swap to a different is_default template
-  // matching the new scope. Skipped when the operator has explicitly
-  // picked the "none" row (slug='none'), and when no matching default
-  // exists (we don't change a manual pick to something arbitrary).
+  // Side-aware template auto-swap + remembered-pref application. When
+  // the operator flips BUY → SELL (or symbol changes from option to
+  // non-option), the currently-selected template's `applies_to` may no
+  // longer match the new direction (e.g. a long-call template on a
+  // SELL submit places a wrong-direction TP/SL) — swap to a different
+  // is_default template matching the new scope. This also runs on the
+  // VERY FIRST resolution (cold mount, `_lastSideScope` starts ''),
+  // which is what makes Templ default ON: previously `!current` was a
+  // silent no-op here (nothing ever got auto-selected on a fresh
+  // mount) — now it resolves to `_sideAwareDefault`.
   // Operator: "side-aware template auto-select removed (BUY → SELL
-  // doesn't re-select default)" — restored via this effect.
+  // doesn't re-select default)" — restored via this effect. Extended
+  // 2026-09-30 (operator: "remember the operator's last on/off/
+  // specific-template choice per scope, persisted across sessions") —
+  // `_readTemplPref(scope)` is consulted FIRST, before the auto-swap
+  // logic below, so an explicit remembered "none" or specific
+  // template wins over the side-aware default even when the carried-
+  // over `current` selection would otherwise have been left alone.
+  // This effect only READS the remembered pref — it never writes one
+  // (writes happen at the three onSelect* call sites below).
   let _lastSideScope = '';
   $effect(() => {
     // action='modify' and 'cancel' don't need template auto-swap —
@@ -1122,48 +1176,42 @@
     // long option gets a sell_option template, not the stale BUY default.
     if (action === 'modify' || action === 'cancel') return;
     if (_templates.length === 0) return;
-    // Mirror the symbol-fallback rule in `_sideAwareDefault` so the
-    // auto-swap on side-flip also picks the right scope when the
-    // operator is on Chain with staged basket legs and no header
-    // symbol typed.
-    const symForScope = (_localSymbol || '').trim()
-      || (_focusedLeg?.sym || '')
-      || (basketLegs.length > 0 ? basketLegs[basketLegs.length - 1].sym : '');
-    // Same 'BUY' fallback as `_sideAwareDefault` (2026-09-30 fix) — keeps
-    // this effect's scope computation in lockstep with the toggle's own
-    // resolution so they never disagree on a cold open.
-    const sideForScope = _focusedLeg?.side || _modalSide || 'BUY';
-    const scope = _appliesToFor(sideForScope, symForScope);
+    // Mirrors `_sideAwareDefault`'s own scope computation via the
+    // shared `_currentScope()` helper — keeps this effect's scope in
+    // lockstep with the toggle's own resolution so they never disagree.
+    const scope = _currentScope();
     if (scope === _lastSideScope) return;
     untrack(() => {
       _lastSideScope = scope;
-      // Don't override an explicit operator pick — "none" stays "none";
-      // a non-default template the operator picked stays as-is.
-      const current = _templates.find(t => t.id === _sharedTemplateId);
-      if (!current) return;
-      if (current.slug === 'none') return;
-      if (!current.is_default) return;
-      // If the current default still fits the new scope, leave it.
-      const cscope = (current.applies_to || '').toLowerCase();
-      if (cscope === scope || cscope === 'both') return;
-      // Find a different is_default that matches the new scope.
-      const next = _templates.find(t =>
-        t.is_default && ((t.applies_to || '').toLowerCase() === scope
-                         || (t.applies_to || '').toLowerCase() === 'both')
-      );
-      if (next && next.id !== _sharedTemplateId) {
-        _sharedTemplateId = next.id;
-      } else if (!next) {
-        // No default template matches the new scope (e.g. operator has
-        // only a buy_option default and flipped to SELL). Clear the
-        // stale BUY template so the preview fires with templateId=null
-        // rather than carrying the wrong-direction template. The
-        // OrderTicket's re-validation effect will call _autoSelectTemplate
-        // which will also find no match and leave templateId null, so
-        // both paths agree. Fixes: audit shows parent_side:'BUY' when
-        // operator intends SELL because the BUY template was never cleared.
-        _sharedTemplateId = null;
+      const pref = _readTemplPref(scope);
+      if (pref === 'none') {
+        if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+        return;
       }
+      if (typeof pref === 'number' && _templates.some(t => t.id === pref)) {
+        _sharedTemplateId = pref;
+        return;
+      }
+      // pref === 'on', undefined (nothing remembered yet), or a stale/
+      // deleted numeric id — fall through to the side-aware-default
+      // auto-swap. Don't override an explicit operator pick still in
+      // effect this session — "none" stays "none"; a non-default
+      // template the operator picked stays as-is; a default that
+      // still fits the new scope is left alone.
+      const current = _templates.find(t => t.id === _sharedTemplateId);
+      if (current && current.slug === 'none') return;
+      if (current && !current.is_default) return;
+      if (current) {
+        const cscope = (current.applies_to || '').toLowerCase();
+        if (cscope === scope || cscope === 'both') return;
+      }
+      // No current pick (cold mount / cleared) OR the current default
+      // no longer fits the new scope — resolve to the side-aware
+      // default (null when nothing fits, e.g. operator has only a
+      // buy_option default and flipped to SELL — clears the stale
+      // template so the preview fires with templateId=null rather
+      // than carrying the wrong-direction template).
+      _sharedTemplateId = _sideAwareDefault?.id ?? null;
     });
   });
   // Account list — falls through three layers:
@@ -2382,12 +2430,21 @@
           bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
           bind:wingPremPctOverride={_sharedWingPremPctOverride}
           onSelectDefault={() => {
-            if (_sideAwareDefault) _sharedTemplateId = _sideAwareDefault.id;
+            if (_sideAwareDefault) {
+              _sharedTemplateId = _sideAwareDefault.id;
+              _writeTemplPref(_currentScope(), 'on');
+            }
           }}
           onSelectNone={() => {
-            if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+            if (_noneTpl) {
+              _sharedTemplateId = _noneTpl.id;
+              _writeTemplPref(_currentScope(), 'none');
+            }
           }}
-          onSelectTemplate={(id) => { _sharedTemplateId = id; }}
+          onSelectTemplate={(id) => {
+            _sharedTemplateId = id;
+            _writeTemplPref(_currentScope(), id);
+          }}
           {accounts}
           refreshKey={_chainBump}
           basketLegs={basketLegs}
@@ -2452,20 +2509,23 @@
          _localSymbol when no legs are staged. -->
     <!-- Templ toggle itself relocated into OptionChainTab's expiry row
          (2026-09-30, incl. the demo-mode note this row used to render
-         in its place) — see `<OptionChainTab>`'s `showTemplateBar` /
-         `showDemoTplNote` props above, computed from the exact same
-         `_templates.length > 0 && action === 'open' && (symbol-or-legs)`
-         / `_isDemo && action === 'open' && (symbol-or-legs)` gates this
-         block used to inline directly. What's left here is ONLY the
-         on-fill preview chip + cap-warning strip, which stays at shell
-         level (depends on several shell-only state vars) — gated
-         additionally on `!_isDemo` (never shown during demo, matching
-         the old else-if's demo-wins precedence) and `!_shellUsingNone`
-         (an empty bordered box with no content would otherwise render
-         when the operator has explicitly picked "None", since the
-         preview/cap-warning content below is itself gated on
-         `!_shellUsingNone`). -->
-    {#if _showTemplateBar && !_isDemo && !_shellUsingNone}
+         in its place) — see `<OptionChainTab>`'s `showTemplateBar` prop
+         above, now unconditionally `true` (2026-09-30 follow-up,
+         operator: "Templ toggle should show unconditionally in
+         Chain") / `showDemoTplNote` gated on
+         `_isDemo && action === 'open' && (symbol-or-legs)`. What's left
+         here is ONLY the on-fill preview chip + cap-warning strip,
+         which stays at shell level (depends on several shell-only
+         state vars) and keeps its OWN separate `_showTemplatePreview`
+         gate (templates loaded + action='open' + symbol-or-legs) so it
+         doesn't render with nothing to preview now that the toggle's
+         own gate is unconditional — additionally gated on `!_isDemo`
+         (never shown during demo, matching the old else-if's demo-wins
+         precedence) and `!_shellUsingNone` (an empty bordered box with
+         no content would otherwise render when the operator has
+         explicitly picked "None", since the preview/cap-warning
+         content below is itself gated on `!_shellUsingNone`). -->
+    {#if _showTemplatePreview && !_isDemo && !_shellUsingNone}
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={_selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
@@ -3408,7 +3468,10 @@
     width: 1px;
     align-self: stretch;
     margin: 0.3rem 0.5rem;
-    background: rgba(255, 255, 255, 0.10);
+    /* Themed amber tint (2026-09-30) — was plain white/gray, out of
+       step with this surface's amber accent family (e.g. TemplateBar's
+       border tones). */
+    background: rgba(251, 191, 36, 0.18);
     flex-shrink: 0;
   }
   .oes-tab-ltp {
@@ -4121,6 +4184,24 @@
     min-height: 0;
     display: flex;
     flex-direction: column;
+  }
+  /* Mobile drops .oct-root's forced full-stretch too (2026-09-30 root-
+     cause fix — see the matching --chain-depth-h:auto exception just
+     above). Forcing `flex: 1 1 0` unconditionally meant .oct-root
+     always stretched to fill the ENTIRE .oes-body height on a short
+     mobile viewport regardless of its actual content, and whatever
+     leftover slack existed between the grid's real content height and
+     that forced full height had to show up as blank space SOMEWHERE
+     inside .oct-root — which is why flipping .chain-grid-wrap's own
+     flex value (OptionChainTab.svelte) across earlier sessions only
+     ever relocated the same gap rather than fixing it. `.oes-ticket-
+     body` is deliberately left OUT of this override — the Ticket
+     tab's own depth ladder already handles its mobile collapse
+     differently and isn't part of this fix. */
+  @media (max-width: 720px) {
+    .oes-body :global(.oct-root) {
+      flex: 0 1 auto;
+    }
   }
 
   /* Ticket body — OrderTicket renders its OWN overlay + modal shell,

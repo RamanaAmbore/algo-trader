@@ -194,7 +194,11 @@
   .ot-depth {
     margin-top: 0.4rem;
     padding: 0.45rem 0.5rem;
-    background: rgba(0,0,0,0.18);
+    /* Surface-elevation parity with the Chain tab's strike grid
+       (OptionChainTab.svelte's .chain-grid-wrap / .chain-th-* — same
+       token) — was a generic black overlay that read as a different
+       surface from the rest of the order-entry chrome. */
+    background: var(--algo-bg-elev2, #0d1829);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
     /* Match the Chain-tab strike grid height when the parent (the

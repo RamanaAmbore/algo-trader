@@ -76,11 +76,18 @@ test.describe('Stale-code: single toggle button replaces the old Default/None pi
     expect(src).not.toMatch(/let _debugOn/);
   });
 
-  test('toggle button is disabled only while inactive with no side-aware default (never while active)', () => {
+  test('toggle button is ALWAYS clickable/enabled — never carries a disabled attribute (2026-09-30)', () => {
+    // Operator: "make Templ always clickable/enabled — never visually
+    // disabled". The button used to disable itself (`_templBtnDisabled`)
+    // whenever inactive with no side-aware default configured; clicking
+    // with nothing to activate to is now a silent no-op instead
+    // (onSelectDefault() itself no-ops without a default — unchanged).
     const src = readFileSync(TEMPLATE_BAR_PATH, 'utf8');
     const btn = src.match(/class="oes-tpl-button"[\s\S]{0,700}?<\/button>/)?.[0] ?? '';
-    expect(btn).toMatch(/disabled=\{_templBtnDisabled\}/);
-    expect(src).toMatch(/_templBtnDisabled\s*=\s*\$derived\(!_toggleOn\s*&&\s*_toggleOnDisabled\)/);
+    expect(btn, 'toggle button block').not.toBe('');
+    expect(btn).not.toMatch(/disabled=/);
+    expect(src).not.toContain('_templBtnDisabled');
+    expect(src).not.toContain('_toggleOnDisabled');
   });
 
   test('default state is active whenever a side-aware default resolves (_toggleOn derivation unchanged)', () => {
@@ -98,6 +105,12 @@ test.describe('Stale-code: single toggle button replaces the old Default/None pi
   test('SymbolPanel passes nonNoneTemplates and onSelectTemplate down through OptionChainTab', () => {
     const src = readFileSync(SYMBOL_PANEL_PATH, 'utf8');
     expect(src).toMatch(/nonNoneTemplates=\{_nonNoneTemplates\}/);
-    expect(src).toMatch(/onSelectTemplate=\{\(id\)\s*=>\s*\{\s*_sharedTemplateId\s*=\s*id;\s*\}\}/);
+    const handler = src.match(/onSelectTemplate=\{[\s\S]{0,160}?\}\}/)?.[0] ?? '';
+    expect(handler, 'onSelectTemplate handler').not.toBe('');
+    expect(handler).toMatch(/_sharedTemplateId\s*=\s*id/);
+    // 2026-09-30 — also persists the operator's specific-template pick
+    // as the remembered per-scope pref (see the scope-remember tests
+    // in chain_ticket_severance_and_mobile_fixes.spec.js).
+    expect(handler).toMatch(/_writeTemplPref\(_currentScope\(\),\s*id\)/);
   });
 });
