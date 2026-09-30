@@ -748,6 +748,11 @@ fill < limit → favorable for SELL (unfavorable for BUY)
 - Inline note appears: "Re-attach OK · wing #abc123" or error message
 - Note disappears after the next poll cycle (~5s)
 
+**Note**: For non-live orders (paper/sim/replay/shadow), `attached_gtts_json` 
+remains null by design — template attach skips broker GTT placement for non-live 
+fills. `/retry-template` endpoint refuses these rows with 403 error. The UI button 
+may show (due to the `== null` condition), but clicking it will fail.
+
 ### Callback Props
 
 - `onCardClick` — fires when card body clicked / Enter / Space
@@ -856,6 +861,13 @@ OPEN chase order.
 - If `attached_gtts_json` already populated → skip (don't double-place GTTs)
 - Kite delivery retries can fire the same postback multiple times
 - Guard ensures one-time execution
+
+### Mode Gate (Non-Live Fills)
+
+**Rule**: Template attach only fires for `mode='live'` orders. Paper/sim/replay/shadow 
+fills on templated orders skip broker GTT/wing placement entirely. The non-live resting 
+state (`template_id` set, `attached_gtts_json` null, `status` FILLED) is expected for 
+non-live rows and is NOT a failed attach.
 
 ### Cross-Broker Postback Handlers
 
@@ -1208,6 +1220,12 @@ List concrete things to verify in an audit:
     - Fill > limit: ↑ (up arrow)
     - Fill < limit: ↓ (down arrow)
     - Same direction visually regardless of BUY/SELL
+
+16. **Template attach mode-scoped** (paper/sim/replay/shadow never place real GTTs)
+    - Paper/sim/replay orders with `template_id` set stay FILLED + `attached_gtts_json` null
+    - No real broker GTT/wing orders placed for non-live fills
+    - `/retry-template` endpoint refuses non-live rows (403)
+    - Expected non-live resting state distinct from failed attach
 
 ---
 

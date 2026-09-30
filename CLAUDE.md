@@ -639,6 +639,34 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   as Kite/Dhan, without adopting their lots conversion (which would be
   wrong for Groww's actual wire convention).
 
+**Template attach mode gate — paper/sim/replay fills never place real broker 
+orders (2026-09-30, commit 05c6f708)** — `_fire_template_attach_on_fill` in 
+`backend/api/routes/orders_place.py` is the ONE function that calls 
+`apply_plan_live()` and places real broker GTT + wing orders on a templated 
+parent fill. The bug: the function hardcoded `apply_path="live"` unconditionally 
+regardless of the AlgoOrder row's actual `mode` field. So a templated order 
+filled in paper/sim/replay mode (all three share `PaperTradeEngine`) reached 
+the broker-placing branch and armed real exit GTTs + a real wing order against 
+a position that only existed in the simulator. The fix: `mode` is now a 
+required keyword-only kwarg (no default) with an explicit early-return check on 
+line 713 — if `mode != "live"`, the function logs and returns immediately, 
+before the per-row lock and before any DB or broker work. DO NOT reintroduce a 
+default value for `mode` — a default would silently recreate the exact bug for 
+any future caller that forgets to pass it (TypeError is the right failure mode). 
+Companion fix: `_retry_precheck_row()` in `backend/api/routes/orders.py` now 
+refuses `/retry-template` for any row whose mode is not 'live' or 'sim' 
+(sim routes to `apply_plan_sim`, no real broker call). This gate is necessary 
+because the non-live resting state (`template_id` set, `attached_gtts_json` 
+null, `status` FILLED) looks identical to a silently-failed attach, so the UI 
+cannot distinguish "attach was correctly skipped for non-live" from "attach 
+failed and needs manual retry." All four callers thread `mode=` from the 
+AlgoOrder row or engine: admin reconcile (orders_place.py:521), postback 
+handler (orders_postback.py:659), paper engine (paper.py:833), and chase 
+terminal (chase.py:243). Test: `backend/tests/test_template_attach_paper_mode_safety.py`. 
+Invariant: `_fire_template_attach_on_fill` (and anything that could reach 
+`apply_plan_live`) must never run for a non-'live' AlgoOrder — 
+paper/sim/replay/shadow fills never place real broker orders.
+
 **Session-anchor bug — Day P&L baseline query (2026-09, fixed commit 93689676)** — 
 Incident: closed-hours snapshot reader derives baseline batch boundary from a wall-clock-stamped 
 `date` column, not from the batch's own `captured_at` timestamp. When a close-reset write 
