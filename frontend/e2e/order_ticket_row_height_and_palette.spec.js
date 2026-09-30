@@ -243,12 +243,15 @@ test.describe('Fix #2 — 15d DTE chip vs TP%/SL% input height', () => {
     // every extra live symbol-search test in the SAME spec file compounds
     // `loadInstruments()` reload cost; empirically a 4th consecutive one
     // in the sibling chain_ticket_severance_and_mobile_fixes.spec.js file
-    // started intermittently timing out. Proves .chain-grid-wrap and the
-    // CE/PE/Strike header cells resolve --card-bg-gradient to a real
-    // linear-gradient in the browser (not `none`, which would happen if
-    // the token were scoped to a theme class that doesn't reach
-    // SymbolPanel's portaled modal), then switches to the Ticket tab
-    // (same page, no extra navigation) to check .ot-depth too.
+    // started intermittently timing out. Proves .chain-grid-wrap
+    // (--card-bg-gradient) and the CE/PE/Strike header cells
+    // (--card-bg-elevated, a distinct token — see
+    // chain_ticket_severance_and_mobile_fixes.spec.js for the header/
+    // body contrast history) each resolve to a real linear-gradient in
+    // the browser (not `none`, which would happen if a token were
+    // scoped to a theme class that doesn't reach SymbolPanel's
+    // portaled modal), then switches to the Ticket tab (same page, no
+    // extra navigation) to check .ot-depth too.
     for (const sel of ['.chain-grid-wrap', '.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const bgImage = await page.locator(sel).first().evaluate((el) => getComputedStyle(el).backgroundImage);
       expect(bgImage, `${sel} background-image`).toMatch(/^linear-gradient/);

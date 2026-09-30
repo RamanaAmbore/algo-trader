@@ -284,38 +284,21 @@
      declarations across lib/ + routes/ all resolve to this. */
   --card-bg-gradient: linear-gradient(180deg, #1d2a44 0%, #152033 100%);
 
-  /* Chain-tab strike grid / Ticket-tab depth ladder surface — SAME
-     gradient family as --card-bg-gradient (not the old --algo-bg-elev2
-     flat navy, which read as a visibly different/darker surface from
-     every other card) but with a thin amber wash layered on top so it
-     still reads as its own "strike-grid / depth-ladder" surface rather
-     than being pixel-identical to a plain .algo-card. Two prior swings
-     on this token, both reverted by operator feedback: (1) flat solid
-     --algo-bg-elev2 — too dark/different-toned from the rest of the
-     app; (2) bare --card-bg-gradient — too identical to every generic
-     card, lost the "this is a distinct grid surface" cue. This wash is
-     the same intensity tier as this file's other subtle accents (e.g.
-     rgba(251,191,36,0.06) ATM row tint in OptionChainTab.svelte). Used
-     by .chain-grid-wrap / .chain-th-ce / .chain-th-pe / .chain-th-strike
-     (OptionChainTab.svelte) and .ot-depth (OrderDepth.svelte) — MUST
-     stay identical between the two so the Chain and Ticket tabs don't
-     visually jump on tab flip. */
-  --chain-depth-bg:
-    linear-gradient(rgba(251,191,36,0.04), rgba(251,191,36,0.04)),
-    var(--card-bg-gradient);
-
-  /* Chain grid's sticky header row (2026-09-30, operator: "chain header
-     background should not be same as chain [body]... slight variation
-     for contrast") — same --card-bg-gradient family and amber-wash
-     idiom as --chain-depth-bg above, just a touch stronger (0.07 vs
-     0.04) so the sticky CE/PE/Strike header row reads as a distinct
-     (if closely related) surface from the scrolling body beneath it,
-     instead of blending into one continuous slab. Used ONLY by
-     .chain-th-ce / .chain-th-pe / .chain-th-strike (OptionChainTab.svelte)
-     — .chain-grid-wrap itself stays on --chain-depth-bg. */
-  --chain-header-bg:
-    linear-gradient(rgba(251,191,36,0.07), rgba(251,191,36,0.07)),
-    var(--card-bg-gradient);
+  /* --chain-depth-bg and --chain-header-bg REMOVED (2026-09-30). Both
+     were amber-wash-over-navy tokens (0.04 / 0.07 alpha respectively)
+     used by the Chain grid body/header and the Ticket depth ladder at
+     various points earlier the same day. Every one of those surfaces
+     (.chain-grid-wrap, .chain-th-ce/-pe/-strike, .ot-depth) has since
+     moved off this idiom entirely — the body/depth-ladder surfaces
+     settled on bare --card-bg-gradient (matching the price chart), and
+     the Chain header settled on --card-bg-elevated (below) after the
+     operator reported the amber-wash header reading as plain "black
+     and gray" — diagnosed live: at a "subtle" alpha the wash blends to
+     ~rgb(45,52,66), too low-saturation to look like anything but the
+     base navy. Neither token has any remaining reference; removed
+     rather than left as dead CSS. See OptionChainTab.svelte /
+     OrderDepth.svelte / ChartWorkspace.svelte / OptionsPayoff.svelte
+     for the full same-day back-and-forth history on each surface. */
 
   /* Elevated card surface — lighter navy gradient used by bucket-card,
      algo-grid-chrome, mp-bucket-wrap, and any hand-rolled table wrapper

@@ -1237,7 +1237,9 @@
     gap: 0.4rem;
     padding: 0.25rem 0.1rem 0.35rem;
     margin-bottom: 0.25rem;
-    border-bottom: 1px dashed rgba(251, 191, 36, 0.10);
+    /* Dashed border-bottom removed (2026-09-30, operator: "the dotted
+       line is not needed") — it sat directly above the CE/Strike/PE
+       header row and read as a stray second separator. */
     flex-wrap: wrap;
   }
   .oct-toolbar :global(.rbq-select-trigger) {
@@ -1462,9 +1464,11 @@
        both already moved to bare --card-bg-gradient earlier the same
        day; this grid-wrap was the one surface still left on
        --chain-depth-bg. Switched to match. The sticky header
-       (.chain-th-ce/-pe/-strike, below) intentionally KEEPS its own
-       --chain-header-bg — operator confirmed the header/body contrast
-       should survive this change. ITM call/put washes
+       (.chain-th-ce/-pe/-strike, below) intentionally KEEPS its own,
+       distinct background token — operator confirmed the header/body
+       contrast should survive this change (the token itself later
+       became --card-bg-elevated, see the header rule's own comment
+       for that follow-up). ITM call/put washes
        (.chain-row-itm-call/-put, further below) are untouched; they
        layer on top of whatever base background this rule sets, so
        they remain visually distinct regardless of this token. */
@@ -1537,27 +1541,37 @@
      .chain-grid-wrap, intentionally pixel-matched to the body).
      REVERSED again same day (operator: "chain header background
      should not be same as chain [body]... slight variation for
-     contrast") — the header now uses its OWN --chain-header-bg
-     (app.css): same --card-bg-gradient family, a slightly stronger
-     amber wash (0.07 vs the body's 0.04) so the sticky header reads
-     as a related-but-distinct surface from the scrolling strike rows
-     beneath it, not one continuous slab. */
+     contrast") — the header used its own --chain-header-bg (app.css):
+     same --card-bg-gradient family, a slightly stronger amber wash
+     (0.07 vs the body's 0.04).
+     REVERSED YET AGAIN (2026-09-30, operator: "the row containing ce,
+     strike, pe is on black and gray side which i don't like... below
+     it there is no white border") — live computed-style check showed
+     the 0.07 amber wash over the dark navy gradient blends to
+     ~rgb(45,52,66), too low-saturation to read as anything but plain
+     "black and gray". Switched to --card-bg-elevated (app.css) — an
+     actually-lighter navy tier, same family, no wash — which reads
+     as a genuinely brighter/distinct surface rather than the same
+     darkness with a faint tint. --chain-header-bg token removed from
+     app.css as dead code (no longer referenced). */
   /* Operator (2026-09-30): CE/PE header text sat on the OPPOSITE
      side from the +/- buttons — .chain-cell-row-ce/-pe (below,
      deliberately unchanged) push the quote+buttons block toward the
      Strike column (flex-end for CE, flex-start for PE), but the
      header text alignment was the mirror image of that. Flipped so
      header labels sit over their own row's actual content. Border
-     bumped 0.05 -> 0.18 so the header row visibly separates from
-     the strike rows below it. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
+     bumped 0.05 -> 0.18, then -> 0.35 (2026-09-30, operator: "below
+     it there is no white border" — 0.18-alpha white on a dark navy
+     background wasn't reading as a visible line) so the header row
+     clearly separates from the strike rows below it. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.35); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button

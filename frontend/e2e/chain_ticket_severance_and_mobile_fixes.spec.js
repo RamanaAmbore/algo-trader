@@ -487,11 +487,11 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a visibly darker border-bottom (0.18 alpha)', () => {
+  test('chain header cells have a visibly bright border-bottom (0.35 alpha, brightened from 0.18 on 2026-09-30 — operator: "below it there is no white border")', () => {
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule, `${sel} border-bottom alpha`).toMatch(/border-bottom:\s*1px solid rgba\(255,255,255,0\.18\)/);
+      expect(rule, `${sel} border-bottom alpha`).toMatch(/border-bottom:\s*1px solid rgba\(255,255,255,0\.35\)/);
     }
   });
 
@@ -842,39 +842,45 @@ test.describe('Depth ladder + tab-strip divider — surface color consistency (2
     expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
     expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     expect(rule).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.18\)/);
-    // The Chain tab's own strike grid wrapper keeps --chain-depth-bg —
-    // .ot-depth and .chain-grid-wrap are intentionally on DIFFERENT
-    // tokens now, not "surface elevation parity" anymore.
-    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--chain-depth-bg\)/);
+    // UPDATED (2026-09-30, later same day): the Chain tab's own strike
+    // grid wrapper moved OFF --chain-depth-bg onto bare
+    // --card-bg-gradient too, per operator: "keep the chain background
+    // colors in sync with price chart background..." — .ot-depth and
+    // .chain-grid-wrap are now intentionally on the SAME token again,
+    // both following the price chart.
+    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--card-bg-gradient\)/);
   });
 
   // REVERSED same day — operator: "chain header background should not
   // be same as chain [body]... slight variation for contrast". The
-  // header cells now reference their OWN --chain-header-bg token
-  // (a stronger amber wash than the body's --chain-depth-bg), not the
-  // body's token.
-  test('chain-th-ce/-pe/-strike header cells reference --chain-header-bg (a distinct, slightly stronger wash than the body\'s --chain-depth-bg), not --card-bg-gradient bare or the flat --algo-bg-elev2 hex', () => {
+  // header cells referenced their OWN --chain-header-bg token at the
+  // time (a stronger amber wash than the body's --chain-depth-bg).
+  // UPDATED (2026-09-30, later same day) — operator reported the
+  // amber-wash header read as plain "black and gray"; --chain-header-bg
+  // was removed (dead token, app.css) in favor of --card-bg-elevated,
+  // an actually-lighter navy tier rather than a same-darkness-plus-tint
+  // approach. The header/body CONTRAST invariant is unchanged.
+  test('chain-th-ce/-pe/-strike header cells reference --card-bg-elevated (distinct from the body\'s --card-bg-gradient), not the flat --algo-bg-elev2 hex', () => {
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\${sel}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--chain-header-bg\)/);
+      expect(rule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
+      expect(rule).not.toMatch(/background:\s*var\(--chain-header-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     }
   });
 
-  test('--chain-depth-bg (app.css) layers a thin amber wash on top of --card-bg-gradient, not a bare re-export', () => {
-    const rule = APP_CSS.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
-    expect(rule, '--chain-depth-bg declaration').not.toBe('');
-    expect(rule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.04\)/);
-    expect(rule).toMatch(/var\(--card-bg-gradient\)/);
+  test('--chain-depth-bg / --chain-header-bg no longer exist in app.css (removed as dead code once every consuming surface moved off the amber-wash idiom)', () => {
+    expect(APP_CSS).not.toMatch(/--chain-depth-bg:/);
+    expect(APP_CSS).not.toMatch(/--chain-header-bg:/);
   });
 
-  test('--chain-header-bg (app.css) is a distinct, slightly stronger amber wash than --chain-depth-bg, same --card-bg-gradient family', () => {
-    const rule = APP_CSS.match(/--chain-header-bg:\s*[\s\S]*?;/)?.[0] ?? '';
-    expect(rule, '--chain-header-bg declaration').not.toBe('');
-    expect(rule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.07\)/);
-    expect(rule).toMatch(/var\(--card-bg-gradient\)/);
+  test('--card-bg-elevated (app.css) is defined and distinct from --card-bg-gradient', () => {
+    const elevatedRule = APP_CSS.match(/--card-bg-elevated:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(elevatedRule, '--card-bg-elevated declaration').not.toBe('');
+    const baseRule = APP_CSS.match(/--card-bg-gradient:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(elevatedRule).not.toBe(baseRule);
   });
 
   // Live computed-style proof that the gradient cascade actually
@@ -954,8 +960,23 @@ test.describe('Fix #3 (2026-09-30 follow-up) — Expiry toolbar row height audit
   });
 });
 
-test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-09-30)', () => {
-  test('live: .chain-grid-wrap and .ot-depth resolve to the identical background, distinct from a plain .algo-card; expiry-toolbar controls share one height tier', async ({ page }) => {
+test.describe('Fix #1 (middle-ground pass, SUPERSEDED 2026-09-30 later same day) — chain surface background parity', () => {
+  // ORIGINAL (middle-ground pass): .chain-grid-wrap and .ot-depth shared
+  // a two-layer amber-wash token (--chain-depth-bg) that deliberately
+  // differed from a plain .algo-card's single-layer background.
+  // SUPERSEDED, in two steps, both 2026-09-30:
+  //   1. Operator: "keep the order quote depth in sync with chart
+  //      background" — .ot-depth moved to plain --card-bg-gradient,
+  //      intentionally diverging from .chain-grid-wrap at the time.
+  //   2. Operator: "keep the chain background colors in sync with
+  //      price chart background..." — .chain-grid-wrap ALSO moved to
+  //      plain --card-bg-gradient, re-converging all three
+  //      (.chain-grid-wrap / .ot-depth / .algo-card) onto the exact
+  //      same background. The only surface still deliberately DIFFERENT
+  //      is the Chain header (.chain-th-ce/-pe/-strike), now on
+  //      --card-bg-elevated after the operator reported the header's
+  //      former amber-wash token reading as plain "black and gray".
+  test('live: .chain-grid-wrap, .ot-depth, and a plain .algo-card all resolve to the IDENTICAL background; the Chain header resolves to a DIFFERENT one; expiry-toolbar controls share one height tier', async ({ page }) => {
     await loginAsAdmin(page);
     await _seedNiftyAndOpenChain(page);
 
@@ -963,9 +984,13 @@ test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-
     await expect(gridWrap).toBeVisible({ timeout: 15_000 });
     const gridBg = await gridWrap.evaluate((el) => getComputedStyle(el).backgroundImage);
 
+    const headerCell = page.locator('.chain-th-ce').first();
+    await expect(headerCell).toBeVisible({ timeout: 10_000 });
+    const headerBg = await headerCell.evaluate((el) => getComputedStyle(el).backgroundImage);
+
     // Probe element for the plain canonical card surface — injected
-    // rather than relying on one existing on the page, per the two-
-    // layer background composition making a source-text match brittle.
+    // rather than relying on one existing on the page, so this doesn't
+    // depend on any particular .algo-card being mounted at the time.
     const probeBg = await page.evaluate(() => {
       const el = document.createElement('div');
       el.className = 'algo-card';
@@ -978,9 +1003,8 @@ test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-
     });
 
     expect(gridBg, '.chain-grid-wrap background-image').toMatch(/^linear-gradient/);
-    // Two background-image layers (amber wash + card gradient) — a
-    // plain .algo-card only ever has one, so the two must differ.
-    expect(gridBg, 'chain-depth-bg must differ from a plain .algo-card background').not.toBe(probeBg);
+    expect(gridBg, '.chain-grid-wrap must now match a plain .algo-card background (both plain --card-bg-gradient)').toBe(probeBg);
+    expect(headerBg, '.chain-th-ce must differ from a plain .algo-card background (--card-bg-elevated, a genuinely different gradient)').not.toBe(probeBg);
 
     // Expiry-toolbar row height audit (2026-09-30 follow-up) — piggybacks
     // on this same Chain-tab navigation instead of adding a 5th live
@@ -1032,14 +1056,12 @@ test.describe('Fix #1 (middle-ground pass) — chain-depth-bg live parity (2026-
     await expect(depth).toBeVisible({ timeout: 15_000 });
     const depthBg = await depth.evaluate((el) => getComputedStyle(el).backgroundImage);
 
-    // REVERSED same day — operator: "keep the order quote depth in sync
-    // with chart background". .ot-depth now follows the price chart's
-    // token (plain --card-bg-gradient, single layer) instead of the
-    // Chain grid's (--chain-depth-bg, two layers) — the two backgrounds
-    // are now intentionally DIFFERENT, and .ot-depth is intentionally
-    // the SAME as a plain .algo-card (both plain --card-bg-gradient).
-    expect(depthBg, '.ot-depth background-image must now differ from .chain-grid-wrap (intentionally diverged)').not.toBe(gridBg);
-    expect(depthBg, '.ot-depth must now match a plain .algo-card background (both plain --card-bg-gradient)').toBe(probeBg);
+    // .ot-depth, .chain-grid-wrap, and a plain .algo-card all follow
+    // the same plain --card-bg-gradient token now (see this
+    // describe block's own header comment for the two supersession
+    // steps that led here) — all three must resolve identically.
+    expect(depthBg, '.ot-depth must match .chain-grid-wrap (both plain --card-bg-gradient)').toBe(gridBg);
+    expect(depthBg, '.ot-depth must match a plain .algo-card background (both plain --card-bg-gradient)').toBe(probeBg);
   });
 });
 

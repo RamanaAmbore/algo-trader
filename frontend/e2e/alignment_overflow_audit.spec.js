@@ -527,33 +527,42 @@ test.describe('Static source checks — price chart / payoff chart background (r
   });
 });
 
-test.describe('Static source checks — Chain header row is distinct from the body (2026-09-30)', () => {
+test.describe('Static source checks — Chain header row is distinct from the body (2026-09-30, updated same day — --chain-header-bg replaced by --card-bg-elevated)', () => {
   // Operator: "chain header background should not be same as chain
   // [body]... slight variation for contrast" — reverses the earlier
   // same-day decision to pixel-match header and body.
-  test('.chain-th-ce/-pe/-strike reference --chain-header-bg, distinct from the body wrap\'s background (2026-09-30, header/body contrast still holds after body synced to price chart)', () => {
+  // UPDATED same day: operator reported the header read as "black and
+  // gray" — --chain-header-bg (a faint amber wash over the same dark
+  // navy) was replaced by --card-bg-elevated (an actually-lighter navy
+  // tier). The header/body CONTRAST invariant this describe block
+  // guards is unchanged; only the specific token is different.
+  test('.chain-th-ce/-pe/-strike reference --card-bg-elevated, distinct from the body wrap\'s background', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--chain-header-bg\)/);
+      expect(rule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
     }
-    // .chain-grid-wrap itself moved OFF --chain-depth-bg onto bare
-    // --card-bg-gradient (see the dedicated describe block below) —
-    // the header's own --chain-header-bg token must still differ from
-    // whatever the body now uses, so the contrast survives.
+    // .chain-grid-wrap itself is on bare --card-bg-gradient (see the
+    // dedicated describe block below) — the header's own
+    // --card-bg-elevated token must still differ from whatever the
+    // body uses, so the contrast survives.
     const wrapRule = ruleBody(content, '.chain-grid-wrap') ?? '';
     expect(wrapRule, '.chain-grid-wrap rule').not.toBe('');
-    expect(wrapRule).not.toMatch(/background:\s*var\(--chain-header-bg\)/);
+    expect(wrapRule).not.toMatch(/background:\s*var\(--card-bg-elevated\)/);
   });
 
-  test('--chain-header-bg (app.css) is a distinct token from --chain-depth-bg, same --card-bg-gradient family', () => {
+  test('--chain-header-bg token no longer exists in app.css (removed as dead code once the header switched to --card-bg-elevated)', () => {
     const appCss = readFile('src/app.css');
-    const headerRule = appCss.match(/--chain-header-bg:\s*[\s\S]*?;/)?.[0] ?? '';
-    expect(headerRule, '--chain-header-bg declaration').not.toBe('');
-    expect(headerRule).toMatch(/var\(--card-bg-gradient\)/);
+    expect(appCss).not.toMatch(/--chain-header-bg:/);
+  });
+
+  test('--card-bg-elevated (app.css) is a distinct, genuinely lighter token from --card-bg-gradient / --chain-depth-bg', () => {
+    const appCss = readFile('src/app.css');
+    const elevatedRule = appCss.match(/--card-bg-elevated:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(elevatedRule, '--card-bg-elevated declaration').not.toBe('');
     const depthRule = appCss.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
-    expect(headerRule).not.toBe(depthRule);
+    expect(elevatedRule).not.toBe(depthRule);
   });
 });
 
@@ -563,7 +572,7 @@ test.describe('Static source checks — Chain body background synced with price 
   // the put area." .chain-grid-wrap was the one surface still left on
   // --chain-depth-bg after the price chart / payoff chart / order
   // ticket depth ladder had all already moved to bare
-  // --card-bg-gradient earlier the same day. Header (--chain-header-bg,
+  // --card-bg-gradient earlier the same day. Header (--card-bg-elevated,
   // confirmed distinct above) and the ITM/OTM td washes (below) are
   // the explicit exceptions and stay untouched.
   test('.chain-grid-wrap references bare --card-bg-gradient (matching .cw-root / .payoff-chart / .ot-depth), not --chain-depth-bg', () => {
@@ -626,6 +635,33 @@ test.describe('Static source checks — Chain ITM/OTM per-side background (2026-
     // .chain-th-pe = --c-short) — not a new, unrelated palette.
     expect(content).toMatch(/\.chain-th-ce\s*\{[^}]*color:\s*var\(--c-long\)/);
     expect(content).toMatch(/\.chain-th-pe\s*\{[^}]*color:\s*var\(--c-short\)/);
+  });
+});
+
+test.describe('Static source checks — Chain toolbar dashed border removed + header border brightened (2026-09-30)', () => {
+  // Operator: "the dotted line is not needed" (the .oct-toolbar row's
+  // dashed border-bottom, which sat directly above the CE/Strike/PE
+  // header) and "below it there is no white border" (the header's own
+  // border-bottom read too faint at 0.18 alpha).
+  test('.oct-toolbar has no border-bottom declaration (dashed separator removed)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const rule = ruleBody(content, '.oct-toolbar') ?? '';
+    expect(rule, '.oct-toolbar rule').not.toBe('');
+    // Anchored to a real declaration line, not a bare substring match —
+    // this rule's own explanatory comment mentions "border-bottom" in
+    // prose (describing what was removed), which a loose
+    // /border-bottom/ match would false-positive against.
+    expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
+  });
+
+  test('.chain-th-ce/-pe/-strike border-bottom brightened to 0.35 alpha white (was 0.18)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
+      const rule = ruleBody(content, sel) ?? '';
+      expect(rule, `${sel} rule`).not.toBe('');
+      expect(rule).toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.35\)/);
+      expect(rule).not.toMatch(/border-bottom:\s*1px solid rgba\(255,\s*255,\s*255,\s*0\.18\)/);
+    }
   });
 });
 
