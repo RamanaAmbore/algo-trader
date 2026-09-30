@@ -450,3 +450,52 @@ test.describe('Live — .opt-picker does not overflow a narrow-ish ≥900px view
     }
   });
 });
+
+test.describe('Static source checks — price chart / payoff chart background sync (2026-09-30)', () => {
+  // Operator: "i am referring to any changes to price chart background
+  // to keep it in sync with chain and quote depth" — Chart + Payoff now
+  // share --chain-depth-bg with .chain-grid-wrap / .ot-depth, instead of
+  // the plain --card-bg-gradient every other generic card uses.
+  test('.cw-root (price chart) references --chain-depth-bg, not bare --card-bg-gradient', () => {
+    const content = readFile('src/lib/ChartWorkspace.svelte');
+    const rule = ruleBody(content, '.cw-root') ?? '';
+    expect(rule, '.cw-root rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--card-bg-gradient\)/);
+  });
+
+  test('.payoff-chart (payoff chart) references --chain-depth-bg, not bare --card-bg-gradient', () => {
+    const content = readFile('src/lib/OptionsPayoff.svelte');
+    const rule = ruleBody(content, '.payoff-chart') ?? '';
+    expect(rule, '.payoff-chart rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--card-bg-gradient\)/);
+  });
+});
+
+test.describe('Static source checks — Chain header row is distinct from the body (2026-09-30)', () => {
+  // Operator: "chain header background should not be same as chain
+  // [body]... slight variation for contrast" — reverses the earlier
+  // same-day decision to pixel-match header and body.
+  test('.chain-th-ce/-pe/-strike reference --chain-header-bg, not --chain-depth-bg (the body wrap\'s token)', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
+      const rule = ruleBody(content, sel) ?? '';
+      expect(rule, `${sel} rule`).not.toBe('');
+      expect(rule).toMatch(/background:\s*var\(--chain-header-bg\)/);
+      expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
+    }
+    const wrapRule = ruleBody(content, '.chain-grid-wrap') ?? '';
+    expect(wrapRule, '.chain-grid-wrap rule').not.toBe('');
+    expect(wrapRule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+  });
+
+  test('--chain-header-bg (app.css) is a distinct token from --chain-depth-bg, same --card-bg-gradient family', () => {
+    const appCss = readFile('src/app.css');
+    const headerRule = appCss.match(/--chain-header-bg:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(headerRule, '--chain-header-bg declaration').not.toBe('');
+    expect(headerRule).toMatch(/var\(--card-bg-gradient\)/);
+    const depthRule = appCss.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(headerRule).not.toBe(depthRule);
+  });
+});

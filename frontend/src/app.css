@@ -304,6 +304,19 @@
     linear-gradient(rgba(251,191,36,0.04), rgba(251,191,36,0.04)),
     var(--card-bg-gradient);
 
+  /* Chain grid's sticky header row (2026-09-30, operator: "chain header
+     background should not be same as chain [body]... slight variation
+     for contrast") — same --card-bg-gradient family and amber-wash
+     idiom as --chain-depth-bg above, just a touch stronger (0.07 vs
+     0.04) so the sticky CE/PE/Strike header row reads as a distinct
+     (if closely related) surface from the scrolling body beneath it,
+     instead of blending into one continuous slab. Used ONLY by
+     .chain-th-ce / .chain-th-pe / .chain-th-strike (OptionChainTab.svelte)
+     — .chain-grid-wrap itself stays on --chain-depth-bg. */
+  --chain-header-bg:
+    linear-gradient(rgba(251,191,36,0.07), rgba(251,191,36,0.07)),
+    var(--card-bg-gradient);
+
   /* Elevated card surface — lighter navy gradient used by bucket-card,
      algo-grid-chrome, mp-bucket-wrap, and any hand-rolled table wrapper
      that reads as the same visual family as ag-theme-algo. One level

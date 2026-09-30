@@ -1549,7 +1549,12 @@
 
 <style>
   .payoff-chart {
-    background: var(--card-bg-gradient);
+    /* Synced with Chain grid / order-ticket depth ladder / price chart
+       (2026-09-30, operator request) — was plain --card-bg-gradient;
+       now shares --chain-depth-bg (app.css) so Chart, Payoff, Chain,
+       and Depth all read as one family of "live market surface"
+       panels. */
+    background: var(--chain-depth-bg);
     border: 1px solid rgba(251,191,36,0.18);
     border-radius: 4px;
     padding: 6px 8px 8px;

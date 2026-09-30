@@ -1514,21 +1514,21 @@
      scrollable" — sticky within .chain-grid-wrap's own scroll
      container (overflow-y: auto). Needs a fully OPAQUE background
      (not the old 0.6-alpha overlay) so scrolled body rows don't show
-     through underneath it; reads as part of the same surface as
-     .chain-grid-wrap below it, not a separate darker band.
+     through underneath it.
      Corrected (2026-09-30) — was --algo-bg-elev2 (flat solid navy,
      mismatched the app's actual card-surface token). Then briefly
      --card-bg-gradient, same token as .chain-grid-wrap, matching the
      app's every other card-like surface (.algo-card, .bucket-card,
      chart wrappers) — reverted again same day, too blended into
-     generic cards. Settled on --chain-depth-bg (app.css): same
-     gradient family, thin amber wash on top so the header still reads
-     as part of a distinct strike-grid surface. Each sticky header cell
-     paints its own short gradient run rather than sharing one
-     continuous gradient with the taller wrap behind it, so the two
-     won't be pixel-identical at every y-offset — this is the same
-     tradeoff every other sticky header + scroll-body pairing in the
-     app already accepts. */
+     generic cards. Then --chain-depth-bg (same token as
+     .chain-grid-wrap, intentionally pixel-matched to the body).
+     REVERSED again same day (operator: "chain header background
+     should not be same as chain [body]... slight variation for
+     contrast") — the header now uses its OWN --chain-header-bg
+     (app.css): same --card-bg-gradient family, a slightly stronger
+     amber wash (0.07 vs the body's 0.04) so the sticky header reads
+     as a related-but-distinct surface from the scrolling strike rows
+     beneath it, not one continuous slab. */
   /* Operator (2026-09-30): CE/PE header text sat on the OPPOSITE
      side from the +/- buttons — .chain-cell-row-ce/-pe (below,
      deliberately unchanged) push the quote+buttons block toward the
@@ -1537,14 +1537,14 @@
      header labels sit over their own row's actual content. Border
      bumped 0.05 -> 0.18 so the header row visibly separates from
      the strike rows below it. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--chain-depth-bg); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--chain-header-bg); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button

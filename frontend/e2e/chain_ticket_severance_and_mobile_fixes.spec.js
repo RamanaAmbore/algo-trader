@@ -842,11 +842,17 @@ test.describe('Depth ladder + tab-strip divider — surface color consistency (2
     expect(CHAIN_TAB).not.toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--algo-bg-elev2/);
   });
 
-  test('chain-th-ce/-pe/-strike header cells also reference --chain-depth-bg, not bare --card-bg-gradient or the flat --algo-bg-elev2 hex', () => {
+  // REVERSED same day — operator: "chain header background should not
+  // be same as chain [body]... slight variation for contrast". The
+  // header cells now reference their OWN --chain-header-bg token
+  // (a stronger amber wash than the body's --chain-depth-bg), not the
+  // body's token.
+  test('chain-th-ce/-pe/-strike header cells reference --chain-header-bg (a distinct, slightly stronger wash than the body\'s --chain-depth-bg), not --card-bg-gradient bare or the flat --algo-bg-elev2 hex', () => {
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\${sel}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--chain-depth-bg\)/);
+      expect(rule).toMatch(/background:\s*var\(--chain-header-bg\)/);
+      expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     }
   });
@@ -855,6 +861,13 @@ test.describe('Depth ladder + tab-strip divider — surface color consistency (2
     const rule = APP_CSS.match(/--chain-depth-bg:\s*[\s\S]*?;/)?.[0] ?? '';
     expect(rule, '--chain-depth-bg declaration').not.toBe('');
     expect(rule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.04\)/);
+    expect(rule).toMatch(/var\(--card-bg-gradient\)/);
+  });
+
+  test('--chain-header-bg (app.css) is a distinct, slightly stronger amber wash than --chain-depth-bg, same --card-bg-gradient family', () => {
+    const rule = APP_CSS.match(/--chain-header-bg:\s*[\s\S]*?;/)?.[0] ?? '';
+    expect(rule, '--chain-header-bg declaration').not.toBe('');
+    expect(rule).toMatch(/rgba\(251,\s*191,\s*36,\s*0\.07\)/);
     expect(rule).toMatch(/var\(--card-bg-gradient\)/);
   });
 
