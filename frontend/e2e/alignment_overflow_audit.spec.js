@@ -43,6 +43,23 @@ function ruleBody(css, selector) {
 test.describe('Static source checks — OrderTicket.svelte', () => {
   const content = readFile('src/lib/order/OrderTicket.svelte');
 
+  test('.ot-input declares color-scheme: dark so native number-input spin buttons are visible on a dark background (2026-09-30)', () => {
+    // Operator: "price stepper [the native up/down ^ arrows] is dark
+    // color and not visible" — browsers draw type="number"'s built-in
+    // spin buttons using a light-mode palette by default regardless
+    // of the input's own colors; color-scheme fixes ALL native form
+    // chrome at once, no vendor-prefixed pseudo-element overrides
+    // needed.
+    // Plain ruleBody(content, '.ot-input') matches the FIRST substring
+    // occurrence of ".ot-input {" anywhere, including inside the
+    // earlier compound selector `.ot-price-cell .ot-input { width:... }`
+    // — anchor on newline + exact 2-space indent so only the base
+    // `.ot-input {` rule (not a compound selector ending in it) matches.
+    const m = content.match(/\n {2}\.ot-input \{([^}]*)\}/);
+    expect(m, 'base .ot-input rule must exist').not.toBeNull();
+    expect(m[1]).toMatch(/color-scheme:\s*dark/);
+  });
+
   test('.ot-chase-toggle no longer right-anchors via margin-left: auto', () => {
     const body = ruleBody(content, '.ot-chase-toggle');
     expect(body, '.ot-chase-toggle rule must exist').not.toBeNull();
@@ -586,12 +603,17 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
   });
 
-  test('.ot-depth-h (header band) has a highlight background and an underline border-bottom', () => {
+  test('.ot-depth-h (header band) keeps its highlight background but has NO border-bottom (2026-09-30, reversed same day)', () => {
+    // Reversed — operator: "the border above the labels should be
+    // removed". .ot-depth-h sits directly above the BID QTY/BID/ASK/
+    // ASK QTY label row; its own border-bottom read as a second,
+    // confusing line stacked right above that row's own
+    // .ot-depth-header-bg underline.
     const content = readFile('src/lib/order/OrderDepth.svelte');
     const rule = ruleBody(content, '.ot-depth-h') ?? '';
     expect(rule, '.ot-depth-h rule').not.toBe('');
     expect(rule).toMatch(/background:\s*rgba\(/);
-    expect(rule).toMatch(/border-bottom:\s*1px solid/);
+    expect(rule).not.toMatch(/border-bottom:\s*1px solid/);
   });
 
   test('Volume stat renders AFTER Spread in the stats row markup (was OI/Volume/Spread, now OI/Spread/Volume)', () => {
@@ -605,7 +627,7 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(volIdx, 'Volume must render after Spread in DOM order').toBeGreaterThan(spreadIdx);
   });
 
-  test('live: .ot-depth-h renders with a non-transparent background and a visible border-bottom', async ({ page }) => {
+  test('live: .ot-depth-h renders with a non-transparent background and NO border-bottom (2026-09-30, reversed same day)', async ({ page }) => {
     await page.setViewportSize({ width: 412, height: 919 });
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
@@ -634,7 +656,7 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
       return { bg: cs.backgroundColor, borderBottom: cs.borderBottomWidth };
     });
     expect(bg, '.ot-depth-h background-color').not.toBe('rgba(0, 0, 0, 0)');
-    expect(parseFloat(borderBottom), '.ot-depth-h border-bottom-width').toBeGreaterThan(0);
+    expect(parseFloat(borderBottom), '.ot-depth-h border-bottom-width must be 0 now').toBe(0);
   });
 
   test('.ot-depth-diag renders raw depth-level counts and raw volume, each with an explicit label, below the grid inside .ot-depth (2026-09-30, relabeled same day)', () => {

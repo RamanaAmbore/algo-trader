@@ -3646,6 +3646,15 @@
     color: var(--algo-slate);
     font-size: var(--ctl-fs, var(--fs-lg));
     font-family: var(--font-numeric);
+    /* Operator: "price stepper ^ / inverted ^ [the native number-input
+       spin buttons] is dark color and not visible" — browsers render
+       type="number"'s built-in up/down spinner using a light-mode
+       palette by default, regardless of the input's own dark
+       background/text colors; color-scheme tells the browser to draw
+       ALL its native form-control chrome (spin buttons included) in a
+       dark-appropriate palette instead. Applies to every .ot-input
+       (Price, Trigger, Lots) for consistency, not just Price. */
+    color-scheme: dark;
   }
   .ot-input:focus { outline: none; border-color: var(--c-action); }
   .ot-num { text-align: right; }

@@ -262,7 +262,13 @@
     margin: -0.45rem -0.5rem 0.3rem;
     padding: 0.25rem 0.5rem;
     background: rgba(251,191,36,0.05);
-    border-bottom: 1px solid rgba(251,191,36,0.16);
+    /* border-bottom REMOVED (2026-09-30, same day, operator: "the
+       border above the labels should be removed") — this band sits
+       directly above the BID QTY/BID/ASK/ASK QTY label row (through
+       the conditional .ot-depth-stats gap), and its own underline
+       read as a second, confusing border stacked right above the
+       label row's own .ot-depth-header-bg underline below. Background
+       highlight kept; only the border-bottom is gone. */
   }
   .ot-depth-meta {
     color: var(--algo-muted);
@@ -395,6 +401,13 @@
      of one run-on text string per item. */
   .ot-depth-diag {
     display: flex;
+    /* Centered to align with .ot-depth-grid above it (2026-09-30,
+       operator: "I want the additional info to be centered below the
+       market depth aligning market depth") — the grid's own columns
+       are content-sized + centered (not stretched full-width), so a
+       left-aligned diagnostic row sat under the left edge of that
+       narrower, centered grid instead of lining up with it. */
+    justify-content: center;
     gap: 0.7rem;
     flex-wrap: wrap;
     margin-top: 0.35rem;
