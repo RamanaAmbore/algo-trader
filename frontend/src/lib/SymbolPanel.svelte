@@ -3489,6 +3489,13 @@
     display: inline-flex;
     align-items: center;
     gap: 0.25rem;
+    /* Row-height parity fix — the TICKET/CHAIN/CHART tab buttons carry
+       an enforced min-height (app.css .algo-tab, var(--toolbar-h)) but
+       this sibling had none, rendering visibly thinner in the same
+       .oes-tabs row. Floor (not a rigid height) matching this modal's
+       shared --ctl-h control-height token. */
+    min-height: var(--ctl-h, 1.7rem);
+    box-sizing: border-box;
   }
   .oes-tab-ltp-label {
     font-size: 0.6rem;
@@ -4534,6 +4541,14 @@
        rendered — e.g. Chain tab staging a multi-leg basket with no
        single-symbol LTP), same as every other sibling in .oes-tabs. */
     margin-left: 0.5rem;
+    /* Row-height parity fix (same rationale as .oes-tab-ltp above) —
+       this label had no explicit height at all, just font-size +
+       letter-spacing, so it rendered thinner than the tab buttons in
+       the same .oes-tabs row. */
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--ctl-h, 1.7rem);
+    box-sizing: border-box;
   }
   .oes-common-chase-label.on { color: var(--c-action); }
   /* .oes-tabs has gap:0 (each child owns its own spacing) — the CHASE

@@ -76,30 +76,6 @@
     opacity: 0.85;
   }
 
-  .ot-side-toggle {
-    display: flex;
-    border: 1px solid rgba(255,255,255,0.12);
-    border-radius: 3px;
-    overflow: hidden;
-    height: 1.7rem;
-  }
-  .ot-side-btn {
-    padding: 0 0.75rem;
-    background: transparent;
-    border: 0;
-    color: var(--text-muted);
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    cursor: pointer;
-    flex: 1 1 0;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    line-height: 1;
-  }
-  .ot-side-buy.on  { background: rgba(74,222,128,0.18);  color: var(--c-long); }
-  .ot-side-sell.on { background: rgba(248,113,113,0.18); color: var(--c-short); }
-
   .ot-side-toggle-compact {
     display: inline-flex;
     width: 100%;
@@ -114,9 +90,20 @@
        .ot-modal / SymbolPanel.svelte .oes-modal) — matches Select,
        QtyInput's steppers/input, and the footer side-selector button
        so a stacked view reads as one horizontal control strip instead
-       of visibly uneven row heights. */
-    height: var(--ctl-h, 1.55rem);
-    min-height: var(--ctl-h, 1.55rem);
+       of visibly uneven row heights.
+       min-height only (2026-09-30) — was BOTH height + min-height, a
+       rigid box that could never grow. Select's own trigger
+       (.rbq-select-trigger, Select.svelte) sets only min-height — a
+       floor that CAN grow taller if its own content needs more room.
+       Dropping the rigid height here matches that growable-floor
+       strategy so both controls settle at the same natural height
+       under any font-scale/viewport instead of one being artificially
+       rigid. Fallback bumped 1.55rem -> 1.7rem to match --ctl-h's
+       actual current declared value (SideToggle only ever renders
+       inside OrderTicket's .ot-modal wrapper, which always declares
+       --ctl-h, so the fallback is never actually reached in practice —
+       fixed anyway for documentation accuracy / defensive parity). */
+    min-height: var(--ctl-h, 1.7rem);
     box-sizing: border-box;
   }
   .ot-side-toggle-compact .ot-side-btn {
@@ -133,6 +120,14 @@
     line-height: 1;
     cursor: pointer;
     box-sizing: border-box;
+    /* Centering — was carried by the now-deleted bare `.ot-side-btn`
+       rule (dead code removal, 2026-09-30: that rule's OTHER
+       declarations were already fully overridden by this more-specific
+       selector, but display/align-items/justify-content were not,
+       so they're preserved here rather than lost with the deletion). */
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     transition: background 0.12s, color 0.12s, box-shadow 0.12s, border-color 0.12s;
   }
   .ot-side-toggle-compact .ot-side-btn:hover:not(.on):not([disabled]) {

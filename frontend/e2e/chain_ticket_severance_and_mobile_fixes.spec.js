@@ -515,11 +515,13 @@ test.describe('Chart Y-axis label has no rupee symbol', () => {
   });
 });
 
-// 2026-09-30: operator — "price width can be reduced by 20%".
-test.describe('PRICE input narrowed 20%', () => {
-  test('.ot-price-cell .ot-input is 7.2rem (was 9rem)', () => {
-    expect(ORDER_TICKET).toMatch(/\.ot-price-cell \.ot-input \{ width:\s*7\.2rem;\s*\}/);
+// 2026-09-30: operator — "price width can be reduced by 20%", narrowed
+// a further ~12% same day (9rem -> 7.2rem -> 6.3rem).
+test.describe('PRICE input narrowed', () => {
+  test('.ot-price-cell .ot-input is 6.3rem (was 9rem / 7.2rem)', () => {
+    expect(ORDER_TICKET).toMatch(/\.ot-price-cell \.ot-input \{ width:\s*6\.3rem;\s*\}/);
     expect(ORDER_TICKET).not.toMatch(/\.ot-price-cell \.ot-input \{ width:\s*9rem;\s*\}/);
+    expect(ORDER_TICKET).not.toMatch(/\.ot-price-cell \.ot-input \{ width:\s*7\.2rem;\s*\}/);
   });
 });
 
@@ -631,16 +633,50 @@ test.describe('Templ toggle — always-enabled + unconditional-in-Chain + per-sc
 // .ot-depth (Ticket tab's depth ladder) used a generic black overlay
 // instead of the app's actual elevation token; .oes-tabs-divider used
 // plain white/gray instead of this surface's amber accent family.
+//
+// Corrected same day (2nd pass): the shared token both were pointed at
+// (--algo-bg-elev2) was itself a flat solid navy that read as a visibly
+// different (darker) surface from every other card-like surface in the
+// app (.algo-card, .bucket-card, chart wrappers — all --card-bg-gradient).
+// Both .ot-depth and the Chain grid now reference --card-bg-gradient,
+// the app's actual canonical card surface token.
 test.describe('Depth ladder + tab-strip divider — surface color consistency (2026-09-30)', () => {
-  test('.ot-depth background references --algo-bg-elev2 (same token as .chain-grid-wrap), not a hardcoded black rgba', () => {
+  test('.ot-depth background references --card-bg-gradient (same token as .chain-grid-wrap), not the flat --algo-bg-elev2 hex', () => {
     const rule = ORDER_DEPTH.match(/\.ot-depth\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
     expect(rule, '.ot-depth rule').not.toBe('');
-    expect(rule).toMatch(/background:\s*var\(--algo-bg-elev2,\s*#0d1829\)/);
+    expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+    expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
     expect(rule).not.toMatch(/background:\s*rgba\(0,\s*0,\s*0,\s*0\.18\)/);
     // Cross-reference: the Chain tab's own strike grid wrapper uses the
     // identical token — this is what "surface elevation parity" means.
-    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--algo-bg-elev2,\s*#0d1829\)/);
+    expect(CHAIN_TAB).toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--card-bg-gradient\)/);
+    expect(CHAIN_TAB).not.toMatch(/\.chain-grid-wrap\s*\{[\s\S]*?background:\s*var\(--algo-bg-elev2/);
   });
+
+  test('chain-th-ce/-pe/-strike header cells also reference --card-bg-gradient, not the flat --algo-bg-elev2 hex', () => {
+    for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
+      const rule = CHAIN_TAB.match(new RegExp(`\\${sel}\\s*\\{[^}]*\\}`))?.[0] ?? '';
+      expect(rule, `${sel} rule`).not.toBe('');
+      expect(rule).toMatch(/background:\s*var\(--card-bg-gradient\)/);
+      expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
+    }
+  });
+
+  // Live computed-style proof that the gradient cascade actually
+  // resolves in the browser (not `none`, which would happen if the
+  // --card-bg-gradient token were scoped to a theme class that doesn't
+  // reach SymbolPanel's portaled modal) lives in
+  // order_ticket_row_height_and_palette.spec.js's "Fix #2" live test —
+  // that test already opens the Chain tab with NIFTY seeded (needed for
+  // its own TP%/SL% height assertion), so the gradient check piggybacks
+  // on the SAME page/navigation there instead of adding a 4th live
+  // NIFTY-symbol-search browser test to THIS file. (Empirically, a 4th
+  // consecutive live test in this file that types NIFTY and waits on
+  // the suggestion dropdown started intermittently timing out —
+  // `searchByPrefix()` awaits a per-context `loadInstruments()` full
+  // reload every test since Playwright gives each test a fresh browser
+  // context with no persisted IndexedDB/cache; this is pre-existing
+  // test-infra cost, not a defect in either fix.)
 
   test('.oes-tabs-divider references the amber accent family, not plain white/gray', () => {
     const rule = SYMBOL_PANEL.match(/\.oes-tabs-divider\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';

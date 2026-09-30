@@ -197,8 +197,14 @@
     /* Surface-elevation parity with the Chain tab's strike grid
        (OptionChainTab.svelte's .chain-grid-wrap / .chain-th-* — same
        token) — was a generic black overlay that read as a different
-       surface from the rest of the order-entry chrome. */
-    background: var(--algo-bg-elev2, #0d1829);
+       surface from the rest of the order-entry chrome.
+       Corrected (2026-09-30) — the shared token was --algo-bg-elev2, a
+       flat solid navy that itself read as a visibly different (darker)
+       surface from every other card-like surface in the app
+       (.algo-card, .bucket-card, chart wrappers — all --card-bg-gradient).
+       Both this and the Chain tab's grid now use --card-bg-gradient,
+       the app's actual canonical card surface. */
+    background: var(--card-bg-gradient);
     border: 1px solid rgba(255,255,255,0.06);
     border-radius: 3px;
     /* Match the Chain-tab strike grid height when the parent (the

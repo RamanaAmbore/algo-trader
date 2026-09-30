@@ -1222,7 +1222,7 @@
     flex-shrink: 0;
   }
   /* Narrowed 20% (2026-09-30, operator request): 11rem/16rem → 8.8rem/12.8rem. */
-  .oct-expiry-pick { min-width: 8.8rem; max-width: 12.8rem; flex: 0 1 auto; }
+  .oct-expiry-pick { min-width: 7.7rem; max-width: 11.2rem; flex: 0 1 auto; }
   /* Days-to-expiry chip — slate-blue resting, amber when ≤ 3 days
      to expiry so the operator sees the imminent roll. */
   .oct-expiry-dte {
@@ -1235,6 +1235,15 @@
     border-radius: 3px;
     padding: 0.15rem 0.45rem;
     flex-shrink: 0;
+    /* Height parity with TemplateBar's TP%/SL%/Wing override inputs
+       (.oes-basket-tpl-param > input, height: 1.4rem) — this chip sits
+       in the same Expiry toolbar row and was visibly shorter with no
+       explicit height. 1.4rem is the local value here (a size tier
+       below the main row controls), not the shared --ctl-h token. */
+    min-height: 1.4rem;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
   }
   .oct-expiry-dte-warn {
     color: var(--c-action);
@@ -1385,8 +1394,13 @@
        had none — a patchy, two-toned look rather than one consistent
        surface. One solid background at the standard card-wrapper
        elevation, covering the whole grid (header + body), same on
-       every viewport. */
-    background: var(--algo-bg-elev2, #0d1829);
+       every viewport.
+       Corrected (2026-09-30) — --algo-bg-elev2 was a flat solid navy
+       that read as a visibly DIFFERENT (darker) surface from every
+       other card-like surface in the app (.algo-card, .bucket-card,
+       chart wrappers), which all use --card-bg-gradient. Switched to
+       the app's actual canonical card surface token instead. */
+    background: var(--card-bg-gradient);
     /* Operator: "order ticket window is wider than viewport mobile
        sometimes" — root-caused to THIS table: table-layout defaults to
        `auto`, which sizes columns off cell content's natural minimum
@@ -1445,9 +1459,17 @@
      scrollable" — sticky within .chain-grid-wrap's own scroll
      container (overflow-y: auto). Needs a fully OPAQUE background
      (not the old 0.6-alpha overlay) so scrolled body rows don't show
-     through underneath it; matches .chain-grid-wrap's own new solid
-     background exactly, so the header reads as part of the same
-     surface, not a separate darker band. */
+     through underneath it; reads as part of the same surface as
+     .chain-grid-wrap below it, not a separate darker band.
+     Corrected (2026-09-30) — was --algo-bg-elev2 (flat solid navy,
+     mismatched the app's actual card-surface token). Now uses
+     --card-bg-gradient, same token as .chain-grid-wrap, matching the
+     app's every other card-like surface (.algo-card, .bucket-card,
+     chart wrappers). Each sticky header cell paints its own short
+     gradient run rather than sharing one continuous gradient with the
+     taller wrap behind it, so the two won't be pixel-identical at
+     every y-offset — this is the same tradeoff every other sticky
+     header + scroll-body pairing in the app already accepts. */
   /* Operator (2026-09-30): CE/PE header text sat on the OPPOSITE
      side from the +/- buttons — .chain-cell-row-ce/-pe (below,
      deliberately unchanged) push the quote+buttons block toward the
@@ -1456,14 +1478,14 @@
      header labels sit over their own row's actual content. Border
      bumped 0.05 -> 0.18 so the header row visibly separates from
      the strike rows below it. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
      button). Tightened from 0.3rem to 0.1rem; column width narrowed
      from 16% to 12%, giving CE/PE the reclaimed width. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--algo-bg-elev2, #0d1829); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); border-bottom: 1px solid rgba(255,255,255,0.18); border-left: 1px solid rgba(255,255,255,0.03); border-right: 1px solid rgba(255,255,255,0.03); background: var(--card-bg-gradient); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
