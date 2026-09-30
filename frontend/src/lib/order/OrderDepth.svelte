@@ -367,17 +367,17 @@
      settled on. No sticky/border-collapse risk here (this is a plain
      CSS grid, not a <table>), so border-bottom is safe to use
      directly — no box-shadow workaround needed.
-     Amber alpha bumped 0.18 -> 0.28 (2026-09-30, operator: "the
-     border color should be a little strong") — kept in sync with the
-     matching bump on Chain's own .chain-th-ce/-pe/-strike, same
-     reasoning: 0.28 already exists elsewhere in the app as a border
-     alpha (e.g. .oct-acct-warn, OptionChainTab.svelte) rather than a
-     new one-off value. */
+     Amber alpha bumped 0.18 -> 0.28 (operator: "the border color
+     should be a little strong"), then 0.28 -> 0.40 (operator: "the
+     bottom border should be stronger on amber side... i am ferring
+     to labels" — confirming this applies to the Bid qty/Bid/Ask/Ask
+     qty label row) — kept in sync with the matching bump on Chain's
+     own .chain-th-ce/-pe/-strike throughout. */
   .ot-depth-header-bg {
     grid-column: 1 / -1;
     grid-row: 1;
     background: var(--card-bg-elevated);
-    border-bottom: 1px solid rgba(251,191,36,0.28);
+    border-bottom: 1px solid rgba(251,191,36,0.40);
   }
   .ot-depth-cell {
     text-align: right;

@@ -1625,9 +1625,13 @@
      Bumped again 0.18 -> 0.28 (2026-09-30, operator: "the border
      color should be a little strong") — 0.28 also already exists
      elsewhere in this file as a border alpha (.oct-acct-warn, above)
-     rather than a new one-off value. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     rather than a new one-off value.
+     Bumped again 0.28 -> 0.40 (2026-09-30, operator: "the bottom
+     border should be stronger on amber side") — kept in sync with
+     the matching bump on the order ticket's .ot-depth-header-bg
+     (OrderDepth.svelte). */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
@@ -1636,8 +1640,15 @@
      Left/right borders folded into the same box-shadow: inset as the
      bottom edge (2026-09-30, same border-collapse/sticky fix as
      .chain-th-ce/-pe above) instead of separate border-left/-right
-     declarations, for the same repaint-reliability reason. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.1rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.28), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     declarations, for the same repaint-reliability reason.
+     Padding widened 0.1rem -> 0.4rem (2026-09-30, operator: "the gap
+     between ce, strike, pe label should be increased") — the earlier
+     "move ce pe away from strike" fix only widened the DATA rows'
+     Strike cell (.chain-row>td.chain-td-strike), not this header
+     cell, leaving the header row's CE|Strike|PE gap visibly tighter
+     than the data rows below it. Matches that same 0.4rem value for
+     header/body consistency. */
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.4rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button

@@ -487,7 +487,7 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a moderately strong amber bottom edge via box-shadow:inset, 0.28 alpha (SUPERSEDED 2026-09-30, three times — border-bottom replaced by box-shadow to fix a repaint bug, dialed white/0.35 -> amber/0.18 for a thinner look, then strengthened to 0.28)', () => {
+  test('chain header cells have a strong amber bottom edge via box-shadow:inset, 0.40 alpha (SUPERSEDED 2026-09-30, four times — border-bottom replaced by box-shadow to fix a repaint bug, dialed white/0.35 -> amber/0.18 for a thinner look, then strengthened to 0.28, then 0.40)', () => {
     // Was border-bottom (brightened from 0.18 to 0.35 alpha same day),
     // then changed to box-shadow: inset (operator: "again the border
     // shows and disappears" / "...in the money calls and puts, it
@@ -499,13 +499,14 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     // Then dialed white 0.35 -> amber 0.18 (operator: "reduce the
     // thickness of the border... if the border thinner with amber
     // shade it may look better"), then 0.18 -> 0.28 (operator: "the
-    // border color should be a little strong") — same day, matches
-    // existing --algo-amber alphas already used elsewhere in this
-    // file (.chain-row-atm at 0.18, .oct-acct-warn at 0.28).
+    // border color should be a little strong"), then 0.28 -> 0.40
+    // (operator: "the bottom border should be stronger on amber
+    // side") — same day, each reusing an existing --algo-amber alpha
+    // rather than inventing a new one-off value.
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,191,36,0\.28\)/);
+      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,191,36,0\.40\)/);
       expect(rule, `${sel} must not use border-bottom`).not.toMatch(/border-bottom:\s*\S/);
     }
   });

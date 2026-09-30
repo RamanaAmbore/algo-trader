@@ -170,14 +170,16 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     // Chain's header cells: --card-bg-elevated + amber box-shadow-
     // equivalent border-bottom (no sticky/border-collapse risk here,
     // so plain border-bottom is safe, unlike Chain's <th>). Amber
-    // alpha bumped 0.18 -> 0.28 same day (operator: "the border color
-    // should be a little strong"), kept in sync with Chain's own bump.
+    // alpha bumped 0.18 -> 0.28 -> 0.40 same day (operator: "the
+    // border color should be a little strong", then "the bottom
+    // border should be stronger on amber side"), kept in sync with
+    // Chain's own bumps throughout.
     expect(content).toMatch(/<div class="ot-depth-header-bg"/);
     const body = ruleBody(content, '.ot-depth-header-bg');
     expect(body, '.ot-depth-header-bg rule must exist').not.toBeNull();
     expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
     expect(body).toMatch(/background:\s*var\(--card-bg-elevated\)/);
-    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.28\)/);
+    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.40\)/);
   });
 
   test('.ot-depth-label/.ot-depth-bid/.ot-depth-ask carry a subtle Bid|Ask divider, matching Chain\'s column-border treatment (2026-09-30, operator: "apply column borders of chain to quote depth headings and quotes")', () => {
@@ -675,7 +677,7 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.chain-th-ce/-pe/-strike bottom edge is a 0.28-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, dialed to amber, then strengthened)', () => {
+  test('.chain-th-ce/-pe/-strike bottom edge is a 0.40-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, dialed to amber, then strengthened twice)', () => {
     // box-shadow: inset instead of border-bottom (2026-09-30, operator:
     // "again the border shows and disappears" / "...in the money calls
     // and puts, it disappears") — sticky <th> + border-collapse:collapse
@@ -686,15 +688,16 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     // Color/alpha dialed white 0.35 -> amber 0.18 (operator: "reduce
     // the thickness of the border... if the border thinner with amber
     // shade it may look better"), then 0.18 -> 0.28 (operator: "the
-    // border color should be a little strong") — same day, matches the
-    // --algo-amber divider convention already used elsewhere in this
-    // file (.chain-row-atm's border-bottom at 0.18, .oct-acct-warn's
-    // border at 0.28) instead of new one-off values.
+    // border color should be a little strong"), then 0.28 -> 0.40
+    // (operator: "the bottom border should be stronger on amber
+    // side") — same day, each step reusing an --algo-amber alpha
+    // already established elsewhere in this file rather than
+    // inventing new one-off values.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.28\)/);
+      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
       // Single-line rule — ruleBody's captured [^}]* contains only the
       // literal declarations between { and }, no surrounding comments,
       // so a bare substring check here is safe (unlike the multi-line
@@ -999,6 +1002,20 @@ test.describe('Static source checks — Chain Strike column widened to separate 
     expect(rule).toMatch(/padding-right:\s*0\.4rem/);
     expect(rule).not.toMatch(/padding-left:\s*0\.1rem/);
     expect(rule).not.toMatch(/padding-right:\s*0\.1rem/);
+  });
+
+  // Operator (2026-09-30, follow-up same day): "the gap between ce,
+  // strike, pe label should be increased" — the fix above only
+  // widened the DATA rows' Strike cell; the HEADER row's own
+  // .chain-th-strike padding was left at 0.1rem, so the header's
+  // CE|Strike|PE gap stayed visibly tighter than the data rows below
+  // it. Matched to the same 0.4rem value for header/body consistency.
+  test('.chain-th-strike padding ALSO widened to 0.4rem (0.2rem 0.1rem -> 0.2rem 0.4rem), matching the data row', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const rule = ruleBody(content, '.chain-th-strike') ?? '';
+    expect(rule, '.chain-th-strike rule').not.toBe('');
+    expect(rule).toMatch(/padding:\s*0\.2rem\s+0\.4rem/);
+    expect(rule).not.toMatch(/padding:\s*0\.2rem\s+0\.1rem/);
   });
 
   test('live: strike cell gains extra horizontal separation from the CE/PE columns without misaligning the header label', async ({ page }) => {
