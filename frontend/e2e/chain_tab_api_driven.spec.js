@@ -65,8 +65,14 @@ async function triggerChainViaButton(page) {
   // Look for option/chain-related buttons or elements
   // On /admin/derivatives, clicking a symbol card might open a modal with the chain tab
   // For now, we'll look for any button that opens a chain view
+  // Playwright's CSS :has-text() takes a plain string (case-insensitive,
+  // substring match by default) — it is not a CSS selector engine that
+  // understands JS regex-literal syntax like /chain/i, which is only
+  // valid with the getByText() locator API. The regex literal here was
+  // invalid CSS and made every .count()/.locator() call on this
+  // selector throw.
   const chainBtn = page.locator(
-    'button:has-text(/chain/i), button[title*="chain" i], [data-testid*="chain" i]'
+    'button:has-text("chain"), button[title*="chain" i], [data-testid*="chain" i]'
   ).first();
 
   if (await chainBtn.count()) {
