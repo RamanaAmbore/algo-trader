@@ -118,22 +118,37 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(cellBody).toMatch(/text-align:\s*right/);
   });
 
-  test('.ot-depth-grid columns are content-sized and centered, not stretched to fill the card width (2026-09-30)', () => {
+  test('.ot-depth-grid columns are content-sized and centered, with a widened column-gap (2026-09-30, twice same day)', () => {
     const body = ruleBody(content, '.ot-depth-grid');
     expect(body, '.ot-depth-grid rule must exist').not.toBeNull();
     expect(body).toMatch(/grid-template-columns:\s*repeat\(4,\s*max-content\)/);
     expect(body).not.toMatch(/grid-template-columns:\s*1fr\s+1fr\s+1fr\s+1fr/);
     expect(body).toMatch(/justify-content:\s*center/);
+    // Widened from 0.4rem -> 0.9rem after "columns too close" feedback
+    // on the just-landed content-sized-column change.
+    expect(body).toMatch(/gap:\s*0\.15rem\s+0\.9rem/);
   });
 
-  test('.ot-depth-label column headers have a lower border and tint toward their own data column color (2026-09-30)', () => {
+  test('.ot-depth-label column headers tint toward their own data column color (2026-09-30)', () => {
     const body = ruleBody(content, '.ot-depth-label');
     expect(body, '.ot-depth-label rule must exist').not.toBeNull();
-    expect(body).toMatch(/border-bottom:\s*1px solid/);
     // Bid/Bid-qty labels (1st/2nd column) tint green; Ask/Ask-qty
     // labels (3rd/4th column) tint red — matching their data cells.
     expect(content).toMatch(/\.ot-depth-label:nth-child\(1\),\s*\n?\s*\.ot-depth-label:nth-child\(2\)\s*\{[^}]*color:\s*var\(--algo-green/);
     expect(content).toMatch(/\.ot-depth-label:nth-child\(3\),\s*\n?\s*\.ot-depth-label:nth-child\(4\)\s*\{[^}]*color:\s*var\(--algo-red/);
+  });
+
+  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border, end-to-end (2026-09-30 follow-up)', () => {
+    // A per-label background/border would leave visible gaps at the
+    // grid's column-gap seams (columns are content-sized, not
+    // stretched) — a single element spanning grid-column: 1 / -1 is
+    // genuinely continuous across the whole label row instead.
+    expect(content).toMatch(/<div class="ot-depth-header-bg"/);
+    const body = ruleBody(content, '.ot-depth-header-bg');
+    expect(body, '.ot-depth-header-bg rule must exist').not.toBeNull();
+    expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
+    expect(body).toMatch(/background:\s*rgba\(/);
+    expect(body).toMatch(/border-bottom:\s*1px solid/);
   });
 });
 
@@ -622,14 +637,25 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(parseFloat(borderBottom), '.ot-depth-h border-bottom-width').toBeGreaterThan(0);
   });
 
-  test('.ot-depth-diag renders raw depth-level counts and raw volume below the grid, inside .ot-depth (2026-09-30)', () => {
+  test('.ot-depth-diag renders raw depth-level counts and raw volume, each with an explicit label, below the grid inside .ot-depth (2026-09-30, relabeled same day)', () => {
     const content = readFile('src/lib/order/OrderDepth.svelte');
     const rule = ruleBody(content, '.ot-depth-diag') ?? '';
     expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
     expect(content).toMatch(/<div class="ot-depth-diag"/);
     expect(content).toMatch(/depth_buy\?\.length/);
     expect(content).toMatch(/depth_sell\?\.length/);
-    expect(content).toMatch(/Vol \(raw\)\s*\{q\.volume/);
+    expect(content).toMatch(/\{q\.volume\s*\?\?/);
+    // Explicit label text per item (operator: "add labels to the
+    // additional info") — not a single run-on string.
+    expect(content).toMatch(/>Buy levels</);
+    expect(content).toMatch(/>Sell levels</);
+    expect(content).toMatch(/>Volume \(raw\)</);
+    // No longer faded/italic (operator: "why the additional info is
+    // not showing" — the 0.65-opacity italic treatment read as
+    // invisible even though it technically rendered).
+    const diagRule = ruleBody(content, '.ot-depth-diag') ?? '';
+    expect(diagRule).not.toMatch(/opacity:\s*0\.65/);
+    expect(diagRule).not.toMatch(/font-style:\s*italic/);
     // Diagnostic row must be AFTER .ot-depth-grid in markup (below the
     // bid/ask ladder), still inside the same .ot-depth container.
     const gridIdx = content.indexOf('<div class="ot-depth-grid">');
@@ -638,7 +664,7 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(diagIdx, '.ot-depth-diag markup').toBeGreaterThan(gridIdx);
   });
 
-  test('live: .ot-depth-diag is visible below the bid/ask grid and reports numeric level counts', async ({ page }) => {
+  test('live: .ot-depth-diag is visible below the bid/ask grid with labeled Buy levels / Sell levels / Volume (raw) values', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded' }).catch(() => {});
     const symInput = page.locator('.ssi-input').first();
@@ -662,7 +688,10 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
       return;
     }
     const text = await diag.innerText();
-    expect(text, '.ot-depth-diag text').toMatch(/Levels \d+B\/\d+S/);
-    expect(text, '.ot-depth-diag text').toMatch(/Vol \(raw\)/);
+    expect(text, '.ot-depth-diag text').toMatch(/Buy levels/);
+    expect(text, '.ot-depth-diag text').toMatch(/Sell levels/);
+    expect(text, '.ot-depth-diag text').toMatch(/Volume \(raw\)/);
+    const opacity = await diag.evaluate((el) => getComputedStyle(el).opacity);
+    expect(parseFloat(opacity), '.ot-depth-diag must be fully opaque, not faded').toBe(1);
   });
 });

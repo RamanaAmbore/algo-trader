@@ -177,6 +177,7 @@
     </div>
   {/if}
   <div class="ot-depth-grid">
+    <div class="ot-depth-header-bg" aria-hidden="true"></div>
     <span class="ot-depth-label">Bid qty</span>
     <span class="ot-depth-label">Bid</span>
     <span class="ot-depth-label">Ask</span>
@@ -197,8 +198,18 @@
        (null-padded for visual alignment). -->
   {#if q}
     <div class="ot-depth-diag" title="Raw /api/quote response — depth level counts and volume as returned by the broker, unpadded">
-      <span class="ot-depth-diag-item">Levels {q.depth_buy?.length ?? 0}B/{q.depth_sell?.length ?? 0}S</span>
-      <span class="ot-depth-diag-item">Vol (raw) {q.volume ?? '—'}</span>
+      <span class="ot-depth-diag-item">
+        <span class="ot-depth-diag-lbl">Buy levels</span>
+        <span class="ot-depth-diag-val">{q.depth_buy?.length ?? 0}</span>
+      </span>
+      <span class="ot-depth-diag-item">
+        <span class="ot-depth-diag-lbl">Sell levels</span>
+        <span class="ot-depth-diag-val">{q.depth_sell?.length ?? 0}</span>
+      </span>
+      <span class="ot-depth-diag-item">
+        <span class="ot-depth-diag-lbl">Volume (raw)</span>
+        <span class="ot-depth-diag-val">{q.volume ?? '—'}</span>
+      </span>
     </div>
   {/if}
 </div>
@@ -280,7 +291,13 @@
        how narrow the actual bid/ask/qty text is. */
     grid-template-columns: repeat(4, max-content);
     justify-content: center;
-    gap: 0.15rem 0.4rem;
+    /* Column-gap widened 0.4rem -> 0.9rem (2026-09-30, operator: "the
+       columns are too close. keep them away to accommodate the
+       number") — max-content columns (above) size EXACTLY to their
+       content with zero internal buffer, so the original 0.4rem gap
+       read as visually cramped, especially between the qty and price
+       columns on each side. Row-gap (between price rows) unchanged. */
+    gap: 0.15rem 0.9rem;
     font-family: var(--font-numeric);
     /* Audit fix — explicit tabular-nums on the price/qty cells. The
        shared --font-numeric stack covers digit-width consistency, but
@@ -295,20 +312,34 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     text-align: right;
-    /* Lower border + per-column color (2026-09-30, operator: "the
-       header with values BID QTY / BID / ASK / ASK QTY to be in a
-       slightly different color scheme with lower border") — each
-       label now tints toward its own data column's color (green for
-       Bid/Bid-qty, red for Ask/Ask-qty) instead of uniform muted gray,
-       plus a subtle underline separating the label row from the price
-       rows beneath it. */
     padding-bottom: 0.2rem;
-    border-bottom: 1px solid rgba(255,255,255,0.10);
+    /* Sits ABOVE .ot-depth-header-bg (next rule) in stacking order so
+       the label text paints over the header band's background. */
+    position: relative;
+    z-index: 1;
   }
   .ot-depth-label:nth-child(1),
   .ot-depth-label:nth-child(2) { color: var(--algo-green, var(--c-long)); opacity: 0.8; }
   .ot-depth-label:nth-child(3),
   .ot-depth-label:nth-child(4) { color: var(--algo-red, var(--c-short)); opacity: 0.8; }
+  /* Header row band (2026-09-30, operator: "let the row [with BID QTY
+     / BID / ASK / ASK QTY] have a lower border end to end and a
+     slightly different background to show this [as] a header") — a
+     dedicated grid item spanning ALL 4 columns of row 1
+     (grid-column: 1 / -1), placed FIRST in the DOM so it paints
+     behind the label text. This avoids the column-gap seam problem a
+     per-label background would have (.ot-depth-grid's columns are
+     content-sized + centered, not stretched full-width, per the
+     earlier same-day fix, so 4 separate per-label backgrounds would
+     leave visible gaps between them) — one element spanning the
+     whole row is genuinely edge-to-edge, not four disconnected
+     chips. */
+  .ot-depth-header-bg {
+    grid-column: 1 / -1;
+    grid-row: 1;
+    background: rgba(255,255,255,0.04);
+    border-bottom: 1px solid rgba(255,255,255,0.14);
+  }
   .ot-depth-cell {
     text-align: right;
     color: var(--algo-slate);
@@ -354,23 +385,37 @@
     color: var(--algo-sky, #7dd3fc);
   }
 
-  /* Raw response diagnostic row (2026-09-30) — deliberately plainer/
-     smaller than .ot-depth-stats (muted, italic, no color-coding) so
-     it reads as "debug info", not another market-data stat the
-     operator should act on. */
+  /* Raw response diagnostic row (2026-09-30) — plainer than
+     .ot-depth-stats (no color-coding), but NOT so faint it's hard to
+     notice: the original 0.65-opacity italic treatment read as
+     "not showing" (operator report) even though it was technically
+     rendering. Dropped the opacity/italic, kept it visually distinct
+     via smaller font + muted (not faded) color + explicit label/value
+     pairs (matching .ot-depth-stat's own label+value pattern) instead
+     of one run-on text string per item. */
   .ot-depth-diag {
     display: flex;
-    gap: 0.6rem;
+    gap: 0.7rem;
+    flex-wrap: wrap;
     margin-top: 0.35rem;
     padding-top: 0.25rem;
-    border-top: 1px solid rgba(255,255,255,0.06);
+    border-top: 1px solid rgba(255,255,255,0.10);
     font-size: var(--fs-2xs);
-    color: var(--algo-muted);
-    font-style: italic;
-    opacity: 0.65;
   }
   .ot-depth-diag-item {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.2rem;
+  }
+  .ot-depth-diag-lbl {
+    color: var(--algo-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .ot-depth-diag-val {
+    color: var(--algo-slate);
     font-family: var(--font-numeric);
     font-variant-numeric: tabular-nums;
+    font-weight: 600;
   }
 </style>
