@@ -21,6 +21,8 @@
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
+  import { toast } from '$lib/data/toastStore.svelte.js';
+  import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
 
   /** @type {{
    *   orderId?: string | null,
@@ -148,6 +150,17 @@
         return tb - ta;
       });
       orderRows = merged;
+      // Trading-critical "template did not attach" toast (2026-09-30) —
+      // evaluated on every merged row BEFORE status-chip filtering, so
+      // it fires regardless of which status bucket the operator has
+      // selected. See templateAttachToast.js for the live-only gate +
+      // time-based debounce this relies on.
+      for (const o of merged) {
+        if (noteAttachObservation(o)) {
+          const oid = o?.id ?? o?.order_id;
+          toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+        }
+      }
     } catch (_) { /* keep last-good */ } finally {
       _loading = false;
     }

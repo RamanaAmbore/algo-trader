@@ -514,6 +514,11 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
             fill_price=float(row.fill_price),
             template_id=int(row.template_id),
             parent_product=str(row.product or "NRML"),
+            # _opl_reconcile_attach_eligible() already restricts this path
+            # to mode=='live' rows; thread the row's own mode through as a
+            # second, independent guard at the real chokepoint (see
+            # _fire_template_attach_on_fill's mode gate below).
+            mode=str(row.mode or "live"),
         ))
     except Exception as e:
         logger.warning(f"reconcile template attach failed for #{row.id}: {e}")
@@ -669,6 +674,7 @@ async def _fire_template_attach_on_fill(
     fill_price: float,
     template_id: int,
     parent_product: str = "NRML",
+    mode: str,
 ) -> None:
     """Fire apply_plan_live for a templated parent order that just
     flipped to FILLED via Kite/Dhan/Groww postback.
@@ -687,8 +693,31 @@ async def _fire_template_attach_on_fill(
     a back-compat shim for callers that don't have the row's product
     in hand; real callers (postback handler, chase terminal) read it
     off AlgoOrder.product (Phase 3C #2).
+
+    `mode` — the AlgoOrder row's own `mode` field ('live' / 'paper' /
+    'sim' / 'replay' / 'shadow'), REQUIRED (no default) so every caller
+    must state explicitly what kind of fill this is. This is the one
+    function that calls `apply_plan_live`, which resolves a REAL broker
+    via `get_broker()` and places REAL GTT/wing orders — it must never
+    run for a non-live fill. CRITICAL FIX (2026-09-30): this function
+    used to hardcode `apply_path="live"` unconditionally, so a paper-mode
+    fill (e.g. a templated Chain/OrderTicket test with paper_trading_mode
+    on) reached this same broker-placing branch and armed real exit GTTs
+    + a real wing order against a position that only existed in the
+    paper simulator. Do NOT reintroduce a default value for `mode` — a
+    default silently recreates the exact bug for any future caller that
+    forgets to pass it.
     """
     if not fill_price or fill_price <= 0:
+        return
+    if (mode or "").lower() != "live":
+        logger.info(
+            "[TPL-ATTACH] skipping — parent #%s %s is mode=%r, not 'live'; "
+            "template attach only ever places REAL broker GTTs/orders, so "
+            "non-live fills (paper/sim/replay/shadow) never reach the "
+            "broker here. No GTTs armed for this fill.",
+            parent_row_id, parent_symbol, mode,
+        )
         return
     # Phase 3D #4 — serialise concurrent calls for the same parent_row_id
     # so the postback handler and chase terminal can't both pass the

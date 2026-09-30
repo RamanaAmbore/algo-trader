@@ -148,6 +148,14 @@
   }
 
   const _slip = $derived(_slippage(order));
+  // Trading-critical "template did not attach" toast: wired from the
+  // POLL LOOP (OrderBook.svelte / LogPanel.svelte `_loadOrders`, on the
+  // merged rows before any status-chip filtering) via
+  // templateAttachToast.js — NOT here. OrderCard only mounts for rows
+  // the currently-selected status filter happens to match, so tying
+  // detection to this component's own lifecycle would silently miss
+  // every row filtered out of the active view. See
+  // templateAttachToast.js's header comment for the full rationale.
 </script>
 
 <!-- Outer is a div role=button (not <button>) so inline action buttons

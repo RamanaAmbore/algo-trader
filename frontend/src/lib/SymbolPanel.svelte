@@ -1977,12 +1977,17 @@
       // broker → resubmit risk on the retained legs. Persistent
       // banner is dismissed by basket-clear or modal-close.
       _stickyResultTimer = null;
+      // Trading-critical toast (2026-09-30) — the sticky banner above
+      // already carries this, but it's scoped to this modal; a toast
+      // means the operator notices even after the modal closes.
+      toast.warning(`Basket: ${ok}/${total} placed, ${fails.length} rejected`, { timeoutMs: 5000 });
     } else {
       basketResultMsg = `Failed: ${fails[0]}`;
       _stickyResultMsg = `All ${total} legs rejected — no orders placed`;
       _stickyResultLevel = 'err';
       if (_stickyResultTimer) clearTimeout(_stickyResultTimer);
       _stickyResultTimer = setTimeout(() => { _stickyResultMsg = ''; _stickyResultLevel = ''; }, 8000);
+      toast.error(`Basket failed — ${fails[0]}`.slice(0, 80), { timeoutMs: 5000 });
     }
   }
 

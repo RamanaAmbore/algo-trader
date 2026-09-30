@@ -22,6 +22,8 @@
   import ActivityAccountSelect from '$lib/ActivityAccountSelect.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
+  import { toast } from '$lib/data/toastStore.svelte.js';
+  import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -585,6 +587,17 @@
         return tb - ta;
       });
       orderRows = merged;
+      // Trading-critical "template did not attach" toast (2026-09-30) —
+      // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
+      // merged rows regardless of the currently-selected order-mode
+      // chip. See templateAttachToast.js for the live-only gate +
+      // time-based debounce.
+      for (const o of merged) {
+        if (noteAttachObservation(o)) {
+          const oid = o?.id ?? o?.order_id;
+          toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+        }
+      }
     } catch (_) { /* keep last-good */ }
     // Fire-and-forget: fetch order lifecycle events in parallel for the
     // order tab event log. Does not block orderRows from rendering.
@@ -2056,7 +2069,31 @@
     flex: 1 1 0;
     min-height: 0;
     overflow-y: auto;
+    overscroll-behavior: contain;
     padding: 0.4rem 0.2rem;
+  }
+  /* Root cause of "order log not scrollable" (operator report, confirmed
+     via real touch-gesture Playwright test — programmatic scrollTop
+     writes and scrollHeight/clientHeight math both looked fine, only a
+     genuine synthesized touch swipe reproduced the failure): the Order
+     tab's rows render inside a NESTED `.log-panel.log-rows` div (no
+     `{heightClass}`, unlike every other tab) — the shared global rule
+     `.log-panel.log-rows { overflow-y: auto; overscroll-behavior: contain; }`
+     still applies to it even though it never actually overflows itself
+     (it's a plain block sized to fit its own content, so its scrollHeight
+     always equals its clientHeight). Chromium's touch-scroll hit-testing
+     picks THIS inner, non-overflowing element as the scroll target (it's
+     the nearest CSS-overflow:auto ancestor to the touch point) and its
+     own `overscroll-behavior: contain` then stops the unused scroll delta
+     from chaining up to the real scroll container — `.lp-order-scroll`
+     one level out, which genuinely has more content than height. Net
+     effect: touch scroll silently does nothing. Fix: the inner wrapper
+     is not itself a scroll container in this tab — neutralise the
+     inherited overflow/overscroll rules here so `.lp-order-scroll` (the
+     single real scroll region) is the only one Chromium considers. */
+  .lp-order-scroll .log-panel.log-rows {
+    overflow-y: visible;
+    overscroll-behavior: auto;
   }
   .lp-order-scroll .oc-book-grid {
     display: grid;

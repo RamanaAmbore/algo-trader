@@ -47,6 +47,7 @@
   } from './orderTicketSubmit.js';
   import { fundsStore } from '$lib/data/marketDataStores.svelte.js';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import ModalShell from '$lib/ModalShell.svelte';
   import { appliesToFor as _appliesToFor } from '$lib/data/templateScope.js';
   import { capWarningFor } from '$lib/data/brokerCapWarnings';
@@ -2208,6 +2209,9 @@
       // indeterminate outcome must not trigger that.
       if (/** @type {any} */ (e)?.name === 'TimeoutError') {
         submitPending = 'Still processing — check Orders';
+        // Not a known failure (see comment above) — no error toast; a
+        // sticky "this failed" popup would be actively misleading when
+        // the order may well have gone through.
       } else {
         submitErr = /** @type {any} */ (e)?.message || String(e);
         // R6 fix (2026-09): api.js attaches the full, untruncated detail
@@ -2217,6 +2221,16 @@
         // for errors that were never truncated in the first place.
         const full = /** @type {any} */ (e)?.fullMessage;
         submitErrFull = (full && full !== submitErr) ? full : '';
+        // Trading-critical toast (2026-09-30, operator audit) — the
+        // inline `submitErr` banner above already shows this, but it's
+        // only visible while the ticket modal stays open/in view. A
+        // short-lived toast means the operator notices a failed PAPER/
+        // LIVE submit even if they've already looked away. Kept to a
+        // 5s auto-dismiss (matching toastStore's own `warning` default)
+        // rather than the store's sticky `error` default (timeoutMs: 0)
+        // — the operator asked for "short-lived", and the inline banner
+        // is already the durable record.
+        toast.error(`Order failed — ${submitErr}`.slice(0, 80), { timeoutMs: 5000 });
       }
     } finally {
       submitting = false;

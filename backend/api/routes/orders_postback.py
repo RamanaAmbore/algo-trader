@@ -652,6 +652,11 @@ def _pb_dispatch_template_attach(_r) -> None:
             fill_price=float(_r.fill_price),
             template_id=int(_r.template_id),
             parent_product=str(_r.product or "NRML"),
+            # _pb_wants_template_attach() already restricts this path to
+            # mode=='live' rows; thread the row's own mode through as a
+            # second, independent guard (mirrors _pb_dispatch_take_profit_arm's
+            # existing parent_mode= pattern above).
+            mode=str(_r.mode or "live"),
         )
     )
 

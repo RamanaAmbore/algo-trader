@@ -17,6 +17,7 @@
     fetchAccounts,
   } from '$lib/api';
   import { executionMode } from '$lib/stores';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import Select from '$lib/Select.svelte';
   import TemplateBar from '$lib/TemplateBar.svelte';
   import {
@@ -805,9 +806,14 @@
   function _finalizeBasket(failures, total) {
     if (failures.length === total) {
       basketError = failures[0] || 'All legs failed';
+      // Trading-critical toast (2026-09-30) — chain-tab basket has its
+      // own inline `basketError` banner but no shared toast; add one so
+      // the operator notices even if they've scrolled away from it.
+      toast.error(`Chain basket failed — ${basketError}`.slice(0, 80), { timeoutMs: 5000 });
     } else if (failures.length) {
       basketError = `${failures.length}/${total} failed: ${failures[0]}`;
       _localBasket = [];
+      toast.warning(`Chain basket: ${total - failures.length}/${total} placed, ${failures.length} failed`, { timeoutMs: 5000 });
     } else {
       _localBasket = []; basketJustDone = true;
       setTimeout(() => { basketJustDone = false; }, 2200);

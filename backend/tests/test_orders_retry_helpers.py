@@ -44,6 +44,7 @@ class TestPrecheckRow:
     def test_no_template_id(self):
         r = SimpleNamespace(
             template_id=None, attached_gtts_json=None, status="FILLED",
+            mode="live",
         )
         out = _retry_precheck_row(r)
         assert out and "no template attached" in out["reason"]
@@ -51,6 +52,7 @@ class TestPrecheckRow:
     def test_already_attached_bails(self):
         r = SimpleNamespace(
             template_id=1, attached_gtts_json='[{}]', status="FILLED",
+            mode="live",
         )
         out = _retry_precheck_row(r)
         assert out and "already attached" in out["reason"]
@@ -58,6 +60,7 @@ class TestPrecheckRow:
     def test_not_filled_bails_with_status_in_reason(self):
         r = SimpleNamespace(
             template_id=1, attached_gtts_json=None, status="OPEN",
+            mode="live",
         )
         out = _retry_precheck_row(r)
         assert out and "OPEN" in out["reason"] and "FILLED" in out["reason"]
@@ -65,8 +68,37 @@ class TestPrecheckRow:
     def test_valid_row_returns_none(self):
         r = SimpleNamespace(
             template_id=1, attached_gtts_json=None, status="FILLED",
+            mode="live",
         )
         assert _retry_precheck_row(r) is None
+
+    def test_valid_sim_row_returns_none(self):
+        """2026-09-30 fix — 'sim' mode is explicitly allowed (routes to
+        apply_plan_sim, no real broker call), same as 'live'."""
+        r = SimpleNamespace(
+            template_id=1, attached_gtts_json=None, status="FILLED",
+            mode="sim",
+        )
+        assert _retry_precheck_row(r) is None
+
+    @pytest.mark.parametrize("mode", ["paper", "replay", "shadow", None, ""])
+    def test_non_live_non_sim_mode_is_refused(self, mode):
+        """2026-09-30 fix — companion to the _fire_template_attach_on_fill
+        mode gate. Since that fix, a FILLED paper/replay/shadow row with a
+        template_id and no attached_gtts_json is its PERMANENT resting
+        state (real broker attach is correctly skipped for non-live
+        fills), not a failed attach. Retrying it must be refused — the
+        retry path (_rco_run_template_attach) only special-cases 'sim';
+        every other non-live mode would otherwise fall through to a real
+        broker call."""
+        r = SimpleNamespace(
+            template_id=1, attached_gtts_json=None, status="FILLED",
+            mode=mode,
+        )
+        out = _retry_precheck_row(r)
+        assert out is not None
+        assert out["ok"] is False
+        assert "mode" in out["reason"]
 
 
 # ── _retry_effective_parent_qty ──────────────────────────────────────────

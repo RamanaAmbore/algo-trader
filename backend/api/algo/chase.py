@@ -236,6 +236,11 @@ async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> 
         fill_price=float(final_price),
         template_id=int(snap["template_id"]),
         parent_product=snap["product"],
+        # chase_order() is the real-broker cancel-and-replace engine — only
+        # ever invoked for mode=='live' rows — but thread the row's own
+        # mode through explicitly rather than relying on that invariant
+        # implicitly, matching every other caller of this function.
+        mode=str(snap["mode"]),
     )
 
 

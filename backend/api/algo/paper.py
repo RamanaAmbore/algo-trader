@@ -795,11 +795,23 @@ class PaperTradeEngine:
         side: str,
         qty: int,
         product: str | None,
+        mode: str,
     ) -> None:
-        """Schedule template-attach task on a paper fill, if applicable.
+        """Schedule template-attach task on a paper/sim/replay fill, if
+        applicable.
 
         Fires only when: kind==fill, template_id set, parent_order_id is None
         (i.e. this is a parent row, not a child), and fill_price is present.
+
+        CRITICAL (2026-09-30): this engine is shared by ALL of `paper`,
+        `sim`, and `replay` (self._label is literally the AlgoOrder.mode
+        value — see recover_from_db above). `_fire_template_attach_on_fill`
+        is the one function that places REAL broker GTTs/wing orders, so
+        `mode` (the row's own AlgoOrder.mode, snapshotted in
+        `_update_algo_order` BEFORE this is called) must always be threaded
+        through explicitly — never assume this engine instance is live,
+        because it never is. `_fire_template_attach_on_fill` refuses to do
+        anything real unless `mode == 'live'`.
         """
         if not template_id or parent_order_id is not None:
             return
@@ -818,6 +830,7 @@ class PaperTradeEngine:
                 fill_price=float(fill_price),
                 template_id=int(template_id),
                 parent_product=str(product or "NRML"),
+                mode=str(mode or self._label),
             ))
         except Exception as _e:
             logger.warning(
@@ -854,17 +867,23 @@ class PaperTradeEngine:
             _row_exchange        = row.exchange
             _row_side            = row.transaction_type
             _row_qty             = int(row.quantity or 0)
+            _row_mode            = row.mode
             await s.commit()
 
-        # Sprint A fix — paper-engine fills must fire the template attach
-        # just like live-mode postbacks do.
+        # Sprint A fix — paper-engine fills fire the SAME template-attach
+        # dispatch function live-mode postbacks use, but `_row_mode` (this
+        # engine instance's own label — 'paper' / 'sim' / 'replay', never
+        # 'live') is threaded through explicitly so
+        # `_fire_template_attach_on_fill` skips the real-broker-placing
+        # branch entirely for these fills (2026-09-30 fix — see that
+        # function's docstring for the incident this closes).
         if kind == "fill":
             self._paper_maybe_fire_template_attach(
                 order,
                 _row_template_id, _row_parent_order_id,
                 str(_row_account), str(_row_symbol),
                 str(_row_exchange or "NFO"), str(_row_side),
-                _row_qty, _row_product,
+                _row_qty, _row_product, str(_row_mode or self._label),
             )
 
         row_snap = {

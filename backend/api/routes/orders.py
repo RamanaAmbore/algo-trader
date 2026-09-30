@@ -389,6 +389,20 @@ def _retry_precheck_row(row) -> Optional[dict]:
     if (row.status or "").upper() != "FILLED":
         return {"ok": False,
                 "reason": f"parent must be FILLED to attach (status={row.status})"}
+    # 2026-09-30 fix — companion to _fire_template_attach_on_fill's mode
+    # gate: since that fix, a FILLED paper/replay/shadow row with a
+    # template_id and no attached_gtts_json is now its PERMANENT resting
+    # state (real broker attach is correctly skipped for non-live fills),
+    # which looks identical to "attach silently failed, needs retry".
+    # _rco_run_template_attach only special-cases mode=='sim' (routes to
+    # apply_plan_sim, no real broker call) — every OTHER non-live mode
+    # falls through to its 'live' branch and would place a REAL broker
+    # GTT/wing order for a paper/replay/shadow fill. Refuse here instead.
+    _row_mode = (row.mode or "").lower()
+    if _row_mode not in ("live", "sim"):
+        return {"ok": False, "reason":
+                f"template retry-attach is not supported for mode={row.mode!r} "
+                "orders — only 'live' fills place real broker GTTs"}
     return None
 
 
