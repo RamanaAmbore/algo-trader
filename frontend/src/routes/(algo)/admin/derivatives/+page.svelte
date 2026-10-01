@@ -49,7 +49,6 @@
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { decomposeSymbol, formatSymbol } from '$lib/data/decomposeSymbol';
   import { rootOfLabel } from '$lib/data/rootOf.js';
-  import { acctColor } from '$lib/account';
   import { POPULAR_UNDERLYINGS } from '$lib/data/popularUnderlyings';
   import { priceFmt, pctFmt, aggCompact, fmtPctFraction, ltpDayClass } from '$lib/format';
   import { todayIST } from '$lib/dateFormat.js';
@@ -5890,7 +5889,7 @@
                than a real (but uncomputed) EV. -->
           {@const _rowEv = _rowEvFor(g.underlying)}
           <div class="byund-row {(g.qty_fno ?? 0) > 0 ? 'byund-dir-long' : (g.qty_fno ?? 0) < 0 ? 'byund-dir-short' : ''}">
-            <span class="byund-und" style="background: {acctColor(g.underlying) ? acctColor(g.underlying) + '1a' : 'transparent'}">{g.underlying}</span>
+            <span class="byund-und">{g.underlying}</span>
             <span class="num {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_ltp != null && _ltp > 0 ? priceFmt(_ltp) : '—'}</span>
             <span class="num byund-chg-sep {ltpDayClass(_pct)} {flash.classOf(`${g.underlying}:ltp`)}">{_pct != null ? `${_pct.toFixed(2)}%` : '—'}</span>
             <span class="num">{_close != null && _close > 0 ? priceFmt(_close) : '—'}</span>
@@ -6929,11 +6928,27 @@
   .byund-row:hover > span {
     background-color: rgba(34,211,238,0.05) !important;
   }
+  /* Flat neutral tint (2026-09-30 consistency pass) — was
+     `acctColor(underlying) + '1a'`, running a SYMBOL string through
+     the function meant to assign per-ACCOUNT colours. That let an
+     underlying coincidentally land on the exact same hue as some
+     operator account, implying a meaning ("this is account X") that
+     wasn't there. No dedicated per-symbol palette exists elsewhere in
+     this codebase (checked OptionsPayoff.svelte, pulseColumns.js —
+     neither colours chips by symbol), and at 10% alpha on a navy
+     background a hash palette would leave too few distinguishable
+     hues to be worth the collision-avoidance complexity. Reuses the
+     same neutral slate-blue tint (`--sep-color`'s rgb triplet) already
+     used for "informational, not alarming" chips elsewhere in this
+     file (see `.cand-hidden-hint` above) — a flat tint that can never
+     alias with the account/direction/action colour spaces. `.byund-row-total`'s
+     own `!important` background wins for the TOTAL row's same-class cell. */
   .byund-und {
     font-weight: 700;
     color: var(--c-action);
     letter-spacing: 0.02em;
     font-variant-numeric: tabular-nums;
+    background: rgba(126,151,184,0.10);
     box-shadow: inset -1px 0 0 0 rgba(126,151,184,0.40);
   }
   .byund-row > .cell-pos { color: var(--c-long); }
@@ -7245,7 +7260,13 @@
     white-space: nowrap;
   }
   /* Single parent grid via subgrid. The headrow is scoped here;
-     .cand-row display:grid+subgrid lives in CandidateLegRow.svelte. */
+     .cand-row display:grid+subgrid lives in CandidateLegRow.svelte.
+     Consolidated from two previously-separate `.cand-headrow` blocks
+     (2026-09-30 consistency pass) — they declared conflicting
+     font-size values (var(--fs-sm) vs var(--fs-md)); only the LAST
+     one in source order ever actually won the cascade. Verified
+     live-rendered value was var(--fs-md) (0.65rem) before merging;
+     the var(--fs-sm) declaration below was dead and is dropped. */
   .cand-headrow {
     display: grid;
     grid-template-columns: subgrid;
@@ -7253,19 +7274,15 @@
     /* Subgrid inherits column-gap from .cand-grid (0.6rem). Don't
        set `gap` here — that overrides the parent and decouples the
        rows' spacing from the header's. */
-    padding: 0.1rem 0.2rem;
+    padding: 0.1rem 0.2rem 0.15rem;
     align-items: center;
-    font-size: var(--fs-sm);
+    font-size: var(--fs-md);
     font-family: monospace;
     font-variant-numeric: tabular-nums;
-  }
-  .cand-headrow {
-    font-size: var(--fs-md);
     font-weight: 800;
     color: var(--text-muted);
     text-transform: uppercase;
     letter-spacing: 0.06em;
-    padding-bottom: 0.15rem;
     border-bottom: 1px solid var(--algo-amber-border-soft);  /* amber — matches History */
     /* Sticky header — operator scrolls data rows under it instead of
        the whole grid sliding up. Pinned to top of .cand-scroll (the

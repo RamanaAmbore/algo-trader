@@ -42,9 +42,12 @@ const DERIVATIVES_PAGE = readFileSync(
 
 test.describe('Legs grid header opacity (source)', () => {
   test('.cand-headrow background is a two-layer composite ending in an opaque hex, not a bare low-alpha rgba', () => {
-    // .cand-headrow has TWO separate rule blocks in source (layout rules,
-    // then typography/sticky-positioning rules) — join every occurrence
-    // so the assertions see the full cascade, not just the first block.
+    // .cand-headrow was consolidated into ONE rule block (2026-09-30
+    // consistency pass — it used to be two separate blocks with a
+    // conflicting duplicate font-size declaration, see
+    // derivatives_cand_headrow_merge.spec.js). Join every occurrence
+    // defensively so this assertion doesn't silently stop covering the
+    // full cascade if the rule is ever split again.
     const rule = (DERIVATIVES_PAGE.match(/\.cand-headrow\s*\{[\s\S]*?\n  \}/g) ?? []).join('\n');
     expect(rule, '.cand-headrow rule(s)').not.toBe('');
     expect(rule).toMatch(/position:\s*sticky/);
