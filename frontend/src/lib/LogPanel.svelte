@@ -1982,7 +1982,7 @@
     column-gap: 0.4rem;
     row-gap: 0.05rem;
     padding: 0.28rem 0;
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
     /* Operator: "agents, terminal, ticks and system text size
        should be equal to news tab text size of the data". News
        row is 0.72rem; matching here. */
@@ -2497,7 +2497,7 @@
     padding: 0.28rem 0;
     font-size: 0.72rem;
     flex-wrap: wrap;
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .lp-conn-row:last-child {
     border-bottom: none;

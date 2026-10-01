@@ -532,7 +532,7 @@
   {/each}
 
 {#snippet proxyCrud()}
-  <div class="mt-2 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
+  <div class="mt-2 pt-2 border-t" style="border-top-color: var(--sep-color)">
     <h3 class="text-[length:var(--fs-md)] font-bold mb-1 opacity-90">Pair table</h3>
     <p class="text-[length:var(--fs-xs)] opacity-70 mb-1">
       Pair-only cross-reference between a held instrument and the
@@ -579,7 +579,7 @@
           </thead>
           <tbody>
             {#each proxies as p (p.id)}
-              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
+              <tr class="border-t" style="border-top-color: var(--sep-color)">
                 <td class="p-1 font-mono">{p.proxy_symbol}</td>
                 <td class="p-1 font-mono">{p.target_root}</td>
                 <td class="p-1"><input bind:value={p.note} class="field-input w-44" /></td>
@@ -663,7 +663,7 @@
           </thead>
           <tbody>
             {#each scheduleDefaults as row (row.id)}
-              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
+              <tr class="border-t" style="border-top-color: var(--sep-color)">
                 <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.gate}</td>
                 <td class="p-1 font-mono text-[length:var(--fs-md)] opacity-70">{fmtWeekdays(row.weekdays)}</td>
                 <td class="p-1 text-[length:var(--fs-md)]">
@@ -719,7 +719,7 @@
           </thead>
           <tbody>
             {#each scheduleOverrides as row (row.id)}
-              <tr class="border-t" style="border-top-color: rgba(126,151,184,0.10)">
+              <tr class="border-t" style="border-top-color: var(--sep-color)">
                 <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.gate}</td>
                 <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.date}</td>
                 <td class="p-1 text-[length:var(--fs-md)]">{row.session_name}</td>
@@ -874,7 +874,7 @@
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
   .settings-row {
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .settings-row:last-child { border-bottom: 0; }
   .section-heading { font-size: var(--fs-sm, 0.6rem); font-weight: 700; text-transform: uppercase; letter-spacing: 0.04em; color: var(--c-action, #fbbf24); padding-bottom: 0.3rem; margin-bottom: 0.5rem; border-bottom: 1px solid rgba(255,255,255,0.10); }

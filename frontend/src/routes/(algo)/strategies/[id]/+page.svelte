@@ -511,7 +511,7 @@
   .strat-table th {
     text-align: left;
     padding: 0.4rem 0.6rem;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.30);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     color: var(--text-muted);
     font-weight: 800; letter-spacing: 0.06em;
     text-transform: uppercase;

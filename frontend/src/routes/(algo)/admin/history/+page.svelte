@@ -483,7 +483,7 @@
     display: flex; flex-direction: column; gap: 0.18rem;
     font-size: var(--fs-xs); font-weight: 700;
     letter-spacing: 0.06em; text-transform: uppercase;
-    color: #94a3b8;
+    color: var(--algo-dim);
     font-family: var(--font-numeric);
   }
   .hist-finput {
@@ -515,8 +515,8 @@
   .hist-pill.st-ok      { background: rgba(74, 222, 128, 0.15);  border-color: rgba(74,222,128,0.5);  color: var(--c-long); }
   .hist-pill.st-err     { background: rgba(248, 113, 113, 0.15); border-color: rgba(248,113,113,0.5); color: #fca5a5; }
   .hist-pill.st-warn    { background: rgba(251, 191, 36, 0.15);  border-color: rgba(251,191,36,0.5);  color: var(--c-action); }
-  .hist-pill.st-pending { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: #67e8f9; }
-  .hist-pill-info       { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: #67e8f9; }
+  .hist-pill.st-pending { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: var(--algo-cyan-text); }
+  .hist-pill-info       { background: rgba(34, 211, 238, 0.13);  border-color: rgba(34,211,238,0.45); color: var(--algo-cyan-text); }
   .hist-pill-warn       { background: rgba(251, 191, 36, 0.12);  border-color: rgba(251,191,36,0.4);  color: var(--c-action); }
 
   /* Chrome delegated to .algo-grid-chrome class on each element. */
@@ -535,7 +535,7 @@
     font-weight: 800;
     letter-spacing: 0.06em;
     text-transform: uppercase;
-    border-bottom: 1px solid rgba(251, 191, 36, 0.30);
+    border-bottom: 1px solid var(--algo-amber-border-soft);
     white-space: nowrap;
   }
   .hist-table th.th-num { text-align: right; }
@@ -546,7 +546,7 @@
   .hist-table td.td-mono { font-family: var(--font-numeric); font-size: var(--fs-sm); }
   .hist-empty-row {
     padding: 2rem; text-align: center;
-    color: #94a3b8; font-style: italic;
+    color: var(--algo-dim); font-style: italic;
   }
 
   .hist-side {
@@ -582,7 +582,7 @@
     font-size: var(--fs-xs);
     font-weight: 700;
     letter-spacing: 0.06em;
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     background: rgba(34, 211, 238, 0.10);
     border: 1px solid rgba(34, 211, 238, 0.40);
     border-radius: 3px;

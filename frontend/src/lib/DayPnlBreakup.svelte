@@ -262,7 +262,7 @@
   .dpb-th-left,
   .dpb-th-right {
     padding: 0.25rem 0.4rem;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 600;
     /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as
        .cell-muted's dedicated token, so reused directly. */
@@ -290,7 +290,7 @@
     /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 40%, transparent);
     cursor: pointer;
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     padding: 0;
     line-height: 1;
   }
@@ -301,7 +301,7 @@
     white-space: nowrap;
   }
   .dpb-td-acct {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     white-space: nowrap;
   }
@@ -317,8 +317,8 @@
   }
   .dpb-warn {
     margin-left: 0.2rem;
-    color: #f59e0b;
-    font-size: 0.6rem;
+    color: var(--algo-amber);
+    font-size: var(--fs-sm);
     cursor: help;
   }
   .dpb-row-formula td {
@@ -326,7 +326,7 @@
     border-bottom: 1px solid rgba(255, 255, 255, 0.06);
   }
   .dpb-formula {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 50%, transparent);
     font-variant-numeric: tabular-nums;
@@ -339,7 +339,7 @@
     border-bottom: 1px solid rgba(251, 191, 36, 0.15);
   }
   .dpb-subtotal-label {
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     color: rgba(251, 191, 36, 0.75);
     text-transform: uppercase;

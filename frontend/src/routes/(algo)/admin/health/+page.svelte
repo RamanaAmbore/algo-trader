@@ -492,7 +492,7 @@
     padding: 0.18rem 0;
     font-size: var(--fs-lg);
     color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .kv-row:last-child { border-bottom: none; }
   .kv-key {
@@ -521,7 +521,7 @@
     padding: 0.2rem 0;
     font-size: var(--fs-lg);
     color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .broker-row:last-child { border-bottom: none; }
   .broker-key {
@@ -578,7 +578,7 @@
     padding: 0.2rem 0;
     font-size: var(--fs-lg);
     color: var(--algo-slate);
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .ip-row:last-child { border-bottom: none; }
   .ip-addr {
@@ -595,7 +595,7 @@
   .ticker-stale-list {
     margin-top: 0.55rem;
     padding-top: 0.45rem;
-    border-top: 1px solid rgba(126,151,184,0.10);
+    border-top: 1px solid var(--sep-color);
     max-height: 12rem;
     overflow-y: auto;
     scrollbar-width: thin;
@@ -656,7 +656,7 @@
   .kv-section {
     margin-top: 0.4rem;
     padding-top: 0.35rem;
-    border-top: 1px solid rgba(126,151,184,0.10);
+    border-top: 1px solid var(--sep-color);
   }
   .kv-indent {
     padding-left: 0.6rem;
