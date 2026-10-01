@@ -594,6 +594,40 @@ POST /api/orders/basket/margin
 - Chases tagged with same `basket_tag` for cross-reference
 - Chase page shows all active chases grouped by basket
 
+### Chain-Tab Spread-Threshold Pre-Submission Gate
+
+**Trigger**: Before submitting a multi-leg order in the Chain tab with a
+wing-bearing template attached, the spread-check gate validates bid-ask spread
+on both the primary leg and the computed offset/wing leg against the template's
+`wing_max_spread_pct` threshold (default 10%, operator-editable per template or
+global setting).
+
+**Four resolution paths** (operator chooses one; loop bounded by max attempts +
+120s timeout):
+
+1. **Spread resolves naturally** — Market conditions improve (bid-ask tightens)
+   on a retry poll; gate clears automatically and submission proceeds.
+2. **Operator confirms "Place anyway"** — Acknowledges elevated spread and
+   overrides the gate immediately.
+3. **Operator adjusts TP%/SL%/Spread%** — Changing any template parameter
+   triggers immediate re-check; loop continues until spread clears or confirmed.
+4. **Operator disables template** — Turns off wing-attachment for that order,
+   skipping the gate entirely and proceeding without template logic.
+
+**Failure safety**: On backend quote failure or timeout, the gate offers
+"Retry" / "Place anyway" / "Cancel" choices rather than hanging indefinitely.
+
+**Scope**: Chain-tab only (multi-leg entry via `POST /api/orders/basket`). The
+Order Ticket (`/ticket`) has no equivalent pre-submission check; template attach
+fires post-fill only (see §13 Postback Fan-Out).
+
+**Implementation**: Backend `GET /api/orders/spread-check` endpoint
+(`backend/api/routes/orders.py`, commit `31c27d6b`) returns structured result
+(`ok`, `spread_pct`, `threshold_pct`, `reason`, `bid`, `ask`); frontend
+`spreadGate.js` module (`frontend/src/lib/data/spreadGate.js`, commit
+`16036f1e`) provides reusable framework-agnostic loop handler for future
+automation/agent use.
+
 ---
 
 ## 10. Order History Surface

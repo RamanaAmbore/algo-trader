@@ -1876,6 +1876,8 @@ Returns `gtt_trigger_errors` in `TicketPreviewResponse` (422 on submit if presen
 
 **Full fill detection** (#2): AttachResult carries `wing_skipped_reason` field (set when wing scan returns no candidate). Consumed by API response + alert channel so operator knows WHY the wing wasn't attached (hard-reject, no candidates, OI too low, etc.).
 
+**Note**: Template attach is the POST-FILL logic documented in this section. A separate, earlier-stage pre-submission spread-threshold gate (Chain-tab-only) validates bid-ask spreads before order placement; see ORDERS_SPEC.md §9 "Chain-Tab Spread-Threshold Pre-Submission Gate".
+
 ## 8.3.1 GTT Pre-flight Lot-Size Validation (Aug 2026)
 
 **File**: `backend/api/routes/template_attach.py` — `apply_plan_live()`
