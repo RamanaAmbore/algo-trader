@@ -2827,12 +2827,31 @@
   // other reactive path to re-run loadStrategy until the next 5s interval tick.
   // This effect tracks `legs` (written by the update $effect above) and fires
   // loadStrategy() when the strategy is stale for the current underlying.
+  //
+  // Post-fill refresh fix (2026-09-30, operator report "payoff and legs
+  // didn't get refreshed"): the original guard here only compared
+  // `strategy.underlying` against `selectedUnderlying` — a SAME-underlying
+  // fill (the common case: an existing leg's quantity changes, or a new
+  // leg is added on the already-selected root) left `stratUnd === sel`
+  // true, so this effect skipped loadStrategy() entirely regardless of
+  // whether `legs` itself had actually changed. The WS `position_filled`
+  // handler's own synchronous loadStrategy() call races the (not-yet-
+  // updated) `legs` state and hits the SAME memo as a no-op, and the
+  // `positions_refreshed` handler (below) didn't call loadStrategy() at
+  // all — so neither event-driven path ever reached the backend for a
+  // same-underlying fill; only the next 5s marketAwareInterval tick could
+  // catch it. Fix: also refetch whenever the current legs signature no
+  // longer matches what was last actually sent to the backend
+  // (`_stratLastKey`, the same memo key loadStrategy() itself maintains) —
+  // this is the correct "did the inputs change" check, independent of
+  // whether the underlying switched.
   $effect(() => {
     void legs;
     const sel = selectedUnderlying;
     const stratUnd = String(strategy?.underlying || '').toUpperCase();
     if (!legs.length) return;
-    if (stratUnd && stratUnd === sel.toUpperCase()) return; // strategy already matches — skip
+    const _legsChanged = computeLegsKey(buildCleanLegs(legs, getInstrument)) !== _stratLastKey;
+    if (stratUnd && stratUnd === sel.toUpperCase() && !_legsChanged) return; // strategy already matches current inputs — skip
     untrack(() => { try { loadStrategy(); } catch (_) {} });
   });
 
