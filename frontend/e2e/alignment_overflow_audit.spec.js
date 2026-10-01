@@ -389,6 +389,52 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     }
   });
 
+  test('.ot-depth-label has symmetric top/bottom padding, matching Chain\'s header cells (2026-09-30, operator: "the chain and order ticket header height is uneven and text is not centered vertically in the header")', () => {
+    // Was padding-bottom: 0.2rem only, no padding-top — an asymmetric
+    // box (live-measured 17.58px tall, text flush at the top) vs.
+    // Chain's .chain-th-ce/-pe/-strike symmetric 0.2rem/0.2rem padding
+    // (20.77px tall, text genuinely centered). Matching padding-top
+    // here fixes both the cross-component height mismatch and the
+    // off-center text in one change.
+    const rule = ruleBody(content, '.ot-depth-label') ?? '';
+    expect(rule, '.ot-depth-label rule').not.toBe('');
+    expect(rule).toMatch(/padding-top:\s*0\.2rem/);
+    expect(rule).toMatch(/padding-bottom:\s*0\.2rem/);
+  });
+
+  test('live: .ot-depth-label height matches Chain\'s .chain-th-ce height exactly (both headers the same height, text centered)', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(800);
+
+    const otLabel = page.locator('.ot-depth-label').first();
+    const otVisible = await otLabel.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!otVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-label not rendered (no quote)' });
+      return;
+    }
+    const otHeight = await otLabel.evaluate((el) => el.getBoundingClientRect().height);
+
+    const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+    await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+    await chainTab.click();
+    await page.waitForTimeout(800);
+    const chainTh = page.locator('.chain-th-ce').first();
+    const chainVisible = await chainTh.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!chainVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.chain-th-ce not rendered (no chain data)' });
+      return;
+    }
+    const chainHeight = await chainTh.evaluate((el) => el.getBoundingClientRect().height);
+    expect(Math.abs(otHeight - chainHeight), `.ot-depth-label (${otHeight}px) vs .chain-th-ce (${chainHeight}px) height must match`).toBeLessThanOrEqual(1);
+  });
+
   test('live: label columns align exactly with the data-cell columns below them (left edges match, still exactly 4 grid columns)', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });

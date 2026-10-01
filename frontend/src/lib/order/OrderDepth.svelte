@@ -361,6 +361,16 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
     text-align: right;
+    /* padding-top added (2026-09-30, operator: "the chain and order
+       ticket header height is uneven and text is not centered
+       vertically in the header") — this rule had only padding-bottom:
+       0.2rem, no padding-top, giving it an asymmetric 0/0.2rem box
+       (live-measured: 17.58px tall, text sitting flush at the top)
+       vs. Chain's .chain-th-ce/-pe/-strike symmetric 0.2rem/0.2rem
+       (20.77px tall, text genuinely centered). Matching padding-top
+       here fixes both the height mismatch and the off-center text in
+       one change. */
+    padding-top: 0.2rem;
     padding-bottom: 0.2rem;
     /* Sits ABOVE .ot-depth-header-bg (next rule) in stacking order so
        the label text paints over the header band's background. */
