@@ -18,6 +18,7 @@
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { portfolioAggregates } from '$lib/data/portfolioStore.svelte.js';
+  import { isSlotFreshAfterTransition } from '$lib/data/navStripFreeze.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import { resolveUnderlying } from '$lib/data/resolveUnderlying';
   import { decomposeSymbol } from '$lib/data/decomposeSymbol';
@@ -80,16 +81,41 @@
   // by two reactive $derived flags below (_anyDegraded / _anyStoreError)
   // driven directly from the stores' own reactive state — always current,
   // no manual bookkeeping needed.
-  // Snapshot of _pollCycleStamp at the moment of the closed→open
-  // session transition. positionsDayPnlStore / holdingsDayPnlStore read
-  // from positions[].day_change_val which is whatever the LAST poll
-  // returned — and `marketAwareInterval` pauses overnight, so that
-  // last poll is from yesterday's session close, carrying yesterday's
-  // MTM. Without this gate, the reset-to-0 inside the freeze effect
-  // is immediately overwritten by the stale value until the next 30s
-  // poll arrives. We instead hold disp at 0 until the FIRST fresh
-  // poll of the new session lands (_pollCycleStamp > the snapshot).
-  let _openTransitionStamp = $state(-1);
+  // Epoch-ms snapshot of "now" at the moment of a closed→open session
+  // transition or an execution-mode switch. positionsDayPnlStore /
+  // holdingsDayPnlStore read from whatever the LAST poll returned, which
+  // right after a transition is stale (yesterday's session close, or the
+  // pre-switch engine's P&L). Without this gate the reset-to-0 inside the
+  // freeze effect would be immediately overwritten by that stale value.
+  // We hold disp at 0 until a fetch that actually landed AFTER this
+  // timestamp lands — see the release check below.
+  //
+  // 2026-09-30 fix (real-money bug: "P∆ shows 0 and never recovers until
+  // page reload"): this used to be `_openTransitionStamp = $state(-1)`
+  // compared against `_pollCycleStamp` (a counter driven solely by the
+  // shared `bookPollerTick` — see marketDataStores.svelte.js's
+  // `_tickBookPollers`). That coupling meant the freeze could only ever
+  // release on the NEXT tick of that one shared poller. Before the
+  // 2026-08 "positionsDayPnlStore SSOT + rationalize poll cycles" commit
+  // (6c66330b), PositionStrip ran its OWN independent 30s
+  // `marketAwareInterval(_load, 30000)` as a redundant refresh path, so
+  // even if the shared poller stalled/lagged (closed-hours 30-min
+  // cadence, a visibility-hibernation throttle, an exception swallowed
+  // inside `_tickBookPollers`'s Promise.allSettled, etc.) this component
+  // still refreshed itself independently within 30s. That redundant timer
+  // was removed as part of the poll-cycle consolidation, leaving the
+  // freeze gate's ONLY release path dependent on the shared poller's
+  // health — any stall there left the strip showing 0 indefinitely (a
+  // full page reload "fixes" it only because reload re-initializes this
+  // stamp to a value that's already satisfied). Fixed by keying the
+  // release directly off each store's own `lastFetch` bookkeeping (set in
+  // dataStore.svelte.js's `_applyRaw`, bumped only on a genuine landed —
+  // not degraded-empty — fetch) instead of the shared tick counter. This
+  // is a strictly stronger signal: it fires as soon as the ACTUAL data
+  // this slot reads from has refreshed, independent of whether the
+  // cosmetic bookPollerTick counter (used only for flash/heartbeat
+  // timing elsewhere) happens to be healthy.
+  let _openTransitionAt = $state(0);
 
   // Data-change detector — was intended to fully DRIVE the heartbeat/
   // poll-pulse animation (replacing _pollCycleStamp per the "Replaces"
@@ -485,26 +511,33 @@
     if (_rawModeChanged) _sawFirstModeChange = true;
     const modeChanged = _rawModeChanged && !_isBootIdleResolution;
     if ((open && !_prevMktOpen) || modeChanged) {
-      // Closed → Open transition OR execution-mode switch. Snapshot the
-      // current poll cycle so we suppress stale day_change_val (from the
-      // prior session, or from a real-broker poll just before swapping
-      // to SIM) until a fresh in-session poll lands. Force _load()
-      // immediately instead of waiting up to 30s for the next
-      // marketAwareInterval tick. Without the mode-change branch a
-      // mid-session SIM↔LIVE flip leaves dispPositionsToday tracking
-      // the old engine's P&L until the next poll naturally arrives.
+      // Closed → Open transition OR execution-mode switch. Snapshot "now"
+      // so we suppress stale day_change_val (from the prior session, or
+      // from a real-broker poll just before swapping to SIM) until a
+      // fetch that lands AFTER this moment arrives. Force _load()
+      // immediately instead of waiting on the shared poller's next tick.
+      // Without the mode-change branch a mid-session SIM↔LIVE flip leaves
+      // dispPositionsToday tracking the old engine's P&L until the next
+      // poll naturally arrives.
       dispPositionsToday = 0;
       dispHoldingsToday  = 0;
       cachedDelete('strip.frozen');
-      _openTransitionStamp = _pollCycleStamp;
+      _openTransitionAt = Date.now();
       untrack(() => { _load(); });
     }
     _prevMktOpen  = open;
     _prevExecMode = _execMode;
-    // During market open, suppress the live-derived assignment until a
-    // fresh poll cycle (one completed AFTER the open transition) lands —
+    // During market open, suppress the live-derived assignment for a
+    // given slot until THAT slot's own backing store reports a fetch
+    // (lastFetch) that actually landed AFTER the open transition —
     // otherwise positions[].day_change_val is stale from yesterday.
-    if (open && _pollCycleStamp <= _openTransitionStamp) return;
+    // Gated per-slot (not via one shared early-return) so a lagging
+    // holdings fetch can never hold the positions slot hostage, and
+    // vice versa — see _openTransitionAt's doc comment for why this is
+    // keyed off each store's own lastFetch instead of the shared
+    // bookPollerTick-driven _pollCycleStamp.
+    const pFresh = isSlotFreshAfterTransition(open, positionsStore.lastFetch,      _openTransitionAt);
+    const hFresh = isSlotFreshAfterTransition(open, pulseHoldingsStore.lastFetch,  _openTransitionAt);
     // Always mirror the live derived. During open hours it tracks SSE
     // ticks live; during closed hours it equals Σ snapshot.day_pnl —
     // the LAST in-session P&L per the market-close-snapshot rule. The
@@ -524,17 +557,21 @@
     // reloading, and prevents the exact real-money "0 instead of last-known-
     // good" bug this guard exists to prevent from firing on a masked/
     // substituted failure that happens to parse to an empty array).
-    const newPTotal = positionsDayPnlStore.total;
-    if (newPTotal !== 0) {
-      dispPositionsToday = newPTotal;
-    } else if (positions.length === 0 && !positionsStore.meta?.degraded) {
-      dispPositionsToday = 0;
+    if (pFresh) {
+      const newPTotal = positionsDayPnlStore.total;
+      if (newPTotal !== 0) {
+        dispPositionsToday = newPTotal;
+      } else if (positions.length === 0 && !positionsStore.meta?.degraded) {
+        dispPositionsToday = 0;
+      }
     }
-    const newHTotal = holdingsDayPnlStore.total;
-    if (newHTotal !== 0) {
-      dispHoldingsToday = newHTotal;
-    } else if (holdings.length === 0 && !pulseHoldingsStore.meta?.degraded) {
-      dispHoldingsToday = 0;
+    if (hFresh) {
+      const newHTotal = holdingsDayPnlStore.total;
+      if (newHTotal !== 0) {
+        dispHoldingsToday = newHTotal;
+      } else if (holdings.length === 0 && !pulseHoldingsStore.meta?.degraded) {
+        dispHoldingsToday = 0;
+      }
     }
     if (!open) return;
   });
