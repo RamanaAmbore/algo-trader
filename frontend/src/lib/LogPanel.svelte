@@ -24,6 +24,7 @@
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
+  import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
 
   // mode (sim/paper/live/shadow/replay): when set, auto-flips logTab to
   // the mapped tab AND auto-applies the matching order filter — sim →
@@ -587,6 +588,13 @@
         return tb - ta;
       });
       orderRows = merged;
+      // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
+      // c90a9d04) — same wiring as OrderBook.svelte's _loadOrders. See
+      // orderFillDetector.js header for the full channel inventory this
+      // closes (live broker-order-book TTL refresh, 5-min
+      // open_order_watchdog sweep, admin reconcile — none broadcast a
+      // WS event today).
+      noteOrderPollFills(merged);
       // Trading-critical "template did not attach" toast (2026-09-30) —
       // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
       // merged rows regardless of the currently-selected order-mode

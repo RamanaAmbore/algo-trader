@@ -33,6 +33,7 @@
   import CardHeader from '$lib/CardHeader.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
+  import { noteOrderPollFills } from '$lib/data/orderFillDetector.js';
 
   /** @type {{
    *   orderId?: string | null,
@@ -164,6 +165,14 @@
         return tb - ta;
       });
       orderRows = merged;
+      // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
+      // c90a9d04) — fires a shared bookChanged bump the moment ANY row
+      // in this poll transitions to FILLED/COMPLETE, regardless of
+      // whether a WS event ever arrived for it (live broker-order-book
+      // TTL refresh, 5-min open_order_watchdog sweep, admin reconcile —
+      // none of those backend paths broadcast today). See
+      // orderFillDetector.js header for the full channel inventory.
+      noteOrderPollFills(merged);
       // Trading-critical "template did not attach" toast (2026-09-30) —
       // evaluated on every merged row BEFORE status-chip filtering, so
       // it fires regardless of which status bucket the operator has
