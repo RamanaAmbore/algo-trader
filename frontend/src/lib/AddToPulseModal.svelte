@@ -37,6 +37,11 @@
     onSearchSymbols,  // (q) => Promise<void>  — populates typeahead
     onPickTypeahead,  // (inst) => void         — picks first match
     onClose,          // () => void             — caller sets open=false + clears inputs
+    // Forwarded to the internal ModalShell — caller overrides for
+    // stacking (e.g. "var(--z-modal-nested)" when opened from inside a
+    // full-screen card). Default matches ModalShell's own default so
+    // every other caller is unaffected.
+    zIndex = /** @type {number | string} */ (200),
   } = $props();
 
   /** @type {HTMLInputElement | null} */
@@ -51,7 +56,7 @@
   });
 </script>
 
-<ModalShell open={!!open} {onClose} ariaLabel="Add to Pulse">
+<ModalShell open={!!open} {onClose} ariaLabel="Add to Pulse" {zIndex}>
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header canonical-modal-header">
         <span class="search-title">Manage watchlists</span>

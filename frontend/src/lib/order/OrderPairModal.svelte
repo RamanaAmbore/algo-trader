@@ -1,11 +1,29 @@
 <script>
   import { computePairPreview } from '$lib/order/pairModalUtils.js';
+  import { portal } from '$lib/portal';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   let {
     open = $bindable(false),
     symbolHint = '',
     pairedCandidates = [],
   } = $props();
+
+  // Escape-stack coordinator (layerStack.js) — this modal previously had
+  // NO Escape handling at all (audit finding: Escape exited a parent
+  // full-screen card but left this modal open and visible underneath).
+  // Teardown form (push on open, pop via the $effect's own cleanup
+  // callback) — not the if/open-else/pop form used by components that
+  // never unmount (e.g. Select.svelte) — because this modal is wrapped
+  // in `{#if _pairModalOpen}` by its host (MarketPulse.svelte), so
+  // `open` flips to false and the component unmounts in the same
+  // reactive flush; relying on the effect's own re-run to catch
+  // `open === false` would race the unmount and could leak the layer.
+  $effect(() => {
+    if (!open) return;
+    const id = pushLayer(() => { open = false; });
+    return () => popLayer(id);
+  });
 
   let orders = $state([]);
   let parentId = $state('');
@@ -81,7 +99,7 @@
 </script>
 
 {#if open}
-  <div class="opm-overlay" role="dialog" aria-modal="true">
+  <div class="opm-overlay" role="dialog" aria-modal="true" use:portal>
     <div class="opm-card">
       <div class="opm-title-row">
         <span class="opm-title">Pair Orders</span>
@@ -147,7 +165,12 @@
 
 <style>
   .opm-overlay {
-    position: fixed; inset: 0; z-index: 9000;
+    /* --z-modal-nested: modals opened FROM INSIDE a full-screen card
+       (e.g. the Positions card's "Pair" button) must sit above both
+       the full-screen tier (9998/9999) and the order-modal tier
+       (--z-command: 10500) — previously a bare 9000 literal rendered
+       this modal BEHIND an open full-screen card. */
+    position: fixed; inset: 0; z-index: var(--z-modal-nested);
     background: rgba(0,0,0,0.55);
     display: flex; align-items: center; justify-content: center;
   }

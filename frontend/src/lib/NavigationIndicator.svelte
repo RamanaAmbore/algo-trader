@@ -9,9 +9,15 @@
    * fades out on afterNavigate.
    *
    * Design notes:
-   *  - z-index 9200 — above navbar (50/z-50), modals (9998 is toast),
-   *    and the ReconnectingPopup (9100). The indicator must always be
-   *    visible over page content during a transition.
+   *  - z-index var(--z-nav-indicator) (10550) — above navbar (50/z-50),
+   *    the full-screen card pattern (.fs-card-on = 9999), the
+   *    ReconnectingPopup (9100), AND the order modal (--z-command =
+   *    10500). Fixed 2026-09-30 (stacking-defect audit, Wave B): the
+   *    indicator previously sat at a bare 9200, below the full-screen
+   *    card and order modal, so a `g`-shortcut navigation fired while
+   *    either was open gave no visible route-progress feedback. The
+   *    indicator must always be visible over page content during a
+   *    transition, full-screen or not.
    *  - The bar is 3px tall, inset to 0 top so it sits flush under the
    *    pub-accent-top / algo viewport top edge.
    *  - Two CSS custom-property variants so a single component works for
@@ -110,7 +116,7 @@
     transition: width 0.8s cubic-bezier(0.2, 0.8, 0.4, 1),
                 opacity 0.2s ease;
     pointer-events: none;
-    z-index: 9200;
+    z-index: var(--z-nav-indicator);
     border-radius: 0 2px 2px 0;
     /* Reduce-motion: cut the transition, keep the instant paint. */
   }

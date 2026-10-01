@@ -17,9 +17,11 @@
     - AgentNotifications bell rows (click → opens modal)
 -->
 <script>
+  import { onMount, onDestroy } from 'svelte';
   import { goto } from '$app/navigation';
   import { chipsAsTextFromJson } from '$lib/logChips';
   import ModalShell from '$lib/ModalShell.svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /** @type {{
    *   fire: {
@@ -44,6 +46,23 @@
   const palette = $derived(TIER_PALETTE[/** @type {keyof typeof TIER_PALETTE} */ (tier)] || TIER_PALETTE.info);
   const detailText = $derived(chipsAsTextFromJson(fire?.detail));
 
+  // Escape-stack coordinator (layerStack.js, Wave B 2026-09-30) — this
+  // component is only ever mounted while open (parent uses `{#if
+  // activeFire}`), so push on mount / pop on destroy rather than an
+  // `open`-prop effect. Without this, ModalShell's own uncoordinated
+  // window Escape listener could fire alongside (or get beaten by) an
+  // unrelated layer below it; registering here ensures a broker/risk
+  // alert always wins Escape while it's the topmost-opened layer.
+  /** @type {string | null} */
+  let _layerId = null;
+  onMount(() => {
+    _layerId = pushLayer(() => onClose());
+  });
+  onDestroy(() => {
+    popLayer(_layerId);
+    _layerId = null;
+  });
+
   function openAgent() {
     if (fire?.slug) {
       goto(`/automation?q=${encodeURIComponent(fire.slug)}`);
@@ -52,7 +71,7 @@
   }
 </script>
 
-<ModalShell open={true} {onClose} zIndex={9998} clickOutside={true} ariaLabel="Agent fire details">
+<ModalShell open={true} {onClose} zIndex="var(--z-agent-alert)" clickOutside={true} ariaLabel="Agent fire details">
   <div class="afm-modal algo-modal" role="document"
        style="border-color: {palette.border}">
     <div class="afm-header canonical-modal-header">

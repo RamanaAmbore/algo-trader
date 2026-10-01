@@ -120,7 +120,12 @@
     position: fixed;
     top: 4rem;          /* clears the navbar */
     right: 0.75rem;
-    z-index: 9997;       /* under modal (9998) + bell popup (9999) */
+    /* Wave B (2026-09-30 stacking-defect audit) — agent-alert tier
+       (--z-agent-alert = 20500), above the cheatsheet (--z-cheatsheet =
+       20200) and every modal tier, below only --z-toast. Was hardcoded
+       9997, which accidentally collided with the cheatsheet's own old
+       panel z-index — see app.css's z-index scale comment, tier 8. */
+    z-index: var(--z-agent-alert);
     display: flex;
     flex-direction: column;
     gap: 0.45rem;

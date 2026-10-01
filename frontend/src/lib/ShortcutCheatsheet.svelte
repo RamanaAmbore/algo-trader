@@ -9,8 +9,28 @@
   operator scans by intent (navigation / actions).
 -->
 <script>
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+
   /** @type {{ open: boolean, onClose: () => void }} */
   let { open = false, onClose = () => {} } = $props();
+
+  // Escape-stack coordinator (layerStack.js, Wave B 2026-09-30) — the
+  // cheatsheet is its own dismissible layer, pushed/popped with `open`.
+  // Fixes the double-close bug: previously this component listened for
+  // Escape independently via svelte:window, with no coordination against
+  // DefaultSizeButton's full-screen-card listener or SymbolPanel's order-
+  // modal listener, so one Escape could close the cheatsheet AND whatever
+  // was open underneath it. Now only the topmost pushed layer reacts.
+  /** @type {string | null} */
+  let _layerId = null;
+  $effect(() => {
+    if (open) {
+      _layerId = pushLayer(() => onClose());
+    } else if (_layerId) {
+      popLayer(_layerId);
+      _layerId = null;
+    }
+  });
 
   // Four grouped sections keep the cheat-sheet scannable.
   // Nav uses Bloomberg `g` + letter pattern (800 ms window).
@@ -43,15 +63,7 @@
     { key: 'c',     label: 'Collapse card' },
   ];
 
-  function _onKey(e) {
-    if (e.key === 'Escape') {
-      e.preventDefault();
-      onClose();
-    }
-  }
 </script>
-
-<svelte:window onkeydown={open ? _onKey : null} />
 
 {#if open}
   <div class="sc-overlay"
@@ -106,7 +118,7 @@
     position: fixed;
     inset: 0;
     background: rgba(8, 15, 28, 0.65);
-    z-index: 9996;
+    z-index: var(--z-cheatsheet);
     cursor: pointer;
     animation: sc-fade 120ms ease-out;
   }
@@ -115,7 +127,7 @@
     top: 50%;
     left: 50%;
     transform: translate(-50%, -50%);
-    z-index: 9997;
+    z-index: calc(var(--z-cheatsheet) + 1);
     width: min(44rem, calc(100vw - 1rem));
     max-height: calc(100vh - 2rem);
     overflow-y: auto;

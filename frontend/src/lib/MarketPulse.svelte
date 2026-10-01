@@ -4601,6 +4601,7 @@
      all async backend-calling functions remain here in MarketPulse. -->
 <AddToPulseModal
   bind:open={searchOpen}
+  zIndex="var(--z-modal-nested)"
   {lists} {focusedListId} {isDemo}
   bind:targetListId bind:newListName
   bind:symInput bind:typeInput bind:aliasInput
@@ -4621,7 +4622,7 @@
      form keeps the Add flow visually contiguous. Click-overlay / Esc
      to dismiss; targets the watchlist chosen in the Add popup via
      _resolveTargetListId. -->
-<ModalShell open={!!optionPickerUnderlying} onClose={closeOptionPicker} ariaLabel="Pick option strike">
+<ModalShell open={!!optionPickerUnderlying} onClose={closeOptionPicker} ariaLabel="Pick option strike" zIndex="var(--z-modal-nested)">
     <div class="search-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="search-header canonical-modal-header">
         <span class="search-title">{optionPickerUnderlying?.name} — pick contract</span>

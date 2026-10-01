@@ -17,7 +17,8 @@
     </section>
 
   Global CSS provides `.fs-card-on` (fixed modal, full viewport,
-  z-index 9999) + `.fs-backdrop`. ESC + backdrop click close.
+  z-index 9999) + `.fs-backdrop`. ESC + backdrop click close — both
+  owned by DefaultSizeButton.svelte, not this component (see below).
 
   Why the backdrop is portalled to document.body
   ----------------------------------------------

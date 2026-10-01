@@ -23,6 +23,8 @@
   three icons read as one consistent family.
 -->
 <script>
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+
   let {
     /** Bindable fullscreen state — set to false on click. */
     isFullscreen = $bindable(false),
@@ -37,12 +39,28 @@
   // Placing these side-effects here (rather than in FullscreenButton) avoids the
   // mount-race: CardControls unmounts FullscreenButton as part of the same reactive
   // flush that sets isFullscreen=true, which would destroy its $effect before it ran.
-  function _onKey(e) {
-    if (e.key === 'Escape') isFullscreen = false;
-  }
+
+  // Escape-stack coordinator (layerStack.js, Wave B 2026-09-30) — the
+  // full-screen card is its own dismissible layer, pushed on mount
+  // (isFullscreen became true) and popped on destroy (isFullscreen went
+  // false, by any means: Escape, backdrop click, the button itself).
+  // Replaces a bare `document.addEventListener('keydown', ...)` that
+  // fired unconditionally and raced every other overlay's own Escape
+  // listener — one Escape could close BOTH this full-screen card AND an
+  // order modal / cheatsheet / nested dropdown opened on top of it.
+  // Now only the topmost pushed layer reacts, fixing all three:
+  //   - full-screen + order modal open together (SymbolPanel is already
+  //     migrated onto the same coordinator)
+  //   - full-screen + shortcut cheatsheet open together (ShortcutCheatsheet
+  //     is already migrated onto the same coordinator)
+  //   - full-screen + a nested symbol-search dropdown open together
+  //     (SymbolSearchInput is already migrated onto the same coordinator)
+  /** @type {string | null} */
+  let _layerId = null;
 
   $effect(() => {
-    document.addEventListener('keydown', _onKey);
+    _layerId = pushLayer(() => { isFullscreen = false; });
+
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
@@ -53,7 +71,8 @@
     document.body.appendChild(backdrop);
 
     return () => {
-      document.removeEventListener('keydown', _onKey);
+      popLayer(_layerId);
+      _layerId = null;
       document.body.style.overflow = prev;
       backdrop.remove();
     };

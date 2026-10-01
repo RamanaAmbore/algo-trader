@@ -198,20 +198,20 @@
 
        2. Full-screen card pattern       .fs-backdrop = 9998,
                                           .fs-card-on  = 9999
-          (literals in FullscreenButton.svelte / DefaultSizeButton.svelte
-          / app.css's own `.fs-card-on` rule — unchanged this pass, these
-          don't need to move)
+          (.fs-backdrop literal + Escape/scroll-lock ownership live in
+          DefaultSizeButton.svelte — NOT FullscreenButton.svelte, which
+          only renders the "enter fullscreen" button; app.css's own
+          `.fs-card-on` rule — unchanged this pass, these don't need to
+          move)
 
-       2.5. NavigationIndicator (route-progress strip) — must stay
-          visible during navigation even when a full-screen card OR the
-          order modal is open (the two documented cases: a `g`-shortcut
-          nav fired from inside a full-screen card, and fired while the
-          order ticket is open). Current literal (9200, in
-          NavigationIndicator.svelte) sits BELOW tier 2 — a pre-existing
-          bug, out of scope for THIS file this wave (component literal,
-          not a var) but flagged here with its target: should move above
-          tier 4 (10500), e.g. 10550. Does not need to compete with
-          tiers 5-9 (rare combinations).
+       2.5. --z-nav-indicator = 10550 — NavigationIndicator (route-progress
+          strip) must stay visible during navigation even when a
+          full-screen card OR the order modal is open (the two documented
+          cases: a `g`-shortcut nav fired from inside a full-screen card,
+          and fired while the order ticket is open). Fixed Wave B (was a
+          bare 9200 literal in NavigationIndicator.svelte, below tier 2);
+          now above both tier 2 (9999) and tier 4 (10500). Does not need
+          to compete with tiers 5-9 (rare combinations).
 
        3. --z-modal-nested = 10700 — modals opened FROM INSIDE a
           full-screen card (AddToPulse, OrderPairModal, MarketPulse
@@ -239,16 +239,20 @@
           any other ConfirmModal instance at this tier — it is reserved
           for dialogs that must unconditionally win every stacking fight.
 
-       7. Shortcut cheatsheet (`?` key) — current literals 9996/9997 in
-          ShortcutCheatsheet.svelte sit BELOW tier 6; target (Wave B,
-          component literals not vars): raise above 11200, e.g.
-          20200/20201 (also above tier 2's --z-dropdown=20000 below, so
-          the cheatsheet can be summoned over an open nav dropdown too).
+       7. --z-cheatsheet = 20200 (Wave B, 2026-09-30) — shortcut
+          cheatsheet (`?` key), ShortcutCheatsheet.svelte. Was hardcoded
+          9996/9997, sitting BELOW tier 6; moved above --z-dropdown
+          (20000) so the cheatsheet can be summoned over an open nav
+          dropdown too. Overlay uses the var directly, panel uses
+          calc(var(--z-cheatsheet) + 1), mirroring the
+          mode-combo-overlay/-dropdown +1 pattern at tier 4.
 
-       8. Agent alerts (AgentToast / AgentFireModal) — current literal
-          9997 in AgentToast.svelte is ACCIDENTALLY the same number as
-          the cheatsheet panel (tier 7) today; must render above the
-          cheatsheet once tier 7 moves. Target (Wave B): 20500.
+       8. --z-agent-alert = 20500 (Wave B, 2026-09-30) — agent alerts
+          (AgentToast's toast stack + AgentFireModal, both in
+          AgentToast.svelte / AgentFireModal.svelte). Was hardcoded 9997,
+          ACCIDENTALLY the same literal as the cheatsheet's old panel
+          z-index; now explicitly above tier 7 so a time-critical
+          broker/risk alert is never hidden behind the cheatsheet.
 
        9. --z-toast = 21000 — toasts (ToastContainer.svelte), the
           absolute top. Nothing may ever render above a toast. (Was 80;
@@ -269,9 +273,12 @@
   --z-tooltip:  9999;
   --z-search:   10000;
   --z-command:  10500;
+  --z-nav-indicator:    10550;
   --z-modal-nested:     10700;
   --z-modal-in-command: 10900;
   --z-modal-critical:   11200;
+  --z-cheatsheet:       20200;
+  --z-agent-alert:      20500;
 
   /* Vertical-bar separator — shared by CardHeader (.ch-sep),
      MarketPulse (.mp-head-sep), and PositionStrip (.ps-agg-sep).
@@ -2327,9 +2334,13 @@
    - keeps the card's existing colour palette + border-radius
 */
 /* Dark overlay backdrop for fullscreen cards — portalled to document.body
-   by FullscreenButton.svelte. Mirrored here so the rule is discoverable by
-   tools; the authoritative version lives in FullscreenButton.svelte's
-   :global(.fs-backdrop) block so it always wins specificity. */
+   by DefaultSizeButton.svelte (NOT FullscreenButton.svelte — that
+   component only renders the "enter fullscreen" button; the backdrop,
+   scroll-lock, and Escape handling all live in DefaultSizeButton, which
+   is mounted only while isFullscreen=true). Mirrored here so the rule is
+   discoverable by tools; the authoritative version lives in
+   DefaultSizeButton.svelte's :global(.fs-backdrop) block so it always
+   wins specificity. */
 .fs-backdrop {
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(3px);

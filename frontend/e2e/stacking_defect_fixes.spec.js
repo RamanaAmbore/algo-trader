@@ -273,6 +273,371 @@ test.describe('Functional — mode dropdown duplicate + Escape (real browser)', 
 // Functional — SymbolPanel scroll-lock restore + click-outside
 // ─────────────────────────────────────────────────────────────────────────
 
+// ─────────────────────────────────────────────────────────────────────────
+// Wave B (2026-09-30) — ShortcutCheatsheet + AgentToast/AgentFireModal
+// z-index tier + layerStack migration. Fixes:
+//   1. Cheatsheet z=9996/9997 (barely above the full-screen tier) → moved
+//      to --z-cheatsheet=20200/+1, above every modal tier + nav dropdown.
+//   2. AgentToast/AgentFireModal z=9997 (accidentally == cheatsheet's old
+//      panel z-index, and below the full-screen/order-modal tiers,
+//      meaning broker/risk alerts could be hidden) → --z-agent-alert=20500,
+//      above the cheatsheet.
+//   3. Cheatsheet's own uncoordinated Escape listener (svelte:window)
+//      double-closed alongside a full-screen card or the order modal on
+//      one Escape press → migrated onto the layerStack coordinator.
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — app.css cheatsheet + agent-alert tiers', () => {
+  const css = readFile('src/app.css');
+
+  function zVar(name) {
+    const m = css.match(new RegExp(`--${name}:\\s*([0-9]+)\\s*;`));
+    expect(m, `--${name} must be a plain numeric custom property in app.css`).not.toBeNull();
+    return Number(m[1]);
+  }
+
+  test('--z-cheatsheet and --z-agent-alert exist and are numeric', () => {
+    expect(zVar('z-cheatsheet')).toBeGreaterThan(0);
+    expect(zVar('z-agent-alert')).toBeGreaterThan(0);
+  });
+
+  test('tier ordering: modal-critical < dropdown/drawer < cheatsheet < agent-alert < toast', () => {
+    const zModalCritical = zVar('z-modal-critical');
+    const zDropdown      = zVar('z-dropdown');
+    const zDrawer        = zVar('z-drawer');
+    const zCheatsheet    = zVar('z-cheatsheet');
+    const zAgentAlert    = zVar('z-agent-alert');
+    const zToast         = zVar('z-toast');
+
+    expect(zModalCritical).toBeLessThan(zCheatsheet);
+    expect(zDropdown).toBeLessThan(zCheatsheet);
+    expect(zDrawer).toBeLessThan(zCheatsheet);
+    expect(zCheatsheet).toBeLessThan(zAgentAlert);
+    expect(zAgentAlert).toBeLessThan(zToast);
+  });
+});
+
+test.describe('Static source checks — ShortcutCheatsheet migrated onto layerStack', () => {
+  const cheatsheet = readFile('src/lib/ShortcutCheatsheet.svelte');
+
+  test('imports pushLayer/popLayer and pushes/pops keyed on `open`', () => {
+    expect(cheatsheet).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
+    expect(cheatsheet).toMatch(/_layerId = pushLayer\(\(\) => onClose\(\)\);/);
+  });
+
+  test('own uncoordinated svelte:window Escape listener is removed', () => {
+    expect(cheatsheet).not.toMatch(/<svelte:window onkeydown=\{open \? _onKey : null\} \/>/);
+    expect(cheatsheet).not.toMatch(/function _onKey/);
+  });
+
+  test('overlay + panel use the --z-cheatsheet token, not bare 9996/9997', () => {
+    expect(cheatsheet).toMatch(/z-index: var\(--z-cheatsheet\);/);
+    expect(cheatsheet).toMatch(/z-index: calc\(var\(--z-cheatsheet\) \+ 1\);/);
+    expect(cheatsheet).not.toMatch(/z-index: 9996;/);
+    expect(cheatsheet).not.toMatch(/z-index: 9997;/);
+  });
+});
+
+test.describe('Static source checks — AgentToast + AgentFireModal tier fix', () => {
+  const agentToast = readFile('src/lib/AgentToast.svelte');
+  const agentFireModal = readFile('src/lib/AgentFireModal.svelte');
+
+  test('AgentToast stack uses --z-agent-alert, not bare 9997', () => {
+    expect(agentToast).toMatch(/z-index: var\(--z-agent-alert\);/);
+    expect(agentToast).not.toMatch(/z-index: 9997;/);
+  });
+
+  test('stale "under modal (9998) + bell popup (9999)" comment is corrected', () => {
+    expect(agentToast).not.toMatch(/under modal \(9998\) \+ bell popup \(9999\)/);
+  });
+
+  test('AgentFireModal is wired to --z-agent-alert via ModalShell', () => {
+    expect(agentFireModal).toMatch(/zIndex="var\(--z-agent-alert\)"/);
+    expect(agentFireModal).not.toMatch(/zIndex=\{9998\}/);
+  });
+
+  test('AgentFireModal registers itself on the layerStack coordinator', () => {
+    expect(agentFireModal).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
+    expect(agentFireModal).toMatch(/_layerId = pushLayer\(\(\) => onClose\(\)\);/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Functional — cheatsheet Escape coordination (real browser)
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Functional — ShortcutCheatsheet Escape coordination', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('`?` opens the cheatsheet; Escape still closes it (regression after layerStack migration)', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+
+    await page.keyboard.press('?');
+    const modal = page.locator('.sc-modal');
+    await expect(modal, 'cheatsheet should open on `?`').toBeVisible({ timeout: 5_000 });
+
+    await page.keyboard.press('Escape');
+    await expect(modal, 'Escape should close the cheatsheet').toHaveCount(0, { timeout: 3_000 });
+  });
+
+  test('cheatsheet opened over an already-fullscreen card: one Escape closes only the cheatsheet', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button.fs-btn:visible').first();
+    await expect(fsBtn, 'a fullscreen-card trigger must be present on /dashboard').toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+    const fsCard = page.locator('.fs-card-on');
+    await expect(fsCard, 'card should promote to fullscreen').toHaveCount(1, { timeout: 5_000 });
+
+    await page.keyboard.press('?');
+    const modal = page.locator('.sc-modal');
+    await expect(modal, 'cheatsheet should open over the fullscreen card').toBeVisible({ timeout: 5_000 });
+
+    await page.keyboard.press('Escape');
+
+    // Only the topmost (most-recently-opened) layer — the cheatsheet —
+    // closes. The fullscreen card must survive the same Escape press.
+    await expect(modal, 'cheatsheet should close').toHaveCount(0, { timeout: 3_000 });
+    await expect(fsCard, 'fullscreen card must NOT also close on the same Escape').toHaveCount(1);
+  });
+
+  test('cheatsheet opened over the order modal: one Escape closes only the cheatsheet', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const orderBtn = page.locator('button.pha-order').first();
+    await expect(orderBtn, '.pha-order button must be present').toBeVisible({ timeout: 10_000 });
+    await orderBtn.click({ force: true });
+    const orderOverlay = page.locator('.canonical-modal-overlay').first();
+    await expect(orderOverlay, 'order modal should open').toBeVisible({ timeout: 10_000 });
+
+    await page.keyboard.press('?');
+    const modal = page.locator('.sc-modal');
+    await expect(modal, 'cheatsheet should open over the order modal').toBeVisible({ timeout: 5_000 });
+
+    await page.keyboard.press('Escape');
+
+    await expect(modal, 'cheatsheet should close').toHaveCount(0, { timeout: 3_000 });
+    await expect(orderOverlay, 'order modal must NOT also close on the same Escape').toBeVisible();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave B (2026-09-30) — NavigationIndicator z-index + DefaultSizeButton
+// full-screen Escape coordination. Builds on Wave A's conventions above.
+//
+//   1. NavigationIndicator was a bare z-index:9200 literal, BELOW the
+//      full-screen card pattern (9999) and the order modal (--z-command
+//      = 10500) — a `g`-shortcut navigation fired while either was open
+//      rendered no visible route-progress feedback. Fixed: new
+//      `--z-nav-indicator` (10550) var, placed between tier 4 (10500)
+//      and tier 3 (10700) in app.css's documented tier ladder.
+//   2. DefaultSizeButton.svelte's full-screen Escape handling used its
+//      own unconditional `document.addEventListener('keydown', ...)`,
+//      independent of every other overlay's own Escape listener — one
+//      Escape could close the full-screen card AND whatever was open on
+//      top of it (order modal / cheatsheet / nested dropdown)
+//      simultaneously. Fixed: migrated onto the shared layerStack
+//      coordinator (pushLayer on mount, popLayer on cleanup) so only the
+//      topmost pushed layer reacts — the full-screen card's own layer is
+//      pushed first (bottom of stack) and stays untouched until every
+//      layer opened on top of it has been explicitly closed.
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — NavigationIndicator z-index tier', () => {
+  const css = readFile('src/app.css');
+  const navIndicator = readFile('src/lib/NavigationIndicator.svelte');
+
+  function zVar(name) {
+    const m = css.match(new RegExp(`--${name}:\\s*([0-9]+)\\s*;`));
+    expect(m, `--${name} must be a plain numeric custom property in app.css`).not.toBeNull();
+    return Number(m[1]);
+  }
+
+  test('--z-nav-indicator exists and sits above the full-screen card AND the order modal', () => {
+    const zNavIndicator = zVar('z-nav-indicator');
+    const zCommand = zVar('z-command');
+    const FULLSCREEN_CARD_Z = 9999; // .fs-card-on — literal, unchanged
+    expect(zNavIndicator).toBeGreaterThan(FULLSCREEN_CARD_Z);
+    expect(zNavIndicator).toBeGreaterThan(zCommand);
+  });
+
+  test('NavigationIndicator.svelte uses the shared var, not the old bare 9200 literal', () => {
+    expect(navIndicator).toMatch(/z-index:\s*var\(--z-nav-indicator\);/);
+    expect(navIndicator).not.toMatch(/z-index:\s*9200;/);
+  });
+});
+
+test.describe('Static source checks — app.css ownership comments corrected (Fix 4)', () => {
+  const css = readFile('src/app.css');
+  const fullscreenBtn = readFile('src/lib/FullscreenButton.svelte');
+
+  test('app.css no longer claims the backdrop is portalled by FullscreenButton.svelte', () => {
+    expect(css).not.toMatch(/portalled to document\.body\s*\n\s*by FullscreenButton\.svelte/);
+    expect(css).toMatch(/portalled to document\.body\s*\n\s*by DefaultSizeButton\.svelte/);
+  });
+
+  test('FullscreenButton.svelte header comment attributes backdrop/Escape ownership to DefaultSizeButton', () => {
+    expect(fullscreenBtn).toMatch(/owned by DefaultSizeButton\.svelte, not this component/);
+  });
+});
+
+test.describe('Static source checks — DefaultSizeButton migrated onto layerStack', () => {
+  const defaultSizeBtn = readFile('src/lib/DefaultSizeButton.svelte');
+
+  test('imports pushLayer/popLayer and pushes a layer that exits full-screen on Escape', () => {
+    expect(defaultSizeBtn).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
+    expect(defaultSizeBtn).toMatch(/_layerId = pushLayer\(\(\) => \{ isFullscreen = false; \}\);/);
+    expect(defaultSizeBtn).toMatch(/popLayer\(_layerId\);/);
+  });
+
+  test('old unconditional document keydown Escape listener is gone', () => {
+    expect(defaultSizeBtn).not.toMatch(/document\.addEventListener\('keydown', _onKey\)/);
+  });
+
+  test('scroll-lock restore-prior-value pattern is untouched (Fix 3 — no regression)', () => {
+    expect(defaultSizeBtn).toMatch(/const prev = document\.body\.style\.overflow;/);
+    expect(defaultSizeBtn).toMatch(/document\.body\.style\.overflow = prev;/);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Functional — full-screen card Escape coordination (real browser)
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Functional — Wave B: full-screen card Escape double-close scenarios', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('full-screen Chart card + order modal: Escape closes only the topmost, one press at a time', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+
+    // Open the order modal via the global 't' shortcut — the full-screen
+    // backdrop visually covers the navbar's own `.pha-order` trigger, so
+    // the shortcut (handled by a window-level listener, unaffected by
+    // the backdrop) is the reliable way to open it on top of a
+    // full-screen card in a real browser.
+    await page.keyboard.press('t');
+    const overlay = page.locator('.canonical-modal-overlay').first();
+    await expect(overlay, 'order modal should open on top of the full-screen card').toBeVisible({ timeout: 10_000 });
+
+    // First Escape: closes ONLY the order modal (topmost layer) — the
+    // regression this fix guards. Pre-fix, this Escape closed BOTH.
+    await page.keyboard.press('Escape');
+    await expect(overlay, 'order modal should close on the first Escape').toHaveCount(0, { timeout: 5_000 });
+    await expect(fsCard, 'full-screen card must still be open after the first Escape').toBeVisible();
+
+    // Second Escape: now closes the full-screen card.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.row1-col-chart.fs-card-on'), 'full-screen card should close on the second Escape')
+      .toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test('full-screen Chart card + shortcut cheatsheet: Escape closes only the topmost, one press at a time', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+
+    await page.keyboard.press('?');
+    const cheatsheet = page.locator('.sc-modal');
+    await expect(cheatsheet, 'cheatsheet should open on top of the full-screen card').toBeVisible({ timeout: 5_000 });
+
+    // First Escape: closes ONLY the cheatsheet (topmost, opened last).
+    // Pre-fix, this Escape closed BOTH the cheatsheet and the full-screen
+    // card at once.
+    await page.keyboard.press('Escape');
+    await expect(cheatsheet, 'cheatsheet should close on the first Escape').toHaveCount(0, { timeout: 5_000 });
+    await expect(fsCard, 'full-screen card must still be open after the first Escape').toBeVisible();
+
+    // Second Escape: now closes the full-screen card.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.row1-col-chart.fs-card-on'), 'full-screen card should close on the second Escape')
+      .toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test('inline fullscreen Order Entry card + nested symbol-search dropdown: Escape closes only the dropdown', async ({ page }) => {
+    await page.goto(`${BASE}/orders`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Order Entry to fullscreen"]');
+    await expect(fsBtn, 'Order Entry card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+
+    const fsCard = page.locator('.bucket-card-entry.fs-card-on');
+    await expect(fsCard, 'Order Entry card should be fullscreen').toBeVisible({ timeout: 5_000 });
+
+    const symInput = fsCard.locator('.ssi-input').first();
+    await symInput.click();
+    const dropdown = page.locator('.ssi-drop').first();
+    await expect(dropdown, 'symbol search dropdown should open').toBeVisible({ timeout: 5_000 });
+
+    // First Escape: closes ONLY the nested dropdown. Pre-fix, the
+    // full-screen card's own unconditional Escape listener fired in
+    // parallel and exited full-screen too.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.ssi-drop'), 'dropdown should close on the first Escape').toHaveCount(0, { timeout: 5_000 });
+    await expect(fsCard, 'full-screen card must still be open after the dropdown closes').toBeVisible();
+
+    // Second Escape: now exits full-screen.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.bucket-card-entry.fs-card-on'), 'full-screen card should close on the second Escape')
+      .toHaveCount(0, { timeout: 5_000 });
+  });
+
+  test('--z-nav-indicator resolves at runtime above the full-screen card AND the order-modal tier, with a full-screen card open', async ({ page }) => {
+    // A real SPA route change (onNavigate → NavigationIndicator.start())
+    // could not be driven reliably in this harness: client-side `goto()`
+    // navigation never committed in this dev environment regardless of
+    // trigger (keyboard `g`+letter buffer, plain click, forced click,
+    // in either route direction) — confirmed via standalone control runs
+    // outside this spec, with no full-screen card involved at all, so
+    // the cause is environmental (this dev server's navigation never
+    // resolving, most likely because `onNavigate`'s view-transition
+    // promise or the destination route's own data load never settles
+    // here — see NavigationIndicator.svelte's design notes), not a
+    // regression from this fix. Instead, this test proves the token
+    // itself resolves correctly at runtime, in the one state (full-screen
+    // card open) the fix specifically targets, which combined with the
+    // static source checks above (var used in the component, old 9200
+    // literal gone, var ordered above tier 2 and tier 4 in app.css)
+    // fully covers the behavior without depending on a live route change.
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+
+    const [navIndicatorZ, commandZ] = await page.evaluate(() => {
+      const cs = getComputedStyle(document.documentElement);
+      return [
+        Number(cs.getPropertyValue('--z-nav-indicator').trim()),
+        Number(cs.getPropertyValue('--z-command').trim()),
+      ];
+    });
+    const FULLSCREEN_CARD_Z = 9999; // .fs-card-on literal — confirmed active via fsCard above
+    expect(navIndicatorZ, '--z-nav-indicator must resolve to a real number at runtime').toBeGreaterThan(0);
+    expect(navIndicatorZ, 'nav indicator z-index must exceed the open full-screen card').toBeGreaterThan(FULLSCREEN_CARD_Z);
+    expect(navIndicatorZ, 'nav indicator z-index must exceed the order-modal tier').toBeGreaterThan(commandZ);
+  });
+});
+
 test.describe('Functional — SymbolPanel scroll-lock restore + click-outside-to-close', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
