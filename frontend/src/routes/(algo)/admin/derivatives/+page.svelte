@@ -341,7 +341,32 @@
     try {
       const sp = new URLSearchParams(window.location.search);
       const u = (sp.get('u') || '').toUpperCase().trim();
-      if (u) selectedUnderlying = u;
+      if (u) {
+        selectedUnderlying = u;
+        // Same reasoning as the cache-restore branch below: a `?u=` seed
+        // (bookmark, shared link, browser Back to a URL that still has the
+        // query) is just as much an explicit pick as a dropdown click —
+        // without this, the auto-select effect's one-time promote (fires
+        // once positions load, if this root's qtySum is 0) would silently
+        // bounce it to the largest-position underlying the moment positions
+        // resolve, the same silent-discard symptom this whole fix targets.
+        _autoSelectDone = true;
+      } else {
+        // Race fix (2026-10): peek the sessionStorage-cached pick HERE, in
+        // this onMount (the first effect/onMount this component creates),
+        // so `selectedUnderlying` is already set before the auto-select
+        // $effect's first flush. See `_readCachedUnderlying()`'s own
+        // comment (near `_loadCache`) for the full root-cause writeup.
+        const cached = _readCachedUnderlying();
+        if (cached) {
+          selectedUnderlying = cached;
+          // Treat a restored pick the same as an explicit operator pick —
+          // otherwise the auto-select effect's one-time promote (fires once
+          // positions load, if this pick's qtySum is 0) could still bounce
+          // it to the largest-position underlying once positions resolve.
+          _autoSelectDone = true;
+        }
+      }
       const e = (sp.get('e') || '').trim();
       if (e) selectedExpiries = e.split(',').map(x => x.trim()).filter(Boolean);
     } catch {}
@@ -4758,7 +4783,12 @@
       if (Array.isArray(d.selectedAccounts)) selectedAccounts = d.selectedAccounts;
       // URL param (set by onMount #1 which runs before this onMount #2)
       // takes precedence over the sessionStorage snapshot. Only restore the
-      // cached underlying when the URL did NOT already seed one.
+      // cached underlying when the URL did NOT already seed one. In practice
+      // `selectedUnderlying` is almost always already truthy by the time this
+      // runs — onMount #1 now also peeks the cache via `_readCachedUnderlying()`
+      // (see below) specifically to win the race against the auto-select
+      // $effect (declared ~line 1525, which runs between onMount #1 and this
+      // onMount #2). This assignment is kept as a harmless defensive fallback.
       if (typeof d.selectedUnderlying === 'string' && !selectedUnderlying) selectedUnderlying = d.selectedUnderlying;
       if (Array.isArray(d.selectedExpiries))          selectedExpiries  = d.selectedExpiries;
       if (d.enabledSymbols && typeof d.enabledSymbols === 'object') {
@@ -4770,6 +4800,35 @@
       // store-mirrored value on a cache hit within the 5-min TTL.
       return true;
     } catch (_) { return false; }
+  }
+  /** Read-only peek at the cached `selectedUnderlying`, without touching any
+   *  other state (strategy/drafts/etc — those still restore later via the
+   *  full `_loadCache()` in onMount #2, unchanged).
+   *
+   *  2026-10 race fix: navigating away from this page (e.g. the navbar's
+   *  bare `/admin/derivatives` link, no `?u=`) and back used to silently
+   *  discard the operator's manually-picked underlying. Root cause: the
+   *  auto-select `$effect` (declared ~line 1525) runs AFTER onMount #1
+   *  (line ~340) but BEFORE onMount #2 (line ~4835, where the full
+   *  `_loadCache()` restore used to be the only place reading this back) —
+   *  Svelte's top-level effects/onMounts flush in creation order on initial
+   *  mount, so the auto-select effect's `if (!cur)` branch always won,
+   *  picking the largest-position underlying before the sessionStorage
+   *  restore ever got a chance to run. Fix: peek the cache from onMount #1
+   *  itself (before the auto-select effect's first flush) so a genuine
+   *  operator pick is already in `selectedUnderlying` by the time
+   *  auto-select runs — its own `curInOpts` validation (just below) still
+   *  rejects a truly stale pick (e.g. a root no longer in the book) exactly
+   *  as before; see derivatives_payoff_default_underlying.spec.js. */
+  function _readCachedUnderlying() {
+    if (typeof sessionStorage === 'undefined') return null;
+    try {
+      const raw = sessionStorage.getItem(_CACHE_KEY);
+      if (!raw) return null;
+      const d = JSON.parse(raw);
+      if (!d || (Date.now() - (d.ts || 0)) > _CACHE_MAX_AGE_MS) return null;
+      return (typeof d.selectedUnderlying === 'string' && d.selectedUnderlying) ? d.selectedUnderlying : null;
+    } catch (_) { return null; }
   }
 
   // Auth transition watcher — when the operator signs in (demo →
