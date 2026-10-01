@@ -16,6 +16,22 @@
  *   5. SymbolPanel's click-outside-to-close was dead code
  *      (`.canonical-modal-overlay` is `pointer-events: none`).
  *
+ * AMENDED 2026-10-01: bug #5's original fix (`.oes-overlay { pointer-events:
+ * auto }`, making the ENTIRE full-viewport overlay a click target) was
+ * itself a regression — it sat above the fixed `.algo-navbar` in z-index
+ * and intercepted every click meant for the navbar (hamburger included)
+ * for as long as the modal was open, re-breaking the fix already shipped
+ * in `mobile_hamburger_over_order_modal.spec.js`. Fixed by narrowing the
+ * click-outside-to-close hit area to a `.oes-click-catcher` plate that
+ * only spans the visible backdrop band BELOW the navbar and ABOVE this
+ * modal's own full-bleed sheet panel (measured at runtime by
+ * `_measureNavGap()` in SymbolPanel.svelte) — the overlay itself reverts
+ * to the shared `pointer-events: none` default so the navbar stays
+ * clickable. The static + functional tests below were updated to match
+ * (clicking at a fixed `{x:5,y:5}` now lands inside the navbar itself,
+ * not backdrop — tests now target `.oes-click-catcher` / its measured
+ * band directly instead of a hardcoded corner).
+ *
  * The Escape-stack coordinator itself (`frontend/src/lib/utils/layerStack.js`)
  * has a dedicated, thorough Vitest unit suite —
  * `frontend/src/lib/__tests__/layerStack.test.js` (push/pop LIFO
@@ -179,7 +195,7 @@ test.describe('Static source checks — SymbolPanel scroll-lock + click-outside 
     expect(symbolPanel).not.toMatch(/document\.body\.style\.overflow = '';\s*\n\s*\}\s*\n\s*\};/);
   });
 
-  test('overlay pointer-events overridden to auto so click-outside can fire', () => {
+  test('overlay itself stays pointer-events:none — navbar stays clickable (2026-10-01 amendment)', () => {
     // Can't use a `[^}]*` regex here — the explanatory comment inside
     // this rule legitimately quotes `onclick={onClose}` style snippets
     // containing literal `}` characters. Slice to the rule's own
@@ -190,7 +206,26 @@ test.describe('Static source checks — SymbolPanel scroll-lock + click-outside 
     const close = symbolPanel.indexOf('\n  }', start);
     expect(close, '.oes-overlay rule must close').toBeGreaterThan(start);
     const ruleBody = symbolPanel.slice(start, close);
+    // The original Wave A fix set `pointer-events: auto` directly on this
+    // full-viewport rule, which is exactly the regression this amendment
+    // fixes (it sat above the fixed navbar in z-index) — must NOT come back.
+    expect(ruleBody).not.toMatch(/pointer-events:\s*auto;/);
+  });
+
+  test('click-outside-to-close is narrowed to a .oes-click-catcher plate, not the full overlay', () => {
+    const start = symbolPanel.indexOf('.oes-click-catcher {');
+    expect(start, '.oes-click-catcher rule must exist').toBeGreaterThan(-1);
+    const close = symbolPanel.indexOf('\n  }', start);
+    expect(close, '.oes-click-catcher rule must close').toBeGreaterThan(start);
+    const ruleBody = symbolPanel.slice(start, close);
     expect(ruleBody).toMatch(/pointer-events:\s*auto;/);
+    expect(ruleBody).toMatch(/position:\s*fixed;/);
+  });
+
+  test('nav-gap measurement reads the real navbar + modal bounding rects, not a hardcoded height', () => {
+    expect(symbolPanel).toMatch(/document\.querySelector\('\.algo-navbar'\)/);
+    expect(symbolPanel).toMatch(/_navGapTop\s*=\s*navBottom;/);
+    expect(symbolPanel).toMatch(/_navGapHeight\s*=\s*Math\.max\(0, panelTop - navBottom\);/);
   });
 
   test('SymbolPanel is migrated onto the layerStack coordinator', () => {
@@ -663,7 +698,14 @@ test.describe('Functional — SymbolPanel scroll-lock restore + click-outside-to
       .toBe('hidden');
 
     // Close the order modal (click-outside — also exercises bug #5).
-    await overlay.click({ position: { x: 5, y: 5 } });
+    // NOTE (2026-10-01 amendment): the full overlay is no longer the
+    // click target — `{x:5,y:5}` on `.canonical-modal-overlay` now lands
+    // inside the fixed navbar, not backdrop. Click the narrow
+    // `.oes-click-catcher` plate (the band between the navbar and this
+    // modal's own sheet panel) directly instead.
+    const catcher = page.locator('.oes-click-catcher').first();
+    await expect(catcher, 'click-catcher plate must be present').toBeVisible({ timeout: 5_000 });
+    await catcher.click({ position: { x: 5, y: 2 } });
     await expect(overlay, 'order modal should close').toHaveCount(0, { timeout: 5_000 });
 
     // The prior lock (simulating the still-open full-screen card) must
@@ -682,10 +724,27 @@ test.describe('Functional — SymbolPanel scroll-lock restore + click-outside-to
     const overlay = page.locator('.canonical-modal-overlay').first();
     await expect(overlay).toBeVisible({ timeout: 10_000 });
 
-    // Click near the very top-left corner of the overlay — outside the
-    // panel content (the panel is top-anchored with side margins at
-    // desktop widths; this point is reliably backdrop, not panel).
-    await overlay.click({ position: { x: 5, y: 5 } });
+    // Guard the actual fix: the navbar itself must stay a real click
+    // target underneath the overlay — i.e. the overlay must NOT be the
+    // topmost element at a point inside the navbar (that was the
+    // regression: `.oes-overlay { pointer-events: auto }` made the whole
+    // overlay intercept clicks meant for `.algo-navbar`).
+    const navBox = await page.locator('.algo-navbar').first().boundingBox();
+    expect(navBox, '.algo-navbar must have a bounding box').toBeTruthy();
+    const navHitOk = await page.evaluate(({ x, y }) => {
+      const el = document.elementFromPoint(x, y);
+      return !!el && !el.closest('.canonical-modal-overlay, .canonical-modal-panel');
+    }, { x: navBox.x + 5, y: navBox.y + navBox.height / 2 });
+    expect(navHitOk, 'a point inside the navbar must not be occluded by the order modal overlay').toBe(true);
+
+    // Click inside the measured backdrop band (between navbar bottom and
+    // the modal's own sheet panel) — the only "outside the panel" region
+    // that exists at any viewport width, now carried by `.oes-click-catcher`
+    // instead of the full overlay (`{x:5,y:5}` on the overlay used to work
+    // here but now lands inside the navbar itself, not backdrop).
+    const catcher = page.locator('.oes-click-catcher').first();
+    await expect(catcher, 'click-catcher plate must be present').toBeVisible({ timeout: 5_000 });
+    await catcher.click({ position: { x: 5, y: 2 } });
     await expect(overlay, 'clicking the backdrop must close the modal').toHaveCount(0, { timeout: 5_000 });
   });
 

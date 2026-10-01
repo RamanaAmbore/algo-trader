@@ -2043,6 +2043,34 @@
   // Focus-trap anchor — bound to .oes-modal so Tab cycles stay inside.
   let _modalEl      = $state(/** @type {HTMLElement|null} */ (null));
 
+  // Click-outside-to-close backdrop region (2026-10-01 regression fix).
+  // The overlay itself stays `pointer-events: none` (shared
+  // canonical-modal-overlay default) so fixed chrome painted BELOW it in
+  // z-index — the navbar (`.algo-navbar`, hamburger included) and the
+  // `.page-header` action strip — stays clickable while this modal is
+  // open, exactly like every other canonical-modal-overlay consumer
+  // (ChartModal, ActivityLogModal). Only this narrow band — the visible
+  // backdrop strip between the navbar's bottom edge and this modal's own
+  // sheet panel (`.canonical-modal-panel` is a full-bleed sheet with zero
+  // margin, so that band IS the entire clickable backdrop at every
+  // viewport width) — gets its own `pointer-events: auto` plate carrying
+  // the click-outside-to-close behaviour via normal event bubbling up to
+  // the overlay's `onclick={onClose}` (bubbling isn't blocked by an
+  // ancestor's `pointer-events: none` — only direct hit-testing on that
+  // ancestor is). Measured from live layout rather than hardcoding the
+  // navbar height, since the mobile navbar can wrap to a second row.
+  let _navGapTop    = $state(0);
+  let _navGapHeight = $state(0);
+
+  function _measureNavGap() {
+    if (inline || typeof document === 'undefined') return;
+    const navEl = document.querySelector('.algo-navbar');
+    const navBottom = navEl ? navEl.getBoundingClientRect().bottom : 0;
+    const panelTop = _modalEl ? _modalEl.getBoundingClientRect().top : navBottom;
+    _navGapTop = navBottom;
+    _navGapHeight = Math.max(0, panelTop - navBottom);
+  }
+
   function _oesFocusables() {
     return /** @type {HTMLElement[]} */ (
       Array.from(_modalEl?.querySelectorAll(
@@ -2064,7 +2092,12 @@
         const els = _oesFocusables();
         const target = els.find(el => el.tagName !== 'INPUT') ?? els[0];
         target?.focus();
+        // Re-measure after the portal + focus settle — _modalEl's real
+        // rendered position is only reliable post-portal.
+        _measureNavGap();
       }, 0);
+      _measureNavGap();
+      window.addEventListener('resize', _measureNavGap);
     }
 
     const onKey = (/** @type {KeyboardEvent} */ e) => {
@@ -2113,6 +2146,9 @@
     window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
+      if (!wasInline) {
+        window.removeEventListener('resize', _measureNavGap);
+      }
       if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
       if (!wasInline) {
         document.body.style.overflow = _prevOverflow;
@@ -2160,6 +2196,15 @@
      aria-label={inline ? undefined : (symbol || 'Symbol panel')}
      onclick={inline ? undefined : (_chartModalOpen ? undefined : onClose)}
      use:portal={!inline}>
+  {#if !inline}
+    <!-- Click-catcher plate — see _measureNavGap() comment above. Carries
+         no handler of its own; a click on it bubbles normally to this
+         overlay's own onclick={onClose} above (pointer-events:none on
+         the overlay only blocks IT from being a hit-test target, it
+         doesn't block bubbling from an auto descendant). -->
+    <div class="oes-click-catcher" aria-hidden="true"
+         style="top:{_navGapTop}px; height:{_navGapHeight}px"></div>
+  {/if}
   <div class={inline ? 'oes-modal oes-modal-inline' : 'canonical-modal-panel oes-modal'}
        role="presentation"
        bind:this={_modalEl}
@@ -3190,19 +3235,37 @@
        canonical-modal-panel. */
     color: var(--algo-slate);
     font-family: var(--font-numeric);
-    /* Override canonical-modal-overlay's shared `pointer-events: none`
-       (app.css — deliberate for ChartModal/ActivityLogModal, which
-       close via × or Esc only) so THIS modal's overlay actually
-       receives the click its own `onclick={onClose}` handler already
-       expects. Scoped to this component (higher specificity than the
-       global one-class rule via Svelte's scoping attribute), so
-       ChartModal / ActivityLogModal's own canonical-modal-overlay
-       instances are unaffected — click-outside-to-close becomes real
-       for SymbolPanel only (2026-09-30 stacking-defect audit, Wave A;
-       the panel's own onclick={(e) => e.stopPropagation()} still
-       prevents a click INSIDE the panel from reaching this and closing
-       it, so the convention matches ModalShell's `clickOutside`
-       pattern: overlay catches the click, content panel re-stops it). */
+    /* NOTE (2026-10-01, fixes a regression from the 2026-09-30
+       stacking-defect audit Wave A): this rule used to override
+       canonical-modal-overlay's shared `pointer-events: none` to `auto`
+       here, making THIS entire full-viewport overlay a click target so
+       its own `onclick={onClose}` would fire. That reintroduced a bug a
+       separate same-day fix (mobile hamburger drawer) had just closed:
+       the overlay (z-index var(--z-command)=10500) then sat ABOVE the
+       fixed `.algo-navbar` (z-index var(--z-nav)=50) and intercepted
+       every click meant for it — including the hamburger button — for
+       as long as this modal was open. Fix: leave `pointer-events: none`
+       here (the shared canonical-modal-overlay default, same as
+       ChartModal/ActivityLogModal) so the navbar stays clickable, and
+       do click-outside-to-close via the narrow `.oes-click-catcher`
+       plate below instead — see its own comment and the
+       `_measureNavGap()` comment in <script>. */
+  }
+  /* Click-outside-to-close plate — spans only the visible backdrop band
+     between the navbar's bottom edge and this modal's own sheet panel
+     (computed at runtime by _measureNavGap(); the panel is a full-bleed
+     sheet with zero margin, so that band is the ENTIRE backdrop at every
+     viewport width — there is no "outside the panel" region below the
+     navbar). `pointer-events: auto` makes only this plate hit-testable;
+     a click on it bubbles normally to the overlay's own
+     onclick={onClose} (ancestor `pointer-events: none` doesn't block
+     bubbling from an `auto` descendant, only direct hits on the
+     ancestor itself). No background — purely a click target, the
+     overlay's own background still supplies the visible dim. */
+  .oes-click-catcher {
+    position: fixed;
+    left: 0;
+    right: 0;
     pointer-events: auto;
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
