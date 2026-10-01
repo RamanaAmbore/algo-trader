@@ -23,9 +23,30 @@
   ModuleRegistry.registerModules([AllCommunityModule]);
   import { accountDisplayOrder, sortAccountsBy } from '$lib/data/accountSort.js';
   import { acctStyleVars } from '$lib/account';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /** Bindable: parent (algo layout) toggles this from the 5/5 chip. */
   let { open = $bindable(false) } = $props();
+
+  // Escape-stack coordinator (layerStack.js, 2026-10-01) — this
+  // component used to carry its own `<svelte:window onkeydown>` (removed
+  // below the markup, see its former location) closing the modal on ANY
+  // Escape unconditionally, with no stacking awareness.
+  // Previously unreachable in combination with a fullscreen card (the
+  // backdrop blocked the broker chip's own click before this modal
+  // could ever open on top of one — see DefaultSizeButton.svelte's
+  // `.fs-backdrop-catch` fix, same 2026-10-01 pass); now that the chip
+  // is clickable while fullscreen, this combination is live, and
+  // live-verified to invert: one Escape closed the fullscreen card
+  // while this modal stayed open on top of the now-plain page. Teardown
+  // form (push on open, pop via the $effect's own cleanup) — matches
+  // OrderPairModal.svelte/AddToPulseModal.svelte's shape, safe even if
+  // the host layout were ever to unmount while this modal is open.
+  $effect(() => {
+    if (!open) return;
+    const id = pushLayer(() => { open = false; });
+    return () => popLayer(id);
+  });
 
   // Consume the shared broker-health store (populated by startBrokerHealthPoller
   // in the layout). No local fetch needed — the store already polls at 30 s
@@ -167,7 +188,8 @@
   onDestroy(() => { _gridApi?.destroy(); _gridApi = null; });
 </script>
 
-<svelte:window onkeydown={open ? (e) => { if (e.key === 'Escape') { e.preventDefault(); open = false; } } : null} />
+<!-- Escape is handled by the layerStack coordinator (pushLayer in <script>
+     above) instead of a local <svelte:window> listener — see its comment. -->
 
 {#if open}
   <!-- Modal overlay -->

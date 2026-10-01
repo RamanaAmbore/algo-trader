@@ -64,17 +64,82 @@
     const prev = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
 
+    // Backdrop is now a pure dim/blur visual with NO click handler of
+    // its own — pointer-events:none (see :global(.fs-backdrop) below).
+    // Before this fix the backdrop carried the click-to-exit handler
+    // directly and spanned the full viewport (inset:0) at z-index 9998,
+    // which sits ABOVE the fixed `.algo-navbar` (z-index
+    // var(--z-nav)=50) AND `.page-header` (z-index 45) — so tapping the
+    // hamburger / mode chip / broker chip / page-header actions while a
+    // card was fullscreen just exited fullscreen instead of doing what
+    // was tapped (the click landed on the backdrop, not the real
+    // control underneath). Same root cause + same fix shape as
+    // SymbolPanel's `.oes-click-catcher` (commit 161fc002): a separate
+    // `.fs-backdrop-catch` plate carries the actual click-to-exit
+    // handler, positioned from the LIVE measured bottom edge of the
+    // navbar+page-header chrome strip down to the viewport bottom —
+    // not the static --modal-sheet-top var, since the navbar can wrap
+    // to two rows on mobile and a static guess wouldn't track that.
     const backdrop = document.createElement('div');
     backdrop.className = 'fs-backdrop';
     backdrop.setAttribute('aria-hidden', 'true');
-    backdrop.addEventListener('click', () => { isFullscreen = false; });
     document.body.appendChild(backdrop);
+
+    const catcher = document.createElement('div');
+    catcher.className = 'fs-backdrop-catch';
+    catcher.setAttribute('aria-hidden', 'true');
+    catcher.addEventListener('click', () => { isFullscreen = false; });
+    document.body.appendChild(catcher);
+
+    // `.fs-card-on`'s own top inset is driven by `--fs-card-top` (set
+    // below, app.css), computed from this SAME live measurement, so the
+    // card and this catcher always agree on exactly where the real
+    // chrome ends — in practice the catcher's band sits entirely UNDER
+    // the fullscreen card and is never actually hit, so the
+    // click-to-exit-via-backdrop affordance has no reachable area left.
+    // Same tradeoff SymbolPanel's click-outside fix had to accept for
+    // the same structural reason (full-bleed sheet starting right at
+    // the chrome boundary). The Default-size button + Escape remain the
+    // ways to exit fullscreen.
+    //
+    // 2026-10-01 fix (live-verified): the static --modal-sheet-top var
+    // (navbar + page-header only) undercounts the real chrome height on
+    // any page where `.ps-strip` (PositionStrip) and/or `.demo-banner`
+    // are ALSO visible — both are `position: fixed` bands that push
+    // `.page-header` itself further down (see the `:has(.ps-strip)` /
+    // `:has(.demo-banner)` overrides in +layout.svelte) without a
+    // matching override ever having existed for `.fs-card-on`. Without
+    // this fix the fullscreen card's own top edge painted OVER the
+    // bottom slice of the real page-header strip (confirmed live: with
+    // `.ps-strip` visible, `.pha-order` resolved to the card itself at
+    // its hit-test point, not the button or the backdrop) — a second,
+    // independent occlusion from the one this fix otherwise addresses,
+    // and the actual reason "page-header actions" stayed unreachable
+    // even after the backdrop/catcher split above. Measuring every
+    // live fixed chrome band's own bottom edge (not just navbar +
+    // page-header) and taking the max fixes both at once.
+    const _measureChrome = () => {
+      const navEl  = document.querySelector('.algo-navbar');
+      const phEl   = document.querySelector('.page-header');
+      const psEl   = document.querySelector('.ps-strip');
+      const dbEl   = document.querySelector('.demo-banner');
+      const bottoms = [navEl, phEl, psEl, dbEl]
+        .map((el) => (el ? el.getBoundingClientRect().bottom : 0));
+      const top = Math.max(...bottoms, 0);
+      catcher.style.top = `${top}px`;
+      document.documentElement.style.setProperty('--fs-card-top', `${top}px`);
+    };
+    _measureChrome();
+    window.addEventListener('resize', _measureChrome);
 
     return () => {
       popLayer(_layerId);
       _layerId = null;
       document.body.style.overflow = prev;
+      window.removeEventListener('resize', _measureChrome);
+      document.documentElement.style.removeProperty('--fs-card-top');
       backdrop.remove();
+      catcher.remove();
     };
   });
 </script>
@@ -112,7 +177,13 @@
 <style>
   /* Backdrop: GLOBAL because the element is portalled to document.body
      imperatively, so Svelte's scoped selector wouldn't reach it.
-     Mirrored in app.css for discoverability; this :global() is authoritative. */
+     Mirrored in app.css for discoverability; this :global() is authoritative.
+
+     pointer-events:none (2026-10-01 fix) — see the $effect comment
+     above. This is now a pure visual dim/blur layer; the click-to-exit
+     handler lives on the sibling `.fs-backdrop-catch` plate below so
+     the fixed navbar/page-header chrome strip stays clickable while
+     any card is fullscreen. */
   :global(.fs-backdrop) {
     position: fixed;
     inset: 0;
@@ -120,6 +191,25 @@
     z-index: 9998;
     backdrop-filter: blur(3px);
     -webkit-backdrop-filter: blur(3px);
+    pointer-events: none;
+  }
+
+  /* Click-to-exit-fullscreen plate — spans from the LIVE measured
+     bottom edge of the navbar+page-header chrome strip (set via
+     `catcher.style.top` in the $effect above) down to the viewport
+     bottom, left:0/right:0. Carries the actual click handler; the
+     chrome strip itself (0..top) is left with no auto pointer-events
+     anywhere above it, so clicks there fall straight through to the
+     real `.algo-navbar` / `.page-header` controls (z-index 50 / 45)
+     underneath both this plate and `.fs-backdrop`. No background —
+     `.fs-backdrop`'s own dim/blur still supplies the visible look. */
+  :global(.fs-backdrop-catch) {
+    position: fixed;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 9998;
+    pointer-events: auto;
   }
 
   /* Shared cyan-400 palette with RefreshButton + FullscreenButton +

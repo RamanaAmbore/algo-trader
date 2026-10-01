@@ -2340,7 +2340,14 @@
    is mounted only while isFullscreen=true). Mirrored here so the rule is
    discoverable by tools; the authoritative version lives in
    DefaultSizeButton.svelte's :global(.fs-backdrop) block so it always
-   wins specificity. */
+   wins specificity.
+
+   pointer-events:none (2026-10-01) — pure visual dim/blur layer now; the
+   click-to-exit-fullscreen handler lives on the sibling
+   `.fs-backdrop-catch` plate (also portalled by DefaultSizeButton.svelte)
+   so the fixed navbar/page-header chrome strip stays clickable while a
+   card is fullscreen — same root cause + fix shape as SymbolPanel's
+   `.oes-click-catcher` (commit 161fc002). */
 .fs-backdrop {
   background: rgba(0, 0, 0, 0.55);
   backdrop-filter: blur(3px);
@@ -2348,11 +2355,33 @@
   position: fixed;
   inset: 0;
   z-index: 9998;
+  pointer-events: none;
+}
+
+.fs-backdrop-catch {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 9998;
+  pointer-events: auto;
 }
 
 .fs-card-on {
   position: fixed !important;
-  inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0 !important;
+  /* --fs-card-top (2026-10-01, set by DefaultSizeButton.svelte's
+     _measureChrome, live) takes priority over the static
+     --modal-sheet-top fallback — the static var only ever accounted
+     for navbar + page-header, so on any page where `.ps-strip` and/or
+     `.demo-banner` are ALSO visible (both push `.page-header` itself
+     further down, see +layout.svelte's `:has(.ps-strip)` /
+     `:has(.demo-banner)` overrides) this card used to start painting
+     OVER the bottom slice of the real page-header strip, hiding
+     page-header action buttons underneath it. --fs-card-top is only
+     ever set while a card is actually fullscreen (removed on exit),
+     so the static fallback still governs the (effectively unused,
+     element isn't rendered when not fullscreen) non-fullscreen case. */
+  inset: var(--fs-card-top, var(--modal-sheet-top, calc(3rem + 1.8rem))) 0 0 0 !important;
   z-index: 9999 !important;
   max-width: none !important;
   max-height: none !important;
@@ -2377,7 +2406,7 @@
 /* Tight viewport: same sheet inset as desktop — card fills below the navbar. */
 @media (max-width: 600px) {
   .fs-card-on {
-    inset: var(--modal-sheet-top, calc(3rem + 1.8rem)) 0 0 0 !important;
+    inset: var(--fs-card-top, var(--modal-sheet-top, calc(3rem + 1.8rem))) 0 0 0 !important;
   }
 }
 

@@ -440,6 +440,23 @@
 
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
+  // Escape-stack coordinator (layerStack.js, 2026-10-01) — the mobile
+  // hamburger drawer had NO Escape handling at all. Previously
+  // unreachable in combination with a fullscreen card (the card's own
+  // `.fs-backdrop` blocked the hamburger button's click before the
+  // drawer could ever open on top of one — see DefaultSizeButton.svelte's
+  // `.fs-backdrop-catch` fix, same 2026-10-01 pass); now that the
+  // hamburger is clickable while fullscreen, this combination is live,
+  // and live-verified to invert: one Escape closed the fullscreen card
+  // while the drawer stayed open on top of the now-plain page. Teardown
+  // form (push on open, pop via the $effect's own cleanup) — this root
+  // layout never unmounts mid-session, so leak risk is low either way,
+  // but matches the shape used elsewhere in this same pass.
+  $effect(() => {
+    if (!menuOpen) return;
+    const id = pushLayer(() => { closeMenu(); });
+    return () => popLayer(id);
+  });
   /** @type {HTMLElement | null} */
   let _navHeaderEl = $state(null);
   // Computed position for the mobile hamburger dropdown — recalculated

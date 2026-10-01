@@ -557,11 +557,11 @@ test.describe('Functional — Wave B: full-screen card Escape double-close scena
     const fsCard = page.locator('.row1-col-chart.fs-card-on');
     await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
 
-    // Open the order modal via the global 't' shortcut — the full-screen
-    // backdrop visually covers the navbar's own `.pha-order` trigger, so
-    // the shortcut (handled by a window-level listener, unaffected by
-    // the backdrop) is the reliable way to open it on top of a
-    // full-screen card in a real browser.
+    // Open the order modal via the global 't' shortcut. `.pha-order`
+    // itself is now also directly clickable over a fullscreen card
+    // (2026-10-01 fix, see the Wave C section below) — the shortcut is
+    // used here only because it's the simpler, pre-existing way this
+    // test already drove the scenario; either entry point works today.
     await page.keyboard.press('t');
     const overlay = page.locator('.canonical-modal-overlay').first();
     await expect(overlay, 'order modal should open on top of the full-screen card').toBeVisible({ timeout: 10_000 });
@@ -762,5 +762,281 @@ test.describe('Functional — SymbolPanel scroll-lock restore + click-outside-to
     // Still open — a click that lands on the panel must not bubble to
     // the overlay's onclick={onClose}.
     await expect(page.locator('.canonical-modal-overlay')).toBeVisible();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Wave C (2026-10-01) — full-screen card's own `.fs-backdrop` occluding the
+// fixed navbar/page-header strip, plus two Escape-priority inversions this
+// fix newly exposed. Distinct from the Wave A `.oes-click-catcher` fix
+// above (that one was about the ORDER MODAL's backdrop, not the full-screen
+// card's) but uses the identical technique:
+//
+//   1. `.fs-backdrop` (DefaultSizeButton.svelte, inset:0, z=9998) sat ABOVE
+//      the fixed `.algo-navbar` (z=50) and `.page-header` (z=45) and
+//      carried the click-to-exit-fullscreen handler directly, so tapping
+//      the hamburger / mode chip / broker chip / page-header actions while
+//      ANY card was fullscreen just exited fullscreen (the click landed on
+//      the backdrop) instead of doing what was tapped. Live-reproduced via
+//      `git stash` before fixing: `elementFromPoint` at the hamburger's
+//      center resolved to `.fs-backdrop`, and Playwright's own click
+//      actionability check reported "<div class="fs-backdrop"> intercepts
+//      pointer events". Fixed: `.fs-backdrop` is now pointer-events:none
+//      (pure dim/blur visual); a sibling `.fs-backdrop-catch` plate carries
+//      the click-to-exit handler, positioned from the LIVE measured bottom
+//      edge of every visible fixed chrome band (navbar, page-header,
+//      `.ps-strip`, `.demo-banner`) down to the viewport bottom.
+//   2. That same live measurement also fixed a SECOND, independent
+//      occlusion found while live-verifying fix #1: `.fs-card-on`'s own
+//      top inset used the STATIC `--modal-sheet-top` var (navbar +
+//      page-header only), which undercounts real chrome height on any
+//      page where `.ps-strip` is also visible (it pushes `.page-header`
+//      itself further down — see +layout.svelte's `:has(.ps-strip)`
+//      overrides). The fullscreen card used to paint OVER the bottom
+//      slice of the real page-header strip on exactly those pages,
+//      independently hiding `.pha-order` and friends — confirmed live:
+//      with `.ps-strip` visible, `.pha-order`'s hit-test point resolved to
+//      the card itself, not the button or the backdrop. New `--fs-card-top`
+//      var (set by the same `_measureChrome()`) now drives `.fs-card-on`'s
+//      inset too, so the card and the catcher always agree on where the
+//      real chrome ends.
+//   3. Fix #1 makes the hamburger drawer and the broker-chip's auth modal
+//      newly OPENABLE while a card is fullscreen — a combination that was
+//      previously unreachable (the backdrop blocked the triggering click
+//      entirely). Both had un-coordinated Escape handling (the mobile
+//      drawer had none at all; BrokerHealthBadge had its own unconditional
+//      `<svelte:window onkeydown>`), so once reachable, one Escape
+//      press inverted priority — closed the fullscreen card underneath
+//      while the drawer/modal stayed open on top. Live-reproduced before
+//      fixing (Escape left `.bh-modal` open and closed `.fs-card-on`
+//      instead). Fixed: both migrated onto the layerStack coordinator
+//      (teardown-effect form, matching OrderPairModal.svelte's shape).
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — DefaultSizeButton backdrop/catcher split + chrome measurement', () => {
+  const defaultSizeBtn = readFile('src/lib/DefaultSizeButton.svelte');
+  const css = readFile('src/app.css');
+
+  test('.fs-backdrop is pointer-events:none (pure visual, no click handler of its own)', () => {
+    const start = defaultSizeBtn.indexOf(':global(.fs-backdrop) {');
+    expect(start, '.fs-backdrop rule must exist').toBeGreaterThan(-1);
+    const close = defaultSizeBtn.indexOf('\n  }', start);
+    const ruleBody = defaultSizeBtn.slice(start, close);
+    expect(ruleBody).toMatch(/pointer-events:\s*none;/);
+  });
+
+  test('.fs-backdrop-catch exists, pointer-events:auto, carries the click-to-exit handler', () => {
+    expect(defaultSizeBtn).toMatch(/catcher\.className = 'fs-backdrop-catch';/);
+    expect(defaultSizeBtn).toMatch(/catcher\.addEventListener\('click', \(\) => \{ isFullscreen = false; \}\);/);
+    const start = defaultSizeBtn.indexOf(':global(.fs-backdrop-catch) {');
+    expect(start, '.fs-backdrop-catch rule must exist').toBeGreaterThan(-1);
+    const close = defaultSizeBtn.indexOf('\n  }', start);
+    const ruleBody = defaultSizeBtn.slice(start, close);
+    expect(ruleBody).toMatch(/pointer-events:\s*auto;/);
+  });
+
+  test('chrome measurement reads real bounding rects (navbar, page-header, ps-strip, demo-banner), not a hardcoded height', () => {
+    expect(defaultSizeBtn).toMatch(/document\.querySelector\('\.algo-navbar'\)/);
+    expect(defaultSizeBtn).toMatch(/document\.querySelector\('\.page-header'\)/);
+    expect(defaultSizeBtn).toMatch(/document\.querySelector\('\.ps-strip'\)/);
+    expect(defaultSizeBtn).toMatch(/document\.querySelector\('\.demo-banner'\)/);
+    expect(defaultSizeBtn).toMatch(/window\.addEventListener\('resize', _measureChrome\)/);
+  });
+
+  test('--fs-card-top is set/removed on the document root in lockstep with the fullscreen lifecycle', () => {
+    expect(defaultSizeBtn).toMatch(/document\.documentElement\.style\.setProperty\('--fs-card-top', `\$\{top\}px`\);/);
+    expect(defaultSizeBtn).toMatch(/document\.documentElement\.style\.removeProperty\('--fs-card-top'\);/);
+  });
+
+  test('app.css .fs-card-on inset reads --fs-card-top first, falling back to the static var (both base and ≤600px rules)', () => {
+    const matches = css.match(/inset:\s*var\(--fs-card-top,\s*var\(--modal-sheet-top,\s*calc\(3rem \+ 1\.8rem\)\)\)\s*0 0 0\s*!important;/g) || [];
+    expect(matches.length, 'both the base and @media(max-width:600px) .fs-card-on rules must use --fs-card-top').toBe(2);
+  });
+});
+
+test.describe('Static source checks — BrokerHealthBadge + mobile drawer migrated onto layerStack', () => {
+  const bh = readFile('src/lib/BrokerHealthBadge.svelte');
+  const layout = readFile('src/routes/(algo)/+layout.svelte');
+
+  test('BrokerHealthBadge imports pushLayer/popLayer and pushes/pops keyed on open (teardown form)', () => {
+    expect(bh).toMatch(/import \{ pushLayer, popLayer \} from '\$lib\/utils\/layerStack\.js';/);
+    expect(bh).toMatch(/if \(!open\) return;\s*\n\s*const id = pushLayer\(\(\) => \{ open = false; \}\);\s*\n\s*return \(\) => popLayer\(id\);/);
+  });
+
+  test('BrokerHealthBadge no longer has its own unconditional svelte:window Escape listener', () => {
+    expect(bh).not.toMatch(/<svelte:window onkeydown=\{open \? \(e\) => \{ if \(e\.key === 'Escape'\)/);
+  });
+
+  test('mobile hamburger drawer (menuOpen) pushes/pops its own layer', () => {
+    expect(layout).toMatch(/if \(!menuOpen\) return;\s*\n\s*const id = pushLayer\(\(\) => \{ closeMenu\(\); \}\);\s*\n\s*return \(\) => popLayer\(id\);/);
+  });
+});
+
+test.describe('Functional — full-screen card backdrop no longer occludes the navbar/page-header (real browser)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  /**
+   * Hit-tests a control's visual center and confirms (a) the point does
+   * NOT resolve into `.fs-backdrop`/`.fs-backdrop-catch`, and (b) it DOES
+   * resolve into the control itself (or a descendant, e.g. the `<path>`
+   * inside an SVG icon) — guards against a false pass where the point
+   * lands on neither the backdrop NOR the control (e.g. on the
+   * `.fs-card-on` card itself, the second, independent occlusion fixed by
+   * the --fs-card-top change above).
+   */
+  async function hitOk(page, selector) {
+    const loc = page.locator(`${selector}:visible`).first();
+    const box = await loc.boundingBox();
+    return page.evaluate(({ x, y, sel }) => {
+      const el = document.elementFromPoint(x, y);
+      return {
+        tag: el?.tagName,
+        matchesSelector: !!(el && el.closest(sel)),
+        onBackdrop: !!(el && (el.classList.contains('fs-backdrop') || el.classList.contains('fs-backdrop-catch'))),
+      };
+    }, { x: box.x + box.width / 2, y: box.y + box.height / 2, sel: selector });
+  }
+
+  for (const vp of [
+    { label: 'desktop', width: 1280, height: 800 },
+    { label: 'mobile',  width: 390,  height: 844 },
+  ]) {
+    test(`[${vp.label}] hamburger, mode chip, broker chip, and page-header actions are all reachable while a card is fullscreen`, async ({ page }) => {
+      await page.setViewportSize({ width: vp.width, height: vp.height });
+      await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+      const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+      await expect(fsBtn, 'Chart card fullscreen button must be visible').toBeVisible({ timeout: 15_000 });
+      await fsBtn.click();
+      const fsCard = page.locator('.row1-col-chart.fs-card-on');
+      await expect(fsCard, 'Chart card should be fullscreen').toBeVisible({ timeout: 5_000 });
+
+      // Each control below only exists at some viewports (hamburger is
+      // mobile-only; mode-trigger/broker-chip depend on live broker/mode
+      // data being present) — skip gracefully rather than fail on a
+      // control this environment never renders, mirroring this file's
+      // existing `:visible` desktop/mobile dual-render convention above.
+      for (const sel of ['.algo-hamburger', '.broker-chip', 'button.mode-trigger', '.pha-order']) {
+        const ok = await expect(page.locator(`${sel}:visible`).first())
+          .toBeVisible({ timeout: 8_000 }).then(() => true).catch(() => false);
+        if (!ok) continue;
+        const r = await hitOk(page, sel);
+        expect(r.onBackdrop, `${sel} must not be occluded by .fs-backdrop/.fs-backdrop-catch`).toBe(false);
+        expect(r.matchesSelector, `${sel} hit-test must resolve to the control itself, not the card or anything else`).toBe(true);
+      }
+
+      // The fullscreen card must still be open — none of the hit-tests
+      // above should have exited it (they're read-only elementFromPoint
+      // checks, but this also guards the broker-chip click below).
+      await expect(fsCard).toBeVisible();
+
+      // Click the broker chip for real and confirm its modal actually
+      // renders ABOVE the fullscreen card (z=20001 via --z-drawer, well
+      // above the card's 9999) — a click reaching the control is not
+      // enough if the surface it opens is itself hidden behind the card.
+      const brokerChip = page.locator('.broker-chip:visible').first();
+      if (await brokerChip.isVisible().catch(() => false)) {
+        await brokerChip.click();
+        const bhModal = page.locator('.bh-modal');
+        await expect(bhModal, 'broker health modal must render above the fullscreen card').toBeVisible({ timeout: 5_000 });
+        await page.locator('.bh-close').click();
+      }
+    });
+  }
+
+  test('no reachable region of the backdrop remains clickable to exit fullscreen — Default-size button and Escape are the only ways out', async ({ page }) => {
+    // Documents the accepted tradeoff (same one SymbolPanel's
+    // click-outside fix made): once the chrome strip is excluded from
+    // hit-testing, `.fs-card-on` already covers every remaining pixel
+    // below it (inset: var(--fs-card-top) 0 0 0), so `.fs-backdrop-catch`
+    // has no reachable area left. Verified here by hit-testing a point
+    // well below the chrome strip and confirming the CARD owns it, not
+    // the catcher.
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn).toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard).toBeVisible({ timeout: 5_000 });
+
+    // Point derived from the real viewport + catcher top (not a
+    // hardcoded desktop-sized guess) so this holds across all three
+    // viewport projects (mobile-portrait is only 360×800, mobile-landscape
+    // only 800×360).
+    const hit = await page.evaluate(() => {
+      const catcher = document.querySelector('.fs-backdrop-catch');
+      const top = catcher ? catcher.getBoundingClientRect().top : 0;
+      const x = window.innerWidth / 2;
+      const y = top + (window.innerHeight - top) / 2;
+      const el = document.elementFromPoint(x, y);
+      return { onCard: !!(el && el.closest('.fs-card-on')), onCatcher: !!(el && el.classList.contains('fs-backdrop-catch')) };
+    });
+    expect(hit.onCard, 'a point well below the chrome strip must belong to the fullscreen card').toBe(true);
+    expect(hit.onCatcher).toBe(false);
+  });
+});
+
+test.describe('Functional — Escape priority inversions exposed by the backdrop fix (real browser)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('broker-chip auth modal opened over a fullscreen card: one Escape closes only the modal', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn).toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard).toBeVisible({ timeout: 5_000 });
+
+    const brokerChip = page.locator('.broker-chip:visible').first();
+    await expect(brokerChip, 'broker chip must be visible and clickable over the fullscreen card').toBeVisible({ timeout: 10_000 });
+    await brokerChip.click();
+    const bhModal = page.locator('.bh-modal');
+    await expect(bhModal, 'broker health modal should open').toBeVisible({ timeout: 5_000 });
+
+    // First Escape: closes ONLY the broker-health modal (topmost,
+    // opened last). Pre-fix, this Escape closed the fullscreen card
+    // instead and left the modal open — the exact inversion this guards.
+    await page.keyboard.press('Escape');
+    await expect(bhModal, 'broker health modal should close on the first Escape').toHaveCount(0, { timeout: 3_000 });
+    await expect(fsCard, 'fullscreen card must still be open after the first Escape').toBeVisible();
+
+    // Second Escape: now closes the fullscreen card.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.row1-col-chart.fs-card-on'), 'fullscreen card should close on the second Escape')
+      .toHaveCount(0, { timeout: 3_000 });
+  });
+
+  test('mobile hamburger drawer opened over a fullscreen card: one Escape closes only the drawer', async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const fsBtn = page.locator('button[aria-label="Expand Chart to fullscreen"]');
+    await expect(fsBtn).toBeVisible({ timeout: 15_000 });
+    await fsBtn.click();
+    const fsCard = page.locator('.row1-col-chart.fs-card-on');
+    await expect(fsCard).toBeVisible({ timeout: 5_000 });
+
+    const hamburger = page.locator('.algo-hamburger').first();
+    await expect(hamburger, 'hamburger must be visible and clickable over the fullscreen card').toBeVisible({ timeout: 10_000 });
+    await hamburger.click();
+    const drawer = page.locator('.algo-mobile-dropdown');
+    await expect(drawer, 'mobile drawer should open').toBeVisible({ timeout: 5_000 });
+
+    // First Escape: closes ONLY the drawer. Pre-fix, this Escape closed
+    // the fullscreen card instead and left the drawer open on top of
+    // the now-plain page — the exact inversion this guards.
+    await page.keyboard.press('Escape');
+    await expect(drawer, 'drawer should close on the first Escape').toHaveCount(0, { timeout: 3_000 });
+    await expect(fsCard, 'fullscreen card must still be open after the first Escape').toBeVisible();
+
+    // Second Escape: now closes the fullscreen card.
+    await page.keyboard.press('Escape');
+    await expect(page.locator('.row1-col-chart.fs-card-on'), 'fullscreen card should close on the second Escape')
+      .toHaveCount(0, { timeout: 3_000 });
   });
 });

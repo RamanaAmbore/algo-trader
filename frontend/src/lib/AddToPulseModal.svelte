@@ -3,6 +3,7 @@
   import Select from '$lib/Select.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
   import { displaySymbol } from '$lib/data/displaySymbol.js';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /**
    * Add-to-watchlist modal extracted from MarketPulse.svelte (Phase 3).
@@ -53,6 +54,54 @@
       // Defer until the modal is painted (same tick as Svelte render).
       tick().then(() => { symInputEl?.focus(); symInputEl?.select(); });
     }
+  });
+
+  // Escape-stack coordinator (layerStack.js) — this component is always
+  // mounted by MarketPulse (never `{#if}`-gated; `open` just toggles its
+  // internal <ModalShell>). Uses the push-then-return-popLayer teardown
+  // form (same shape as OrderPairModal.svelte), NOT the if/open-else/pop
+  // form Select.svelte uses — that form only pops when `open` itself
+  // flips false in a LATER effect run; it never pops if the HOST
+  // (MarketPulse) unmounts while this modal happens to be open (e.g. a
+  // route change away from /pulse mid-session), leaking a layer that
+  // would silently swallow every page-level Escape for the rest of the
+  // tab's life. The teardown form's returned callback runs on both
+  // paths (open→false AND component destroy), so it can't leak.
+  //
+  // Without this, pressing Escape while this modal is open over a
+  // fullscreen card (or any other already-migrated layer) closed BOTH
+  // at once — ModalShell's own `<svelte:window onkeydown>` fires
+  // unconditionally on every Escape with no stacking awareness at all.
+  // Registering a layer here means the capture-phase layerStack
+  // listener consumes the Escape first (stopPropagation) and
+  // ModalShell's bubble-phase listener never runs — same reliance
+  // ConfirmModal.svelte's own ask()/prompt() already has on this exact
+  // mechanic.
+  //
+  // Because the layerStack listener is capture-phase on `document` and
+  // calls stopPropagation(), the event never reaches this modal's own
+  // per-input `onkeydown` handlers below — their former Escape branches
+  // are folded into this ONE callback instead (self-audit: left in
+  // place they'd be structurally unreachable dead code). Two real,
+  // user-visible cases existed and are preserved here:
+  //   - renaming a watchlist (the "Esc to cancel" hint below the rename
+  //     row) → cancel the rename, don't close the whole modal
+  //   - otherwise → the real `onClose` prop (not a bare `open = false`)
+  //     so the caller's own cleanup (MarketPulse's `closeSearch()`
+  //     resets typeahead/newListName/aliasInput/rename state) still
+  //     runs, same as every other close path in this component.
+  // A third case — "first Esc closes the typeahead suggestions" — was
+  // NOT ported: `typeaheadOpen` never gated the suggestion list's own
+  // markup (`{#if typeahead.length}`, independent of `typeaheadOpen`),
+  // so toggling it off was already a visual no-op pre-existing this fix;
+  // only `onClose()` is live-equivalent to port forward.
+  $effect(() => {
+    if (!open) return;
+    const id = pushLayer(() => {
+      if (renameId !== null && renameId === targetListId) { onCancelRename?.(); return; }
+      onClose?.();
+    });
+    return () => popLayer(id);
   });
 </script>
 
@@ -142,7 +191,8 @@
             <input bind:value={renameName}
               onkeydown={(e) => {
                 if (e.key === 'Enter') { e.preventDefault(); onCommitRename(); }
-                else if (e.key === 'Escape') { e.preventDefault(); onCancelRename(); }
+                // Escape is handled by the layerStack coordinator (pushLayer
+                // in <script> above) instead of here — see its comment.
               }}
               class="field-input text-[0.7rem] py-1 px-2 flex-1"
               placeholder="New name" autocomplete="off" />
@@ -159,13 +209,6 @@
         {#if targetListId === 'NEW'}
           <div class="search-row" style="margin-top: 0.4rem;">
             <input bind:value={newListName}
-              onkeydown={(e) => {
-                if (e.key === 'Escape') {
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                  else { onClose(); }
-                }
-              }}
               class="field-input text-[0.7rem] py-1 px-2 flex-1"
               placeholder="New watchlist name" autocomplete="off" />
           </div>
@@ -199,17 +242,9 @@
                   e.preventDefault();
                   if (typeaheadOpen && typeahead.length && symInput.trim()) onPickTypeahead(typeahead[0]);
                   else onAdd();
-                } else if (e.key === 'Escape') {
-                  // First Esc closes the typeahead suggestions if they're
-                  // ACTUALLY rendered (typeaheadOpen AND non-empty); a
-                  // second Esc closes the popup. When the dropdown is
-                  // invisible — onfocus sets typeaheadOpen=true even when
-                  // typeahead is [] — first Esc would otherwise no-op,
-                  // forcing operators to press Esc twice to dismiss.
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; }
-                  else { onClose(); }
                 }
+                // Escape is handled by the layerStack coordinator (pushLayer
+                // in <script> above) instead of here — see its comment.
               }}
               class="field-input text-[0.7rem] py-1 px-2 flex-1"
               placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
@@ -236,7 +271,8 @@
             <input bind:value={aliasInput}
               onkeydown={(e) => {
                 if (e.key === 'Enter') { e.preventDefault(); onAdd(); }
-                else if (e.key === 'Escape') { e.preventDefault(); onClose(); }
+                // Escape is handled by the layerStack coordinator (pushLayer
+                // in <script> above) instead of here — see its comment.
               }}
               class="field-input text-[0.7rem] py-1 px-2 flex-1"
               placeholder="Display name (optional) — e.g. Crude oil"
