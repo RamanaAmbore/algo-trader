@@ -23,7 +23,8 @@ which orders will be placed.
 6. [Apply Path — Sim and Live](#6-apply-path--sim-and-live)
 7. [OCO Pair-Watcher and Trail Stops](#7-oco-pair-watcher-and-trail-stops)
 8. [Edge Cases](#8-edge-cases)
-9. [Test Coverage Map](#9-test-coverage-map)
+9. [Standalone GTT Listing and Cancel API](#9-standalone-gtt-listing-and-cancel-api)
+10. [Test Coverage Map](#10-test-coverage-map)
 
 ---
 
@@ -224,7 +225,120 @@ attached_gtts_json to see which GTTs landed.
 
 ---
 
-## 9. Test Coverage Map
+## 9. Standalone GTT Listing and Cancel API
+
+This section documents the **standalone broker GTT listing and cancellation** endpoints
+— a read-only mirror of all GTTs currently resting at each broker, regardless of how
+they were placed (operator via Kite's web, a template attachment, manual GTT, etc.).
+
+**Distinct from template-attached GTTs**: The `attached_gtts_json` field on AlgoOrder
+rows (documented in section 4) tracks GTTs and wings this platform placed as exit rules
+after an order filled. The APIs below are for querying raw broker inventory.
+
+### GET /api/orders/gtts/
+
+**Purpose**: List all standing broker GTTs across configured accounts.
+
+**Query parameters**:
+- `accounts` (optional, comma-separated) — filter by account codes. Empty or missing
+  returns GTTs for all accounts.
+
+**Response shape**:
+
+```json
+{
+  "gtts": [
+    {
+      "gtt_id": "kite-gtt-12345",
+      "account": "ZG0790",
+      "broker_id": "kite",
+      "status": "active|triggered|cancelled|expired|disabled",
+      "trigger_type": "two-leg|single",
+      "tradingsymbol": "NIFTY25APR22000CE",
+      "exchange": "NFO",
+      "trigger_values": [22100.5, 21900.0],
+      "last_price": 22050.25,
+      "orders": [{...}, ...],
+      "created_at": "2026-09-30T14:23:45Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+**GttRow fields**:
+- `gtt_id` — broker-assigned GTT identifier (Kite `id` or Dhan/Groww `gtt_id`)
+- `account` — account code (masked for non-admin callers)
+- `broker_id` — "kite", "dhan", or "groww"
+- `status` — "active" (waiting), "triggered" (fired), "cancelled" (manual cancel),
+  "expired", "disabled", or other broker-specific status. Only active GTTs count
+  toward the OrderBook GTT chip.
+- `trigger_type` — "two-leg" (OCO: TP and SL) or "single" (TP-only or SL-only)
+- `tradingsymbol`, `exchange` — the contract identifier
+- `trigger_values` — array of threshold prices (one for single, two for OCO)
+- `last_price` — most recent LTP (informational; helps operator verify the trigger)
+- `orders` — nested array of order objects (raw broker shape) that fire when
+  this GTT triggers
+- `created_at` — when the GTT was placed (ISO 8601 UTC timestamp)
+
+**Error handling**:
+- Per-account broker failures (timeout, HTTP 500, network) return an empty array
+  for that account only — never blank the entire response (staleness-freeze
+  convention). The combined list includes GTTs from all reachable accounts.
+
+**Admin vs non-admin**:
+- Admin callers see unmasked account codes
+- Non-admin callers see masked codes (e.g., ZG0790 → ZG####)
+
+**Caching**:
+- 10-second TTL cache on the combined result set. `POST /api/orders/gtts/{gtt_id}/cancel`
+  invalidates the cache immediately, so the cancel result shows within the next list call.
+
+### POST /api/orders/gtts/{gtt_id}/cancel
+
+**Purpose**: Cancel one GTT at the broker.
+
+**Query parameters (required)**:
+- `account` (query string) — account code owning the GTT
+
+**Query parameters (optional)**:
+- `exchange` (query string) — exchange code. Groww requires this to resolve the
+  segment; Kite/Dhan may not need it. Include it when known.
+
+**Response shape**:
+
+```json
+{
+  "gtt_id": "kite-gtt-12345"
+}
+```
+
+**Error codes**:
+- **400 Bad Request** — invalid gtt_id format, broker rejection, invalid exchange hint
+- **404 Not Found** — account code doesn't exist or not configured
+- **501 Not Implemented** — broker adapter hasn't implemented cancel_gtt
+- **500 Internal Server Error** — broker API failure or timeout
+
+**Admin guard**: Only designated, admin, trader, or risk roles can cancel; demo and
+partner roles get 403 Forbidden.
+
+**Logging**: Cancel is logged to audit log as `category='gtt.cancelled'` with
+masked account code.
+
+### Broker adapter requirements
+
+Every Broker subclass must implement:
+- `get_gtts() → list[dict]` — return raw broker GTT rows. Row shape varies:
+  - Kite SDK: fields nested under `condition` dict
+  - Dhan/Groww: fields at top level (flattened "Kite shape")
+  - The API normaliser `_normalize_gtt_row` reconciles both shapes
+- `cancel_gtt(gtt_id: str, exchange: Optional[str]) → str` — cancel the GTT
+  at the broker; return the cancelled gtt_id as confirmation. Raise ValueError
+  on bad input; raise NotImplementedError if the broker doesn't support GTT cancel.
+
+---
+
+## 10. Test Coverage Map
 
 ### Backend
 
@@ -235,6 +349,8 @@ attached_gtts_json to see which GTTs landed.
 - `test_template_plan_resolve.py` — TP/SL trigger calculation, lot_size propagation
 - `test_g1_guard_gtt.py` — lot-multiple validation, error return on failure
 - `test_trail_stop_modification.py` — ratcheting SL trigger on fixed 30s interval
+- `test_gtts_listing_api.py` — listing GTTs across accounts, filtering, normalization
+- `test_gtts_cancel_api.py` — cancelling standalone GTTs, error codes (404/501/400)
 
 ### Frontend
 
@@ -247,4 +363,5 @@ attached_gtts_json to see which GTTs landed.
 
 | Date | Change |
 |---|---|
+| 2026-09-30 | Added section 9: standalone GTT listing/cancel API, GttRow schema, broker adapter contract |
 | 2026-07-11 | v1.0 initial spec; G1 guard + qty translation behavior documented |

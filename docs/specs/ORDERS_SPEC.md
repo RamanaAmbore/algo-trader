@@ -87,8 +87,8 @@ across close/reopen on the same page. Switching pages resets to `defaultTab`.
 **Components**:
 1. **Order Entry card** (bucket-card-entry) — embedded SymbolPanel with
    Ticket/Chain/Command tabs, Account selector, Mode pill, Chase controls
-2. **Status strip** — 5-card counter grid (All / Open / Filled / Rejected /
-   Cancelled) that uncollapse the Activity card when clicked
+2. **Status strip** — 5-chip counter grid (Chase / Open / Filled /
+   Rejected-Cancelled / GTT) with first-non-zero-count default display
 3. **Chases card** (bucket-card-chase) — active chase orders with Kill button;
    hides when no chases running
 4. **Activity card** (bucket-card-activity) — 6-tab LogPanel (Orders / Agents /
@@ -100,7 +100,7 @@ or share `/orders?symbol=BANKNIFTY26JUN50000CE&exchange=NFO`.
 
 **Activity card filters**:
 - Account multi-select (via ActivityHeaderFilters)
-- Status histogram filter (All / Open / Filled / Rejected / Cancelled)
+- Status histogram filter (Chase / Open / Filled / Rejected-Cancelled / GTT, default first-non-zero)
 - Level filter (All / Error / Warning / Info)
 - Inline Modify / Cancel / Reconcile buttons on OrderCard rows
 
@@ -620,16 +620,41 @@ POST /api/orders/basket/margin
 
 ### Status Histogram Filter
 
-**Above grid**: 5 status cards (All / Open / Filled / Rejected / Cancelled)
-- Click any card to filter the grid to that status
-- Card styling: gradient + status-colored border + count number (bold 1.3rem)
-- Hover: border opacity increases + card lifts 1px
-- Selected: 2px amber inset ring on top
+**Above grid**: 5 status chips (Chase / Open / Filled / Rejected-Cancelled / GTT)
+- **Chase** — orders with active cancel-and-replace attempts in progress
+- **Open** — orders placed but not yet filled (includes PENDING states)
+- **Filled** — terminal filled orders (broker COMPLETE or platform FILLED)
+- **Rejected-Cancelled** — merged chip for both rejection and cancellation (red styling)
+- **GTT** — count of standalone broker GTTs (distinct from template-attached GTTs)
+
+**Default behavior** (v2026-09-30): When the page first loads or is refreshed, exactly
+ONE chip is highlighted and its rows displayed — the first chip (in order Chase → Open
+→ Filled → Rejected-Cancelled → GTT) whose count is non-zero. This avoids a "union
+of everything" view and makes the first non-empty category obvious at a glance.
+
+**Explicit selection**: Clicking any chip switches to exclusive-filter mode for that
+category. The selection persists until another chip is clicked or the page reloads.
+
+**Chip styling**:
+- Chase (sky-blue): active chases waiting for fill
+- Open (amber): orders resting at broker, may fill
+- Filled (emerald): completed and terminal
+- Rejected-Cancelled (red): blocked or cancelled
+- GTT (cyan): broker-resting standalone GTTs (no corresponding AlgoOrder)
+
+**Count accuracy**:
+- Chase, Open, Filled, Rejected-Cancelled: synced with AlgoOrder rows and postbacks
+- GTT: live count of active-status GTTs from `GET /api/orders/gtts/` (10s cache);
+  excludes triggered/cancelled/expired/disabled GTTs (only "active" rows count)
+
+**Card styling**: gradient + status-colored border + count number (bold 1.3rem).
+Hover: border opacity increases + card lifts 1px. Selected: 2px amber inset ring on top
 
 ### Filters (ActivityHeaderFilters)
 
 1. **Account multi-select** — checkboxes for each account
-2. **Status filter** — All / Open / Filled / Rejected / Cancelled chips
+2. **Status filter** — Chase / Open / Filled / Rejected-Cancelled / GTT chips
+   (same as the Status Strip above; clicking here has the same effect)
 3. **Level filter** — All / Error / Warning / Info (for log entries)
 4. **Mode filter** — SIM / PAPER / LIVE / SHADOW / REPLAY pills
 
@@ -1368,5 +1393,6 @@ List concrete things to verify in an audit:
 
 | Date | Change |
 |---|---|
+| 2026-09-30 | v2.1 Updated Status Histogram Filter: merged Rejected/Cancelled chip, added GTT chip (standalone broker GTTs), documented default-first-non-zero-chip behavior (reactive), kept exclusive-filter selection mode |
 | 2026-07-11 | v2.0 complete rewrite from codebase audit; added Surface Variants, State Machine, Field Validation, OrderCard, Timeline Drawer, Audit Cases, Test Map; expanded Preflight, Basket, API Contract sections; F&O lot convention detailed |
 | 2026-07-11 | v1.0 initial spec from codebase audit; lot convention, prefill contract, basket execution |
