@@ -1402,3 +1402,49 @@ test.describe('Template expand toggle — pure-CSS chevron, not tiny ▴/▾ or 
     expect(TEMPLATE_BAR).not.toMatch(/\.oes-tpl-expand-btn:not\(\.oes-tpl-expand-open\)/);
   });
 });
+
+test.describe('TP%/SL% param inputs restyled to match the order ticket price field (2026-09-30)', () => {
+  // Operator: "make tp% and sl% values... look like price values in
+  // order ticket" — was a semi-transparent dark background with a
+  // strong amber border + inset glow (rgba(12,18,32,0.82) /
+  // rgba(251,191,36,0.70) / box-shadow glow), visually a different
+  // "kind" of input from OrderTicket.svelte's .ot-input. Matched to
+  // .ot-input's own solid #1d2a44 background and subtle 0.25-alpha
+  // amber border, no glow.
+  test('.oes-basket-tpl-param > input uses solid #1d2a44 background and subtle 0.25-alpha amber border, no inset glow', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-basket-tpl-param\s*>\s*input\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-basket-tpl-param > input rule').not.toBe('');
+    expect(rule).toMatch(/background:\s*#1d2a44/);
+    expect(rule).toMatch(/border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.25\)/);
+    expect(rule).not.toMatch(/background:\s*rgba\(12,\s*18,\s*32/);
+    expect(rule).not.toMatch(/border:\s*1px solid rgba\(251,\s*191,\s*36,\s*0\.70\)/);
+    expect(rule).not.toMatch(/box-shadow:\s*inset/);
+  });
+
+  test('.oes-basket-tpl-param > input height is UNCHANGED (still 1.4rem) — matching the toolbar-controls-same-height invariant, not .ot-input\'s own min-height: 1.7rem', () => {
+    const rule = TEMPLATE_BAR.match(/\.oes-basket-tpl-param\s*>\s*input\s*\{[\s\S]*?\n  \}/)?.[0] ?? '';
+    expect(rule, '.oes-basket-tpl-param > input rule').not.toBe('');
+    expect(rule).toMatch(/height:\s*1\.4rem/);
+    expect(rule).not.toMatch(/min-height:\s*1\.7rem/);
+  });
+
+  test('live: toolbar controls (Select trigger / Template toggle / DTE chip / TP% input) still all render at the same height after the restyle', async ({ page }) => {
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChain(page);
+
+    const toggle = page.locator('.oes-tpl-button').first();
+    await expect(toggle).toBeVisible({ timeout: 10_000 });
+    const mountedActive = await toggle.evaluate((el) => el.classList.contains('active'));
+    if (!mountedActive) {
+      await toggle.click();
+      await page.waitForTimeout(300);
+    }
+    const heights = await page.evaluate(() => {
+      const sels = ['.oct-expiry-pick .rbq-select-trigger', '.oes-tpl-button', '.oct-expiry-dte', '.oes-basket-tpl-param > input'];
+      return sels.map((s) => document.querySelector(s)?.getBoundingClientRect().height).filter((h) => h != null);
+    });
+    expect(heights.length, 'all 4 toolbar controls must be present').toBe(4);
+    const maxDelta = Math.max(...heights) - Math.min(...heights);
+    expect(maxDelta, `toolbar control heights should be within 1px of each other: ${JSON.stringify(heights)}`).toBeLessThanOrEqual(1);
+  });
+});

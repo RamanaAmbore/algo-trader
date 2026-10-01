@@ -488,27 +488,35 @@
   .oes-tpl-param-err > span {
     color: rgba(248, 113, 113, 0.90);
   }
-  /* On-fill param inputs — amber accent on dark navy. The new
-     container gradient already carries an amber wash, so the input
-     borders use a solid amber that pops against the gradient and
-     reads as algo-primary. Focus state inverts to bright amber with
-     an inset glow so the active field jumps out. */
+  /* On-fill param inputs — restyled to match the order ticket's price
+     field (.ot-input, OrderTicket.svelte) (2026-09-30, operator:
+     "make tp% and sl% values... look like price values in order
+     ticket") — was a semi-transparent dark background with a strong
+     amber border + inset glow, visually a different "kind" of input
+     from the ticket's own Price/Trigger/Lots fields. Height
+     deliberately UNCHANGED (still 1.4rem) — that value is part of a
+     separately tested "all toolbar controls share one height tier"
+     invariant (Fix #3, this file's own CSS further down + the live
+     test asserting Select trigger/Template toggle/DTE chip/this input
+     all render at the same height); matching .ot-input's own
+     min-height: 1.7rem here would break that tier. Hover/focus states
+     intentionally left as-is — only the RESTING look (what the operator
+     called "values") was in scope. */
   .oes-basket-tpl-param > input {
     width: 3.6rem;
     height: 1.4rem;
     padding: 0 0.35rem;
-    background: rgba(12, 18, 32, 0.82);
-    border: 1px solid rgba(251, 191, 36, 0.70);
+    background: #1d2a44;
+    border: 1px solid rgba(251, 191, 36, 0.25);
     border-radius: 3px;
     /* A3 (2026-09 audit) — same as .oes-basket-tpl-name above. */
     color: var(--algo-slate);
     font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 600;
+    font-size: var(--fs-md);
     text-align: right;
     box-sizing: border-box;
     font-variant-numeric: tabular-nums;
-    box-shadow: inset 0 0 0 1px rgba(251, 191, 36, 0.10);
+    color-scheme: dark;
     transition: border-color 0.12s, background 0.12s, box-shadow 0.12s;
   }
   .oes-basket-tpl-param > input:hover {
