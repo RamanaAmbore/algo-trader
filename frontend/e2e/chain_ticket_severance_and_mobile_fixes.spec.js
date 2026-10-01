@@ -99,6 +99,22 @@ async function _seedNiftyAndOpenChain(page) {
 }
 
 /**
+ * Same navigation as `_seedNiftyAndOpenChain`, but waits for a real,
+ * fully-loaded strike chain (>=15 rows) before returning — needed for the
+ * inline-mode height-cap regression test below, which only reproduces with
+ * genuine chain content (an empty/loading chain gives `.oct-root` nothing
+ * to overflow, making the comparison meaningless).
+ * @param {import('@playwright/test').Page} page
+ */
+async function _seedNiftyAndOpenChainWithRows(page) {
+  await _seedNiftyAndOpenChain(page);
+  await expect(async () => {
+    const n = await page.locator('.chain-row').count();
+    expect(n, 'strike rows loaded').toBeGreaterThanOrEqual(15);
+  }).toPass({ timeout: 20_000 });
+}
+
+/**
  * Open the REAL popup order-entry modal (`.canonical-modal-panel` +
  * `.oes-modal`, a genuinely viewport-bounded fixed-height box — NOT the
  * always-visible `inline` SymbolPanel that `_seedNiftyAndOpenChain` above
@@ -275,6 +291,61 @@ test.describe('Ticket/Chain template severance', () => {
 });
 
 test.describe('Mobile chain height cap REMOVED (2026-09-30 audit) + desktop row gap', () => {
+  // REGRESSION FOLLOW-UP (2026-09-30, same day) — removing
+  // OptionChainTab.svelte's own max-height cap was correct for the MODAL
+  // path (verified below: live popup measurement showed .chain-grid-wrap
+  // stays ~140-290px with or without the cap, because `.oes-body`'s own
+  // fixed-height flex-shrink + overflow-y:auto one level up already
+  // bounds it there) but broke the INLINE path (`/orders` page's Order
+  // Entry card, `.oes-modal-inline`), which is DELIBERATELY content-driven
+  // with no fixed-height ancestor. Without any cap at all, a real NIFTY
+  // chain rendered at its full ~2780px content height right in the page
+  // flow, burying the Chases/Order Activity cards ~2500px further down
+  // the page than before — operator-reported as "the chain is fully
+  // taking available height of viewport ... order status chips and cards
+  // are not visible. it is only on mobile." The existing live popup test
+  // below never caught this: its own comment (`_openPopupChainOnDashboard`
+  // docblock) explicitly flags the inline panel as architecturally
+  // different and "trivially satisfied" by the same assertion — correct,
+  // but it meant the inline path had NO regression coverage of its own.
+  // Fix: SymbolPanel.svelte re-introduces a mobile-only max-height cap
+  // (16rem, matching the original pre-audit value) scoped to
+  // `.oes-modal-inline` specifically — the modal path keeps the full-
+  // height improvement from this same commit.
+  test('live: inline /orders Chain tab stays height-capped on mobile — Activity card lands near the fold, not thousands of px down', async ({ page }) => {
+    await page.setViewportSize({ width: 375, height: 667 });
+    await loginAsAdmin(page);
+    await _seedNiftyAndOpenChainWithRows(page);
+
+    const wrap = page.locator('.chain-grid-wrap').first();
+    await expect(wrap).toBeVisible({ timeout: 10_000 });
+    const wrapBox = await wrap.boundingBox();
+    expect(wrapBox, '.chain-grid-wrap box').toBeTruthy();
+    // The regression ballooned this to ~2780px (full table content height,
+    // no cap at all). A capped, scrollable grid must stay well under that.
+    expect(wrapBox.height, 'chain-grid-wrap must stay capped, not grow to full table height')
+      .toBeLessThanOrEqual(300);
+
+    const scrollInfo = await wrap.evaluate((el) => ({ scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }));
+    expect(scrollInfo.scrollHeight, 'grid content must exceed its own box (real internal scroll), proving the cap is active, not coincidental')
+      .toBeGreaterThan(scrollInfo.clientHeight);
+
+    // The Activity card (OrderBook — "order status chips and cards" in
+    // the operator's report) is a sibling further down the /orders page,
+    // not nested inside the Order Entry card. Confirm it lands at a
+    // reachable position, not buried behind thousands of px of chain grid.
+    const activity = page.locator('.bucket-card-activity').first();
+    await expect(activity).toBeVisible({ timeout: 10_000 });
+    const activityBox = await activity.boundingBox();
+    expect(activityBox, '.bucket-card-activity box').toBeTruthy();
+    // The regression pushed this to y≈3126 on a 667px-tall viewport
+    // (page scrollHeight 3352px). A bounded chain keeps it within a
+    // couple of screenfuls of the top, not buried behind ~5 phone-screens
+    // of near-empty chain-grid space.
+    expect(activityBox.y, 'Activity card must not be buried thousands of px down the page')
+      .toBeLessThanOrEqual(900);
+  });
+
   // SUPERSEDED — the Templ toggle this cap protected moved into the
   // expiry toolbar row ABOVE the grid the same day (2026-09-30), so the
   // cap had nothing left to protect. It was silently wasting ~200px of
@@ -300,14 +371,35 @@ test.describe('Mobile chain height cap REMOVED (2026-09-30 audit) + desktop row 
     expect(CHAIN_TAB).not.toMatch(/@media \(max-width: 760px\) \{\s*\.chain-grid-wrap \{/);
   });
 
-  test('live: .chain-grid-wrap resolves max-height: none at a mobile viewport (412px)', async ({ page }) => {
+  // UPDATED (2026-09-30, same-day regression fix) — this test originally
+  // asserted `max-height: none` using `_seedNiftyAndOpenChain`, which
+  // drives the INLINE `/orders` panel, not the modal. That assertion was
+  // itself the bug: OptionChainTab.svelte's own cap is correctly gone
+  // (still true, and still asserted via the source-scan test above), but
+  // the INLINE path needed its OWN cap re-introduced one level up in
+  // SymbolPanel.svelte (`.oes-modal-inline .oes-body :global(.chain-grid-
+  // wrap)`) once it turned out that path has no fixed-height ancestor to
+  // bound it — see the "live: inline /orders Chain tab stays height-
+  // capped..." test above for the full regression story. Split into two
+  // explicit assertions so neither mode's invariant masks the other's.
+  test('live: .chain-grid-wrap resolves max-height: none in MODAL mode at a mobile viewport (412px)', async ({ page }) => {
+    await page.setViewportSize({ width: 412, height: 919 });
+    await loginAsAdmin(page);
+    await _openPopupChainOnDashboard(page);
+
+    const wrap = page.locator('.chain-grid-wrap').first();
+    await expect(wrap).toBeVisible({ timeout: 15_000 });
+    await expect(wrap).toHaveCSS('max-height', 'none');
+  });
+
+  test('live: .chain-grid-wrap resolves a capped max-height (256px) in INLINE /orders mode at a mobile viewport (412px)', async ({ page }) => {
     await page.setViewportSize({ width: 412, height: 919 });
     await loginAsAdmin(page);
     await _seedNiftyAndOpenChain(page);
 
     const wrap = page.locator('.chain-grid-wrap').first();
     await expect(wrap).toBeVisible({ timeout: 15_000 });
-    await expect(wrap).toHaveCSS('max-height', 'none');
+    await expect(wrap).toHaveCSS('max-height', '256px');
   });
 
   // Mandatory real height-comparison — a source/flex-value check alone

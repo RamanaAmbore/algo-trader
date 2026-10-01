@@ -4297,6 +4297,40 @@
       flex: 0 1 auto;
     }
   }
+  /* REGRESSION FIX (2026-09-30, mobile "Chain takes full viewport")  —
+     OptionChainTab.svelte's own mobile max-height cap on
+     .chain-grid-wrap was removed the same day (see that file's
+     .chain-grid-wrap comment) on the theory that the MODAL path's own
+     .oes-body (fixed-height `.canonical-modal-panel`, flex:1 1 auto +
+     min-height:0 + overflow-y:auto one level up) already bounds the
+     grid, so the per-grid cap was redundant there — true, verified live
+     (popup chain-grid-wrap stayed ~140-290px with or without the cap,
+     submit/chase/bottom-panel all stayed visible either way).
+     That reasoning does NOT hold for INLINE mode (`.oes-modal-inline`,
+     used by the /orders page's Order Entry card): that mode is
+     DELIBERATELY content-driven with no fixed-height ancestor (see
+     `.oes-modal.oes-modal-inline`'s own comment — an explicit min-height
+     there previously broke the page's natural scroll, so it was
+     switched to grow with content on purpose). With no outer cap AND no
+     per-grid cap, a real NIFTY chain's ~100+ rows rendered at full
+     content height (measured live: .chain-grid-wrap 2780px,
+     .bucket-card-entry 3022px at 375x667/812), shoving the Chases /
+     Order Activity cards further down the PAGE than the operator could
+     reasonably scroll to find them. Restoring a cap scoped to inline
+     mode only (never touching the modal path) fixes this without
+     reverting the modal-side improvement. 16rem matches the original
+     (pre-audit) cap value deliberately, not a new tuning — measured
+     live at 375x667 (the shortest supported phone height): a larger
+     cap (tried 20rem) left .bucket-card-activity's top edge landing
+     exactly AT the viewport fold (1px of it visible); 16rem leaves a
+     real, if modest, sliver of it on-screen without any scroll at
+     all, while still giving ~6-7 strike rows (vs the old 5) before the
+     operator needs to scroll inside the grid itself. */
+  @media (max-width: 720px) {
+    .oes-modal-inline .oes-body :global(.chain-grid-wrap) {
+      max-height: 16rem;
+    }
+  }
 
   /* Ticket body — OrderTicket renders its OWN overlay + modal shell,
      which conflicts when nested inside oes-modal. We override those
