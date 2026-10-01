@@ -240,6 +240,15 @@
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
+    /* overflow: hidden (2026-09-30, operator: "extend the header in
+       order ticket end to end. there is a gap header in order
+       ticket. remove it.") — clips .ot-depth-header-bg's box-shadow
+       bleed trick (see that rule below) exactly at this card's own
+       edges, giving the header band a genuine "end to end" width
+       regardless of how narrow the actual centered bid/ask columns
+       are. Safe here: .ot-depth has no popovers/tooltips of its own
+       that would need to escape this boundary. */
+    overflow: hidden;
   }
   .ot-depth-h {
     display: flex;
@@ -321,7 +330,13 @@
     font-size: var(--fs-sm);
   }
   .ot-depth-label {
-    font-size: var(--fs-2xs);
+    /* font-size/weight matched to Chain's header typography
+       (.chain-th-ce/-pe/-strike, OptionChainTab.svelte) — was --fs-2xs
+       with no explicit weight (2026-09-30, operator: "order ticket
+       header font decoration should be similar to chain header
+       decoration"). */
+    font-size: var(--fs-sm);
+    font-weight: 700;
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
@@ -425,8 +440,45 @@
   .ot-depth-header-bg {
     grid-column: 1 / -1;
     grid-row: 1;
+    /* position: relative anchors the ::before bleed layer below. */
+    position: relative;
     background: var(--card-bg-elevated);
     border-bottom: 1px solid rgba(251,191,36,0.40);
+  }
+  /* Full-bleed background layer (2026-09-30, operator: "extend the
+     header in order ticket end to end. there is a gap header in
+     order ticket. remove it.") — root cause: .ot-depth-grid stretches
+     to fill .ot-depth's full width (default flex cross-axis stretch),
+     but grid-template-columns sizes the 4 columns to their own
+     content (minmax(3.4rem, max-content)) and centers that narrower
+     group via justify-content: center, per the earlier, deliberate
+     "columns centered, not expanding to available width" decision.
+     .ot-depth-header-bg's grid-column: 1/-1 only spans those 4
+     EXPLICIT tracks, not the grid container's extra centering gutter
+     on either side — so on a wide ticket panel the header band could
+     end up covering only a narrow sliver in the middle, nowhere near
+     "end to end" (measured live: a 267px header band inside a 1349px
+     grid, ~540px of uncovered gap on each side). A plain CSS grid
+     item can't reach past its own track span, so this can't be fixed
+     by adjusting grid-column alone.
+     Fix: a ::before pseudo-element, absolutely positioned relative to
+     THIS element (not confined by the grid-track system at all),
+     bled ±9999px horizontally — clipped at .ot-depth's own edges via
+     that element's `overflow: hidden` (above) — giving the
+     background+border a genuine full-card width regardless of how
+     narrow the actual centered Bid/Ask columns are. A plain
+     background-color box-shadow bleed trick doesn't work here since
+     --card-bg-elevated is a gradient, not a solid color (box-shadow's
+     color argument can't be a gradient); a real ::before background
+     has no such restriction. top/bottom: 0 inherits this element's
+     own height, which already correctly matches grid-row 1 via
+     normal grid sizing — only the width axis needed fixing. */
+  .ot-depth-header-bg::before {
+    content: '';
+    position: absolute;
+    inset: 0 -9999px;
+    background: var(--card-bg-elevated);
+    border-bottom: inherit;
   }
   .ot-depth-cell {
     text-align: right;

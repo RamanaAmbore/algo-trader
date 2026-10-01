@@ -192,7 +192,7 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(colors[0], '"Bid qty"/"Bid" must differ from "Ask"/"Ask qty"').not.toBe(colors[2]);
   });
 
-  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border, end-to-end (2026-09-30 follow-up, restyled to match Chain same day)', () => {
+  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border (2026-09-30 follow-up, restyled to match Chain same day)', () => {
     // A per-label background/border would leave visible gaps at the
     // grid's column-gap seams (columns are content-sized, not
     // stretched) — a single element spanning grid-column: 1 / -1 is
@@ -212,6 +212,82 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
     expect(body).toMatch(/background:\s*var\(--card-bg-elevated\)/);
     expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.40\)/);
+  });
+
+  test('.ot-depth-header-bg::before bleeds the background+border ±9999px, clipped by .ot-depth\'s own overflow:hidden — genuinely "end to end" (2026-09-30, operator: "extend the header in order ticket end to end. there is a gap header in order ticket. remove it.")', () => {
+    // Root cause: .ot-depth-grid stretches to .ot-depth's full width
+    // (flex default cross-axis stretch), but the 4 columns are
+    // content-sized + centered (justify-content: center) inside it,
+    // per the earlier, deliberate "columns centered, not expanding to
+    // available width" decision. .ot-depth-header-bg's grid-column:
+    // 1/-1 only spans those 4 EXPLICIT tracks, not the grid's extra
+    // centering gutter — live-measured: a 267px header band inside a
+    // 1349px grid, ~540px of uncovered gap on each side. A plain grid
+    // item can't reach past its own track span, so a ::before
+    // pseudo-element (NOT confined by the grid-track system) bleeds
+    // the background/border far past both sides, clipped at
+    // .ot-depth's real edges by its own overflow: hidden.
+    const bgRule = ruleBody(content, '.ot-depth-header-bg') ?? '';
+    expect(bgRule, '.ot-depth-header-bg rule').not.toBe('');
+    expect(bgRule).toMatch(/position:\s*relative/);
+    const beforeRule = content.match(/\.ot-depth-header-bg::before\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(beforeRule, '.ot-depth-header-bg::before rule').not.toBe('');
+    expect(beforeRule).toMatch(/position:\s*absolute/);
+    expect(beforeRule).toMatch(/inset:\s*0\s+-9999px/);
+    expect(beforeRule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
+    expect(beforeRule).toMatch(/border-bottom:\s*inherit/);
+    const depthRule = ruleBody(content, '.ot-depth') ?? '';
+    expect(depthRule, '.ot-depth rule').not.toBe('');
+    expect(depthRule).toMatch(/overflow:\s*hidden/);
+  });
+
+  test('live: the header band\'s background reaches .ot-depth\'s own left/right edges, not just the centered column group', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(800);
+
+    const depthEl = page.locator('.ot-depth').first();
+    const headerBg = page.locator('.ot-depth-header-bg').first();
+    const headerBgVisible = await headerBg.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!headerBgVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-header-bg not rendered (no quote)' });
+      return;
+    }
+    // Sample computed background-color at pixels near .ot-depth's own
+    // left and right edges (well outside the narrow centered column
+    // group) — if the bleed is working, elementFromPoint there should
+    // resolve back to .ot-depth-header-bg's own painted area (the
+    // ::before layer), not fall through to .ot-depth's plain card
+    // background one layer behind it.
+    const result = await depthEl.evaluate((depth) => {
+      const dr = depth.getBoundingClientRect();
+      const hr = depth.querySelector('.ot-depth-header-bg').getBoundingClientRect();
+      const y = hr.top + hr.height / 2;
+      const nearLeftX = dr.left + 3;
+      const nearRightX = dr.right - 3;
+      const elAtLeft = document.elementFromPoint(nearLeftX, y);
+      const elAtRight = document.elementFromPoint(nearRightX, y);
+      return {
+        leftIsHeaderBg: !!elAtLeft && (elAtLeft === depth.querySelector('.ot-depth-header-bg') || elAtLeft.closest('.ot-depth-header-bg') === depth.querySelector('.ot-depth-header-bg')),
+        rightIsHeaderBg: !!elAtRight && (elAtRight === depth.querySelector('.ot-depth-header-bg') || elAtRight.closest('.ot-depth-header-bg') === depth.querySelector('.ot-depth-header-bg')),
+      };
+    });
+    expect(result.leftIsHeaderBg, 'near-left edge must land on .ot-depth-header-bg (bleed reaches it)').toBe(true);
+    expect(result.rightIsHeaderBg, 'near-right edge must land on .ot-depth-header-bg (bleed reaches it)').toBe(true);
+  });
+
+  test('.ot-depth-label font-size/weight matches Chain\'s header typography (2026-09-30, operator: "order ticket header font decoration should be similar to chain header decoration")', () => {
+    const body = ruleBody(content, '.ot-depth-label') ?? '';
+    expect(body, '.ot-depth-label rule').not.toBe('');
+    expect(body).toMatch(/font-size:\s*var\(--fs-sm\)/);
+    expect(body).toMatch(/font-weight:\s*700/);
+    expect(body).not.toMatch(/font-size:\s*var\(--fs-2xs\)/);
   });
 
   test('.ot-depth-label/.ot-depth-bid/.ot-depth-ask carry a subtle Bid|Ask divider, matching Chain\'s column-border treatment (2026-09-30, operator: "apply column borders of chain to quote depth headings and quotes"; fixed to nth-of-type same day per the "hidden header" bug above)', () => {
