@@ -262,6 +262,17 @@ async def _chase_terminal_update_db(
                         from backend.api.routes.orders_postback import _pb_write_ledger_fills
                         await _pb_write_ledger_fills(_s, [row])
                         await _s.commit()
+                        # Gap fix (2026-10): chase is the primary
+                        # fill-detection path for Dhan/Groww (whose
+                        # postback delivery is unreliable/manually
+                        # configured — see CLAUDE.md) and can also race
+                        # ahead of a Kite postback. Without this, a
+                        # chase-filled order's WS tick subscription
+                        # silently waited for the next _task_performance
+                        # cycle (up to 5 min) instead of becoming
+                        # symbol-addressable immediately.
+                        from backend.api.routes.orders import _subscribe_filled_pairs
+                        await _subscribe_filled_pairs([(row.symbol, row.exchange)])
             # Snapshot AFTER the optional mutation + commit so the
             # downstream attach paths read post-commit values.
             _row_snap = _chase_snapshot_algo_row(row, broker_order_id)

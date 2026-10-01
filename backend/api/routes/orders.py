@@ -1341,30 +1341,78 @@ def _groww_parse_payload(body: dict) -> tuple[str, str, str, str, object, object
     return order_id, status, symbol, txn, qty, price
 
 
+async def _subscribe_filled_pairs(pairs: "list[tuple[str, str]]") -> None:
+    """Wake the performance task and subscribe newly-filled instruments'
+    ticker tokens so live ticks are addressable by symbol immediately,
+    instead of waiting up to 5 minutes for the next `_task_performance`
+    cycle's own `subscribe_with_sym()` call.
+
+    Shared by every fill-detection path that can mark an AlgoOrder row
+    FILLED outside — or in addition to — the primary Kite postback flow:
+    Dhan/Groww postback, the open-order-watchdog reconcile sweep, the
+    admin/per-card reconcile endpoints, and chase's own terminal-fill
+    update. `pairs` is a list of (tradingsymbol, exchange) in Kite
+    canonical form (matches `AlgoOrder.symbol` / `AlgoOrder.exchange`
+    and the Dhan/Groww-normalised tradingsymbol).
+
+    Deliberately uses `subscribe_with_sym()`, NOT the bare `subscribe()`.
+    Plain `subscribe()` registers the token with the ticker's live socket
+    so Kite starts streaming it, but it does NOT populate
+    `_token_to_sym` / `_sym_to_token` — every tick is then published to
+    the SSE bus with `sym=""`, and every symbol-keyed frontend consumer
+    (`symbolStore`'s `getSnapshot(sym)`) silently drops it. The tick only
+    becomes usable once the next `_task_performance` cycle's
+    `subscribe_with_sym()` backfills the symbol mapping — i.e. the exact
+    "lags up to 5 minutes" symptom this function exists to close.
+
+    Best-effort: kick_performance() always fires on a non-empty call;
+    token resolution + subscribe is skipped (not raised) on any failure
+    or when a pair can't be resolved to a token.
+    """
+    try:
+        from backend.api.background import kick_performance
+        kick_performance()
+        if not pairs:
+            return
+        from backend.api.persistence.instruments_store import get_or_fetch_instruments
+        from backend.brokers.kite_ticker import get_ticker
+
+        _ticker = get_ticker()
+        _tok_cache: dict[str, dict] = {}
+        batch: list[tuple[int, str]] = []
+        for sym, exch in pairs:
+            sym_u  = str(sym or "").upper()
+            exch_u = str(exch or "").upper()
+            if not sym_u or not exch_u:
+                continue
+            tok_map = _tok_cache.get(exch_u)
+            if tok_map is None:
+                tok_map = await get_or_fetch_instruments(exch_u)
+                _tok_cache[exch_u] = tok_map
+            tok = tok_map.get((sym_u, exch_u))
+            if tok:
+                batch.append((int(tok), sym_u))
+        if batch:
+            _ticker.subscribe_with_sym(batch)
+            logger.info(
+                f"post-fill resubscribe: {[s for _, s in batch]}"
+            )
+    except Exception as _sub_exc:
+        logger.warning(f"post-fill resubscribe failed: {_sub_exc}")
+
+
 async def _groww_handle_complete_fill(body: dict, symbol: str) -> None:
     """Wake the performance task and subscribe the filled instrument's ticker token.
 
     Called only when the mapped kite_status is ``COMPLETE``.
     Groww exchange strings are normalised to Kite canonical names via
-    ``_GROWW_EXCHANGE_TO_KITE`` before the instrument lookup.
+    ``_GROWW_EXCHANGE_TO_KITE`` before the instrument lookup. Delegates
+    to `_subscribe_filled_pairs` (shared with the reconcile/chase gap
+    fixes) for the actual kick + resolve + subscribe_with_sym.
     """
-    from backend.api.background import kick_performance
-    from backend.api.persistence.instruments_store import get_or_fetch_instruments
-    from backend.brokers.kite_ticker import get_ticker
-
-    kick_performance()
     raw_exchange  = str(body.get("exchange") or body.get("segment") or "").upper()
     kite_exchange = _GROWW_EXCHANGE_TO_KITE.get(raw_exchange, raw_exchange)
-    groww_symbol  = str(symbol).upper()
-    if groww_symbol and kite_exchange:
-        tok_map = await get_or_fetch_instruments(kite_exchange)
-        tok = tok_map.get((groww_symbol, kite_exchange))
-        if tok:
-            get_ticker().subscribe([tok])
-            logger.info(
-                f"groww postback: subscribed token {tok} for"
-                f" {groww_symbol}/{kite_exchange} after COMPLETE fill"
-            )
+    await _subscribe_filled_pairs([(symbol, kite_exchange)])
 
 
 class OrdersController(Controller):
@@ -1660,6 +1708,17 @@ class OrdersController(Controller):
             # the committed FILLED state.
             for _r in _attach_queue:
                 _maybe_fire_template_attach_for_reconcile(_r)
+            # Gap fix (2026-10): this sweep can mark a row FILLED without
+            # ever going through the primary postback flow (which already
+            # kicks the performance task + resubscribes the ticker on
+            # fill) — without this, a newly-filled position's WS tick
+            # subscription silently waits for the next _task_performance
+            # cycle (up to 5 min). _attach_queue already holds exactly
+            # the rows that just transitioned to FILLED.
+            if _attach_queue:
+                await _subscribe_filled_pairs(
+                    [(_r.symbol, _r.exchange) for _r in _attach_queue]
+                )
 
         return {"scanned": len(rows), "updated": updated, "missing": missing}
 
@@ -1708,6 +1767,15 @@ class OrdersController(Controller):
             # new session reads the committed FILLED state.
             if updated and r is not None and _attach_after_commit:
                 _maybe_fire_template_attach_for_reconcile(r)
+            # Gap fix (2026-10): same as the admin sweep above — a
+            # per-card reconcile can flip a row to FILLED with no postback
+            # involved. Gate on r.status == "FILLED" directly (not
+            # _attach_after_commit, which is False whenever the broker
+            # order dict lacks average_price — see
+            # _rco_reconcile_apply_target — so it would otherwise miss
+            # some genuine FILLED transitions).
+            if updated and r is not None and r.status == "FILLED":
+                await _subscribe_filled_pairs([(r.symbol, r.exchange)])
 
         return {
             "broker_order_id": str(broker_order_id),
@@ -2094,19 +2162,8 @@ class OrdersController(Controller):
         try:
             from backend.api.routes.orders_postback import _broker_is_fill_status  # noqa: PLC0415
             if _broker_is_fill_status("dhan", str(body.get("orderStatus") or "")):
-                from backend.api.background import kick_performance
-                kick_performance()
-                if kite_symbol and kite_exchange:
-                    from backend.api.persistence.instruments_store import get_or_fetch_instruments
-                    from backend.brokers.kite_ticker import get_ticker
-                    tok_map = await get_or_fetch_instruments(kite_exchange)
-                    tok = tok_map.get((kite_symbol.upper(), kite_exchange.upper()))
-                    if tok:
-                        get_ticker().subscribe([tok])
-                        logger.info(
-                            f"dhan postback: subscribed token {tok} for"
-                            f" {kite_symbol} after fill"
-                        )
+                _pairs = [(kite_symbol, kite_exchange)] if (kite_symbol and kite_exchange) else []
+                await _subscribe_filled_pairs(_pairs)
         except Exception as _sub_exc:
             logger.warning(f"dhan postback: post-fill subscribe failed: {_sub_exc}")
 

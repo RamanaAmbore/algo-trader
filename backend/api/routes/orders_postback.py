@@ -987,10 +987,20 @@ async def kite_postback_handler(request) -> dict:
 
         # On a completed fill, subscribe the instrument to the ticker so live
         # ticks arrive immediately — independent of the next book-poll cycle.
+        #
+        # Uses subscribe_with_sym (not the bare subscribe()) — plain
+        # subscribe() registers the token with the live socket but does NOT
+        # populate _token_to_sym/_sym_to_token, so each tick publishes to the
+        # SSE bus with sym="" and every symbol-keyed frontend consumer
+        # silently drops it until the next _task_performance cycle's own
+        # subscribe_with_sym() backfills the mapping — i.e. the same
+        # "lags up to 5 minutes" symptom this whole fix exists to close.
         if status == "COMPLETE" and instrument_token:
             try:
                 from backend.brokers.kite_ticker import get_ticker
-                get_ticker().subscribe([int(instrument_token)])
+                get_ticker().subscribe_with_sym(
+                    [(int(instrument_token), str(tradingsymbol or "").upper())]
+                )
                 logger.info(
                     f"Postback: subscribed token {instrument_token} for"
                     f" {tradingsymbol} after COMPLETE fill"

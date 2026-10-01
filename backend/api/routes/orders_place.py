@@ -1967,10 +1967,24 @@ async def _opp_live_handle_success(
     try:
         from backend.brokers.registry import _broker_id_for
         if _broker_id_for(account) in ("dhan", "groww"):
-            from backend.api.routes.orders import _positions_refresh_after_fill
+            from backend.api.routes.orders import (
+                _positions_refresh_after_fill, _subscribe_filled_pairs,
+            )
             _qty_delta = qty * (1 if (side or "").upper() == "BUY" else -1)
             asyncio.create_task(
                 _positions_refresh_after_fill(account, sym, _qty_delta)
+            )
+            # Gap fix (2026-10): for Dhan/Groww, this ticket-success path
+            # is the ONLY fill-adjacent mechanism that reliably runs when
+            # postback delivery isn't configured (see the comment block
+            # above) — _positions_refresh_after_fill refreshes position
+            # DATA but never touched the ticker subscription, so a filled
+            # Dhan/Groww order's WS tick stayed symbol-unaddressable for
+            # up to 5 minutes. Fired speculatively right after placement
+            # (same as the sibling call above) — subscribing is idempotent
+            # and harmless even if the order never fills.
+            asyncio.create_task(
+                _subscribe_filled_pairs([(sym, data.exchange or "NFO")])
             )
     except Exception:
         pass

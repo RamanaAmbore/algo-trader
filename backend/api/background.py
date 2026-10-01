@@ -4380,6 +4380,16 @@ async def _task_open_order_watchdog() -> None:
                 await sess.commit()
             for item in attach_queue:
                 _maybe_fire_template_attach_for_reconcile(item)
+            # Gap fix (2026-10): this watchdog reconciles orders directly
+            # against the broker without ever going through the primary
+            # postback flow — without this, a position newly detected
+            # FILLED here would wait for the *next* watchdog/perf cycle
+            # before its WS tick subscription became symbol-addressable.
+            if attach_queue:
+                from backend.api.routes.orders import _subscribe_filled_pairs
+                await _subscribe_filled_pairs(
+                    [(r.symbol, r.exchange) for r in attach_queue]
+                )
         except Exception as exc:
             logger.warning("open_order_watchdog error: %s", exc)
 

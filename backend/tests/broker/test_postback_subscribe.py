@@ -14,9 +14,12 @@ Five quality dimensions:
 Test catalogue:
 
 TestKitePostbackSubscribe (3 tests):
-  1. COMPLETE postback with instrument_token calls get_ticker().subscribe()
-  2. CANCELLED postback does NOT call subscribe()
-  3. Missing instrument_token on COMPLETE does NOT call subscribe()
+  1. COMPLETE postback with instrument_token calls
+     get_ticker().subscribe_with_sym() (2026-10 fix — was the bare
+     subscribe(), which doesn't register the token->symbol map the
+     SSE bus needs; see orders_postback.py's kite_postback_handler)
+  2. CANCELLED postback does NOT call subscribe_with_sym()
+  3. Missing instrument_token on COMPLETE does NOT call subscribe_with_sym()
 
 TestDhanPostbackSubscribBlock (3 tests):
   4. TRADED (Dhan fill) status triggers kick_performance + ticker.subscribe()
@@ -45,7 +48,19 @@ class TestKitePostbackSubscribe:
 
     @pytest.mark.asyncio
     async def test_complete_with_token_calls_subscribe(self):
-        """COMPLETE postback with instrument_token must call get_ticker().subscribe([token])."""
+        """COMPLETE postback with instrument_token must call
+        get_ticker().subscribe_with_sym([(token, SYMBOL)]).
+
+        2026-10 fix: previously asserted the bare subscribe([token]) —
+        that call registers the token with the live socket but does NOT
+        populate _token_to_sym/_sym_to_token, so every tick publishes to
+        the SSE bus with sym="" and every symbol-keyed frontend consumer
+        silently drops it until the next _task_performance cycle. Verified
+        on both ticker flavours: the in-process TickerManager AND the
+        conn-service-mode MmapTickReader (whose bare subscribe() forwards
+        an empty symbol too) have this same gap, so the fix must — and
+        does — use subscribe_with_sym on the common interface both share.
+        """
         from backend.api.routes.orders_postback import kite_postback_handler
 
         body = {
@@ -65,7 +80,7 @@ class TestKitePostbackSubscribe:
         mock_request.json = AsyncMock(return_value=body)
 
         mock_ticker = MagicMock()
-        mock_ticker.subscribe = MagicMock()
+        mock_ticker.subscribe_with_sym = MagicMock()
 
         with patch(
             "backend.api.routes.orders_postback._pb_verify_signature",
@@ -85,11 +100,13 @@ class TestKitePostbackSubscribe:
             result = await kite_postback_handler(mock_request)
 
         assert result == {"status": "ok"}
-        mock_ticker.subscribe.assert_called_once_with([738561])
+        mock_ticker.subscribe_with_sym.assert_called_once_with(
+            [(738561, "RELIANCE")]
+        )
 
     @pytest.mark.asyncio
     async def test_cancelled_does_not_call_subscribe(self):
-        """CANCELLED postback must NOT call subscribe()."""
+        """CANCELLED postback must NOT call subscribe_with_sym()."""
         from backend.api.routes.orders_postback import kite_postback_handler
 
         body = {
@@ -108,7 +125,7 @@ class TestKitePostbackSubscribe:
         mock_request.json = AsyncMock(return_value=body)
 
         mock_ticker = MagicMock()
-        mock_ticker.subscribe = MagicMock()
+        mock_ticker.subscribe_with_sym = MagicMock()
 
         with patch(
             "backend.api.routes.orders_postback._pb_verify_signature",
@@ -128,11 +145,11 @@ class TestKitePostbackSubscribe:
             result = await kite_postback_handler(mock_request)
 
         assert result == {"status": "ok"}
-        mock_ticker.subscribe.assert_not_called()
+        mock_ticker.subscribe_with_sym.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_complete_without_token_does_not_call_subscribe(self):
-        """COMPLETE postback with no instrument_token must NOT call subscribe()."""
+        """COMPLETE postback with no instrument_token must NOT call subscribe_with_sym()."""
         from backend.api.routes.orders_postback import kite_postback_handler
 
         body = {
@@ -151,7 +168,7 @@ class TestKitePostbackSubscribe:
         mock_request.json = AsyncMock(return_value=body)
 
         mock_ticker = MagicMock()
-        mock_ticker.subscribe = MagicMock()
+        mock_ticker.subscribe_with_sym = MagicMock()
 
         with patch(
             "backend.api.routes.orders_postback._pb_verify_signature",
@@ -171,7 +188,7 @@ class TestKitePostbackSubscribe:
             result = await kite_postback_handler(mock_request)
 
         assert result == {"status": "ok"}
-        mock_ticker.subscribe.assert_not_called()
+        mock_ticker.subscribe_with_sym.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
