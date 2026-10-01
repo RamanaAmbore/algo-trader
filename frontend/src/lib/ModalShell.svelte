@@ -15,7 +15,11 @@
     ariaLabel    — accessible name for the dialog (default 'Dialog')
     usePortal    — portal node to document.body (default true)
     clickOutside — backdrop click closes (default true)
-    zIndex       — CSS z-index; override for stacking (default 200)
+    zIndex       — CSS z-index; override for stacking (default 200).
+                   Accepts a number OR a `var(--token)` string — pass
+                   one of the app.css z-index-scale tokens (e.g.
+                   "var(--z-modal-critical)") when the caller needs a
+                   named tier rather than a bare literal.
     dim          — show dark backdrop (default true); false = transparent
     passthrough  — pointer-events:none on overlay (default false); panel
                    content restores pointer-events automatically
@@ -24,13 +28,17 @@
 <script>
   import { portal } from '$lib/portal';
 
+  /** @type {{ open?: boolean, onClose?: (() => void) | null,
+   *           ariaLabel?: string, usePortal?: boolean,
+   *           clickOutside?: boolean, zIndex?: number | string,
+   *           dim?: boolean, passthrough?: boolean, children?: any }} */
   let {
     open         = false,
     onClose      = null,      // () => void
     ariaLabel    = 'Dialog',  // accessible name — callers should override
     usePortal    = true,      // portal to document.body
     clickOutside = true,      // click on backdrop closes
-    zIndex       = 200,       // caller overrides for stacking
+    zIndex       = 200,       // caller overrides for stacking — number or var(--token)
     dim          = true,      // false = transparent backdrop
     passthrough  = false,     // true = pointer-events:none on overlay
     children,

@@ -33,6 +33,7 @@
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
   import { pollOpenOrders } from '$lib/data/openOrdersStore.svelte.js';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   const { children } = $props();
 
@@ -537,6 +538,21 @@
   /** @type {HTMLButtonElement | null} */
   let _modeTriggerElMobile = $state(null);
 
+  // Escape-stack coordinator (layerStack.js) — the mode dropdown is its
+  // own dismissible layer. Previously had no Escape handling at all
+  // (only overlay-click closed it); now Escape closes it when it's the
+  // topmost registered layer, same as every other migrated overlay.
+  /** @type {string | null} */
+  let _modeLayerId = null;
+  $effect(() => {
+    if (modeOpen) {
+      _modeLayerId = pushLayer(() => { modeOpen = false; });
+    } else if (_modeLayerId) {
+      popLayer(_modeLayerId);
+      _modeLayerId = null;
+    }
+  });
+
   /** Open the mode dropdown and compute its fixed position from the trigger rect. */
   function openModeDropdown(/** @type {HTMLButtonElement | null} */ triggerEl) {
     modeError = '';
@@ -929,7 +945,12 @@
      call start() and complete(). -->
 <NavigationIndicator bind:this={_navIndicator} variant="algo" />
 
-<ConfirmModal bind:this={_liveConfirmRef} />
+<!-- LIVE-mode-switch confirm — tier 6 (--z-modal-critical) so it renders
+     unconditionally on top of everything, including an open order modal
+     (tier 4) — previously rendered at ConfirmModal's default z=400,
+     invisible behind the order ticket if the operator triggered a LIVE
+     switch while it was open (2026-09-30 stacking-defect audit, Wave A). -->
+<ConfirmModal bind:this={_liveConfirmRef} zIndex="var(--z-modal-critical)" />
 <ShortcutCheatsheet open={_cheatsheetOpen}
                     onClose={() => { _cheatsheetOpen = false; }} />
 <!-- Single ActivityLogModal mount for the entire algo surface — driven
@@ -1045,27 +1066,9 @@
                       stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
-            {#if modeOpen && modeDropdownPos}
-              <!-- Portalled to document.body so the dropdown escapes
-                   EVERY ancestor stacking context — z-index alone was
-                   insufficient (operator 2026-07-01: "mode dropdown is
-                   not showing over modals. double check"). -->
-              <div class="mode-combo-overlay" use:portal role="presentation"
-                   onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" use:portal role="listbox"
-                  style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
-                {#each allowedModes as m}
-                  <li>
-                    <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
-                            style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
-                            role="option" aria-selected={$executionMode === m}
-                            onclick={() => pickMode(m)}>
-                      {m.toUpperCase()}
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
+            <!-- Dropdown itself renders ONCE, consolidated below (outside
+                 the responsive lg:/mobile split) — see the comment at its
+                 render site for why there used to be two copies. -->
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
         {/if}
@@ -1194,29 +1197,49 @@
                       stroke-linecap="round" stroke-linejoin="round"/>
               </svg>
             </button>
-            {#if modeOpen && modeDropdownPos}
-              <!-- Portalled to document.body so the dropdown escapes
-                   EVERY ancestor stacking context — z-index alone was
-                   insufficient (operator 2026-07-01: "mode dropdown is
-                   not showing over modals. double check"). -->
-              <div class="mode-combo-overlay" use:portal role="presentation"
-                   onclick={() => { modeOpen = false; }}></div>
-              <ul class="mode-combo-dropdown" use:portal role="listbox"
-                  style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
-                {#each allowedModes as m}
-                  <li>
-                    <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
-                            style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
-                            role="option" aria-selected={$executionMode === m}
-                            onclick={() => pickMode(m)}>
-                      {m.toUpperCase()}
-                    </button>
-                  </li>
-                {/each}
-              </ul>
-            {/if}
+            <!-- Dropdown itself renders ONCE, consolidated below. -->
             {#if modeError}<span class="mode-combo-error">{modeError}</span>{/if}
           </div>
+        {/if}
+
+        <!-- ── Mode dropdown — single consolidated render path ───────
+             Both the desktop and mobile trigger buttons above call the
+             SAME openModeDropdown(), writing the SAME modeOpen /
+             modeDropdownPos state — there is only ever one logical
+             picker. Previously this block was duplicated verbatim
+             inside BOTH the desktop and mobile responsive sections
+             (an artifact of an earlier responsive split that predated
+             the shared portal+position logic both triggers now use),
+             so opening the picker from either trigger mounted TWO
+             `.mode-combo-overlay` / `.mode-combo-dropdown` portals at
+             identical coordinates — confirmed live (2026-09-30
+             stacking-defect audit, Wave A). Rendering it once here
+             (its `use:portal` already re-parents it to document.body,
+             so its position in the template doesn't matter) fixes the
+             duplicate while keeping both triggers working identically.
+             Escape now closes it via the layerStack coordinator
+             (pushLayer/popLayer below) instead of not being handled at
+             all — previously only overlay-click closed the dropdown. -->
+        {#if modeOpen && modeDropdownPos}
+          <!-- Portalled to document.body so the dropdown escapes
+               EVERY ancestor stacking context — z-index alone was
+               insufficient (operator 2026-07-01: "mode dropdown is
+               not showing over modals. double check"). -->
+          <div class="mode-combo-overlay" use:portal role="presentation"
+               onclick={() => { modeOpen = false; }}></div>
+          <ul class="mode-combo-dropdown" use:portal role="listbox"
+              style="top:{modeDropdownPos.top}px; right:{modeDropdownPos.right}px">
+            {#each allowedModes as m}
+              <li>
+                <button class="mode-combo-item {$executionMode === m ? 'mode-combo-item-active' : ''}"
+                        style="--mc: {MODE_COLOR[m] ?? '#94a3b8'}"
+                        role="option" aria-selected={$executionMode === m}
+                        onclick={() => pickMode(m)}>
+                  {m.toUpperCase()}
+                </button>
+              </li>
+            {/each}
+          </ul>
         {/if}
 
         <!-- Broker connectivity chip (mobile mirror of the desktop block above). -->
@@ -1364,7 +1387,10 @@
 
     <!-- Programmatic toast system: success / error / info / warning.
          Mounted once; pages fire via: import { toast } from '$lib/data/toastStore.svelte.js'
-         z-index 80 — below AgentToast (9997) and modals (9998). -->
+         Tier 9 (absolute top) of the app.css z-index scale — var(--z-toast),
+         currently 21000 — above AgentToast's agent-alert tier, the
+         cheatsheet, and every modal tier. See app.css's z-index scale
+         comment block for the full ladder. -->
     <ToastContainer />
 
     <footer class="algo-footer">

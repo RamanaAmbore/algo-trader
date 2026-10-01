@@ -179,15 +179,99 @@
   --toolbar-h: 24px;
   --chart-toolbar-h: var(--toolbar-h);
 
-  /* z-index scale — use these vars; never hardcode global stacking values */
+  /* ──────────────────────────────────────────────────────────────────────
+     z-index scale — SSOT for every overlay layer in the app. Use these
+     vars; never hardcode a global stacking value. Companion coordinator:
+     `frontend/src/lib/utils/layerStack.js` (Escape-stack, LIFO top-only
+     dispatch) — any dismissible layer listed below should register with
+     it via `pushLayer`/`popLayer` instead of its own window/document
+     keydown listener.
+
+     Reworked 2026-09-30 (modal/menu/toast stacking-defect audit, Wave A)
+     — the scale below replaces ad-hoc/undocumented numbers with one
+     complete, ordered hierarchy. Bottom to top:
+
+       1. Page chrome / nav bar          --z-nav = 50 (unchanged)
+          (sibling literals, not vars, same tier: footer z-index:40,
+          .page-header strip z-index:45 — both pre-existing, out of
+          scope for this pass)
+
+       2. Full-screen card pattern       .fs-backdrop = 9998,
+                                          .fs-card-on  = 9999
+          (literals in FullscreenButton.svelte / DefaultSizeButton.svelte
+          / app.css's own `.fs-card-on` rule — unchanged this pass, these
+          don't need to move)
+
+       2.5. NavigationIndicator (route-progress strip) — must stay
+          visible during navigation even when a full-screen card OR the
+          order modal is open (the two documented cases: a `g`-shortcut
+          nav fired from inside a full-screen card, and fired while the
+          order ticket is open). Current literal (9200, in
+          NavigationIndicator.svelte) sits BELOW tier 2 — a pre-existing
+          bug, out of scope for THIS file this wave (component literal,
+          not a var) but flagged here with its target: should move above
+          tier 4 (10500), e.g. 10550. Does not need to compete with
+          tiers 5-9 (rare combinations).
+
+       3. --z-modal-nested = 10700 — modals opened FROM INSIDE a
+          full-screen card (AddToPulse, OrderPairModal, MarketPulse
+          strike-picker). Placed above BOTH tier 2 (9999) and tier 4
+          (--z-command = 10500): the audit flagged this choice as
+          genuinely ambiguous (does a modal nested in a full-screen card
+          ever need to beat an open order modal too?) and the safer
+          default — "most specific / most recently opened wins", same
+          LIFO philosophy as the Escape-stack coordinator — is to clear
+          both.
+
+       4. --z-command = 10500 (order modal / command overlay, unchanged)
+          with its existing portalled sibling dropdowns computed off it:
+          .mode-combo-overlay = calc(--z-command + 100) = 10600,
+          .mode-combo-dropdown = calc(--z-command + 101) = 10601
+          (both unchanged, in `(algo)/+layout.svelte`).
+
+       5. --z-modal-in-command = 10900 — modals opened FROM INSIDE the
+          order modal itself (OrderTicket.svelte's demo-mode submit
+          modal). Above tier 4 and tier 3.
+
+       6. --z-modal-critical = 11200 — confirmation dialogs that must
+          interrupt literally anything (the LIVE-mode-switch confirm in
+          `(algo)/+layout.svelte`). Above every tier 1-5. Do NOT point
+          any other ConfirmModal instance at this tier — it is reserved
+          for dialogs that must unconditionally win every stacking fight.
+
+       7. Shortcut cheatsheet (`?` key) — current literals 9996/9997 in
+          ShortcutCheatsheet.svelte sit BELOW tier 6; target (Wave B,
+          component literals not vars): raise above 11200, e.g.
+          20200/20201 (also above tier 2's --z-dropdown=20000 below, so
+          the cheatsheet can be summoned over an open nav dropdown too).
+
+       8. Agent alerts (AgentToast / AgentFireModal) — current literal
+          9997 in AgentToast.svelte is ACCIDENTALLY the same number as
+          the cheatsheet panel (tier 7) today; must render above the
+          cheatsheet once tier 7 moves. Target (Wave B): 20500.
+
+       9. --z-toast = 21000 — toasts (ToastContainer.svelte), the
+          absolute top. Nothing may ever render above a toast. (Was 80;
+          raised this pass since ToastContainer is in-scope this wave.)
+
+     Pre-existing vars kept at their current values (not part of the
+     tier ladder above, no change needed): --z-dropdown (nav disclosure
+     dropdowns + mobile hamburger drawer, portal-escape numbering),
+     --z-drawer (OrderTimelineDrawer), --z-modal (generic ModalShell
+     default — individual callers already override via the `zIndex`
+     prop), --z-tooltip, --z-search.
+     ────────────────────────────────────────────────────────────────── */
   --z-nav:      50;
   --z-dropdown: 20000;
-  --z-toast:    80;
+  --z-toast:    21000;
   --z-drawer:   20001;
   --z-modal:    300;
   --z-tooltip:  9999;
   --z-search:   10000;
   --z-command:  10500;
+  --z-modal-nested:     10700;
+  --z-modal-in-command: 10900;
+  --z-modal-critical:   11200;
 
   /* Vertical-bar separator — shared by CardHeader (.ch-sep),
      MarketPulse (.mp-head-sep), and PositionStrip (.ps-agg-sep).
@@ -2347,8 +2431,8 @@
 
 /* PageHeaderActions (.pha-wrap) open modals — they don't need
    viewport-pinning during fullscreen. The modal overlay itself is
-   position: fixed at z-index 10000, so it surfaces above any
-   fullscreen card without additional CSS here. */
+   position: fixed at var(--z-command) = 10500, so it surfaces above
+   any fullscreen card (z-index 9999) without additional CSS here. */
 
 /* ── Canonical card header layout ────────────────────────────────
    Single global rule that enforces the same header treatment on

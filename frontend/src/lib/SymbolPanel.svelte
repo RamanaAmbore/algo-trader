@@ -29,6 +29,7 @@
 
   import { onMount, onDestroy, untrack, getContext } from 'svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { get as _storeGet } from 'svelte/store';
   import { portal } from '$lib/portal';
   import { ORDER_TABS } from '$lib/order/tabs.js';
@@ -2067,11 +2068,11 @@
     }
 
     const onKey = (/** @type {KeyboardEvent} */ e) => {
-      if (e.key === 'Escape') {
-        // Fullscreen exits first; second Esc closes the panel.
-        onClose();
-        return;
-      }
+      // Escape is handled by the layerStack coordinator (pushLayer
+      // below) instead of here — this used to call onClose()
+      // unconditionally for ANY Escape, which is exactly the bug that
+      // let a nested dropdown's Escape close the whole modal instead
+      // of just the dropdown (2026-09-30 stacking-defect audit, Wave A).
       if (e.key === 'Tab' && !inline) {
         const els = _oesFocusables();
         if (!els.length) return;
@@ -2083,20 +2084,40 @@
         }
       }
     };
-    window.addEventListener('keydown', onKey);
     // HIGH 1: prevent background page scroll while the modal is open.
     // Only applies in overlay mode (not inline) — inline renders as a
     // flat page element so scroll should remain enabled.
     const wasInline = inline;
+    // Capture whatever value was already there BEFORE this modal locks
+    // it, and restore THAT value (not an unconditional '') on close —
+    // same pattern as DefaultSizeButton.svelte's fullscreen scroll-lock.
+    // Without this, closing SymbolPanel wiped a lock a still-open
+    // full-screen card had already applied (2026-09-30 stacking-defect
+    // audit, Wave A): operator opens a fullscreen card (locks scroll),
+    // then the order modal from inside it, then closes just the order
+    // modal — the page could scroll again even though the fullscreen
+    // card was still open underneath.
+    const _prevOverflow = document.body.style.overflow;
     if (!wasInline) {
       document.body.style.overflow = 'hidden';
     }
+
+    // Escape-stack coordinator (layerStack.js) — SymbolPanel is its own
+    // dismissible layer. Replaces the former unconditional window Escape
+    // listener (which closed the WHOLE modal on any Escape, including
+    // one meant for a nested dropdown inside it — e.g. Select.svelte /
+    // SymbolSearchInput.svelte's own pickers, now migrated to push
+    // their own nested layer so their Escape is consumed first).
+    const _layerId = inline ? null : pushLayer(onClose);
+
+    window.addEventListener('keydown', onKey);
     return () => {
       window.removeEventListener('keydown', onKey);
       if (_wlToastTimer) { clearTimeout(_wlToastTimer); _wlToastTimer = null; }
       if (!wasInline) {
-        document.body.style.overflow = '';
+        document.body.style.overflow = _prevOverflow;
       }
+      popLayer(_layerId);
     };
   });
 
@@ -3144,9 +3165,11 @@
 </div>
 
 <!-- Chart modal — opened by the chart-icon button in the header.
-     Rendered at top-level so it sits above the SymbolPanel overlay
-     (z-index 200 > 100). Only mounted when the operator clicks the
-     chart button and a symbol is set. -->
+     Rendered at top-level so it sits above the SymbolPanel overlay.
+     ChartModal overrides the shared canonical-modal-overlay z-index
+     (var(--z-command) = 10500, SymbolPanel's own tier) to 10600 — see
+     ChartModal.svelte's own z-index comment. Only mounted when the
+     operator clicks the chart button and a symbol is set. -->
 {#if _chartModalOpen && _localSymbol}
   <ChartModal
     symbol={_localSymbol}
@@ -3167,6 +3190,20 @@
        canonical-modal-panel. */
     color: var(--algo-slate);
     font-family: var(--font-numeric);
+    /* Override canonical-modal-overlay's shared `pointer-events: none`
+       (app.css — deliberate for ChartModal/ActivityLogModal, which
+       close via × or Esc only) so THIS modal's overlay actually
+       receives the click its own `onclick={onClose}` handler already
+       expects. Scoped to this component (higher specificity than the
+       global one-class rule via Svelte's scoping attribute), so
+       ChartModal / ActivityLogModal's own canonical-modal-overlay
+       instances are unaffected — click-outside-to-close becomes real
+       for SymbolPanel only (2026-09-30 stacking-defect audit, Wave A;
+       the panel's own onclick={(e) => e.stopPropagation()} still
+       prevents a click INSIDE the panel from reaching this and closing
+       it, so the convention matches ModalShell's `clickOutside`
+       pattern: overlay catches the click, content panel re-stops it). */
+    pointer-events: auto;
   }
   /* Inline mode strips the modal chrome — used by /console which hosts
      the shell as the page's primary content. */

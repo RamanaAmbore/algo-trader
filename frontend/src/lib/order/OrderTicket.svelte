@@ -3130,11 +3130,16 @@
   </div>
 </div>
 
+<!-- Demo-mode submit modal — opens FROM INSIDE the order ticket (always
+     embedded in SymbolPanel, itself at --z-command = 10500), so it needs
+     its own tier above that: --z-modal-in-command = 10900 (app.css z-index
+     scale, tier 5). Was a hardcoded zIndex={300} — invisible behind the
+     order modal (2026-09-30 stacking-defect audit, Wave A). -->
 <ModalShell
   open={_demoSubmitOpen}
   onClose={() => (_demoSubmitOpen = false)}
   ariaLabel="Demo mode"
-  zIndex={300}
+  zIndex="var(--z-modal-in-command)"
 >
   <div class="ot-demo-modal"
        onkeydown={(e) => e.stopPropagation()}>
@@ -3168,12 +3173,19 @@
     display: flex;
     align-items: flex-start;
     justify-content: center;
-    /* z-index var(--z-modal): above the OrderTimelineDrawer (var(--z-drawer)=200),
-       the PositionStrip (z=49), the navbar (var(--z-nav)=50), and any per-page
-       sticky LogPanel that might be in the operator's way when the
-       ticket opens. Operators reported the Submit row getting
-       clipped by bottom panels — this guarantees the ticket sits
-       on top. */
+    /* z-index var(--z-modal)=300: above the PositionStrip (z=49) and the
+       navbar (var(--z-nav)=50), and any per-page sticky LogPanel that
+       might be in the operator's way when the ticket opens. Operators
+       reported the Submit row getting clipped by bottom panels — this
+       guarantees the ticket sits on top.
+       Stale-comment fix (2026-09-30 stacking-defect audit, Wave A):
+       this used to also claim "above the OrderTimelineDrawer
+       (var(--z-drawer)=200)" — var(--z-drawer) is actually 20001, not
+       200, so that claim was backwards (300 is well BELOW 20001). In
+       practice this whole rule is moot: the only live caller
+       (SymbolPanel) always passes standalone=false, so `.ot-overlay-embedded`
+       below (z-index: auto) is what actually renders — this block only
+       matters for a hypothetical future standalone mount of OrderTicket. */
     z-index: var(--z-modal);
     /* Top-anchored at the canonical sheet position — same Y as
        ChartModal / ActivityLogModal so all modals open at the same

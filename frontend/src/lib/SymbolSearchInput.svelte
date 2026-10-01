@@ -15,6 +15,7 @@
   //   ariaLabel     — accessible label for the input
 
   import { untrack, onMount } from 'svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
   import { loadInstruments, searchByPrefix } from '$lib/data/instruments';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols';
   import { _BARE_UNDERLYINGS } from '$lib/data/accounts';
@@ -48,6 +49,23 @@
   // a "Searching…" hint so the operator doesn't see an empty dropdown
   // and assume the search broke.
   let _searching      = $state(false);
+
+  // Escape-stack coordinator (layerStack.js) — the suggestion dropdown
+  // is its own dismissible layer, pushed/popped with `_symOpen`. Before
+  // this, `_onKeydown`'s Escape branch had no stopPropagation, so the
+  // keydown kept bubbling to any ancestor modal's own Escape listener
+  // and could close the whole modal instead of just this dropdown
+  // (2026-09-30 stacking-defect audit, Wave A).
+  /** @type {string | null} */
+  let _layerId = null;
+  $effect(() => {
+    if (_symOpen) {
+      _layerId = pushLayer(() => { _symOpen = false; _symSuggestions = []; });
+    } else if (_layerId) {
+      popLayer(_layerId);
+      _layerId = null;
+    }
+  });
 
   // Warm the instruments cache as soon as the component mounts. Without
   // this, the FIRST keystrokes hit suggestUnderlyings before the IDB
@@ -196,7 +214,7 @@
   }
 
   function _onKeydown(/** @type {KeyboardEvent} */ e) {
-    if (e.key === 'Escape') { _symOpen = false; _symSuggestions = []; }
+    // Escape is handled by the layerStack coordinator above, not here.
     if (e.key === 'Enter') {
       e.preventDefault();
       // Prefer first result row; fall back to first pin if no results.

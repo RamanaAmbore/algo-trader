@@ -7,6 +7,7 @@
 
 <script>
   import ModalShell from '$lib/ModalShell.svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /**
    * Confirm modal. Promise-returning `ask()` resolves true on confirm,
@@ -23,7 +24,17 @@
    * Usage:
    *   <ConfirmModal bind:this={confirmRef} />
    *   if (!await confirmRef.ask({title:'Suspend user?', danger:true})) return;
+   *
+   *   <!-- Only for dialogs that must unconditionally render on top of
+   *        every other open layer (see app.css z-index scale, tier 6) -->
+   *   <ConfirmModal bind:this={criticalRef} zIndex="var(--z-modal-critical)" />
    */
+  /** Stacking tier for this instance's overlay. Every OTHER ConfirmModal
+   *  mount in the app keeps the default (400, ModalShell's own fallback
+   *  envelope) — only call sites that must win every stacking fight
+   *  (e.g. the LIVE-mode-switch confirm) should override this. */
+  /** @type {{ zIndex?: number | string }} */
+  let { zIndex = 400 } = $props();
   let _open    = $state(false);
   let _title   = $state('Confirm');
   let _message = $state('');
@@ -39,6 +50,14 @@
   let _inputPlaceholder = $state('');
   /** @type {((ok: boolean) => void) | ((val: string|null) => void) | null} */
   let _resolve = null;
+  // Escape-stack coordinator id (frontend/src/lib/utils/layerStack.js) —
+  // pushed when the dialog opens, popped on every close path (confirm,
+  // cancel, or a nested layer's own Escape). Replaces this component's
+  // former standalone `window` Escape listener so a nested dropdown's
+  // own Escape can never fall through and close this dialog too, and
+  // vice versa (2026-09-30 stacking-defect audit, Wave A).
+  /** @type {string | null} */
+  let _layerId = null;
 
   /**
    * @param {{title?:string, message?:string, danger?:boolean,
@@ -54,6 +73,7 @@
     _inputType     = null;
     _inputValue    = '';
     _open = true;
+    _layerId = pushLayer(() => _resolve_and_close(false));
     return new Promise((res) => { _resolve = res; });
   }
 
@@ -78,6 +98,7 @@
     _inputPlaceholder = opts.placeholder ?? '';
     _inputValue    = opts.defaultValue  ?? '';
     _open = true;
+    _layerId = pushLayer(() => _resolve_and_close(false));
     return new Promise((res) => { _resolve = res; });
   }
 
@@ -92,6 +113,8 @@
     const r = /** @type {any} */ (_resolve);
     _resolve = null;
     _open = false;
+    popLayer(_layerId);
+    _layerId = null;
     if (isPrompt) {
       // Prompt mode resolves to the typed value (or null on cancel).
       // Empty string on confirm counts as null — most callers want a
@@ -105,16 +128,21 @@
 
   function _cancel() { _resolve_and_close(false); }
 
+  // Escape is handled exclusively by the layerStack coordinator pushed
+  // in ask()/prompt() above (fires only when this dialog is the topmost
+  // registered layer) — no Escape branch here. Enter remains a plain
+  // window listener: once the z-index fix (tier 6 for the LIVE-mode
+  // confirm) keeps this dialog genuinely on top whenever it's open,
+  // Enter-confirms-the-default-action is normal modal UX, not a hazard.
   function onKey(/** @type {KeyboardEvent} */ e) {
     if (!_open) return;
-    if (e.key === 'Escape') { e.preventDefault(); _resolve_and_close(false); }
-    else if (e.key === 'Enter') { e.preventDefault(); _resolve_and_close(true); }
+    if (e.key === 'Enter') { e.preventDefault(); _resolve_and_close(true); }
   }
 </script>
 
 <svelte:window onkeydown={onKey} />
 
-<ModalShell open={_open} onClose={_cancel} ariaLabel="Confirm action" zIndex={400}>
+<ModalShell open={_open} onClose={_cancel} ariaLabel="Confirm action" {zIndex}>
     <div class="cm-modal algo-modal" role="presentation"
          onclick={(e) => e.stopPropagation()}>
       <div class="cm-title">{_title}</div>

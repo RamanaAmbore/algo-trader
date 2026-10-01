@@ -13,6 +13,7 @@
   //   ariaLabel?    — a11y fallback if no <label> is in scope
 
   import { onMount, onDestroy } from 'svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   let {
     value = $bindable(/** @type {any} */ ('')),
@@ -42,6 +43,22 @@
   } = $props();
 
   let open = $state(false);
+  // Escape-stack coordinator (layerStack.js) — this dropdown is its own
+  // dismissible layer, pushed/popped with `open`. Any host modal that
+  // has ALSO migrated (SymbolPanel, ConfirmModal, …) sees its own
+  // Escape consumed by whichever layer is topmost, so a nested Select
+  // open inside a modal gets first crack at Escape instead of the
+  // modal closing underneath it.
+  /** @type {string | null} */
+  let _layerId = null;
+  $effect(() => {
+    if (open) {
+      _layerId = pushLayer(() => { open = false; });
+    } else if (_layerId) {
+      popLayer(_layerId);
+      _layerId = null;
+    }
+  });
   let triggerEl;
   let panelEl = $state(/** @type {HTMLElement | undefined} */ (undefined));
   /** @type {HTMLInputElement | undefined} */
@@ -121,7 +138,12 @@
       }
       return;
     }
-    if (e.key === 'Escape') { open = false; e.preventDefault(); return; }
+    // Escape itself is handled by the layerStack coordinator (the
+    // $effect below) — not here. Without a dedicated layer, this
+    // listener had no stopPropagation and the Escape kept bubbling up
+    // to any ancestor modal's own window-level listener, closing the
+    // WHOLE modal instead of just this dropdown (2026-09-30
+    // stacking-defect audit, Wave A).
     if (e.key === 'ArrowDown') { highlighted = Math.min(filteredOptions.length - 1, highlighted + 1); e.preventDefault(); return; }
     if (e.key === 'ArrowUp')   { highlighted = Math.max(0, highlighted - 1); e.preventDefault(); return; }
     if (e.key === 'Enter') {

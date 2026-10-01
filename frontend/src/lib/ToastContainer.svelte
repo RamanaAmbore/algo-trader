@@ -1,9 +1,14 @@
 <!--
   ToastContainer.svelte — fixed-position stack that renders active toasts.
 
-  Mount ONCE in the algo layout (after AgentToast, not competing with it
-  for z-index). AgentToast uses z-index 9997; this container uses 80 so
-  it sits below the agent interrupt toasts and below modals (z ~9998).
+  Mount ONCE in the algo layout. Toasts are tier 9 (the absolute top) of
+  the app-wide z-index scale documented in app.css — `var(--z-toast)`,
+  currently 21000 — above every modal tier (--z-command, --z-modal-nested,
+  --z-modal-in-command, --z-modal-critical), the shortcut cheatsheet, and
+  AgentToast's own agent-alert tier. Nothing should ever be able to hide
+  a toast. (2026-09-30 stacking-defect audit, Wave A — was z-index 80,
+  which sat below essentially everything; see app.css's z-index scale
+  comment block for the full tier ladder.)
 
   Positioning:
     Desktop: top: 4.5rem, right: 1rem (clears the 3.8rem navbar)
