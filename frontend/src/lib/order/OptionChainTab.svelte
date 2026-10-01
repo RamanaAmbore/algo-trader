@@ -1629,9 +1629,20 @@
      Bumped again 0.28 -> 0.40 (2026-09-30, operator: "the bottom
      border should be stronger on amber side") — kept in sync with
      the matching bump on the order ticket's .ot-depth-header-bg
-     (OrderDepth.svelte). */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     (OrderDepth.svelte).
+     Top edge added (2026-09-30, operator: "add top border also to
+     headers in chain and order ticket") — a second inset box-shadow
+     layer (inset 0 1px 0, positive y-offset = top edge, vs. the
+     existing -1px = bottom edge), same amber/alpha, sandwiching the
+     header row on both sides instead of just underlining it.
+     text-align flipped (2026-09-30, operator: "ce label should be
+     left aligned and pe should be right aligned") — was right/left;
+     now CE left-aligned, PE right-aligned. Deliberately scoped to
+     just this header text — the data rows' own +/- button/quote
+     layout (.chain-cell-row-ce/-pe, their own flex-end/flex-start,
+     further below) is untouched. */
+  .chain-th-ce      { text-align: left;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: right;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
@@ -1641,14 +1652,19 @@
      bottom edge (2026-09-30, same border-collapse/sticky fix as
      .chain-th-ce/-pe above) instead of separate border-left/-right
      declarations, for the same repaint-reliability reason.
-     Padding widened 0.1rem -> 0.4rem (2026-09-30, operator: "the gap
-     between ce, strike, pe label should be increased") — the earlier
-     "move ce pe away from strike" fix only widened the DATA rows'
-     Strike cell (.chain-row>td.chain-td-strike), not this header
-     cell, leaving the header row's CE|Strike|PE gap visibly tighter
-     than the data rows below it. Matches that same 0.4rem value for
-     header/body consistency. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.4rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 rgba(251,191,36,0.40), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     Padding widened 0.1rem -> 0.4rem (operator: "the gap between ce,
+     strike, pe label should be increased") — the earlier "move ce pe
+     away from strike" fix only widened the DATA rows' Strike cell
+     (.chain-row>td.chain-td-strike), not this header cell, leaving
+     the header row's CE|Strike|PE gap visibly tighter than the data
+     rows below it.
+     Reduced again 0.4rem -> 0.22rem (2026-09-30, operator: "the gap
+     between ce, strike, pe values should be reduced") — 0.4rem read
+     as too wide once seen rendered; 0.22rem keeps a real, visible gap
+     (vs. the original cramped 0.1rem) without being as wide as the
+     brief 0.4rem experiment. Kept in sync with the DATA row's own
+     Strike cell padding (below) for header/body consistency. */
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.22rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
@@ -1686,19 +1702,22 @@
     color: var(--algo-slate);
     font-weight: 700;
     font-variant-numeric: tabular-nums;
-    /* Widened 0.1rem -> 0.4rem (2026-09-30, operator: "move ce pe
-       away from strike") — CE/PE content is flex-end/flex-start
-       aligned toward this column (see .chain-cell-row-ce/-pe above),
-       so the visible gap between CE/PE and Strike is this cell's own
-       left/right padding; the earlier 0.1rem was tightened for a
-       different reason ("reduce the space before and after strike")
-       and read as too close once CE/PE content butted right up
-       against it. text-align: center keeps "Strike"/the numbers
-       centered in the column regardless of this padding value, so
-       widening it doesn't misalign the header label against the data
-       rows below. */
-    padding-left: 0.4rem;
-    padding-right: 0.4rem;
+    /* Widened 0.1rem -> 0.4rem (operator: "move ce pe away from
+       strike") — CE/PE content is flex-end/flex-start aligned toward
+       this column (see .chain-cell-row-ce/-pe above), so the visible
+       gap between CE/PE and Strike is this cell's own left/right
+       padding; the earlier 0.1rem was tightened for a different
+       reason ("reduce the space before and after strike") and read
+       as too close once CE/PE content butted right up against it.
+       text-align: center keeps "Strike"/the numbers centered in the
+       column regardless of this padding value, so widening it
+       doesn't misalign the header label against the data rows below.
+       Reduced again 0.4rem -> 0.22rem (2026-09-30, operator: "the gap
+       between ce, strike, pe values should be reduced") — matches
+       the header's own Strike cell padding (.chain-th-strike, above)
+       for header/body consistency. */
+    padding-left: 0.22rem;
+    padding-right: 0.22rem;
     /* Subtle column divider between CE | Strike | PE — same
        whisper-quiet weight as the row dividers above, completing
        the "grid" reading operator asked for without adding visual

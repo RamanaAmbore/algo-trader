@@ -469,16 +469,18 @@ test.describe('Chain +/- pressed-state feedback', () => {
   });
 });
 
-test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () => {
-  test('CE header text-align right, PE header text-align left — matches the +/- button side', () => {
+test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-align flipped later same day)', () => {
+  test('CE header text-align LEFT, PE header text-align RIGHT (2026-09-30, operator: "ce label should be left aligned and pe should be right aligned" — flipped from the earlier right/left)', () => {
     const ceRule = CHAIN_TAB.match(/\.chain-th-ce\s*\{[^}]*\}/)?.[0] ?? '';
     const peRule = CHAIN_TAB.match(/\.chain-th-pe\s*\{[^}]*\}/)?.[0] ?? '';
     expect(ceRule, '.chain-th-ce rule').not.toBe('');
     expect(peRule, '.chain-th-pe rule').not.toBe('');
-    expect(ceRule).toMatch(/text-align:\s*right/);
-    expect(peRule).toMatch(/text-align:\s*left/);
+    expect(ceRule).toMatch(/text-align:\s*left/);
+    expect(peRule).toMatch(/text-align:\s*right/);
     // The row-content alignment (+/- buttons toward Strike column) must
-    // stay untouched — a deliberate, explicitly-commented layout choice.
+    // stay untouched — a deliberate, explicitly-commented layout choice,
+    // and explicitly NOT part of this later text-align flip (operator
+    // scoped it to "ce label"/"pe label" specifically).
     expect(CHAIN_TAB).toMatch(/\.chain-cell-row-ce\s*\{\s*justify-content:\s*flex-end;\s*\}/);
     expect(CHAIN_TAB).toMatch(/\.chain-cell-row-pe\s*\{\s*justify-content:\s*flex-start;\s*\}/);
   });
@@ -487,7 +489,7 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a strong amber bottom edge via box-shadow:inset, 0.40 alpha (SUPERSEDED 2026-09-30, four times — border-bottom replaced by box-shadow to fix a repaint bug, dialed white/0.35 -> amber/0.18 for a thinner look, then strengthened to 0.28, then 0.40)', () => {
+  test('chain header cells have a strong amber bottom edge via box-shadow:inset, 0.40 alpha (SUPERSEDED 2026-09-30, five times — border-bottom replaced by box-shadow to fix a repaint bug, dialed white/0.35 -> amber/0.18 for a thinner look, strengthened to 0.28 then 0.40, then a top edge added alongside it)', () => {
     // Was border-bottom (brightened from 0.18 to 0.35 alpha same day),
     // then changed to box-shadow: inset (operator: "again the border
     // shows and disappears" / "...in the money calls and puts, it
@@ -502,11 +504,17 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30)', () 
     // border color should be a little strong"), then 0.28 -> 0.40
     // (operator: "the bottom border should be stronger on amber
     // side") — same day, each reusing an existing --algo-amber alpha
-    // rather than inventing a new one-off value.
+    // rather than inventing a new one-off value. A top edge (operator:
+    // "add top border also to headers in chain and order ticket") was
+    // added as a FIRST box-shadow layer ahead of this bottom one, so
+    // the check below no longer anchors "box-shadow:" directly to
+    // "inset 0 -1px 0" — it just confirms the bottom-edge layer is
+    // present somewhere in the (now two-layer) list.
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule, `${sel} box-shadow alpha`).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,191,36,0\.40\)/);
+      expect(rule, `${sel} box-shadow present`).toMatch(/box-shadow:/);
+      expect(rule, `${sel} box-shadow bottom-edge alpha`).toMatch(/inset 0 -1px 0 rgba\(251,191,36,0\.40\)/);
       expect(rule, `${sel} must not use border-bottom`).not.toMatch(/border-bottom:\s*\S/);
     }
   });

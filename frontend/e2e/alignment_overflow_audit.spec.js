@@ -192,26 +192,25 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(colors[0], '"Bid qty"/"Bid" must differ from "Ask"/"Ask qty"').not.toBe(colors[2]);
   });
 
-  test('.ot-depth-header-bg spans all 4 columns of row 1 with a background + lower border (2026-09-30 follow-up, restyled to match Chain same day)', () => {
+  test('.ot-depth-header-bg spans all 4 columns of row 1, sized only — painting lives on ::before (2026-09-30 follow-up, restyled to match Chain, then consolidated onto ::before same day)', () => {
     // A per-label background/border would leave visible gaps at the
     // grid's column-gap seams (columns are content-sized, not
     // stretched) — a single element spanning grid-column: 1 / -1 is
     // genuinely continuous across the whole label row instead.
-    // Background/border restyled (2026-09-30, operator: "apply this
-    // header format to ticker bid qty, bid, ask, ask qty") to match
-    // Chain's header cells: --card-bg-elevated + amber box-shadow-
-    // equivalent border-bottom (no sticky/border-collapse risk here,
-    // so plain border-bottom is safe, unlike Chain's <th>). Amber
-    // alpha bumped 0.18 -> 0.28 -> 0.40 same day (operator: "the
-    // border color should be a little strong", then "the bottom
-    // border should be stronger on amber side"), kept in sync with
-    // Chain's own bumps throughout.
+    // Background/border were on THIS element too at one point, but
+    // moved entirely to ::before (operator: "did you observe uneven
+    // border width for header in the middle and at the end" — two
+    // separately-rasterized border lines, the host's own narrow one
+    // plus ::before's full-width one, landing near-but-not-exactly on
+    // the same pixels in the middle section only). Full detail +
+    // ::before's own assertions live in the dedicated ::before test
+    // below; this one just confirms the host stays paint-free.
     expect(content).toMatch(/<div class="ot-depth-header-bg"/);
     const body = ruleBody(content, '.ot-depth-header-bg');
     expect(body, '.ot-depth-header-bg rule must exist').not.toBeNull();
     expect(body).toMatch(/grid-column:\s*1\s*\/\s*-1/);
-    expect(body).toMatch(/background:\s*var\(--card-bg-elevated\)/);
-    expect(body).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.40\)/);
+    expect(body).not.toMatch(/\n\s*background:/);
+    expect(body).not.toMatch(/\n\s*border-bottom:/);
   });
 
   test('.ot-depth-header-bg::before bleeds the background+border ±9999px, clipped by .ot-depth\'s own overflow:hidden — genuinely "end to end" (2026-09-30, operator: "extend the header in order ticket end to end. there is a gap header in order ticket. remove it.")', () => {
@@ -227,18 +226,49 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     // pseudo-element (NOT confined by the grid-track system) bleeds
     // the background/border far past both sides, clipped at
     // .ot-depth's real edges by its own overflow: hidden.
+    // UPDATED (2026-09-30, operator: "did you observe uneven border
+    // width for header in the middle and at the end") — the base
+    // .ot-depth-header-bg element no longer paints its OWN
+    // background/border-bottom (that was the bug: two separately-
+    // rasterized 1px border lines — the host's own narrow one plus
+    // ::before's full-width one — landing near-but-not-exactly on the
+    // same pixels in the middle section only). All painting is now
+    // consolidated onto ::before alone; the host just sizes the grid
+    // cell (position: relative, nothing else).
     const bgRule = ruleBody(content, '.ot-depth-header-bg') ?? '';
     expect(bgRule, '.ot-depth-header-bg rule').not.toBe('');
     expect(bgRule).toMatch(/position:\s*relative/);
+    expect(bgRule).not.toMatch(/\n\s*background:/);
+    expect(bgRule).not.toMatch(/\n\s*border-bottom:/);
     const beforeRule = content.match(/\.ot-depth-header-bg::before\s*\{[^}]*\}/)?.[0] ?? '';
     expect(beforeRule, '.ot-depth-header-bg::before rule').not.toBe('');
     expect(beforeRule).toMatch(/position:\s*absolute/);
     expect(beforeRule).toMatch(/inset:\s*0\s+-9999px/);
     expect(beforeRule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
-    expect(beforeRule).toMatch(/border-bottom:\s*inherit/);
+    expect(beforeRule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.40\)/);
+    // Top edge added later same day (operator: "add top border also
+    // to headers in chain and order ticket") — sandwiches the header,
+    // matching Chain's own .chain-th-* (second box-shadow layer).
+    expect(beforeRule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.40\)/);
     const depthRule = ruleBody(content, '.ot-depth') ?? '';
     expect(depthRule, '.ot-depth rule').not.toBe('');
     expect(depthRule).toMatch(/overflow:\s*hidden/);
+  });
+
+  test('.ot-depth-grid:first-child cancels .ot-depth\'s own top padding (2026-09-30, operator: "observer the gap above the header on order quote depath... there is top margin or padding which needs to be removed")', () => {
+    // When .ot-depth-h (the "Prev <price>" band) doesn't render (no
+    // ohlc.close / no err), .ot-depth-grid becomes .ot-depth's literal
+    // first child and inherits the card's own 0.45rem top padding
+    // before any content — unremarkable before, but now that the
+    // header has a prominent edge-to-edge colored band, that padding
+    // read as an unexplained gap. Chain's equivalent wrapper
+    // (.chain-grid-wrap) has no padding at all, so this cancels
+    // .ot-depth's own padding-top exactly, ONLY when grid has nothing
+    // above it — when .ot-depth-h IS rendered, this selector doesn't
+    // match and that spacing is untouched.
+    const rule = content.match(/\.ot-depth-grid:first-child\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule, '.ot-depth-grid:first-child rule').not.toBe('');
+    expect(rule).toMatch(/margin-top:\s*-0\.45rem/);
   });
 
   test('live: the header band\'s background reaches .ot-depth\'s own left/right edges, not just the centered column group', async ({ page }) => {
@@ -897,18 +927,76 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     // (operator: "the bottom border should be stronger on amber
     // side") — same day, each step reusing an --algo-amber alpha
     // already established elsewhere in this file rather than
-    // inventing new one-off values.
+    // inventing new one-off values. A top edge (inset 0 1px 0, same
+    // alpha) was added later same day (operator: "add top border also
+    // to headers in chain and order ticket") as a FIRST layer ahead of
+    // this bottom one in the same box-shadow list — the check below no
+    // longer anchors "box-shadow:" directly to "inset 0 -1px 0" since
+    // that layer isn't first anymore; it just confirms the bottom-edge
+    // layer is present somewhere in the (now two-layer) list.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/box-shadow:\s*inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
+      expect(rule).toMatch(/box-shadow:/);
+      expect(rule).toMatch(/inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
       // Single-line rule — ruleBody's captured [^}]* contains only the
       // literal declarations between { and }, no surrounding comments,
       // so a bare substring check here is safe (unlike the multi-line
       // comment-collision cases documented elsewhere in this file).
       expect(rule).not.toMatch(/border-bottom:\s*\S/);
     }
+  });
+
+  test('.chain-th-ce/-pe/-strike ALSO carry a top edge (2026-09-30, operator: "add top border also to headers in chain and order ticket") — sandwiches the header row', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
+      const rule = ruleBody(content, sel) ?? '';
+      expect(rule, `${sel} rule`).not.toBe('');
+      // Positive y-offset (1px, vs. the existing -1px for the bottom
+      // edge) = inset shadow anchored to the TOP of the box.
+      expect(rule).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
+    }
+  });
+
+  test('CE/PE header text-align flipped: CE left, PE right (2026-09-30, operator: "ce label should be left aligned and pe should be right aligned")', () => {
+    const content = readFile('src/lib/order/OptionChainTab.svelte');
+    const ceRule = ruleBody(content, '.chain-th-ce') ?? '';
+    const peRule = ruleBody(content, '.chain-th-pe') ?? '';
+    expect(ceRule, '.chain-th-ce rule').not.toBe('');
+    expect(peRule, '.chain-th-pe rule').not.toBe('');
+    expect(ceRule).toMatch(/text-align:\s*left/);
+    expect(peRule).toMatch(/text-align:\s*right/);
+  });
+
+  test('live: CE renders left-aligned and PE renders right-aligned', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
+    const symInput = page.locator('.ssi-input').first();
+    await expect(symInput).toBeVisible({ timeout: 15_000 });
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    await expect(sugg).toBeVisible({ timeout: 10_000 });
+    await sugg.click({ force: true });
+    await page.waitForTimeout(500);
+    const chainTab = page.getByRole('tab', { name: /Chain/i }).first();
+    await expect(chainTab).toBeEnabled({ timeout: 15_000 });
+    await chainTab.click();
+    await page.waitForTimeout(800);
+
+    const ce = page.locator('.chain-th-ce').first();
+    const pe = page.locator('.chain-th-pe').first();
+    const ceVisible = await ce.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!ceVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.chain-th-ce not rendered (no chain data)' });
+      return;
+    }
+    const [ceAlign, peAlign] = await Promise.all([
+      ce.evaluate((el) => getComputedStyle(el).textAlign),
+      pe.evaluate((el) => getComputedStyle(el).textAlign),
+    ]);
+    expect(ceAlign, '.chain-th-ce computed text-align').toBe('left');
+    expect(peAlign, '.chain-th-pe computed text-align').toBe('right');
   });
 });
 
@@ -1020,16 +1108,18 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(diagIdx, '.ot-depth-diag markup').toBeGreaterThan(gridIdx);
   });
 
-  test('.ot-depth-diag is content-sized (inline-flex + align-self: flex-end), not a full-width flex container (2026-09-30, align-self later changed from center to flex-end)', () => {
+  test('.ot-depth-diag is content-sized (inline-flex + align-self: center), not a full-width flex container (2026-09-30, align-self changed center -> flex-end -> back to center, same day)', () => {
     // Operator: "the border above should be limited to the content" —
     // a block-level `display: flex` container takes its parent's full
     // width by default, so border-top spanned the whole card even
     // though justify-content: center only centered the TEXT inside
     // that full-width box. inline-flex shrinks the box itself to fit
     // the 3 labeled items, so border-top is genuinely content-width.
-    // align-self later changed center -> flex-end (operator: "align
-    // the labels to right") — same day, right-aligns the block
-    // instead of centering it.
+    // align-self briefly changed center -> flex-end (operator: "align
+    // the labels to right"), then REVERTED back to center same day
+    // (operator: "the bottom label info with border is not aligned
+    // at center") — right-aligning it read as inconsistent against
+    // the grid above, whose own column group centers within the card.
     const content = readFile('src/lib/order/OrderDepth.svelte');
     const rule = ruleBody(content, '.ot-depth-diag') ?? '';
     expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
@@ -1037,13 +1127,13 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     // trailing prose) — the explanatory comment above these two
     // declarations deliberately discusses the OLD values in prose
     // ("justify-content: center", "display: flex", "align-self:
-    // center") as part of explaining the change, which would
+    // flex-end") as part of explaining the change, which would
     // false-match a bare substring search.
     expect(rule).toMatch(/\n\s*display:\s*inline-flex;/);
-    expect(rule).toMatch(/\n\s*align-self:\s*flex-end;/);
+    expect(rule).toMatch(/\n\s*align-self:\s*center;/);
     expect(rule).not.toMatch(/\n\s*display:\s*flex;/);
     expect(rule).not.toMatch(/\n\s*justify-content:\s*center;/);
-    expect(rule).not.toMatch(/\n\s*align-self:\s*center;/);
+    expect(rule).not.toMatch(/\n\s*align-self:\s*flex-end;/);
   });
 
   test('.ot-depth-diag border-top matches the header\'s amber border, and font-size matches Chain\'s label size (2026-09-30, operator: "make the border above the labels to align with header border... the text size the label text size be in sync with chain")', () => {
@@ -1067,7 +1157,7 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(rule).toMatch(/text-align:\s*right/);
   });
 
-  test('live: .ot-depth-diag right-aligns against .ot-depth-grid\'s right edge, not centered', async ({ page }) => {
+  test('live: .ot-depth-diag horizontally centers against .ot-depth-grid\'s own center (reverted from right-align same day)', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
     const symInput = page.locator('.ssi-input').first();
@@ -1096,7 +1186,9 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
       test.info().annotations.push({ type: 'skip', description: 'boundingBox() unavailable this run' });
       return;
     }
-    expect(Math.abs(diagBox.right - gridBox.right), 'diag right edge must align with grid right edge, not sit centered').toBeLessThanOrEqual(2);
+    const diagCenter = diagBox.left + diagBox.width / 2;
+    const gridCenter = gridBox.left + gridBox.width / 2;
+    expect(Math.abs(diagCenter - gridCenter), 'diag center must align with grid center, not sit right-anchored').toBeLessThanOrEqual(2);
   });
 
   test('live: .ot-depth-diag\'s own box (and its border-top) is narrower than .ot-depth-grid\'s card, not full-width', async ({ page }) => {
@@ -1255,15 +1347,20 @@ test.describe('Static source checks — Chain Strike column widened to separate 
   // Operator: "move ce pe away from strike". CE/PE content is
   // flex-end/flex-start aligned toward the Strike column (see
   // .chain-cell-row-ce/-pe), so the visible gap between them is the
-  // Strike cell's own left/right padding. Widened 0.1rem -> 0.4rem.
-  test('.chain-row > td.chain-td-strike padding widened to 0.4rem (was 0.1rem)', () => {
+  // Strike cell's own left/right padding. Widened 0.1rem -> 0.4rem,
+  // then reduced to 0.22rem same day (operator: "the gap between ce,
+  // strike, pe values should be reduced") — 0.4rem read as too wide
+  // once rendered.
+  test('.chain-row > td.chain-td-strike padding reduced to 0.22rem (0.1rem -> 0.4rem -> 0.22rem)', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     const rule = content.match(/\.chain-row\s*>\s*td\.chain-td-strike\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule, '.chain-row > td.chain-td-strike rule').not.toBe('');
-    expect(rule).toMatch(/padding-left:\s*0\.4rem/);
-    expect(rule).toMatch(/padding-right:\s*0\.4rem/);
+    expect(rule).toMatch(/padding-left:\s*0\.22rem/);
+    expect(rule).toMatch(/padding-right:\s*0\.22rem/);
     expect(rule).not.toMatch(/padding-left:\s*0\.1rem/);
     expect(rule).not.toMatch(/padding-right:\s*0\.1rem/);
+    expect(rule).not.toMatch(/padding-left:\s*0\.4rem/);
+    expect(rule).not.toMatch(/padding-right:\s*0\.4rem/);
   });
 
   // Operator (2026-09-30, follow-up same day): "the gap between ce,
@@ -1272,12 +1369,17 @@ test.describe('Static source checks — Chain Strike column widened to separate 
   // .chain-th-strike padding was left at 0.1rem, so the header's
   // CE|Strike|PE gap stayed visibly tighter than the data rows below
   // it. Matched to the same 0.4rem value for header/body consistency.
-  test('.chain-th-strike padding ALSO widened to 0.4rem (0.2rem 0.1rem -> 0.2rem 0.4rem), matching the data row', () => {
+  // Reduced again 0.4rem -> 0.22rem same day (operator: "the gap
+  // between ce, strike, pe values should be reduced") — 0.4rem read
+  // as too wide once rendered; both header and data Strike cell kept
+  // in sync at the new value.
+  test('.chain-th-strike padding reduced to 0.22rem (0.2rem 0.1rem -> 0.2rem 0.4rem -> 0.2rem 0.22rem), matching the data row', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     const rule = ruleBody(content, '.chain-th-strike') ?? '';
     expect(rule, '.chain-th-strike rule').not.toBe('');
-    expect(rule).toMatch(/padding:\s*0\.2rem\s+0\.4rem/);
+    expect(rule).toMatch(/padding:\s*0\.2rem\s+0\.22rem/);
     expect(rule).not.toMatch(/padding:\s*0\.2rem\s+0\.1rem/);
+    expect(rule).not.toMatch(/padding:\s*0\.2rem\s+0\.4rem/);
   });
 
   test('live: strike cell gains extra horizontal separation from the CE/PE columns without misaligning the header label', async ({ page }) => {
@@ -1298,7 +1400,7 @@ test.describe('Static source checks — Chain Strike column widened to separate 
     const firstStrikeTd = page.locator('.chain-row > td.chain-td-strike').first();
     await expect(firstStrikeTd).toBeVisible({ timeout: 15_000 });
     const pl = await firstStrikeTd.evaluate((el) => getComputedStyle(el).paddingLeft);
-    expect(pl, 'chain-td-strike computed padding-left').toBe('6.4px');
+    expect(pl, 'chain-td-strike computed padding-left').toBe('3.52px');
 
     // Header "Strike" label and a data-row strike number must still
     // share the same horizontal center (widening padding must not

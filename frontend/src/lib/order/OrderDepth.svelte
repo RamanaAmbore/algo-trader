@@ -329,6 +329,26 @@
     font-variant-numeric: tabular-nums;
     font-size: var(--fs-sm);
   }
+  /* :first-child override (2026-09-30, operator: "observer the gap
+     above the header on order quote depth. there is some hidden
+     element for the gap or there is top margin or padding which
+     needs to be removed") — when .ot-depth-h (the "Prev <price>"
+     band, markup above) doesn't render (no ohlc.close / no err), this
+     grid becomes .ot-depth's literal first child and inherits the
+     card's own 0.45rem top padding before ANY content — previously
+     unremarkable, but now that the header has a prominent, edge-to-
+     edge colored band (the ::before bleed fix above), that padding
+     reads as an unexplained gap rather than a quiet card margin.
+     Chain's equivalent wrapper (.chain-grid-wrap) has no padding at
+     all, so its header starts flush at the wrap's own border. Negative
+     margin-top here cancels exactly .ot-depth's own padding-top,
+     pulling the header flush to the card's border — but ONLY when
+     grid is first-child; when .ot-depth-h IS rendered above it, this
+     selector doesn't match and the normal spacing between the Prev
+     band and the header is untouched. */
+  .ot-depth-grid:first-child {
+    margin-top: -0.45rem;
+  }
   .ot-depth-label {
     /* font-size/weight matched to Chain's header typography
        (.chain-th-ce/-pe/-strike, OptionChainTab.svelte) — was --fs-2xs
@@ -440,10 +460,12 @@
   .ot-depth-header-bg {
     grid-column: 1 / -1;
     grid-row: 1;
-    /* position: relative anchors the ::before bleed layer below. */
+    /* position: relative anchors the ::before bleed layer below. This
+       element itself paints NOTHING (no background/border-bottom of
+       its own, 2026-09-30 fix below) — it exists purely as a grid
+       item for sizing (matching grid-row 1's height); ::before does
+       all the actual painting. */
     position: relative;
-    background: var(--card-bg-elevated);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
   }
   /* Full-bleed background layer (2026-09-30, operator: "extend the
      header in order ticket end to end. there is a gap header in
@@ -472,13 +494,33 @@
      color argument can't be a gradient); a real ::before background
      has no such restriction. top/bottom: 0 inherits this element's
      own height, which already correctly matches grid-row 1 via
-     normal grid sizing — only the width axis needed fixing. */
+     normal grid sizing — only the width axis needed fixing.
+     REVISED (2026-09-30, operator: "did you observe uneven border
+     width for header in the middle and at the end") — the FIRST
+     version kept background/border-bottom on .ot-depth-header-bg
+     ITSELF too (duplicating ::before's own copy), so the real
+     element's narrow 267px-wide box and the ::before's full-width
+     bleed each painted their OWN border-bottom line at the same y
+     position — two separately-rasterized 1px lines landing on
+     (nearly, due to sub-pixel rounding) the same pixels in the middle
+     section only, vs. a single clean line at the bled ends, reading
+     as uneven thickness. Painting is now consolidated onto ::before
+     ALONE; the host element paints nothing. */
   .ot-depth-header-bg::before {
     content: '';
     position: absolute;
     inset: 0 -9999px;
     background: var(--card-bg-elevated);
-    border-bottom: inherit;
+    /* Top edge added (2026-09-30, operator: "add top border also to
+       headers in chain and order ticket") — sandwiches the header
+       band on both sides, matching Chain's own .chain-th-* (which got
+       the same addition as a second inset box-shadow layer — see
+       OptionChainTab.svelte). A real border-top (not box-shadow) is
+       fine here since this is a plain ::before on a CSS grid item,
+       not a sticky <th> in a border-collapse <table> — no repaint-bug
+       risk to defend against. */
+    border-top: 1px solid rgba(251,191,36,0.40);
+    border-bottom: 1px solid rgba(251,191,36,0.40);
   }
   .ot-depth-cell {
     text-align: right;
@@ -527,12 +569,17 @@
        (the 3 labeled items), so the border-top is exactly as wide as
        "Buy levels 0 · Sell levels 0 · Volume (raw) 0" — genuinely
        limited to the content, not stretching edge to edge.
-       align-self: flex-end (2026-09-30, operator: "align the labels
-       to right") — was align-self: center (itself a replacement for
-       the old justify-content: center, redundant on a content-sized
-       box); right-aligns this whole block against .ot-depth's own
-       right edge instead of centering it, matching the header
-       labels' own text-align: right convention.
+       align-self: flex-end tried (2026-09-30, operator: "align the
+       labels to right") — was align-self: center (itself a
+       replacement for the old justify-content: center, redundant on
+       a content-sized box); right-aligned this block against
+       .ot-depth's own right edge. REVERTED back to center same day
+       (operator: "the bottom label info with border is not aligned
+       at center") — right-aligning it read as visually inconsistent
+       against the grid above, whose own column group centers within
+       the card; centered the diag row matches that reference point.
+       The .ot-depth-diag-lbl text-align: right (below) still applies
+       per-label, independent of this container-level alignment.
        border-top color/alpha matched to the header's own border
        (2026-09-30, operator: "make the border above the labels to
        align with header border") — was a plain white 0.10 alpha line,
@@ -544,7 +591,7 @@
        own header-label size (.chain-th-ce/-pe/-strike), was smaller
        than Chain's equivalent labels. */
     display: inline-flex;
-    align-self: flex-end;
+    align-self: center;
     gap: 0.7rem;
     flex-wrap: wrap;
     margin-top: 0.35rem;
