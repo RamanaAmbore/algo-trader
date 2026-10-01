@@ -397,7 +397,14 @@ class TestWingSkippedReason:
         assert result_ov.get("_wing_picked_symbol") == "NIFTY25JUL25000CE"
 
     @pytest.mark.asyncio
-    async def test_wing_skipped_reason_none_when_not_sell_option(self):
+    async def test_wing_scan_runs_for_buy_option_offset_direction(self):
+        """2026-10 — BUY-parent option entries now run the SAME premium-%
+        chain scan as SELL-parent entries (mirrored offset-SELL/LIMIT
+        direction, see `_wing_direction`). The scan itself is side-
+        agnostic; with no instruments cache populated in this unit test
+        it naturally finds no chain candidates and reports that as the
+        (non-None) reason — confirming the scan actually RAN, not that
+        it found a winner."""
         from backend.api.algo.template_attach import _maybe_scan_wing_by_premium
 
         template = {"wing_premium_pct": 30.0, "wing_strike_offset": None}
@@ -405,8 +412,30 @@ class TestWingSkippedReason:
         result_ov, note, skip_reason = await _maybe_scan_wing_by_premium(
             template=template,
             overrides={},
-            parent_side="BUY",   # BUY — scan skipped
+            parent_side="BUY",   # BUY — scan now RUNS (mirrored direction)
             parent_symbol="NIFTY25JUL24000CE",
+            parent_exchange="NFO",
+            parent_fill_price=200.0,
+        )
+
+        assert skip_reason is not None
+        assert note is not None
+        assert "_wing_picked_symbol" not in result_ov
+
+    @pytest.mark.asyncio
+    async def test_wing_skipped_reason_none_for_buy_future(self):
+        """BUY parent on a FUTURES symbol (not an option) still skips the
+        scan entirely — `_wing_direction` only recognises option symbols
+        on either side; futures/equity never get a wing/offset leg."""
+        from backend.api.algo.template_attach import _maybe_scan_wing_by_premium
+
+        template = {"wing_premium_pct": 30.0, "wing_strike_offset": None}
+
+        result_ov, note, skip_reason = await _maybe_scan_wing_by_premium(
+            template=template,
+            overrides={},
+            parent_side="BUY",
+            parent_symbol="NIFTY26JUNFUT",   # futures — not an option
             parent_exchange="NFO",
             parent_fill_price=200.0,
         )

@@ -57,22 +57,44 @@ class GttSpec:
 
 @dataclass
 class WingSpec:
-    """Protective wing leg for a SELL option entry. Symbol is computed
-    from the parent's strike + template's wing_strike_offset (CE wing
-    is +offset, PE wing is -offset). Quantity matches the parent so the
-    spread net-margin is properly bounded.
+    """Protective/offset leg attached opposite the parent's option entry.
 
-    `estimated_price` is a heuristic (template's wing_premium_pct of
-    parent price) — the actual entry price comes from the paper engine
-    fill. Operator sees the estimate in the preview chip.
+    Two directions (see `_wing_direction`):
+      • SELL-option parent (short) → BUY wing, order_type=MARKET. This is
+        the original "hedge" leg — `estimated_price` here is a COSMETIC
+        heuristic only (template's wing_premium_pct of parent price, or
+        the chain-scan's picked LTP at scan time); the real fill price
+        comes from the broker/paper-engine market fill, never from this
+        field. `limit_price` is always None on this branch.
+      • BUY-option parent (long) → SELL offset leg, order_type=LIMIT.
+        Operator-confirmed: never MARKET for this direction. Here
+        `estimated_price` (mirrored into `limit_price`) IS the REAL
+        broker-bound limit price — the chain-scan's (or manual-offset
+        quote lookup's) picked LTP, tick-snapped. A WingSpec is only
+        ever built for this direction when a live quote was resolved —
+        there is no price-less fallback, because a LIMIT order with no
+        price is rejected by every broker.
+
+    Symbol is computed from the parent's strike + template's
+    wing_strike_offset (CE wing is +offset, PE wing is -offset) or from
+    the wing_premium_pct chain scan (`_pick_wing_by_premium`) — same
+    strike-selection mechanism for both directions. Quantity matches the
+    parent so the spread net-margin is properly bounded.
     """
     tradingsymbol:    str
     transaction_type: str = "BUY"
     quantity:         int = 0
     exchange:         str = "NFO"
     product:          str = "NRML"
-    order_type:       str = "MARKET"   # market-take so the hedge lands first
+    order_type:       str = "MARKET"   # market-take for the hedge direction; LIMIT for the offset direction
     estimated_price:  Optional[float] = None
+    # Real broker-bound LIMIT price for the offset-SELL direction only.
+    # None on the MARKET hedge direction (where `estimated_price` is
+    # cosmetic). Kept as a distinct field so callers can tell "this is a
+    # real order price" from "this is a preview estimate" without having
+    # to branch on `order_type` — mirrors `estimated_price` by value
+    # whenever order_type == "LIMIT".
+    limit_price:      Optional[float] = None
     placed_id:        Optional[str] = None
 
 
@@ -405,6 +427,26 @@ def _fire_attach_fail_alert(
 def _is_sell_option(side: str, symbol: str) -> bool:
     """SELL + parseable option symbol. Drives wing attach."""
     return side == "SELL" and bool(_OPT_SYM_RE.match(symbol.upper()))
+
+
+def _wing_direction(parent_side: str, parent_symbol: str) -> Optional[tuple[str, str]]:
+    """Return ``(wing_transaction_type, wing_order_type)`` for the leg
+    attached opposite the parent's option entry, or ``None`` when the
+    parent isn't a recognisable option entry (futures/equity on either
+    side, or an unparseable symbol, never get a wing).
+
+      • SELL option parent (short) → ``("BUY", "MARKET")``  — original
+        protective hedge, unchanged.
+      • BUY option parent (long)   → ``("SELL", "LIMIT")``  — new offset
+        leg (operator-confirmed: this direction is never MARKET).
+
+    Reuses `_is_sell_option` for the first branch so both stay in sync.
+    """
+    if _is_sell_option(parent_side, parent_symbol):
+        return "BUY", "MARKET"
+    if parent_side == "BUY" and bool(_OPT_SYM_RE.match(parent_symbol.upper())):
+        return "SELL", "LIMIT"
+    return None
 
 
 def _wing_symbol(parent_symbol: str, offset: int) -> Optional[str]:
@@ -1231,36 +1273,73 @@ def _build_wing_spec(
     parent_exchange:   str,
     parent_product:    str,
     parent_fill_price: float,
+    tick_size:         float = 0.0,
 ) -> tuple[Optional[WingSpec], list[str]]:
-    """Build a WingSpec for a SELL option entry, or return (None, notes).
+    """Build a WingSpec for the parent's option entry, or return (None, notes).
 
-    Priority: pre-resolved _wing_picked_symbol (set by apply_template_to_order
-    after chain scan) > wing_strike_offset > no wing. Returns
-    (wing_spec_or_none, notes_to_add).
+    Direction (hedge MARKET vs offset LIMIT) comes from `_wing_direction` —
+    see `WingSpec`'s own docstring for the full contract. Priority within
+    either direction: pre-resolved `_wing_picked_symbol`/`_wing_picked_ltp`
+    (set by `apply_template_to_order`, either via the wing_premium_pct
+    chain scan or — for the LIMIT offset direction only — a manual-offset
+    live quote lookup) > `wing_strike_offset` (hedge/MARKET direction
+    only — no live price needed there) > no wing.
+
+    `tick_size` (>0 when known) snaps the LIMIT offset leg's price to the
+    instrument's tick grid, same convention as `_snap_trigger_price`.
     """
     notes: list[str] = []
-    if not _is_sell_option(parent_side, parent_symbol):
+    direction = _wing_direction(parent_side, parent_symbol)
+    if direction is None:
         return None, notes
+    wing_txn_type, wing_order_type = direction
+    is_limit = wing_order_type == "LIMIT"
 
     _ov = overrides or {}
     # Phase 1B — apply_template_to_order pre-resolves the wing via
-    # _pick_wing_by_premium when wing_premium_pct is set, and seeds
-    # the picked tradingsymbol back into overrides. Use it first.
+    # _pick_wing_by_premium (or, for the LIMIT offset direction with a
+    # manual wing_strike_offset, a single-symbol quote lookup) and seeds
+    # the picked tradingsymbol + its live LTP back into overrides.
     wing_picked_sym = _ov.get("_wing_picked_symbol")
     wing_picked_ltp = _ov.get("_wing_picked_ltp")
     if wing_picked_sym:
+        est = float(wing_picked_ltp) if wing_picked_ltp is not None else None
+        limit_px: Optional[float] = None
+        if is_limit:
+            # The offset leg is a real order — never place a LIMIT with
+            # no (or non-positive) price.
+            if est is None or est <= 0:
+                notes.append(
+                    f"wing offset skipped — no valid live price for "
+                    f"{wing_picked_sym}"
+                )
+                return None, notes
+            limit_px = _snap_trigger_price(est, tick_size)
+            est = limit_px
         return WingSpec(
             tradingsymbol=str(wing_picked_sym),
-            transaction_type="BUY",
+            transaction_type=wing_txn_type,
             quantity=parent_qty,
             exchange=parent_exchange,
             product=parent_product,
-            order_type="MARKET",
-            estimated_price=(float(wing_picked_ltp)
-                             if wing_picked_ltp is not None else None),
+            order_type=wing_order_type,
+            estimated_price=est,
+            limit_price=limit_px,
         ), notes
 
     if wing_strike_offset is not None:
+        if is_limit:
+            # BUY-parent offset leg needs a REAL broker-bound price.
+            # A manual wing_strike_offset with no resolved live quote
+            # (apply_template_to_order's offset-quote lookup failed, or
+            # wasn't reached) cannot safely place a LIMIT order — never
+            # fall back to the cosmetic wing_premium_pct estimate as a
+            # real price, and never silently place MARKET instead.
+            notes.append(
+                "wing_strike_offset set but no live quote resolved for "
+                "the LIMIT offset leg — wing not attached (see wing scan notes)"
+            )
+            return None, notes
         wing_sym = _wing_symbol(parent_symbol, wing_strike_offset)
         if wing_sym is None:
             notes.append(
@@ -1269,17 +1348,17 @@ def _build_wing_spec(
             return None, notes
         # Estimated wing premium — fraction of parent's premium.
         # Operator's preview shows this; actual fill comes from
-        # paper engine.
+        # paper engine. (MARKET direction only — cosmetic, see above.)
         est = None
         if wing_premium_pct is not None:
             est = round(parent_fill_price * float(wing_premium_pct) / 100.0, 2)
         return WingSpec(
             tradingsymbol=wing_sym,
-            transaction_type="BUY",
+            transaction_type=wing_txn_type,
             quantity=parent_qty,
             exchange=parent_exchange,
             product=parent_product,
-            order_type="MARKET",
+            order_type=wing_order_type,
             estimated_price=est,
         ), notes
 
@@ -1389,6 +1468,7 @@ def resolve_template_plan(
         parent_side, parent_symbol, _ov,
         wing_strike_offset, wing_premium_pct,
         parent_qty, parent_exchange, parent_product, parent_fill_price,
+        tick_size=plan.parent_tick_size,
     )
     plan.notes.extend(_wing_notes)
 
@@ -1545,10 +1625,24 @@ def _ta_sim_place_wing(
     plan: TemplatePlan,
     result: AttachResult,
 ) -> None:
-    """Register the wing leg with SimDriver's paper engine."""
+    """Register the wing/offset leg with SimDriver's paper engine.
+
+    MARKET hedge direction (unchanged): the dict intentionally omits
+    `side`/`limit_price` — `PaperTradeEngine._paper_step_single_order`
+    then defaults `side` to "SELL" and `limit` to 0, which fills
+    immediately at the current bid. This is the pre-existing
+    "market-take" sim approximation; untouched here.
+
+    LIMIT offset direction (BUY-parent → SELL offset leg): this is a
+    REAL limit order, so `side`/`qty`/`limit_price` are set explicitly —
+    the paper engine then evaluates it as a genuine resting SELL limit
+    (`_paper_is_fillable`: fills only when bid >= limit_price), not an
+    instant market-style fill.
+    """
     if plan.wing is None:
         return
     from datetime import datetime, timezone
+    is_limit = str(plan.wing.order_type).upper() == "LIMIT"
     wing_order = {
         "account":          plan.parent_account,
         "symbol":           plan.wing.tradingsymbol,
@@ -1560,13 +1654,23 @@ def _ta_sim_place_wing(
         "mode":             "sim",
         "engine":           "sim",
         "detail":           (
-            f"[SIM-WING] template={plan.template_name} → BUY "
-            f"{plan.wing.quantity} {plan.wing.tradingsymbol} "
+            f"[SIM-WING] template={plan.template_name} → "
+            f"{plan.wing.transaction_type} {plan.wing.quantity} "
+            f"{plan.wing.tradingsymbol} "
             f"(parent {plan.parent_side} {plan.parent_symbol})"
         ),
         "created_at":       datetime.now(timezone.utc),
         "attempts":         0,
     }
+    if is_limit:
+        _lp = (
+            plan.wing.limit_price
+            if plan.wing.limit_price is not None
+            else plan.wing.estimated_price
+        )
+        wing_order["side"] = plan.wing.transaction_type
+        wing_order["qty"] = plan.wing.quantity
+        wing_order["limit_price"] = _lp
     try:
         driver.register_open_order(wing_order)
         plan.wing.placed_id = f"sim-wing-{plan.wing.tradingsymbol}"
@@ -1673,7 +1777,20 @@ def _translate_gtt_orders(broker, spec: GttSpec, plan: TemplatePlan) -> list[dic
 
 
 def _place_wing_leg(broker, plan: TemplatePlan) -> str:
-    """Translate the wing leg's quantity and place a market order.
+    """Translate the wing/offset leg's quantity and place the order.
+
+    MARKET direction (hedge, unchanged): no `price` kwarg is sent — exactly
+    byte-identical to the pre-existing behavior.
+
+    LIMIT direction (BUY-parent offset leg): `price` MUST be present and
+    positive for Kite's `_validate_kite_order_prices` to accept the order
+    ("LIMIT order requires price > 0") — a LIMIT order_type with no price
+    kwarg at all would be rejected by the broker, never silently placed
+    as MARKET. `WingSpec.limit_price` (falling back to `estimated_price`,
+    which is the same real price on this direction — see WingSpec's
+    docstring) supplies it. Raises ValueError before the broker call when
+    no valid price is available, so the caller's except block collects a
+    clear error instead of letting an opaque broker rejection surface.
 
     Returns the broker order_id as a string. Raises on any failure so
     the caller's except block collects the error.
@@ -1689,8 +1806,8 @@ def _place_wing_leg(broker, plan: TemplatePlan) -> str:
             f"{plan.wing.exchange}/{plan.wing.tradingsymbol} "
             f"qty={raw_wing_q} lot_size={plan.parent_lot_size}: {_te}"
         ) from _te
-    # intent omitted intentionally — wing legs are new opens, 50-lot ceiling applies
-    order_id = broker.place_order(
+    # intent omitted intentionally — wing/offset legs are new opens, 50-lot ceiling applies
+    _wing_kwargs: dict = dict(
         tradingsymbol=plan.wing.tradingsymbol,
         exchange=plan.wing.exchange,
         transaction_type=plan.wing.transaction_type,
@@ -1700,6 +1817,21 @@ def _place_wing_leg(broker, plan: TemplatePlan) -> str:
         variety="regular",
         tag=f"tpl-{plan.template_id}-wing",  # Kite tag cap: 20 chars
     )
+    if str(plan.wing.order_type).upper() == "LIMIT":
+        _price = (
+            plan.wing.limit_price
+            if plan.wing.limit_price is not None
+            else plan.wing.estimated_price
+        )
+        if not _price or float(_price) <= 0:
+            raise ValueError(
+                f"[WING-LIMIT-PRICE-GUARD] LIMIT offset leg for "
+                f"{plan.wing.tradingsymbol} has no valid price "
+                f"(limit_price={plan.wing.limit_price!r}, "
+                f"estimated_price={plan.wing.estimated_price!r})"
+            )
+        _wing_kwargs["price"] = float(_price)
+    order_id = broker.place_order(**_wing_kwargs)
     return str(order_id)
 
 
@@ -1869,6 +2001,12 @@ def _ta_template_row_to_dict(row) -> dict:
         "sl_pct":             float(row.sl_pct)           if row.sl_pct is not None else None,
         "wing_premium_pct":   float(row.wing_premium_pct) if row.wing_premium_pct is not None else None,
         "wing_strike_offset": int(row.wing_strike_offset) if row.wing_strike_offset is not None else None,
+        # Chain-tab pre-submission spread gate default (spread_check.
+        # resolve_max_spread_pct reads this key). NOT consumed by
+        # resolve_template_plan / _parse_template_overrides — adding
+        # it here is deliberately isolated from that override tuple.
+        "wing_max_spread_pct": (float(row.wing_max_spread_pct)
+                                 if getattr(row, "wing_max_spread_pct", None) is not None else None),
         "tp_order_type":      (row.tp_order_type or "LIMIT"),
         "tp_scales_json":     row.tp_scales_json,
         "sl_trail_pct":       float(row.sl_trail_pct)     if row.sl_trail_pct is not None else None,
@@ -2220,7 +2358,9 @@ def _ta_wing_scan_precondition(
     """Return the resolved wing_premium_pct when the premium-scan should run.
 
     Returns ``None`` when the scan should be skipped — either because the
-    parent is not a SELL option, the fill price is zero, a manual
+    parent isn't a recognisable option entry on either side (see
+    `_wing_direction` — covers both the SELL-parent hedge direction and
+    the BUY-parent offset direction), the fill price is zero, a manual
     ``wing_strike_offset`` is already set, or no ``wing_premium_pct`` is
     configured on the template or overrides.
     """
@@ -2233,8 +2373,7 @@ def _ta_wing_scan_precondition(
         wing_pct_pre = template.get("wing_premium_pct")
 
     if not (
-        parent_side == "SELL"
-        and bool(_OPT_SYM_RE.match(parent_symbol.upper()))
+        _wing_direction(parent_side, parent_symbol) is not None
         and wing_pct_pre is not None
         and wing_offset_pre is None
         and parent_fill_price > 0
@@ -2308,6 +2447,100 @@ async def _maybe_scan_wing_by_premium(
     return overrides, reason, reason
 
 
+def _ta_offset_wing_precondition(
+    overrides: dict,
+    template: dict,
+    parent_side: str,
+    parent_symbol: str,
+) -> Optional[int]:
+    """Return the manual wing_strike_offset int when the LIMIT offset
+    direction (BUY-parent) needs its own live-quote lookup — i.e. the
+    premium-scan (`_maybe_scan_wing_by_premium`) didn't already resolve a
+    picked symbol AND the operator (or template) set an explicit
+    wing_strike_offset. Returns None (no-op) for the MARKET hedge
+    direction — that branch never needs a live price."""
+    _ov = overrides or {}
+    if _ov.get("_wing_picked_symbol"):
+        return None  # already resolved by the premium scan
+    direction = _wing_direction(parent_side, parent_symbol)
+    if direction is None or direction[1] != "LIMIT":
+        return None  # MARKET hedge direction — no live price needed
+    offset_pre = _ov.get("wing_strike_offset")
+    if offset_pre is None:
+        offset_pre = template.get("wing_strike_offset")
+    if offset_pre is None:
+        return None  # no manual offset configured — nothing to quote
+    try:
+        return int(offset_pre)
+    except (TypeError, ValueError):
+        return None
+
+
+async def _maybe_fetch_wing_quote_for_offset(
+    template:          dict,
+    overrides:         dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_exchange:   str,
+    parent_order_id:   Optional[int] = None,
+) -> tuple[dict, Optional[str], Optional[str]]:
+    """BUY-parent LIMIT offset leg, manual `wing_strike_offset` path.
+
+    The offset leg's strike is computed the SAME way as the existing
+    MARKET-hedge offset path (`_wing_symbol` — no new strike-selection
+    logic), but a LIMIT order needs a REAL price. When no
+    `wing_premium_pct` scan already resolved one (see
+    `_maybe_scan_wing_by_premium`), fetch a single live quote for the
+    computed strike here, reusing the same `_wing_fetch_quotes` plumbing
+    `_pick_wing_by_premium` uses — not a new broker-call pattern.
+
+    Returns (overrides_possibly_augmented, note_or_None, skip_reason_or_None) —
+    same contract as `_maybe_scan_wing_by_premium`. No-ops (all None) when
+    this path doesn't apply (MARKET hedge direction, premium-scan already
+    resolved a symbol, or no manual offset configured).
+    """
+    offset = _ta_offset_wing_precondition(overrides, template, parent_side, parent_symbol)
+    if offset is None:
+        return overrides, None, None
+
+    wing_sym = _wing_symbol(parent_symbol, offset)
+    if wing_sym is None:
+        return overrides, None, None  # _build_wing_spec's own note covers parse failure
+
+    try:
+        quote_data, quote_err = await _wing_fetch_quotes(
+            [{"exch": parent_exchange, "ts": wing_sym}], parent_exchange,
+        )
+    except Exception as e:
+        quote_data, quote_err = {}, f"wing offset LIMIT quote failed: {e}"
+
+    reason: Optional[str] = quote_err
+    if not quote_err:
+        q = quote_data.get(f"{parent_exchange}:{wing_sym}") or {}
+        ltp = float(q.get("last_price") or 0)
+        if ltp > 0:
+            overrides = dict(overrides or {})
+            overrides["_wing_picked_symbol"] = wing_sym
+            overrides["_wing_picked_ltp"] = ltp
+            return overrides, f"wing offset leg priced — {wing_sym} @ ₹{ltp:.2f}", None
+        reason = f"wing offset LIMIT quote unavailable for {wing_sym}"
+
+    logger.warning(
+        "[WING-OFFSET-SKIP] order #%s %s: %s",
+        parent_order_id, parent_symbol, reason,
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_ntfy_alert
+        send_ntfy_alert(
+            "Wing offset attach skipped",
+            f"{reason} | order #{parent_order_id} {parent_symbol} {parent_exchange}",
+            priority="high",
+        )
+    except Exception as _na:
+        logger.warning("wing offset skip ntfy alert failed: %s", _na)
+    return overrides, reason, reason
+
+
 def _mcx_capability_guard(
     caps,
     parent_exchange: str,
@@ -2350,6 +2583,36 @@ def _mcx_capability_guard(
     )
     result.guard_alert_fired = True
     return result
+
+
+async def _resolve_wing_pricing(
+    template:          dict,
+    overrides:         dict,
+    parent_side:       str,
+    parent_symbol:     str,
+    parent_exchange:   str,
+    parent_fill_price: float,
+    parent_order_id:   Optional[int] = None,
+) -> tuple[dict, Optional[str], Optional[str]]:
+    """Resolve any live wing/offset pricing needed before `resolve_template_plan`
+    runs — the wing_premium_pct chain scan (either direction) followed by
+    the BUY-parent manual-offset LIMIT quote lookup (no-op unless that
+    specific case applies). Thin sequencing wrapper kept separate from
+    `apply_template_to_order` so the CC gate doesn't trip on the caller.
+
+    Returns (overrides_possibly_augmented, note_or_None, skip_reason_or_None) —
+    same contract as the two helpers it sequences.
+    """
+    overrides, wing_scan_note, wing_skipped_reason = await _maybe_scan_wing_by_premium(
+        template, overrides, parent_side, parent_symbol,
+        parent_exchange, parent_fill_price,
+        parent_order_id=parent_order_id,
+    )
+    overrides, offset_note, offset_skip = await _maybe_fetch_wing_quote_for_offset(
+        template, overrides, parent_side, parent_symbol,
+        parent_exchange, parent_order_id=parent_order_id,
+    )
+    return overrides, (wing_scan_note or offset_note), (wing_skipped_reason or offset_skip)
 
 
 async def apply_template_to_order(
@@ -2479,13 +2742,13 @@ async def apply_template_to_order(
     if _early is not None:
         return _early
 
-    # Phase 1B — when the template says "pick wing by premium %" AND
-    # no explicit wing_strike_offset overrides it, run the chain scan
-    # here (we're in async context) and feed the picked tradingsymbol
-    # back into the synchronous resolver via the merged overrides dict.
-    # Scan failures convert to a plan note + skip wing attach; the
-    # parent order is never blocked.
-    overrides, wing_scan_note, wing_skipped_reason = await _maybe_scan_wing_by_premium(
+    # Phase 1B / BUY-offset — resolve any live wing pricing (premium-scan
+    # for either direction, or a manual-offset quote lookup for the new
+    # LIMIT offset direction) before the sync plan resolver runs. Scan/
+    # quote failures convert to a plan note + skip wing attach; the
+    # parent order is never blocked. Extracted to its own helper to keep
+    # this function's own branching flat (CC gate).
+    overrides, wing_scan_note, wing_skipped_reason = await _resolve_wing_pricing(
         template, overrides, parent_side, parent_symbol,
         parent_exchange, parent_fill_price,
         parent_order_id=parent_order_id,
