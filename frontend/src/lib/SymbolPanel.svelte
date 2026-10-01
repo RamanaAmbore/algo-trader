@@ -2965,7 +2965,7 @@
                     }} />
                 </label>
                 <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / template default.">
-                  <span>TP%</span>
+                  <span>TP %</span>
                   <input type="number" step="0.5" disabled={basketSubmitting}
                          placeholder={_eff2?.tp_pct != null ? String(_eff2.tp_pct) : '—'}
                          value={leg.tp_pct_override ?? ''}
@@ -2976,7 +2976,7 @@
                          }} />
                 </label>
                 <label class="oes-leg-editor-field" title="SL% for this leg. Empty = inherit shell / template default.">
-                  <span>SL%</span>
+                  <span>SL %</span>
                   <input type="number" step="0.5" disabled={basketSubmitting}
                          placeholder={_eff2?.sl_pct != null ? String(_eff2.sl_pct) : '—'}
                          value={leg.sl_pct_override ?? ''}

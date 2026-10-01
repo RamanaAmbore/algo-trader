@@ -1468,7 +1468,7 @@ class OrderTemplate(Base):
     wing_strike_offset: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
     # Pre-submission spread% threshold for the Chain-tab gate
     # (backend.api.algo.spread_check). NULL = fall back to the global
-    # admin setting `templates.wing_max_spread_pct` (default 10.0 —
+    # admin setting `templates.wing_max_spread_pct` (default 0.5 —
     # the same number `_pick_wing_by_premium`'s own liquidity filter
     # reads). Distinct from that filter: this value is never used to
     # pick a different strike, only to warn before submit when the

@@ -229,7 +229,7 @@ def resolve_max_spread_pct(
 ) -> tuple[float, str]:
     """Resolve the effective spread% threshold: override > template >
     global admin setting (`templates.wing_max_spread_pct`, default
-    10.0 — same setting `_pick_wing_by_premium`'s own liquidity filter
+    0.5 — same setting `_pick_wing_by_premium`'s own liquidity filter
     reads, deliberately: the operator's brief is "the global setting's
     current value as the default, editable per-order/per-template").
 
@@ -262,6 +262,6 @@ def resolve_max_spread_pct(
 
     try:
         from backend.shared.helpers.settings import get_float
-        return float(get_float("templates.wing_max_spread_pct", 10.0)), "setting"
+        return float(get_float("templates.wing_max_spread_pct", 0.5)), "setting"
     except Exception:
-        return 10.0, "setting"
+        return 0.5, "setting"

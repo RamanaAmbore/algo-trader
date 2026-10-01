@@ -156,8 +156,8 @@
   // Default placeholder: per-template override once the backend field
   // lands (`wing_max_spread_pct` — same name as the existing global
   // `templates.wing_max_spread_pct` admin setting it overrides), else
-  // the global setting's own default value (10.0).
-  const _spreadDefault = $derived(selectedTemplate?.wing_max_spread_pct ?? 10);
+  // the global setting's own default value (0.5).
+  const _spreadDefault = $derived(selectedTemplate?.wing_max_spread_pct ?? 0.5);
   const _spreadAsterisk = $derived(
     selectedTemplate && spreadMaxPctOverride !== '' && spreadMaxPctOverride != null &&
     String(Number(spreadMaxPctOverride)) !== String(_spreadDefault)
@@ -237,7 +237,7 @@
     <!-- TP% override -->
     <label class="oes-basket-tpl-param {_tpErr ? 'oes-tpl-param-err' : ''}"
            title="Take-profit % above (BUY) or below (SELL) the fill price.">
-      <span>TP%{_tpAsterisk ? '*' : ''}</span>
+      <span>TP %{_tpAsterisk ? '*' : ''}</span>
       <input type="number" step="0.5"
         class:oes-tpl-input-err={!!_tpErr}
         placeholder={selectedTemplate.tp_pct != null ? String(selectedTemplate.tp_pct) : '—'}
@@ -246,7 +246,7 @@
     <!-- SL% override -->
     <label class="oes-basket-tpl-param {_slErr ? 'oes-tpl-param-err' : ''}"
            title="Stop-loss % opposite the TP side.">
-      <span>SL%{_slAsterisk ? '*' : ''}</span>
+      <span>SL %{_slAsterisk ? '*' : ''}</span>
       <input type="number" step="0.5"
         class:oes-tpl-input-err={!!_slErr}
         placeholder={selectedTemplate.sl_pct != null ? String(selectedTemplate.sl_pct) : '—'}
@@ -259,7 +259,7 @@
          wing/offset leg actually resolves. -->
     <label class="oes-basket-tpl-param {_spreadErr ? 'oes-tpl-param-err' : ''}"
            title="Max bid/ask spread % allowed on the original + offset leg before Chain submit warns.">
-      <span>Spread%{_spreadAsterisk ? '*' : ''}</span>
+      <span>Spread %{_spreadAsterisk ? '*' : ''}</span>
       <input type="number" step="0.5"
         class:oes-tpl-input-err={!!_spreadErr}
         placeholder={String(_spreadDefault)}
@@ -324,7 +324,7 @@
       {/if}
       <!-- Trailing stop % -->
       <label class="oes-basket-tpl-param" title="Trailing stop % — SL trigger ratchets toward LTP as it moves favorably.">
-        <span>Trail SL%{_trailAsterisk ? '*' : ''}</span>
+        <span>Trail SL %{_trailAsterisk ? '*' : ''}</span>
         <input type="number" step="0.5"
           placeholder={selectedTemplate.sl_trail_pct != null ? String(selectedTemplate.sl_trail_pct) : '—'}
           bind:value={slTrailPctOverride} />

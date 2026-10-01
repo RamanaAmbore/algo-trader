@@ -365,7 +365,7 @@ SEEDS: list[tuple] = [
      "picked. Filters out illiquid strikes that would land a bad fill. "
      "Set 0 to disable the OI filter.",
      "lots", {"min": 0, "max": 1000000, "step": 100}),
-    ("templates", "templates.wing_max_spread_pct", "float", 10.0,
+    ("templates", "templates.wing_max_spread_pct", "float", 0.5,
      "Maximum bid-ask spread as % of LTP that a candidate wing is "
      "allowed to have. Wide spreads = expensive entry. Set 100 to "
      "disable.",

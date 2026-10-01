@@ -45,26 +45,95 @@ const TEMPLATE_PATH = `${ROOT}/TemplateBar.svelte`;
 const SHELL_PATH     = `${ROOT}/SymbolPanel.svelte`;
 const GATE_LIB_PATH  = `${ROOT}/data/spreadGate.js`;
 
+const BACKEND_ROOT = '/Users/ramanambore/projects/ramboq/backend';
+const SETTINGS_PATH     = `${BACKEND_ROOT}/shared/helpers/settings.py`;
+const SPREAD_CHECK_PATH = `${BACKEND_ROOT}/api/algo/spread_check.py`;
+const TEMPLATE_ATTACH_PATH = `${BACKEND_ROOT}/api/algo/template_attach.py`;
+
 let chainSrc = '', templateSrc = '', shellSrc = '', gateLibSrc = '';
+let settingsSrc = '', spreadCheckSrc = '', templateAttachSrc = '';
 
 test.beforeAll(() => {
   chainSrc    = readFileSync(CHAIN_PATH, 'utf-8');
   templateSrc = readFileSync(TEMPLATE_PATH, 'utf-8');
   shellSrc    = readFileSync(SHELL_PATH, 'utf-8');
   gateLibSrc  = readFileSync(GATE_LIB_PATH, 'utf-8');
+
+  settingsSrc        = readFileSync(SETTINGS_PATH, 'utf-8');
+  spreadCheckSrc      = readFileSync(SPREAD_CHECK_PATH, 'utf-8');
+  templateAttachSrc   = readFileSync(TEMPLATE_ATTACH_PATH, 'utf-8');
+});
+
+test.describe('Spread% default threshold is 0.5% everywhere (not the old 10.0%)', () => {
+  test('backend admin-settings seed registers templates.wing_max_spread_pct default as 0.5', () => {
+    expect(settingsSrc).toContain(
+      '("templates", "templates.wing_max_spread_pct", "float", 0.5,'
+    );
+    expect(settingsSrc).not.toContain(
+      '("templates", "templates.wing_max_spread_pct", "float", 10.0,'
+    );
+  });
+
+  test('resolve_max_spread_pct() fallback (get_float + except branch) both use 0.5', () => {
+    expect(spreadCheckSrc).toContain(
+      'get_float("templates.wing_max_spread_pct", 0.5)'
+    );
+    expect(spreadCheckSrc).toContain('return 0.5, "setting"');
+    expect(spreadCheckSrc).not.toContain(
+      'get_float("templates.wing_max_spread_pct", 10.0)'
+    );
+  });
+
+  test('_pick_wing_by_premium() fallback (get_float + except branch) both use 0.5', () => {
+    expect(templateAttachSrc).toContain(
+      'get_float("templates.wing_max_spread_pct", 0.5)'
+    );
+    expect(templateAttachSrc).toContain('min_oi, max_spread_pct, chain_radius = 1000, 0.5, 20');
+    expect(templateAttachSrc).not.toContain(
+      'get_float("templates.wing_max_spread_pct", 10.0)'
+    );
+  });
+
+  test('frontend fallbacks (TemplateBar + OptionChainTab) both use 0.5, not 10', () => {
+    expect(templateSrc).toContain('selectedTemplate?.wing_max_spread_pct ?? 0.5');
+    expect(chainSrc).toContain('(tpl.wing_max_spread_pct ?? 0.5)');
+    expect(templateSrc).not.toContain('selectedTemplate?.wing_max_spread_pct ?? 10');
+    expect(chainSrc).not.toContain('(tpl.wing_max_spread_pct ?? 10)');
+  });
+});
+
+test.describe('TP %/SL %/Spread % labels render with a space before the %', () => {
+  test('TemplateBar renders "TP %", "SL %", "Spread %" (space before %, asterisk right after %)', () => {
+    expect(templateSrc).toContain("<span>TP %{_tpAsterisk ? '*' : ''}</span>");
+    expect(templateSrc).toContain("<span>SL %{_slAsterisk ? '*' : ''}</span>");
+    expect(templateSrc).toContain("<span>Spread %{_spreadAsterisk ? '*' : ''}</span>");
+    expect(templateSrc).not.toContain('<span>TP%');
+    expect(templateSrc).not.toContain('<span>SL%');
+    expect(templateSrc).not.toContain('<span>Spread%');
+  });
+
+  test('TemplateBar also spaces the sibling "Trail SL %" label (same fix, same file)', () => {
+    expect(templateSrc).toContain("<span>Trail SL %{_trailAsterisk ? '*' : ''}</span>");
+    expect(templateSrc).not.toContain('Trail SL%');
+  });
+
+  test('SymbolPanel per-leg editor renders "TP %" / "SL %" (space before %)', () => {
+    expect(shellSrc).toContain('<span>TP %</span>');
+    expect(shellSrc).toContain('<span>SL %</span>');
+  });
 });
 
 test.describe('Spread% field renders alongside TP%/SL% with the correct default', () => {
-  test('TemplateBar declares a Spread% bindable prop + input, defaulted from wing_max_spread_pct ?? 10', () => {
+  test('TemplateBar declares a Spread% bindable prop + input, defaulted from wing_max_spread_pct ?? 0.5', () => {
     expect(templateSrc).toContain('spreadMaxPctOverride');
     // Default placeholder resolution — per-template field once it
-    // exists, else the same 10.0 fallback the global admin setting uses.
-    expect(templateSrc).toContain("selectedTemplate?.wing_max_spread_pct ?? 10");
+    // exists, else the same 0.5 fallback the global admin setting uses.
+    expect(templateSrc).toContain("selectedTemplate?.wing_max_spread_pct ?? 0.5");
     // Rendered in the SAME param row as TP%/SL% (not gated on showsWing)
-    // — i.e. the <label>...Spread%... block sits between the SL% input
+    // — i.e. the <label>...Spread %... block sits between the SL % input
     // and the `{#if showsWing}` wing block, not inside it.
-    const slIdx     = templateSrc.indexOf('>SL%');
-    const spreadIdx = templateSrc.indexOf('>Spread%');
+    const slIdx     = templateSrc.indexOf('>SL %');
+    const spreadIdx = templateSrc.indexOf('>Spread %');
     const wingIfIdx  = templateSrc.indexOf('{#if showsWing}');
     expect(slIdx).toBeGreaterThan(-1);
     expect(spreadIdx).toBeGreaterThan(slIdx);

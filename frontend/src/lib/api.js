@@ -930,7 +930,7 @@ export async function previewOrderMargin(payload) {
  *  `{ok: false, status: 'error', reason: '...'}` rather than a 5xx.
  *  `max_spread_pct` is optional — when omitted the backend falls back
  *  to the per-template `wing_max_spread_pct` / global
- *  `templates.wing_max_spread_pct` setting (default 10.0) and echoes
+ *  `templates.wing_max_spread_pct` setting (default 0.5) and echoes
  *  whichever value it actually used back as `threshold_pct` +
  *  `threshold_source` ("override" | "template" | "setting").
  *

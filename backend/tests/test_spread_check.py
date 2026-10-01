@@ -261,5 +261,5 @@ class TestResolveMaxSpreadPct:
             side_effect=RuntimeError("db down"),
         ):
             value, source = resolve_max_spread_pct(None, None)
-        assert value == 10.0
+        assert value == 0.5
         assert source == "setting"

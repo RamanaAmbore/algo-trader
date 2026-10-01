@@ -750,10 +750,10 @@ async def _pick_wing_by_premium(
     try:
         from backend.shared.helpers.settings import get_int, get_float
         min_oi          = get_int("templates.wing_min_oi", 1000)
-        max_spread_pct  = get_float("templates.wing_max_spread_pct", 10.0)
+        max_spread_pct  = get_float("templates.wing_max_spread_pct", 0.5)
         chain_radius    = get_int("templates.wing_chain_radius", 20)
     except Exception:
-        min_oi, max_spread_pct, chain_radius = 1000, 10.0, 20
+        min_oi, max_spread_pct, chain_radius = 1000, 0.5, 20
 
     # #10: hard-reject floor — 0 = disabled (default).
     try:

@@ -917,7 +917,7 @@
       ?? (tpl.wing_premium_pct ?? null);
     const maxSpreadPct = (spreadMaxPctOverride !== '' && spreadMaxPctOverride != null)
       ? Number(spreadMaxPctOverride)
-      : (tpl.wing_max_spread_pct ?? 10);
+      : (tpl.wing_max_spread_pct ?? 0.5);
     // _template_has_wing parity: offset != null (including 0, a valid
     // ATM wing) OR a truthy premium%. Not a truthiness check on offset.
     const hasWing = offset != null || !!(premPct && Number(premPct) > 0);

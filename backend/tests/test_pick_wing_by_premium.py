@@ -781,10 +781,14 @@ async def test_pick_wing_by_premium_settings_fallback():
         _make_instrument("NIFTY25APR22050CE", 22050.0),
     ]
 
+    # Tight bid/ask (~0.2% spread) so this scenario stays valid against the
+    # hardcoded fallback's max_spread=0.5% — this test is about the OI/
+    # chain_radius fallback, not about exercising the spread threshold
+    # itself.
     quote_data = {
-        "NFO:NIFTY25APR21950CE": _make_mock_quote(ltp=50.0),  # score=0 (exact)
-        "NFO:NIFTY25APR22000CE": _make_mock_quote(ltp=55.0),  # score=5
-        "NFO:NIFTY25APR22050CE": _make_mock_quote(ltp=45.0),  # score=5
+        "NFO:NIFTY25APR21950CE": _make_mock_quote(ltp=50.0, bid=49.95, ask=50.05),  # score=0 (exact)
+        "NFO:NIFTY25APR22000CE": _make_mock_quote(ltp=55.0, bid=54.95, ask=55.05),  # score=5
+        "NFO:NIFTY25APR22050CE": _make_mock_quote(ltp=45.0, bid=44.95, ask=45.05),  # score=5
     }
 
     # Simulate settings read failure — should fall back to hardcoded defaults
@@ -802,7 +806,7 @@ async def test_pick_wing_by_premium_settings_fallback():
             parent_symbol, parent_exchange, parent_fill_price, wing_premium_pct,
         )
 
-    # Target = 50. With hardcoded defaults (min_oi=1000, chain_radius=20, max_spread=10%)
+    # Target = 50. With hardcoded defaults (min_oi=1000, chain_radius=20, max_spread=0.5%)
     # 21950 @ 50 has best score (0), so should be picked
     assert ws == "NIFTY25APR21950CE", "Should succeed with fallback defaults"
     assert wltp == 50.0
