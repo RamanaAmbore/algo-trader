@@ -1637,12 +1637,14 @@
      header row on both sides instead of just underlining it.
      text-align flipped (2026-09-30, operator: "ce label should be
      left aligned and pe should be right aligned") — was right/left;
-     now CE left-aligned, PE right-aligned. Deliberately scoped to
-     just this header text — the data rows' own +/- button/quote
+     changed to CE left-aligned, PE right-aligned. Deliberately scoped
+     to just this header text — the data rows' own +/- button/quote
      layout (.chain-cell-row-ce/-pe, their own flex-end/flex-start,
-     further below) is untouched. */
-  .chain-th-ce      { text-align: left;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: right;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+     further below) is untouched.
+     REVERSED again same day (operator: "reverse ce and re label
+     alignment") — back to the ORIGINAL right/left. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper

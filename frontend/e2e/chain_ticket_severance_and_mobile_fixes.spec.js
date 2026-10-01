@@ -469,18 +469,18 @@ test.describe('Chain +/- pressed-state feedback', () => {
   });
 });
 
-test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-align flipped later same day)', () => {
-  test('CE header text-align LEFT, PE header text-align RIGHT (2026-09-30, operator: "ce label should be left aligned and pe should be right aligned" — flipped from the earlier right/left)', () => {
+test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-align flipped then reversed back same day)', () => {
+  test('CE header text-align RIGHT, PE header text-align LEFT — back to original (2026-09-30, operator flipped to left/right then said "reverse ce and re label alignment")', () => {
     const ceRule = CHAIN_TAB.match(/\.chain-th-ce\s*\{[^}]*\}/)?.[0] ?? '';
     const peRule = CHAIN_TAB.match(/\.chain-th-pe\s*\{[^}]*\}/)?.[0] ?? '';
     expect(ceRule, '.chain-th-ce rule').not.toBe('');
     expect(peRule, '.chain-th-pe rule').not.toBe('');
-    expect(ceRule).toMatch(/text-align:\s*left/);
-    expect(peRule).toMatch(/text-align:\s*right/);
+    expect(ceRule).toMatch(/text-align:\s*right/);
+    expect(peRule).toMatch(/text-align:\s*left/);
     // The row-content alignment (+/- buttons toward Strike column) must
     // stay untouched — a deliberate, explicitly-commented layout choice,
-    // and explicitly NOT part of this later text-align flip (operator
-    // scoped it to "ce label"/"pe label" specifically).
+    // never part of either text-align change (operator scoped both to
+    // "ce label"/"pe label" specifically).
     expect(CHAIN_TAB).toMatch(/\.chain-cell-row-ce\s*\{\s*justify-content:\s*flex-end;\s*\}/);
     expect(CHAIN_TAB).toMatch(/\.chain-cell-row-pe\s*\{\s*justify-content:\s*flex-start;\s*\}/);
   });

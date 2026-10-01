@@ -959,17 +959,17 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     }
   });
 
-  test('CE/PE header text-align flipped: CE left, PE right (2026-09-30, operator: "ce label should be left aligned and pe should be right aligned")', () => {
+  test('CE/PE header text-align back to original right/left (2026-09-30, flipped to left/right then reversed back same day — operator: "reverse ce and re label alignment")', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     const ceRule = ruleBody(content, '.chain-th-ce') ?? '';
     const peRule = ruleBody(content, '.chain-th-pe') ?? '';
     expect(ceRule, '.chain-th-ce rule').not.toBe('');
     expect(peRule, '.chain-th-pe rule').not.toBe('');
-    expect(ceRule).toMatch(/text-align:\s*left/);
-    expect(peRule).toMatch(/text-align:\s*right/);
+    expect(ceRule).toMatch(/text-align:\s*right/);
+    expect(peRule).toMatch(/text-align:\s*left/);
   });
 
-  test('live: CE renders left-aligned and PE renders right-aligned', async ({ page }) => {
+  test('live: CE renders right-aligned and PE renders left-aligned', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 });
     const symInput = page.locator('.ssi-input').first();
@@ -995,8 +995,8 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
       ce.evaluate((el) => getComputedStyle(el).textAlign),
       pe.evaluate((el) => getComputedStyle(el).textAlign),
     ]);
-    expect(ceAlign, '.chain-th-ce computed text-align').toBe('left');
-    expect(peAlign, '.chain-th-pe computed text-align').toBe('right');
+    expect(ceAlign, '.chain-th-ce computed text-align').toBe('right');
+    expect(peAlign, '.chain-th-pe computed text-align').toBe('left');
   });
 });
 
