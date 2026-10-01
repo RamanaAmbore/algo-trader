@@ -440,7 +440,18 @@ class KiteBroker(Broker):
         return self.kite.modify_order(order_id=order_id, **kwargs)
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
-        return self.kite.cancel_order(order_id=order_id, **kwargs)
+        # KiteConnect.cancel_order() only accepts variety/order_id/
+        # parent_order_id — unlike place/modify, Kite's cancel endpoint
+        # has no exchange param. Callers (chase.py `_cancel_order`) pass
+        # `exchange=` universally because Groww's cancel_order genuinely
+        # needs it to resolve the correct segment (MCX/NFO vs cash) —
+        # so accept-and-ignore here rather than forwarding blindly, which
+        # raises "unexpected keyword argument 'exchange'" against the
+        # real SDK (confirmed prod incident 2026-10-01, AlgoOrder #1119).
+        sdk_kwargs = {
+            k: kwargs[k] for k in ("variety", "parent_order_id") if k in kwargs
+        }
+        return self.kite.cancel_order(order_id=order_id, **sdk_kwargs)
 
     # ── GTT / trigger orders ──────────────────────────────────────────
     #

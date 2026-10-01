@@ -1,7 +1,9 @@
 """Tests for KiteBroker adapter and Kite qty translation functions."""
 
 import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, create_autospec, patch
+
+from kiteconnect import KiteConnect
 
 from backend.brokers.adapters.kite import (
     KiteBroker,
@@ -338,3 +340,92 @@ class TestKiteBrokerPlaceOrder:
             product="MIS",
         )
         assert result == "order_999"
+
+
+class TestKiteBrokerCancelOrder:
+    """Regression coverage for the 2026-10-01 prod incident (AlgoOrder #1119,
+    CRUDEOIL26OCT8400CE / MCX): chase.py's cancel-and-replace flow calls
+    `broker.cancel_order(order_id, variety=..., exchange=...)` universally
+    across brokers (Groww's adapter genuinely needs `exchange` to resolve
+    the correct segment). KiteConnect.cancel_order() does NOT accept an
+    `exchange` kwarg — forwarding it raised "unexpected keyword argument
+    'exchange'" and aborted the cancel.
+
+    These tests build the adapter against `create_autospec(KiteConnect,
+    instance=True)` instead of a hand-rolled `MagicMock()` fake, so the
+    mock enforces the REAL SDK signature (`variety, order_id,
+    parent_order_id=None`) — a plain MagicMock would silently accept any
+    kwarg and hide this exact bug class, which is what let it reach prod
+    undetected.
+    """
+
+    def _broker_with_autospec_sdk(self):
+        mock_conn = MagicMock()
+        # instance=True autospecs the bound-method signatures (no `self`),
+        # so calling with a kwarg the real SDK doesn't accept raises the
+        # exact TypeError prod hit.
+        mock_kite = create_autospec(KiteConnect, instance=True)
+        mock_kite.cancel_order.return_value = "order_cxl_1"
+        mock_conn.get_kite_conn = MagicMock(return_value=mock_kite)
+        broker = KiteBroker(mock_conn)
+        return broker, mock_kite
+
+    def test_cancel_order_with_exchange_kwarg_does_not_raise(self):
+        """Exact prod call shape: chase.py passes exchange= for an MCX
+        cancel on a Kite account. Must not raise TypeError against the
+        real KiteConnect.cancel_order signature."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        result = broker.cancel_order(
+            "251001000000000", variety="regular", exchange="MCX"
+        )
+
+        assert result == "order_cxl_1"
+        # exchange must never reach the real SDK call — only variety/
+        # order_id/parent_order_id are valid for KiteConnect.cancel_order.
+        mock_kite.cancel_order.assert_called_once_with(
+            order_id="251001000000000", variety="regular"
+        )
+
+    def test_cancel_order_without_exchange_kwarg(self):
+        """Plain cancel (no exchange passed) still works unchanged."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        result = broker.cancel_order("251001000000001", variety="regular")
+
+        assert result == "order_cxl_1"
+        mock_kite.cancel_order.assert_called_once_with(
+            order_id="251001000000001", variety="regular"
+        )
+
+    def test_cancel_order_forwards_parent_order_id(self):
+        """parent_order_id IS a real SDK param (multi-leg orders) and
+        must still be forwarded."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        broker.cancel_order(
+            "251001000000002",
+            variety="regular",
+            exchange="NFO",
+            parent_order_id="251001000000099",
+        )
+
+        mock_kite.cancel_order.assert_called_once_with(
+            order_id="251001000000002",
+            variety="regular",
+            parent_order_id="251001000000099",
+        )
+
+    def test_cancel_order_unknown_kwarg_dropped_silently(self):
+        """Any other unrecognised kwarg (not just exchange) must also be
+        dropped rather than forwarded, since the real SDK signature is
+        fixed and any stray kwarg would raise the same TypeError class."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        broker.cancel_order(
+            "251001000000003", variety="regular", tradingsymbol="FOO"
+        )
+
+        mock_kite.cancel_order.assert_called_once_with(
+            order_id="251001000000003", variety="regular"
+        )
