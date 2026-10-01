@@ -134,6 +134,18 @@ async function mockOrdersEndpoints(page) {
     const req = route.request();
     if (req.method() !== 'GET') { await route.continue(); return; }
     const url = req.url();
+    // GTT list — checked before the bare-/orders/ regex below so it never
+    // falls through to route.continue() (which would hit the real
+    // dev.ramboq.com backend and 404, since this endpoint isn't deployed
+    // there yet). Deterministic empty set — this spec covers the order
+    // chips only; see orderbook_gtt_chip.spec.js for GTT coverage.
+    if (url.includes('/orders/gtts')) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ gtts: [], count: 0 }),
+      });
+      return;
+    }
     if (url.includes('/orders/algo/recent')) {
       await route.fulfill({
         status: 200, contentType: 'application/json',
@@ -155,7 +167,7 @@ async function mockOrdersEndpoints(page) {
 test.describe('OrderBook — Chase chip + session-boundary reset', () => {
   test.setTimeout(60_000);
 
-  test('All chip removed, Chase chip present with correct in-flight count', async ({ page }) => {
+  test('All chip removed, Chase chip present with correct in-flight count; Rejected+Cancelled merged', async ({ page }) => {
     await authOnce(page);
     await page.clock.setFixedTime(new Date(_NOW_ISO));
     await mockOrdersEndpoints(page);
@@ -171,6 +183,9 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
 
     // No "All" chip anywhere in the strip.
     await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^All$/ })).toHaveCount(0);
+    // No separate Rejected / Cancelled chips — merged into one.
+    await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^Rejected$/ })).toHaveCount(0);
+    await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^Cancelled$/ })).toHaveCount(0);
 
     // Exactly one "Chase" chip, count = 2: id=1 (OPEN + attempts>0, today's
     // session) AND id=4/RBQ-STALECHASE (OPEN + attempts>0, prior session —
@@ -183,18 +198,25 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     // B1006/RBQ-STALEOPEN + algo id4/RBQ-STALECHASE (prior session, both
     // still OPEN, both exempt from the session filter — Chase is a SUBSET
     // of Open, not mutually exclusive, so id4 counts in both chips).
-    // Complete = 2; Rejected = 1; Cancelled = 1.
+    // Complete = 2; combined Rejected/Cancelled = 1 + 1 = 2.
     const openChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Open$/ }) });
     await expect(openChip.locator('.ob-sc-n')).toHaveText('5');
     const completeChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Filled$/ }) });
     await expect(completeChip.locator('.ob-sc-n')).toHaveText('2');
-    const rejectedChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Rejected$/ }) });
-    await expect(rejectedChip.locator('.ob-sc-n')).toHaveText('1');
-    const cancelledChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Cancelled$/ }) });
-    await expect(cancelledChip.locator('.ob-sc-n')).toHaveText('1');
+    // Merged chip — single chip, combined count, red/error styling.
+    const mergedChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Rejected\/Cancelled$/ }) });
+    await expect(mergedChip).toHaveCount(1);
+    await expect(mergedChip.locator('.ob-sc-n')).toHaveText('2');
+    await expect(mergedChip).toHaveAttribute('data-status', 'error');
+
+    // GTT chip present too (mocked to zero in this spec — see
+    // orderbook_gtt_chip.spec.js for GTT-specific coverage).
+    const gttChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^GTT$/ }) });
+    await expect(gttChip).toHaveCount(1);
+    await expect(gttChip.locator('.ob-sc-n')).toHaveText('0');
   });
 
-  test('Clicking Chase filters the grid to only in-flight-chased rows', async ({ page }) => {
+  test('Default view (nothing clicked) highlights ONLY Chase — the first non-zero chip in order', async ({ page }) => {
     await authOnce(page);
     await page.clock.setFixedTime(new Date(_NOW_ISO));
     await mockOrdersEndpoints(page);
@@ -204,12 +226,35 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
     await page.waitForTimeout(600);
 
-    // Default filter is now 'open' — 5 cards (includes both prior-session
-    // still-OPEN rows, RBQ-STALEOPEN and RBQ-STALECHASE, which the
-    // session filter exempts).
-    await expect(page.locator('.oc-book-grid .order-card')).toHaveCount(5);
+    // CHIP_ORDER = ['chase','open','complete','rejected_cancelled','gtt'].
+    // Chase has a non-zero count (2) in this fixture, so it's first-non-
+    // zero and becomes the default — not Open, even though Open is also
+    // non-zero (5). Exactly ONE chip carries .is-active.
+    const activeChips = page.locator('.ob-status-bar .ob-sc.is-active');
+    await expect(activeChips).toHaveCount(1);
+    const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
+    await expect(chaseChip).toHaveClass(/is-active/);
+
+    // ...and the grid below shows only Chase's 2 rows, matching the chip.
+    await expect(page.locator('.oc-book-grid .order-card')).toHaveCount(2);
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-CHASE1' })).toHaveCount(1);
+    await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALECHASE' })).toHaveCount(1);
+  });
+
+  test('Clicking Chase filters the grid to only in-flight-chased rows (explicit click unchanged)', async ({ page }) => {
+    await authOnce(page);
+    await page.clock.setFixedTime(new Date(_NOW_ISO));
+    await mockOrdersEndpoints(page);
+
+    await page.goto('/orders');
+    await page.waitForLoadState('domcontentloaded');
+    await page.waitForSelector('.ob-status-bar', { timeout: 15_000 });
+    await page.waitForTimeout(600);
 
     const chaseChip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: /^Chase$/ }) });
+    // Default already resolves to Chase in this fixture (see previous
+    // test) — click it anyway to exercise the explicit-click path
+    // (_internalStatus becomes non-null, sticky from here on).
     await chaseChip.click();
 
     const cards = page.locator('.oc-book-grid .order-card');
@@ -235,7 +280,7 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
 
     // Terminal stale row never renders, regardless of which status chip
     // is active.
-    for (const filterLabel of [/^Open$/, /^Filled$/, /^Cancelled$/, /^Chase$/]) {
+    for (const filterLabel of [/^Open$/, /^Filled$/, /^Rejected\/Cancelled$/, /^Chase$/]) {
       const chip = page.locator('.ob-status-bar .ob-sc', { has: page.locator('.ob-sc-l', { hasText: filterLabel }) });
       await chip.click();
       await expect(page.locator('.oc-book-grid .order-card', { hasText: 'RBQ-STALEFILL' })).toHaveCount(0);

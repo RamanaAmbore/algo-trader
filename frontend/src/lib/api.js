@@ -836,6 +836,29 @@ export const cancelOrder = (orderId, account, variety = 'regular') => {
   return _del(`/orders/${orderId}?${params}`, { auth: true });
 };
 
+/** GET /api/orders/gtts/ — standalone broker GTT orders (not the per-filled-
+ *  order attached-exit-GTT concept in `attached_gtts_json`/OrderCard — this
+ *  is independently-resting GTTs at the broker, regardless of how they got
+ *  there). Returns `{gtts: GttRow[], count}` — see `backend/api/schemas.py:GttRow`.
+ *  `accounts` (optional array) scopes the response server-side via
+ *  `?accounts=` (comma-separated), the same convention as `history.py`'s
+ *  account filter. */
+export const fetchGtts = (accounts = /** @type {string[]} */ ([])) => {
+  const qs = accounts && accounts.length
+    ? `?accounts=${encodeURIComponent(accounts.join(','))}`
+    : '';
+  return _get(`/orders/gtts/${qs}`, { auth: true });
+};
+
+/** POST /api/orders/gtts/{gttId}/cancel — cancel a standalone broker GTT.
+ *  `exchange` is optional but required by Groww to resolve its segment;
+ *  Kite/Dhan ignore it. Admin-only route (guards=[admin_guard] server-side). */
+export const cancelGtt = (gttId, account, exchange = '') => {
+  const params = new URLSearchParams({ account });
+  if (exchange) params.set('exchange', exchange);
+  return _post(`/orders/gtts/${encodeURIComponent(gttId)}/cancel?${params}`, {}, { auth: true });
+};
+
 // ── Charts (admin-guarded) ────────────────────────────────────────────────────
 
 /** GET /api/charts/symbols?mode=… — list symbols with captured ticks. */

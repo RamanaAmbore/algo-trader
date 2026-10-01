@@ -51,6 +51,7 @@ from backend.api.routes.agent_templates import AgentTemplateController
 from backend.api.routes.templates import OrderTemplateController
 from backend.api.routes.instruments import InstrumentsController
 from backend.api.routes.orders import AccountsController, OrdersController
+from backend.api.routes.orders_gtt import GttController
 from backend.api.routes.quote import QuoteController, SparklineController
 from backend.api.routes.positions import PositionsController
 from backend.api.routes.settings import SettingsController
@@ -204,6 +205,7 @@ _route_handlers = [
     AgentTemplateController,
     OrderTemplateController,
     OrdersController,
+    GttController,
     AccountsController,
     InstrumentsController,
     QuoteController,

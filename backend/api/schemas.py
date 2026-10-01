@@ -804,6 +804,40 @@ class ReconcileSingleRequest(msgspec.Struct):
 
 
 # ---------------------------------------------------------------------------
+# Standalone broker GTTs (Good-Till-Triggered) — distinct from the per-order
+# `attached_gtts_json` exit-GTT concept used by OrderCard.svelte. This is a
+# listable/countable feed of every GTT resting at the broker across accounts.
+# ---------------------------------------------------------------------------
+
+class GttRow(msgspec.Struct):
+    """One broker GTT, normalised across Kite/Dhan/Groww shapes + tagged
+    with the account it belongs to. `orders` is the raw per-leg dict list
+    passed through unnormalised — shape varies by broker and the UI only
+    needs it for display, not for re-placement."""
+    gtt_id: str
+    account: str
+    broker_id: str
+    status: str
+    trigger_type: str
+    tradingsymbol: str
+    exchange: str
+    trigger_values: list[float]
+    last_price: float
+    orders: list[dict]
+    created_at: str
+
+
+class GttListResponse(msgspec.Struct):
+    gtts: list[GttRow]
+    count: int
+
+
+class GttCancelResponse(msgspec.Struct):
+    gtt_id: str
+    detail: str = "GTT cancelled successfully"
+
+
+# ---------------------------------------------------------------------------
 # Accounts
 # ---------------------------------------------------------------------------
 

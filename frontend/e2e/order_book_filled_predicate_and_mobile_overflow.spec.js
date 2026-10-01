@@ -90,6 +90,17 @@ async function mockOrdersEndpoints(page) {
     const req = route.request();
     if (req.method() !== 'GET') { await route.continue(); return; }
     const url = req.url();
+    // Deterministic empty GTT set — checked before the bare-/orders/
+    // regex below so it never falls through to route.continue() (which
+    // would hit the real dev.ramboq.com backend). This spec doesn't
+    // exercise the GTT chip — see orderbook_gtt_chip.spec.js.
+    if (url.includes('/orders/gtts')) {
+      await route.fulfill({
+        status: 200, contentType: 'application/json',
+        body: JSON.stringify({ gtts: [], count: 0 }),
+      });
+      return;
+    }
     if (url.includes('/orders/algo/recent')) {
       await route.fulfill({
         status: 200, contentType: 'application/json',
