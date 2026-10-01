@@ -944,26 +944,83 @@ test.describe('Static source checks — OrderDepth.svelte (2026-09-30, order tic
     expect(diagIdx, '.ot-depth-diag markup').toBeGreaterThan(gridIdx);
   });
 
-  test('.ot-depth-diag is content-sized (inline-flex + align-self: center), not a full-width flex container (2026-09-30 follow-up)', () => {
+  test('.ot-depth-diag is content-sized (inline-flex + align-self: flex-end), not a full-width flex container (2026-09-30, align-self later changed from center to flex-end)', () => {
     // Operator: "the border above should be limited to the content" —
     // a block-level `display: flex` container takes its parent's full
     // width by default, so border-top spanned the whole card even
     // though justify-content: center only centered the TEXT inside
     // that full-width box. inline-flex shrinks the box itself to fit
     // the 3 labeled items, so border-top is genuinely content-width.
+    // align-self later changed center -> flex-end (operator: "align
+    // the labels to right") — same day, right-aligns the block
+    // instead of centering it.
     const content = readFile('src/lib/order/OrderDepth.svelte');
     const rule = ruleBody(content, '.ot-depth-diag') ?? '';
     expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
     // Match on real declaration lines only (leading whitespace, no
     // trailing prose) — the explanatory comment above these two
     // declarations deliberately discusses the OLD values in prose
-    // ("justify-content: center", "display: flex") as part of
-    // explaining the change, which would false-match a bare
-    // substring search.
+    // ("justify-content: center", "display: flex", "align-self:
+    // center") as part of explaining the change, which would
+    // false-match a bare substring search.
     expect(rule).toMatch(/\n\s*display:\s*inline-flex;/);
-    expect(rule).toMatch(/\n\s*align-self:\s*center;/);
+    expect(rule).toMatch(/\n\s*align-self:\s*flex-end;/);
     expect(rule).not.toMatch(/\n\s*display:\s*flex;/);
     expect(rule).not.toMatch(/\n\s*justify-content:\s*center;/);
+    expect(rule).not.toMatch(/\n\s*align-self:\s*center;/);
+  });
+
+  test('.ot-depth-diag border-top matches the header\'s amber border, and font-size matches Chain\'s label size (2026-09-30, operator: "make the border above the labels to align with header border... the text size the label text size be in sync with chain")', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-diag') ?? '';
+    expect(rule, '.ot-depth-diag rule must exist').not.toBe('');
+    // Same amber alpha as .ot-depth-header-bg's border-bottom, kept in
+    // sync with Chain's own .chain-th-* box-shadow amber throughout.
+    expect(rule).toMatch(/\n\s*border-top:\s*1px solid rgba\(251,191,36,0\.40\);/);
+    expect(rule).not.toMatch(/\n\s*border-top:\s*1px solid rgba\(255,255,255,0\.10\);/);
+    // --fs-sm matches Chain's .chain-th-ce/-pe/-strike label size,
+    // was --fs-2xs (smaller than Chain's equivalent labels).
+    expect(rule).toMatch(/\n\s*font-size:\s*var\(--fs-sm\);/);
+    expect(rule).not.toMatch(/\n\s*font-size:\s*var\(--fs-2xs\);/);
+  });
+
+  test('.ot-depth-diag-lbl is right-aligned (2026-09-30, operator: "align the labels to right")', () => {
+    const content = readFile('src/lib/order/OrderDepth.svelte');
+    const rule = ruleBody(content, '.ot-depth-diag-lbl') ?? '';
+    expect(rule, '.ot-depth-diag-lbl rule must exist').not.toBe('');
+    expect(rule).toMatch(/text-align:\s*right/);
+  });
+
+  test('live: .ot-depth-diag right-aligns against .ot-depth-grid\'s right edge, not centered', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded', timeout: 30000 }).catch(() => {});
+    const symInput = page.locator('.ssi-input').first();
+    const visible = await symInput.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!visible) {
+      test.info().annotations.push({ type: 'skip', description: 'symbol input not visible' });
+      return;
+    }
+    await symInput.fill('NIFTY');
+    const sugg = page.locator('.ssi-drop .ssi-row').first();
+    const suggVisible = await sugg.isVisible({ timeout: 8_000 }).catch(() => false);
+    if (!suggVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'no suggestions' });
+      return;
+    }
+    await sugg.click({ force: true });
+    const diag = page.locator('.ot-depth-diag').first();
+    const diagVisible = await diag.isVisible({ timeout: 10_000 }).catch(() => false);
+    if (!diagVisible) {
+      test.info().annotations.push({ type: 'skip', description: '.ot-depth-diag not rendered (no quote)' });
+      return;
+    }
+    const grid = page.locator('.ot-depth-grid').first();
+    const [diagBox, gridBox] = await Promise.all([diag.boundingBox(), grid.boundingBox()]);
+    if (!diagBox || !gridBox) {
+      test.info().annotations.push({ type: 'skip', description: 'boundingBox() unavailable this run' });
+      return;
+    }
+    expect(Math.abs(diagBox.right - gridBox.right), 'diag right edge must align with grid right edge, not sit centered').toBeLessThanOrEqual(2);
   });
 
   test('live: .ot-depth-diag\'s own box (and its border-top) is narrower than .ot-depth-grid\'s card, not full-width', async ({ page }) => {

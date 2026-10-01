@@ -475,20 +475,30 @@
        (the 3 labeled items), so the border-top is exactly as wide as
        "Buy levels 0 · Sell levels 0 · Volume (raw) 0" — genuinely
        limited to the content, not stretching edge to edge.
-       align-self: center (replaces the old justify-content: center,
-       now redundant on a content-sized box) centers that content-
-       sized box within .ot-depth's column, aligning it with
-       .ot-depth-grid's own centered column group above it (2026-09-30
-       earlier same-day request: "additional info... centered below
-       the market depth aligning market depth"). */
+       align-self: flex-end (2026-09-30, operator: "align the labels
+       to right") — was align-self: center (itself a replacement for
+       the old justify-content: center, redundant on a content-sized
+       box); right-aligns this whole block against .ot-depth's own
+       right edge instead of centering it, matching the header
+       labels' own text-align: right convention.
+       border-top color/alpha matched to the header's own border
+       (2026-09-30, operator: "make the border above the labels to
+       align with header border") — was a plain white 0.10 alpha line,
+       now the same amber used by .ot-depth-header-bg's border-bottom,
+       which is itself kept in sync with Chain's .chain-th-*
+       box-shadow amber.
+       font-size bumped --fs-2xs -> --fs-sm (2026-09-30, operator:
+       "the label text size be in sync with chain") — matches Chain's
+       own header-label size (.chain-th-ce/-pe/-strike), was smaller
+       than Chain's equivalent labels. */
     display: inline-flex;
-    align-self: center;
+    align-self: flex-end;
     gap: 0.7rem;
     flex-wrap: wrap;
     margin-top: 0.35rem;
     padding-top: 0.25rem;
-    border-top: 1px solid rgba(255,255,255,0.10);
-    font-size: var(--fs-2xs);
+    border-top: 1px solid rgba(251,191,36,0.40);
+    font-size: var(--fs-sm);
   }
   .ot-depth-diag-item {
     display: inline-flex;
@@ -499,6 +509,7 @@
     color: var(--algo-muted);
     text-transform: uppercase;
     letter-spacing: 0.04em;
+    text-align: right;
   }
   .ot-depth-diag-val {
     color: var(--algo-slate);
