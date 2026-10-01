@@ -2001,12 +2001,6 @@ def _ta_template_row_to_dict(row) -> dict:
         "sl_pct":             float(row.sl_pct)           if row.sl_pct is not None else None,
         "wing_premium_pct":   float(row.wing_premium_pct) if row.wing_premium_pct is not None else None,
         "wing_strike_offset": int(row.wing_strike_offset) if row.wing_strike_offset is not None else None,
-        # Chain-tab pre-submission spread gate default (spread_check.
-        # resolve_max_spread_pct reads this key). NOT consumed by
-        # resolve_template_plan / _parse_template_overrides — adding
-        # it here is deliberately isolated from that override tuple.
-        "wing_max_spread_pct": (float(row.wing_max_spread_pct)
-                                 if getattr(row, "wing_max_spread_pct", None) is not None else None),
         "tp_order_type":      (row.tp_order_type or "LIMIT"),
         "tp_scales_json":     row.tp_scales_json,
         "sl_trail_pct":       float(row.sl_trail_pct)     if row.sl_trail_pct is not None else None,

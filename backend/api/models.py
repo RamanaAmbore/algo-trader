@@ -1466,6 +1466,14 @@ class OrderTemplate(Base):
     # +500 for CE, -500 for PE). One of the two; never both.
     wing_premium_pct: Mapped[Optional[float]]   = mapped_column(Numeric(8, 4), nullable=True)
     wing_strike_offset: Mapped[Optional[int]]   = mapped_column(Integer, nullable=True)
+    # Pre-submission spread% threshold for the Chain-tab gate
+    # (backend.api.algo.spread_check). NULL = fall back to the global
+    # admin setting `templates.wing_max_spread_pct` (default 10.0 —
+    # the same number `_pick_wing_by_premium`'s own liquidity filter
+    # reads). Distinct from that filter: this value is never used to
+    # pick a different strike, only to warn before submit when the
+    # ALREADY-resolved parent or wing leg's live spread is too wide.
+    wing_max_spread_pct: Mapped[Optional[float]] = mapped_column(Numeric(8, 4), nullable=True)
     # Order type fired by the TP GTT when its trigger crosses. Default
     # 'LIMIT' matches the historical behaviour. 'MARKET' lets operators
     # express "take what the book gives me at +X% — don't risk a missed

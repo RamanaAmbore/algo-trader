@@ -422,6 +422,10 @@ class OrderTemplateOut(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    # Per-template default for the Chain-tab pre-submission spread
+    # gate (backend.api.algo.spread_check). None = fall back to the
+    # global `templates.wing_max_spread_pct` admin setting.
+    wing_max_spread_pct: float | None = None
     tp_order_type:       str = "LIMIT"   # 'LIMIT' | 'MARKET'
     # JSON string of [{at_pct, close_pct}] entries; None / empty = no
     # scale-out (TP behaves as a single trigger via tp_pct).
@@ -440,6 +444,7 @@ class OrderTemplateCreate(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    wing_max_spread_pct: float | None = None
     tp_order_type:       str = "LIMIT"
     tp_scales_json:      str | None = None
     sl_trail_pct:        float | None = None
@@ -459,6 +464,7 @@ class OrderTemplatePatch(msgspec.Struct):
     sl_pct:              float | None = None
     wing_premium_pct:    float | None = None
     wing_strike_offset:  int | None = None
+    wing_max_spread_pct: float | None = None
     tp_order_type:       str | None = None
     tp_scales_json:      str | None = None
     sl_trail_pct:        float | None = None
@@ -669,6 +675,15 @@ class TicketOrderRequest(msgspec.Struct):
     sl_pct_override:              Optional[float] = None
     wing_premium_pct_override:    Optional[float] = None
     wing_strike_offset_override:  Optional[int]   = None
+    # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
+    # here purely for persistence/symmetry — `_build_overrides_json`
+    # serializes it onto AlgoOrder.template_overrides_json so a retry-
+    # template replay preserves the operator's chosen threshold, same
+    # as every other override field. The live pre-submission gate
+    # itself calls `GET /api/orders/spread-check?max_spread_pct=...`
+    # directly (see TicketPreviewRequest's own field below) — this
+    # field is never read by the ticket-submit path itself.
+    wing_max_spread_pct_override: Optional[float] = None
     # Trail-stop + scale-out override carriers. UI doesn't expose inputs
     # for these yet; `_build_overrides_json` already reads them so they
     # flow through the postback handler's override-replay path when the
@@ -733,6 +748,14 @@ class TicketPreviewRequest(msgspec.Struct):
     sl_pct_override:              Optional[float] = None
     wing_premium_pct_override:    Optional[float] = None
     wing_strike_offset_override:  Optional[int]   = None
+    # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
+    # here for persistence/symmetry with TicketOrderRequest's own
+    # override field — the live Chain-tab spread gate itself reads
+    # `GET /api/orders/spread-check?max_spread_pct=...` directly
+    # (one lightweight call per leg per poll), not this preview
+    # endpoint, to avoid a template-load + wing-scan round trip (with
+    # its own ntfy-alert-on-failure side effects) on every 4s re-check.
+    wing_max_spread_pct_override: Optional[float] = None
     # Backward compat — legacy target_pct (fractional) also accepted
     # here so OrderTicket can preview without separating the two paths.
     target_pct:                   Optional[float] = None
@@ -742,6 +765,24 @@ class TicketPreviewResponse(msgspec.Struct):
     plan: dict                          # TemplatePlan.to_dict()
     wing_feasible: Optional[bool] = None  # None = no wing in template
     gtt_trigger_errors: list = []         # non-empty → block submit
+
+
+class SpreadCheckResponse(msgspec.Struct):
+    """GET /api/orders/spread-check response — one tradingsymbol+exchange's
+    bid-ask spread% vs an (optional) threshold. See
+    backend.api.algo.spread_check.SpreadCheckResult for field semantics;
+    this mirrors it 1:1 plus the resolved threshold + its source."""
+    ok:               bool
+    tradingsymbol:    str
+    exchange:         str
+    threshold_pct:    float
+    threshold_source: str              # "override" | "template" | "setting"
+    status:           str              # "ok" | "wide" | "no_quote" | "error"
+    spread_pct:       Optional[float] = None
+    bid:              Optional[float] = None
+    ask:              Optional[float] = None
+    basis:            Optional[str]   = None   # "ltp" | "mid" | None
+    reason:           Optional[str]   = None
 
 
 class ModifyOrderRequest(msgspec.Struct):

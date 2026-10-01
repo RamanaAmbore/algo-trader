@@ -54,6 +54,8 @@ def _to_out(row: OrderTemplate) -> OrderTemplateOut:
         wing_premium_pct=(float(row.wing_premium_pct)
                           if row.wing_premium_pct is not None else None),
         wing_strike_offset=row.wing_strike_offset,
+        wing_max_spread_pct=(float(row.wing_max_spread_pct)
+                             if row.wing_max_spread_pct is not None else None),
         tp_order_type=(row.tp_order_type or "LIMIT"),
         tp_scales_json=row.tp_scales_json,
         sl_trail_pct=(float(row.sl_trail_pct)
@@ -170,7 +172,7 @@ def _validate_applies_to(value: str) -> None:
 _PATCH_FIELDS = (
     "name", "description", "applies_to",
     "tp_pct", "sl_pct",
-    "wing_premium_pct", "wing_strike_offset",
+    "wing_premium_pct", "wing_strike_offset", "wing_max_spread_pct",
     "tp_order_type", "tp_scales_json", "sl_trail_pct",
     "is_default", "is_active",
 )
@@ -260,6 +262,7 @@ class OrderTemplateController(Controller):
                 sl_pct=data.sl_pct,
                 wing_premium_pct=data.wing_premium_pct,
                 wing_strike_offset=data.wing_strike_offset,
+                wing_max_spread_pct=data.wing_max_spread_pct,
                 tp_order_type=(data.tp_order_type or "LIMIT"),
                 tp_scales_json=data.tp_scales_json,
                 sl_trail_pct=data.sl_trail_pct,

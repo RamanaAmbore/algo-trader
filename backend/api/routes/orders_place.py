@@ -2257,6 +2257,18 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
             status_code=422,
             detail="wing_premium_pct must be > 0",
         )
+    # wing_max_spread_pct_override=0 guard — same defence-in-depth shape
+    # as wing_premium_pct above. This field is never enforced here (the
+    # live Chain-tab spread gate calls GET /api/orders/spread-check
+    # directly, not the ticket-submit path), just validated so a
+    # persisted template_overrides_json never carries a nonsensical
+    # threshold.
+    _wms = getattr(data, "wing_max_spread_pct_override", None)
+    if _wms is not None and _wms <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="wing_max_spread_pct must be > 0",
+        )
 
     # Close/offset gate: strip template_id when this order would reduce an
     # existing opposite position (close-intent or net-offsetting).

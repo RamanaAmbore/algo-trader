@@ -719,6 +719,11 @@ def _ticket_overrides_dict(data) -> dict:
         "sl_pct":             data.sl_pct_override,
         "wing_premium_pct":   data.wing_premium_pct_override,
         "wing_strike_offset": data.wing_strike_offset_override,
+        # Chain-tab pre-submission spread gate (backend.api.algo.
+        # spread_check.resolve_max_spread_pct reads this key). Not a
+        # resolve_template_plan field — getattr-guarded since not every
+        # caller of this helper's request struct carries it.
+        "wing_max_spread_pct": getattr(data, "wing_max_spread_pct_override", None),
     }
     if overrides["tp_pct"] is None and getattr(data, "target_pct", None) is not None:
         try:
@@ -748,6 +753,7 @@ def _build_overrides_json(leg) -> str | None:
         ("sl_pct_override",             "sl_pct"),
         ("wing_premium_pct_override",   "wing_premium_pct"),
         ("wing_strike_offset_override", "wing_strike_offset"),
+        ("wing_max_spread_pct_override", "wing_max_spread_pct"),
         ("sl_trail_pct_override",       "sl_trail_pct"),
         ("tp_scales_json_override",     "tp_scales_json"),
     ):

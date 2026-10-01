@@ -44,6 +44,7 @@ from backend.api.schemas import (
     OrderRow,
     OrdersResponse,
     ReconcileSingleRequest,
+    SpreadCheckResponse,
     TicketOrderRequest,
     TicketOrderResponse,
     TicketPreviewRequest,
@@ -876,6 +877,9 @@ async def _preview_check_broker_gates(data, exch: str) -> None:
     _wpp = getattr(data, "wing_premium_pct_override", None)
     if _wpp is not None and _wpp <= 0:
         raise HTTPException(status_code=422, detail="wing_premium_pct must be > 0")
+    _wms = getattr(data, "wing_max_spread_pct_override", None)
+    if _wms is not None and _wms <= 0:
+        raise HTTPException(status_code=422, detail="wing_max_spread_pct must be > 0")
 
 
 async def _preview_template_meta(result, data, sym: str, exch: str) -> "tuple[bool | None, list[str]]":
@@ -1901,6 +1905,82 @@ class OrdersController(Controller):
             plan=result.plan.to_dict(),
             wing_feasible=_wing_feasible,
             gtt_trigger_errors=_gtt_errors,
+        )
+
+    @get("/spread-check")
+    async def spread_check(
+        self,
+        tradingsymbol: str,
+        exchange: str,
+        max_spread_pct: Optional[float] = None,
+    ) -> SpreadCheckResponse:
+        """Reusable bid-ask spread% check for ONE tradingsymbol+exchange.
+
+        Backs the Chain tab's pre-submission spread gate (operator:
+        "if there is too much spread on the offset limit side, it
+        should warn ... it should check original and offset orders").
+        The frontend (`frontend/src/lib/data/spreadGate.js`) calls this
+        once per leg — the parent AND the resolved offset/wing leg —
+        and polls it in a bounded loop until the operator confirms,
+        edits TP%/SL%/Spread%, or disables the template.
+
+        Deliberately NOT template-aware: the caller resolves operator-
+        override-vs-template-default client-side (TemplateBar's new
+        Spread% field, default-seeded from `OrderTemplateOut.
+        wing_max_spread_pct`) and sends the final number as
+        `max_spread_pct`; omitting it falls back to the global
+        `templates.wing_max_spread_pct` admin setting via
+        `backend.api.algo.spread_check.resolve_max_spread_pct`. No
+        template load, no wing chain-scan — safe to poll every few
+        seconds (quotes are cached 2s to bound broker-call volume
+        across the two legs × the gate's own poll cadence).
+
+        Always 200 with a structured result — `backend.api.algo.
+        spread_check` never raises, so a quote-fetch failure degrades
+        to `status="error"`/`ok=False`, never a 5xx. Reused by any
+        future declarative-agent-grammar metric that wants the same
+        bid-ask threshold check (see spread_check.py's own docstring).
+        """
+        sym  = (tradingsymbol or "").strip().upper()
+        exch = (exchange or "").strip().upper()
+        if not sym:
+            raise HTTPException(status_code=422, detail="tradingsymbol is required")
+        if not exch:
+            raise HTTPException(status_code=422, detail="exchange is required")
+        if max_spread_pct is not None and max_spread_pct <= 0:
+            raise HTTPException(status_code=422, detail="max_spread_pct must be > 0")
+
+        from backend.api.algo.spread_check import check_spreads, resolve_max_spread_pct
+
+        threshold, source = resolve_max_spread_pct(
+            None, {"wing_max_spread_pct": max_spread_pct},
+        )
+
+        async def _cached_quote_fn(keys: list[str]):
+            # 2s TTL — short enough to track a moving market, long
+            # enough that the gate's own poll cadence (4s, two legs)
+            # doesn't double every real quote round-trip.
+            cache_key = "spread_q:" + ",".join(sorted(keys))
+
+            async def _fetch():
+                import asyncio as _aio
+                from backend.brokers.registry import get_market_data_broker
+                broker = get_market_data_broker()
+                return await _aio.to_thread(broker.quote, keys)
+
+            return await get_or_fetch(cache_key, _fetch, ttl_seconds=2)
+
+        results = await check_spreads(
+            [{"tradingsymbol": sym, "exchange": exch}],
+            threshold,
+            quote_fn=_cached_quote_fn,
+        )
+        r = results[0]
+        return SpreadCheckResponse(
+            ok=r.ok, tradingsymbol=r.tradingsymbol, exchange=r.exchange,
+            threshold_pct=threshold, threshold_source=source,
+            status=r.status, spread_pct=r.spread_pct, bid=r.bid, ask=r.ask,
+            basis=r.basis, reason=r.reason,
         )
 
     @post("/ticket")

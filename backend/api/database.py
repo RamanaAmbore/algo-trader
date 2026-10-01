@@ -846,6 +846,23 @@ async def _migrate_app_messages_table(conn) -> None:
         await conn.execute(_text(stmt))
 
 
+async def _migrate_order_templates_wing_max_spread_pct(conn) -> None:
+    """Add wing_max_spread_pct column to order_templates (idempotent).
+
+    Per-template default for the Chain-tab pre-submission spread gate
+    (backend.api.algo.spread_check.resolve_max_spread_pct). NULL falls
+    back to the global `templates.wing_max_spread_pct` admin setting —
+    same default value `_pick_wing_by_premium`'s liquidity filter uses,
+    deliberately, per the operator's brief that the global setting's
+    current value is the starting default for this new per-order field.
+    """
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
+        "wing_max_spread_pct NUMERIC(8, 4)"
+    ))
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -885,6 +902,7 @@ async def init_db() -> None:
         await _migrate_algo_orders_gtt_order_id(conn)
         await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
+        await _migrate_order_templates_wing_max_spread_pct(conn)
     logger.info("Database: tables verified")
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always
