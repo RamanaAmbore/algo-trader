@@ -33,6 +33,7 @@
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
   import { pollOpenOrders } from '$lib/data/openOrdersStore.svelte.js';
+  import { pollOrderFillWatch } from '$lib/data/orderFillPoller.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   const { children } = $props();
@@ -776,7 +777,7 @@
   // `isDemo` derivation + nav filter can read them; the actual
   // pollers + lifecycle live here.
   let simTeardown, paperTeardown, replayTeardown;
-  let modeTeardown, chaseTeardown, persistTeardown;
+  let modeTeardown, chaseTeardown, persistTeardown, fillWatchTeardown;
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }
     catch (_) { /* cap flag off or auth gone — treat as idle */ }
@@ -923,10 +924,25 @@
     pollOpenOrders();
     chaseTeardown = _adaptiveInterval(async () => { await pollChase(); pollOpenOrders(); },
       () => openOrderIds.size > 0, 5000, 60000);
+    // Mount-independent fill-detection backstop (2026-10-01) — see
+    // orderFillPoller.js header. Runs regardless of which page is
+    // routed / which components it happens to mount, so a fill that
+    // only ever surfaces via a silent channel (broker-order-book TTL
+    // refresh, 5-min open_order_watchdog sweep, admin reconcile) still
+    // reaches `noteOrderPollFills` → `bookChanged` → every subscriber's
+    // own fresh refetch, even on a page like /admin/derivatives that
+    // doesn't mount OrderBook/LogPanel. Deliberately NOT market-gated
+    // (visibleInterval only, pauses on tab-hidden) — this mirrors
+    // OrderBook.svelte's/LogPanel.svelte's own poll cadence exactly
+    // (neither pauses for market-closed either), since this poller's
+    // whole purpose is parity with what those components already do
+    // when mounted, not a new overnight-pause behaviour they don't have.
+    pollOrderFillWatch();
+    fillWatchTeardown = visibleInterval(pollOrderFillWatch, 5000);
   });
   onDestroy(() => {
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
-    modeTeardown?.(); chaseTeardown?.(); persistTeardown?.();
+    modeTeardown?.(); chaseTeardown?.(); persistTeardown?.(); fillWatchTeardown?.();
     window.removeEventListener('keydown', _onGlobalKeydown);
     _clearG();
     stopMarketGatedQuoteStream();
