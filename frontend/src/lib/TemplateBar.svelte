@@ -27,6 +27,7 @@
    * @prop {number|''}    slOverride                - SL% override value ($bindable)
    * @prop {number|''}    wingStrikeOffsetOverride  - Wing strike offset override ($bindable)
    * @prop {number|''}    wingPremPctOverride       - Wing premium % override ($bindable)
+   * @prop {number|''}    spreadMaxPctOverride      - Spread% threshold override ($bindable, Chain-only pre-submit gate)
    * @prop {number|''}    slTrailPctOverride        - Trailing stop % override ($bindable, #30)
    * @prop {'LIMIT'|'MARKET'|''}  tpOrderTypeOverride  - TP order type override ($bindable, #30)
    * @prop {string}       tpScalesJsonOverride      - Scale-out JSON override ($bindable, #30)
@@ -44,6 +45,7 @@
     slOverride       = $bindable(),
     wingStrikeOffsetOverride = $bindable(),
     wingPremPctOverride      = $bindable(),
+    spreadMaxPctOverride     = $bindable(),
     slTrailPctOverride       = $bindable(),
     tpOrderTypeOverride      = $bindable(),
     tpScalesJsonOverride     = $bindable(),
@@ -90,6 +92,16 @@
   const _wingPremErr = $derived.by(() => {
     if (shellUsingNone || !selectedTemplate) return '';
     if (wingPremPctOverride !== '' && wingPremPctOverride != null && Number(wingPremPctOverride) <= 0) return 'Wing prem% must be > 0';
+    return '';
+  });
+  // Spread% threshold — Chain-tab-only pre-submit gate (OptionChainTab
+  // checks the original leg + any offset/wing leg's live bid/ask spread
+  // against this threshold before submitting). Rendered alongside TP%/
+  // SL% (not gated on showsWing) so the operator always sees/can tune
+  // the threshold that WOULD apply if a wing gets attached.
+  const _spreadErr = $derived.by(() => {
+    if (shellUsingNone || !selectedTemplate) return '';
+    if (spreadMaxPctOverride !== '' && spreadMaxPctOverride != null && Number(spreadMaxPctOverride) <= 0) return 'Spread% must be > 0';
     return '';
   });
 
@@ -141,6 +153,15 @@
     selectedTemplate && wingPremPctOverride !== '' && wingPremPctOverride != null &&
     String(Number(wingPremPctOverride)) !== String(selectedTemplate.wing_premium_pct)
   );
+  // Default placeholder: per-template override once the backend field
+  // lands (`wing_max_spread_pct` — same name as the existing global
+  // `templates.wing_max_spread_pct` admin setting it overrides), else
+  // the global setting's own default value (10.0).
+  const _spreadDefault = $derived(selectedTemplate?.wing_max_spread_pct ?? 10);
+  const _spreadAsterisk = $derived(
+    selectedTemplate && spreadMaxPctOverride !== '' && spreadMaxPctOverride != null &&
+    String(Number(spreadMaxPctOverride)) !== String(_spreadDefault)
+  );
   const _trailAsterisk = $derived(
     selectedTemplate && slTrailPctOverride !== '' && slTrailPctOverride != null &&
     String(Number(slTrailPctOverride)) !== String(selectedTemplate.sl_trail_pct)
@@ -155,6 +176,7 @@
     slOverride = '';
     wingStrikeOffsetOverride = '';
     wingPremPctOverride = '';
+    spreadMaxPctOverride = '';
     slTrailPctOverride = '';
     tpOrderTypeOverride = '';
     tpScalesJsonOverride = '';
@@ -230,6 +252,19 @@
         placeholder={selectedTemplate.sl_pct != null ? String(selectedTemplate.sl_pct) : '—'}
         bind:value={slOverride} />
     </label>
+    <!-- Spread% override — Chain tab's pre-submit gate threshold. Shown
+         alongside TP%/SL% (not gated on showsWing) so the operator can
+         see/tune the threshold regardless of whether a wing is
+         currently configured; OptionChainTab only RUNS the gate when a
+         wing/offset leg actually resolves. -->
+    <label class="oes-basket-tpl-param {_spreadErr ? 'oes-tpl-param-err' : ''}"
+           title="Max bid/ask spread % allowed on the original + offset leg before Chain submit warns.">
+      <span>Spread%{_spreadAsterisk ? '*' : ''}</span>
+      <input type="number" step="0.5"
+        class:oes-tpl-input-err={!!_spreadErr}
+        placeholder={String(_spreadDefault)}
+        bind:value={spreadMaxPctOverride} />
+    </label>
     {#if showsWing}
       <label class="oes-basket-tpl-param {_wingPremErr ? 'oes-tpl-param-err' : ''}"
              title="Protective wing BUY at this many strikes away from the parent.">
@@ -250,11 +285,12 @@
   </div>
 
   <!-- Inline validation errors (#7) -->
-  {#if _tpErr || _slErr || _wingPremErr}
+  {#if _tpErr || _slErr || _wingPremErr || _spreadErr}
     <div class="oes-tpl-errors">
       {#if _tpErr}<span class="oes-tpl-err-chip">{_tpErr}</span>{/if}
       {#if _slErr}<span class="oes-tpl-err-chip">{_slErr}</span>{/if}
       {#if _wingPremErr}<span class="oes-tpl-err-chip">{_wingPremErr}</span>{/if}
+      {#if _spreadErr}<span class="oes-tpl-err-chip">{_spreadErr}</span>{/if}
     </div>
   {/if}
   <!-- TP% < SL% cross-check warning (non-blocking) -->

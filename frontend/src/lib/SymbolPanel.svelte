@@ -1009,6 +1009,13 @@
   let _sharedSlOverride               = $state(/** @type {number|''} */ (''));
   let _sharedWingStrikeOffsetOverride = $state(/** @type {number|''} */ (''));
   let _sharedWingPremPctOverride      = $state(/** @type {number|''} */ (''));
+  // Chain-only pre-submit spread-gate threshold — see OptionChainTab's
+  // runPreSubmitGate(). Rendered in TemplateBar alongside TP%/SL%.
+  let _sharedSpreadMaxPctOverride     = $state(/** @type {number|''} */ (''));
+  // bind:this target for OptionChainTab — lets the shared Submit button
+  // (below) await its exported runPreSubmitGate() before calling
+  // submitBasket(). Chain-tab-only; never set when _activeTab !== 'chain'.
+  let _chainTabRef = $state(/** @type {any} */ (null));
   // Whether the selected template's scope is a SELL option (the only
   // case where the wing fields are relevant). Mirrors OrderTicket's
   // `_appliesToFor` check at SymbolPanel level so the shell-row UI
@@ -2534,6 +2541,7 @@
              into the shell to mutate it. Its own placeBasket is unused
              when routed through onSubmitBasket. -->
         <OptionChainTab
+          bind:this={_chainTabRef}
           symbol={_localSymbol}
           account={_sharedAccount || account}
           onAccountChange={_onAccountChange}
@@ -2551,6 +2559,7 @@
           bind:slOverride={_sharedSlOverride}
           bind:wingStrikeOffsetOverride={_sharedWingStrikeOffsetOverride}
           bind:wingPremPctOverride={_sharedWingPremPctOverride}
+          bind:spreadMaxPctOverride={_sharedSpreadMaxPctOverride}
           onSelectDefault={() => {
             if (_sideAwareDefault) {
               _sharedTemplateId = _sideAwareDefault.id;
@@ -3156,10 +3165,20 @@
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')
                       || _ticketOwnSubmitBusy}
-            onclick={() => {
+            onclick={async () => {
               if (basketLegs.length > 0) {
                 // Global basket submit — fires from any tab whenever there
                 // are staged legs (Chain's own +CE / +PE mechanism).
+                // Chain-only pre-submit spread gate (operator: "it should
+                // be in a loop until the conditions are satisfied before
+                // placing the order") — runPreSubmitGate() is a no-op
+                // (resolves true immediately) when no leg has a wing/
+                // offset configured. No impact on the Ticket tab's own
+                // submit path below.
+                if (_activeTab === 'chain' && _chainTabRef?.runPreSubmitGate) {
+                  const proceed = await _chainTabRef.runPreSubmitGate();
+                  if (!proceed) return;
+                }
                 submitBasket();
               } else if (_activeTab === 'ticket') {
                 _modalFireSubmit();

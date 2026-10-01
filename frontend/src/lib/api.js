@@ -920,6 +920,38 @@ export async function previewOrderMargin(payload) {
   return _post('/orders/preflight', payload, { auth: true });
 }
 
+/** GET /api/orders/spread-check — reusable bid/ask spread-threshold
+ *  check for a single tradingsymbol+exchange. Backs the Chain tab's
+ *  pre-submission spread gate (original leg + offset/wing leg); kept
+ *  template-agnostic on the backend (`backend.api.algo.spread_check`)
+ *  so a future declarative-agent-grammar metric can reuse it too.
+ *
+ *  Always 200 — a quote-fetch failure degrades to
+ *  `{ok: false, status: 'error', reason: '...'}` rather than a 5xx.
+ *  `max_spread_pct` is optional — when omitted the backend falls back
+ *  to the per-template `wing_max_spread_pct` / global
+ *  `templates.wing_max_spread_pct` setting (default 10.0) and echoes
+ *  whichever value it actually used back as `threshold_pct` +
+ *  `threshold_source` ("override" | "template" | "setting").
+ *
+ *  Response: `{ ok, tradingsymbol, exchange, threshold_pct,
+ *    threshold_source, status: 'ok'|'wide'|'no_quote'|'error',
+ *    spread_pct, bid, ask, basis: 'ltp'|'mid'|null, reason }`.
+ *  `basis` — the backend prefers `ltp` as the spread% denominator
+ *  (matches the wing-scan's own liquidity filter), falling back to
+ *  the bid/ask midpoint only when `ltp` isn't available yet.
+ *
+ *  @param {{tradingsymbol: string, exchange: string, maxSpreadPct?: number|string|null, signal?: AbortSignal}} args
+ */
+export async function checkOrderSpread({ tradingsymbol, exchange, maxSpreadPct, signal }) {
+  const p = new URLSearchParams({
+    tradingsymbol: String(tradingsymbol || '').toUpperCase(),
+    exchange:      String(exchange || ''),
+  });
+  if (maxSpreadPct != null && maxSpreadPct !== '') p.set('max_spread_pct', String(maxSpreadPct));
+  return _get(`/orders/spread-check?${p}`, { auth: true, signal });
+}
+
 /** POST /api/orders/basket — place all legs in one atomic backend call.
  *  Request:  { groups: [{ account, legs: [...] }] }
  *  Response: { groups: [{ account, basket_id, results: [...], margin_required, margin_available }] } */

@@ -15,7 +15,10 @@
     fetchOptionsSpot, fetchChainQuotesPrices,
     placeTicketOrder,
     fetchAccounts,
+    checkOrderSpread,
+    previewTicketTemplate,
   } from '$lib/api';
+  import { createSpreadGate, resolveWingTradingsymbol } from '$lib/data/spreadGate.js';
   import { executionMode } from '$lib/stores';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import Select from '$lib/Select.svelte';
@@ -66,6 +69,7 @@
    *   slOverride?:               number | '',
    *   wingStrikeOffsetOverride?: number | '',
    *   wingPremPctOverride?:      number | '',
+   *   spreadMaxPctOverride?:     number | '',
    *   onSelectDefault?:  () => void,
    *   onSelectNone?:     () => void,
    *   onSelectTemplate?: (id: number) => void,
@@ -137,6 +141,9 @@
     slOverride               = $bindable(/** @type {number|''} */ ('')),
     wingStrikeOffsetOverride = $bindable(/** @type {number|''} */ ('')),
     wingPremPctOverride      = $bindable(/** @type {number|''} */ ('')),
+    // Pre-submit spread-gate threshold (Chain-only). Shown in TemplateBar
+    // alongside TP%/SL%; consumed by runPreSubmitGate() below.
+    spreadMaxPctOverride     = $bindable(/** @type {number|''} */ ('')),
     onSelectDefault  = /** @type {(() => void)|undefined} */ (undefined),
     onSelectNone     = /** @type {(() => void)|undefined} */ (undefined),
     onSelectTemplate = /** @type {((id: number) => void)|undefined} */ (undefined),
@@ -847,6 +854,267 @@
     _finalizeBasket(failures, total);
   }
 
+  // ── Pre-submit spread gate (Chain-only) ───────────────────────────
+  // Operator: "if there is too much spread on the offset limit side,
+  // it should warn... it should be in a loop until the conditions are
+  // satisfied before placing the order." Runs ONLY when the submission
+  // would attach a wing/offset leg (either direction — see
+  // `_wing_direction` in backend/api/algo/template_attach.py, not the
+  // SELL-only `showsWing` prop, which predates that BUY-parent offset
+  // leg and must not be reused as this gate's predicate). Exposed as
+  // `runPreSubmitGate()` (component export, called via bind:this) so
+  // the shell's shared Submit button can await it before calling
+  // submitBasket() — see SymbolPanel.svelte's wiring.
+  /** @type {import('$lib/data/spreadGate.js').SpreadGateState} */
+  let _gateState = $state({ phase: 'idle', legs: [], attempts: 0, lastError: '' });
+  /** @type {ReturnType<typeof createSpreadGate> | null} */
+  let _gate = null;
+  /** Pending resolvers for `runPreSubmitGate()` — a Set (not a single
+   *  ref) so a double-click on Submit while the gate is already open
+   *  can't leave an earlier caller's await dangling forever. */
+  const _gateResolvers = /** @type {Set<(ok: boolean) => void>} */ (new Set());
+  /** Premium%-mode wing tradingsymbol cache, keyed by basket leg `key`.
+   *  Populated ONCE per gate session (in `runPreSubmitGate()`, before
+   *  `_gate.start()`) via `POST /api/orders/ticket/preview` — NEVER
+   *  re-queried on every poll tick. That endpoint runs a template load
+   *  + the wing chain-scan (with its own ntfy-alert-on-failure side
+   *  effect on scan failure — see `_pick_wing_by_premium` in
+   *  template_attach.py), so polling it every 4s would spam alerts;
+   *  `GET /api/orders/spread-check` (the actual per-tick poll target)
+   *  is deliberately template-agnostic and has no such side effect. */
+  let _premiumWingSymCache = /** @type {Map<string, string>} */ (new Map());
+
+  function _isGateTerminal(/** @type {string} */ phase) {
+    return phase === 'idle' || phase === 'passed' || phase === 'overridden' || phase === 'cancelled';
+  }
+
+  /** Effective template row for a basket leg — per-leg `template_id`
+   *  wins, else the shell's shared pick. Mirrors SymbolPanel's
+   *  `_legEffectiveTpl` (that component owns the catalog lookup for
+   *  its own per-leg editor; this is the Chain tab's own copy over the
+   *  `nonNoneTemplates`/`selectedTemplate` props already passed down). */
+  function _effTemplateForLeg(/** @type {any} */ leg) {
+    const tid = leg?.template_id ?? templateId;
+    if (tid == null) return null;
+    if (selectedTemplate && selectedTemplate.id === tid) return selectedTemplate;
+    return nonNoneTemplates.find((t) => t.id === tid) || null;
+  }
+
+  /** Effective wing/spread params for a leg — leg override > shell
+   *  override (only when the leg has no template override of its own,
+   *  same precedence SymbolPanel's `_applySharedOverrides` uses) >
+   *  template default. Side-inclusive (CE or PE, BUY or SELL parent) —
+   *  deliberately NOT gated on `showsWing`/`applies_to === 'sell_option'`. */
+  function _effWingParams(/** @type {any} */ leg) {
+    const tpl = _effTemplateForLeg(leg);
+    if (!tpl) return null;
+    const hasLegTpl = leg?.template_id != null && leg.template_id !== templateId;
+    const offset = leg?.wing_strike_offset_override ?? (hasLegTpl ? null
+      : (wingStrikeOffsetOverride !== '' && wingStrikeOffsetOverride != null ? Number(wingStrikeOffsetOverride) : null))
+      ?? (tpl.wing_strike_offset ?? null);
+    const premPct = leg?.wing_premium_pct_override ?? (hasLegTpl ? null
+      : (wingPremPctOverride !== '' && wingPremPctOverride != null ? Number(wingPremPctOverride) : null))
+      ?? (tpl.wing_premium_pct ?? null);
+    const maxSpreadPct = (spreadMaxPctOverride !== '' && spreadMaxPctOverride != null)
+      ? Number(spreadMaxPctOverride)
+      : (tpl.wing_max_spread_pct ?? 10);
+    // _template_has_wing parity: offset != null (including 0, a valid
+    // ATM wing) OR a truthy premium%. Not a truthiness check on offset.
+    const hasWing = offset != null || !!(premPct && Number(premPct) > 0);
+    return { offset, premPct, maxSpreadPct, hasWing };
+  }
+
+  /**
+   * Build the list of {leg, parentSym, parentExch, wingSym, wingUnresolved,
+   * maxSpreadPct} entries that need a spread check right now. Empty
+   * list = gate doesn't apply (no template, or no leg has a wing
+   * configured) — recomputed on every check (including every recheck),
+   * so disabling the template or removing the last wing-configured leg
+   * mid-wait naturally resolves to "nothing left to check" on the next
+   * tick, per the operator's "disabling template skips the check
+   * entirely" requirement.
+   */
+  function _buildGatePlan() {
+    /** @type {Array<{leg: any, parentSym: string, parentExch: string, wingSym: string|null, wingUnresolved: boolean, premiumMode: boolean, maxSpreadPct: number}>} */
+    const items = [];
+    for (const leg of chainBasket) {
+      if (leg?.optType !== 'CE' && leg?.optType !== 'PE') continue; // wing only applies to option legs
+      const wp = _effWingParams(leg);
+      if (!wp || !wp.hasWing) continue;
+      let wingSym = /** @type {string|null} */ (null);
+      let wingUnresolved = false;
+      let premiumMode = false;
+      if (wp.offset != null) {
+        wingSym = resolveWingTradingsymbol(leg.sym, wp.offset);
+        wingUnresolved = !wingSym;
+      } else {
+        // Premium%-scan mode — the real wing strike depends on a
+        // server-side chain scan at fill time (parent fill price not
+        // known pre-submit). `runPreSubmitGate()` resolves this ONCE
+        // per gate session via /orders/ticket/preview and caches it
+        // here by leg key; until resolved, check the parent leg only.
+        premiumMode = true;
+        const cached = _premiumWingSymCache.get(leg.key);
+        if (cached) wingSym = cached; else wingUnresolved = true;
+      }
+      items.push({ leg, parentSym: leg.sym, parentExch: leg.exchange || 'NFO', wingSym, wingUnresolved, premiumMode, maxSpreadPct: wp.maxSpreadPct });
+    }
+    return items;
+  }
+
+  /** Resolve premium%-mode wing tradingsymbols ONCE per gate session —
+   *  see `_premiumWingSymCache`'s own comment for why this must not run
+   *  on every poll tick. No-op for items already cached or not in
+   *  premium mode. Failures are swallowed — that leg's wing simply
+   *  stays unresolved (parent-only check, flagged in the banner) rather
+   *  than blocking the whole gate on a preview-call failure. */
+  async function _resolvePremiumWingSymbols(/** @type {ReturnType<typeof _buildGatePlan>} */ items) {
+    const toResolve = items.filter((it) => it.premiumMode && it.wingUnresolved && !_premiumWingSymCache.has(it.leg.key));
+    if (toResolve.length === 0) return;
+    const mode = _resolveBasketMode();
+    await Promise.all(toResolve.map(async (it) => {
+      try {
+        const wp = _effWingParams(it.leg);
+        const tpl = _effTemplateForLeg(it.leg);
+        const resp = await previewTicketTemplate({
+          mode,
+          side: it.leg.side,
+          tradingsymbol: it.leg.sym,
+          quantity: Math.max(1, Number(it.leg.lots) || 1),
+          exchange: it.parentExch,
+          product: it.leg.product || 'NRML',
+          account: it.leg.account || _account,
+          reference_price: Number(it.leg.limit) || 0,
+          template_id: tpl?.id ?? null,
+          wing_premium_pct_override: wp?.premPct ?? null,
+        });
+        const sym = resp?.plan?.wing?.tradingsymbol;
+        if (sym) _premiumWingSymCache.set(it.leg.key, String(sym));
+      } catch { /* leave unresolved — parent-only check for this leg */ }
+    }));
+  }
+
+  /** Dedupe parent + wing symbols across every leg into one flat list
+   *  of {tradingsymbol, exchange, maxSpreadPct, label} check targets. */
+  function _buildCheckTargets(/** @type {ReturnType<typeof _buildGatePlan>} */ items) {
+    /** @type {Map<string, {tradingsymbol: string, exchange: string, maxSpreadPct: number, label: string}>} */
+    const map = new Map();
+    for (const it of items) {
+      const pk = `${it.parentExch}:${it.parentSym}`;
+      if (!map.has(pk)) map.set(pk, { tradingsymbol: it.parentSym, exchange: it.parentExch, maxSpreadPct: it.maxSpreadPct, label: it.parentSym });
+      if (it.wingSym) {
+        const wk = `${it.parentExch}:${it.wingSym}`;
+        if (!map.has(wk)) map.set(wk, { tradingsymbol: it.wingSym, exchange: it.parentExch, maxSpreadPct: it.maxSpreadPct, label: `${it.wingSym} offset` });
+      }
+    }
+    return [...map.values()];
+  }
+
+  /** `checkLegs` callback handed to createSpreadGate — rebuilds the plan
+   *  fresh on every call (not a stale snapshot from `start()`), so a
+   *  TP%/SL%/Spread%/wing edit — or disabling the template entirely —
+   *  is reflected on the very next tick/recheck. */
+  async function _checkLegs(/** @type {{signal: AbortSignal}} */ { signal }) {
+    const items = _buildGatePlan();
+    if (items.length === 0) {
+      return { ok: true, legs: [] }; // nothing wing-configured anymore — gate clears itself
+    }
+    const targets = _buildCheckTargets(items);
+    const results = await Promise.all(targets.map(async (t) => {
+      const r = await checkOrderSpread({
+        tradingsymbol: t.tradingsymbol, exchange: t.exchange,
+        maxSpreadPct: t.maxSpreadPct, signal,
+      });
+      return {
+        label: t.label, tradingsymbol: t.tradingsymbol,
+        ok: r?.ok === true, spread_pct: r?.spread_pct ?? null,
+        bid: r?.bid ?? null, ask: r?.ask ?? null, maxSpreadPct: t.maxSpreadPct,
+        reason: r?.reason ?? null,
+      };
+    }));
+    const ok = results.every((r) => r.ok === true);
+    return { ok, legs: results };
+  }
+
+  function _settleGateResolvers(/** @type {boolean} */ ok) {
+    for (const r of _gateResolvers) r(ok);
+    _gateResolvers.clear();
+  }
+
+  /**
+   * Component export — called via `bind:this` from the shell (see
+   * SymbolPanel.svelte's shared Submit button). Returns a Promise that
+   * resolves `true` once it's safe to call submitBasket() (no wing
+   * configured, spread already fine, operator explicitly overrode, or
+   * the template got disabled mid-wait) and `false` if the operator
+   * cancels. NEVER auto-resolves true past the bounded error/timeout
+   * state — those require an explicit Retry / Place anyway / Cancel.
+   * @returns {Promise<boolean>}
+   */
+  export async function runPreSubmitGate() {
+    if (_gate && !_isGateTerminal(_gateState.phase)) {
+      // Already running (e.g. a double-click on Submit) — attach to
+      // the same in-flight loop instead of starting a second one.
+      return new Promise((resolve) => { _gateResolvers.add(resolve); });
+    }
+    let items = _buildGatePlan();
+    if (items.length === 0) {
+      _gateState = { phase: 'idle', legs: [], attempts: 0, lastError: '' };
+      return true;
+    }
+    // New gate session — fresh premium-wing-symbol cache, resolved
+    // once here (not on every poll tick; see the cache's own comment).
+    _premiumWingSymCache = new Map();
+    const premiumItems = items.filter((it) => it.premiumMode);
+    if (premiumItems.length > 0) {
+      await _resolvePremiumWingSymbols(premiumItems);
+      items = _buildGatePlan(); // re-resolve now that the cache is populated
+      if (items.length === 0) {
+        _gateState = { phase: 'idle', legs: [], attempts: 0, lastError: '' };
+        return true;
+      }
+    }
+    return new Promise((resolve) => {
+      _gateResolvers.add(resolve);
+      _gate = createSpreadGate({
+        checkLegs: _checkLegs,
+        onUpdate: (s) => {
+          _gateState = s;
+          if (s.phase === 'passed' || s.phase === 'overridden') _settleGateResolvers(true);
+          else if (s.phase === 'cancelled') _settleGateResolvers(false);
+          // 'checking' / 'wide' / 'error' / 'timeout' stay pending —
+          // operator (or a recheck) must move the phase along.
+        },
+      });
+      _gate.start();
+    });
+  }
+
+  function _gatePlaceAnyway() { _gate?.confirmOverride(); }
+  function _gateCancel()      { _gate?.cancel(); }
+  function _gateRetry()       { _gate?.retry(); }
+
+  // Immediate re-check triggers (operator req't c): TP%/SL%/Spread%/wing
+  // param edits, a template switch, or a basket-leg add/remove — only
+  // while the gate is actually open (not idle/resolved). Disabling the
+  // template (shellUsingNone flips true) also lands here and resolves
+  // to "nothing to check" on the very next tick via `_buildGatePlan()`.
+  $effect(() => {
+    void tpOverride; void slOverride; void spreadMaxPctOverride;
+    void wingStrikeOffsetOverride; void wingPremPctOverride;
+    void templateId; void shellUsingNone; void chainBasket;
+    untrack(() => {
+      if (_gate && !_isGateTerminal(_gateState.phase)) _gate.recheck();
+    });
+  });
+
+  onDestroy(() => {
+    // No dangling timers if the operator navigates away / closes the
+    // modal mid-loop — resolves any still-pending caller as false
+    // (same outcome as an explicit Cancel).
+    _gate?.cancel();
+  });
+
   function _loadInstrumentsSafe() {
     _instrumentsError = false;
     loadInstruments().catch(() => { _instrumentsError = true; });
@@ -947,6 +1215,7 @@
           bind:slOverride
           bind:wingStrikeOffsetOverride
           bind:wingPremPctOverride
+          bind:spreadMaxPctOverride
           {onSelectDefault}
           {onSelectNone}
           {onSelectTemplate} />
@@ -1172,6 +1441,42 @@
        next successful add. -->
   {#if basketError}
     <div class="chain-basket-err" role="alert">{basketError}</div>
+  {/if}
+
+  <!-- Pre-submit spread gate banner — only ever visible once the
+       operator has clicked Submit AND at least one staged leg has a
+       wing/offset configured (see runPreSubmitGate() above). -->
+  {#if _gateState.phase !== 'idle'}
+    <div class="chain-spread-gate"
+         class:chain-spread-gate-wide={_gateState.phase === 'wide'}
+         class:chain-spread-gate-error={_gateState.phase === 'error' || _gateState.phase === 'timeout'}
+         data-testid="spread-gate-banner"
+         data-phase={_gateState.phase}
+         role="alert">
+      {#if _gateState.phase === 'checking'}
+        <span class="chain-spread-gate-msg">Checking spread…</span>
+        <button type="button" class="chain-spread-gate-btn" onclick={_gateCancel}>Cancel</button>
+      {:else if _gateState.phase === 'wide'}
+        <span class="chain-spread-gate-msg">
+          ⚠ Wide spread —{#each _gateState.legs.filter((l) => l.ok === false) as l (l.tradingsymbol)} {l.label} {l.spread_pct != null ? l.spread_pct.toFixed(1) : '?'}%{/each}
+        </span>
+        <button type="button" class="chain-spread-gate-btn chain-spread-gate-btn-primary"
+                data-testid="spread-gate-place-anyway" onclick={_gatePlaceAnyway}>Place anyway</button>
+        <button type="button" class="chain-spread-gate-btn" onclick={_gateCancel}>Cancel</button>
+      {:else if _gateState.phase === 'error'}
+        <span class="chain-spread-gate-msg">⚠ Spread check failed</span>
+        <button type="button" class="chain-spread-gate-btn" data-testid="spread-gate-retry" onclick={_gateRetry}>Retry</button>
+        <button type="button" class="chain-spread-gate-btn chain-spread-gate-btn-primary"
+                data-testid="spread-gate-place-anyway" onclick={_gatePlaceAnyway}>Place anyway</button>
+        <button type="button" class="chain-spread-gate-btn" onclick={_gateCancel}>Cancel</button>
+      {:else if _gateState.phase === 'timeout'}
+        <span class="chain-spread-gate-msg">⚠ Spread check timed out</span>
+        <button type="button" class="chain-spread-gate-btn" data-testid="spread-gate-retry" onclick={_gateRetry}>Retry</button>
+        <button type="button" class="chain-spread-gate-btn chain-spread-gate-btn-primary"
+                data-testid="spread-gate-place-anyway" onclick={_gatePlaceAnyway}>Place anyway</button>
+        <button type="button" class="chain-spread-gate-btn" onclick={_gateCancel}>Cancel</button>
+      {/if}
+    </div>
   {/if}
 </div>
 
@@ -2005,6 +2310,46 @@
     color: var(--algo-slate-muted);
   }
   .chain-basket-err { flex: 1 1 100%; color: var(--c-short); font-family: monospace; font-size: var(--fs-sm); margin-top: 0.2rem; }
+  /* Pre-submit spread gate banner — amber (checking/wide, action color)
+     escalating to red (error/timeout, same --c-short the basket error
+     above uses) once the loop has exhausted its bounded retries. */
+  .chain-spread-gate {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.4rem;
+    margin-top: 0.3rem;
+    padding: 0.3rem 0.5rem;
+    border-radius: 3px;
+    font-family: monospace;
+    font-size: var(--fs-sm);
+    background: rgba(251, 191, 36, 0.10);
+    border: 1px solid rgba(251, 191, 36, 0.35);
+    color: var(--algo-amber, var(--c-action));
+  }
+  .chain-spread-gate-error {
+    background: rgba(248, 113, 113, 0.10);
+    border-color: rgba(248, 113, 113, 0.40);
+    color: var(--c-short);
+  }
+  .chain-spread-gate-msg { flex: 1 1 auto; font-variant-numeric: tabular-nums; }
+  .chain-spread-gate-btn {
+    flex-shrink: 0;
+    padding: 0.15rem 0.5rem;
+    background: rgba(148, 163, 184, 0.10);
+    border: 1px solid rgba(148, 163, 184, 0.35);
+    border-radius: 3px;
+    color: var(--algo-slate);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    cursor: pointer;
+  }
+  .chain-spread-gate-btn-primary {
+    background: rgba(251, 191, 36, 0.20);
+    border-color: rgba(251, 191, 36, 0.55);
+    color: var(--algo-amber, var(--c-action));
+  }
   @keyframes chain-quick-fade {
     0%   { opacity: 1; }
     70%  { opacity: 1; }
