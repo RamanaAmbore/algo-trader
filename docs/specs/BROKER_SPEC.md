@@ -3,7 +3,7 @@
 Single source of truth for `backend/brokers/` — the vendor-agnostic broker abstraction layer.
 Code, tests, and documentation must stay in sync with this file.
 
-**Version**: 1.31 — 2026-09-27  
+**Version**: 1.32 — 2026-10-01  
 **Owner**: Platform  
 **Linked files**: `backend/brokers/base.py` · `backend/brokers/registry.py` · `backend/brokers/connections.py` · `backend/brokers/kite_ticker.py` · `backend/brokers/adapters/` · `backend/brokers/service/` · `backend/brokers/client/`
 
@@ -1822,7 +1822,43 @@ For BUY parents (exit is SELL): LIMIT set below trigger.
 For SELL parents (exit is BUY): LIMIT set above trigger.  
 SL legs always remain LIMIT at trigger with no offset.
 
-**Wing feasibility flag** (#10): Preview endpoint returns `wing_feasible=False` in `TicketPreviewResponse` when a wing template is required but no liquid strike was found (chain empty, all OI below threshold, quote failure). Operator sees this before submit so they can adjust settings or skip the wing.
+**GTT price tick-grid snap** (commit 7468734d): Trigger and LIMIT prices now
+snap to the instrument's tick grid, not just `round(x, 2)`. `_tp_trigger`,
+`_sl_trigger`, and `_tp_limit_offset` each accept `tick_size` (resolved once
+and threaded via `TemplatePlan.parent_tick_size`, mirroring the existing
+`parent_lot_size` pattern). Triggers snap via `_snap_trigger_price` (half-up to
+nearest tick, with a floor-at-one-tick guard clamping any sub-zero result up to
+one tick). LIMIT prices for TP legs snap via integer tick-count arithmetic:
+when `tick_size` is known, the offset direction (down for SELL exits, up for BUY
+exits) is preserved by stepping whole ticks away from the trigger, preventing
+the limit from collapsing onto the trigger itself. Both fall back to plain
+`round(x, 2)` when `tick_size` is unknown/0, preserving pre-fix behavior for
+test fixtures.
+
+**Wing/offset-leg direction for both option sides** (commit 7ef1ee21): The wing
+attach system now fires for BOTH BUY and SELL option parents, not just SELL.
+`_wing_direction(parent_side, parent_symbol)` returns:
+
+| Parent | Leg Direction | Order Type | Purpose |
+|---|---|---|---|
+| SELL option | BUY | MARKET | Protective hedge (unchanged) |
+| BUY option | SELL | LIMIT | Offset leg (new; operator rule: no market orders for offsetting) |
+| Futures/equity | — | — | No wing |
+
+Strike selection reuses `_pick_wing_by_premium` unchanged: target premium is
+`parent_fill_price × wing_premium_pct / 100`, with liquidity filters
+(`wing_min_oi`, `wing_max_spread_pct`, `wing_chain_radius`). The offset leg's
+LIMIT price is tick-snapped (see "GTT price tick-grid snap" above). `_place_wing_leg`
+sends the `price` kwarg for LIMIT legs and raises `ValueError` before calling the
+broker if no valid price is available. Note: "offset leg" here means the
+opposite-side leg attached for options protection, distinct from both (1)
+close/offset orders that reduce existing positions, and (2) the LIMIT offset
+applied to TP triggers.
+
+**Wing feasibility flag** (#10): Preview endpoint returns `wing_feasible=False`
+in `TicketPreviewResponse` when a wing template is required but no liquid strike
+was found (chain empty, all OI below threshold, quote failure). Operator sees
+this before submit so they can adjust settings or skip the wing.
 
 **Wing failure alerting**: When wing scan fails (hard-reject, chain miss, quote error), `wing_skipped_reason` is set on `AttachResult` and an ntfy alert fires immediately with the skip reason. Operator receives Telegram ping ≤30s so they can decide whether to arm exits manually.
 
@@ -1879,7 +1915,7 @@ on breach to catch untranslated lots-vs-contracts bugs before they reach the Dha
 
 **MCX/Dhan fail-fast in `apply_template_to_order`** (commit b8b1214c): After resolving `caps = capabilities_for(account)`, if `caps.gtt_supports_mcx=False` and `parent_exchange` is MCX or NCO, the function returns an `AttachResult` with errors immediately — before lot-size resolution, plan resolution, or any broker call. Fires `_fire_attach_fail_alert`. `guard_alert_fired=True` suppresses the duplicate alert at the bottom of the function.
 
-**Off-hours GTT note** (commit b8b1214c): When a GTT-only template (no wing) is attached while the exchange is closed, `AttachResult.plan.notes` now includes: "GTT registered off-hours ({exchange} closed) — will activate at next session open". Only applies when no wing leg exists (wing MARKET legs require open hours). See `apply_template_to_order` line 2026–2030.
+**Off-hours GTT note** (commit b8b1214c): When a GTT-only template (no wing) is attached while the exchange is closed, `AttachResult.plan.notes` now includes: "GTT registered off-hours ({exchange} closed) — will activate at next session open". Only applies when no wing leg exists — `_check_offhours_wing_gate` defers the whole attach (not just the wing) whenever a wing is configured and the exchange is closed, regardless of which direction the wing resolves to (BUY MARKET or SELL LIMIT, per `_wing_direction` above — the gate is direction-agnostic, keyed only on `_template_has_wing`). See `apply_template_to_order` line 2026–2030.
 
 ## 8.4. Broker Postback Fill-Status Mapping & Authentication (2026-09)
 
@@ -2440,7 +2476,7 @@ Virtual symbols (`CRUDEOIL`, `CRUDEOIL_NEXT`, `USDINR`, etc.) are never sent raw
 
 **I18 — Postback attach TOCTOU protection**: Idempotency check re-fetches `attached_gtts_json` INSIDE the per-parent-order async lock (`_get_template_attach_lock`). Prevents postback handler + reconcile path from both passing the `is None` check simultaneously and double-placing GTTs.
 
-**I19 — LIMIT TP slippage offset per exchange**: LIMIT TP legs apply exchange-specific tick offsets to improve fill probability. NFO/BFO/CDS: 0.05 (default). Futures/others: 0.5 (default). Config keys: `template.tp_limit_tick_offset_nfo`, `template.tp_limit_tick_offset_default`. SL legs always remain at trigger with no offset.
+**I19 — LIMIT TP slippage offset per exchange**: LIMIT TP legs apply exchange-specific tick offsets to improve fill probability. NFO/BFO/CDS: 0.05 (default). Futures/others: 0.5 (default). Config keys: `template.tp_limit_tick_offset_nfo`, `template.tp_limit_tick_offset_default`. SL legs always remain at trigger with no offset. Both trigger prices and LIMIT offset prices snap to the instrument's tick grid (see section 8.3 "GTT price tick-grid snap").
 
 **I20 — Scale-out rounding to lot multiple**: Scale-out GTT qtys rounded UP to nearest lot multiple; last entry trimmed to cap total at parent_qty. Qty lost to rounding is noted in `plan.notes`. Ensures no sub-lot GTT leg reaches the broker.
 
