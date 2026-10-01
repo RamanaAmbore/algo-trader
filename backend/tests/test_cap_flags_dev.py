@@ -168,11 +168,14 @@ async def test_close_once_applies_close_override_and_rebuilds_positions_summary(
     from backend.api.background import _run_close_once, _default_seg_state
 
     IST = ZoneInfo("Asia/Kolkata")
-    # Friday, well past a 15:30 close + 15 min offset.
-    now = datetime(2026, 8, 21, 16, 0, 0, tzinfo=IST)
+    # Friday, well past a 23:30 MCX close + 15 min offset. _run_close_once
+    # is MCX-only (2026-10 fix) — a NON-MCX segment here would be skipped
+    # before any fetch/send, so the override/rebuild path must be exercised
+    # via the MCX trigger.
+    now = datetime(2026, 8, 21, 23, 50, 0, tzinfo=IST)
     assert now.weekday() == 4
 
-    seg = {"name": "NON-MCX", "exchange": "NSE", "hours_end": dtime(15, 30)}
+    seg = {"name": "MCX", "exchange": "MCX", "hours_end": dtime(23, 30)}
     state = {"close_seg_state": _default_seg_state()}
 
     df_h = pd.DataFrame()
@@ -216,7 +219,7 @@ async def test_close_once_applies_close_override_and_rebuilds_positions_summary(
         "positions DataFrame from _fetch_positions_direct"
     )
     mock_rebuild.assert_called_once_with(df_p)
-    assert state["close_seg_state"]["NON-MCX"]["last_close"] == now.date(), (
+    assert state["close_seg_state"]["MCX"]["last_close"] == now.date(), (
         "close summary must complete (last_close updated) even with the "
         "override/rebuild step inserted"
     )

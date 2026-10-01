@@ -11,9 +11,13 @@ A. _override_stale_close_from_snapshot (positions.py):
 B. _override_stale_close_for_holdings (holdings.py):
    Same COALESCE removal — SQL uses ltp directly.
 
-C. _perf_run_close_check (background.py):
-   Extracted helper fires when now >= close_trigger, does NOT fetch from
-   broker (uses already-fetched data), updates seg_state['last_close'].
+C. _task_performance (background.py):
+   The market-closure (close summary) report is no longer sent from this
+   task at all — that responsibility moved entirely to `_run_close_once`
+   (see test_cap_flags_dev.py and test_market_closure_report_mcx_only.py).
+   This file now only asserts the dead code (`_perf_run_close_check`) was
+   actually removed and that `_task_performance` no longer references
+   `send_summary` on the close path.
 
 D. kite_postback_handler (orders_postback.py):
    kick_performance() called on COMPLETE, not on CANCELLED/REJECTED.
@@ -221,146 +225,32 @@ class TestHoldingsSqlNoCOALESCE:
 
 
 # ---------------------------------------------------------------------------
-# Task C — background.py: _perf_run_close_check exists and fires correctly
+# Task C — background.py: _perf_run_close_check removed; close report now
+# lives exclusively in _run_close_once (see test_cap_flags_dev.py and
+# test_market_closure_report_mcx_only.py for the MCX-only behaviour).
 # ---------------------------------------------------------------------------
 
-class TestPerfRunCloseCheck:
-    """_perf_run_close_check fires summarise when trigger exceeded, skips otherwise."""
+class TestPerfRunCloseCheckRemoved:
+    """The old in-_task_performance close-summary sender is gone.
 
-    def _make_seg_state(self) -> dict:
-        from backend.api.background import _default_seg_state
-        return _default_seg_state()
+    2026-10 fix: `_task_performance` used to send a SECOND, duplicate close
+    report (independent state from `_run_close_once`'s cron sweep) whenever
+    `_perf_probe_open_segments` first observed all segments closed. That
+    duplicate sender had no `market_summary` cap gate and — because its own
+    `close_seg_state` dict never got primed until both NON-MCX and MCX had
+    already closed — it fired its *own* NON-MCX report hours late, around
+    MCX close, on top of `_run_close_once`'s already-correct send. Removed
+    entirely rather than filtered, since `_run_close_once` already covers
+    the full (unfiltered, cross-exchange) book.
+    """
 
-    def _make_segment(self, name: str, close_hour: int, close_minute: int) -> dict:
-        """Minimal segment dict matching _build_segments() output."""
-        return {
-            'name': name,
-            'exchange': 'NSE',
-            'hours_end': dtime(close_hour, close_minute),
-        }
-
-    def test_helper_exists(self):
-        """_perf_run_close_check must be importable from background."""
-        from backend.api.background import _perf_run_close_check  # noqa: F401
-
-    def test_fires_summarise_when_trigger_exceeded(self):
-        """When now >= close_trigger, seg_state['last_close'] is updated to today.
-
-        Mocks summarise_holdings / summarise_positions / send_summary and _run
-        so no actual broker or DB calls are made.
-        """
-        from backend.api.background import _perf_run_close_check
-
-        # Segment closes at 15:30; offset=15 min → trigger=15:45; now=16:00 → fires
-        seg_state = self._make_seg_state()
-        today = date(2026, 8, 22)  # Friday (weekday=5 → 5 < 5 is False — weekday 5 is Saturday)
-        # Use a Friday date: 2026-08-21 is Friday (weekday=4)
-        today = date(2026, 8, 21)
-        now = datetime(2026, 8, 21, 16, 0, 0, tzinfo=IST)
-        assert now.weekday() == 4, f"2026-08-21 should be Friday, got {now.weekday()}"
-
-        df_empty = pd.DataFrame()
-        seg = self._make_segment('NON-MCX', 15, 30)
-
-        # _run must be an async wrapper that calls the lambda immediately
-        async def _mock_run(fn):
-            return fn()
-
-        with (
-            patch("backend.api.background._get_segments", return_value=[seg]),
-            patch("backend.api.background._run", side_effect=_mock_run),
-            patch("backend.api.background.timestamp_display", return_value="16:00 IST"),
-            patch("backend.shared.helpers.summarise.summarise_holdings",
-                  return_value={}),
-            patch("backend.shared.helpers.summarise.summarise_positions",
-                  return_value={}),
-            patch("backend.shared.helpers.alert_utils.send_summary"),
-        ):
-            asyncio.run(_perf_run_close_check(
-                df_empty, df_empty, df_empty, df_empty, df_empty,
-                now, today, seg_state, close_offset=15,
-            ))
-
-        # last_close must be updated for the segment
-        assert seg_state['NON-MCX']['last_close'] == today, (
-            "seg_state['NON-MCX']['last_close'] must be set to today after summary fires"
+    def test_helper_deleted(self):
+        """_perf_run_close_check must no longer exist in background.py."""
+        src = Path("backend/api/background.py").read_text()
+        assert "_perf_run_close_check" not in src, (
+            "_perf_run_close_check is dead code and must stay deleted — the "
+            "market-closure report is now sent exclusively by _run_close_once"
         )
-
-    def test_skips_when_before_trigger(self):
-        """When now < close_trigger, summary must NOT be sent."""
-        from backend.api.background import _perf_run_close_check
-
-        seg_state = self._make_seg_state()
-        today = date(2026, 8, 22)
-        # Trigger would be 15:45; now=15:30 → before trigger
-        now = datetime(2026, 8, 22, 15, 30, 0, tzinfo=IST)
-
-        seg = self._make_segment('NON-MCX', 15, 30)
-
-        mock_send = MagicMock()
-        with (
-            patch("backend.api.background._get_segments", return_value=[seg]),
-            patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
-        ):
-            asyncio.run(_perf_run_close_check(
-                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                now, today, seg_state, close_offset=15,
-            ))
-
-        # last_close must NOT be set
-        assert seg_state['NON-MCX']['last_close'] != today, (
-            "seg_state must not be updated before the close trigger"
-        )
-
-    def test_skips_on_weekend(self):
-        """Weekend (Sunday = weekday 6) → summary must not fire."""
-        from backend.api.background import _perf_run_close_check
-
-        seg_state = self._make_seg_state()
-        # 2026-08-23 is Sunday (weekday=6)
-        today = date(2026, 8, 23)
-        now = datetime(2026, 8, 23, 16, 0, 0, tzinfo=IST)
-        assert now.weekday() == 6, f"2026-08-23 should be Sunday, got {now.weekday()}"
-
-        seg = self._make_segment('NON-MCX', 15, 30)
-        mock_send = MagicMock()
-
-        with (
-            patch("backend.api.background._get_segments", return_value=[seg]),
-            patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
-        ):
-            asyncio.run(_perf_run_close_check(
-                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                now, today, seg_state, close_offset=15,
-            ))
-
-        assert seg_state['NON-MCX']['last_close'] != today, (
-            "Close summary must not fire on weekends (weekday >= 5)"
-        )
-
-    def test_skips_already_sent_today(self):
-        """last_close == today → do not send duplicate summary."""
-        from backend.api.background import _perf_run_close_check
-
-        seg_state = self._make_seg_state()
-        today = date(2026, 8, 22)  # Friday
-        seg_state['NON-MCX']['last_close'] = today  # already sent
-        now = datetime(2026, 8, 22, 16, 30, 0, tzinfo=IST)
-
-        seg = self._make_segment('NON-MCX', 15, 30)
-        mock_send = MagicMock()
-
-        with (
-            patch("backend.api.background._get_segments", return_value=[seg]),
-            patch("backend.shared.helpers.alert_utils.send_summary", mock_send),
-        ):
-            asyncio.run(_perf_run_close_check(
-                pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(),
-                now, today, seg_state, close_offset=15,
-            ))
-
-        # send_summary must never be called
-        mock_send.assert_not_called()
 
     def test_task_close_deleted(self):
         """_task_close must not exist in background.py (dead code removed).
@@ -384,10 +274,11 @@ class TestPerfRunCloseCheck:
             "Module docstring must not reference deleted _task_close task"
         )
 
-    def test_close_check_called_inside_open_segments_gate(self):
-        """_perf_run_close_check must be called INSIDE the `if not open_segments:` block
-        in _task_performance, before the `sim_active` live-market path — this ensures
-        the close summary fires in the post-close window when all markets are closed."""
+    def test_task_performance_no_longer_sends_close_summary(self):
+        """`_task_performance`'s own `if not open_segments:` branch must no
+        longer reference `send_summary` / `_perf_fetch_all_broker_data` for a
+        close report — it must be a plain no-op `continue`. The ONLY sender
+        of the market-closure report is `_run_close_once`."""
         src = Path("backend/api/background.py").read_text()
         func_start = src.index("async def _task_performance")
         try:
@@ -396,21 +287,21 @@ class TestPerfRunCloseCheck:
             func_end = len(src)
         func_src = src[func_start:func_end]
 
+        assert "send_summary" not in func_src, (
+            "_task_performance must not call send_summary at all — the close "
+            "report is owned exclusively by _run_close_once"
+        )
+        assert "close_seg_state" not in func_src, (
+            "_task_performance must not carry its own close_seg_state — "
+            "dead state left over from the removed duplicate close-summary sender"
+        )
+
         open_gate_pos = func_src.find("if not open_segments:")
-        close_check_pos = func_src.find("_perf_run_close_check")
-        sim_active_pos = func_src.find("sim_active = _bg_is_sim_active()")
-
-        assert close_check_pos != -1, "_perf_run_close_check must be called in _task_performance"
         assert open_gate_pos != -1, "'if not open_segments:' guard must exist in _task_performance"
-        assert sim_active_pos != -1, "'sim_active = _bg_is_sim_active()' must exist in _task_performance"
-
-        # The call must appear AFTER the `if not open_segments:` gate
-        # (i.e., inside the closed-market branch) and BEFORE the live-market
-        # `sim_active` path. This confirms it runs in the post-close window.
-        assert open_gate_pos < close_check_pos < sim_active_pos, (
-            "_perf_run_close_check must be called inside `if not open_segments:` "
-            "(after the gate, before sim_active) so it fires when all markets are closed. "
-            f"Gate at {open_gate_pos}, call at {close_check_pos}, sim_active at {sim_active_pos}"
+        gate_block = func_src[open_gate_pos:open_gate_pos + 400]
+        assert "continue" in gate_block, (
+            "'if not open_segments:' must still short-circuit the rest of the "
+            "tick via `continue`"
         )
 
 

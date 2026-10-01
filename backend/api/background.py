@@ -7,7 +7,9 @@ never stall the async event loop.
 
 Two tasks are started on Litestar startup:
   1. _task_performance — refresh holdings/positions/funds every N minutes during market hours,
-                         send open/close summaries (via _perf_run_close_check), fire loss alerts.
+                         send open summaries (via _perf_send_open_summaries), fire loss alerts.
+                         The market-closure (close) report is sent separately, once daily
+                         after MCX settles, by _run_close_once (see _task_post_market_cron).
   2. _task_market      — hydrate market cache from DB at startup (whatever
                          row exists, regardless of age — never blocks a
                          visitor on a live Gemini call). The daily proactive
@@ -1626,70 +1628,6 @@ async def _preload_db_lkg_cache() -> None:
     )
 
 
-async def _perf_run_close_check(
-    df_h: "pd.DataFrame",
-    sum_h: "pd.DataFrame",
-    df_p: "pd.DataFrame",
-    sum_p: "pd.DataFrame",
-    df_m: "pd.DataFrame",
-    now: "datetime",
-    today: "date",
-    seg_state: dict,
-    close_offset: int,
-) -> None:
-    """Check whether any market segment has crossed its close trigger and, if
-    so, send a closing summary via Telegram.
-
-    Called from _task_performance BEFORE the ``if not open_segments: continue``
-    guard so it fires even when all segments are already closed (the most
-    common post-close scenario).  The caller is responsible for providing
-    already-fetched broker data (df_h, sum_h, df_p, sum_p, df_m) so this
-    helper does NOT make any additional broker API calls.
-
-    Segment close trigger: ``hours_end + close_offset minutes``.
-    Fires on weekdays (weekday() < 5) only — weekends are always skipped.
-    Once per day per segment: ``seg_state[seg_name]['last_close'] == today``
-    guards against duplicate sends.
-    """
-    from backend.shared.helpers.alert_utils import send_summary
-    from backend.shared.helpers.summarise import (
-        summarise_holdings as _summarise_holdings,
-        summarise_positions as _summarise_positions,
-    )
-
-    segments = _get_segments()
-    for seg in segments:
-        ss = seg_state[seg['name']]
-        if ss['last_close'] == today:
-            continue
-
-        close_trigger = now.replace(
-            hour=seg['hours_end'].hour,
-            minute=seg['hours_end'].minute,
-            second=0, microsecond=0,
-        ) + timedelta(minutes=close_offset)
-
-        # Operator note: holiday gate deliberately omitted (see _task_close
-        # comment). Weekday gate is sufficient — partial-session days where
-        # one exchange is on holiday but another is open must not be silenced.
-        if now.weekday() < 5 and now >= close_trigger:
-            try:
-                ist_display = timestamp_display()
-                _sh = _summarise_holdings(df_h, sum_h, None)
-                _sp = _summarise_positions(df_p)
-                _label = seg['name'].capitalize()
-                await _run(lambda: send_summary(
-                    _sh, _sp, ist_display, 'close',
-                    label=_label,
-                    df_margins=df_m,
-                    df_positions=df_p,
-                ))
-                ss['last_close'] = today
-                logger.info(f"Background: close summary sent for {seg['name']}")
-            except Exception as e:
-                logger.error(f"Background: close summary failed for {seg['name']}: {e}")
-
-
 async def _task_performance(state: dict) -> None:
     """Refresh performance data every N minutes during market hours."""
     from backend.brokers.broker_apis import fetch_holidays
@@ -1711,12 +1649,8 @@ async def _task_performance(state: dict) -> None:
     def _open_offset():
         return get_int("performance.open_summary_offset_min",
                        config.get("open_summary_offset_minutes", 15))
-    def _close_offset():
-        return get_int("performance.close_summary_offset_min",
-                       config.get("close_summary_offset_minutes", 15))
 
     seg_state       = _default_seg_state()
-    close_seg_state = _default_seg_state()
     alert_state     = {}
     holiday_cache: dict = {}
 
@@ -1736,7 +1670,6 @@ async def _task_performance(state: dict) -> None:
         # next cycle instead of after a service restart.
         interval     = _interval()
         open_offset  = _open_offset()
-        close_offset = _close_offset()
         # asyncio.wait_for instead of plain sleep so the sim driver can
         # signal an immediate kick via kick_performance() when it
         # auto-stops. Without this, an auto-stopped sim left up to 5 min
@@ -1782,38 +1715,12 @@ async def _task_performance(state: dict) -> None:
         # loop stalls for ~100-200ms (longer on a Kite outage).
         open_segments = await _perf_probe_open_segments(segments, holiday_cache, now)
 
-        # Close-summary check — runs BEFORE the open-segments gate because
-        # the close trigger fires precisely when open_segments is empty (all
-        # markets just closed).  Fetch broker data independently with its own
-        # timeout so a broker outage at close time doesn't suppress the summary.
+        # Market-closure report is owned entirely by `_run_close_once`
+        # (polled every 30s from `_task_post_market_cron`, MCX-only — see
+        # its docstring). No close-summary work happens on this task's own
+        # (coarser, interval-gated) clock; when all segments are closed
+        # there's nothing left for the performance-refresh cycle to do.
         if not open_segments:
-            # Check whether any segment needs a close summary.
-            _needs_close = any(
-                close_seg_state[seg['name']]['last_close'] != today
-                and now.weekday() < 5
-                and now >= (
-                    now.replace(
-                        hour=seg['hours_end'].hour,
-                        minute=seg['hours_end'].minute,
-                        second=0, microsecond=0,
-                    ) + timedelta(minutes=close_offset)
-                )
-                for seg in segments
-            )
-            if _needs_close:
-                try:
-                    try:
-                        (df_h_c, sum_h_c, df_p_c, sum_p_c,
-                         df_m_c) = await _perf_fetch_all_broker_data()
-                    except Exception as _fe:
-                        logger.warning(f"[CLOSE-SUMMARY] broker fetch failed: {_fe}")
-                        df_h_c = sum_h_c = df_p_c = sum_p_c = df_m_c = pd.DataFrame()
-                    await _perf_run_close_check(
-                        df_h_c, sum_h_c, df_p_c, sum_p_c, df_m_c,
-                        now, today, close_seg_state, close_offset,
-                    )
-                except Exception as _ce:
-                    logger.error(f"Background: close-summary dispatch failed: {_ce}")
             continue
 
         sim_active = _bg_is_sim_active()
@@ -7027,7 +6934,18 @@ async def _task_deploy_sync_check() -> None:
 # ---------------------------------------------------------------------------
 
 async def _run_close_once(state: dict) -> None:
-    """One close-summary sweep — all segments that crossed their close trigger."""
+    """Once-daily close-summary sweep — MCX only.
+
+    The trading day spans two close events (NON-MCX/equity ~15:30 IST,
+    MCX ~23:30 IST — see CLAUDE.md "Market daily window"), but only ONE
+    market-closure report is sent: after MCX settles. Sending it earlier,
+    at the NON-MCX close, would report a partial day (MCX still trading)
+    hours before the book is actually final. The underlying holdings/
+    positions/margins fetch below is always the FULL cross-exchange book
+    (never filtered to a segment's own exchanges), so the single MCX-
+    triggered report already reflects the complete day across both NSE
+    and MCX — no data is lost by skipping the NON-MCX trigger entirely.
+    """
     from backend.shared.helpers.utils import is_enabled
     if not is_enabled('market_summary'):
         return
@@ -7049,6 +6967,11 @@ async def _run_close_once(state: dict) -> None:
     seg_state = state.setdefault("close_seg_state", _default_seg_state())
 
     for seg in segments:
+        if seg["name"] != "MCX":
+            # Non-MCX (equity) close is intentionally silent — see
+            # docstring above. No bookkeeping needed: this segment's
+            # trigger is simply never evaluated.
+            continue
         ss = seg_state[seg["name"]]
         if ss["last_close"] == today:
             continue
