@@ -447,7 +447,7 @@
     border-radius: 3px;
     cursor: pointer;
     transition: background 0.1s;
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .cand-row:hover { background: rgba(34,211,238,0.05); }  /* cyan — matches History hover */
   /* All cells fill the full row track height and restore 0.2rem vertical

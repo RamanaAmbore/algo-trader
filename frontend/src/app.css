@@ -191,7 +191,16 @@
 
   /* Vertical-bar separator — shared by CardHeader (.ch-sep),
      MarketPulse (.mp-head-sep), and PositionStrip (.ps-agg-sep).
-     Single source of truth for the hairline divider color + spacing. */
+     Single source of truth for the hairline divider color + spacing.
+     Also the canonical "whisper slate" row/cell-divider colour (2026-09
+     consistency pass) — same literal, reused rather than duplicated
+     under a second name, for: `.ag-theme-algo .ag-cell` border-right,
+     `.ag-theme-algo .ag-row` border-bottom, `.algo-table tbody td`
+     border-bottom, `.log-news-panel .log-news-row` border-bottom, and
+     the derivatives `.cand-row` border-bottom
+     (admin/derivatives/CandidateLegRow.svelte). Grids that intentionally
+     use a DIFFERENT divider alpha (Chain's 0.025, PnlPanel's 0.06, etc.)
+     are deliberate deviations — do not repoint those to this token. */
   --sep-color:  rgba(126, 151, 184, 0.10);
   --sep-margin: 0.15rem 0.4rem;
 }
@@ -1388,7 +1397,7 @@
      MarketPulse's `.mp-bucket-wrap` previously zeroed this to 0 for
      every cell — restored (MarketPulse.svelte) to fall through to this
      same rule instead of duplicating the literal. */
-  border-right: 1px solid rgba(126,151,184,0.10) !important;
+  border-right: 1px solid var(--sep-color) !important;
   /* Tabular figures so digit widths don't jitter as values update —
      applied at the cell level so every numeric column on every algo
      grid (PerformancePage + watchlist) inherits it without per-column
@@ -1411,7 +1420,7 @@
   font-weight: 500;
   color: var(--algo-slate) !important;
   letter-spacing: 0.01em;
-  border-bottom: 1px solid rgba(126,151,184,0.10) !important;
+  border-bottom: 1px solid var(--sep-color) !important;
   background-color: transparent !important;
 }
 .ag-theme-algo .ag-row-odd {
@@ -1441,6 +1450,19 @@
 }
 
 /* ─── Hand-rolled table SSOT — matches ag-theme-algo ─────────────────────── */
+/* Canonical "dense grid" row/padding values (documented, not extracted
+   into a shared token — 2026-09 consistency pass audit flagged this as a
+   literal-dedup candidate, but `.algo-table`'s 24px body row and
+   ag-theme-algo's 28px are genuinely two different numbers, and the
+   latter is also overwritten at runtime per grid instance via
+   `syncGridRowHeightVar()` (`$lib/data/algoGridUtils.js`, 28px desktop /
+   36px mobile) — extracting a single var here would either be wrong for
+   one of the two surfaces or fight the JS override. Reference values for
+   the next wave, verified current as of this pass:
+     ag-theme-algo:  --ag-row-height 28px, --ag-header-height 28px
+                      (desktop; 36px row on mobile via syncGridRowHeightVar)
+     .algo-table:    thead th height 28px, tbody td height 24px
+     Both:           cell padding `0 4px` */
 .algo-table {
   width: 100%;
   border-collapse: collapse;
@@ -1463,7 +1485,7 @@
   padding: 0 4px;
   height: 24px;
   vertical-align: middle;
-  border-bottom: 1px solid rgba(126,151,184,0.10);
+  border-bottom: 1px solid var(--sep-color);
 }
 .algo-table tbody tr:nth-child(odd) td {
   background: var(--ag-odd-row-background-color, rgba(13,22,42,0.30));
@@ -1544,11 +1566,52 @@
    intentionally does NOT apply `ag-col-acct` for this reason; that cell
    renders plain (still monospace via `mp-acct-cell` for +N badge
    alignment, no colour identity). Do not re-add `ag-col-acct` to a
-   trailing/non-first account column without operator sign-off. */
+   trailing/non-first account column without operator sign-off.
+
+   Correction (2026-09 Wave 1 consistency pass): the claim above that this
+   rule "drives THREE identity signals from one place" was NOT actually
+   true for every surface it lists — NavBreakdown's P/M/C/H account column
+   also carries `ag-col-fill` (`cellClass: 'ag-col-fill ag-col-acct'`),
+   and the separate flat-amber `.ag-cell.ag-col-fill` rule (3-class
+   compound, `!important`, declared above) was winning over this rule's
+   un-`!important` background-color, silently dropping the 14% tint on
+   those four grids down to a flat 8% amber — only the stripe survived.
+   See the `.ag-cell.ag-col-fill.ag-col-acct` override rule immediately
+   below this block for the fix. BrokerHealthBadge was never affected
+   (its account column never carries `ag-col-fill`). */
 .ag-theme-algo .ag-col-acct {
   border-left: 3px solid var(--acct-color, transparent) !important;
   background-color: color-mix(in srgb, var(--acct-color, transparent) 14%, transparent);
   font-weight: 600;
+}
+
+/* ── Account-color background must win over the flat amber "fill" tint
+   (2026-09 audit, specificity-bug fix) ───────────────────────────────────
+   `.ag-cell.ag-col-fill` (3-class compound, `!important`, declared above
+   at ~line 1423) was unconditionally painting a flat 8% amber tint on any
+   cell carrying BOTH `ag-col-fill` and `ag-col-acct` — NavBreakdown's
+   P/M/C/H account column (`cellClass: 'ag-col-fill ag-col-acct'`) — because
+   the bare `.ag-theme-algo .ag-col-acct` rule right above has only 2
+   classes on the background-color declaration (no `!important`), so it
+   lost on BOTH specificity and importance. Only the 3px stripe (its OWN
+   declaration IS `!important`) ever showed through.
+   Fixed the same way this file already resolves every other same-theme
+   cascade conflict (see the `.ag-column-last` override at ~line 1400 and
+   the reasoning at ~line 1532): a MORE SPECIFIC compound selector that
+   also carries `!important`, rather than relying on source order (two
+   `!important` rules at equal specificity is exactly the "cascade race"
+   called out there). `.ag-cell` is kept in the selector deliberately —
+   header cells also carry `ag-col-acct` (mirrored headerClass), but a
+   header cell is `.ag-header-cell`, not `.ag-cell`, so this rule can
+   never touch the header's own flat 14% amber fill.
+   TOTAL rows are unaffected: `.ag-row.totals-row .ag-cell` (~line 1190)
+   already forces `background-color: transparent !important` at a tying
+   4-class specificity, winning via source order for the TOTAL row case;
+   `acctColor('TOTAL')` also resolves `--acct-color` to `transparent`
+   regardless, so the two rules agree. BrokerHealthBadge's account column
+   never carries `ag-col-fill` at all, so it is untouched by construction. */
+.ag-theme-algo .ag-cell.ag-col-fill.ag-col-acct {
+  background-color: color-mix(in srgb, var(--acct-color, transparent) 14%, transparent) !important;
 }
 
 /* ── Dual-zone log timestamp ──────────────────────────────────────────────
@@ -1663,7 +1726,7 @@
   /* Very tight gap — timestamp sits flush next to the headline. */
   gap: 0.15rem;
   padding: 0.32rem 0;
-  border-bottom: 1px solid rgba(126,151,184,0.10);
+  border-bottom: 1px solid var(--sep-color);
   line-height: 1.35;
 }
 .log-news-panel .log-news-row:last-child { border-bottom: 0; }

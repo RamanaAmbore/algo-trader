@@ -5239,7 +5239,13 @@
   :global(.ag-theme-algo .mp-acct-cell) {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    font-weight: 700;
+    /* 700 -> 600 (2026-09 consistency pass): matches the shared
+       `.ag-theme-algo .ag-col-acct` font-weight used by NavBreakdown and
+       BrokerHealthBadge's non-alert accounts — this column never carried
+       identity colour (trailing-column exclusion above), so there was no
+       reason for its weight to drift from the rest of the account-cell
+       family. */
+    font-weight: 600;
     letter-spacing: 0.04em;
   }
 

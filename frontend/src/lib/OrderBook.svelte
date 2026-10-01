@@ -25,6 +25,7 @@
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
   import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt } from '$lib/api';
   import { priceFmt } from '$lib/format';
+  import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -542,7 +543,13 @@
           <div class="algo-status-card gtt-card text-left p-2.5" data-status={_gttStatusDataAttr(g.status)}>
             <div class="flex items-center justify-start gap-2 mb-0.5">
               <span class="font-semibold text-xs min-w-0 truncate">
-                <span class="oc-acct">{g.account}</span>
+                <!-- `.oc-acct` (shared with OrderCard.svelte) reads
+                     --acct-color inline, same pattern as OrderCard's own
+                     span (order/OrderCard.svelte ~line 173) — without
+                     this inline style the stripe falls back to
+                     `transparent` and never shows a colour (2026-09-30
+                     consistency-pass fix). -->
+                <span class="oc-acct" style={g.account ? `--acct-color: ${acctColor(g.account) || 'transparent'};` : ''}>{g.account}</span>
                 <span class="text-[var(--algo-slate)]">{g.tradingsymbol || '—'}</span>
               </span>
               <span class="algo-status-pill ml-auto flex-shrink-0">{(g.status || '').toUpperCase() || 'GTT'}</span>
