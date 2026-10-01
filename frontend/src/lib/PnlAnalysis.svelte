@@ -707,7 +707,7 @@
         <div class="tbl-wrap">
           <table class="pnl-tbl">
             <thead>
-              <tr><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+              <tr><th>Segment</th><th class="num">Total P&L</th><th class="num">Day P&L</th><th class="num">Rows</th></tr>
             </thead>
             <tbody>
               {#each data.by_segment as row}
@@ -729,7 +729,7 @@
         <div class="tbl-wrap">
           <table class="pnl-tbl">
             <thead>
-              <tr><th>Account</th><th>Segment</th><th>Kind</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+              <tr><th>Account</th><th>Segment</th><th>Kind</th><th class="num">Total P&L</th><th class="num">Day P&L</th><th class="num">Rows</th></tr>
             </thead>
             <tbody>
               {#each data.by_account as row}
@@ -754,7 +754,7 @@
         <div class="tbl-wrap">
           <table class="pnl-tbl">
             <thead>
-              <tr><th>Symbol</th><th>Segment</th><th>Total P&L</th><th>Day P&L</th><th>Rows</th></tr>
+              <tr><th>Symbol</th><th>Segment</th><th class="num">Total P&L</th><th class="num">Day P&L</th><th class="num">Rows</th></tr>
             </thead>
             <tbody>
               {#each visibleSymbols as row}
@@ -777,7 +777,7 @@
         <div class="tbl-wrap">
           <table class="pnl-tbl">
             <thead>
-              <tr><th>Date</th><th>Total P&L</th><th>Day P&L</th></tr>
+              <tr><th>Date</th><th class="num">Total P&L</th><th class="num">Day P&L</th></tr>
             </thead>
             <tbody>
               {#each visibleDaily as row}
@@ -871,7 +871,7 @@
         <div class="tbl-wrap" style="margin-top:0.5rem">
           <table class="pnl-tbl">
             <thead>
-              <tr><th>Symbol</th><th>Segment</th><th>Qty</th><th>Total P&L</th></tr>
+              <tr><th>Symbol</th><th>Segment</th><th class="num">Qty</th><th class="num">Total P&L</th></tr>
             </thead>
             <tbody>
               {#each csvResult.sample as r}
@@ -959,7 +959,7 @@
     text-underline-offset: 2px;
   }
   .link-btn:hover { color: #fcd34d; }
-  .muted { color: #4e6080 !important; }
+  .muted { color: var(--algo-muted) !important; }
   .fb-label {
     display: flex;
     flex-direction: column;
@@ -1124,7 +1124,7 @@
 
   .chart-placeholder {
     font-size: var(--fs-md);
-    color: #4e6080;
+    color: var(--algo-muted);
     font-family: var(--font-numeric);
     padding: 1.5rem 0;
     text-align: center;
@@ -1230,13 +1230,13 @@
   .pnl-tbl .num  { text-align: right; font-variant-numeric: tabular-nums; }
   .pnl-tbl .mono { font-family: var(--font-numeric); }
   .pnl-tbl .sym  { font-weight: 600; letter-spacing: 0.02em; }
-  .pnl-tbl .muted { color: #4e6080; }
+  .pnl-tbl .muted { color: var(--algo-muted); }
   .pnl-tbl .pos  { color: var(--c-long); }
   .pnl-tbl .neg  { color: var(--c-short); }
 
   .empty-hint {
     font-size: var(--fs-md);
-    color: #4e6080;
+    color: var(--algo-muted);
     font-family: var(--font-numeric);
     padding: 0.25rem 0;
     margin: 0;
@@ -1251,7 +1251,7 @@
     text-transform: uppercase;
     letter-spacing: 0.06em;
     background: rgba(125,211,252,0.12);
-    color: #7dd3fc;
+    color: var(--algo-sky);
   }
 
   .algo-btn {
@@ -1371,7 +1371,7 @@
   .drop-zone:hover  { border-color: rgba(125,211,252,0.5); background: rgba(125,211,252,0.04); }
   .drag-over { border-color: #7dd3fc !important; background: rgba(125,211,252,0.08) !important; }
   .has-file  { border-color: rgba(74,222,128,0.4); color: var(--algo-slate); }
-  .drop-prompt  { color: #4e6080; }
+  .drop-prompt  { color: var(--algo-muted); }
   .drop-filename { font-weight: 600; color: var(--algo-slate); }
   .drop-clear {
     background: transparent;

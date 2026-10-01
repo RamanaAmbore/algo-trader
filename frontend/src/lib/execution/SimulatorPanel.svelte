@@ -1001,7 +1001,7 @@
       <div class="sim-section-label">Positions summary</div>
       {#if summaryPositions.length}
         <table class="sim-summary-grid">
-          <thead><tr><th>Account</th><th>Value</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <thead><tr><th>Account</th><th class="sim-num">Value</th><th class="sim-num">P&amp;L</th><th class="sim-num">Day P&amp;L</th></tr></thead>
           <tbody>
             {#each summaryPositions as row (row.account)}
               <tr class:sim-summary-total={row.account === 'TOTAL'}>
@@ -1027,7 +1027,7 @@
       <section class="sim-card">
         <div class="sim-section-label">Holdings summary</div>
         <table class="sim-summary-grid">
-          <thead><tr><th>Account</th><th>Value</th><th>P&amp;L</th><th>Day P&amp;L</th></tr></thead>
+          <thead><tr><th>Account</th><th class="sim-num">Value</th><th class="sim-num">P&amp;L</th><th class="sim-num">Day P&amp;L</th></tr></thead>
           <tbody>
             {#each summaryHoldings as row (row.account)}
               <tr class:sim-summary-total={row.account === 'TOTAL'}>
@@ -1906,7 +1906,7 @@
   }
   .sim-leg-chart-row {
     background: rgba(13, 21, 38, 0.4);
-    border: 1px solid rgba(126,151,184,0.10);
+    border: 1px solid var(--sep-color);
     border-radius: 3px;
     padding: 0.3rem 0.4rem;
   }
@@ -2087,7 +2087,7 @@
   }
   .sim-summary-grid td {
     padding: 0.3rem 0.55rem;
-    border-bottom: 1px solid rgba(126,151,184,0.10);
+    border-bottom: 1px solid var(--sep-color);
   }
   .sim-summary-grid .sim-num {
     text-align: right;
@@ -2097,7 +2097,7 @@
   .sim-summary-grid .sim-num.down { color: var(--c-short); }
   .sim-summary-total td {
     font-weight: 700;
-    color: #fde68a;
+    color: var(--algo-amber-text);
     border-top: 1px solid rgba(251,191,36,0.25);
   }
   /* Empty placeholders so every section header has SOMETHING under it

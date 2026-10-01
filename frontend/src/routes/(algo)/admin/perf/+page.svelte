@@ -821,11 +821,20 @@
   }
 
   /* ── Hotspot table ────────────────────────────────────────────────── */
-  /* .perf-hotspot-table width:100% removed — algo-table global provides it. */
+  /* .perf-hotspot-table width/padding/row-height removed — algo-table
+     global already provides the canonical dense-grid values (28px th /
+     24px td, 0 4px padding). Text-align stays local since this table's
+     Function/Page columns are textual while cc/line are numeric — the
+     numeric columns right-align via .algo-table-num (2026-09 fix: this
+     selector used to be MORE specific than .algo-table-num, left-aligning
+     cc/line against the rest of the app's "numeric right-aligned" rule). */
   .perf-hotspot-table th,
   .perf-hotspot-table td {
-    padding: 0.3rem 0.5rem;
     text-align: left;
+  }
+  .perf-hotspot-table th.algo-table-num,
+  .perf-hotspot-table td.algo-table-num {
+    text-align: right;
   }
   .perf-hotspot-table th {
     color: var(--text-soft, #94a3b8);
