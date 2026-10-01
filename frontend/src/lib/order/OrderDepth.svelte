@@ -520,17 +520,22 @@
     content: '';
     position: absolute;
     inset: 0 -9999px;
-    background: var(--card-bg-elevated);
-    /* Top edge added (2026-09-30, operator: "add top border also to
-       headers in chain and order ticket") — sandwiches the header
-       band on both sides, matching Chain's own .chain-th-* (which got
-       the same addition as a second inset box-shadow layer — see
-       OptionChainTab.svelte). A real border-top (not box-shadow) is
-       fine here since this is a plain ::before on a CSS grid item,
-       not a sticky <th> in a border-collapse <table> — no repaint-bug
-       risk to defend against. */
-    border-top: 1px solid rgba(251,191,36,0.40);
-    border-bottom: 1px solid rgba(251,191,36,0.40);
+    /* Background/border swapped to reuse the Legs grid's own sticky
+       header decoration verbatim (2026-09-30, operator: "you can use
+       legs grid header decoration like background, borders, etc to
+       chain and order ticket header. text color can remain the
+       same") — see .cand-headrow in derivatives/+page.svelte for the
+       source. Two-layer background (translucent navy tint over an
+       opaque base) instead of the old single --card-bg-elevated
+       gradient; single border-bottom (the top border added earlier
+       this session is dropped — Legs grid never had one) using the
+       shared --algo-amber-border-soft token instead of a literal
+       rgba(). Text color intentionally untouched — labels keep their
+       own green/red/muted coloring below. */
+    background:
+      linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)),
+      #1d2a44;
+    border-bottom: 1px solid var(--algo-amber-border-soft);
   }
   .ot-depth-cell {
     text-align: right;

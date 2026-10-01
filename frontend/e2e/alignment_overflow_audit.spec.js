@@ -244,12 +244,17 @@ test.describe('Static source checks — OrderDepth.svelte', () => {
     expect(beforeRule, '.ot-depth-header-bg::before rule').not.toBe('');
     expect(beforeRule).toMatch(/position:\s*absolute/);
     expect(beforeRule).toMatch(/inset:\s*0\s+-9999px/);
-    expect(beforeRule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
-    expect(beforeRule).toMatch(/border-bottom:\s*1px solid rgba\(251,191,36,0\.40\)/);
-    // Top edge added later same day (operator: "add top border also
-    // to headers in chain and order ticket") — sandwiches the header,
-    // matching Chain's own .chain-th-* (second box-shadow layer).
-    expect(beforeRule).toMatch(/border-top:\s*1px solid rgba\(251,191,36,0\.40\)/);
+    // Background/border swapped again (2026-09-30, operator: "you can
+    // use legs grid header decoration like background, borders, etc
+    // to chain and order ticket header. text color can remain the
+    // same") — now the Legs grid's own two-layer background (a
+    // translucent navy tint over an opaque #1d2a44 base) and a single
+    // bottom-only border via the shared --algo-amber-border-soft
+    // token. The top edge added earlier the same session is gone —
+    // the Legs grid header never had one.
+    expect(beforeRule).toMatch(/background:\s*\n?\s*linear-gradient\(rgba\(15,23,42,0\.65\), rgba\(15,23,42,0\.65\)\),\s*\n?\s*#1d2a44/);
+    expect(beforeRule).toMatch(/border-bottom:\s*1px solid var\(--algo-amber-border-soft\)/);
+    expect(beforeRule).not.toMatch(/border-top:/);
     const depthRule = ruleBody(content, '.ot-depth') ?? '';
     expect(depthRule, '.ot-depth rule').not.toBe('');
     expect(depthRule).toMatch(/overflow:\s*hidden/);
@@ -840,20 +845,20 @@ test.describe('Static source checks — Chain header row is distinct from the bo
   // navy) was replaced by --card-bg-elevated (an actually-lighter navy
   // tier). The header/body CONTRAST invariant this describe block
   // guards is unchanged; only the specific token is different.
-  test('.chain-th-ce/-pe/-strike reference --card-bg-elevated, distinct from the body wrap\'s background', () => {
+  test('.chain-th-ce/-pe/-strike reuse the Legs grid header background, distinct from the body wrap\'s background (2026-09-30, operator: "you can use legs grid header decoration like background, borders, etc to chain and order ticket header")', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
+      expect(rule).toMatch(/background:\s*linear-gradient\(rgba\(15,23,42,0\.65\), rgba\(15,23,42,0\.65\)\),\s*#1d2a44/);
     }
     // .chain-grid-wrap itself is on bare --card-bg-gradient (see the
-    // dedicated describe block below) — the header's own
-    // --card-bg-elevated token must still differ from whatever the
-    // body uses, so the contrast survives.
+    // dedicated describe block below) — the header's own two-layer
+    // background must still differ from whatever the body uses, so
+    // the contrast survives.
     const wrapRule = ruleBody(content, '.chain-grid-wrap') ?? '';
     expect(wrapRule, '.chain-grid-wrap rule').not.toBe('');
-    expect(wrapRule).not.toMatch(/background:\s*var\(--card-bg-elevated\)/);
+    expect(wrapRule).not.toMatch(/background:\s*linear-gradient\(rgba\(15,23,42,0\.65\)/);
   });
 
   test('--chain-header-bg token no longer exists in app.css (removed as dead code once the header switched to --card-bg-elevated)', () => {
@@ -958,7 +963,7 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     expect(rule).not.toMatch(/\n\s*border-bottom:\s*\S/);
   });
 
-  test('.chain-th-ce/-pe/-strike bottom edge is a 0.40-alpha amber box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix, dialed to amber, then strengthened twice)', () => {
+  test('.chain-th-ce/-pe/-strike bottom edge is an --algo-amber-border-soft box-shadow:inset, not border-bottom (2026-09-30, sticky + border-collapse repaint fix; decoration later reused from Legs grid header)', () => {
     // box-shadow: inset instead of border-bottom (2026-09-30, operator:
     // "again the border shows and disappears" / "...in the money calls
     // and puts, it disappears") — sticky <th> + border-collapse:collapse
@@ -966,26 +971,21 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     // repaint (exactly what the ITM/OTM background-wash switch-on is).
     // box-shadow isn't part of table border-collapse semantics, so it's
     // immune to this bug class.
-    // Color/alpha dialed white 0.35 -> amber 0.18 (operator: "reduce
-    // the thickness of the border... if the border thinner with amber
-    // shade it may look better"), then 0.18 -> 0.28 (operator: "the
-    // border color should be a little strong"), then 0.28 -> 0.40
-    // (operator: "the bottom border should be stronger on amber
-    // side") — same day, each step reusing an --algo-amber alpha
-    // already established elsewhere in this file rather than
-    // inventing new one-off values. A top edge (inset 0 1px 0, same
-    // alpha) was added later same day (operator: "add top border also
-    // to headers in chain and order ticket") as a FIRST layer ahead of
-    // this bottom one in the same box-shadow list — the check below no
-    // longer anchors "box-shadow:" directly to "inset 0 -1px 0" since
-    // that layer isn't first anymore; it just confirms the bottom-edge
-    // layer is present somewhere in the (now two-layer) list.
+    // Alpha/color went through several one-off rgba() bumps the same
+    // day, then (operator: "you can use legs grid header decoration
+    // like background, borders, etc to chain and order ticket header.
+    // text color can remain the same") was replaced with the shared
+    // --algo-amber-border-soft token, matching .cand-headrow (Legs
+    // grid) exactly, and the top edge added earlier the same session
+    // was dropped — the Legs grid header never had one, so this rule
+    // is back to a single box-shadow layer.
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
       expect(rule).toMatch(/box-shadow:/);
-      expect(rule).toMatch(/inset 0 -1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
+      expect(rule).toMatch(/inset 0 -1px 0 var\(--algo-amber-border-soft\)/);
+      expect(rule).not.toMatch(/inset 0 1px 0/);
       // Single-line rule — ruleBody's captured [^}]* contains only the
       // literal declarations between { and }, no surrounding comments,
       // so a bare substring check here is safe (unlike the multi-line
@@ -994,14 +994,14 @@ test.describe('Static source checks — Chain toolbar dashed border removed + he
     }
   });
 
-  test('.chain-th-ce/-pe/-strike ALSO carry a top edge (2026-09-30, operator: "add top border also to headers in chain and order ticket") — sandwiches the header row', () => {
+  test('.chain-th-ce/-pe/-strike no longer carry a top edge (2026-09-30, operator: "add top border also to headers in chain and order ticket", then reversed by "you can use legs grid header decoration... text color can remain the same" — Legs grid header has no top edge)', () => {
     const content = readFile('src/lib/order/OptionChainTab.svelte');
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = ruleBody(content, sel) ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      // Positive y-offset (1px, vs. the existing -1px for the bottom
-      // edge) = inset shadow anchored to the TOP of the box.
-      expect(rule).toMatch(/box-shadow:\s*inset 0 1px 0 rgba\(251,\s*191,\s*36,\s*0\.40\)/);
+      // Positive y-offset (1px) would be a top-anchored inset shadow —
+      // confirm it's gone, only the -1px bottom edge remains.
+      expect(rule).not.toMatch(/inset 0 1px 0/);
     }
   });
 

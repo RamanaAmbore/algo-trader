@@ -489,7 +489,7 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-
     expect(CHAIN_TAB).not.toMatch(/font-size:\s*0\.78rem/);
   });
 
-  test('chain header cells have a strong amber bottom edge via box-shadow:inset, 0.40 alpha (SUPERSEDED 2026-09-30, five times — border-bottom replaced by box-shadow to fix a repaint bug, dialed white/0.35 -> amber/0.18 for a thinner look, strengthened to 0.28 then 0.40, then a top edge added alongside it)', () => {
+  test('chain header cells have an amber bottom edge via box-shadow:inset, now the shared --algo-amber-border-soft token (SUPERSEDED 2026-09-30, six times — border-bottom replaced by box-shadow to fix a repaint bug, dialed through several one-off alphas, a top edge added then removed, finally reused verbatim from the Legs grid header)', () => {
     // Was border-bottom (brightened from 0.18 to 0.35 alpha same day),
     // then changed to box-shadow: inset (operator: "again the border
     // shows and disappears" / "...in the money calls and puts, it
@@ -498,23 +498,19 @@ test.describe('CE/PE header alignment + palette normalization (2026-09-30, text-
     // ITM/OTM background-wash switch-on (elsewhere in this file) is
     // exactly that kind of repaint. box-shadow isn't part of table
     // border-collapse semantics, so it's immune.
-    // Then dialed white 0.35 -> amber 0.18 (operator: "reduce the
-    // thickness of the border... if the border thinner with amber
-    // shade it may look better"), then 0.18 -> 0.28 (operator: "the
-    // border color should be a little strong"), then 0.28 -> 0.40
-    // (operator: "the bottom border should be stronger on amber
-    // side") — same day, each reusing an existing --algo-amber alpha
-    // rather than inventing a new one-off value. A top edge (operator:
-    // "add top border also to headers in chain and order ticket") was
-    // added as a FIRST box-shadow layer ahead of this bottom one, so
-    // the check below no longer anchors "box-shadow:" directly to
-    // "inset 0 -1px 0" — it just confirms the bottom-edge layer is
-    // present somewhere in the (now two-layer) list.
+    // Final pass (operator: "you can use legs grid header decoration
+    // like background, borders, etc to chain and order ticket header.
+    // text color can remain the same") replaced the one-off rgba()
+    // alpha with the shared --algo-amber-border-soft token (matching
+    // .cand-headrow in derivatives/+page.svelte) and dropped the top
+    // edge added earlier the same session — the Legs grid header
+    // never had one, so this is back to a single box-shadow layer.
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\.${sel.slice(1)}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
       expect(rule, `${sel} box-shadow present`).toMatch(/box-shadow:/);
-      expect(rule, `${sel} box-shadow bottom-edge alpha`).toMatch(/inset 0 -1px 0 rgba\(251,191,36,0\.40\)/);
+      expect(rule, `${sel} box-shadow bottom-edge token`).toMatch(/inset 0 -1px 0 var\(--algo-amber-border-soft\)/);
+      expect(rule, `${sel} must not carry a top edge`).not.toMatch(/inset 0 1px 0/);
       expect(rule, `${sel} must not use border-bottom`).not.toMatch(/border-bottom:\s*\S/);
     }
   });
@@ -884,14 +880,15 @@ test.describe('Depth ladder + tab-strip divider — surface color consistency (2
   // was removed (dead token, app.css) in favor of --card-bg-elevated,
   // an actually-lighter navy tier rather than a same-darkness-plus-tint
   // approach. The header/body CONTRAST invariant is unchanged.
-  test('chain-th-ce/-pe/-strike header cells reference --card-bg-elevated (distinct from the body\'s --card-bg-gradient), not the flat --algo-bg-elev2 hex', () => {
+  test('chain-th-ce/-pe/-strike header cells reuse the Legs grid two-layer background (distinct from the body\'s --card-bg-gradient), not the flat --algo-bg-elev2 hex (2026-09-30, operator: "you can use legs grid header decoration like background, borders, etc to chain and order ticket header")', () => {
     for (const sel of ['.chain-th-ce', '.chain-th-pe', '.chain-th-strike']) {
       const rule = CHAIN_TAB.match(new RegExp(`\\${sel}\\s*\\{[^}]*\\}`))?.[0] ?? '';
       expect(rule, `${sel} rule`).not.toBe('');
-      expect(rule).toMatch(/background:\s*var\(--card-bg-elevated\)/);
+      expect(rule).toMatch(/background:\s*linear-gradient\(rgba\(15,23,42,0\.65\), rgba\(15,23,42,0\.65\)\),\s*#1d2a44/);
       expect(rule).not.toMatch(/background:\s*var\(--chain-header-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--chain-depth-bg\)/);
       expect(rule).not.toMatch(/background:\s*var\(--algo-bg-elev2/);
+      expect(rule).not.toMatch(/background:\s*var\(--card-bg-elevated\)/);
     }
   });
 

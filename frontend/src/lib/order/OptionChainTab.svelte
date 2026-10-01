@@ -1643,8 +1643,20 @@
      further below) is untouched.
      REVERSED again same day (operator: "reverse ce and re label
      alignment") — back to the ORIGINAL right/left. */
-  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
-  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  /* Background/bottom-border decoration reused verbatim from the Legs
+     grid's own sticky header (2026-09-30, operator: "you can use legs
+     grid header decoration like background, borders, etc to chain and
+     order ticket header. text color can remain the same") — see
+     .cand-headrow in derivatives/+page.svelte for the source. Still a
+     box-shadow (not a real border) — this header is a sticky <th> in
+     a border-collapse <table>, the exact repaint-reliability trap the
+     box-shadow workaround already on this rule was built to avoid, so
+     switching to a literal border-bottom here would reintroduce it.
+     Top inset layer (added earlier the same session) is dropped — the
+     Legs grid header never had one. Text color (var(--c-long)/
+     var(--c-short)) intentionally untouched. */
+  .chain-th-ce      { text-align: right;  color: var(--c-long); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 var(--algo-amber-border-soft); background: linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)), #1d2a44; position: sticky; top: 0; z-index: 2; }
+  .chain-th-pe      { text-align: left;   color: var(--c-short); padding: 0.2rem 0.5rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 var(--algo-amber-border-soft); background: linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)), #1d2a44; position: sticky; top: 0; z-index: 2; }
   /* Operator: "reduce the space before and after strike in chain" —
      strike is a short 4-5 digit number, doesn't need the same
      horizontal padding as CE/PE (which carry a quote + a stepper
@@ -1666,7 +1678,7 @@
      (vs. the original cramped 0.1rem) without being as wide as the
      brief 0.4rem experiment. Kept in sync with the DATA row's own
      Strike cell padding (below) for header/body consistency. */
-  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.22rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 1px 0 rgba(251,191,36,0.40), inset 0 -1px 0 rgba(251,191,36,0.40), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: var(--card-bg-elevated); position: sticky; top: 0; z-index: 2; }
+  .chain-th-strike  { text-align: center; color: var(--algo-slate); padding: 0.2rem 0.22rem; font-weight: 700; font-size: var(--fs-sm); box-shadow: inset 0 -1px 0 var(--algo-amber-border-soft), inset 1px 0 0 rgba(255,255,255,0.03), inset -1px 0 0 rgba(255,255,255,0.03); background: linear-gradient(rgba(15,23,42,0.65), rgba(15,23,42,0.65)), #1d2a44; position: sticky; top: 0; z-index: 2; }
   .chain-row > td {
     /* Operator: "reduce the height of chain grid for strike prices
        by half". Vertical padding zeroed (was 0.1rem), button
