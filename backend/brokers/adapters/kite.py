@@ -437,7 +437,31 @@ class KiteBroker(Broker):
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
         _truncate_tag(kwargs)
-        return self.kite.modify_order(order_id=order_id, **kwargs)
+        # KiteConnect.modify_order() only accepts variety/order_id/
+        # parent_order_id/quantity/price/order_type/trigger_price/
+        # validity/disclosed_quantity — no exchange param. Callers
+        # (actions_live.py `_action_live_modify_order`) pass `exchange=`
+        # universally across brokers because Groww's modify_order
+        # genuinely needs it to resolve the correct segment (MCX/NFO vs
+        # cash) — so accept-and-ignore here rather than forwarding
+        # blindly, which raises "unexpected keyword argument 'exchange'"
+        # against the real SDK (same bug class as cancel_order, fixed
+        # 2026-10-01).
+        sdk_kwargs = {
+            k: kwargs[k]
+            for k in (
+                "variety",
+                "parent_order_id",
+                "quantity",
+                "price",
+                "order_type",
+                "trigger_price",
+                "validity",
+                "disclosed_quantity",
+            )
+            if k in kwargs
+        }
+        return self.kite.modify_order(order_id=order_id, **sdk_kwargs)
 
     def cancel_order(self, order_id: str, **kwargs: Any) -> str:
         # KiteConnect.cancel_order() only accepts variety/order_id/

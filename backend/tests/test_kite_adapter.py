@@ -429,3 +429,106 @@ class TestKiteBrokerCancelOrder:
         mock_kite.cancel_order.assert_called_once_with(
             order_id="251001000000003", variety="regular"
         )
+
+
+class TestKiteBrokerModifyOrder:
+    """Regression coverage for the same bug class as TestKiteBrokerCancelOrder
+    above, found in KiteBroker.modify_order(): actions_live.py's
+    `_action_live_modify_order` (the agent-action modify path) injects
+    `exchange=` into kwargs universally across brokers (Groww's modify_order
+    genuinely needs it to resolve the correct segment) before calling
+    `broker.modify_order(order_id, variety=variety, **kwargs)`. The real
+    KiteConnect.modify_order() signature (`variety, order_id,
+    parent_order_id=None, quantity=None, price=None, order_type=None,
+    trigger_price=None, validity=None, disclosed_quantity=None`) has no
+    `exchange` param, so this was a live latent crash for any agent-action
+    modify of a Kite order that didn't already happen to omit `exchange`.
+
+    Same `create_autospec(KiteConnect, instance=True)` pattern as
+    TestKiteBrokerCancelOrder so the mock enforces the real installed SDK's
+    signature rather than a hand-rolled fake that would silently accept any
+    kwarg and hide this exact bug class again.
+    """
+
+    def _broker_with_autospec_sdk(self):
+        mock_conn = MagicMock()
+        mock_kite = create_autospec(KiteConnect, instance=True)
+        mock_kite.modify_order.return_value = "order_mod_1"
+        mock_conn.get_kite_conn = MagicMock(return_value=mock_kite)
+        broker = KiteBroker(mock_conn)
+        return broker, mock_kite
+
+    def test_modify_order_with_exchange_kwarg_does_not_raise(self):
+        """Exact prod call shape: actions_live.py passes exchange= for an
+        agent-action modify on a Kite order. Must not raise TypeError
+        against the real KiteConnect.modify_order signature."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        result = broker.modify_order(
+            "251001000000010", variety="regular", exchange="MCX", price=105.5
+        )
+
+        assert result == "order_mod_1"
+        # exchange must never reach the real SDK call.
+        mock_kite.modify_order.assert_called_once_with(
+            order_id="251001000000010", variety="regular", price=105.5
+        )
+
+    def test_modify_order_without_exchange_kwarg(self):
+        """Baseline: plain modify (no exchange passed) still works
+        unchanged."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        result = broker.modify_order(
+            "251001000000011", variety="regular", price=200.0
+        )
+
+        assert result == "order_mod_1"
+        mock_kite.modify_order.assert_called_once_with(
+            order_id="251001000000011", variety="regular", price=200.0
+        )
+
+    def test_modify_order_forwards_all_real_sdk_params(self):
+        """All real SDK params (quantity/price/order_type/trigger_price/
+        validity/disclosed_quantity/parent_order_id) must still pass
+        through correctly, even alongside a stray exchange= kwarg."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        broker.modify_order(
+            "251001000000012",
+            variety="regular",
+            exchange="NFO",
+            parent_order_id="251001000000098",
+            quantity=50,
+            price=150.25,
+            order_type="LIMIT",
+            trigger_price=149.0,
+            validity="DAY",
+            disclosed_quantity=10,
+        )
+
+        mock_kite.modify_order.assert_called_once_with(
+            order_id="251001000000012",
+            variety="regular",
+            parent_order_id="251001000000098",
+            quantity=50,
+            price=150.25,
+            order_type="LIMIT",
+            trigger_price=149.0,
+            validity="DAY",
+            disclosed_quantity=10,
+        )
+
+    def test_modify_order_unknown_kwarg_dropped_silently(self):
+        """Any other unrecognised kwarg (not just exchange) must also be
+        dropped rather than forwarded, since the real SDK signature is
+        fixed and any stray kwarg would raise the same TypeError class."""
+        broker, mock_kite = self._broker_with_autospec_sdk()
+
+        broker.modify_order(
+            "251001000000013", variety="regular", tradingsymbol="FOO"
+        )
+
+        mock_kite.modify_order.assert_called_once_with(
+            order_id="251001000000013", variety="regular"
+        )
