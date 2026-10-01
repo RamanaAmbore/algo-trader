@@ -439,6 +439,22 @@
 
   let menuOpen = $state(false);
   const closeMenu = () => { menuOpen = false; };
+  /** @type {HTMLElement | null} */
+  let _navHeaderEl = $state(null);
+  // Computed position for the mobile hamburger dropdown — recalculated
+  // from the navbar's own getBoundingClientRect() each time it opens,
+  // same pattern as openModeDropdown() below. The dropdown is portalled
+  // to document.body (see .algo-mobile-dropdown CSS comment) so it can
+  // no longer rely on `top: 100%` relative to its old position:absolute
+  // ancestor — this supplies the equivalent fixed-position top offset.
+  /** @type {{ top: number } | null} */
+  let mobileMenuPos = $state(null);
+  function toggleMobileMenu() {
+    if (!menuOpen && _navHeaderEl) {
+      mobileMenuPos = { top: _navHeaderEl.getBoundingClientRect().bottom };
+    }
+    menuOpen = !menuOpen;
+  }
 
   // ── Group disclosure for the desktop nav ──────────────────────────
   //
@@ -943,7 +959,7 @@
 <div class="algo-viewport card-theme-dark">
   <div class="algo-card">
     <!-- Top bar -->
-    <header class="algo-navbar">
+    <header class="algo-navbar" bind:this={_navHeaderEl}>
       <div class="algo-nav-inner hidden lg:flex items-center gap-1 h-12">
         <!-- Vertical ALGO label, flush at the left edge. Bare text —
              no chip, no background, no border. -->
@@ -1253,7 +1269,7 @@
           </span>
         {/if}
         <button
-          onclick={() => menuOpen = !menuOpen}
+          onclick={toggleMobileMenu}
           class="algo-hamburger"
           aria-label="Toggle menu"
           aria-expanded={menuOpen}
@@ -1274,7 +1290,8 @@
            caption first, then its items. Order mirrors the desktop
            layout (Monitor → Analyze → Modes → Build → Config). -->
       {#if menuOpen}
-        <nav class="algo-mobile-dropdown">
+        <nav class="algo-mobile-dropdown" use:portal
+             style={mobileMenuPos ? `top:${mobileMenuPos.top}px` : ''}>
           {#each Object.keys(GROUP_LABELS) as g (g)}
             {@const items = algoLinks.filter(l => l.group === g)}
             {#if items.length > 0}
@@ -1786,10 +1803,21 @@
   }
   .algo-hamburger:hover { background: rgba(251,191,36,0.12); }
 
-  /* Mobile dropdown */
+  /* Mobile dropdown — position:fixed + portalled to document.body so it
+     escapes the navbar's own stacking context (navbar is position:fixed;
+     z-index: var(--z-nav)=50 — a position:absolute child was trapped
+     inside that context and could never paint above the order-modal
+     overlay at var(--z-command)=10500, regardless of this element's own
+     z-index number). Same established pattern as .mode-combo-dropdown
+     above. `top` is injected as an inline style computed from the
+     navbar's own getBoundingClientRect() in toggleMobileMenu(). */
   .algo-mobile-dropdown {
-    position: absolute;
-    top: 100%;
+    position: fixed;
+    /* Fallback matching the mobile navbar row's own height (h-12 =
+       3rem) in case the inline style (computed from the navbar's real
+       rect) hasn't been set yet on first paint — keeps the drawer from
+       ever collapsing to body's static top:0 origin. */
+    top: 3rem;
     left: 0;
     right: 0;
     z-index: var(--z-dropdown);
