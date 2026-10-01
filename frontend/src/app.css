@@ -648,14 +648,15 @@
 .ag-theme-ramboq .ag-cell {
   padding-left: 3px !important;
   padding-right: 3px !important;
-  /* Whisper hairline (2026-09) — was an opaque #d1d5db (cool grey,
-     unrelated to the cream/champagne palette), which read as a hard,
-     dominant vertical rule against the warm #faf8f4/#f5f2eb row
-     backgrounds. Mirrors the algo-theme's own low-alpha divider
-     convention (.ag-theme-algo .ag-cell below) but tinted to this
-     theme's navy ink (#1a1e35) instead of algo's blue-grey, and at a
-     touch higher alpha since it sits on a lighter background. */
-  border-right: 1px solid rgba(29,41,57,0.12) !important;
+  /* Whisper hairline (2026-09), stepped subtler still (2026-09-30 —
+     operator: "make cell borders a little subtle"). Was an opaque
+     #d1d5db (cool grey, unrelated to the cream/champagne palette),
+     then 0.12 navy, which was still a touch heavier than intended on
+     the warm #faf8f4/#f5f2eb row backgrounds. Mirrors the algo-theme's
+     own low-alpha divider convention (.ag-theme-algo .ag-cell below)
+     but tinted to this theme's navy ink (#1a1e35) instead of algo's
+     blue-grey. */
+  border-right: 1px solid rgba(29,41,57,0.08) !important;
   /* Tabular figures so digit widths don't jitter as values update.
      Same rule on ag-theme-algo below — public + algo grids share this
      idiom. */
@@ -667,6 +668,17 @@
   color: #1a1e35;
   letter-spacing: 0.01em;
   text-shadow: 0 0.5px 0.5px rgba(0,0,0,0.08);
+  /* Row divider (2026-09-30 fix, same "subtle cell borders" pass as
+     the .ag-cell vertical hairline above). ag-Grid's own structural
+     CSS derives --ag-row-border-color from --ag-secondary-border-color,
+     which falls through to this theme's --ag-border-color (#c4bba8,
+     OPAQUE — it also feeds the wrapper/header border, so it's left
+     alone). Without this explicit override, every row-bottom line
+     rendered as a solid opaque tan rule, far heavier than the 0.08
+     vertical divider above. Matches the same alpha so horizontal and
+     vertical dividers read as one consistent whisper grid — same
+     pairing idiom as .ag-theme-algo's .ag-cell/.ag-row below. */
+  border-bottom: 1px solid rgba(29,41,57,0.08) !important;
 }
 /* Background fill for Account and Symbol columns */
 .ag-theme-ramboq .ag-cell.ag-col-fill {
