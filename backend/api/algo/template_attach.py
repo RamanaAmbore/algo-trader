@@ -23,10 +23,12 @@ commit fans them out.
 
 from __future__ import annotations
 
+import math
 import re
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
+from backend.api.routes.orders_helpers import _snap_to_tick
 from backend.brokers.capabilities import BrokerCapabilities
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -89,6 +91,14 @@ class TemplatePlan:
     # Populated in apply_template_to_order via get_lot_size() before the plan
     # is resolved — keeps resolve_template_plan sync (pure data).
     parent_lot_size:    int = 1
+    # tick_size for TP/SL trigger + LIMIT-offset snapping at apply time.
+    # 0.0 = unknown/cache-miss — snap helpers (`_snap_trigger_price`,
+    # `_tp_limit_offset`) no-op to plain round(x, 2), the pre-fix
+    # behavior. Populated in apply_template_to_order via
+    # `_resolve_tick_size_for_order()` before the plan is resolved —
+    # keeps resolve_template_plan sync (pure data), same pattern as
+    # parent_lot_size.
+    parent_tick_size:   float = 0.0
     gtts:               list[GttSpec] = field(default_factory=list)
     wing:               Optional[WingSpec] = None
     notes:              list[str] = field(default_factory=list)
@@ -105,6 +115,7 @@ class TemplatePlan:
             "parent_exchange":    self.parent_exchange,
             "parent_fill_price":  self.parent_fill_price,
             "parent_lot_size":    self.parent_lot_size,
+            "parent_tick_size":   self.parent_tick_size,
             "gtts":               [asdict(g) for g in self.gtts],
             "wing":               asdict(self.wing) if self.wing else None,
             "notes":              list(self.notes),
@@ -788,8 +799,28 @@ async def _pick_wing_by_premium(
 
 # ── Trigger-price computation ────────────────────────────────────────
 
+def _snap_trigger_price(raw: float, tick_size: float) -> float:
+    """Snap a computed TP/SL trigger price to the instrument's tick grid.
+
+    No-op (plain round(x, 2)) when tick_size is unknown/non-positive —
+    preserves the pre-fix behavior exactly so callers that don't resolve
+    a tick_size (e.g. existing test fixtures) see byte-identical output.
+
+    Floor-at-one-tick guard: a low-premium contract's trigger can
+    compute to a near-zero value that snaps DOWN to exactly 0 on the
+    tick grid — Kite's place_gtt rejects `trigger_value <= 0`. Clamp up
+    to one tick above zero instead of letting a 0 reach the broker.
+    """
+    if not tick_size or tick_size <= 0:
+        return round(raw, 2)
+    snapped = _snap_to_tick(raw, tick_size)
+    if snapped <= 0:
+        snapped = round(tick_size, 4)
+    return snapped
+
+
 def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float],
-                instrument_type: str = "") -> Optional[float]:
+                instrument_type: str = "", tick_size: float = 0.0) -> Optional[float]:
     """Convert template's tp_pct into an absolute price.
 
     BUY parent: TP fires above (long unwinds at gain). fill × (1 + tp%/100).
@@ -799,6 +830,10 @@ def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float],
     trigger at 0 or below which Kite will reject. (#9)
     `instrument_type` is informational — logged for MCX futures as a
     sanity reminder that lot-size translation must already be applied. (#9)
+    `tick_size`, when known (>0), snaps the computed trigger to the
+    instrument's tick grid via `_snap_trigger_price` — Kite rejects a
+    trigger that isn't an exact multiple of tick_size. Unknown/0
+    tick_size preserves the pre-fix plain round(x, 2) behavior exactly.
     """
     if tp_pct is None:
         return None
@@ -812,11 +847,12 @@ def _tp_trigger(parent_side: str, fill_price: float, tp_pct: Optional[float],
             fill_price, tp_pct,
         )
     sign = 1.0 if parent_side == "BUY" else -1.0
-    return round(fill_price * (1.0 + sign * float(tp_pct) / 100.0), 2)
+    raw = fill_price * (1.0 + sign * float(tp_pct) / 100.0)
+    return _snap_trigger_price(raw, tick_size)
 
 
 def _sl_trigger(parent_side: str, fill_price: float, sl_pct: Optional[float],
-                instrument_type: str = "") -> Optional[float]:
+                instrument_type: str = "", tick_size: float = 0.0) -> Optional[float]:
     """SL fires opposite side of TP — protects against adverse move.
 
     BUY parent: SL fires below entry. fill × (1 - sl%/100).
@@ -825,6 +861,7 @@ def _sl_trigger(parent_side: str, fill_price: float, sl_pct: Optional[float],
     `fill_price` must be strictly positive — a zero fill price produces a
     trigger at 0 or below which Kite will reject. (#9)
     `instrument_type` is informational — logged for MCX futures. (#9)
+    `tick_size` — see `_tp_trigger`'s docstring; same snap convention.
     """
     if sl_pct is None:
         return None
@@ -838,7 +875,8 @@ def _sl_trigger(parent_side: str, fill_price: float, sl_pct: Optional[float],
             fill_price, sl_pct,
         )
     sign = 1.0 if parent_side == "BUY" else -1.0
-    return round(fill_price * (1.0 - sign * float(sl_pct) / 100.0), 2)
+    raw = fill_price * (1.0 - sign * float(sl_pct) / 100.0)
+    return _snap_trigger_price(raw, tick_size)
 
 
 # ── Plan resolution ──────────────────────────────────────────────────
@@ -994,6 +1032,7 @@ def _build_scale_out_gtts(
     sl_trail_pct:      Optional[float],
     lot_size:          int = 1,
     parent_exchange:   str = "",
+    tick_size:         float = 0.0,
 ) -> tuple[list[GttSpec], list[str]]:
     """Build GTT specs + notes for the Phase 3A scale-out path.
 
@@ -1011,6 +1050,10 @@ def _build_scale_out_gtts(
 
     `parent_exchange` (#1): forwarded to `_leg` so LIMIT TP legs apply the
     exchange-appropriate tick offset (NFO/BFO/CDS vs futures/others).
+
+    `tick_size` (2026-10): forwarded to `_tp_trigger` (per-scale trigger
+    snap) and `_leg` (LIMIT offset snap). 0.0 = unknown — no-op, exact
+    pre-fix behavior.
     """
     gtts: list[GttSpec] = []
     notes: list[str] = []
@@ -1060,7 +1103,8 @@ def _build_scale_out_gtts(
     for sc, q in zip(tp_scales, allocations):
         if q <= 0:
             continue
-        scale_trig = _tp_trigger(parent_side, parent_fill_price, float(sc["at_pct"]))
+        scale_trig = _tp_trigger(parent_side, parent_fill_price, float(sc["at_pct"]),
+                                  tick_size=tick_size)
         if scale_trig is None:
             continue
         label = f"TP+{sc['at_pct']}% × {q}"
@@ -1068,14 +1112,16 @@ def _build_scale_out_gtts(
             trigger_type="single",
             trigger_values=[scale_trig],
             orders=[_leg(exit_side, q, scale_trig, parent_product, tp_order_type,
-                         tp_offset_exchange=parent_exchange if tp_order_type == "LIMIT" else "")],
+                         tp_offset_exchange=parent_exchange if tp_order_type == "LIMIT" else "",
+                         tick_size=tick_size)],
             label=label,
         ))
     if sl_trig is not None:
         gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[sl_trig],
-            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT",
+                         tick_size=tick_size)],
             label="SL",
             sl_trail_pct=sl_trail_pct,
         ))
@@ -1116,6 +1162,7 @@ def _build_tp_sl_gtts(
     sl_trail_pct:    Optional[float],
     broker_caps:     Optional[BrokerCapabilities],
     parent_exchange: str = "",
+    tick_size:       float = 0.0,
 ) -> tuple[list[GttSpec], list[str]]:
     """Build GTT specs for the combined TP+SL case.
 
@@ -1125,6 +1172,10 @@ def _build_tp_sl_gtts(
 
     `parent_exchange` (#1): forwarded to `_leg` for LIMIT TP legs to apply
     the exchange-appropriate tick offset.
+
+    `tick_size` (2026-10): forwarded to `_leg` so the LIMIT offset snaps
+    to the instrument's tick grid. 0.0 = unknown — no-op, exact
+    pre-fix behavior.
     """
     _tp_exch = parent_exchange if tp_order_type == "LIMIT" else ""
     gtts: list[GttSpec] = []
@@ -1138,8 +1189,9 @@ def _build_tp_sl_gtts(
             trigger_values=[tp_trig, sl_trig],
             orders=[
                 _leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
-                     tp_offset_exchange=_tp_exch),
-                _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT"),
+                     tp_offset_exchange=_tp_exch, tick_size=tick_size),
+                _leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT",
+                     tick_size=tick_size),
             ],
             label="TP+SL",
             sl_trail_pct=sl_trail_pct,
@@ -1151,13 +1203,14 @@ def _build_tp_sl_gtts(
             trigger_type="single",
             trigger_values=[tp_trig],
             orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
-                         tp_offset_exchange=_tp_exch)],
+                         tp_offset_exchange=_tp_exch, tick_size=tick_size)],
             label="TP",
         ))
         gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[sl_trig],
-            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT",
+                         tick_size=tick_size)],
             label="SL",
             sl_trail_pct=sl_trail_pct,
         ))
@@ -1249,6 +1302,7 @@ def resolve_template_plan(
     parent_product:    str = "NRML",
     broker_caps:       Optional[BrokerCapabilities] = None,
     parent_lot_size:   int = 1,
+    parent_tick_size:  float = 0.0,
 ) -> TemplatePlan:
     """Build the plan. No broker calls, no DB writes — pure data."""
 
@@ -1275,6 +1329,7 @@ def resolve_template_plan(
         parent_exchange=parent_exchange,
         parent_fill_price=float(parent_fill_price),
         parent_lot_size=int(parent_lot_size) if parent_lot_size > 1 else 1,
+        parent_tick_size=float(parent_tick_size) if parent_tick_size and parent_tick_size > 0 else 0.0,
     )
     # Surface the pre-plan validation notes (tp_pct/sl_pct rejected) so
     # the operator sees them in the preview chip + retry response.
@@ -1282,8 +1337,10 @@ def resolve_template_plan(
         plan.notes.append(_n)
 
     # ── GTT spec — TP / SL / both ────────────────────────────────────
-    tp_trig = _tp_trigger(parent_side, parent_fill_price, tp_pct)
-    sl_trig = _sl_trigger(parent_side, parent_fill_price, sl_pct)
+    tp_trig = _tp_trigger(parent_side, parent_fill_price, tp_pct,
+                          tick_size=plan.parent_tick_size)
+    sl_trig = _sl_trigger(parent_side, parent_fill_price, sl_pct,
+                          tick_size=plan.parent_tick_size)
     exit_side = _close_side(parent_side)
 
     # Phase 3A — scale-out path supersedes single tp_pct.
@@ -1294,6 +1351,7 @@ def resolve_template_plan(
             sl_trig, sl_trail_pct,
             lot_size=plan.parent_lot_size,         # #3: round scale qtys to lot multiples
             parent_exchange=parent_exchange,        # #1: TP LIMIT offset
+            tick_size=plan.parent_tick_size,        # tick-grid snap
         )
         plan.gtts.extend(_gtts)
         plan.notes.extend(_notes)
@@ -1302,6 +1360,7 @@ def resolve_template_plan(
             tp_trig, sl_trig, exit_side, parent_qty,
             parent_product, tp_order_type, sl_trail_pct, broker_caps,
             parent_exchange=parent_exchange,        # #1: TP LIMIT offset
+            tick_size=plan.parent_tick_size,        # tick-grid snap
         )
         plan.gtts.extend(_gtts)
         plan.notes.extend(_notes)
@@ -1311,14 +1370,16 @@ def resolve_template_plan(
             trigger_type="single",
             trigger_values=[tp_trig],
             orders=[_leg(exit_side, parent_qty, tp_trig, parent_product, tp_order_type,
-                         tp_offset_exchange=_tp_exch)],  # #1
+                         tp_offset_exchange=_tp_exch,
+                         tick_size=plan.parent_tick_size)],  # #1
             label="TP",
         ))
     elif sl_trig is not None:
         plan.gtts.append(GttSpec(
             trigger_type="single",
             trigger_values=[sl_trig],
-            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT")],
+            orders=[_leg(exit_side, parent_qty, sl_trig, parent_product, "LIMIT",
+                         tick_size=plan.parent_tick_size)],
             label="SL",
             sl_trail_pct=sl_trail_pct,
         ))
@@ -1334,7 +1395,8 @@ def resolve_template_plan(
     return plan
 
 
-def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
+def _tp_limit_offset(trigger: float, side: str, exchange: str = "",
+                      tick_size: float = 0.0) -> float:
     """Return the adjusted LIMIT price for a TP leg to improve fill probability.
 
     For a BUY parent, the exit is SELL so we set LIMIT slightly *below* the
@@ -1348,6 +1410,17 @@ def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
     The offset is cosmetic on trigger-linked GTT legs (Kite fires the GTT at
     the trigger, then places the child LIMIT order); the adjustment protects
     against rounding edge cases when the trigger and LIMIT price are identical.
+
+    `tick_size`, when known (>0), snaps the offset LIMIT price to the
+    instrument's tick grid using INTEGER tick-count arithmetic (never
+    float floor/ceil — a float snap can overshoot by a whole tick on
+    binary-float residue, the same bug class fixed in commit 4c61e47f).
+    `trigger` is always already tick-aligned (computed via
+    `_tp_trigger`/`_sl_trigger`'s own snap), so `t = round(trigger /
+    tick_size)` is an exact tick count; stepping by whole ticks away
+    from `t` makes a collapse onto the trigger structurally impossible
+    (the offset-in-ticks is clamped to >= 1). Unknown/0 tick_size
+    preserves the pre-fix plain round(x, 2) behavior exactly.
     """
     try:
         from backend.shared.helpers.settings import get_float
@@ -1363,14 +1436,22 @@ def _tp_limit_offset(trigger: float, side: str, exchange: str = "") -> float:
     # SELL parent exits BUY → LIMIT above trigger.
     # The `side` passed here is the EXIT side (from _close_side), so:
     # exit=SELL means BUY parent → push LIMIT down; exit=BUY → push up.
-    if side.upper() == "SELL":
-        return round(trigger - offset, 2)
-    return round(trigger + offset, 2)
+    is_sell = side.upper() == "SELL"
+    if not tick_size or tick_size <= 0:
+        return round(trigger - offset, 2) if is_sell else round(trigger + offset, 2)
+    t = round(trigger / tick_size)
+    off_ticks = max(1, math.ceil(offset / tick_size - 1e-9))
+    lim_ticks = (t - off_ticks) if is_sell else (t + off_ticks)
+    # Floor-at-one-tick guard — never let the LIMIT price settle at or
+    # below zero (Kite rejects a non-positive price).
+    lim_ticks = max(1, lim_ticks)
+    return round(lim_ticks * tick_size, 4)
 
 
 def _leg(side: str, qty: int, price: float, product: str,
          order_type: str = "LIMIT",
-         tp_offset_exchange: str = "") -> dict:
+         tp_offset_exchange: str = "",
+         tick_size: float = 0.0) -> dict:
     """Compose a GTT leg dict — same shape SimGttBook + KiteBroker.place_gtt
     expect.
 
@@ -1384,10 +1465,13 @@ def _leg(side: str, qty: int, price: float, product: str,
     inbound-of-trigger price offset (see `_tp_limit_offset`) so the
     limit order rests just inside the trigger and has a better fill chance.
     Set to the parent exchange for TP legs; leave empty for SL legs.
+
+    `tick_size` — forwarded to `_tp_limit_offset` so the offset price
+    snaps to the instrument's tick grid. 0.0 = unknown — no-op.
     """
     leg_price = float(price)
     if order_type == "LIMIT" and tp_offset_exchange:
-        leg_price = _tp_limit_offset(leg_price, side, tp_offset_exchange)
+        leg_price = _tp_limit_offset(leg_price, side, tp_offset_exchange, tick_size=tick_size)
     return {
         "transaction_type": side,
         "quantity":         int(qty),
@@ -2021,6 +2105,44 @@ async def _resolve_lot_size_for_order(
         return 1, result_err
 
 
+async def _resolve_tick_size_for_order(parent_exchange: str, parent_symbol: str) -> float:
+    """Resolve tick_size from the instruments cache for TP/SL trigger +
+    LIMIT-offset snapping (2026-10 hardening fix).
+
+    Applies to EVERY exchange, not just F&O — equity triggers are just
+    as tick-sensitive (NSE equities commonly tick at 0.05 too).
+
+    Fail-open to 0.0 ("unknown") on any lookup miss or error. This is
+    the OPPOSITE policy of `_resolve_lot_size_for_order`: a tick-size
+    miss must never refuse the template attach — the snap helpers
+    already no-op to the pre-fix plain round(x, 2) behavior when
+    tick_size is 0.0, so a broker-side rejection on an off-tick GTT is
+    the worst case, not a silently-unarmed parent position.
+
+    Reuses the same (exchange, symbol) → tick_size index the ticket
+    route's `_align_price_to_tick` builds from the instruments cache.
+    Accessed via module attribute, not a direct name import —
+    `orders_helpers._rebuild_tick_index` REBINDS the module-level dict
+    (`global _TICK_INDEX; _TICK_INDEX = new_index`) on every cache
+    refresh, so `from orders_helpers import _TICK_INDEX` would capture
+    a stale reference once and never see a later refresh.
+    """
+    try:
+        import backend.api.routes.orders_helpers as _oh
+        await _oh._ensure_tick_index()
+        tick = _oh._TICK_INDEX.get(
+            ((parent_exchange or "").upper(), (parent_symbol or "").upper())
+        )
+        return float(tick) if tick else 0.0
+    except Exception as e:
+        logger.warning(
+            "[TEMPLATE-TICK] tick_size lookup failed for %s/%s: %s — "
+            "falling back to plain round(x, 2) (no tick snap).",
+            parent_exchange, parent_symbol, e,
+        )
+        return 0.0
+
+
 def _template_has_wing(template: dict) -> bool:
     """Return True when the template dict specifies a wing leg.
 
@@ -2340,6 +2462,13 @@ async def apply_template_to_order(
             )
         return _lot_err
 
+    # Tick-size resolution (2026-10 hardening fix) — unlike lot_size this
+    # applies to EVERY exchange (equity triggers are tick-sensitive too)
+    # and fails OPEN to 0.0 on any miss/error: see
+    # `_resolve_tick_size_for_order`'s docstring for why a tick-size
+    # miss must never refuse the attach the way a lot_size miss does.
+    parent_tick_size = await _resolve_tick_size_for_order(parent_exchange, parent_symbol)
+
     # C1 — Market-hours guard: wing MARKET legs fail when exchange closed.
     # GTT-only templates proceed off-hours (Kite accepts GTTs 24×7).
     _early, _offhours_note = _check_offhours_wing_gate(
@@ -2373,6 +2502,7 @@ async def apply_template_to_order(
         parent_product=parent_product,
         broker_caps=caps,
         parent_lot_size=parent_lot_size,
+        parent_tick_size=parent_tick_size,
     )
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
