@@ -368,6 +368,12 @@
   // input + product defaults render correctly during the picker
   // interaction.
   const kind = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — getInstrument()
+    // reads a plain module-level index invisible to Svelte; without this
+    // read, `kind` computes once pre-cache and never re-fires once the
+    // instruments cache warms, freezing an equity symbol in OPT/FUT mode.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const resolved = (typeof _resolvedSymbol === 'string' ? _resolvedSymbol : '').toUpperCase();
     const raw = (symbol || '').toUpperCase();
     const s = resolved || raw;
@@ -419,6 +425,12 @@
   // distinct expiries from the CE side (symmetric with PE); for FUT
   // pulls distinct expiries from the futures rows.
   const _expiryChoices = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — listFutures/
+    // listExpiries read the same module-level instruments index; without
+    // this read the picker's expiry list freezes empty when the cache
+    // was still cold the first time this block ran.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     if (!_underlying) return [];
     if (_wantsFut) {
       return listFutures(_underlying).map(r => r.x).filter(Boolean);
@@ -429,6 +441,9 @@
     return [];
   });
   const _strikeChoices = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — see _expiryChoices.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     if (!_wantsOpt || !_pickedExpiry) return [];
     return listStrikes(_underlying, _pickedOptType, _pickedExpiry);
   });
@@ -470,6 +485,12 @@
   // Returns null when the picks haven't resolved yet so the form
   // disables submit while the operator finishes choosing.
   const _resolvedSymbol = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — findNearestFuture/
+    // listFutures/findOption all read the instruments index; without this
+    // read a cold-cache bare-underlying pick can resolve to null forever
+    // even after the cache warms moments later.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     if (!_isBareUnderlying) return symbol;
     if (!_pickedExpiry) return null;
     if (_wantsFut) {
@@ -496,6 +517,13 @@
   // so we look up the resolved symbol's actual exchange first and
   // only fall back to the caller's hint when the cache lookup misses.
   const _resolvedExchange = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — getInstrument()
+    // reads the module-level instruments index; without this read, a
+    // cold-cache mount freezes `_resolvedExchange` at the caller's generic
+    // 'NSE' default forever, even for MCX/CDS contracts, once the cache
+    // populates moments after mount.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     if (sym) {
       const inst = getInstrument(sym);
@@ -524,6 +552,11 @@
     return ['NSE', 'BSE', 'NFO', 'BFO', 'MCX', 'CDS'];
   });
   const exchangeOptions = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — listExchangesForSymbol
+    // reads the instruments index; without this read, derivative exchange
+    // choices freeze at the static kind-fallback forever on a cold-cache mount.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const fallback = _kindExchangeFallback;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     if (!sym) return fallback;
@@ -1161,6 +1194,13 @@
   // symbol typed into a draft ticket). 0.05 covers NSE equity / F&O
   // which is the majority case.
   const _tickSize = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — getInstrument()
+    // reads the module-level instruments index; without this read,
+    // `_tickSize` freezes at the 0.05 fallback forever on a cold-cache
+    // mount, even for CRUDEOIL/GOLDM (₹1.00) or USDINR (₹0.0025) — the
+    // exact "invalid price / tick size" rejection class this field guards.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     if (!sym) return 0.05;
     const inst = getInstrument(sym);
@@ -1291,6 +1331,9 @@
   // Parse expiry date from the instrument cache. Falls back to null
   // when the instrument isn't loaded or has no expiry (equities, cash).
   const _dte = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — see _tickSize.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     if (!sym) return null;
     const inst = getInstrument(sym);
@@ -1307,6 +1350,9 @@
   // Requires: strike, option type (CE/PE), underlying LTP.
   // ATM: |strike − spot| / spot < 1%; ITM/OTM per type.
   const _strike = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — see _tickSize.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     const inst = getInstrument(sym);
     if (inst?.k != null) return Number(inst.k);
@@ -1316,6 +1362,9 @@
   });
 
   const _optType = $derived.by(() => {
+    // Cache-version dependency (D2-class fix, 2026-10) — see _tickSize.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
     const inst = getInstrument(sym);
     if (inst?.t === 'CE') return 'CE';
