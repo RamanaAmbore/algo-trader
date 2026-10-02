@@ -88,9 +88,24 @@
 
   // ── Derived locals (identical logic to what was in {@const} blocks) ───
 
-  const ltp       = $derived(liveSnap(String(c.symbol || '').toUpperCase())?.ltp ?? (lg?.ltp ?? c.ltp));
-  const cost      = $derived(c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null));
+  // isClosed must be computed BEFORE ltp (Fix 2a, coherence guard) — a
+  // leg's local qty (from either a real poll or Fix 1's optimistic
+  // position_filled apply) can flip to 0 well before the symbol's own
+  // SSE subscription naturally stops delivering ticks (other legs on the
+  // same underlying, or a lingering subscription, can keep the
+  // symbolStore entry updating indefinitely). Reading a live tick for a
+  // row that's no longer held produces a "ghost leg" — a closed
+  // position whose LTP visibly keeps moving. qty=0 rows stay in the
+  // Legs grid on purpose (CLOSED split tag, realised P&L feeding
+  // TOTAL/Day P&L — see CLAUDE.md's Day P&L formulas) — only the LIVE
+  // price feed is frozen here, not the row itself.
   const isClosed  = $derived(Number(c.qty || 0) === 0);
+  const ltp       = $derived(
+    isClosed
+      ? (lg?.ltp ?? c.ltp)
+      : (liveSnap(String(c.symbol || '').toUpperCase())?.ltp ?? (lg?.ltp ?? c.ltp))
+  );
+  const cost      = $derived(c.avg_cost != null ? c.avg_cost : (lg ? lg.avg_cost : null));
 
   // Sold-today eq rows: surface opening_qty so Lots column shows original size.
   const _eqDisplayQty = $derived(
@@ -116,7 +131,25 @@
   // (_legsTotalsBase.reduce(... + Number(c.pnl ?? 0), 0)), which already
   // summed the per-row field directly — this fix makes the CELL agree
   // with the TOTAL it's part of, instead of silently diverging from it.
-  const pnl = $derived(legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null));
+  // Fix 2b (coherence guard, pending state): a brand-new provisional (~)
+  // leg (Fix 1's optimistic position_filled apply, no matching real row
+  // yet) is seeded with `pnl: 0`/`average_price === last_price` as a
+  // rough proxy (provisionalPositions.svelte.js) — legPnlDisplay's own
+  // formula then also computes exactly 0 via (ltp − cost) since both
+  // equal the fill price, so the cell would show a MISLEADING confirmed
+  // "0.00" rather than "not yet known". Once the symbol's own SSE feed
+  // delivers its first real tick (liveSnap no longer null), the row is
+  // still provisional but now has a genuine live price to value against
+  // — fall through to the normal computation from then on. Reuses the
+  // existing null → '—' convention below (no new UI).
+  const _provisionalNoTickYet = $derived(
+    !!c._provisional && !liveSnap(String(c.symbol || '').toUpperCase())
+  );
+  const pnl = $derived(
+    _provisionalNoTickYet
+      ? null
+      : legPnlDisplay(c, ltp, cost, displayQty, _ltpFromFallback, c._residualQty != null)
+  );
 
   const dir        = $derived(displayQty < 0 ? 'short' : displayQty > 0 ? 'long' : 'flat');
   const isClosable = $derived(!isClosed && c.source !== 'draft');
