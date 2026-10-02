@@ -13,6 +13,7 @@
     fetchOrderEvents,
     fetchPersistenceMode, setPersistenceMode,
     fetchSettings,
+    fetchAlgoOrdersRecent,
   } from '$lib/api';
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
@@ -34,6 +35,7 @@
   import BrokerHealthBadge from '$lib/BrokerHealthBadge.svelte';
   import { pollOpenOrders } from '$lib/data/openOrdersStore.svelte.js';
   import { pollOrderFillWatch } from '$lib/data/orderFillPoller.js';
+  import { noteAttachObservation } from '$lib/data/templateAttachToast.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   const { children } = $props();
@@ -781,9 +783,34 @@
   /** Wraps `pollOrderFillWatch()` behind a stable reference so the
    *  settings-driven re-arm (see fetchSettings() block in onMount) can
    *  tear down and recreate the `visibleInterval` with a new cadence
-   *  while still pointing at the same callback. */
+   *  while still pointing at the same callback.
+   *
+   *  Also runs the "template did not attach" stall check (2026-10-02) —
+   *  `noteAttachObservation()` (templateAttachToast.js) previously ran
+   *  ONLY from inside OrderBook.svelte's and LogPanel.svelte's own
+   *  `_loadOrders()` poll loops, so a page that mounts neither (e.g.
+   *  /admin/derivatives with no ticket open) never saw the toast at all —
+   *  same mount-dependent gap class `orderFillPoller.js` was written to
+   *  close for `noteOrderPollFills`/`bookChanged`. Only `fetchAlgoOrdersRecent`
+   *  is needed here (not `fetchOrders()` too): `template_id`/`mode`/
+   *  `attached_gtts_json` are AlgoOrder-only fields — broker rows from
+   *  `fetchOrders()` never carry them, so `isAttachFailedState()` can
+   *  never be true for a broker row regardless. Toast string matches
+   *  OrderBook.svelte's own `_loadOrders()` wording exactly; the
+   *  detector's own sessionStorage dedupe (shared module state) means
+   *  this and OrderBook's/LogPanel's identical check on the same
+   *  order_id never double-toasts. */
   async function _fillWatchTick() {
     await pollOrderFillWatch();
+    try {
+      const algoRows = await fetchAlgoOrdersRecent(100, 'all');
+      for (const o of (Array.isArray(algoRows) ? algoRows : [])) {
+        if (noteAttachObservation(o)) {
+          const oid = o?.id ?? o?.order_id;
+          toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+        }
+      }
+    } catch (_) { /* backstop, not primary path — keep last-good silently */ }
   }
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }

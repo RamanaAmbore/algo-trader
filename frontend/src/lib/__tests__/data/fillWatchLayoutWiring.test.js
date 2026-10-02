@@ -94,8 +94,13 @@ describe('(algo)/+layout.svelte — fill-watch backstop cadence wiring', () => {
       .toBe(true);
   });
 
-  it('_fillWatchTick wraps pollOrderFillWatch() so the re-arm points at a stable callback reference', () => {
-    expect(/async function _fillWatchTick\(\) \{\s*await pollOrderFillWatch\(\);\s*\}/.test(src))
+  it('_fillWatchTick wraps pollOrderFillWatch() (as its first step) so the re-arm points at a stable callback reference', () => {
+    // Fix 4 (2026-10-02 follow-up) extends this function's body with a
+    // template-attach-toast check after the fill-watch poll — this
+    // assertion only pins pollOrderFillWatch() remaining the FIRST
+    // statement, not the function's entire body (see
+    // fillWatchAttachToast.test.js for the Fix 4 coverage).
+    expect(/async function _fillWatchTick\(\) \{\s*await pollOrderFillWatch\(\);/.test(src))
       .toBe(true);
   });
 });
