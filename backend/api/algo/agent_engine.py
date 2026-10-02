@@ -2510,10 +2510,15 @@ async def _ae_dispatch_survivor_entry(entry: dict, now, context: dict,
     rich_sent = await _v2_send_rich_alert(
         agent, matches_, now, sim_mode=sim_mode_p, context=context,
     )
-    # Rich alert (telegram+email table) runs first. If it succeeded, skip those
-    # channels in dispatch() — they were already handled by the rich path.
-    # ntfy / log / websocket / inapp always run via dispatch() regardless.
-    skip = frozenset({'telegram', 'email'}) if rich_sent else frozenset()
+    # Rich alert (telegram+email+ntfy table) runs first via alert_utils._dispatch
+    # -> _alert_route, which already routes telegram/email/ntfy per
+    # alert_routing.agent_alert in backend_config.yaml. If it succeeded, skip
+    # all three of those channels in dispatch() below — sending them again
+    # there would duplicate every rich-alert fire (confirmed live incident:
+    # 4 duplicate ntfy pushes for one MCX pre-close event). log / websocket /
+    # inapp always run via dispatch() regardless — they have no rich-path
+    # equivalent.
+    skip = frozenset({'telegram', 'email', 'ntfy'}) if rich_sent else frozenset()
     await dispatch(agent, result, broadcast_fn, sim_mode=sim_mode_p, skip_channels=skip)
     if rich_sent and broadcast_fn:
         broadcast_fn('agent_alert', {
