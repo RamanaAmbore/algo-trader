@@ -547,8 +547,10 @@ SEEDS: list[tuple] = [
      "auto-pick when exactly one account is loaded; otherwise the "
      "operator chooses from the Account dropdown each time.",
      None, None),
-    ("orders",      "orders.open_order_watchdog_seconds", "int", 300,
-     "Cancel unacknowledged open orders after this many seconds.",
+    ("orders",      "orders.open_order_watchdog_seconds", "int", 60,
+     "Open-order watchdog poll cadence (seconds). Safety-net backstop, not "
+     "the primary fill-detection path (that's event-driven via postback) — "
+     "default dropped from 300s (5 min) to 60s accordingly.",
      "s", {"min": 0, "max": 3600, "step": 30}),
     # Default symbol the order modal / chart modal pre-selects when the
     # host page doesn't supply a contextual symbol. Operator-friendly

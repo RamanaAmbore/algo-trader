@@ -721,7 +721,7 @@ class TestNewSeedsPresence:
         row = self._find("orders.open_order_watchdog_seconds")
         assert row is not None
         assert row[2] == "int"
-        assert row[3] == 300
+        assert row[3] == 60
 
     # ── retention ─────────────────────────────────────────────────────────
 
