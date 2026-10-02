@@ -136,14 +136,22 @@ export async function loadAccounts() {
       _defaultAccount = String((data && data.default_account) || '');
       _defaultSymbol  = String((data && data.default_symbol)  || '');
     } catch (e) {
-      _accounts = [];
+      // 2026-10-02 fix — mirrors templates.js's loadOrderTemplates() fix
+      // (commit 85ca09f5). `if (_accounts) return _accounts;` above checks
+      // truthiness, and an empty array is truthy — so caching a transient
+      // failure (auth-token-not-yet-attached race very early in page load,
+      // a momentary network blip) as `[]` permanently poisoned every
+      // future call in this browser tab's session: no retry, ever. Leave
+      // `_accounts` at its initial `null` so the next caller genuinely
+      // retries; only a real successful response (including a genuinely
+      // empty one) is cached.
       _defaultAccount = '';
       _defaultSymbol = '';
     }
     defaultAccountStore.set(_defaultAccount);
     defaultSymbolStore.set(_defaultSymbol);
     accountsReadyStore.set(true);
-    return _accounts;
+    return _accounts ?? [];
   })();
   try { return await _loadPromise; }
   finally { _loadPromise = null; }
