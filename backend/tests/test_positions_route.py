@@ -320,6 +320,134 @@ class TestFetchForceRefreshThreading:
         mock_fetch.assert_called_once_with(force_refresh=False)
 
 
+class TestStackedPositionCacheCollapse:
+    """Perf fix 2026-10-02 — collapse stacked position caches.
+
+    `positions.py`'s route-level `get_or_fetch("positions", ..., ttl_
+    seconds=_TTL)` used to run its own independent 30s staleness clock
+    on top of `broker_apis.fetch_positions()`'s own `_POSITIONS_SSOT_TTL`
+    (also 30s). A bare `broker_apis._raw_cache_invalidate("positions")`
+    (what every postback / chase / background path calls) only ever
+    busted the INNER layer — the route's own cache kept serving the
+    PRE-invalidation response for up to its own full `_TTL` window on
+    top of that, so the two 30s TTLs could compound instead of
+    bounding worst-case staleness to one ~30s window.
+
+    Fix: `_resolve_positions_source._broker_fn` now peeks
+    `broker_apis._fetch_positions_cached._result_cache["positions"]`
+    (object identity, not a timestamp — `_raw_cache_invalidate` never
+    touches `_positions_ssot_refresh_at`) on every call and proactively
+    evicts the route cache the moment that object no longer matches
+    what the route's cached response was built from
+    (`positions._route_cache_built_from`).
+
+    These tests drive the REAL `broker_apis.fetch_positions()` /
+    `_fetch_positions_cached` machinery (only the lowest-level
+    `_fetch_positions_local` is stubbed — an internal function, not
+    the broker SDK, so this does not violate the no-SDK-mocks
+    convention) so the interaction between the two real cache layers
+    is exercised end-to-end, not simulated.
+    """
+
+    @staticmethod
+    def _reset_caches():
+        from backend.api.cache import invalidate as _cache_invalidate
+        from backend.brokers import broker_apis
+        import backend.api.routes.positions as positions_mod
+
+        _cache_invalidate("positions")
+        broker_apis._raw_cache_invalidate("positions")
+        positions_mod._route_cache_built_from = None
+
+    @pytest.mark.asyncio
+    async def test_bare_raw_cache_invalidate_reflected_on_next_read(self, monkeypatch):
+        """(a) A single broker_apis-layer invalidation must be visible on
+        the very next route read — without waiting out the route cache's
+        own ttl_seconds=_TTL window. This is the stacking-collapse proof:
+        it fails on the pre-fix code (the route cache would still be warm
+        and would short-circuit get_or_fetch before ever reaching
+        broker_apis again)."""
+        from backend.brokers import broker_apis
+        from backend.api.routes.positions import _resolve_positions_source
+
+        self._reset_caches()
+        monkeypatch.setattr(broker_apis, "_USE_CONN_SERVICE", False)
+
+        calls = {"n": 0}
+
+        def _fake_local(*a, **kw):
+            calls["n"] += 1
+            return [pd.DataFrame()]
+
+        monkeypatch.setattr(broker_apis, "_fetch_positions_local", _fake_local)
+
+        request = MagicMock()
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        assert calls["n"] == 1, "cold caches both layers: exactly one real fetch"
+
+        # Warm-cache sanity check: nothing invalidated, no new fetch.
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        assert calls["n"] == 1, "unchanged broker_apis frame + warm route cache: no re-fetch"
+
+        # Simulate a postback / chase / background path: bust ONLY the
+        # broker_apis-layer raw cache. The route-level cache is left
+        # completely untouched by this call.
+        broker_apis._raw_cache_invalidate("positions")
+
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        assert calls["n"] == 2, (
+            "a bare broker_apis._raw_cache_invalidate('positions') must "
+            "trigger a real re-fetch on the very next route read, even "
+            "though the route's own ttl_seconds=_TTL has not expired — "
+            "the two 30s TTLs must not compound into independent "
+            "staleness windows"
+        )
+
+    @pytest.mark.asyncio
+    async def test_force_refresh_true_still_busts_end_to_end(self, monkeypatch):
+        """(b) Explicit force_refresh=True (the post-fill-refresh caller's
+        path, via `?fresh=1`) must still guarantee a genuine broker
+        round-trip end-to-end after the stacking-collapse fix — i.e. the
+        pass-through peek must never short-circuit an EXPLICIT force."""
+        from backend.brokers import broker_apis
+        from backend.api.routes.positions import _resolve_positions_source
+
+        self._reset_caches()
+        monkeypatch.setattr(broker_apis, "_USE_CONN_SERVICE", False)
+        monkeypatch.setattr(broker_apis, "dhan_next_poll_clear", lambda: None)
+
+        calls = {"n": 0}
+
+        def _fake_local(*a, **kw):
+            calls["n"] += 1
+            return [pd.DataFrame()]
+
+        monkeypatch.setattr(broker_apis, "_fetch_positions_local", _fake_local)
+
+        request = MagicMock()
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        assert calls["n"] == 1
+
+        # Warm cache, nothing invalidated — would normally be served
+        # from cache with zero new fetches.
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=False, skip_ltp=True)
+        assert calls["n"] == 1
+
+        # Explicit ?fresh=1 must bypass BOTH layers regardless.
+        with patch("backend.api.routes.positions._any_segment_open", return_value=True):
+            await _resolve_positions_source(request, fresh=True, skip_ltp=False)
+        assert calls["n"] == 2, (
+            "force_refresh=True (?fresh=1 / post-fill path) must still "
+            "force a genuine broker round-trip after the stacking-"
+            "collapse fix"
+        )
+
+
 def test_paper_positions_response_still_calls_ticker_ltp_override():
     """`_build_paper_positions_response` must still call
     _override_stale_ltp_from_ticker — paper positions have no broker book to

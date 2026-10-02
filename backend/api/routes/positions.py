@@ -636,6 +636,23 @@ _TTL = 30
 # by the general None-guard in the row-building comprehension.
 _NULLABLE_COLS: frozenset[str] = frozenset({'prev_settlement_pnl'})
 
+# Pass-through de-dup anchor (perf fix 2026-10-02 — collapse stacked
+# position caches). The raw per-account frame LIST OBJECT that this
+# route's cached PositionsResponse (get_or_fetch("positions", ..., ttl=
+# _TTL) below) was last built from. broker_apis.fetch_positions() is
+# the single TTL owner for raw broker data on this path (it's the
+# shared SSOT also read by NAV/background/algo.expiry/sim, and the one
+# `force_refresh=True` / `_raw_cache_invalidate("positions")` actually
+# target) — this route cache must never impose its OWN additional
+# staleness window on top of that, or the two 30s TTLs compound to up
+# to ~60s worst case instead of one bounded ~30s window. Tracked by
+# object IDENTITY, not a timestamp: `_raw_cache_invalidate("positions")`
+# clears broker_apis's cached object without ever touching its
+# `_positions_ssot_refresh_at` timestamp, so only an identity
+# comparison can detect that invalidation from this side. See
+# `_resolve_positions_source._broker_fn` for the read/write sites.
+_route_cache_built_from: "list | None" = None
+
 
 def _replace_row_price(r, live_ltp: float, exchange_open: bool, snap_ltp: "float | None"):
     """Apply resolve_current_price to *r* and return a replaced struct.
@@ -2141,6 +2158,33 @@ async def _resolve_positions_source(
             except Exception:
                 pass
 
+        # Collapse the stacked caches (perf fix 2026-10-02). PEEK at
+        # broker_apis's own raw-frame cache — a plain dict .get(), no
+        # network/thread hop, and critically NOT a call into the
+        # public fetch_positions() wrapper, which resets its
+        # _positions_ssot_refresh_at TTL clock on EVERY successful
+        # call (cache-hit or not) — calling that wrapper once per poll
+        # would starve its own periodic auto-refresh for every OTHER
+        # consumer (NAV, background tasks, algo.expiry, sim) that
+        # shares it, since the "due for refresh" window would never
+        # elapse. The peeked object is compared BY IDENTITY against
+        # the frame this route's cached PositionsResponse was last
+        # built from (_route_cache_built_from — object identity, not
+        # a timestamp, because _raw_cache_invalidate("positions")
+        # clears broker_apis's cached object without ever touching
+        # that timestamp). A mismatch means broker_apis already holds
+        # a newer (or invalidated/absent) frame than the one backing
+        # this route's cached response — e.g. its own TTL fired, a
+        # postback called _raw_cache_invalidate, or an explicit
+        # force_refresh=True ran — so the route cache is provably
+        # stale and must be rebuilt now via the real fetch inside
+        # _fetch_scoped, instead of being served for up to another
+        # full ttl_seconds=_TTL window on top of that staleness.
+        global _route_cache_built_from
+        _raw_peek = broker_apis._fetch_positions_cached._result_cache.get("positions")
+        if _raw_peek is not _route_cache_built_from:
+            invalidate("positions")
+
         # get_or_fetch() calls `fetcher()` with no args and checks
         # asyncio.iscoroutinefunction(fetcher) to decide whether to await
         # it directly or offload to a thread — a plain lambda wrapping
@@ -2149,7 +2193,10 @@ async def _resolve_positions_source(
         # asyncio.to_thread, caching the un-awaited coroutine itself as
         # the "result". Must be a real `async def` closure.
         async def _fetch_scoped() -> PositionsResponse:
-            return await _fetch(force_refresh=fresh)
+            resp = await _fetch(force_refresh=fresh)
+            global _route_cache_built_from
+            _route_cache_built_from = broker_apis._fetch_positions_cached._result_cache.get("positions")
+            return resp
 
         return await get_or_fetch("positions", _fetch_scoped, ttl_seconds=_TTL)
 
