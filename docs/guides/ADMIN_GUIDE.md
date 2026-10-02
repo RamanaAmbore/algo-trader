@@ -64,7 +64,7 @@ After fill: `tmpl:#1 ✓` (all GTTs placed) or `tmpl:#1 …` (placing, ~1 sec) o
 | Key | Default | Purpose |
 |---|---|---|
 | `wing_min_oi` | 1000 | Filter illiquid strikes |
-| `wing_max_spread_pct` | 10 | Max bid-ask spread % |
+| `wing_max_spread_pct` | 0.5 | Max bid-ask spread % |
 | `wing_chain_radius` | 20 | ±N strikes around parent |
 | `trail_poll_interval_seconds` | 30 | LTP check frequency for trailing stop |
 | `oco_pair_poll_seconds` | 15 | Sibling-cancel check for emulated OCO (Groww) |
@@ -693,6 +693,15 @@ Promotion is now a single master-toggle flip (`execution.paper_trading_mode`), n
 3. When the fires look right, flip the navbar dropdown to LIVE. The next agent fire hits the real broker.
 
 If anything looks off in LIVE mode, flip the navbar dropdown back to PAPER. The next tick reverts every action to paper. No per-action staging — one master toggle owns the whole pipeline.
+
+### Polling cadence settings (`/admin/settings → polling.*`)
+
+| Key | Default | Purpose |
+|---|---|---|
+| `polling.fast_ms` | 5000 | FAST cadence (5s) for order-fill backstop pollers, OrderBook/LogPanel poll interval, PerformancePage backstop |
+| `polling.slow_ms` | 60000 | SLOW cadence (60s) for periodic refreshes with lower urgency |
+| `polling.book_live_ms` | 5000 | Order book polling interval during market hours |
+| `polling.book_closed_ms` | 60000 | Order book polling interval outside market hours |
 
 ### How edits take effect
 

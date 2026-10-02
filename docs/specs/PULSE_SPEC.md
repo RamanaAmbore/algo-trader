@@ -1007,6 +1007,47 @@ Front-month futures rollovers are detected and resolved automatically without ma
 
 ---
 
+### 13.5 Derivatives Page Fill Reflection and Leg Coherence (Oct 2026)
+
+The derivatives page Snapshot and Candidate Legs grids now reflect fills optimistically and
+maintain coherence between live-tick LTP and poll-driven leg quantities, eliminating delays
+and stale price displays.
+
+**Optimistic fill application**:
+- Previously, `position_filled` WS events only extracted `order_id` and `fill_price` for
+  toast-matching; the page forced a full `fetch_positions()` refetch before reflecting the
+  fill in grids. Operators waited 5+ seconds for round-trip confirmation.
+- Fix: Fills are now applied optimistically to affected legs immediately from the WS
+  payload. `provisionalPositions.svelte.js` exposes `applyFill()`, `clearFill()`, and
+  `clearAll()` which insert/update the position locally. A 60-second safety timeout
+  (`clearFill` callback) auto-reverts the provisional state if a later poll never confirms
+  it. File: `+page.svelte` uses `_provisionalForCandidates` derived to suppress duplicate
+  display when a real poll-confirmed row exists for the same (symbol, account).
+
+**Leg price–quantity coherence**:
+- Per-leg LTP ticks live via WebSocket (1s+ refresh) while leg quantity and average cost
+  come from REST polls (5s cadence). Previously, a leg shown with quantity=10 could display
+  a live LTP even after the position was fully closed, or show quantity=0 with an active
+  price feed.
+- Fixes in `CandidateLegRow.svelte`: (a) once `qty` reaches zero, the live price feed
+  freezes — row stays visible with a CLOSED tag and realised P&L, but LTP no longer ticks;
+  (b) a newly-added provisional leg with no real tick yet renders P&L as "—" instead of
+  misleading 0.00.
+
+**Payoff chart overlay refresh indicator**:
+- The rotating-circle loading spinner previously fired on every `loadStrategy()` call,
+  firing continuously during routine 5s refresh cycles. It obscured the chart body.
+- Fix: Spinner is now reserved for first-load / empty-state only. Routine refresh cycles
+  instead flash the LTP/CHG% stat-row values using the existing live-tick flash mechanism
+  (the same one used elsewhere in Pulse for real-time data flicks). File: `+page.svelte`'s
+  `loadStrategy()` — `_stratRefreshing` only sets `true` inside the genuine first-load branch.
+
+**Impact**: Fills appear in Snapshot and Legs grids within 1–2 seconds of WSdispatch,
+eliminating the prior 5+ second wait. Closed legs stop showing live ticks. Routine chart
+refreshes use a lighter visual indicator, keeping the payoff curve unobstructed.
+
+---
+
 ### 13.9 Column Width Reductions Across All Pulse Grids (Sep 2026)
 
 Pulse column widths were optimized to reduce horizontal scrolling burden on mobile and 
