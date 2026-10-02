@@ -107,8 +107,9 @@ callers `_strategy_resolve_option_ltp` / `_strategy_calibrate_iv` /
 futures-equivalent for MCX regardless of which `_resolve_spot()` step produced it.
 The aggregate "Greeks (position)" card (`multileg_greeks()`) dispatches per-leg on
 the same flag, stored on each resolved-leg dict. NSE equity/index legs are
-unaffected — `b=r` is numerically identical (to floating-point noise, ~1e-13) to
-the pre-existing standalone implementation.
+unaffected — `b=r` is bit-identical (`==`, not merely within tolerance) to the
+pre-existing standalone implementation, verified by a committed regression test
+against a frozen copy of the pre-refactor code (`test_derivatives_vec.py`).
 
 **Risk-free rate**: `DEFAULT_RISK_FREE = 0.07` (7% p.a., calibrated to Indian
 RBI repo). Canonical source: `backend/api/algo/derivatives.py:DEFAULT_RISK_FREE`.
@@ -496,26 +497,54 @@ implementation paths, identical visual output.
 
 - `backend/tests/test_derivatives_vec.py` — reference-value Greeks (delta, gamma,
   theta, vega, rho) for BOTH the cash-spot BS path (`greeks()`, `b=r`) and the
-  Black-76 futures path (`greeks_76()`, `b=0`), tight tolerance; short-position
-  sign flip (`multileg_greeks` qty=-1 exactly negates qty=+1); put-call delta
-  parity; payoff-curve intrinsic + theta (single-leg + multi-leg, iron condor
-  shape); vectorized-vs-scalar BS equivalence; perf budgets for curve/EV/
+  Black-76 futures path (`greeks_76()`, `b=0`), tight tolerance; aggregate
+  Greeks via linear addition and the short-position sign flip
+  (`multileg_greeks` qty=-1 exactly negates qty=+1, for both pricing models);
+  put-call delta parity (BS: call−put==1; Black-76: call−put==e^(-rT)≠1);
+  Black-76's rho=-T·price shortcut; an independent central-finite-difference
+  check of `greeks_76()` against `black_76()` alone (not self-referential);
+  a byte-identical (`==`) regression of the `b=r` wrappers against a frozen
+  copy of the pre-refactor standalone implementation, including the
+  long-T/large-S corner where rho's cross-term cancellation is most exposed;
+  call-site dispatch tests through the real production entry points
+  (`_strategy_build_option_leg()` and `_strategy_build_legs()` in
+  `options.py`, not just `black_76()`/`greeks_76()` directly — proven
+  non-vacuous by a manual revert-and-confirm-fail pass each); payoff-curve
+  intrinsic + theta (single-leg + multi-leg, iron condor shape);
+  vectorized-vs-scalar BS equivalence; perf budgets for curve/EV/
   intermediate-curve computation
-- `backend/tests/test_strategy_analytics_helpers.py` +
-  `test_strategy_analytics_cache.py` — aggregate Greeks via linear addition,
-  LTP/IV fallback chains, leg-curve cache behavior
-- `backend/tests/test_options_leg_curve_cache.py` — R:R computation (edge cases:
-  0 profit, 0 loss), symbol-parse round-trip coverage
+- `backend/tests/test_strategy_analytics_helpers.py` — LTP/IV fallback chains
+  (override → broker → avg_cost → BS/Black-76 estimate → 400), leg-metadata
+  validation (mixed-root rejection, symbol normalization), spot-anchor
+  picking, per-leg T-range computation
+- `backend/tests/test_strategy_analytics_cache.py` +
+  `test_options_leg_curve_cache.py` — Phase 2 (strategy-analytics, 5s TTL) and
+  Phase 4 (leg-curve, 5min sliding TTL) cache behavior: TTL expiry, LRU
+  eviction, key hashing, spot-change cache-miss vs leg-change cache-miss
 
 ### Backend — gaps
 
-- Dedicated standalone `parse_tradingsymbol()` round-trip test file (currently
-  only indirectly exercised via the files above)
+- Dedicated standalone `parse_tradingsymbol()` round-trip test file and a
+  dedicated R:R edge-case test (0 profit, 0 loss) — `risk_reward_ratio` is
+  exercised only incidentally as a helper call inside the leg-curve-cache
+  tests, not asserted against directly
 - Multi-expiry basket analytics beyond the existing shared-curve approximation
   (see §9 — currently accepted, not validated; no dedicated N-expiry-grid test)
 - IV calibration convergence vs market IV (implied vol finder accuracy)
 - EV integration accuracy (trapezoidal vs numerical ODE solver)
 - Historical OHLCV multi-broker fallback (Kite → Dhan order)
+- The today/intermediate payoff curves (`_accumulate_leg_slice` via
+  `_black_scholes_vec`) still price EVERY leg through the cash-spot BS
+  vectorized pricer, even for MCX legs — only the per-leg detail Greeks
+  (`_strategy_build_option_leg`) and the aggregate "Greeks (position)" card
+  (`multileg_greeks`) branch to Black-76 so far. On an MCX payoff chart, the
+  Greeks-card delta (Black-76) will not exactly match the today-curve's
+  slope at spot (BS) until a `_black_76_vec` lands. Flagged, not yet fixed —
+  see also the sibling non-strategy-analytics surfaces that also still price
+  MCX options via plain BS: `positions.py:_enrich_position_greeks`,
+  `options_helpers.py:_chain_snapshot_iv_greeks`, `expiry.py` (Greeks for
+  expiry-aware agent conditions), and the single-leg `/api/options/analytics`
+  endpoint (`options.py` — both the IV-calibration and Greeks call sites).
 
 ### Frontend — covered
 
