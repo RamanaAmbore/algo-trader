@@ -176,7 +176,9 @@ test.describe('Fullscreen card modal — new modal chrome + X sync', () => {
   // ── 8. Backdrop is dark — not just a blur ────────────────────────────────
   test('backdrop_is_dark_not_just_blur', async ({ page }) => {
     // Dimensions: UX (palette compliance), SSOT (computed styles)
-    // Expected: background-color rgba(0, 0, 0, 0.55)
+    // Expected: background-color rgba(8, 12, 20, 0.42) — matches
+    // .canonical-modal-overlay (2026-10-02 dimming-parity fix); no longer
+    // rgba(0, 0, 0, 0.55) + blur.
     await authOnce(page);
     const fsBtn = await navDashboard(page);
     await fsBtn.click();

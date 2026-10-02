@@ -183,14 +183,26 @@
      above. This is now a pure visual dim/blur layer; the click-to-exit
      handler lives on the sibling `.fs-backdrop-catch` plate below so
      the fixed navbar/page-header chrome strip stays clickable while
-     any card is fullscreen. */
+     any card is fullscreen.
+
+     Dimming parity (2026-10-02) — was rgba(0,0,0,0.55) + blur(3px), a
+     visibly stronger wash than the canonical modal family's own dim
+     layer (`.canonical-modal-overlay`, app.css: rgba(8,12,20,0.42), no
+     blur) used by Order Entry / Chart / Activity Log modals. Operator-
+     reported: navbar read "washed-out" under a fullscreened card but
+     crisp under those canonical modals. Matched to the SAME rgba +
+     dropped the blur so the fixed navbar/page-header/ps-strip chrome
+     dims identically regardless of which overlay family is active. No
+     shared CSS custom property exists for this value today (checked
+     :root — only --algo-dim-bg / --algo-slate-dim, both unrelated
+     tokens for inline surfaces, not full-viewport overlays), so this
+     mirrors the canonical modal's hardcoded value directly rather than
+     inventing a new variable that nothing else would consume. */
   :global(.fs-backdrop) {
     position: fixed;
     inset: 0;
-    background: rgba(0, 0, 0, 0.55);
+    background: rgba(8, 12, 20, 0.42);
     z-index: 9998;
-    backdrop-filter: blur(3px);
-    -webkit-backdrop-filter: blur(3px);
     pointer-events: none;
   }
 

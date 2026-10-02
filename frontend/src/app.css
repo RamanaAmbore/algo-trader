@@ -2347,11 +2347,17 @@
    `.fs-backdrop-catch` plate (also portalled by DefaultSizeButton.svelte)
    so the fixed navbar/page-header chrome strip stays clickable while a
    card is fullscreen — same root cause + fix shape as SymbolPanel's
-   `.oes-click-catcher` (commit 161fc002). */
+   `.oes-click-catcher` (commit 161fc002).
+
+   Dimming parity (2026-10-02) — rgba(8,12,20,0.42), no blur, matching
+   `.canonical-modal-overlay` (line ~555) exactly so the fullscreen-card
+   dim reads identically to the Order Entry / Chart / Activity Log
+   modal family. Was rgba(0,0,0,0.55) + blur(3px), a visibly stronger
+   wash on the fixed navbar/page-header/ps-strip chrome underneath. Keep
+   this block byte-identical to DefaultSizeButton.svelte's authoritative
+   :global(.fs-backdrop) block. */
 .fs-backdrop {
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+  background: rgba(8, 12, 20, 0.42);
   position: fixed;
   inset: 0;
   z-index: 9998;
