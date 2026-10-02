@@ -5535,25 +5535,25 @@
                etc.) — causing the page-wide hang. `?.` throughout so the
                expression returns undefined instead of throwing; pctFmt
                renders '—' for undefined. -->
-          <span class="opt-section-tag tf-cell tag-greek"
-            title="Delta — net directional exposure (₹ per ₹1 spot move). Includes +qty for enabled equity-holding legs.">
-            Δ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
+          <span class="opt-section-tag tf-cell tag-greek">
+            Δ <InfoHint popup text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." />
+            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek"
-            title="Gamma — convexity, rate of change of Δ as spot moves">
-            Γ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
+          <span class="opt-section-tag tf-cell tag-greek">
+            Γ <InfoHint popup text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." />
+            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}"
-            title="Theta — daily decay (₹/day, positive when net short premium)">
-            Θ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}">
+            Θ <InfoHint popup text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." />
+            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}"
-            title="Vega — P&L per 1% IV move (positive = long volatility)">
-            𝒱 {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}">
+            𝒱 <InfoHint popup text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." />
+            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
           </span>
-          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}"
-            title="Rho — P&L per 1% interest-rate move (typically small for short-DTE)">
-            ρ {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
+          <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}">
+            ρ <InfoHint popup text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." />
+            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
           </span>
         </div>
       {/snippet}
