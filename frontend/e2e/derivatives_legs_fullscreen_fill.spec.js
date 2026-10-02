@@ -36,9 +36,12 @@
  *                 leak outside `.fs-card-on`); sparse (1-row) leg lists
  *                 don't get comedically stretched rows (align-content:start).
  *
- * Run:
+ * Run (--workers=1 — see waitForLayoutSettled's comment; this repo's sibling
+ * specs use the same convention to avoid 9-way default-parallelism
+ * contention against a single local dev server):
  *   npx playwright test e2e/derivatives_legs_fullscreen_fill.spec.js \
- *   --project=chromium-desktop --project=mobile-portrait --workers=1
+ *   --project=chromium-desktop --project=mobile-portrait \
+ *   --project=mobile-landscape --workers=1
  */
 
 import { test, expect } from '@playwright/test';
@@ -128,6 +131,43 @@ async function pickUnderlyingWithLegs(page, symbol = 'CRUDEOIL', timeoutMs = 15_
   return 0;
 }
 
+// The page has an unrelated, pre-existing async layout settle a few
+// seconds after first load — confirmed live (2026-10-02 investigation)
+// to be completely independent of this fix: an untouched control button
+// (the Payoff card's OWN fullscreen toggle, on `.opt-payoff`, never
+// touched by this commit) shows the identical ~800ms `click()` latency
+// when clicked in the same timing window right after the underlying
+// picker resolves, while clicking that SAME button a few seconds
+// earlier (before the settle) or later (after the settle) takes ~20ms.
+// Root cause: something above the Payoff/Legs row (first-poll data
+// replacing a provisional placeholder, verified via `scrollHeight`
+// dropping ~27px around the 3-4s mark) shifts page layout once;
+// Playwright's own `.click()` actionability wait (element must be
+// visible+stable+hit-testable for 2 consecutive animation frames)
+// retries through that shift, adding up to ~1.3s on this viewport's
+// cramped geometry — not a cost of the fullscreen CSS transition
+// itself. Isolating the measured "toggle latency" from this unrelated
+// variance (rather than padding the budget to tolerate it) is the
+// correct fix: wait for `document.documentElement.scrollHeight` to
+// stop changing before starting the timer, so the timed interval
+// reflects only the fullscreen toggle's own cost.
+async function waitForLayoutSettled(page, { checkIntervalMs = 150, stableChecks = 3, timeoutMs = 8_000 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  let lastHeight = null;
+  let stableCount = 0;
+  while (Date.now() < deadline) {
+    const h = await page.evaluate(() => document.documentElement.scrollHeight);
+    if (h === lastHeight) {
+      stableCount++;
+      if (stableCount >= stableChecks) return;
+    } else {
+      stableCount = 0;
+      lastHeight = h;
+    }
+    await page.waitForTimeout(checkIntervalMs);
+  }
+}
+
 // ── spec ──────────────────────────────────────────────────────────────────────
 
 test.describe('Legs grid fullscreen fill — no dead gap below TOTAL', () => {
@@ -180,6 +220,12 @@ test.describe('Legs grid fullscreen fill — no dead gap below TOTAL', () => {
       test.skip(true, 'Fullscreen button not visible on Legs card');
       return;
     }
+
+    // See waitForLayoutSettled's own comment: an unrelated async page
+    // settle a few seconds after load can otherwise contaminate the
+    // measured click() latency on this viewport. Not part of the
+    // timed interval itself — isolates what we're actually budgeting.
+    await waitForLayoutSettled(page);
 
     const t0 = Date.now();
     await fsBtn.click();
@@ -283,6 +329,7 @@ test.describe('Legs grid fullscreen fill — no dead gap below TOTAL', () => {
       test.skip(true, 'Fullscreen button not visible on Legs card');
       return;
     }
+    await waitForLayoutSettled(page);
     await fsBtn.click();
     await expect(page.locator('.opt-legs-card.fs-card-on')).toBeVisible({ timeout: 5_000 });
     await page.waitForTimeout(300);
