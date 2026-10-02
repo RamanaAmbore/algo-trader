@@ -600,6 +600,14 @@
   let _fsByund   = $state(false);
   let _filterByund = $state('');
 
+  // Payoff-header Greek chip tooltips — clicking the VALUE text itself
+  // (not a separate visible (i) button) opens the InfoHint popover.
+  // One bindable open-flag + one anchor-element ref per Greek so each
+  // chip's popover opens/closes/positions independently.
+  let _greekHintOpen = $state({ delta: false, gamma: false, theta: false, vega: false, rho: false });
+  /** @type {Record<string, HTMLElement|undefined>} */
+  let _greekHintAnchor = $state({});
+
   // Tab inside the Legs card — 'legs' shows the full candidate
   // grid; 'expiry' shows positions identified for close before
   // expiry day (equity rules: every ITM contract; commodity rules:
@@ -5536,24 +5544,59 @@
                expression returns undefined instead of throwing; pctFmt
                renders '—' for undefined. -->
           <span class="opt-section-tag tf-cell tag-greek">
-            Δ <InfoHint popup text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." />
-            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}
+            Δ <button type="button" class="greek-val-trigger"
+                bind:this={_greekHintAnchor.delta}
+                aria-expanded={_greekHintOpen.delta}
+                aria-controls="greek-hint-delta"
+                onclick={() => { _greekHintOpen.delta = !_greekHintOpen.delta; }}
+                >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</button>
+            <InfoHint popup hideButton id="greek-hint-delta" anchor={_greekHintAnchor.delta}
+              bind:open={_greekHintOpen.delta}
+              text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek">
-            Γ <InfoHint popup text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." />
-            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}
+            Γ <button type="button" class="greek-val-trigger"
+                bind:this={_greekHintAnchor.gamma}
+                aria-expanded={_greekHintOpen.gamma}
+                aria-controls="greek-hint-gamma"
+                onclick={() => { _greekHintOpen.gamma = !_greekHintOpen.gamma; }}
+                >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</button>
+            <InfoHint popup hideButton id="greek-hint-gamma" anchor={_greekHintAnchor.gamma}
+              bind:open={_greekHintOpen.gamma}
+              text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}">
-            Θ <InfoHint popup text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." />
-            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}
+            Θ <button type="button" class="greek-val-trigger"
+                bind:this={_greekHintAnchor.theta}
+                aria-expanded={_greekHintOpen.theta}
+                aria-controls="greek-hint-theta"
+                onclick={() => { _greekHintOpen.theta = !_greekHintOpen.theta; }}
+                >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</button>
+            <InfoHint popup hideButton id="greek-hint-theta" anchor={_greekHintAnchor.theta}
+              bind:open={_greekHintOpen.theta}
+              text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}">
-            𝒱 <InfoHint popup text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." />
-            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}
+            𝒱 <button type="button" class="greek-val-trigger"
+                bind:this={_greekHintAnchor.vega}
+                aria-expanded={_greekHintOpen.vega}
+                aria-controls="greek-hint-vega"
+                onclick={() => { _greekHintOpen.vega = !_greekHintOpen.vega; }}
+                >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</button>
+            <InfoHint popup hideButton id="greek-hint-vega" anchor={_greekHintAnchor.vega}
+              bind:open={_greekHintOpen.vega}
+              text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}">
-            ρ <InfoHint popup text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." />
-            {pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}
+            ρ <button type="button" class="greek-val-trigger"
+                bind:this={_greekHintAnchor.rho}
+                aria-expanded={_greekHintOpen.rho}
+                aria-controls="greek-hint-rho"
+                onclick={() => { _greekHintOpen.rho = !_greekHintOpen.rho; }}
+                >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</button>
+            <InfoHint popup hideButton id="greek-hint-rho" anchor={_greekHintAnchor.rho}
+              bind:open={_greekHintOpen.rho}
+              text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." />
           </span>
         </div>
       {/snippet}
@@ -6614,6 +6657,21 @@
      premium / long volatility carry the inverse sign convention). */
   .tag-greek      { color: #c084fc; background: rgba(192,132,252,0.10); }
   .tag-greek-neg  { color: #fda4af; background: rgba(253,164,175,0.10); }
+  /* Greek chip value — the click trigger for its InfoHint popover (no
+     separate visible (i) chip per operator request). Styled as plain
+     text matching the surrounding chip, with only `cursor: pointer` +
+     a hover underline hinting it's interactive. */
+  .greek-val-trigger {
+    font: inherit;
+    color: inherit;
+    background: none;
+    border: 0;
+    padding: 0;
+    margin: 0;
+    cursor: pointer;
+  }
+  .greek-val-trigger:hover,
+  .greek-val-trigger:focus-visible { text-decoration: underline; }
   .opt-section-meta {
     color: var(--text-muted);
     font-weight: 400;

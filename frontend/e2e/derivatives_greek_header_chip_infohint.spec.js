@@ -1,26 +1,38 @@
 /**
  * derivatives_greek_header_chip_infohint.spec.js
  *
- * The compact Payoff-header Greek chips (Δ Γ Θ 𝒱 ρ, ~lines 5538-5557 of
- * /admin/derivatives) used to carry a plain unstyled `title="..."` native
- * tooltip. They now reuse <InfoHint popup text="..."> with wording copied
- * VERBATIM from the "Greeks (position)" card (~lines 6123-6140), which was
- * already correct. This spec guards:
+ * The compact Payoff-header Greek chips (Δ Γ Θ 𝒱 ρ, ~lines 5546-5596 of
+ * /admin/derivatives) first moved from a plain `title="..."` native
+ * tooltip to <InfoHint popup text="..."> (commit 4a67445e), which added a
+ * visible `(i)` button chip next to each value.
+ *
+ * Follow-up (this spec's current revision): the operator asked for the
+ * GREEK VALUE TEXT ITSELF to be the click trigger, with no separate
+ * visible `(i)` chip. Each chip now renders:
+ *   - a plain-text-styled `<button class="greek-val-trigger">` carrying
+ *     the Greek's numeric value (the only click target)
+ *   - an `<InfoHint popup hideButton anchor={...} bind:open={...}>` with
+ *     the SAME wording as before, rendering no button of its own
+ *
+ * This spec guards:
  *
  *   1. SSOT    — header-chip InfoHint text is byte-identical to the
  *                Greeks-card InfoHint text for all 5 Greeks (source parity).
- *   2. Perf    — click-to-popover opens within budget (no hang/regression);
- *                desktop is comfortably sub-500ms, budget set generously
- *                to also cover touch-emulated mobile projects' overhead on
- *                InfoHint's RAF-based viewport fit/position step.
- *   3. Stale   — no `title="..."` attribute remains on the 5 header chip
- *                spans (the old mechanism); InfoHint's own generic
- *                "Show details" button title is unaffected/expected.
- *   4. Reuse   — all 5 chips render `button.info-btn` (InfoHint component),
- *                not a hand-rolled tooltip.
- *   5. UX      — clicking/hovering a header chip's InfoHint shows text
- *                matching the known Greek description; popover carries
- *                role="tooltip".
+ *   2. Hidden  — all 5 header-chip InfoHint instances pass `hideButton`;
+ *                the Greeks-card instances (still the (i)-button mode) do
+ *                NOT. No `.info-btn` renders anywhere inside a header chip.
+ *   3. Perf    — click-to-popover opens within budget (no hang/regression).
+ *   4. UX      — clicking the Greek VALUE opens a role="tooltip" popover
+ *                with the matching wording; clicking the same value again
+ *                CLOSES it (verifies the anchor click-outside-exemption
+ *                fix in InfoHint.svelte, not just that opening works).
+ *   5. Isolation — opening one Greek's popover and then another closes
+ *                  the first and shows only the second's text (per-chip
+ *                  independent state, no cross-talk).
+ *   6. Regression — the pre-existing Greeks (position) CARD (a sibling,
+ *                    unrelated InfoHint consumer on the same page) is
+ *                    UNCHANGED: still renders its own visible `.info-btn`
+ *                    and still opens/shows the same wording via it.
  *
  * Run locally (auto-starts local vite dev server, proxies /api to
  * dev.ramboq.com per vite.config.js):
@@ -36,7 +48,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 const PAGE_PATH = resolve(process.cwd(), 'src/routes/(algo)/admin/derivatives/+page.svelte');
 
 /** Known-good Greek descriptions, copied verbatim from the Greeks (position)
- *  card (lines 6123, 6127, 6131, 6135, 6139) — the SSOT wording. */
+ *  card — the SSOT wording. */
 const GREEK_TEXT = {
   delta: 'Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs.',
   gamma: 'Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly.',
@@ -45,9 +57,9 @@ const GREEK_TEXT = {
   rho: 'Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options.',
 };
 
-// ── Suite 1: Source audit — byte-exact wording parity (always green, no network) ──
+// ── Suite 1: Source audit — byte-exact wording parity + hideButton wiring (always green, no network) ──
 
-test.describe('Source audit — header-chip Greek InfoHint text matches Greeks card', () => {
+test.describe('Source audit — header-chip Greek InfoHint text + hideButton wiring', () => {
   const src = readFileSync(PAGE_PATH, 'utf8');
 
   // Isolate the header-chips block (opt-section-chips) and the Greeks-card
@@ -76,14 +88,12 @@ test.describe('Source audit — header-chip Greek InfoHint text matches Greeks c
     test(`${greek}: header chip InfoHint text matches Greeks card verbatim`, () => {
       // Card must contain the SSOT text (sanity on our own fixture).
       expect(cardBlock, `Greeks card missing expected ${greek} text`).toContain(text);
-      // Header chip must contain the SAME text via InfoHint, not `title=`.
+      // Header chip must contain the SAME text via InfoHint.
       expect(chipsBlock, `Header chip missing InfoHint text for ${greek}`).toContain(text);
     });
   }
 
   test('no `title=` attribute remains on any of the 5 Greek header chip spans', () => {
-    // Match each `<span class="opt-section-tag ... tag-greek ...">` opening
-    // tag up to its `>` and assert none carry a `title=` attribute.
     const chipOpenTags = chipsBlock.match(/<span class="opt-section-tag[^>]*tag-greek[^>]*>/g) || [];
     expect(chipOpenTags.length).toBe(5);
     for (const tag of chipOpenTags) {
@@ -91,38 +101,55 @@ test.describe('Source audit — header-chip Greek InfoHint text matches Greeks c
     }
   });
 
-  test('all 5 Greek header chips render <InfoHint', () => {
+  test('all 5 Greek header chips render <InfoHint hideButton>, not the (i)-button mode', () => {
     const infoHintCount = (chipsBlock.match(/<InfoHint\s/g) || []).length;
     // EV chip (not a Greek, out of scope) keeps its native title — only
     // the 5 Greek chips should carry InfoHint inside this block.
     expect(infoHintCount).toBe(5);
+    const hideButtonCount = (chipsBlock.match(/hideButton/g) || []).length;
+    expect(hideButtonCount).toBe(5);
+  });
+
+  test('the Greeks-card InfoHint instances do NOT pass hideButton (unaffected sibling consumer)', () => {
+    const cardInfoHintCount = (cardBlock.match(/<InfoHint\s/g) || []).length;
+    expect(cardInfoHintCount).toBeGreaterThanOrEqual(5);
+    expect(cardBlock).not.toMatch(/hideButton/);
+  });
+
+  test('each Greek header chip has a plain-text `.greek-val-trigger` click target carrying the value', () => {
+    const triggerCount = (chipsBlock.match(/class="greek-val-trigger"/g) || []).length;
+    expect(triggerCount).toBe(5);
+    // No visible .info-btn chip markup inside the header-chips block at all.
+    expect(chipsBlock).not.toMatch(/class="info-btn"/);
   });
 });
 
-// ── Suite 2: Live DOM — chips render InfoHint, not a native title ────────────
+// ── Suite 2: Live DOM — header chips trigger via value text, Greeks card unaffected ────────────
 
-test.describe('/admin/derivatives — Greek header chips render InfoHint', () => {
+test.describe('/admin/derivatives — Greek header chips open via value click, no visible (i) chip', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/admin/derivatives', { waitUntil: 'domcontentloaded' });
   });
 
-  test('Reuse + Stale: 5 tag-greek chips exist, each with button.info-btn, none with a bespoke title=', async ({ page }) => {
+  test('Reuse + Stale: 5 tag-greek chips exist, each with a value trigger, none with a visible .info-btn or bespoke title=', async ({ page }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
     const count = await chips.count();
     for (let i = 0; i < count; i++) {
       const chip = chips.nth(i);
-      // Reuse: InfoHint's own button is present.
-      await expect(chip.locator('button.info-btn')).toHaveCount(1);
+      // No visible (i) button chip — operator's explicit ask.
+      await expect(chip.locator('button.info-btn')).toHaveCount(0);
+      // The value itself is the click target.
+      await expect(chip.locator('button.greek-val-trigger')).toHaveCount(1);
       // Stale: the chip span itself must not carry the old bespoke title.
       const title = await chip.getAttribute('title');
       expect(title, `Chip ${i} still has a native title attribute: "${title}"`).toBeNull();
     }
   });
 
-  test('UX + Perf: clicking the Delta chip InfoHint opens a role=tooltip popover quickly with matching wording', async ({ page }) => {
+  test('UX + Perf: clicking the Delta value opens a role=tooltip popover quickly with matching wording, and clicking again closes it', async ({ page }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -130,11 +157,11 @@ test.describe('/admin/derivatives — Greek header chips render InfoHint', () =>
     const deltaChip = chips.nth(0);
     await expect(deltaChip).toContainText('Δ');
 
-    const btn = deltaChip.locator('button.info-btn');
-    await expect(btn).toBeVisible();
+    const trigger = deltaChip.locator('button.greek-val-trigger');
+    await expect(trigger).toBeVisible();
 
     const t0 = Date.now();
-    await btn.click();
+    await trigger.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     const elapsed = Date.now() - t0;
@@ -148,11 +175,34 @@ test.describe('/admin/derivatives — Greek header chips render InfoHint', () =>
     expect(text).toContain('net directional exposure');
     expect(text).toContain('equity-holding legs');
 
-    // Close so later tests in this file aren't affected by a stray open popover.
-    await page.keyboard.press('Escape');
+    // Clicking the SAME value again must close it — guards the
+    // anchor-exemption fix in InfoHint.svelte's click-outside listener;
+    // without it, the mousedown-driven close races the trigger's own
+    // click handler and the popover can never be closed by re-clicking
+    // its own trigger.
+    await trigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('UX: all 5 header chips open distinct, correctly-worded popovers', async ({ page }) => {
+  test('Isolation: opening Gamma after Delta closes Delta and shows only Gamma text', async ({ page }) => {
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
+
+    const deltaTrigger = chips.nth(0).locator('button.greek-val-trigger');
+    const gammaTrigger = chips.nth(1).locator('button.greek-val-trigger');
+
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('net directional exposure');
+
+    await gammaTrigger.click();
+    const tooltips = page.locator('[role="tooltip"]');
+    await expect(tooltips).toHaveCount(1);
+    await expect(tooltips.first()).toContainText('rate-of-change of delta');
+    await expect(tooltips.first()).not.toContainText('net directional exposure');
+  });
+
+  test('UX: all 5 header chips open distinct, correctly-worded popovers via their value trigger', async ({ page }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -166,14 +216,31 @@ test.describe('/admin/derivatives — Greek header chips render InfoHint', () =>
 
     for (let i = 0; i < 5; i++) {
       const chip = chips.nth(i);
-      const btn = chip.locator('button.info-btn');
-      await btn.click();
+      const trigger = chip.locator('button.greek-val-trigger');
+      await trigger.click();
       const popover = page.locator('[role="tooltip"]').first();
       await expect(popover).toBeVisible({ timeout: 2000 });
       const text = (await popover.textContent()) || '';
       expect(text, `Chip ${i} popover missing expected wording`).toContain(anchors[i]);
-      await page.keyboard.press('Escape');
-      await page.waitForTimeout(80);
+      // Close via the same trigger before moving to the next chip.
+      await trigger.click();
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
     }
+  });
+
+  test('Regression: Greeks (position) card — unrelated sibling InfoHint consumer — is unchanged', async ({ page }) => {
+    // The card still uses the (i)-button mode (no hideButton); scope the
+    // locator to the card's own container so we don't pick up a header
+    // chip's popover from an earlier test in this file.
+    const card = page.locator('.opt-kv.opt-kv-greeks');
+    await expect(card).toBeVisible({ timeout: 20_000 });
+
+    const cardDeltaBtn = card.locator('button.info-btn').first();
+    await expect(cardDeltaBtn).toBeVisible();
+    await cardDeltaBtn.click();
+    const popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    const text = (await popover.textContent()) || '';
+    expect(text).toContain('net directional exposure');
   });
 });

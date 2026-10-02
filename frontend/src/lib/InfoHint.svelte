@@ -33,6 +33,9 @@
    *   accentColor?: string,
    *   title?: string,
    *   showOnHover?: boolean,
+   *   hideButton?: boolean,
+   *   open?: boolean,
+   *   anchor?: HTMLElement,
    * }} */
   let {
     children,
@@ -48,6 +51,19 @@
     accentColor = 'var(--algo-amber)',
     title = '',
     showOnHover = false,
+    // Additive, opt-in: when true, InfoHint renders no button of its own —
+    // an external element (passed via `anchor`, bound to `open`) becomes
+    // the click trigger instead. Every existing caller omits both props
+    // and gets byte-identical behavior to before this was added.
+    hideButton = false,
+    // Bindable so an external trigger (e.g. a clickable value span) can
+    // open/close this InfoHint's popout directly. Defaults from the same
+    // one-time `defaultOpen` seed as before for callers that don't bind it.
+    open = $bindable($state.snapshot(defaultOpen)),
+    // External trigger element InfoHint should anchor its popup position
+    // to AND exempt from the click-outside-closes listener, when set
+    // (hideButton mode). Ignored otherwise.
+    anchor = undefined,
   } = $props();
 
   // Unique id for aria-describedby. Generated in onMount to avoid
@@ -58,9 +74,6 @@
   });
   const _popoutId = $derived(_uid || 'infohint-pending');
 
-  // intentional: defaultOpen is a one-time seed; operator toggles thereafter
-  // svelte-ignore state_referenced_locally
-  let open = $state($state.snapshot(defaultOpen));
   let hovered = $state(false);
   /** @type {HTMLSpanElement | undefined} */
   let wrap;
@@ -72,7 +85,15 @@
   $effect(() => {
     if (!popup || !open) return;
     function onDocClick(/** @type {MouseEvent} */ e) {
-      if (wrap && !wrap.contains(/** @type {Node} */ (e.target))) open = false;
+      const t = /** @type {Node} */ (e.target);
+      // `anchor` (hideButton mode) sits OUTSIDE `wrap` in the DOM — the
+      // external trigger that toggles `open`. Without this exemption, the
+      // mousedown that reaches this listener fires BEFORE the anchor's own
+      // click handler, so every attempt to close via re-clicking the
+      // anchor would immediately get flipped back open by that handler,
+      // making the popover unclosable by its own trigger.
+      if (anchor && anchor.contains(t)) return;
+      if (wrap && !wrap.contains(t)) open = false;
     }
     document.addEventListener('mousedown', onDocClick);
     return () => document.removeEventListener('mousedown', onDocClick);
@@ -108,7 +129,12 @@
       // bias the natural rect.
       popoutEl.style.left = '';
       popoutEl.style.top  = '';
-      const chipRect = wrap.getBoundingClientRect();
+      // In hideButton mode `wrap` renders no button, so it's an empty
+      // ~0×0 inline span — anchor to the external trigger's own rect
+      // instead so the popup lands next to what the operator actually
+      // clicked, not a collapsed point. Non-hideButton callers are
+      // unaffected since they never pass `anchor`.
+      const chipRect = (anchor ?? wrap).getBoundingClientRect();
       const popRect  = popoutEl.getBoundingClientRect();
       // Anchor at chip's left, clamp to viewport with 8px gutters.
       let left = chipRect.left;
@@ -145,6 +171,7 @@
 <span class="info-wrap" class:align-right={align === 'right'}
       class:info-wrap-popup={popup}
       bind:this={wrap}>
+  {#if !hideButton}
   <button type="button"
           class="info-btn"
           class:open
@@ -157,6 +184,7 @@
           onmouseleave={() => hovered = false}
           onfocus={() => { if (showOnHover) hovered = true; }}
           onblur={() => { if (showOnHover) hovered = false; }}>{label}</button>
+  {/if}
   {#if visible}
     <span class="info-popout"
           class:info-popout-popup={popup}
