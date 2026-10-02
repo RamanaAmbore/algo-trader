@@ -825,3 +825,43 @@ export function stopBookPollers() {
   if (_bookPollerTeardown) { _bookPollerTeardown(); _bookPollerTeardown = null; }
   _bookPollerStarted = false;
 }
+
+// ── Mount-independent fill-watch backstop cadence (Fix 5, 2026-10) ──────
+//
+// `pollOrderFillWatch` (orderFillPoller.js) is a pure function with no
+// owned interval — the actual `visibleInterval(pollOrderFillWatch, 5000)`
+// call lives in `(algo)/+layout.svelte` (outside this module's file
+// scope for this change). Since this poller is now documented as a pure
+// safety-net backstop for non-WS-broadcasting channels (position_filled
+// WS events + OrderBook/LogPanel's own poll loops are the primary fill-
+// detection path per CLAUDE.md), its intended default cadence is 60 s
+// (SLOW), not the current 5 s.
+//
+// This getter/setter pair mirrors `setBookPollerLiveMs`/
+// `setBookPollerClosedMs` exactly so a FUTURE settings-driven wiring
+// (operator ask: source from a `polling.slow_ms` registry setting, the
+// SAME fetchSettings() call in the layout's onMount that already reads
+// `polling.book_live_ms`/`polling.book_closed_ms`) has a ready-made,
+// tested landing spot. Known incomplete: changing ONLY this module does
+// NOT change the poller's actual cadence yet — `(algo)/+layout.svelte`
+// still needs a companion edit to (a) read `polling.slow_ms` from
+// `/api/admin/settings` and call `setFillWatchIntervalMs()`, and (b)
+// change its `visibleInterval(pollOrderFillWatch, 5000)` call to read
+// `getFillWatchIntervalMs()` instead of the hardcoded literal. Flagged
+// explicitly in this change's report rather than silently left half-done.
+let _fillWatchIntervalMs = 60_000;
+
+/** Current fill-watch backstop cadence in ms. Default 60_000 (SLOW) —
+ *  see module header comment above for the companion layout.svelte wiring
+ *  this is designed to support. */
+export function getFillWatchIntervalMs() {
+  return _fillWatchIntervalMs;
+}
+
+/** Override the fill-watch backstop cadence (e.g. from a `polling.slow_ms`
+ *  settings fetch). Guards the same >=1000ms floor as
+ *  `setBookPollerLiveMs` — never accepts a sub-1s cadence. */
+export function setFillWatchIntervalMs(ms) {
+  if (!Number.isFinite(ms) || ms < 1000) return;
+  _fillWatchIntervalMs = ms;
+}
