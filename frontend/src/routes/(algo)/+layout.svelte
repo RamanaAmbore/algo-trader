@@ -26,7 +26,7 @@
   import ShortcutCheatsheet from '$lib/ShortcutCheatsheet.svelte';
   import { bootstrapRBAC } from '$lib/rbac';
   import { startBookChangedBus } from '$lib/data/bookChanged';
-  import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs } from '$lib/data/marketDataStores.svelte.js';
+  import { startBookPollers, setBookPollerLiveMs, setBookPollerClosedMs, getFillWatchIntervalMs, setFillWatchIntervalMs } from '$lib/data/marketDataStores.svelte.js';
   import { loadAccountOrder } from '$lib/data/accountSort.js';
   import { startMarketGatedQuoteStream, stopMarketGatedQuoteStream } from '$lib/data/quoteStream';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
@@ -778,6 +778,13 @@
   // pollers + lifecycle live here.
   let simTeardown, paperTeardown, replayTeardown;
   let modeTeardown, chaseTeardown, persistTeardown, fillWatchTeardown;
+  /** Wraps `pollOrderFillWatch()` behind a stable reference so the
+   *  settings-driven re-arm (see fetchSettings() block in onMount) can
+   *  tear down and recreate the `visibleInterval` with a new cadence
+   *  while still pointing at the same callback. */
+  async function _fillWatchTick() {
+    await pollOrderFillWatch();
+  }
   async function pollSim() {
     try { simStatus = await fetchSimStatus(); }
     catch (_) { /* cap flag off or auth gone — treat as idle */ }
@@ -867,6 +874,25 @@
         const closedRow = all.find?.(s => s?.key === 'polling.book_closed_ms');
         const closedV   = Number(closedRow?.value ?? closedRow?.default_value);
         if (Number.isFinite(closedV) && closedV >= 60000) setBookPollerClosedMs(closedV);
+
+        // Fill-watch backstop cadence (`polling.slow_ms`, default 60000) —
+        // companion to the getFillWatchIntervalMs()/setFillWatchIntervalMs()
+        // pair shipped in marketDataStores.svelte.js (commit 7574df2d). The
+        // `visibleInterval(pollOrderFillWatch, ...)` call below already ran
+        // synchronously BEFORE this async fetch resolves (it reads the
+        // module's default at that instant), so setting the value alone
+        // would silently never take effect — re-arm the interval here with
+        // the freshly-read cadence, same as setBookPollerInterval's own
+        // teardown+recreate pattern (marketDataStores.svelte.js:802-810).
+        const slowRow = all.find?.(s => s?.key === 'polling.slow_ms');
+        const slowV   = Number(slowRow?.value ?? slowRow?.default_value);
+        if (Number.isFinite(slowV) && slowV >= 1000) {
+          setFillWatchIntervalMs(slowV);
+          if (!_layoutDestroyed) {
+            fillWatchTeardown?.();
+            fillWatchTeardown = visibleInterval(_fillWatchTick, getFillWatchIntervalMs());
+          }
+        }
       } catch { /* anon/demo — keep defaults */ }
     })();
     // Cross-page book poller (positions / holdings / funds). Layout-resident
@@ -932,15 +958,18 @@
     // reaches `noteOrderPollFills` → `bookChanged` → every subscriber's
     // own fresh refetch, even on a page like /admin/derivatives that
     // doesn't mount OrderBook/LogPanel. Deliberately NOT market-gated
-    // (visibleInterval only, pauses on tab-hidden) — this mirrors
-    // OrderBook.svelte's/LogPanel.svelte's own poll cadence exactly
-    // (neither pauses for market-closed either), since this poller's
-    // whole purpose is parity with what those components already do
-    // when mounted, not a new overnight-pause behaviour they don't have.
-    pollOrderFillWatch();
-    fillWatchTeardown = visibleInterval(pollOrderFillWatch, 5000);
+    // (visibleInterval only, pauses on tab-hidden). Cadence is settings-
+    // driven (`polling.slow_ms`, default 60000 — see the fetchSettings()
+    // block above) rather than a fixed literal, so it no longer tracks
+    // OrderBook.svelte's/LogPanel.svelte's own (separately FAST-cadence)
+    // poll loops 1:1 — this poller's purpose is "a backstop refresh that
+    // still happens when neither of those is mounted," not cadence parity.
+    _fillWatchTick();
+    fillWatchTeardown = visibleInterval(_fillWatchTick, getFillWatchIntervalMs());
   });
+  let _layoutDestroyed = false;
   onDestroy(() => {
+    _layoutDestroyed = true;
     simTeardown?.(); paperTeardown?.(); replayTeardown?.();
     modeTeardown?.(); chaseTeardown?.(); persistTeardown?.(); fillWatchTeardown?.();
     window.removeEventListener('keydown', _onGlobalKeydown);
