@@ -1018,25 +1018,37 @@ def _gbs_greeks(S: float, K: float, T_years: float, r: float, b: float,
     nd1 = _norm_pdf(d1)
     Nd1 = _norm_cdf(d1)
     Nd2 = _norm_cdf(d2)
-    price = _gbs_price(S, K, T_years, r, b, sigma, opt_type)
 
+    # Theta/rho are written in the call/put-specific closed forms below
+    # (not `-T*price + T*S*delta*db_dr` / a single shared theta
+    # expression) so that at b=r, db_dr=1 every `(r-b)` / `(db_dr-1)` /
+    # `(1-db_dr)` factor is an EXACT IEEE754 0.0 (0.0 * finite == 0.0,
+    # no rounding), leaving the remaining term float-op-identical to
+    # the original pre-refactor `greeks()` expression — verified by a
+    # same-process, no-literal regression test against the frozen
+    # pre-refactor implementation (see test_derivatives_vec.py). Rho's
+    # two forms are both algebraically equal to the general chain-rule
+    # result `-T*price + T*S*delta*db_dr`, just rearranged per
+    # call/put so each reduces to its own original expression exactly.
     if opt_type == "CE":
         delta    = growth * Nd1
         theta_yr = (-S * growth * nd1 * sigma / (2.0 * sqrt_T)
                     + S * (r - b) * growth * Nd1
                     - r * K * disc * Nd2)
+        rho_raw  = (K * T_years * disc * Nd2
+                    + T_years * S * growth * Nd1 * (db_dr - 1.0))
     else:
+        Nmd1 = _norm_cdf(-d1)
+        Nmd2 = _norm_cdf(-d2)
         delta    = growth * (Nd1 - 1.0)
         theta_yr = (-S * growth * nd1 * sigma / (2.0 * sqrt_T)
-                    - S * (r - b) * growth * (1.0 - Nd1)
-                    + r * K * disc * (1.0 - Nd2))
+                    - S * (r - b) * growth * Nmd1
+                    + r * K * disc * Nmd2)
+        rho_raw  = (-K * T_years * disc * Nmd2
+                    + T_years * S * growth * Nmd1 * (1.0 - db_dr))
 
     gamma    = growth * nd1 / (S * sigma * sqrt_T)
     vega_raw = S * growth * nd1 * sqrt_T
-    # rho = total d(price)/dr = ∂price/∂r|_b + ∂price/∂b * db/dr
-    #     = -T*price + T*S*delta*db_dr  (derived via chain rule on
-    #     _gbs_price(); verified against both b=r and b=0 endpoints).
-    rho_raw  = -T_years * price + T_years * S * delta * db_dr
 
     # Trader-friendly units.
     return {
