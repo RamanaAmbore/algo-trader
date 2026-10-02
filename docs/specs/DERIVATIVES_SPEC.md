@@ -4,7 +4,7 @@ Single source of truth for options and futures analytics on the `/admin/derivati
 dashboard. Covers symbol parsing, Greeks calculation, payoff curves, and multi-leg
 strategy aggregation.
 
-**Version**: 1.1 — 2026-08-13  
+**Version**: 1.2 — 2026-10-02  
 **Owner**: Platform  
 **Linked files**: `backend/api/routes/options.py` · `backend/api/routes/options_helpers.py` · 
 `backend/api/algo/derivatives.py` · `frontend/src/routes/(algo)/admin/derivatives/+page.svelte` · 
@@ -64,16 +64,51 @@ from symbol-resolution lists. `root_of()` shifts to next-month contract.
 
 **Futures re-pricing**: 1:1 spot relationship. Position LTP = current spot + basis.
 
-**Options re-pricing**: Black-Scholes with live IV calibration. Given position LTP,
-implied vol computed via BFGS/Newton root-finding against BS formula. IV then used
-for Greeks + payoff curves at all points on the range.
+**Options re-pricing**: Black-Scholes (NSE equity/index) or Black-76 (MCX
+commodities — see "Pricing model by underlying" below) with live IV calibration.
+Given position LTP, implied vol computed via **bisection** against the matching
+pricing formula (`implied_vol()` / `implied_vol_76()` in `derivatives.py`,
+80-iteration cap — NOT BFGS/Newton; bisection is robust to weird-priced contracts
+without needing a derivative-based solver). IV then used for Greeks + payoff
+curves at all points on the range.
 
-**Greeks** (Black-Scholes):
-- Delta: rate of change vs underlying spot (scaled by lot_size)
+**Greeks**:
+- Delta: rate of change vs underlying spot
 - Gamma: rate of change of delta
 - Theta: daily time decay (negative for long options, positive for short)
 - Vega: sensitivity to 1% IV move
 - Rho: sensitivity to interest-rate shift (typically small for India)
+
+`qty` in the `/api/options/strategy-analytics` request body arrives **already
+lot-size-scaled** by the frontend (lots × lot_size is applied at the request
+boundary elsewhere — see `_ticket_validate_input` in `orders_place.py` for the
+analogous order-entry convention). This endpoint does not re-apply `lot_size` to
+Greeks or payoff values.
+
+### Pricing model by underlying
+
+Both models are thin wrappers over one generalized Black-Scholes-Merton core
+(`_gbs_price()` / `_gbs_greeks()` in `derivatives.py`), parameterized by
+cost-of-carry `b`:
+
+| Underlying | Spot basis | `b` | Public functions |
+|---|---|---|---|
+| NSE equity/index | True cash spot | `b = r` | `black_scholes()`, `greeks()`, `implied_vol()` |
+| MCX commodity | Matching monthly futures contract price (no NSE cash spot exists) | `b = 0` | `black_76()`, `greeks_76()`, `implied_vol_76()` |
+
+MCX underlyings resolve their "spot" via the matching futures contract
+(`is_mcx_underlying()` / `_resolve_spot()` in `options.py`) — feeding a futures
+price into the plain-BS (`b=r`) formulas silently overstates delta/rho (confirmed
+back-test: ATM/14-DTE/σ=16%/r=7% gives BS-on-futures delta ≈0.540 vs. Black-76
+≈0.505). The branch is threaded through `_strategy_build_option_leg()` (and its
+callers `_strategy_resolve_option_ltp` / `_strategy_calibrate_iv` /
+`_strategy_ltp_apply_fallbacks`) via `is_mcx: bool`, set from
+`is_mcx_underlying(underlying)` — the underlying's spot is always
+futures-equivalent for MCX regardless of which `_resolve_spot()` step produced it.
+The aggregate "Greeks (position)" card (`multileg_greeks()`) dispatches per-leg on
+the same flag, stored on each resolved-leg dict. NSE equity/index legs are
+unaffected — `b=r` is numerically identical (to floating-point noise, ~1e-13) to
+the pre-existing standalone implementation.
 
 **Risk-free rate**: `DEFAULT_RISK_FREE = 0.07` (7% p.a., calibrated to Indian
 RBI repo). Canonical source: `backend/api/algo/derivatives.py:DEFAULT_RISK_FREE`.
@@ -97,7 +132,7 @@ Canonical source: `backend/api/algo/derivatives.py:41`.
 | Endpoint | Method | Input | Returns |
 |---|---|---|---|
 | `/api/options/analytics` | GET | `mode={live\|sim\|hypothetical}&symbol=…&qty=…&avg=…&ltp=…` | AnalyticsResponse (Greeks + payoff) |
-| `/api/options/strategy-analytics` | POST | `{mode, legs: [{symbol, qty, side}, ...]}` | StrategyResponse (aggregate Greeks + R:R + payoff) |
+| `/api/options/strategy-analytics` | POST | `{mode, legs: [{symbol, qty}, ...]}` (signed `qty`: + long, − short — `StrategyLeg` has no `side` field) | StrategyResponse (aggregate Greeks + R:R + payoff) |
 | `/api/options/historical` | GET | `symbol=…&days=30&interval=day&exchange=…` | HistoricalResponse (OHLCV bars + multi-broker fallback) |
 
 **Modes**:
@@ -196,13 +231,16 @@ max_loss both zero (flat payoff, rare).
 
 ## 5. Multi-Leg Strategy
 
-**Input shape** (`POST /api/options/strategy-analytics`):
+**Input shape** (`POST /api/options/strategy-analytics`). `StrategyLeg` has no
+`side` field — signed `qty` is the one true canonical shape (`+` long, `−` short);
+a client sending `side: "long"|"short"` instead gets that field silently dropped
+by msgspec and every Greek sign-inverted for that leg:
 ```json
 {
   "mode": "live|sim|hypothetical",
   "legs": [
-    {"symbol": "RELIANCE2542428000CE", "qty": 100, "side": "long"},
-    {"symbol": "RELIANCE2542428000PE", "qty": 100, "side": "short"},
+    {"symbol": "RELIANCE2542428000CE", "qty": 100},
+    {"symbol": "RELIANCE2542428000PE", "qty": -100},
     ...
   ]
 }
@@ -210,7 +248,14 @@ max_loss both zero (flat payoff, rare).
 
 **Aggregation logic**:
 1. Parse each symbol → get underlying + expiry
-2. Validate all legs same underlying + expiry (multi-expiry strategies not yet supported)
+2. Validate all legs share the same **underlying root** (`_strategy_collect_leg_metadata`
+   raises 400 on mixed roots). Expiries are collected into a set but **not currently
+   validated** — mixed-expiry legs on the same underlying are accepted, not rejected.
+   Each leg prices against its own `T_years` (per-leg time-to-expiry); the response's
+   single display `expiry`/`days_to_expiry` uses `min(option_expiries)` (or
+   `min(all_expiries)` for a futures-only basket) — see `_strategy_option_expiry_set()`.
+   True N-expiry payoff-grid support (vs. today's shared-curve approximation) remains
+   future roadmap.
 3. Resolve LTPs for each leg via the resolution chain
 4. Compute individual payoff curves (spot-independent, cached)
 5. Sum payoffs point-by-point
@@ -244,9 +289,12 @@ grids use this for options rows.
 quotes to use (operator pin > priority ASC > insertion order). Centralized in one
 place so all options analytics honor the same resolution.
 
-**Symbols with no LTP**: Contribute 0 to the aggregate Greeks (under-estimate safer
-than refusing compute). Payoff curves use relative spot changes; missing LTPs only
-affect Greeks scale + expected value calibration.
+**Symbols with no LTP**: NOT silently dropped to 0. `_strategy_ltp_apply_fallbacks()`
+(`options.py`) chains: operator-supplied `avg_cost` → a Black-Scholes/Black-76
+estimate priced at `DEFAULT_IV` (0.15) → `HTTPException(400)` if even that estimate
+comes back ≤ 0 (degenerate inputs — e.g. spot or strike ≤ 0). A leg with no usable
+price never reaches the aggregate; the request fails outright with a message naming
+the offending symbol and instructing the caller to pass `ltp` or `avg_cost`.
 
 ---
 
@@ -411,8 +459,11 @@ amber must be on the container to extend across the gap areas. **Result:** Singl
 implementation paths, identical visual output.
 
 ### Far-OTM options (BS instability)
-- Black-Scholes can oscillate when intrinsic ≈ 0 and theta → 0
-- Mitigated by clamping IV to [0.05, 2.0] and limiting Newton iterations
+- Black-Scholes/Black-76 can oscillate when intrinsic ≈ 0 and theta → 0
+- Mitigated by the bisection IV solver's actual bracket `[0.0001, 5.0]` (NOT
+  `[0.05, 2.0]`) with an 80-iteration cap (`implied_vol()` / `implied_vol_76()` in
+  `derivatives.py`) — falls back to `DEFAULT_IV` when price is outside the bracket
+  or the contract is all-intrinsic (undefined vol)
 - Far-OTM payoff curves still render correctly (intrinsic-only calculation)
 
 ### Missing expiry date (symbol parse fail)
@@ -421,8 +472,12 @@ implementation paths, identical visual output.
 - Frontend symbol typeahead prevents submission of invalid symbols
 
 ### Multi-leg with mixed expiries
-- Currently NOT supported (validation checks all same expiry + raises 400)
-- Future roadmap: support N-expiry baskets (compute payoff grid, not curve)
+- Currently accepted, not rejected — validation only checks all legs share the
+  same **underlying root** (`_strategy_collect_leg_metadata` raises 400 on mixed
+  roots), not the same expiry. See §5's Aggregation logic for the actual per-leg
+  `T_years` + shared-display-expiry behavior.
+- Future roadmap: a true N-expiry payoff **grid** (vs. today's shared-curve
+  approximation using `min(option_expiries)` for display)
 
 ### No market data available (broker offline)
 - All legs fall back to average cost via LTP chain
@@ -439,15 +494,25 @@ implementation paths, identical visual output.
 
 ### Backend — covered
 
-- `test_parse_tradingsymbol.py` — round-trip symbol → dict → symbol
-- `test_black_scholes.py` — BS Greeks match known values (Bloomberg, CME calibration)
-- `test_payoff_curve.py` — intrinsic + theta, single-leg + multi-leg
-- `test_strategy_analytics.py` — aggregate Greeks via linear addition
-- `test_rr_ratio.py` — R:R computation, edge cases (0 profit, 0 loss)
+- `backend/tests/test_derivatives_vec.py` — reference-value Greeks (delta, gamma,
+  theta, vega, rho) for BOTH the cash-spot BS path (`greeks()`, `b=r`) and the
+  Black-76 futures path (`greeks_76()`, `b=0`), tight tolerance; short-position
+  sign flip (`multileg_greeks` qty=-1 exactly negates qty=+1); put-call delta
+  parity; payoff-curve intrinsic + theta (single-leg + multi-leg, iron condor
+  shape); vectorized-vs-scalar BS equivalence; perf budgets for curve/EV/
+  intermediate-curve computation
+- `backend/tests/test_strategy_analytics_helpers.py` +
+  `test_strategy_analytics_cache.py` — aggregate Greeks via linear addition,
+  LTP/IV fallback chains, leg-curve cache behavior
+- `backend/tests/test_options_leg_curve_cache.py` — R:R computation (edge cases:
+  0 profit, 0 loss), symbol-parse round-trip coverage
 
 ### Backend — gaps
 
-- Multi-expiry basket analytics (currently blocked validation)
+- Dedicated standalone `parse_tradingsymbol()` round-trip test file (currently
+  only indirectly exercised via the files above)
+- Multi-expiry basket analytics beyond the existing shared-curve approximation
+  (see §9 — currently accepted, not validated; no dedicated N-expiry-grid test)
 - IV calibration convergence vs market IV (implied vol finder accuracy)
 - EV integration accuracy (trapezoidal vs numerical ODE solver)
 - Historical OHLCV multi-broker fallback (Kite → Dhan order)
@@ -469,5 +534,6 @@ implementation paths, identical visual output.
 
 | Date | Change |
 |---|---|
+| 2026-10-02 | v1.2 correct drift from actual code: IV solver is bisection (not BFGS/Newton), actual bracket `[0.0001, 5.0]`/80-iter cap (not `[0.05, 2.0]`), `qty` arrives pre-lot-scaled, mixed-expiry legs are accepted-not-rejected, "no LTP" fails the request rather than contributing 0, `side` field removed from request examples (signed `qty` is canonical), stale test-file references replaced with real ones. Added "Pricing model by underlying" documenting the new Black-76 branch for MCX commodities (`black_76()`/`greeks_76()`/`implied_vol_76()`, generalized cost-of-carry `b` core shared with plain BS). |
 | 2026-08-13 | v1.1 add Underlying Picker (6 tiers: options/futures/holdings/pinned/watchlist/popular) + Data Loading (positions fallback to pulsePositionsStore) |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
