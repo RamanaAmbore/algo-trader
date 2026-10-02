@@ -565,63 +565,63 @@
         fetchOrders(),
         fetchAlgoOrdersRecent(100, 'all'),
       ]);
-      // Broker-fetch-failure guard (2026-10 fix) — a rejected brokerResp
-      // must NOT be silently treated as "the broker book is empty" the
-      // same way orderFillPoller.js already guards its own merge (see
-      // that file's header comment). Without this, a transient broker
-      // fetch failure made brokerIds empty below, so EVERY algo-only row
-      // (including ones that mirror a broker order the detector has
-      // already seen COMPLETE via the broker channel) leaked into
-      // `merged` unfiltered. If that algo row's own .status field still
-      // lagged behind the broker's real-time COMPLETE (a normal
-      // transient window before postback/reconcile catches the algo
-      // row up), `noteOrderPollFills` would downgrade that order_id's
-      // recorded status in its shared _lastStatus map — "unseeing" a
-      // fill that was already observed. The NEXT good poll (broker
-      // fetch succeeds again, same order still COMPLETE) then looks
-      // like a brand-new OPEN->COMPLETE transition and spuriously
-      // refires a books refresh. Skipping the detector feed (and the
-      // per-row attach-toast scan, same exposure) on a failed broker
-      // fetch — while still painting `orderRows` from whatever algo-only
-      // data is available — closes this without blocking the rest of
-      // the tick.
-      const brokerOk = brokerResp.status === 'fulfilled';
-      const brokerRows = (brokerOk && Array.isArray(brokerResp.value?.rows))
-        ? brokerResp.value.rows
-        : [];
-      const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
-        ? algoResp.value
-        : [];
-      // Dedup: keep every broker row by order_id; only include algo
-      // rows whose order_id isn't already in the broker set.
-      const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
-      const algoOnly  = algoRows.filter(o => {
-        const oid = String(o?.order_id || o?.id || '');
-        return !brokerIds.has(oid);
-      });
-      // Newest first — broker orders carry order_timestamp; algo rows
-      // carry created_at. Date.parse falls back to 0 on bad strings so
-      // empty/null timestamps land at the bottom.
-      const merged = [...brokerRows, ...algoOnly];
-      merged.sort((a, b) => {
-        const ta = Date.parse(a.order_timestamp || a.created_at || '') || 0;
-        const tb = Date.parse(b.order_timestamp || b.created_at || '') || 0;
-        return tb - ta;
-      });
-      orderRows = merged;
-      if (brokerOk) {
+      // Broker-fetch-failure guard (2026-10 fix) — mirrors OrderBook.svelte's
+      // own "cancelled orders showing as OPEN again" audit fix for this
+      // EXACT merge shape (see that file's _loadOrders): a rejected
+      // brokerResp must NOT be silently treated as "the broker book is
+      // empty". Without this, a transient broker fetch failure made
+      // brokerIds empty below, so EVERY algo-only row (including ones
+      // that mirror a broker order the detector has already seen
+      // COMPLETE via the broker channel) leaked into `merged` unfiltered.
+      // If that algo row's own .status field still lagged behind the
+      // broker's real-time COMPLETE (a normal transient window before
+      // postback/reconcile catches the algo row up), this view would
+      // render that order back as OPEN purely because the broker fetch
+      // (not the order) failed, AND `noteOrderPollFills` would downgrade
+      // that order_id's recorded status in its shared _lastStatus map —
+      // "unseeing" a fill that was already observed. The NEXT good poll
+      // (broker fetch succeeds again, same order still COMPLETE) then
+      // looks like a brand-new OPEN->COMPLETE transition and spuriously
+      // refires a books refresh. Freezing `orderRows` (and skipping the
+      // detector + attach-toast scan) to the last-known-good merged view
+      // on a broker-fetch failure — rather than recomputing from partial
+      // data — matches this app's staleness-freeze convention elsewhere
+      // (positions/holdings/NAV) AND OrderBook.svelte's own precedent for
+      // this identical code path.
+      if (brokerResp.status === 'fulfilled') {
+        const brokerRows = Array.isArray(brokerResp.value?.rows) ? brokerResp.value.rows : [];
+        const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
+          ? algoResp.value
+          : [];
+        // Dedup: keep every broker row by order_id; only include algo
+        // rows whose order_id isn't already in the broker set.
+        const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
+        const algoOnly  = algoRows.filter(o => {
+          const oid = String(o?.order_id || o?.id || '');
+          return !brokerIds.has(oid);
+        });
+        // Newest first — broker orders carry order_timestamp; algo rows
+        // carry created_at. Date.parse falls back to 0 on bad strings so
+        // empty/null timestamps land at the bottom.
+        const merged = [...brokerRows, ...algoOnly];
+        merged.sort((a, b) => {
+          const ta = Date.parse(a.order_timestamp || a.created_at || '') || 0;
+          const tb = Date.parse(b.order_timestamp || b.created_at || '') || 0;
+          return tb - ta;
+        });
+        orderRows = merged;
         // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
         // c90a9d04) — same wiring as OrderBook.svelte's _loadOrders. See
         // orderFillDetector.js header for the full channel inventory this
         // closes (live broker-order-book TTL refresh, 5-min
         // open_order_watchdog sweep, admin reconcile — none broadcast a
-        // WS event today). Gated on brokerOk — see guard comment above.
+        // WS event today).
         noteOrderPollFills(merged);
         // Trading-critical "template did not attach" toast (2026-09-30) —
         // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
         // merged rows regardless of the currently-selected order-mode
         // chip. See templateAttachToast.js for the live-only gate +
-        // time-based debounce. Gated on brokerOk for the same reason.
+        // time-based debounce.
         for (const o of merged) {
           if (noteAttachObservation(o)) {
             const oid = o?.id ?? o?.order_id;
