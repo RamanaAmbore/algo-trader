@@ -565,7 +565,28 @@
         fetchOrders(),
         fetchAlgoOrdersRecent(100, 'all'),
       ]);
-      const brokerRows = (brokerResp.status === 'fulfilled' && Array.isArray(brokerResp.value?.rows))
+      // Broker-fetch-failure guard (2026-10 fix) — a rejected brokerResp
+      // must NOT be silently treated as "the broker book is empty" the
+      // same way orderFillPoller.js already guards its own merge (see
+      // that file's header comment). Without this, a transient broker
+      // fetch failure made brokerIds empty below, so EVERY algo-only row
+      // (including ones that mirror a broker order the detector has
+      // already seen COMPLETE via the broker channel) leaked into
+      // `merged` unfiltered. If that algo row's own .status field still
+      // lagged behind the broker's real-time COMPLETE (a normal
+      // transient window before postback/reconcile catches the algo
+      // row up), `noteOrderPollFills` would downgrade that order_id's
+      // recorded status in its shared _lastStatus map — "unseeing" a
+      // fill that was already observed. The NEXT good poll (broker
+      // fetch succeeds again, same order still COMPLETE) then looks
+      // like a brand-new OPEN->COMPLETE transition and spuriously
+      // refires a books refresh. Skipping the detector feed (and the
+      // per-row attach-toast scan, same exposure) on a failed broker
+      // fetch — while still painting `orderRows` from whatever algo-only
+      // data is available — closes this without blocking the rest of
+      // the tick.
+      const brokerOk = brokerResp.status === 'fulfilled';
+      const brokerRows = (brokerOk && Array.isArray(brokerResp.value?.rows))
         ? brokerResp.value.rows
         : [];
       const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
@@ -588,22 +609,24 @@
         return tb - ta;
       });
       orderRows = merged;
-      // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
-      // c90a9d04) — same wiring as OrderBook.svelte's _loadOrders. See
-      // orderFillDetector.js header for the full channel inventory this
-      // closes (live broker-order-book TTL refresh, 5-min
-      // open_order_watchdog sweep, admin reconcile — none broadcast a
-      // WS event today).
-      noteOrderPollFills(merged);
-      // Trading-critical "template did not attach" toast (2026-09-30) —
-      // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
-      // merged rows regardless of the currently-selected order-mode
-      // chip. See templateAttachToast.js for the live-only gate +
-      // time-based debounce.
-      for (const o of merged) {
-        if (noteAttachObservation(o)) {
-          const oid = o?.id ?? o?.order_id;
-          toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+      if (brokerOk) {
+        // Channel-agnostic fresh-books trigger (2026-09-30 follow-up to
+        // c90a9d04) — same wiring as OrderBook.svelte's _loadOrders. See
+        // orderFillDetector.js header for the full channel inventory this
+        // closes (live broker-order-book TTL refresh, 5-min
+        // open_order_watchdog sweep, admin reconcile — none broadcast a
+        // WS event today). Gated on brokerOk — see guard comment above.
+        noteOrderPollFills(merged);
+        // Trading-critical "template did not attach" toast (2026-09-30) —
+        // same wiring as OrderBook.svelte's _loadOrders; evaluated on the
+        // merged rows regardless of the currently-selected order-mode
+        // chip. See templateAttachToast.js for the live-only gate +
+        // time-based debounce. Gated on brokerOk for the same reason.
+        for (const o of merged) {
+          if (noteAttachObservation(o)) {
+            const oid = o?.id ?? o?.order_id;
+            toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+          }
         }
       }
     } catch (_) { /* keep last-good */ }

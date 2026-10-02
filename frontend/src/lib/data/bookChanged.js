@@ -76,6 +76,19 @@ export const lastBookEvent = writable(/** @type {null|{account:string, exchange:
  *  and symbol that just filled so consumers can scope their re-fetch. */
 export const lastFillEvent = writable(/** @type {null|{account:string, symbol:string, ts:number}} */ (null));
 
+// Dev/test-only mirror of the bookChanged counter onto window — same
+// dev-host-gated precedent as `(algo)/+layout.svelte`'s
+// `window.__stores.tickBus` exposure. Lets Playwright specs assert on
+// the exact bump count without depending on a page-specific downstream
+// side effect (e.g. LogPanel's noteOrderPollFills guard, Fix 4 2026-10).
+// No-op / no window reference in the prod bundle outside these hosts.
+if (typeof window !== 'undefined' &&
+    (window.location.hostname === 'dev.ramboq.com' ||
+     window.location.hostname === 'localhost' ||
+     window.location.hostname === '127.0.0.1')) {
+  bookChanged.subscribe((n) => { /** @type {any} */ (window).__bookChangedCount = n; });
+}
+
 let _unsub = null;
 let _started = false;
 /** Coalesce bursts — multiple postbacks landing within 200ms
