@@ -77,10 +77,16 @@
   /** @type {(() => void) | null} */
   let _pulseUnsub = null;
   // Poll-pulse — slow slate halo fired on every background broker-data poll
-  // (positions, holdings, funds, margins). Fires regardless of market hours
-  // so the operator can see that non-ticker data is still refreshing when
-  // both markets are closed. Distinct from the fast sky-blue tick-pulse:
-  // 1.5s duration, slate palette, no SVG rotation (icon stays still).
+  // (positions, holdings, funds, margins). Fires on every live-trading-hours
+  // book-poller cycle, plus the narrow premarket/post-close snapshot-write
+  // grace windows (see isBookSnapshotGraceWindow in marketHours.js) — NOT
+  // on every tick through the fully-closed span, since the central poller
+  // (marketDataStores.svelte.js:_tickBookPollers) skips the fetch entirely
+  // there (2026-10, "stop pointless polling through the closed window" fix).
+  // Going quiet for hours overnight/over a weekend is correct, not a bug:
+  // `daily_book` genuinely cannot change outside those windows, so there is
+  // nothing to signal. Distinct from the fast sky-blue tick-pulse: 1.5s
+  // duration, slate palette, no SVG rotation (icon stays still).
   let _pollPulseClass = $state(/** @type {'' | 'rf-poll-a' | 'rf-poll-b'} */ (''));
 
   // Post-hibernation refire state — true while _exitHibernation() is running

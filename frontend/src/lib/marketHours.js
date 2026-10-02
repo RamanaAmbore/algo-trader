@@ -99,6 +99,48 @@ export function isMarketHoliday() {
   return !!(_serverStatus && _serverStatus.is_holiday);
 }
 
+// ── Book-poller snapshot grace windows ──────────────────────────────────
+//
+// Consumed by `_tickBookPollers()` in
+// `frontend/src/lib/data/marketDataStores.svelte.js`. Two narrow windows
+// where the backend's `daily_book` genuinely changes even though
+// isNseOpen()/isMcxOpen() are both false, per CLAUDE.md's "Market daily
+// window" section:
+//   - 08:00 IST: fix_daily_book_prev_close() resets prev_close for the new
+//     session (the only moment prev_close changes outside a close
+//     snapshot). Window runs until the earlier of NSE/MCX open (MCX,
+//     09:00) — once either segment is open, the live isNseOpen()/
+//     isMcxOpen() path already fetches, so the grace window only needs to
+//     bridge 08:00→open.
+//   - MCX close (23:30) + 15 min: the MCX settlement snapshot write lands
+//     at 23:45; +5min buffer absorbs write/cron jitter. The NSE-only
+//     15:45 close snapshot needs no separate window of its own — MCX is
+//     still open at 15:45 (closes 23:30), so the live isMcxOpen() path
+//     already covers that fetch.
+// Outside these two windows the fully-closed span (overnight, weekends,
+// holiday clusters) is genuinely static — `daily_book` cannot change
+// again until the next of these two writes — so there is nothing worth
+// fetching.
+const _BOOK_PREMARKET_GRACE_START_MIN = 8 * 60;        // 08:00
+const _BOOK_POSTCLOSE_GRACE_END_MIN   = 23 * 60 + 50;  // 23:50 (23:45 write + 5min buffer)
+
+/**
+ * True only inside the premarket (08:00→market open) or post-MCX-close
+ * (23:30→23:50) snapshot-write windows described above. Book-poller
+ * specific — NOT a general "market about to open" signal; do not reuse
+ * for other polling decisions. Weekday + holiday-aware via
+ * isMarketHoliday() (conservative default: not-a-holiday until the first
+ * server poll lands, matching the rest of this module).
+ */
+export function isBookSnapshotGraceWindow(/** @type {Date} */ now = new Date()) {
+  if (isMarketHoliday()) return false;
+  const { weekday, minute } = _istNow(now);
+  if (weekday === 0 || weekday === 6) return false;
+  if (minute >= _BOOK_PREMARKET_GRACE_START_MIN && minute < ANY_OPEN_MIN) return true;
+  if (minute >= ANY_CLOSE_MIN && minute < _BOOK_POSTCLOSE_GRACE_END_MIN) return true;
+  return false;
+}
+
 /**
  * One-shot fetch of /api/market/status. Stores.js wires this into a
  * 5-min visibleInterval. Resolves silently on failure so a backend

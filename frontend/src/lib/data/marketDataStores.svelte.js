@@ -41,7 +41,7 @@ import { mergeSymbolBatch } from './symbolStore.svelte.js';
 import { cachedDelete } from './persistentCache.js';
 import { browser } from '$app/environment';
 import { marketAwareInterval, visibleInterval, lastRefreshAt } from '$lib/stores';
-import { isNseOpen, isMcxOpen } from '$lib/marketHours';
+import { isNseOpen, isMcxOpen, isBookSnapshotGraceWindow } from '$lib/marketHours';
 // Hardening: dev-only runtime shape assertions on backend responses.
 // Vite dead-code-eliminates the assertion body in production so the
 // operator's browser pays zero cost.
@@ -733,10 +733,19 @@ let _bookForegroundMs = 5_000;
 let _bookLiveMs   = 5_000;
 let _bookClosedMs = 30 * 60 * 1_000;
 
-async function _tickBookPollers() {
-  // Promise.allSettled so a single broker failure (e.g. /api/funds
-  // 502 mid-session) doesn't stall the next tick's positions refresh.
-  // The stores themselves keep last-good value on error — no UI flash.
+// Timestamp (ms) of the book poller's last successful fetch made while
+// NOT live-trading (a grace-window fetch — see isBookSnapshotGraceWindow).
+// Throttles grace-window fetches to `_bookClosedMs` apart even though the
+// outer timer itself keeps ticking at live cadence (the tick-rate check is
+// free; only the actual network round-trip is throttled). Reset to 0 on
+// every genuinely live fetch so a fresh closed-window throttle window
+// starts the next time the market closes.
+let _lastGraceFetchAt = 0;
+
+// Promise.allSettled so a single broker failure (e.g. /api/funds 502
+// mid-session) doesn't stall the next tick's positions refresh. The
+// stores themselves keep last-good value on error — no UI flash.
+async function _loadBookOnce() {
   try {
     await Promise.allSettled([
       positionsStore.load(),
@@ -749,21 +758,36 @@ async function _tickBookPollers() {
     // book-poller cadence (default 5 s) rather than its own 30 s interval.
     _bookPollerTick++;
     lastRefreshAt.set(Date.now());
-    // Slow cadence ONLY when the whole market is closed (no NSE, no MCX).
-    // BUG FIX (2026-09-30, PositionStrip heartbeat investigation): this used
-    // to read `_holdingsSnapshotAt != null` (set whenever /api/holdings
-    // served a daily_book snapshot) as a "market closed" proxy. But the
-    // holdings route gates on NSE hours ONLY (segment_exchanges=["NSE"] in
-    // holdings.py) — so that flag is truthy for the entire 15:30-23:30 IST
-    // window every trading day, whenever NSE has closed but MCX is still
-    // open. During that ~8h daily window the poller was silently collapsing
-    // from 5s to 30min, starving _bookPollerTick / _pollCycleStamp and (as
-    // a direct consequence) PositionStrip's heartbeat pulse — plus leaving
-    // live positions/margin/cash stale for up to 30min at a time while MCX
-    // was actively trading. Now checks BOTH segments directly.
-    const _wantMs = (isNseOpen() || isMcxOpen()) ? _bookLiveMs : _bookClosedMs;
-    if (_wantMs !== _bookForegroundMs) setBookPollerInterval(_wantMs);
+    _lastGraceFetchAt = (isNseOpen() || isMcxOpen()) ? 0 : Date.now();
+    // Keep the running timer's cadence reconciled with the `polling.
+    // book_live_ms` setting (settings change takes effect on the next
+    // landed fetch). No more open/closed branch here — the closed-window
+    // cadence decision is made by the fetch-skip logic in
+    // _tickBookPollers below, not by re-arming the timer itself.
+    setBookPollerInterval(_bookLiveMs);
   } catch (_) { /* defensive — allSettled should never throw, but guard */ }
+}
+
+async function _tickBookPollers() {
+  // Fully closed (no NSE, no MCX) AND outside the two narrow snapshot-
+  // write grace windows (08:00 daily reset / MCX 23:45 settlement write,
+  // see isBookSnapshotGraceWindow's doc) — nothing in `daily_book` can
+  // change until one of those windows opens, so skip the fetch entirely.
+  // isNseOpen/isMcxOpen/isBookSnapshotGraceWindow are free, synchronous,
+  // already-holiday-aware reads of the `_serverStatus` cache kept warm by
+  // the existing, separate startMarketStatusPoller() (stores.js, 5-min
+  // cadence) — no network call either way. _bookPollerTick / lastRefreshAt
+  // deliberately do NOT advance on a skipped tick — the data hasn't
+  // changed, so there is nothing new to signal.
+  if (!isNseOpen() && !isMcxOpen()) {
+    if (!isBookSnapshotGraceWindow()) return;
+    // Inside a grace window: throttle the actual fetch to `_bookClosedMs`
+    // apart rather than firing on every live-cadence tick — the timer
+    // itself keeps running at live cadence (cheap, no network); only the
+    // round-trip is throttled.
+    if (Date.now() - _lastGraceFetchAt < _bookClosedMs) return;
+  }
+  await _loadBookOnce();
 }
 
 /**
@@ -782,17 +806,18 @@ export function startBookPollers(intervalMs) {
     _bookForegroundMs = /** @type {number} */ (intervalMs);
     _bookLiveMs = /** @type {number} */ (intervalMs);
   }
-  // Kick once immediately so the first paint after a cold load doesn't
-  // wait `intervalMs` for the initial fetch. createDataStore already
-  // dedups against any page-mounted `.load()` racing this on the same
-  // tick.
-  _tickBookPollers();
-  // visibleInterval fires regardless of market hours so the book poller
-  // stays alive during premarket / closed hours. Stores return snapshot
-  // data cheaply (no broker calls when closed). hiddenMs throttle
-  // applies only when the tab is backgrounded (hibernation). The
-  // market-hours gate was removed because NavStrip values must stay
-  // current during premarket (operator watching the strip before open).
+  // Kick once immediately, UNGATED, so the first paint after a cold load
+  // (including a page load during the fully-closed window — overnight, a
+  // weekend, a holiday cluster) always gets the last-known-good snapshot
+  // rather than nothing. This is a single one-time fetch per mount, not a
+  // recurring one, so it doesn't reintroduce the pointless-polling problem
+  // this change fixes. createDataStore already dedups against any
+  // page-mounted `.load()` racing this on the same tick.
+  _loadBookOnce();
+  // visibleInterval fires regardless of market hours — it's the RECURRING
+  // tick that _tickBookPollers gates (skip fetch when fully closed and
+  // outside a snapshot-write grace window, see above). hiddenMs throttle
+  // applies only when the tab is backgrounded (hibernation).
   _bookPollerTeardown = visibleInterval(_tickBookPollers, _bookForegroundMs, `throttle:${_BOOK_HIDDEN_MS}`);
 }
 
