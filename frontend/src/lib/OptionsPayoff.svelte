@@ -40,7 +40,6 @@
    *   showDraftInPayoff?: boolean | null,
    *   onToggleDraft?: (() => void) | null,
    *   legSignature?: string,
-   *   refreshing?:  boolean,
    * }} */
   let {
     payoff = [],
@@ -129,12 +128,6 @@
     // — falls back to the old array-identity pulse behaviour so existing
     // callers that don't wire this prop (SimulatorPanel) keep working.
     legSignature = '',
-    // "A routine refetch is currently in flight" (B1 fix) — drives ONLY
-    // the small spinner in the LTP/CHG% stat rows, never the full-chart
-    // placeholder (that's still `loading`). Generation-guarded by the
-    // caller (B4) so it can't get stuck showing while a newer fetch has
-    // already landed.
-    refreshing = false,
   } = $props();
 
   // Days until the anchor contract expires — used to decide whether
@@ -889,14 +882,6 @@
          compatible without re-wiring; the prop just isn't surfaced as
          a chart-overlay control any more. -->
 
-    <!-- Refresh spinner — REVERSED (2026-09-29): an earlier operator ask
-         deliberately kept this OUT of .payoff-stats, anchored to the
-         chart's own top-right corner via .payoff-loading-ring-corner
-         (absolute position, its own z-index) so it never competed for a
-         grid slot inside the overlay. Moved inline next to the LTP value
-         below instead, so "chart is refreshing" reads next to the number
-         it's refreshing, not in a disconnected corner. -->
-
     <!-- Top-left stat overlay — the chart's at-a-glance numerics so the
          operator doesn't have to glance at the Greeks / Risk cards just
          to read TDAY P&L or max profit. Pointer-events: none so the
@@ -918,35 +903,7 @@
                ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
                : "Current spot price for the underlying — anchor for every other stat in this overlay"}>
           <span class="ps-k">LTP</span>
-          <!-- .ps-row is display:contents, so its children become direct
-               grid items of .payoff-stats (grid-template-columns: max-content
-               max-content). A bare third child here would land in column 1
-               of the NEXT row and shift every row below it. Instead this
-               wrapper stays a single column-2 grid item — spinner + value
-               flow inside it — so the 2-column grid shape is preserved.
-               Spinner ordered BEFORE the value (2026-09-30, operator:
-               "rotating circle in payoff... after LTP label... in a fixed
-               place before ltp value" / "ltp value should not move while
-               animating") — the reserved-width slot (fixed width whether
-               `.on` or not) means the value's own position never shifts
-               when `refreshing` toggles; flex-end justification keeps the
-               whole [spinner][value] group hugging the column's right
-               edge, so the spinner sits immediately after the LTP label
-               with no gap. -->
-          <span class="ps-v-wrap">
-            <!-- Reserved-width slot (10px, matches the SVG) — always
-                 mounted so toggling `refreshing` only flips visibility,
-                 never the LTP row's width within the grid. -->
-            <span class="payoff-loading-ring-slot" class:on={refreshing} aria-hidden="true">
-              <svg class="payoff-loading-ring" viewBox="0 0 16 16" width="10" height="10" role="status" aria-label="Refreshing">
-                <circle cx="8" cy="8" r="5.5"
-                  fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round"
-                  stroke-dasharray="9 30" />
-              </svg>
-            </span>
-            <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
-          </span>
+          <span class={'ps-v ' + ltpDayClass(spotPct) + ' ' + _spotFlash.classOf('spot')}>{fmtSpot(spot)}</span>
         </div>
         {#if spotPct != null}
           <div class="ps-row" title="Spot % change from previous session close">
@@ -1833,54 +1790,6 @@
     font-size: 10px;
     color: var(--algo-slate);
     font-variant-numeric: tabular-nums;
-  }
-  /* Spinner + value wrapper for the LTP row — stays a single column-2
-     grid item (see the markup comment above) so the value's own
-     right-alignment survives and the spinner never paints over the
-     _spotFlash tick-flash background applied to .ps-v itself.
-     justify-content: flex-end keeps [spinner][value] hugging the
-     right edge as one group regardless of DOM order. */
-  .ps-v-wrap {
-    display: inline-flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 0.2rem;
-  }
-  /* B1 fix — small "a routine refetch is in flight" spinner. Reuses
-     the rbq-spin keyframe (app.css) — same pattern as CardHeader's
-     .ch-spin loading ring.
-     MOVED (2026-09-29) — was rendered {#if refreshing} in its own
-     absolutely-positioned top-right corner (.payoff-loading-ring-corner,
-     removed), per an earlier operator ask to keep it OUT of .payoff-stats.
-     Reversed: now sits inline right after the LTP value so the "chart is
-     refreshing" indicator reads next to the number it refreshes. Always
-     mounted in a reserved-width slot (.payoff-loading-ring-slot) so
-     toggling `refreshing` never changes the LTP row's width. */
-  .payoff-loading-ring {
-    display: inline-block;
-    color: var(--c-action, #fbbf24);
-  }
-  .payoff-loading-ring-slot {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    width: 10px;
-    height: 10px;
-    flex-shrink: 0;
-    visibility: hidden;
-    opacity: 0;
-  }
-  .payoff-loading-ring-slot.on {
-    visibility: visible;
-    opacity: 1;
-  }
-  /* Animation lives on the .on state only — an idle (non-refreshing)
-     chart must not run an infinite-spin keyframe forever. */
-  .payoff-loading-ring-slot.on .payoff-loading-ring {
-    animation: rbq-spin 0.9s linear infinite;
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .payoff-loading-ring-slot.on .payoff-loading-ring { animation: none; }
   }
   .ps-v.ps-spot { color: #7dd3fc; }
   /* Day-direction tint on the SPOT readout — green when above

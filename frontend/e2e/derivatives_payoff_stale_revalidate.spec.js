@@ -46,21 +46,30 @@
  *   5. Immediately after switch (before fetch completes):
  *      - Assert payoff chart container is visible
  *      - Assert SVG path elements still present (old curve persists)
- *      - Assert loading indicator is visible (spinning spinner at .payoff-loading-ring)
- *   6. Wait for loading indicator to disappear (fetch complete)
+ *   6. Wait for the new strategy fetch to complete
  *   7. Assert payoff chart still has SVG path elements (new curve rendered)
+ *
+ * Note (2026-10): the payoff overlay's rotating-circle loading spinner
+ * (`.payoff-loading-ring`) was removed entirely per operator request — the
+ * chart no longer shows ANY loading-overlay indicator during a revalidate
+ * fetch; the old curve simply persists in place until the new one lands
+ * (or the cold-start "Resolving spot…" text placeholder shows, for a
+ * genuinely never-visited root). `isLoadingVisible()` below always returns
+ * false now; kept as a no-op probe so the "spinner was never visible —
+ * fetch was very fast" branch (already handled gracefully) is exercised
+ * unconditionally rather than deleting a working, if now-trivial, code path.
  *
  * Five quality dimensions:
  *  1. SSOT     — single strategy data source; stale preservation happens at
  *                the same point where loading flag is toggled
- *  2. Perf     — old curve remains in DOM (no re-layout); only loading spinner
- *                is new overlay; new fetch replaces in-place
+ *  2. Perf     — old curve remains in DOM (no re-layout); new fetch
+ *                replaces in-place, no loading overlay to paint/unpaint
  *  3. Stale    — grep confirms loading={loading} passed to OptionsPayoff and
  *                strategy is preserved during loading=true window
  *  4. Reusable — CardHeader + OptionsPayoff loading pattern applies across
  *                all pages using derivable strategy data
- *  5. UX       — smooth transition: old chart → spinner overlay → new chart
- *                (no blank flash, no double-render glitch)
+ *  5. UX       — smooth transition: old chart → new chart in place
+ *                (no blank flash, no double-render glitch, no spinner)
  *
  * Run:
  *   cd frontend && npx playwright test e2e/derivatives_payoff_stale_revalidate.spec.js
@@ -172,7 +181,12 @@ async function getPayoffPathCount(page) {
 }
 
 /**
- * Check if the loading spinner is visible on the payoff chart.
+ * Check if the loading spinner is visible on the payoff chart. The
+ * spinner was removed entirely 2026-10 (operator: "completely removed" —
+ * see derivatives_payoff_overlay_flash.spec.js) — this always returns
+ * false now. Kept so the caller's "spinner never appeared — fetch was
+ * very fast" branch (always true today) stays exercised rather than
+ * special-cased away.
  */
 async function isLoadingVisible(page) {
   const spinner = page.locator('.payoff-loading-ring');
@@ -181,7 +195,7 @@ async function isLoadingVisible(page) {
 
 // ── Main test ──────────────────────────────────────────────────────────────
 test.describe('Derivatives payoff — stale-while-revalidate on underlying switch', () => {
-  test('Chart preserves old curve during fetch; shows loading spinner', async ({
+  test('Chart preserves old curve during fetch; no loading spinner (removed 2026-10)', async ({
     page,
   }) => {
     test.setTimeout(180_000);

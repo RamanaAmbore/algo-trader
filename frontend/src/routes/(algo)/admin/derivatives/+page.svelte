@@ -128,25 +128,6 @@
   let _brokerWorstState = $state(/** @type {'green'|'amber'|'red'} */ ('amber'));
   const _unsubBrokerHealth = brokerHealthStore.subscribe(v => { _brokerWorstState = v?.worstState || 'amber'; });
   let loading       = $state(false);
-  // Payoff-chart "rotating-circle spinner, next to the LTP stat-row
-  // value" flag. Originally (B1 fix) set true on EVERY strategy refetch
-  // (first load AND routine 5s polls) so a routine refetch showed
-  // *something* without re-triggering OptionsPayoff's full-chart
-  // placeholder. 2026-10 operator ask repurposed this: OptionsPayoff's
-  // own LTP/CHG% stat-row values already flash on every `spot`/`spotPct`
-  // change (its `_spotFlash` tick-flash instance), so a persistent
-  // spinner on every routine poll was redundant — the flash is now the
-  // sole refresh indicator for those. `_stratRefreshing` now mirrors
-  // `loading`'s own `!strategy` gate exactly (see loadStrategy()), so the
-  // spinner is reserved for the genuine first-load / no-data-yet window.
-  // Still distinct from `loading` itself (drives OptionsPayoff's
-  // "Resolving spot…" full-chart placeholder) and from `_refreshing`
-  // below (RefreshButton's "any of the three page-level loads is in
-  // flight" flag) — kept as a separate variable for that reason, even
-  // though its SET condition is now identical to `loading`'s.
-  // Generation-guarded (B4) the same way `loading` is — see
-  // loadStrategy()'s `finally` block.
-  let _stratRefreshing = $state(false);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
   // never animates when the operator clicks Refresh on an unchanged
@@ -4715,23 +4696,12 @@
     }
 
     const _thisGen = ++_stratGen;
-    // 2026-10 operator ask: repurpose the rotating-circle spinner (passed
-    // to OptionsPayoff as `refreshing`, rendered next to the LTP stat-row
-    // value) so it fires ONLY on a genuine first load — the SAME
-    // `!strategy` gate `loading` already uses — instead of on EVERY
-    // routine 5s refetch. Previously `_stratRefreshing` was set true
-    // unconditionally here (B1 fix's original intent: show *something*
-    // for a routine refetch without re-triggering OptionsPayoff's
-    // full-chart placeholder) — but OptionsPayoff's own LTP/CHG% stat-row
-    // values already flash on every `spot`/`spotPct` change
-    // (OptionsPayoff.svelte's `_spotFlash`, a `createTickFlash()`
-    // instance keyed on `spot`), so a persistent spinner on every poll
-    // was redundant chrome once that flash existed. The flash is now the
-    // SOLE refresh indicator for routine polls; the spinner is reserved
-    // for the "nothing to show yet" cold-start window (`loading` is true
-    // AND OptionsPayoff has no payoff/spot to render at all — see its own
-    // `{:else if loading && (!payoff.length || spot == null)}` branch).
-    if (!strategy) { loading = true; _stratRefreshing = true; }
+    // `loading` gates OptionsPayoff's "Resolving spot…" full-chart
+    // placeholder for the genuine first-load / no-data-yet window (see
+    // its own `{:else if loading && (!payoff.length || spot == null)}`
+    // branch) — unset on every subsequent routine refetch once a
+    // strategy has already loaded once.
+    if (!strategy) { loading = true; }
     // Stamp BEFORE the await (item-6 fix), not after. Stamping post-await
     // only counted (5000ms − request latency) as "elapsed" by the time the
     // next 5s interval tick checked _dueForRefresh, so the effective
@@ -4779,15 +4749,14 @@
       }
     } finally {
       // B4 fix: a superseded (stale-generation) fetch's `finally` must NOT
-      // clear `loading`/`_stratRefreshing` when a NEWER fetch is still in
-      // flight — only the CURRENT generation's own finally may clear them.
-      // Previously `finally` ran unconditionally (even after the early
-      // `return` on a stale-gen catch/success above), so a slow superseded
-      // response could clear `loading` while the real in-flight request
-      // was still running, prematurely dropping the placeholder/spinner.
+      // clear `loading` when a NEWER fetch is still in flight — only the
+      // CURRENT generation's own finally may clear it. Previously
+      // `finally` ran unconditionally (even after the early `return` on
+      // a stale-gen catch/success above), so a slow superseded response
+      // could clear `loading` while the real in-flight request was still
+      // running, prematurely dropping the placeholder.
       if (_thisGen === _stratGen) {
         loading = false;
-        _stratRefreshing = false;
       }
     }
   }
@@ -5651,7 +5620,6 @@
         onToggleDraft={_flipDraft}
         netCost={payoffDisplay?.netCost}
         loading={!payoffDisplay && (loading || _strategyStale)}
-        refreshing={_stratRefreshing}
         legSignature={_legSignature}
         height={320} />
     </div>

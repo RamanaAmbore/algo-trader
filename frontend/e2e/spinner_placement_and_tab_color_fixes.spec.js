@@ -17,6 +17,9 @@
  *      positioned top-right corner into an inline slot right after the
  *      LTP value, wrapped so the 2-column .payoff-stats grid
  *      (.ps-row is display:contents) isn't broken by a bare 3rd child.
+ *      SUPERSEDED 2026-10: the spinner was removed entirely per operator
+ *      request — test #3 below now guards its absence instead of its
+ *      placement. See derivatives_payoff_overlay_flash.spec.js.
  *
  *   4. PerformancePage.svelte — .tabs-row's dead selectors
  *      (button[class*="border-primary"/"text-muted"], which AlgoTabs never
@@ -98,27 +101,23 @@ test.describe('Source-level guards', () => {
   });
 
   // 2026-09-30: operator clarified the spinner belongs AFTER the "LTP"
-  // label but BEFORE the LTP value ("rotating circle in payoff...
-  // after LTP label... in a fixed place before ltp value" / "ltp
-  // value should not move while animating") — reordered from the
-  // original after-value placement.
-  test('3: OptionsPayoff spinner no longer carries the corner-absolute class, renders after LTP label but before the LTP value', () => {
+  // label but BEFORE the LTP value. SUPERSEDED 2026-10: operator asked
+  // for the spinner to be removed ENTIRELY (not repositioned, not
+  // conditionally shown) — see derivatives_payoff_overlay_flash.spec.js
+  // for the current, canonical coverage of the removal. This test now
+  // asserts the opposite of its original intent: the spinner markup/CSS
+  // and the `refreshing` prop that drove it must not exist at all, and
+  // the LTP label/value markup it used to sit between is unaffected.
+  test('3: OptionsPayoff spinner removed entirely (2026-10) — no markup, no CSS, no refreshing prop; LTP label/value unaffected', () => {
     const src = readFileSync(`${ROOT}/src/lib/OptionsPayoff.svelte`, 'utf-8');
-    expect(src, 'old corner-absolute class must not be used in markup')
-      .not.toMatch(/class="payoff-loading-ring payoff-loading-ring-corner"/);
+    expect(src, 'spinner markup/CSS must be gone entirely').not.toMatch(/payoff-loading-ring/);
+    expect(src, 'the now-unused refreshing prop must be gone').not.toMatch(/\brefreshing\b/);
     const ltpLabelIdx = src.indexOf('<span class="ps-k">LTP</span>');
-    const spinnerIdx = src.indexOf('payoff-loading-ring-slot');
     const ltpValueIdx = src.indexOf(`{fmtSpot(spot)}`);
     expect(ltpLabelIdx, 'LTP label span must exist').toBeGreaterThan(-1);
-    expect(spinnerIdx, 'payoff-loading-ring-slot must exist').toBeGreaterThan(-1);
     expect(ltpValueIdx, 'LTP value span must exist').toBeGreaterThan(-1);
-    expect(spinnerIdx, 'spinner must render after the LTP label in source order')
+    expect(ltpValueIdx, 'LTP value must still render shortly after the LTP label')
       .toBeGreaterThan(ltpLabelIdx);
-    expect(spinnerIdx, 'spinner must render before the LTP value in source order')
-      .toBeLessThan(ltpValueIdx);
-    // Reserved-width slot so toggling `refreshing` doesn't resize the LTP row.
-    expect(src).toMatch(/\.payoff-loading-ring-slot\s*\{[\s\S]*?width:\s*10px/);
-    expect(src).toMatch(/\.payoff-loading-ring-slot\.on \.payoff-loading-ring\s*\{[\s\S]*?animation:\s*rbq-spin/);
   });
 
   test('4: PerformancePage tab overrides target .algo-tab, set explicit color, and share the identical hover value', () => {
