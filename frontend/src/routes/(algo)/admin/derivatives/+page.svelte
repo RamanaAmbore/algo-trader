@@ -5784,6 +5784,20 @@
               EV
             </span>
           </div>
+          <!-- Body wrapper — groups header-less content (leg rows +
+               empty-state) into ONE grid item so fullscreen mode can
+               give it a dedicated `1fr` row track and pin TOTAL to a
+               trailing `auto` track below it (ag-Grid "pinned bottom
+               row" idiom — see `.cand-grid`'s fs-card-on override).
+               `grid-template-columns: subgrid` keeps every leg row's
+               own subgrid chain resolving against the SAME outer
+               `.cand-grid` column tracks as before — this wrapper adds
+               a nesting level but does not own or redefine any track
+               sizing itself. Non-fullscreen layout is unaffected: with
+               no explicit `grid-template-rows` override, this wrapper
+               still collapses to a single auto-sized row exactly like
+               the flat row list did pre-wrapper. -->
+          <div class="cand-body-rows">
           {#each displayedCandidates as c, _ci (c.source + '|' + c.account + '|' + c.symbol + '|' + (c._splitTag ?? _ci) + '|' + (c._pairId ?? '') + '|' + (c._band ?? '') + '|' + (c.draftId != null ? c.draftId : _ci))}
             <CandidateLegRow
               {c}
@@ -5845,6 +5859,7 @@
               {/if}
             </div>
           {/if}
+          </div>
           {#if displayedCandidates.length > 0}
             <!-- TOTAL row — always the last row of the grid. Sums
                  pnl + day_change_val across the CHECKED candidates only
@@ -7247,8 +7262,61 @@
     font-style: italic;
   }
 
-  :global(.fs-card-on) .cand-scroll {
-    max-height: calc(100vh - 28rem) !important;
+  /* Fullscreen fill — Legs grid (2026-10-02 fix). A stale
+     `:global(.fs-card-on) .cand-scroll { max-height: calc(100vh -
+     28rem) !important; }` override used to live here, predating the
+     shared `.fs-content-fill` mechanism in app.css — it silently
+     capped `.cand-scroll` at ~452px in a 900px-tall viewport, leaving
+     a large dead gap between the TOTAL row and the bottom of the
+     fullscreen card. Removed.
+
+     `.fs-content-fill`'s calc(100vh - 4rem - var(--fs-chrome-h))
+     still needs a --fs-chrome-h guess (set inline on `.cand-scroll`)
+     that can't correctly account for this card's two CONDITIONALLY
+     rendered chrome rows above it (`.cand-hidden-hint`,
+     `.cand-draft-payoff-bar`) — a single hardcoded rem value can't be
+     right for every combination of the two. Fixed with the same flex
+     idiom the >=1180px side-by-side rule below already uses to size
+     `.cand-scroll` against the Payoff card's height: make the
+     fullscreen card a flex column and let `.cand-scroll` claim the
+     remaining space via `flex: 1 1 0`. A definite flex-basis makes
+     the flex-computed size win over the `height` property entirely,
+     so the `--fs-chrome-h` guess and `.fs-content-fill`'s calc become
+     inert (harmless, just unused) — correct no matter which chrome
+     rows are present, with no measurement code needed. */
+  :global(.opt-legs-card.fs-card-on) {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+  }
+  :global(.opt-legs-card.fs-card-on) .cand-scroll {
+    flex: 1 1 0;
+    min-height: 0;
+    max-height: none;
+  }
+  /* `.cand-grid` itself still only grows to its own content's natural
+     height inside that now-correctly-tall `.cand-scroll` — a short
+     leg list leaves the TOTAL row stranded right under the last leg
+     row, with the same dead-gap visual bug one box further in. Pin
+     TOTAL to the bottom (ag-Grid "pinned bottom row" idiom) via a
+     3-row template: header (auto) / body (1fr) / TOTAL (auto), using
+     the `.cand-body-rows` wrapper (markup above) as the single grid
+     item occupying the `1fr` track. `min-height: 100%` only ever adds
+     a FLOOR — when there are enough rows to already exceed the
+     available height, the body row naturally grows past its `1fr`
+     fair share exactly as it did before this rule existed, so the
+     real-overflow scroll case (and the sticky header/TOTAL pinning
+     that already handles it) is unaffected. `align-content: start`
+     on the body wrapper keeps every row at its natural height instead
+     of CSS Grid's default `stretch` inflating them to fill the `1fr`
+     track — confirmed live with a 1-leg underlying (rows stayed their
+     normal height; only the free space below the last leg row grew). */
+  :global(.opt-legs-card.fs-card-on) .cand-grid {
+    min-height: 100%;
+    grid-template-rows: auto 1fr auto;
+  }
+  :global(.opt-legs-card.fs-card-on) .cand-body-rows {
+    align-content: start;
   }
 
   /* Chrome delegated to .algo-grid-chrome class on the element. */
@@ -7422,6 +7490,21 @@
       minmax(62px, max-content);           /* ev */
     column-gap: 0.35rem;
     width: max-content;
+  }
+  /* Body wrapper (markup: see `.cand-body-rows` div above, between
+     `.cand-headrow` and `.cand-row-total`) — a grid item of `.cand-grid`
+     that subgrids the SAME column tracks so leg rows + the empty-state
+     placeholder keep pixel-identical column alignment with the header
+     and TOTAL row, one nesting level deeper. Unconditional (not scoped
+     to fullscreen) — non-fullscreen sizing is unaffected since this
+     collapses to a single auto-sized row like the flat list did before
+     the wrapper existed. See the `:global(.opt-legs-card.fs-card-on)
+     .cand-grid` override below for the fullscreen-only row-track split
+     that actually uses this wrapper to pin TOTAL to the bottom. */
+  .cand-body-rows {
+    display: grid;
+    grid-template-columns: subgrid;
+    grid-column: 1 / -1;
   }
   /* Amber TOTAL stratum — single rule drives both Snapshot (byund-row-total > span)
      and Legs/ExpClose (cand-row-total container). The Legs TOTAL row uses a subgrid
