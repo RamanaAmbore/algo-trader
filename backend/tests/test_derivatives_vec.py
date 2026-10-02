@@ -29,6 +29,7 @@ from backend.api.algo.derivatives import (
     expected_value,
     greeks,
     greeks_76,
+    implied_vol,
     multileg_greeks,
     multileg_intermediate_curves,
     multileg_payoff_curve,
@@ -37,6 +38,158 @@ from backend.api.algo.derivatives import (
     _norm_cdf,
     _norm_cdf_vec,
 )
+
+
+# ── Frozen pre-refactor reference (for byte-identical NSE regression) ──
+#
+# Verbatim copies of `black_scholes()`/`greeks()`/`implied_vol()` as they
+# existed BEFORE the generalized cost-of-carry (`_gbs_price`/`_gbs_greeks`)
+# refactor landed — not re-derived, not hand-typed from memory. Frozen
+# here so `test_gbs_wrappers_byte_identical_to_legacy_bs` below has a
+# same-process, no-hardcoded-float-literal comparison target: computing
+# both sides fresh in the same process/platform avoids any libm-ulp
+# cross-platform flakiness that hardcoded literals would risk (macOS dev
+# vs. Linux CI/prod can round the last ULP of erf/exp differently).
+
+def _legacy_norm_cdf(x: float) -> float:
+    return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
+
+
+def _legacy_black_scholes(S: float, K: float, T_years: float, r: float,
+                          sigma: float, opt_type: str) -> float:
+    if S <= 0 or K <= 0:
+        return 0.0
+    if T_years <= 0 or sigma <= 0:
+        if opt_type == "CE":
+            return max(0.0, S - K)
+        return max(0.0, K - S)
+    sqrt_T = math.sqrt(T_years)
+    d1 = (math.log(S / K) + (r + sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    if opt_type == "CE":
+        return S * _legacy_norm_cdf(d1) - K * math.exp(-r * T_years) * _legacy_norm_cdf(d2)
+    return K * math.exp(-r * T_years) * _legacy_norm_cdf(-d2) - S * _legacy_norm_cdf(-d1)
+
+
+def _legacy_norm_pdf(x: float) -> float:
+    return math.exp(-x * x / 2.0) / math.sqrt(2.0 * math.pi)
+
+
+def _legacy_greeks(S: float, K: float, T_years: float, r: float,
+                   sigma: float, opt_type: str) -> dict:
+    if S <= 0 or K <= 0:
+        return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+    if T_years <= 0 or sigma <= 0:
+        if opt_type == "CE":
+            d = 1.0 if S > K else 0.0
+        else:
+            d = -1.0 if S < K else 0.0
+        return {"delta": d, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
+    sqrt_T = math.sqrt(T_years)
+    d1 = (math.log(S / K) + (r + sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    nd1 = _legacy_norm_pdf(d1)
+    Nd1 = _legacy_norm_cdf(d1)
+    Nd2 = _legacy_norm_cdf(d2)
+    if opt_type == "CE":
+        delta = Nd1
+        theta_yr = (-S * nd1 * sigma / (2.0 * sqrt_T)
+                    - r * K * math.exp(-r * T_years) * Nd2)
+        rho_raw  = K * T_years * math.exp(-r * T_years) * Nd2
+    else:
+        delta = Nd1 - 1.0
+        theta_yr = (-S * nd1 * sigma / (2.0 * sqrt_T)
+                    + r * K * math.exp(-r * T_years) * _legacy_norm_cdf(-d2))
+        rho_raw  = -K * T_years * math.exp(-r * T_years) * _legacy_norm_cdf(-d2)
+    gamma     = nd1 / (S * sigma * sqrt_T)
+    vega_raw  = S * nd1 * sqrt_T
+    return {
+        "delta": delta,
+        "gamma": gamma,
+        "theta": theta_yr / 365.0,
+        "vega":  vega_raw / 100.0,
+        "rho":   rho_raw  / 100.0,
+    }
+
+
+def _legacy_implied_vol(price: float, S: float, K: float, T_years: float,
+                        r: float, opt_type: str,
+                        *, max_iter: int = 80, tol: float = 1e-3) -> float:
+    if price <= 0 or S <= 0 or K <= 0 or T_years <= 0:
+        return DEFAULT_IV
+    intrinsic = max(0.0, S - K) if opt_type == "CE" else max(0.0, K - S)
+    if price <= intrinsic + 0.05:
+        return 0.0001
+    lo, hi = 0.0001, 5.0
+    p_lo = _legacy_black_scholes(S, K, T_years, r, lo, opt_type)
+    p_hi = _legacy_black_scholes(S, K, T_years, r, hi, opt_type)
+    if not (p_lo - 0.5 <= price <= p_hi + 0.5):
+        return DEFAULT_IV
+    for _ in range(max_iter):
+        mid    = 0.5 * (lo + hi)
+        p_mid  = _legacy_black_scholes(S, K, T_years, r, mid, opt_type)
+        if abs(p_mid - price) < tol:
+            return mid
+        if p_mid < price:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
+
+
+def test_gbs_wrappers_byte_identical_to_legacy_bs():
+    """`black_scholes()`/`greeks()`/`implied_vol()` — now thin b=r
+    wrappers over the shared `_gbs_price()`/`_gbs_greeks()` core — must
+    produce EXACTLY (`==`, not approx) the same output as the frozen
+    pre-refactor implementations above, across a grid including the
+    long-T/large-S corner (S=55000, T=10.0) where rho's cross-term
+    cancellation is most exposed to rounding drift. A same-process
+    comparison (not hardcoded float literals) so this can't flake from
+    a one-ULP libm difference between macOS (dev) and Linux (prod/CI)."""
+    mismatches = []
+    for S in (40.0, 42.0, 100.0, 2500.0, 55000.0):
+        for K_mult in (0.5, 0.9, 1.0, 1.1, 1.5):
+            K = S * K_mult
+            for T in (0.001, 0.02, 0.1, 0.5, 1.5, 3.0, 10.0):
+                for r in (0.0, 0.03, 0.07, 0.15):
+                    for sigma in (0.0, 0.0001, 0.1, 0.2, 0.5, 1.5):
+                        for opt in ("CE", "PE"):
+                            p_new = black_scholes(S, K, T, r, sigma, opt)
+                            p_old = _legacy_black_scholes(S, K, T, r, sigma, opt)
+                            if p_new != p_old:
+                                mismatches.append(("price", S, K, T, r, sigma, opt, p_new, p_old))
+                            g_new = greeks(S, K, T, r, sigma, opt)
+                            g_old = _legacy_greeks(S, K, T, r, sigma, opt)
+                            for k in g_old:
+                                if g_new[k] != g_old[k]:
+                                    mismatches.append((k, S, K, T, r, sigma, opt, g_new[k], g_old[k]))
+    assert not mismatches, (
+        f"{len(mismatches)} byte-identical mismatches vs frozen pre-refactor "
+        f"implementation; first 5: {mismatches[:5]}"
+    )
+
+
+def test_implied_vol_byte_identical_to_legacy():
+    """`implied_vol()` (b=r wrapper over `_gbs_implied_vol`) must also
+    match the frozen pre-refactor bisection exactly — the re-pricing
+    calls inside the loop go through the new `black_scholes()` wrapper,
+    so any drift there would also surface here."""
+    mismatches = []
+    for S, K, T, r, sigma, opt in (
+        (24500.0, 24500.0, 14 / 365.0, 0.07, 0.16, "CE"),
+        (24500.0, 24500.0, 14 / 365.0, 0.07, 0.16, "PE"),
+        (42.0, 40.0, 0.5, 0.10, 0.20, "CE"),
+        (55000.0, 50000.0, 10.0, 0.15, 0.5, "PE"),
+        (100.0, 110.0, 0.02, 0.0, 0.1, "CE"),
+    ):
+        price = _legacy_black_scholes(S, K, T, r, sigma, opt)
+        if price <= 0:
+            continue
+        iv_new = implied_vol(price, S, K, T, r, opt)
+        iv_old = _legacy_implied_vol(price, S, K, T, r, opt)
+        if iv_new != iv_old:
+            mismatches.append((S, K, T, r, sigma, opt, iv_new, iv_old))
+    assert not mismatches, f"implied_vol byte-identical mismatches: {mismatches}"
 
 
 # ── Sample fixtures ───────────────────────────────────────────────────
@@ -395,6 +548,56 @@ def test_put_call_delta_parity_black76():
     assert (g_call["delta"] - g_put["delta"]) != pytest.approx(1.0, abs=1e-3)
 
 
+# ── Black-76 Greeks via independent finite difference on black_76() ───
+#
+# The reference-value tests above compare `greeks_76()` against ITSELF
+# (the `_B76_REF_*` constants are `greeks_76()`'s own recorded output) —
+# a bug in the theta/rho closed-form shortcuts would freeze in as a
+# "passing" reference rather than get caught. This test instead derives
+# each Greek from `black_76()` ALONE via central finite difference, so
+# it's independent of `greeks_76()`'s own formulas — only the anchor
+# price (externally verified against Haug's published 1.7011 above) and
+# `black_76()` itself are trusted inputs.
+
+def test_greeks_76_match_finite_difference_of_black_76():
+    h_F, h_sigma, h_r, h_T = 1e-3, 1e-5, 1e-5, 1e-5
+    for opt_type in ("CE", "PE"):
+        g = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R,
+                      _B76_REF_SIGMA, opt_type)
+
+        delta_fd = (
+            black_76(_B76_REF_F + h_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+            - black_76(_B76_REF_F - h_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+        ) / (2 * h_F)
+        assert g["delta"] == pytest.approx(delta_fd, abs=1e-4), f"{opt_type} delta"
+
+        gamma_fd = (
+            black_76(_B76_REF_F + h_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+            - 2 * black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+            + black_76(_B76_REF_F - h_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+        ) / (h_F * h_F)
+        assert g["gamma"] == pytest.approx(gamma_fd, abs=1e-4), f"{opt_type} gamma"
+
+        vega_fd = (
+            black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA + h_sigma, opt_type)
+            - black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA - h_sigma, opt_type)
+        ) / (2 * h_sigma) * 0.01
+        assert g["vega"] == pytest.approx(vega_fd, abs=1e-4), f"{opt_type} vega"
+
+        rho_fd = (
+            black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R + h_r, _B76_REF_SIGMA, opt_type)
+            - black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R - h_r, _B76_REF_SIGMA, opt_type)
+        ) / (2 * h_r) * 0.01
+        assert g["rho"] == pytest.approx(rho_fd, abs=1e-4), f"{opt_type} rho"
+
+        # theta = -d(price)/dT, trader units = per day => /365.
+        theta_fd = -(
+            black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T + h_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+            - black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T - h_T, _B76_REF_R, _B76_REF_SIGMA, opt_type)
+        ) / (2 * h_T) / 365.0
+        assert g["theta"] == pytest.approx(theta_fd, abs=1e-4), f"{opt_type} theta"
+
+
 # ── Call-site dispatch: MCX leg must actually route through Black-76 ──
 #
 # The tests above exercise `black_76()`/`greeks_76()` directly — they'd
@@ -456,6 +659,41 @@ def test_strategy_build_option_leg_nse_leg_stays_on_bs():
     gbs = greeks(2800.0, 2800.0, 0.1, DEFAULT_RISK_FREE, sig, "CE")
     for k in gbs:
         assert detail["greeks"][k] == pytest.approx(gbs[k], abs=1e-9)
+
+
+def test_strategy_build_legs_wiring_passes_is_mcx_through():
+    """Guards the real production wiring line (`is_mcx=_is_commodity`
+    inside `_strategy_build_legs()`, options.py) one level up from
+    `test_strategy_build_option_leg_mcx_leg_uses_black_76` above. That
+    test enters directly at `_strategy_build_option_leg(is_mcx=True)` —
+    since `is_mcx` defaults to False, a regression that deletes the
+    `is_mcx=_is_commodity` keyword argument at the actual call site
+    inside `_strategy_build_legs()` would silently revert MCX legs to
+    plain BS while that lower-level test keeps passing untouched (it
+    never exercises the wiring line itself). This test goes through
+    `_strategy_build_legs()` — the real caller — instead, using a
+    forward-dated `expiry` so it never time-bombs."""
+    from datetime import date, timedelta
+    from backend.api.routes.options import _strategy_build_legs, StrategyLeg, StrategyRequest
+
+    future_expiry = (date.today() + timedelta(days=30)).isoformat()
+    leg = StrategyLeg(symbol="CRUDEOIL26OCT5500CE", qty=1, avg_cost=None,
+                      ltp=200.0, iv=0.20, expiry=future_expiry)
+    data = StrategyRequest(legs=[leg])
+    parsed_by_sym = {
+        "CRUDEOIL26OCT5500CE": {"strike": 5500.0, "opt_type": "CE",
+                                "root": "CRUDEOIL", "kind": "opt"},
+    }
+    resolved_legs, leg_details, _, _ = _strategy_build_legs(
+        data, parsed_by_sym, {}, 5500.0, True, (23, 30), {},
+    )
+    assert len(resolved_legs) == 1
+    assert resolved_legs[0]["is_mcx"] is True
+
+    g76 = greeks_76(5500.0, 5500.0, resolved_legs[0]["T_years"],
+                    DEFAULT_RISK_FREE, 0.20, "CE")
+    for k in g76:
+        assert leg_details[0]["greeks"][k] == pytest.approx(g76[k], abs=1e-9)
 
 
 # ── Test C: Futures multileg payoff subtracts entry cost ───────────────
