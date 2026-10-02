@@ -608,6 +608,12 @@
   /** @type {Record<string, HTMLElement|undefined>} */
   let _greekHintAnchor = $state({});
 
+  // Payoff-header EV chip tooltip — same click-the-value-text treatment
+  // as the 5 Greek chips above (no separate visible (i) button).
+  let _evHintOpen = $state(false);
+  /** @type {HTMLElement|undefined} */
+  let _evHintAnchor = $state();
+
   // Tab inside the Legs card — 'legs' shows the full candidate
   // grid; 'expiry' shows positions identified for close before
   // expiry day (equity rules: every ITM contract; commodity rules:
@@ -5522,9 +5528,16 @@
                expectancy; negative = lose money on average. Companion
                to POP for assessing trade quality (POP alone is
                misleading on asymmetric clip sizes). -->
-          <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'}"
-                title="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.">
-            EV {fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}
+          <span class="opt-section-tag tf-cell {(_mergedEv ?? 0) >= 0 ? 'tag-long' : 'tag-short'}">
+            EV <button type="button" class="greek-val-trigger"
+                bind:this={_evHintAnchor}
+                aria-expanded={_evHintOpen}
+                aria-controls="greek-hint-ev"
+                onclick={() => { _evHintOpen = !_evHintOpen; }}
+                >{fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}</button>
+            <InfoHint popup hideButton id="greek-hint-ev" anchor={_evHintAnchor}
+              bind:open={_evHintOpen}
+              text="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|." />
           </span>
           <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
                header so the operator sees position-level direction /

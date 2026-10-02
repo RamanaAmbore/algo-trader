@@ -14,13 +14,20 @@
  *   - an `<InfoHint popup hideButton anchor={...} bind:open={...}>` with
  *     the SAME wording as before, rendering no button of its own
  *
+ * Second follow-up: the EV chip in the same header row (not one of the
+ * 5 Greeks, previously a plain `title="..."` attribute on the whole
+ * chip span) now gets the identical treatment — its numeric value is
+ * also a `.greek-val-trigger` button paired with a `hideButton` InfoHint,
+ * same wording the `title=` attribute used to carry.
+ *
  * This spec guards:
  *
  *   1. SSOT    — header-chip InfoHint text is byte-identical to the
  *                Greeks-card InfoHint text for all 5 Greeks (source parity).
- *   2. Hidden  — all 5 header-chip InfoHint instances pass `hideButton`;
- *                the Greeks-card instances (still the (i)-button mode) do
- *                NOT. No `.info-btn` renders anywhere inside a header chip.
+ *   2. Hidden  — all 6 header-chip InfoHint instances (5 Greeks + EV) pass
+ *                `hideButton`; the Greeks-card instances (still the
+ *                (i)-button mode) do NOT. No `.info-btn` renders anywhere
+ *                inside a header chip.
  *   3. Perf    — click-to-popover opens within budget (no hang/regression).
  *   4. UX      — clicking the Greek VALUE opens a role="tooltip" popover
  *                with the matching wording; clicking the same value again
@@ -33,6 +40,9 @@
  *                    unrelated InfoHint consumer on the same page) is
  *                    UNCHANGED: still renders its own visible `.info-btn`
  *                    and still opens/shows the same wording via it.
+ *   7. EV chip — same value-click trigger, no visible `(i)`, no stale
+ *                `title=` attribute, matching wording, independent from
+ *                the 5 Greek chips (opening/closing one doesn't affect EV).
  *
  * Run locally (auto-starts local vite dev server, proxies /api to
  * dev.ramboq.com per vite.config.js):
@@ -56,6 +66,12 @@ const GREEK_TEXT = {
   vega: 'Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion).',
   rho: 'Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options.',
 };
+
+/** EV chip's own wording — not a Greek, so no "card" SSOT counterpart to
+ *  compare against inside this block (the Risk & expected value card
+ *  uses richer wording for a different purpose); this is the text the
+ *  stale `title=` attribute used to carry verbatim. */
+const EV_TEXT = 'Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|.';
 
 // ── Suite 1: Source audit — byte-exact wording parity + hideButton wiring (always green, no network) ──
 
@@ -101,13 +117,26 @@ test.describe('Source audit — header-chip Greek InfoHint text + hideButton wir
     }
   });
 
-  test('all 5 Greek header chips render <InfoHint hideButton>, not the (i)-button mode', () => {
+  test('no `title=` attribute remains on the EV header chip span either', () => {
+    const evOpenTags = chipsBlock.match(/<span class="opt-section-tag tf-cell \{[^}]*tag-(long|short)[^}]*\}">/g) || [];
+    // The EV chip is the only `opt-section-tag` chip using the tag-long/
+    // tag-short sign-tint (the Greek chips use tag-greek); there must be
+    // exactly one, carrying no stale title=.
+    for (const tag of evOpenTags) {
+      expect(tag, `Stale title= attribute found on EV chip: ${tag}`).not.toMatch(/\btitle=/);
+    }
+    expect(chipsBlock).toContain('EV <button type="button" class="greek-val-trigger"');
+  });
+
+  test('all 6 header chips (5 Greeks + EV) render <InfoHint hideButton>, not the (i)-button mode', () => {
     const infoHintCount = (chipsBlock.match(/<InfoHint\s/g) || []).length;
-    // EV chip (not a Greek, out of scope) keeps its native title — only
-    // the 5 Greek chips should carry InfoHint inside this block.
-    expect(infoHintCount).toBe(5);
+    expect(infoHintCount).toBe(6);
     const hideButtonCount = (chipsBlock.match(/hideButton/g) || []).length;
-    expect(hideButtonCount).toBe(5);
+    expect(hideButtonCount).toBe(6);
+  });
+
+  test('EV chip InfoHint carries the same wording the stale title= attribute used to have', () => {
+    expect(chipsBlock).toContain(EV_TEXT);
   });
 
   test('the Greeks-card InfoHint instances do NOT pass hideButton (unaffected sibling consumer)', () => {
@@ -116,9 +145,9 @@ test.describe('Source audit — header-chip Greek InfoHint text + hideButton wir
     expect(cardBlock).not.toMatch(/hideButton/);
   });
 
-  test('each Greek header chip has a plain-text `.greek-val-trigger` click target carrying the value', () => {
+  test('each of the 6 header chips (5 Greeks + EV) has a plain-text `.greek-val-trigger` click target carrying the value', () => {
     const triggerCount = (chipsBlock.match(/class="greek-val-trigger"/g) || []).length;
-    expect(triggerCount).toBe(5);
+    expect(triggerCount).toBe(6);
     // No visible .info-btn chip markup inside the header-chips block at all.
     expect(chipsBlock).not.toMatch(/class="info-btn"/);
   });
@@ -226,6 +255,44 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
       await trigger.click();
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
     }
+  });
+
+  test('EV chip: value click opens a role=tooltip popover with matching wording, no visible (i), no stale title=, and closes on re-click', async ({ page }) => {
+    const evChip = page.locator('.opt-section-tag.tf-cell', { hasText: 'EV' }).first();
+    await expect(evChip).toBeVisible({ timeout: 20_000 });
+
+    await expect(evChip.locator('button.info-btn')).toHaveCount(0);
+    const evTitle = await evChip.getAttribute('title');
+    expect(evTitle, `EV chip still has a native title attribute: "${evTitle}"`).toBeNull();
+
+    const trigger = evChip.locator('button.greek-val-trigger');
+    await expect(trigger).toBeVisible();
+
+    await trigger.click();
+    const popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    const text = (await popover.textContent()) || '';
+    expect(text).toContain('probability-weighted average payoff');
+
+    await trigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+  });
+
+  test('EV chip is independent from the 5 Greek chips (no cross-talk)', async ({ page }) => {
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
+    const evTrigger = page.locator('.opt-section-tag.tf-cell', { hasText: 'EV' }).first().locator('button.greek-val-trigger');
+    const deltaTrigger = chips.nth(0).locator('button.greek-val-trigger');
+
+    await evTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('probability-weighted average payoff');
+
+    await deltaTrigger.click();
+    const tooltips = page.locator('[role="tooltip"]');
+    await expect(tooltips).toHaveCount(1);
+    await expect(tooltips.first()).toContainText('net directional exposure');
+    await expect(tooltips.first()).not.toContainText('probability-weighted average payoff');
   });
 
   test('Regression: Greeks (position) card — unrelated sibling InfoHint consumer — is unchanged', async ({ page }) => {
