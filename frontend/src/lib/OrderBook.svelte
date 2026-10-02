@@ -9,7 +9,19 @@
    *   orderId?       — when set, narrows display to rows matching this id
    *   accountFilter? — optional external account filter (bindable)
    *   title?         — header label (default 'Order Book')
-   *   pollMs?        — polling cadence in ms (default 3000)
+   *   pollMs?        — polling cadence in ms (default 5000, matching the
+   *                    `polling.fast_ms` registry setting's own default —
+   *                    see backend/shared/helpers/settings.py. A static
+   *                    literal, not a settings-driven read: this
+   *                    component's onMount creates its visibleInterval
+   *                    synchronously, before any async settings fetch
+   *                    could resolve — the same race (algo)/+layout.svelte
+   *                    had to explicitly re-arm around for the fill-watch
+   *                    backstop (2026-10-02). True settings-driven wiring
+   *                    for this cadence would need a getFastPollMs()/
+   *                    setFastPollMs() pair in marketDataStores.svelte.js
+   *                    (out of scope for this change) plus the same
+   *                    re-arm-on-resolve treatment.
    *   statusFilter?  — 'chase'|'open'|'complete'|'rejected_cancelled'|'gtt' —
    *                    INERT for the no-chip-clicked default (2026-09-30):
    *                    both existing call sites pass 'open' as a literal
@@ -49,7 +61,7 @@
     orderId       = null,
     accountFilter = /** @type {string[]} */ ([]),
     title         = 'Order Book',
-    pollMs        = 3000,
+    pollMs        = 5000,
     statusFilter  = /** @type {'chase'|'open'|'complete'|'rejected_cancelled'|'gtt'} */ ('open'),
     onSymbolClick = /** @type {((ord: any) => void) | null} */ (null),
     isCollapsed   = $bindable(false),

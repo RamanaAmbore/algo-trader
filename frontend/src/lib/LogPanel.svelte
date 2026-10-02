@@ -66,7 +66,17 @@
     tabs        = ['order','agent','terminal','simulator','system','conn','news'],
     defaultTab  = 'order',
     simScope    = false,
-    pollMs      = 3000,
+    // Default matches the `polling.fast_ms` registry setting's own default
+    // (backend/shared/helpers/settings.py) — a static literal, not a
+    // settings-driven read, same rationale as OrderBook.svelte's own
+    // pollMs default (see its JSDoc). KNOWN GAP: every real mount of
+    // LogPanel today goes through ActivityLogSurface.svelte, which has
+    // its own `pollMs = 3000` default and always passes `{pollMs}`
+    // explicitly — so this default change has NO effect on the live
+    // cadence until ActivityLogSurface's own default is updated too
+    // (out of this change's file scope; flagged rather than silently
+    // left looking fixed).
+    pollMs      = 5000,
     cmdHistory  = [],
     onTabChange = () => {},
     mode        = /** @type {string | null} */ (null),
