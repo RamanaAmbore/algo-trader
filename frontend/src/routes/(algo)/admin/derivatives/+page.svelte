@@ -43,6 +43,7 @@
     listExpiries, listStrikes, findOption,
     listFutures, getInstrument, getOptionUnderlyingLot,
     findNearestFuture, hasFNO,
+    instrumentsCacheVersion,
   } from '$lib/data/instruments';
   import { resolveUnderlying, resolveUnderlyingTradingsymbol, resolveUnderlyingPrevClose, buildUndLiveFallbackEntry } from '$lib/data/resolveUnderlying';
   import { expiryPnl, expiryPnlWithRealised, resolveExpiryAnchor, legExtrinsicDisplay, expiredLegFrozenPnl } from '$lib/data/expiryPnl';
@@ -1706,6 +1707,19 @@
    *  "what's actually in scope right now" rather than every listed
    *  contract Kite knows about. Drafts contribute too. */
   const expiryChoicesForUnderlying = $derived.by(() => {
+    // Fix 3 (audit): `instrumentsReady` is a plain $state flag flipped
+    // once after the FIRST successful load (line ~4997-ish) — it never
+    // flips back, so it's a one-shot boolean, not a change signal. This
+    // derived calls getInstrument() internally without otherwise
+    // depending on anything that changes when the instruments cache is
+    // refreshed/replaced later (deploy, manual reload-cache action), so a
+    // cold/direct page load can freeze on empty/null instrument data the
+    // first time it runs and never re-evaluate once the cache actually
+    // populates. Read `$instrumentsCacheVersion` (bumped on every load,
+    // not just the first) so Svelte tracks it as a real dependency —
+    // same pattern as MarketPulse.svelte / OptionChainTab.svelte / etc.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     if (!instrumentsReady || !selectedUnderlying) return [];
     const target = selectedUnderlying.toUpperCase();
     // Strip _NEXT suffix before building the prefix regex — a URL-restored
@@ -2198,6 +2212,12 @@
   // the instrument cache can't resolve the anchor (cold cache) so the
   // chip never goes blank.
   const _spotAnchorExpiryISO = $derived.by(() => {
+    // Fix 3 (audit) — see expiryChoicesForUnderlying's own comment above:
+    // this derived also calls getInstrument() internally without any
+    // other dependency that changes when the instruments cache
+    // (re)populates, so it can freeze on a cold cache's null lookup.
+    /* eslint-disable-next-line @typescript-eslint/no-unused-expressions */
+    $instrumentsCacheVersion;
     const anchor = String(strategy?.spot_anchor_contract || '').toUpperCase();
     if (!anchor) return strategy?.expiry ?? '';
     const inst = getInstrument(anchor);
