@@ -939,12 +939,17 @@
     // synthetic ticks and assert flash class synchrony without needing
     // a real SSE stream. Kept out of the store module so the prod bundle
     // has no window reference from the data layer.
+    // Also exposes `toast` (2026-10, mobile toast-burst-cap spec) so a
+    // Playwright spec can push a burst of toasts directly via
+    // `window.__stores.toast.warning(...)` without needing to drive a
+    // real backend failure path for every toast kind.
     if (typeof window !== 'undefined' &&
         (window.location.hostname === 'dev.ramboq.com' ||
          window.location.hostname === 'localhost' ||
          window.location.hostname === '127.0.0.1')) {
       /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
       /** @type {any} */ (window).__stores.tickBus = tickBus;
+      /** @type {any} */ (window).__stores.toast = toast;
     }
     // Market-gated quote stream gate. Starts the SSE if any segment is
     // open right now; runs a 30 s visibility-aware watcher that pauses /
