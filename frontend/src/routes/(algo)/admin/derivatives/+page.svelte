@@ -26,7 +26,7 @@
   import { holdingsDayPnlStore } from '$lib/data/holdingsDayPnlStore.svelte.js';
   import { positionsDerivedStore } from '$lib/data/positionsDerivedStore.svelte.js';
   import { loadWatchlistSymbols } from '$lib/data/watchlistSymbols.js';
-  import { getProvisionalPositions } from '$lib/data/provisionalPositions.svelte.js';
+  import { getProvisionalPositions, applyFill, clearFill, clearAll as clearAllProvisional } from '$lib/data/provisionalPositions.svelte.js';
   import { getDraftPositions } from '$lib/data/draftPositions.svelte.js';
   import { getSnapshot, liveSnap, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
   import OptionsPayoff from '$lib/OptionsPayoff.svelte';
@@ -161,6 +161,13 @@
   let wsTeardown;
   let quotesTeardown;
   let simTeardown;
+  // Fix 1 — safety-timeout handles for the optimistic position_filled
+  // apply (mirrors MarketPulse's own 60s `clearFill` fallback). Tracked
+  // so onDestroy can cancel any still-pending timers instead of letting
+  // a stale timer fire loadPositions()/clearFill() after the page has
+  // navigated away.
+  /** @type {Set<ReturnType<typeof setTimeout>>} */
+  const _fillSafetyTimers = new Set();
 
   // Sim status — when true, the candidates panel shows sim positions
   // instead of live. Polled every few seconds.
@@ -1733,6 +1740,34 @@
     });
   });
 
+  // Fix 1 (position_filled optimistic apply): provisional (~) entries
+  // whose (symbol, account) has NO matching real F&O position row yet —
+  // mirrors MarketPulse's own dedup in `scopedPositions`
+  // (MarketPulse.svelte ~2975-2990). A provisional row exists to show a
+  // NEW leg immediately, before the broker book has caught up; once ANY
+  // real row already exists for that key (even at its stale pre-fill
+  // qty), the provisional entry would otherwise double-count alongside
+  // it until the next poll / `positions_refreshed` event clears the
+  // whole provisional map (see the WS handler below). Suppressing it
+  // here avoids that transient double-count without needing to merge a
+  // delta into the real row's own qty.
+  const _provisionalForCandidates = $derived.by(() => {
+    const raw = getProvisionalPositions();
+    if (raw.size === 0) return raw;
+    const realKeys = new Set(
+      positions.map(p => `${String(p.symbol || '').toUpperCase()}|${p.account}`)
+    );
+    let filtered = null;
+    for (const [key, entry] of raw) {
+      const rk = `${String(entry.tradingsymbol || '').toUpperCase()}|${entry.account}`;
+      if (realKeys.has(rk)) {
+        if (!filtered) filtered = new Map(raw);
+        filtered.delete(key);
+      }
+    }
+    return filtered ?? raw;
+  });
+
   // Candidate positions matching the filter. Live + sim positions on
   // the chosen underlying held in one of the chosen accounts, plus all
   // drafts whose symbol matches the underlying prefix. Source is a
@@ -1758,7 +1793,7 @@
       proxiesForTarget,
       getInstrument,
       hasFNO,
-      provisionalPositions: getProvisionalPositions(),
+      provisionalPositions: _provisionalForCandidates,
       draftStorePositions:  getDraftPositions(),
     });
   });
@@ -5029,7 +5064,10 @@
         // a postback fan-out or reconcile sweep) — refresh immediately
         // rather than waiting for the 5 s book-poller cycle. Mirrors
         // MarketPulse.svelte / PerformancePage.svelte's own handling of
-        // this event.
+        // this event. clearAllProvisional() drops every outstanding (~)
+        // row — the broker book has caught up, so none of them should
+        // still be shown alongside (or instead of) the now-fresh real rows.
+        clearAllProvisional();
         loadPositions({ fresh: true });
         return;
       }
@@ -5037,6 +5075,25 @@
       const orderId = String(msg.order_id || '');
       const matched = orderId ? _markToastFilled(orderId, Number(msg.fill_price || 0)) : false;
       if (!matched) _pushFillToast(msg);
+      // Fix 1 (optimistic apply) — insert a provisional (~) row
+      // immediately from the WS payload, mirroring MarketPulse.svelte's
+      // `applyFill`/`clearFill` usage (~1574-1600) so a new leg shows up
+      // on the Legs grid / Payoff chart within a frame instead of
+      // waiting on the fresh REST round-trip below. `_provisionalForCandidates`
+      // (candidatePositions' own dedup, above) suppresses this row again
+      // the moment a real position already exists for the same
+      // (symbol, account) — it only ever surfaces a genuinely NEW leg.
+      applyFill(msg);
+      // 60 s safety — drop the provisional row even if `positions_refreshed`
+      // never arrives (broker lag, Dhan/Groww's unreliable postback
+      // delivery per CLAUDE.md), and force one more fresh refetch so the
+      // page doesn't silently rely on the stale optimistic row forever.
+      const _fillTimer = setTimeout(() => {
+        _fillSafetyTimers.delete(_fillTimer);
+        clearFill(msg);
+        loadPositions({ fresh: true });
+      }, 60_000);
+      _fillSafetyTimers.add(_fillTimer);
       // fresh=true: position_filled means the broker book just changed;
       // bypass the backend 30s TTL cache to surface the new position
       // in the underlying dropdown without waiting for cache expiry.
@@ -5051,6 +5108,11 @@
     flash.dispose(); _unsubFlashPct(); _unsubBook?.(); _unsubDerivsOrder?.(); _unsubBrokerHealth?.();
     if (_orderUpdateTimer) { clearTimeout(_orderUpdateTimer); _orderUpdateTimer = null; }
     if (_urlSyncTimer) { clearTimeout(_urlSyncTimer); _urlSyncTimer = null; }
+    // Fix 1 — cancel any still-pending fill-safety timers so a late
+    // timer can't fire clearFill()/loadPositions() after this page has
+    // been torn down.
+    for (const t of _fillSafetyTimers) clearTimeout(t);
+    _fillSafetyTimers.clear();
   });
 
   // Refresh underlying quotes whenever the Snapshot universe changes
