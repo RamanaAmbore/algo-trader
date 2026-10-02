@@ -263,37 +263,85 @@ def _black_scholes_vec(S_arr: np.ndarray, K: float, T_years: float,
     return np.where(valid, prices, 0.0)
 
 
-def black_scholes(S: float, K: float, T_years: float, r: float,
-                  sigma: float, opt_type: str) -> float:
+# ── Generalized Black-Scholes-Merton core (cost-of-carry `b`) ──────────
+#
+# Plain Black-Scholes (cash spot) and Black-76 (options on futures) are
+# both special cases of the GBSM model with a cost-of-carry rate `b`:
+#   b = r  →  plain Black-Scholes (cash spot — NSE equity/index options,
+#             no carry between expiries)
+#   b = 0  →  Black-76 (options on futures — MCX commodities, whose
+#             "spot" is resolved as the matching futures contract price;
+#             see `is_mcx_underlying()` / `_resolve_spot()` in
+#             `backend/api/routes/options.py`)
+#
+# Feeding a futures price into the b=r (plain BS) formulas silently
+# overstates delta/rho — confirmed ATM/14-DTE/sigma=16%/r=7% back-test:
+# BS-on-futures delta ≈ 0.540 vs. Black-76 (b=0) ≈ 0.505, a ~3.5-point
+# systematic bias that grows with rate × time.
+#
+# `black_scholes()`/`greeks()`/`implied_vol()` and `black_76()`/
+# `greeks_76()`/`implied_vol_76()` are thin public wrappers around one
+# shared `_gbs_*` core — not independently-derived duplicate formula
+# sets — so a future third cost-of-carry case (continuous dividend
+# yield, say) only needs a third thin wrapper, not a third copy-pasted
+# formula set. The b=r wrappers are verified byte-identical to the
+# pre-refactor standalone implementations (see
+# `backend/tests/test_derivatives_vec.py`); NSE equity/index behavior
+# is unchanged by this refactor.
+#
+# Delta/gamma/vega have the SAME closed form for both cases (just
+# substitute `b`). Theta and rho do NOT — they differ depending on
+# whether `b` is itself coupled to `r` (stock: `b ≡ r`, so a rate shift
+# also shifts `b`) or independent of `r` (futures: `b ≡ 0` always, a
+# rate shift leaves `b` fixed at 0). `db_dr` (`db/dr`) encodes that
+# coupling: `db_dr=1` for the stock case, `db_dr=0` for the futures
+# case. Both rho and theta formulas below were derived via the chain
+# rule on `_gbs_price()`, verified algebraically at both endpoints
+# (b=r/db_dr=1 reduces exactly to the original, already-verified plain-
+# BS formulas; b=0/db_dr=0 reduces exactly to the independently-
+# derived-and-numerically-verified Black-76 formulas — see this
+# session's working notes) and via finite-difference cross-check in
+# the test suite.
+
+def _gbs_d1_d2(S: float, K: float, T_years: float, b: float,
+               sigma: float) -> tuple[float, float, float]:
+    sqrt_T = math.sqrt(T_years)
+    d1 = (math.log(S / K) + (b + sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    return d1, d2, sqrt_T
+
+
+def _gbs_price(S: float, K: float, T_years: float, r: float, b: float,
+               sigma: float, opt_type: str) -> float:
     """
-    Vanilla European option price (no dividend yield — Indian index
-    options pay no carry between expiries, so q=0 is fine). T_years
-    is time-to-expiry in fractional years.
+    Generalized Black-Scholes-Merton price, parameterized by cost-of-
+    carry `b` (`b=r` → plain BS cash-spot; `b=0` → Black-76 futures).
+    Shared core — see module-level comment block above. Not exported;
+    callers use `black_scholes()`/`black_76()`.
     """
     if S <= 0 or K <= 0:
         return 0.0
-    # Degenerate cases — at expiry or zero vol → intrinsic.
+    # Degenerate cases — at expiry or zero vol → intrinsic. Model-
+    # independent: at T=0 every discount/growth factor is 1 regardless
+    # of b, so this reduces to the same intrinsic value either way.
     if T_years <= 0 or sigma <= 0:
         if opt_type == "CE":
             return max(0.0, S - K)
         return max(0.0, K - S)
 
-    sqrt_T = math.sqrt(T_years)
-    d1 = (math.log(S / K) + (r + sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
+    d1, d2, sqrt_T = _gbs_d1_d2(S, K, T_years, b, sigma)
+    growth = math.exp((b - r) * T_years)
+    disc   = math.exp(-r * T_years)
     if opt_type == "CE":
-        return S * _norm_cdf(d1) - K * math.exp(-r * T_years) * _norm_cdf(d2)
-    return K * math.exp(-r * T_years) * _norm_cdf(-d2) - S * _norm_cdf(-d1)
+        return S * growth * _norm_cdf(d1) - K * disc * _norm_cdf(d2)
+    return K * disc * _norm_cdf(-d2) - S * growth * _norm_cdf(-d1)
 
 
-def implied_vol(price: float, S: float, K: float, T_years: float,
-                r: float, opt_type: str,
-                *, max_iter: int = 80, tol: float = 1e-3) -> float:
-    """
-    Bisection IV solver. Robust to weird-priced contracts (deep ITM,
-    near-zero time value, pre-open stale LTPs) — falls back to
-    DEFAULT_IV when the bisection can't bracket a solution.
-    """
+def _gbs_implied_vol(price: float, S: float, K: float, T_years: float,
+                     r: float, b: float, opt_type: str,
+                     *, max_iter: int = 80, tol: float = 1e-3) -> float:
+    """Shared bisection IV solver for the `_gbs_price()` family. Not
+    exported; callers use `implied_vol()`/`implied_vol_76()`."""
     if price <= 0 or S <= 0 or K <= 0 or T_years <= 0:
         return DEFAULT_IV
 
@@ -305,15 +353,15 @@ def implied_vol(price: float, S: float, K: float, T_years: float,
         return 0.0001
 
     lo, hi = 0.0001, 5.0
-    p_lo = black_scholes(S, K, T_years, r, lo, opt_type)
-    p_hi = black_scholes(S, K, T_years, r, hi, opt_type)
+    p_lo = _gbs_price(S, K, T_years, r, b, lo, opt_type)
+    p_hi = _gbs_price(S, K, T_years, r, b, hi, opt_type)
     # If the target price is outside the bracket, fall back.
     if not (p_lo - 0.5 <= price <= p_hi + 0.5):
         return DEFAULT_IV
 
     for _ in range(max_iter):
-        mid    = 0.5 * (lo + hi)
-        p_mid  = black_scholes(S, K, T_years, r, mid, opt_type)
+        mid   = 0.5 * (lo + hi)
+        p_mid = _gbs_price(S, K, T_years, r, b, mid, opt_type)
         if abs(p_mid - price) < tol:
             return mid
         if p_mid < price:
@@ -321,6 +369,52 @@ def implied_vol(price: float, S: float, K: float, T_years: float,
         else:
             hi = mid
     return 0.5 * (lo + hi)
+
+
+def black_scholes(S: float, K: float, T_years: float, r: float,
+                  sigma: float, opt_type: str) -> float:
+    """
+    Vanilla European option price (no dividend yield — Indian index
+    options pay no carry between expiries, so q=0 is fine). T_years
+    is time-to-expiry in fractional years. Thin wrapper over
+    `_gbs_price()` with `b=r` (cash spot, no cost-of-carry drift).
+    """
+    return _gbs_price(S, K, T_years, r, r, sigma, opt_type)
+
+
+def implied_vol(price: float, S: float, K: float, T_years: float,
+                r: float, opt_type: str,
+                *, max_iter: int = 80, tol: float = 1e-3) -> float:
+    """
+    Bisection IV solver. Robust to weird-priced contracts (deep ITM,
+    near-zero time value, pre-open stale LTPs) — falls back to
+    DEFAULT_IV when the bisection can't bracket a solution. Thin
+    wrapper over `_gbs_implied_vol()` with `b=r`.
+    """
+    return _gbs_implied_vol(price, S, K, T_years, r, r, opt_type,
+                            max_iter=max_iter, tol=tol)
+
+
+def black_76(F: float, K: float, T_years: float, r: float,
+             sigma: float, opt_type: str) -> float:
+    """
+    European option on a futures/forward contract (Black-76). `F` is
+    the futures/forward price standing in for spot. Thin wrapper over
+    `_gbs_price()` with `b=0` (no cost-of-carry — all rate-dependence
+    routes through the outer discount factor, not through d1/d2).
+    """
+    return _gbs_price(F, K, T_years, r, 0.0, sigma, opt_type)
+
+
+def implied_vol_76(price: float, F: float, K: float, T_years: float,
+                   r: float, opt_type: str,
+                   *, max_iter: int = 80, tol: float = 1e-3) -> float:
+    """
+    Bisection IV solver for the Black-76 (futures-underlying) path.
+    Thin wrapper over `_gbs_implied_vol()` with `b=0`.
+    """
+    return _gbs_implied_vol(price, F, K, T_years, r, 0.0, opt_type,
+                            max_iter=max_iter, tol=tol)
 
 
 # ── Helpers used by the simulator ─────────────────────────────────────
@@ -882,54 +976,67 @@ def _norm_pdf(x: float) -> float:
     return math.exp(-x * x / 2.0) / math.sqrt(2.0 * math.pi)
 
 
-def greeks(S: float, K: float, T_years: float, r: float,
-           sigma: float, opt_type: str) -> dict:
+def _gbs_greeks(S: float, K: float, T_years: float, r: float, b: float,
+                sigma: float, opt_type: str, *, db_dr: float = 1.0) -> dict:
     """
-    Per-share analytical Greeks for a vanilla European option. Returned
-    fields:
+    Generalized BSM Greeks, parameterized by cost-of-carry `b`. Shared
+    core for `greeks()` (`b=r`) and `greeks_76()` (`b=0`) — see the
+    module-level comment block above `_gbs_price()` for the full
+    derivation/verification story. Not exported; callers use
+    `greeks()`/`greeks_76()`.
+
+    Returned fields (trader-friendly units — theta per day, vega/rho
+    per 1 %):
 
       delta:  ∂price/∂spot      (dimensionless; multiply by qty for $-delta)
       gamma:  ∂²price/∂spot²    (per ₹1 spot move; tiny number for index opts)
       theta:  ∂price/∂time      (decimal: PER DAY — divide annual θ by 365)
       vega:   ∂price/∂σ         (per 1 % IV change — divide raw vega by 100)
-      rho:    ∂price/∂r         (per 1 % rate change — divide raw rho by 100)
+      rho:    total dprice/dr, accounting for `b`'s own dependence on
+              `r` via `db_dr` (`db_dr=1` when `b≡r` — stock case, a rate
+              shift also shifts `b`; `db_dr=0` when `b≡0` always —
+              futures case, a rate shift leaves `b` fixed) — per 1 %
+              rate change, divide raw rho by 100.
 
-    Theta / vega / rho are returned in the trader-friendly units (per day,
-    per 1 % vol, per 1 % rate) rather than the raw mathematical units.
     Degenerate cases (T ≤ 0, σ ≤ 0) return zeros for everything except
     delta, where intrinsic-direction is preserved (calls → 1 if ITM,
-    puts → -1 if ITM).
+    puts → -1 if ITM) — model-independent, since every growth/discount
+    factor is 1 at T=0 regardless of `b`.
     """
     if S <= 0 or K <= 0:
         return {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     if T_years <= 0 or sigma <= 0:
-        # At expiry: delta is sign-of-intrinsic, others vanish.
         if opt_type == "CE":
             d = 1.0 if S > K else 0.0
         else:
             d = -1.0 if S < K else 0.0
         return {"delta": d, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
 
-    sqrt_T = math.sqrt(T_years)
-    d1 = (math.log(S / K) + (r + sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
-    d2 = d1 - sigma * sqrt_T
+    d1, d2, sqrt_T = _gbs_d1_d2(S, K, T_years, b, sigma)
+    growth = math.exp((b - r) * T_years)
+    disc   = math.exp(-r * T_years)
     nd1 = _norm_pdf(d1)
     Nd1 = _norm_cdf(d1)
     Nd2 = _norm_cdf(d2)
+    price = _gbs_price(S, K, T_years, r, b, sigma, opt_type)
 
     if opt_type == "CE":
-        delta = Nd1
-        theta_yr = (-S * nd1 * sigma / (2.0 * sqrt_T)
-                    - r * K * math.exp(-r * T_years) * Nd2)
-        rho_raw  = K * T_years * math.exp(-r * T_years) * Nd2
+        delta    = growth * Nd1
+        theta_yr = (-S * growth * nd1 * sigma / (2.0 * sqrt_T)
+                    + S * (r - b) * growth * Nd1
+                    - r * K * disc * Nd2)
     else:
-        delta = Nd1 - 1.0
-        theta_yr = (-S * nd1 * sigma / (2.0 * sqrt_T)
-                    + r * K * math.exp(-r * T_years) * _norm_cdf(-d2))
-        rho_raw  = -K * T_years * math.exp(-r * T_years) * _norm_cdf(-d2)
+        delta    = growth * (Nd1 - 1.0)
+        theta_yr = (-S * growth * nd1 * sigma / (2.0 * sqrt_T)
+                    - S * (r - b) * growth * (1.0 - Nd1)
+                    + r * K * disc * (1.0 - Nd2))
 
-    gamma     = nd1 / (S * sigma * sqrt_T)
-    vega_raw  = S * nd1 * sqrt_T
+    gamma    = growth * nd1 / (S * sigma * sqrt_T)
+    vega_raw = S * growth * nd1 * sqrt_T
+    # rho = total d(price)/dr = ∂price/∂r|_b + ∂price/∂b * db/dr
+    #     = -T*price + T*S*delta*db_dr  (derived via chain rule on
+    #     _gbs_price(); verified against both b=r and b=0 endpoints).
+    rho_raw  = -T_years * price + T_years * S * delta * db_dr
 
     # Trader-friendly units.
     return {
@@ -939,6 +1046,27 @@ def greeks(S: float, K: float, T_years: float, r: float,
         "vega":  vega_raw / 100.0,        # per 1 % IV
         "rho":   rho_raw  / 100.0,        # per 1 % rate
     }
+
+
+def greeks(S: float, K: float, T_years: float, r: float,
+           sigma: float, opt_type: str) -> dict:
+    """
+    Per-share analytical Greeks for a vanilla European option. Thin
+    wrapper over `_gbs_greeks()` with `b=r`, `db_dr=1.0` (cash spot —
+    see that function's docstring for field definitions and units).
+    """
+    return _gbs_greeks(S, K, T_years, r, r, sigma, opt_type, db_dr=1.0)
+
+
+def greeks_76(F: float, K: float, T_years: float, r: float,
+             sigma: float, opt_type: str) -> dict:
+    """
+    Per-share analytical Greeks for a European option on a futures
+    contract (Black-76). Thin wrapper over `_gbs_greeks()` with `b=0`,
+    `db_dr=0.0` (futures price carries no cost-of-carry, and never
+    co-moves with `r` — see that function's docstring).
+    """
+    return _gbs_greeks(F, K, T_years, r, 0.0, sigma, opt_type, db_dr=0.0)
 
 
 # ── Probability of profit (POP) ───────────────────────────────────────
@@ -1274,6 +1402,14 @@ def multileg_greeks(legs: list[dict], *, S: float,
     Position-level Greeks summed across all legs (signed qty applied per
     leg). Linear in qty so summation works directly. Returned in trader
     units (theta/day, vega per 1 % IV, rho per 1 % rate).
+
+    Per-leg model dispatch: a leg dict carrying `is_mcx: True` (set by
+    `_strategy_build_option_leg()` via `is_mcx_underlying()`) is priced
+    with `greeks_76()` (Black-76, options on futures) instead of
+    `greeks()` (cash-spot BS). Absent/False `is_mcx` — the default for
+    any caller that doesn't set the key — keeps the exact BS path, so
+    NSE equity/index aggregate Greeks are byte-identical to before this
+    branch existed.
     """
     out = {"delta": 0.0, "gamma": 0.0, "theta": 0.0, "vega": 0.0, "rho": 0.0}
     for l in legs:
@@ -1282,7 +1418,8 @@ def multileg_greeks(legs: list[dict], *, S: float,
         if kind == "fut":
             # Futures contribute pure delta (1 per share, signed by qty).
             # Gamma / Theta / Vega / Rho are zero — futures payoff is
-            # linear in spot.
+            # linear in spot. Model-independent: true for both cash-spot
+            # and futures-underlying futures legs alike.
             out["delta"] += qty
             continue
         K     = float(l["strike"])
@@ -1292,7 +1429,8 @@ def multileg_greeks(legs: list[dict], *, S: float,
         # Apply scale_ratio so Greeks evaluate at the leg's own contract-
         # month spot rather than the chart's near-month reference spot.
         scale = float(l.get("scale_ratio") or 1.0)
-        g = greeks(S * scale, K, T_yrs, r, sig, opt)
+        pricer = greeks_76 if l.get("is_mcx") else greeks
+        g = pricer(S * scale, K, T_yrs, r, sig, opt)
         for k in out:
             out[k] += g[k] * qty
     return out

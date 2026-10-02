@@ -37,13 +37,16 @@ from litestar.exceptions import HTTPException
 from backend.api.algo.derivatives import (
     DEFAULT_IV,
     DEFAULT_RISK_FREE,
+    black_76,
     black_scholes,
     days_to_expiry,
     expected_value,
     find_breakevens,
     futures_symbol_for_expiry,
     greeks,
+    greeks_76,
     implied_vol,
+    implied_vol_76,
     is_mcx_underlying,
     lookup_future_for_option,
     lookup_mcx_front_month_future,
@@ -1797,15 +1800,19 @@ def _strategy_ltp_apply_fallbacks(
     S_leg: float,
     parsed: dict,
     T_yrs: float,
+    is_mcx: bool = False,
 ) -> tuple[float, str]:
-    """avg_cost → BS estimate fallbacks for the option LTP chain.
-    Raises HTTPException(400) when all fallbacks are exhausted."""
+    """avg_cost → BS/Black-76 estimate fallbacks for the option LTP chain.
+    Raises HTTPException(400) when all fallbacks are exhausted.
+    `is_mcx` selects Black-76 (futures-underlying) instead of cash-spot
+    BS for the estimate — `S_leg` is a futures price for MCX legs."""
     if ltp_val is None and avg_cost is not None and avg_cost > 0:
         ltp_val, ltp_source = float(avg_cost), "avg_cost"
     if ltp_val is None or ltp_val <= 0:
-        est = black_scholes(S_leg, parsed["strike"], T_yrs,
-                            DEFAULT_RISK_FREE, DEFAULT_IV,
-                            parsed["opt_type"])
+        pricer = black_76 if is_mcx else black_scholes
+        est = pricer(S_leg, parsed["strike"], T_yrs,
+                     DEFAULT_RISK_FREE, DEFAULT_IV,
+                     parsed["opt_type"])
         if est > 0:
             ltp_val, ltp_source = est, "estimated"
     if ltp_val is None or ltp_val <= 0:
@@ -1825,13 +1832,14 @@ def _strategy_resolve_option_ltp(
     quote_resp: dict,
     S_leg: float,
     T_yrs: float,
+    is_mcx: bool = False,
 ) -> tuple[float, str]:
-    """Option-leg LTP chain: override → broker → avg_cost → BS estimate → fail.
-    Raises HTTPException(400) if all fallbacks are exhausted.
-    """
+    """Option-leg LTP chain: override → broker → avg_cost → BS/Black-76
+    estimate → fail. Raises HTTPException(400) if all fallbacks are
+    exhausted."""
     ltp_val, ltp_source = _strategy_ltp_from_leg_or_quote(leg, sym, quote_resp)
     return _strategy_ltp_apply_fallbacks(
-        sym, ltp_val, ltp_source, leg.avg_cost, S_leg, parsed, T_yrs
+        sym, ltp_val, ltp_source, leg.avg_cost, S_leg, parsed, T_yrs, is_mcx,
     )
 
 
@@ -1842,13 +1850,17 @@ def _strategy_calibrate_iv(
     T_yrs: float,
     ltp_val: float,
     ltp_source: str,
+    is_mcx: bool = False,
 ) -> tuple[float, str]:
     """Return (sigma, iv_source). Operator override → calibrated → DEFAULT_IV.
-    """
+    `is_mcx` selects `implied_vol_76()` (Black-76 re-pricing) instead of
+    `implied_vol()` (cash-spot BS) — `S_leg` is a futures price for MCX
+    legs, so the calibrator must re-price with the matching model."""
     if leg.iv is not None and leg.iv > 0:
         return float(leg.iv), "override"
-    sig = implied_vol(ltp_val, S_leg, parsed["strike"], T_yrs,
-                      DEFAULT_RISK_FREE, parsed["opt_type"])
+    calibrator = implied_vol_76 if is_mcx else implied_vol
+    sig = calibrator(ltp_val, S_leg, parsed["strike"], T_yrs,
+                     DEFAULT_RISK_FREE, parsed["opt_type"])
     if sig == DEFAULT_IV or ltp_source not in ("override", "live", "sim"):
         iv_source = "default" if sig == DEFAULT_IV else "calibrated"
     else:
@@ -1865,22 +1877,32 @@ def _strategy_build_option_leg(
     T_yrs: float,
     scale_ratio: float,
     qty: int,
+    is_mcx: bool = False,
 ) -> tuple[dict, dict, float]:
     """Resolve an option leg → (resolved_leg dict, leg_detail dict, sigma).
     Sigma is returned so the caller can accumulate the qty-weighted mean
     across all option legs.
+
+    `is_mcx` (from `is_mcx_underlying(underlying)` — the leg's spot is
+    always futures-equivalent for MCX regardless of which `_resolve_spot`
+    step produced it) branches pricing/Greeks/IV-calibration to the
+    Black-76 path (`black_76`/`greeks_76`/`implied_vol_76`) instead of
+    cash-spot BS (`black_scholes`/`greeks`/`implied_vol`). Defaults to
+    False so any caller that doesn't pass it keeps the exact byte-
+    identical BS behavior (NSE equity/index legs).
     """
     ltp_val, ltp_source = _strategy_resolve_option_ltp(
-        leg, sym, parsed, quote_resp, S_leg, T_yrs,
+        leg, sym, parsed, quote_resp, S_leg, T_yrs, is_mcx,
     )
     sig, iv_source = _strategy_calibrate_iv(
-        leg, parsed, S_leg, T_yrs, ltp_val, ltp_source,
+        leg, parsed, S_leg, T_yrs, ltp_val, ltp_source, is_mcx,
     )
     entry = float(leg.avg_cost) if leg.avg_cost is not None else ltp_val
-    theo = black_scholes(S_leg, parsed["strike"], T_yrs,
-                         DEFAULT_RISK_FREE, sig, parsed["opt_type"])
-    g_per = greeks(S_leg, parsed["strike"], T_yrs,
-                   DEFAULT_RISK_FREE, sig, parsed["opt_type"])
+    price_fn, greeks_fn = (black_76, greeks_76) if is_mcx else (black_scholes, greeks)
+    theo = price_fn(S_leg, parsed["strike"], T_yrs,
+                    DEFAULT_RISK_FREE, sig, parsed["opt_type"])
+    g_per = greeks_fn(S_leg, parsed["strike"], T_yrs,
+                      DEFAULT_RISK_FREE, sig, parsed["opt_type"])
     resolved = {
         "strike":      parsed["strike"],
         "opt_type":    parsed["opt_type"],
@@ -1889,6 +1911,7 @@ def _strategy_build_option_leg(
         "T_years":     T_yrs,
         "sigma":       sig,
         "scale_ratio": scale_ratio,
+        "is_mcx":      is_mcx,
     }
     detail = {
         "symbol":      sym,
@@ -2014,6 +2037,7 @@ def _strategy_build_legs(
 
         opt_resolved, opt_detail, sig = _strategy_build_option_leg(
             leg, sym, parsed, quote_resp, S_leg, T_yrs, scale_ratio, qty,
+            is_mcx=_is_commodity,
         )
         resolved_legs.append(opt_resolved)
         leg_details.append(opt_detail)
