@@ -73,7 +73,8 @@ test.describe('Fullscreen card — NavStrip (.ps-strip) offset', () => {
     await page.waitForLoadState('domcontentloaded');
 
     const psStrip = page.locator('.ps-strip').first();
-    const psVisible = await psStrip.isVisible({ timeout: 20_000 }).catch(() => false);
+    const psVisible = await psStrip.isVisible().catch(() => false)
+      || await expect(psStrip).toBeVisible({ timeout: 20_000 }).then(() => true).catch(() => false);
     if (!psVisible) {
       test.skip(true, '.ps-strip not visible — PositionStrip may be self-hiding (no positions)');
       return;
@@ -81,7 +82,8 @@ test.describe('Fullscreen card — NavStrip (.ps-strip) offset', () => {
     const psBoxBefore = await psStrip.boundingBox();
 
     const legsCard = page.locator('.opt-legs-card').first();
-    const legsVisible = await legsCard.isVisible({ timeout: 10_000 }).catch(() => false);
+    const legsVisible = await legsCard.isVisible().catch(() => false)
+      || await expect(legsCard).toBeVisible({ timeout: 15_000 }).then(() => true).catch(() => false);
     if (!legsVisible) {
       test.skip(true, '.opt-legs-card not visible — no strategy/positions loaded');
       return;
@@ -90,7 +92,8 @@ test.describe('Fullscreen card — NavStrip (.ps-strip) offset', () => {
     const fsBtn = legsCard
       .locator('.fs-btn, [title*="fullscreen" i], [aria-label*="fullscreen" i]')
       .first();
-    const fsBtnVisible = await fsBtn.isVisible({ timeout: 10_000 }).catch(() => false);
+    const fsBtnVisible = await fsBtn.isVisible().catch(() => false)
+      || await expect(fsBtn).toBeVisible({ timeout: 10_000 }).then(() => true).catch(() => false);
     if (!fsBtnVisible) {
       test.skip(true, 'Legs grid fullscreen button not visible');
       return;
@@ -137,7 +140,8 @@ test.describe('Fullscreen card — NavStrip (.ps-strip) offset', () => {
     await page.waitForLoadState('domcontentloaded');
 
     const legsCard = page.locator('.opt-legs-card').first();
-    const legsVisible = await legsCard.isVisible({ timeout: 10_000 }).catch(() => false);
+    const legsVisible = await legsCard.isVisible().catch(() => false)
+      || await expect(legsCard).toBeVisible({ timeout: 15_000 }).then(() => true).catch(() => false);
     if (!legsVisible) {
       test.skip(true, '.opt-legs-card not visible — no strategy/positions loaded');
       return;
@@ -157,7 +161,8 @@ test.describe('Fullscreen card — NavStrip (.ps-strip) offset', () => {
     const fsBtn = legsCard
       .locator('.fs-btn, [title*="fullscreen" i], [aria-label*="fullscreen" i]')
       .first();
-    const fsBtnVisible = await fsBtn.isVisible({ timeout: 10_000 }).catch(() => false);
+    const fsBtnVisible = await fsBtn.isVisible().catch(() => false)
+      || await expect(fsBtn).toBeVisible({ timeout: 10_000 }).then(() => true).catch(() => false);
     if (!fsBtnVisible) {
       test.skip(true, 'Legs grid fullscreen button not visible');
       return;
