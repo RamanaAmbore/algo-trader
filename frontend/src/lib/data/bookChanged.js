@@ -3,13 +3,27 @@
  * `fill_event` WebSocket events emitted by the broker postback handler.
  *
  * Events handled:
- *   book_changed — emitted on every terminal order status
- *                  (COMPLETE / CANCELLED / REJECTED / EXPIRED).
- *   fill_event   — emitted immediately after a COMPLETE fill so the
- *                  positions grid updates within ~2 s without waiting
- *                  for the next poll cycle. Backend must emit with
- *                  key "event" (not "type") — ws.js drops frames that
- *                  lack an `event` field.
+ *   book_changed        — emitted on every terminal order status
+ *                         (COMPLETE / CANCELLED / REJECTED / EXPIRED).
+ *   fill_event          — emitted immediately after a COMPLETE fill so the
+ *                         positions grid updates within ~2 s without
+ *                         waiting for the next poll cycle. Backend must
+ *                         emit with key "event" (not "type") — ws.js drops
+ *                         frames that lack an `event` field.
+ *   positions_refreshed — emitted by `_positions_refresh_after_fill`
+ *                         (backend/api/routes/orders.py) once a poll of
+ *                         the broker book confirms a genuine quantity
+ *                         change after a fill. This is the ONLY backstop
+ *                         signal for Dhan/Groww fills when their postback
+ *                         webhook isn't configured (2026-10 fix — this
+ *                         event kind was previously dropped entirely by
+ *                         this bus, silently falling through the final
+ *                         `if (msg.event !== 'book_changed') return;`
+ *                         guard). Payload carries `tradingsymbol` (not
+ *                         `symbol`) + `account` + `ts`; wired into the
+ *                         same immediate (no-debounce) lane as fill_event
+ *                         since it already represents a confirmed fresh
+ *                         state, not a burst to coalesce.
  *
  * Why centralize: previously each surface that displays position-
  * derived data (snapshot grid, legs panel, payoff curve, dashboard
@@ -84,6 +98,16 @@ export function startBookChangedBus() {
       // re-fetch lands fresh data on the first try.
       if (msg.event === 'fill_event') {
         lastFillEvent.set({ account: msg.account, symbol: msg.symbol, ts: msg.ts ?? Date.now() });
+        bookChanged.update(n => n + 1);
+        return;
+      }
+
+      // positions_refreshed — same immediate (no-debounce) lane as
+      // fill_event. Payload uses `tradingsymbol`, not `symbol`; map it
+      // onto the shared lastFillEvent shape so existing consumers that
+      // already branch on lastFillEvent.symbol need no changes.
+      if (msg.event === 'positions_refreshed') {
+        lastFillEvent.set({ account: msg.account, symbol: msg.tradingsymbol, ts: msg.ts ?? Date.now() });
         bookChanged.update(n => n + 1);
         return;
       }
