@@ -44,8 +44,16 @@
     statusFilter        = /** @type {'all'|'open'|'complete'|'rejected'|'cancelled'} */ ('all'),
     /** Set of upper-case tradingsymbols to scope Order tab rows to. */
     symbolFilter        = /** @type {Set<string> | null} */ (null),
-    /** Poll cadence — ms between auto-refreshes inside LogPanel. */
-    pollMs              = 3000,
+    /** Poll cadence — ms between auto-refreshes inside LogPanel.
+     *  Default matches the `polling.fast_ms` registry setting's own
+     *  default (same static-literal rationale as LogPanel.svelte's own
+     *  default — see that file's JSDoc). ActivityLogSurface is the ONLY
+     *  real mount path for LogPanel today and always passes `{pollMs}`
+     *  explicitly, so this is the default that actually reaches the
+     *  live cadence end-to-end (2026-10-02 fix — unshadows LogPanel's
+     *  own 5000 default, which was previously inert for every real
+     *  mount). */
+    pollMs              = 5000,
     /** Tail height passthrough — LogPanel respects the same class. */
     heightClass         = 'flex-1 min-h-0',
     /** Selected account codes — bindable so parent + ActivityAccountSelect share state. */
