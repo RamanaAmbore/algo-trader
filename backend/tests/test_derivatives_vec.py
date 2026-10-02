@@ -23,8 +23,13 @@ import pytest
 
 from backend.api.algo.derivatives import (
     DEFAULT_IV,
+    DEFAULT_RISK_FREE,
+    black_76,
     black_scholes,
     expected_value,
+    greeks,
+    greeks_76,
+    multileg_greeks,
     multileg_intermediate_curves,
     multileg_payoff_curve,
     payoff_curve,
@@ -219,13 +224,238 @@ def test_scalar_black_scholes_still_works():
     assert 250 < px < 400, f"BS sanity check failed: {px}"
 
 
-def test_scalar_greeks_still_works():
-    """`greeks` must remain callable scalar-style for multileg_greeks
-    (which is called once per request at a single spot)."""
-    from backend.api.algo.derivatives import greeks
-    g = greeks(24500.0, 24500.0, 14 / 365.0, 0.07, 0.16, "CE")
-    assert set(g.keys()) == {"delta", "gamma", "theta", "vega", "rho"}
-    assert 0.4 < g["delta"] < 0.6, f"ATM delta sanity failed: {g['delta']}"
+# ── Reference-value Greeks: cash-spot Black-Scholes (b=r) ─────────────
+#
+# Hull's classic worked example ("Options, Futures, and Other
+# Derivatives"): S=42, K=40, r=10%, sigma=20%, T=0.5 years. Hand-verified
+# this session against the formulas in `greeks()`/`black_scholes()`
+# before this test was added — values below are this repo's own
+# `greeks()` output at that point, locked in as a permanent regression
+# guard (closes the "spec claims reference tests exist but don't" gap;
+# DERIVATIVES_SPEC.md §10 previously pointed at three nonexistent test
+# files for exactly this kind of check).
+
+_BS_REF_S, _BS_REF_K, _BS_REF_T = 42.0, 40.0, 0.5
+_BS_REF_R, _BS_REF_SIGMA = 0.10, 0.20
+
+_BS_REF_CALL = {
+    "delta": 0.779131290942669,
+    "gamma": 0.04996267040591185,
+    "theta": -0.012490663546829112,
+    "vega":  0.08813415059602853,
+    "rho":   0.1398204591336028,
+}
+_BS_REF_PUT = {
+    "delta": -0.22086870905733103,
+    "gamma": 0.04996267040591185,
+    "theta": -0.0020662314975062202,
+    "vega":  0.08813415059602853,
+    "rho":   -0.05042542576654,
+}
+
+
+def test_greeks_bs_reference_values_call():
+    """`greeks()` (b=r, cash-spot BS) must match the Hull worked example
+    to tight tolerance — not just a wide sanity band."""
+    g = greeks(_BS_REF_S, _BS_REF_K, _BS_REF_T, _BS_REF_R, _BS_REF_SIGMA, "CE")
+    for k, expected in _BS_REF_CALL.items():
+        assert g[k] == pytest.approx(expected, abs=1e-6), f"{k}: {g[k]} != {expected}"
+
+
+def test_greeks_bs_reference_values_put():
+    """Put-side counterpart of the Hull reference — exercises the
+    opposite delta/theta/rho sign branch."""
+    g = greeks(_BS_REF_S, _BS_REF_K, _BS_REF_T, _BS_REF_R, _BS_REF_SIGMA, "PE")
+    for k, expected in _BS_REF_PUT.items():
+        assert g[k] == pytest.approx(expected, abs=1e-6), f"{k}: {g[k]} != {expected}"
+
+
+def test_multileg_greeks_short_sign_flip_bs():
+    """A short position (qty=-1) must exactly negate every Greek vs the
+    equivalent long (qty=+1) — linearity in qty is the whole premise of
+    `multileg_greeks()`'s qty-weighted summation."""
+    leg = {"kind": "opt", "strike": _BS_REF_K, "opt_type": "CE",
+           "T_years": _BS_REF_T, "sigma": _BS_REF_SIGMA}
+    long_g  = multileg_greeks([{**leg, "qty": 1}],  S=_BS_REF_S, r=_BS_REF_R)
+    short_g = multileg_greeks([{**leg, "qty": -1}], S=_BS_REF_S, r=_BS_REF_R)
+    for k in long_g:
+        assert short_g[k] == pytest.approx(-long_g[k], abs=1e-9), (
+            f"{k}: short {short_g[k]} is not the exact negation of long {long_g[k]}"
+        )
+
+
+def test_put_call_delta_parity_bs():
+    """Put-call parity on delta for cash-spot BS: call_delta - put_delta
+    must equal exactly 1 (b=r makes the growth factor e^((b-r)T) == 1)."""
+    g_call = greeks(_BS_REF_S, _BS_REF_K, _BS_REF_T, _BS_REF_R, _BS_REF_SIGMA, "CE")
+    g_put  = greeks(_BS_REF_S, _BS_REF_K, _BS_REF_T, _BS_REF_R, _BS_REF_SIGMA, "PE")
+    assert (g_call["delta"] - g_put["delta"]) == pytest.approx(1.0, abs=1e-9)
+
+
+# ── Reference-value Greeks: Black-76 (options on futures, b=0) ────────
+#
+# Haug's "The Complete Guide to Option Pricing Formulas" at-the-money-
+# forward worked example: F=K=19, T=0.75, r=10%, sigma=28% → call price
+# == put price == 1.7011 (ATM-forward put-call parity: C-P =
+# e^(-rT)(F-K) = 0 when F=K). This is an INDEPENDENT published reference
+# (not derived from the BS numbers above — different model, needs its
+# own anchor) that this repo's `black_76()` reproduces to 4 decimals
+# (1.70105...). The Greek reference values below are this repo's own
+# `greeks_76()` output at that point — their correctness was established
+# this session via finite-difference cross-check against `black_76()`
+# directly (delta/gamma/vega/rho/theta all independently verified
+# numerically; see commit history) and via the generalized-b derivation
+# reducing exactly to the BS endpoint above at b=r — now locked in as a
+# permanent regression guard.
+
+_B76_REF_F, _B76_REF_K, _B76_REF_T = 19.0, 19.0, 0.75
+_B76_REF_R, _B76_REF_SIGMA = 0.10, 0.28
+_B76_REF_PRICE = 1.7010507252362679  # matches Haug's published 1.7011 to 4dp
+
+_B76_REF_CALL = {
+    "delta": 0.5086362359336519,
+    "gamma": 0.07974503467912114,
+    "theta": -0.0026257064718563077,
+    "vega":  0.06045471079024173,
+    "rho":   -0.012757880439272009,
+}
+_B76_REF_PUT = {
+    "delta": -0.419107250394901,
+    "gamma": 0.07974503467912114,
+    "theta": -0.0026257064718563073,
+    "vega":  0.06045471079024173,
+    "rho":   -0.012757880439272009,
+}
+
+
+def test_black_76_price_matches_published_reference():
+    """`black_76()` must reproduce Haug's published ATM-forward example
+    (F=K=19, T=0.75, r=10%, sigma=28% → 1.7011) to 4 decimals, for both
+    call and put (ATM-forward parity: they're equal when F=K)."""
+    call = black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "CE")
+    put  = black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "PE")
+    assert call == pytest.approx(1.7011, abs=1e-4)
+    assert put  == pytest.approx(1.7011, abs=1e-4)
+    assert call == pytest.approx(put, abs=1e-9)
+
+
+def test_greeks_76_reference_values_call():
+    """`greeks_76()` (b=0, Black-76) at the Haug ATM-forward point,
+    tight tolerance."""
+    g = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "CE")
+    for k, expected in _B76_REF_CALL.items():
+        assert g[k] == pytest.approx(expected, abs=1e-6), f"{k}: {g[k]} != {expected}"
+
+
+def test_greeks_76_reference_values_put():
+    g = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "PE")
+    for k, expected in _B76_REF_PUT.items():
+        assert g[k] == pytest.approx(expected, abs=1e-6), f"{k}: {g[k]} != {expected}"
+
+
+def test_greeks_76_rho_shortcut_matches_minus_T_times_price():
+    """Black-76's closed-form rho shortcut (rho = -T*price, since d1/d2
+    carry no `r` term — all rate-dependence routes through the outer
+    discount factor) must match the actual `greeks_76()` output exactly,
+    for both call and put."""
+    for opt_type in ("CE", "PE"):
+        price = black_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R,
+                         _B76_REF_SIGMA, opt_type)
+        g = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R,
+                      _B76_REF_SIGMA, opt_type)
+        expected_rho_raw = -_B76_REF_T * price
+        assert g["rho"] == pytest.approx(expected_rho_raw / 100.0, abs=1e-9)
+
+
+def test_multileg_greeks_short_sign_flip_black76():
+    """Short-position sign flip for the Black-76 path too — a leg with
+    `is_mcx: True` must negate exactly under qty=-1 vs qty=+1, same as
+    the BS path."""
+    leg = {"kind": "opt", "strike": _B76_REF_K, "opt_type": "CE",
+           "T_years": _B76_REF_T, "sigma": _B76_REF_SIGMA, "is_mcx": True}
+    long_g  = multileg_greeks([{**leg, "qty": 1}],  S=_B76_REF_F, r=_B76_REF_R)
+    short_g = multileg_greeks([{**leg, "qty": -1}], S=_B76_REF_F, r=_B76_REF_R)
+    for k in long_g:
+        assert short_g[k] == pytest.approx(-long_g[k], abs=1e-9), (
+            f"{k}: short {short_g[k]} is not the exact negation of long {long_g[k]}"
+        )
+
+
+def test_put_call_delta_parity_black76():
+    """Put-call parity on delta for Black-76 differs from plain BS:
+    call_delta - put_delta == e^(-rT) (the growth factor at b=0), NOT 1
+    — a distinguishing numerical signature that the futures model is
+    actually in effect, not a mislabeled BS call."""
+    import math
+    g_call = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "CE")
+    g_put  = greeks_76(_B76_REF_F, _B76_REF_K, _B76_REF_T, _B76_REF_R, _B76_REF_SIGMA, "PE")
+    expected = math.exp(-_B76_REF_R * _B76_REF_T)
+    assert (g_call["delta"] - g_put["delta"]) == pytest.approx(expected, abs=1e-9)
+    # And NOT 1 — proves this is genuinely the futures model, not BS.
+    assert (g_call["delta"] - g_put["delta"]) != pytest.approx(1.0, abs=1e-3)
+
+
+# ── Call-site dispatch: MCX leg must actually route through Black-76 ──
+#
+# The tests above exercise `black_76()`/`greeks_76()` directly — they'd
+# stay green even if the route-layer branch in
+# `_strategy_build_option_leg()` were reverted to always call
+# `black_scholes()`/`greeks()`. This test goes through the real call
+# site instead, so it fails if that branch regresses (verified manually
+# this session: temporarily hardcoding the branch to the BS path breaks
+# this test's assertions, then reverted).
+
+
+def test_strategy_build_option_leg_mcx_leg_uses_black_76():
+    """An `is_mcx=True` leg built via `_strategy_build_option_leg()`
+    (the real production call site, options.py) must produce Black-76
+    Greeks/pricing — measurably different from what the plain-BS path
+    would give for the same inputs — and must propagate an `is_mcx`
+    flag that `multileg_greeks()` picks up for the aggregate card."""
+    from backend.api.routes.options import _strategy_build_option_leg, StrategyLeg
+
+    leg = StrategyLeg(symbol="CRUDEOIL26OCT5500CE", qty=1, avg_cost=None,
+                      ltp=200.0, iv=0.20)
+    parsed = {"strike": 5500.0, "opt_type": "CE", "root": "CRUDEOIL", "kind": "opt"}
+    resolved, detail, sig = _strategy_build_option_leg(
+        leg, "CRUDEOIL26OCT5500CE", parsed, {}, 5500.0, 0.1, 1.0, 1,
+        is_mcx=True,
+    )
+    assert resolved["is_mcx"] is True
+    assert sig == pytest.approx(0.20)
+
+    g76 = greeks_76(5500.0, 5500.0, 0.1, DEFAULT_RISK_FREE, sig, "CE")
+    gbs = greeks(5500.0, 5500.0, 0.1, DEFAULT_RISK_FREE, sig, "CE")
+
+    # Leg detail's per-share Greeks must match the Black-76 path exactly...
+    for k in g76:
+        assert detail["greeks"][k] == pytest.approx(g76[k], abs=1e-9)
+    # ...and must differ from the plain-BS path by far more than any
+    # floating-point tolerance — proves the branch is actually live.
+    assert abs(detail["greeks"]["delta"] - gbs["delta"]) > 1e-3
+
+    # The aggregate "Greeks (position)" card (multileg_greeks) must also
+    # dispatch this leg through Black-76, not silently fall back to BS.
+    agg = multileg_greeks([resolved], S=5500.0)
+    for k in g76:
+        assert agg[k] == pytest.approx(g76[k], abs=1e-9)
+
+
+def test_strategy_build_option_leg_nse_leg_stays_on_bs():
+    """The `is_mcx=False` default must keep NSE/non-commodity legs on
+    the plain-BS path — byte-identical to calling `greeks()` directly."""
+    from backend.api.routes.options import _strategy_build_option_leg, StrategyLeg
+
+    leg = StrategyLeg(symbol="RELIANCE25APR2800CE", qty=1, avg_cost=None,
+                      ltp=50.0, iv=0.20)
+    parsed = {"strike": 2800.0, "opt_type": "CE", "root": "RELIANCE", "kind": "opt"}
+    resolved, detail, sig = _strategy_build_option_leg(
+        leg, "RELIANCE25APR2800CE", parsed, {}, 2800.0, 0.1, 1.0, 1,
+    )  # is_mcx defaults to False
+    assert resolved["is_mcx"] is False
+    gbs = greeks(2800.0, 2800.0, 0.1, DEFAULT_RISK_FREE, sig, "CE")
+    for k in gbs:
+        assert detail["greeks"][k] == pytest.approx(gbs[k], abs=1e-9)
 
 
 # ── Test C: Futures multileg payoff subtracts entry cost ───────────────
