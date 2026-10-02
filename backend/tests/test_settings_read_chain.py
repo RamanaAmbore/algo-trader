@@ -715,6 +715,26 @@ class TestNewSeedsPresence:
         assert row[2] == "int"
         assert row[3] == 0
 
+    # ── polling (FAST/SLOW cadence unification) ─────────────────────────────
+
+    def test_polling_fast_ms_seeded(self):
+        row = self._find("polling.fast_ms")
+        assert row is not None
+        assert row[0] == "polling"
+        assert row[2] == "int"
+        assert row[3] == 5000
+        assert row[5] == "ms"
+        assert row[6] == {"min": 1000, "max": 30000, "step": 500}
+
+    def test_polling_slow_ms_seeded(self):
+        row = self._find("polling.slow_ms")
+        assert row is not None
+        assert row[0] == "polling"
+        assert row[2] == "int"
+        assert row[3] == 60000
+        assert row[5] == "ms"
+        assert row[6] == {"min": 10000, "max": 300000, "step": 5000}
+
     # ── orders ────────────────────────────────────────────────────────────
 
     def test_orders_open_order_watchdog_seconds_seeded(self):

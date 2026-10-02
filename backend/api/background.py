@@ -4342,9 +4342,11 @@ async def _task_open_order_watchdog() -> None:
     """Reconcile stale OPEN live orders that were never chased.
 
     This is a safety-net backstop, not the primary fill-detection path
-    (that's event-driven via postback + `_subscribe_filled_pairs`), so a
-    60s cadence is safe — `orders.open_order_watchdog_seconds` default
-    dropped from 300s (5 min) to 60s accordingly.
+    (that's event-driven via postback + `_subscribe_filled_pairs`), so it
+    defaults to the canonical SLOW cadence (`polling.slow_ms`, settings.py —
+    60s by default, was a hardcoded 300s). `orders.open_order_watchdog_seconds`
+    still overrides per-deploy if this task specifically needs a cadence
+    different from the rest of SLOW.
 
     Cutoff: orders created more than 5 minutes ago. Accounts are reconciled
     individually against the broker order book; FILLED rows trigger template
@@ -4359,7 +4361,8 @@ async def _task_open_order_watchdog() -> None:
     from backend.api.routes.orders_place import _maybe_fire_template_attach_for_reconcile
     from sqlalchemy import select as _sel
 
-    interval = max(60, get_int("orders.open_order_watchdog_seconds", 60))
+    _slow_default_s = get_int("polling.slow_ms", 60000) // 1000
+    interval = max(60, get_int("orders.open_order_watchdog_seconds", _slow_default_s))
     while True:
         await asyncio.sleep(interval)
         try:

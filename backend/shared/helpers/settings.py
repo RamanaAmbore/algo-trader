@@ -137,6 +137,17 @@ SEEDS: list[tuple] = [
      "are frozen during closed hours; a 30-minute refresh is sufficient and eliminates "
      "720+/hr backend hits. Auto-restores to book_live_ms on market open.",
      "ms", {"min": 60000, "max": 7200000, "step": 60000}),
+    ("polling", "polling.fast_ms", "int", 5000,
+     "Canonical FAST cadence (ms) for event-adjacent polling — order book, "
+     "fill backstops, merged Derivatives poll. Read via get_int(); backend "
+     "callers that poll in seconds divide by 1000.",
+     "ms", {"min": 1000, "max": 30000, "step": 500}),
+    ("polling", "polling.slow_ms", "int", 60000,
+     "Canonical SLOW cadence (ms) for safety-net / backstop polling — open-order "
+     "watchdog and other non-primary refresh paths that are a backstop behind an "
+     "event-driven primary path. Read via get_int(); backend callers that poll "
+     "in seconds divide by 1000.",
+     "ms", {"min": 10000, "max": 300000, "step": 5000}),
 
     # ── UI tuning ───────────────────────────────────────────────────────
     ("ui", "ui.ltp_flash_pct", "float", 0.1,
@@ -550,7 +561,8 @@ SEEDS: list[tuple] = [
     ("orders",      "orders.open_order_watchdog_seconds", "int", 60,
      "Open-order watchdog poll cadence (seconds). Safety-net backstop, not "
      "the primary fill-detection path (that's event-driven via postback) — "
-     "default dropped from 300s (5 min) to 60s accordingly.",
+     "defaults to the canonical SLOW cadence (polling.slow_ms); override "
+     "here only if this task specifically needs a different cadence.",
      "s", {"min": 0, "max": 3600, "step": 30}),
     # Default symbol the order modal / chart modal pre-selects when the
     # host page doesn't supply a contextual symbol. Operator-friendly
