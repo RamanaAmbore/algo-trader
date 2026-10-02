@@ -16,10 +16,11 @@
   import { fetchHoldings, fetchPositions, fetchFunds, fetchNavByAccount } from '$lib/api';
   import { createPerformanceSocket } from '$lib/ws';
   import { bookChanged } from '$lib/data/bookChanged';
-  import { authStore, ltpFlashPct } from '$lib/stores';
+  import { authStore, ltpFlashPct, visibleInterval } from '$lib/stores';
   import {
-    positionsStore, holdingsStore, fundsStore,
+    positionsStore, holdingsStore, fundsStore, getFillWatchIntervalMs,
   } from '$lib/data/marketDataStores.svelte.js';
+  import { pollOrderFillWatch } from '$lib/data/orderFillPoller.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
   import GridDownloadButton from '$lib/GridDownloadButton.svelte';
@@ -1244,6 +1245,9 @@
   }
 
   let unsub;
+  /** Teardown for the auth-gated fill-watch backstop poller — see its
+   *  setup at the end of onMount below. */
+  let _fillWatchTeardown;
 
   onMount(async () => {
     // Dynamic import — keeps AllCommunityModule (~200KB gzip) out of the
@@ -1358,6 +1362,29 @@
       try { positionsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
       try { holdingsAllGrid?.refreshCells({ columns: ['last_price', 'day_change_val', 'pnl'], force: true }); } catch (_) {}
     });
+
+    // Fill-watch backstop (2026-10-02) — the WS subscription above
+    // (`createPerformanceSocket`) and the `$bookChanged` effect below are
+    // the primary refresh paths, but three channels never broadcast a WS
+    // event at all: the broker-order-book TTL cache read, the 5-min
+    // `_task_performance` watchdog cycle, and admin reconcile sweeps (see
+    // orderFillPoller.js header). If WS drops and none of those happen to
+    // coincide with an operator action, this page has no fallback.
+    // Reuses the SAME layout-resident backstop function + settings-driven
+    // cadence every (algo) page gets (`polling.slow_ms`, default 60s —
+    // see (algo)/+layout.svelte) rather than inventing a second one.
+    //
+    // Gated on authStore INSIDE the callback (same pattern as
+    // startBrokerHealthPoller in stores.js) rather than skipped at setup
+    // time — /performance is a PUBLIC page; `pollOrderFillWatch()` hits
+    // admin-guarded endpoints that would just 401 silently for an
+    // anonymous visitor (wasted backend load, zero benefit — they can't
+    // act on data anyway, WS is their only update path). Gating inside
+    // the callback (not at setup) also means a mid-session login starts
+    // the backstop immediately on the next tick, no page reload needed.
+    const _fwPoll = () => { if (authStore.getToken()) pollOrderFillWatch(); };
+    _fwPoll();
+    _fillWatchTeardown = visibleInterval(_fwPoll, getFillWatchIntervalMs());
   });
 
   // book_changed bus — also covers cancel / reject paths where
@@ -1423,6 +1450,7 @@
   onDestroy(() => {
     _unsubPerfOrder();
     unsub?.();
+    _fillWatchTeardown?.();
     _perfTickUnsub?.();
     _perfLtpTimers.forEach(t => clearTimeout(t));
     _perfLtpTimers.clear();
