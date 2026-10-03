@@ -1806,8 +1806,8 @@
   .sim-pill-long  { border-color: rgba(56,189,248,0.45); }
   .sim-pill-short { border-color: rgba(251,146,60,0.45); }
   .sim-pill-chase { border-color: rgba(251,191,36,0.45); background: rgba(251,191,36,0.06); }
-  .sim-pill-side-buy  { background: rgba(110,231,183,0.22); color: #6ee7b7; }
-  .sim-pill-side-sell { background: var(--c-short-22);  color: #fda4af; }
+  .sim-pill-side-buy  { background: var(--c-long-22);  color: var(--c-long); }
+  .sim-pill-side-sell { background: var(--c-short-22); color: var(--c-short); }
   .sim-pill-sym { color: #fde68a; font-weight: 600; }
   .sim-pill-qty { color: var(--algo-slate); }
   .sim-pill-limit { color: #7dd3fc; }

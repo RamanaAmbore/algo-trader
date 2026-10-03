@@ -537,8 +537,8 @@
   .sim-table td      { padding: 0.3rem 0.5rem; color: var(--algo-slate); border-bottom: 1px solid rgba(148,163,184,0.06); }
   .sim-td-mono       { font-family: 'JetBrains Mono', monospace; font-size: var(--fs-md); }
   .sim-td-detail     { max-width: 24rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .sim-buy           { color: #38bdf8; }
-  .sim-sell          { color: #fb923c; }
+  .sim-buy           { color: var(--c-long); }
+  .sim-sell          { color: var(--c-short); }
   .sim-pill          { font-size: var(--fs-sm); font-weight: 700; padding: 0.1rem 0.4rem; border-radius: 9999px; }
   .sim-pill-replay   { color: var(--c-long); background: rgba(74,222,128,0.12); }
   /* #64748b is deliberately darker than --algo-dim (#94a3b8) — an
