@@ -99,6 +99,24 @@
     return () => document.removeEventListener('mousedown', onDocClick);
   });
 
+  // In hideButton mode the internal chip (and its own onmouseenter/
+  // onmouseleave) is never rendered, so nothing drove `hovered` for
+  // that mode — hover silently did nothing on every anchor-trigger
+  // site. Wire the same `hovered` state directly to the external
+  // anchor element so hover and click both work identically to the
+  // default chip.
+  $effect(() => {
+    if (!hideButton || !anchor) return;
+    function onEnter() { hovered = true; }
+    function onLeave() { hovered = false; }
+    anchor.addEventListener('mouseenter', onEnter);
+    anchor.addEventListener('mouseleave', onLeave);
+    return () => {
+      anchor.removeEventListener('mouseenter', onEnter);
+      anchor.removeEventListener('mouseleave', onLeave);
+    };
+  });
+
   // Whether to render the popout right now.
   const visible = $derived(popup ? (open || hovered) : open);
 

@@ -306,6 +306,16 @@
   /** @type {{startClientX: number, startMin: number, startMax: number} | null} */
   let pan = $state(null);
 
+  // Payoff-stats overlay tooltip triggers — field-as-trigger (the
+  // overlay is too tight for a separate chip), hideButton + anchor +
+  // bind:open, same mechanism as ChartWorkspace's Greeks strip.
+  let _psHintOpen = $state({ ltp: false, chg: false, close: false, dayPnl: false, pnl: false, adj: false, expPnl: false, dte: false, iv: false });
+  /** @type {Record<string, HTMLElement>} */
+  let _psHintAnchor = $state({});
+  function _psHintKeydown(/** @type {KeyboardEvent} */ e, /** @type {() => void} */ fn) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+  }
+
   // B2 fix — a genuine leg-composition change (underlying switch, leg
   // add/remove/qty-change) invalidates any manual zoom window from the
   // PREVIOUS strategy — its spot range rarely even overlaps the new
@@ -902,8 +912,12 @@
     <div class="payoff-stats">
       {#if spot != null}
         <div class="ps-row">
-          <span class="ps-k">LTP
-            <InfoHint popup panel title="LTP" text={spotAnchor?.source === 'futures'
+          <span class="ps-k" bind:this={_psHintAnchor.ltp} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.ltp}
+                onclick={() => { _psHintOpen.ltp = !_psHintOpen.ltp; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.ltp = !_psHintOpen.ltp)}>LTP
+            <InfoHint popup hideButton id="ps-hint-ltp" anchor={_psHintAnchor.ltp} bind:open={_psHintOpen.ltp}
+              panel title="LTP" text={spotAnchor?.source === 'futures'
               ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
               : 'Current spot price for the underlying — anchor for every other stat in this overlay'} />
           </span>
@@ -911,8 +925,12 @@
         </div>
         {#if spotPct != null}
           <div class="ps-row">
-            <span class="ps-k">CHG%
-              <InfoHint popup panel title="CHG%" text="Spot % change from previous session close" />
+            <span class="ps-k" bind:this={_psHintAnchor.chg} role="button" tabindex="0"
+                  aria-expanded={_psHintOpen.chg}
+                  onclick={() => { _psHintOpen.chg = !_psHintOpen.chg; }}
+                  onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.chg = !_psHintOpen.chg)}>CHG%
+              <InfoHint popup hideButton id="ps-hint-chg" anchor={_psHintAnchor.chg} bind:open={_psHintOpen.chg}
+                panel title="CHG%" text="Spot % change from previous session close" />
             </span>
             <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('spot') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
@@ -926,8 +944,12 @@
              without comparing the SPOT row to a number stored in their
              head. Bloomberg / TWS / Kite all show this. -->
         <div class="ps-row">
-          <span class="ps-k">CLOSE
-            <InfoHint popup panel title="CLOSE" text="Previous-session close for the underlying — anchor for today's spot drift" />
+          <span class="ps-k" bind:this={_psHintAnchor.close} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.close}
+                onclick={() => { _psHintOpen.close = !_psHintOpen.close; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.close = !_psHintOpen.close)}>CLOSE
+            <InfoHint popup hideButton id="ps-hint-close" anchor={_psHintAnchor.close} bind:open={_psHintOpen.close}
+              panel title="CLOSE" text="Previous-session close for the underlying — anchor for today's spot drift" />
           </span>
           <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
         </div>
@@ -939,8 +961,12 @@
              book. Operator can scan TODAY (lifetime P&L at spot) vs DAY P&L (today's
              intraday move) at a glance. -->
         <div class="ps-row">
-          <span class="ps-k">DAY P&amp;L
-            <InfoHint popup panel title="DAY P&amp;L" text="Today's mark-to-market change on enabled basket positions (baseline-diff Day P&amp;L, live-tick-adjusted). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position." />
+          <span class="ps-k" bind:this={_psHintAnchor.dayPnl} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.dayPnl}
+                onclick={() => { _psHintOpen.dayPnl = !_psHintOpen.dayPnl; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.dayPnl = !_psHintOpen.dayPnl)}>DAY P&amp;L
+            <InfoHint popup hideButton id="ps-hint-day-pnl" anchor={_psHintAnchor.dayPnl} bind:open={_psHintOpen.dayPnl}
+              panel title="DAY P&amp;L" text="Today's mark-to-market change on enabled basket positions (baseline-diff Day P&amp;L, live-tick-adjusted). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position." />
           </span>
           <span class={'ps-v ' + (dayPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(dayPnl)}
@@ -950,8 +976,12 @@
       {#if curveAtSpot}
         {#if curveAtSpot.today_value != null}
         <div class="ps-row">
-          <span class="ps-k">P&amp;L
-            <InfoHint popup panel title="P&amp;L" text={realizedPnl !== 0
+          <span class="ps-k" bind:this={_psHintAnchor.pnl} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.pnl}
+                onclick={() => { _psHintOpen.pnl = !_psHintOpen.pnl; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.pnl = !_psHintOpen.pnl)}>P&amp;L
+            <InfoHint popup hideButton id="ps-hint-pnl" anchor={_psHintAnchor.pnl} bind:open={_psHintOpen.pnl}
+              panel title="P&amp;L" text={realizedPnl !== 0
               ? `Position lifetime P&amp;L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
               : "Position lifetime P&amp;L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's intraday move — use the DAY P&amp;L row above for that."} />
           </span>
@@ -968,8 +998,12 @@
                    pricing drifts from market LTP for illiquid
                    contracts) -->
           <div class="ps-row">
-            <span class="ps-k">ADJ
-              <InfoHint popup panel title="ADJ" text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
+            <span class="ps-k" bind:this={_psHintAnchor.adj} role="button" tabindex="0"
+                  aria-expanded={_psHintOpen.adj}
+                  onclick={() => { _psHintOpen.adj = !_psHintOpen.adj; }}
+                  onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.adj = !_psHintOpen.adj)}>ADJ
+              <InfoHint popup hideButton id="ps-hint-adj" anchor={_psHintAnchor.adj} bind:open={_psHintOpen.adj}
+                panel title="ADJ" text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
             </span>
             <span class={'ps-v ' + (realizedPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
               {fmtMoney(realizedPnl)}
@@ -981,8 +1015,12 @@
           ? legsExpPnlAtSpot
           : curveAtSpot.expiry_value}
         <div class="ps-row">
-          <span class="ps-k">Exp P&amp;L
-            <InfoHint popup panel title="Exp P&amp;L" text={legsExpPnlAtSpot != null
+          <span class="ps-k" bind:this={_psHintAnchor.expPnl} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.expPnl}
+                onclick={() => { _psHintOpen.expPnl = !_psHintOpen.expPnl; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.expPnl = !_psHintOpen.expPnl)}>Exp P&amp;L
+            <InfoHint popup hideButton id="ps-hint-exp-pnl" anchor={_psHintAnchor.expPnl} bind:open={_psHintOpen.expPnl}
+              panel title="Exp P&amp;L" text={legsExpPnlAtSpot != null
               ? 'Strategy P&amp;L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&amp;L column.'
               : 'Strategy P&amp;L at expiry (intrinsic only) for the current spot — same vertical offset as TODAY.'} />
           </span>
@@ -993,8 +1031,12 @@
       {/if}
       {#if dte != null}
         <div class="ps-row">
-          <span class="ps-k">DTE
-            <InfoHint popup panel title="DTE" text="Days to expiry (calendar days remaining)" />
+          <span class="ps-k" bind:this={_psHintAnchor.dte} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.dte}
+                onclick={() => { _psHintOpen.dte = !_psHintOpen.dte; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.dte = !_psHintOpen.dte)}>DTE
+            <InfoHint popup hideButton id="ps-hint-dte" anchor={_psHintAnchor.dte} bind:open={_psHintOpen.dte}
+              panel title="DTE" text="Days to expiry (calendar days remaining)" />
           </span>
           <span class="ps-v">{Math.round(dte)}</span>
         </div>
@@ -1004,8 +1046,12 @@
              across the option legs). Drives Black-Scholes pricing for
              the today curve and the σ-tick spacing on the x-axis. -->
         <div class="ps-row">
-          <span class="ps-k">σ <span class="ps-k-hint">IV</span>
-            <InfoHint popup panel title="IV" text="Implied volatility (annualised %) — qty-weighted IV across the option legs" />
+          <span class="ps-k" bind:this={_psHintAnchor.iv} role="button" tabindex="0"
+                aria-expanded={_psHintOpen.iv}
+                onclick={() => { _psHintOpen.iv = !_psHintOpen.iv; }}
+                onkeydown={(e) => _psHintKeydown(e, () => _psHintOpen.iv = !_psHintOpen.iv)}>σ <span class="ps-k-hint">IV</span>
+            <InfoHint popup hideButton id="ps-hint-iv" anchor={_psHintAnchor.iv} bind:open={_psHintOpen.iv}
+              panel title="IV" text="Implied volatility (annualised %) — qty-weighted IV across the option legs" />
           </span>
           <span class="ps-v">{(ivProxy * 100).toFixed(1)}%</span>
         </div>

@@ -27,16 +27,16 @@ import { loginAsAdmin } from './fixtures/auth.js';
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
 /**
- * Click the InfoHint button adjacent to a table header or tile label,
+ * Click the anchor label (field-as-trigger, hideButton mode),
  * wait for the popover to appear, and return the popover locator.
  *
  * @param {import('@playwright/test').Page} page
- * @param {import('@playwright/test').Locator} labelLoc - the label container
+ * @param {import('@playwright/test').Locator} labelLoc - the label span (now the anchor)
  * @returns {Promise<import('@playwright/test').Locator>} popover
  */
 async function openPopoverFor(page, labelLoc) {
-  const btn = labelLoc.locator('button.info-btn').first();
-  await btn.click();
+  // In hideButton mode, the label span itself is the anchor (no button inside)
+  await labelLoc.click();
   // The popover is rendered with role="tooltip" and data-testid="metric-popover"
   const popover = page.locator('[data-testid="metric-popover"]').first();
   await expect(popover).toBeVisible({ timeout: 5000 });
@@ -86,8 +86,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     await page.waitForLoadState('domcontentloaded');
   });
 
-  // 1. SSOT — table headers carry InfoHint buttons
-  test('SSOT: table header InfoHint buttons exist for each tracked metric', async ({ page }) => {
+  // 1. SSOT — table headers carry metric-label anchors (field-as-trigger, hideButton mode)
+  test('SSOT: table header metric labels are clickable anchors with InfoHint popover', async ({ page }) => {
     // The page may show an empty-state if no snapshots exist in dev.
     // We want to verify header markup is still rendered (they are always shown).
     // If the page shows EmptyState, the <table> is conditionally hidden.
@@ -108,21 +108,23 @@ test.describe('/admin/metrics — metric tooltips', () => {
       return;
     }
 
-    // Table is rendered: check all numeric headers carry an info-btn
-    const metricHeaders = page.locator('.metrics-table th.num');
-    const headerCount = await metricHeaders.count();
+    // Table is rendered: check all numeric headers carry .metric-label spans (no separate button)
+    const metricLabels = page.locator('.metrics-table th.num .metric-label');
+    const labelCount = await metricLabels.count();
     // Expect at least 10 metric columns (BE + FE suite)
-    expect(headerCount).toBeGreaterThanOrEqual(10);
+    expect(labelCount).toBeGreaterThanOrEqual(10);
 
-    for (let i = 0; i < headerCount; i++) {
-      const th = metricHeaders.nth(i);
-      const btn = th.locator('button.info-btn');
-      await expect(btn).toBeVisible();
+    for (let i = 0; i < labelCount; i++) {
+      const label = metricLabels.nth(i);
+      // Label itself is the anchor (hideButton mode, no button inside)
+      await expect(label.locator('button.info-btn')).toHaveCount(0);
+      // But it is interactive (role=button)
+      await expect(label).toHaveAttribute('role', 'button');
     }
   });
 
-  // 2. Perf — popover opens within 350 ms (and stays within viewport)
-  test('Perf: tooltip click-to-visible < 350 ms and within viewport bounds', async ({ page, viewport }) => {
+  // 2. Perf — popover opens within 350 ms and via both click + hover (and stays within viewport)
+  test('Perf: click-to-visible < 350 ms and within viewport bounds; hover also works', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — cannot open table-header tooltip');
@@ -130,11 +132,12 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     const firstMetricTh = page.locator('.metrics-table th.num').first();
-    const btn = firstMetricTh.locator('button.info-btn').first();
-    await expect(btn).toBeVisible();
+    const label = firstMetricTh.locator('.metric-label').first();
+    await expect(label).toBeVisible();
 
+    // CLICK test
     const t0 = Date.now();
-    await btn.click();
+    await label.click();
     const popover = page.locator('[data-testid="metric-popover"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     const elapsed = Date.now() - t0;
@@ -161,9 +164,15 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     await closePopover(page);
+
+    // HOVER test
+    await label.hover();
+    const popoverH = page.locator('[data-testid="metric-popover"]').first();
+    await expect(popoverH).toBeVisible({ timeout: 2000 });
+    await closePopover(page);
   });
 
-  // 3. Stale — no info-btn on an element that also has @html / raw text
+  // 3. Stale — popover content uses structured grid, not raw HTML blob
   //    (This is a static check via DOM: the popover must render structured
   //    .info-struct elements, not plain innerHTML strings.)
   test('Stale: popover content uses structured grid, not raw HTML blob', async ({ page }) => {
@@ -174,7 +183,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     const firstMetricTh = page.locator('.metrics-table th.num').first();
-    const popover = await openPopoverFor(page, firstMetricTh);
+    const label = firstMetricTh.locator('.metric-label').first();
+    const popover = await openPopoverFor(page, label);
 
     // Must have .info-struct wrapper (the structured grid), not bare text
     const struct = popover.locator('.info-struct');
@@ -182,22 +192,25 @@ test.describe('/admin/metrics — metric tooltips', () => {
     await closePopover(page);
   });
 
-  // 4. Reuse — popovers are from InfoHint (button.info-btn), not hand-rolled spans
-  test('Reuse: all metric tooltips use button.info-btn (InfoHint pattern)', async ({ page }) => {
+  // 4. Reuse — all metric tooltips use field-as-trigger (hideButton InfoHint pattern)
+  test('Reuse: all metric tooltips use .metric-label anchors (hideButton InfoHint pattern)', async ({ page }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows');
       return;
     }
 
-    // Every .metric-label span must contain a button.info-btn
+    // Every .metric-label span is a hideButton anchor (no button.info-btn inside)
     const labels = page.locator('.metric-label');
     const count = await labels.count();
     expect(count).toBeGreaterThan(0);
 
     for (let i = 0; i < count; i++) {
-      const btn = labels.nth(i).locator('button.info-btn');
-      await expect(btn).toBeVisible();
+      const label = labels.nth(i);
+      // The label itself has role=button and is the anchor
+      await expect(label).toHaveAttribute('role', 'button');
+      // No separate button inside (hideButton mode)
+      await expect(label.locator('button.info-btn')).toHaveCount(0);
     }
   });
 
@@ -210,8 +223,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     const firstMetricTh = page.locator('.metrics-table th.num').first();
-    const btn = firstMetricTh.locator('button.info-btn').first();
-    await btn.click();
+    const label = firstMetricTh.locator('.metric-label').first();
+    await label.click();
 
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 3000 });
@@ -219,11 +232,11 @@ test.describe('/admin/metrics — metric tooltips', () => {
     // role=tooltip set on the popout span
     await expect(popover).toHaveAttribute('role', 'tooltip');
 
-    // aria-describedby on the button points to the popover id
-    const btnId = await btn.getAttribute('aria-describedby');
-    if (btnId) {
+    // aria-describedby on the label anchor points to the popover id
+    const labelId = await label.getAttribute('aria-describedby');
+    if (labelId) {
       const popoverId = await popover.getAttribute('id');
-      expect(popoverId).toBe(btnId);
+      expect(popoverId).toBe(labelId);
     }
 
     // Four structured rows
@@ -252,7 +265,7 @@ test.describe('/admin/metrics — metric tooltips', () => {
   });
 
   // Trend tiles also carry tooltips
-  test('UX: trend tile labels carry InfoHint tooltips (viewport bounds check)', async ({ page, viewport }) => {
+  test('UX: trend tile labels carry InfoHint tooltips (hover + click; viewport bounds check)', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — trend tiles may not render');
@@ -266,13 +279,14 @@ test.describe('/admin/metrics — metric tooltips', () => {
       return;
     }
 
-    // Check first tile has an info-btn in its label
+    // Check first tile has a .metric-label in its label (no separate button in hideButton mode)
     const firstTileLabel = tiles.first().locator('.metrics-tile-label');
-    const btn = firstTileLabel.locator('button.info-btn').first();
-    await expect(btn).toBeVisible();
+    const label = firstTileLabel.locator('.metric-label').first();
+    await expect(label).toBeVisible();
+    await expect(label.locator('button.info-btn')).toHaveCount(0);
 
-    // Open it and verify structure
-    const popover = await openPopoverFor(page, firstTileLabel);
+    // CLICK: open and verify structure
+    const popover = await openPopoverFor(page, label);
     await assertFourRows(popover);
 
     // Viewport clipping check
@@ -295,10 +309,16 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     await closePopover(page);
+
+    // HOVER: verify hover also works
+    await label.hover();
+    const popoverH = page.locator('[data-testid="metric-popover"]').first();
+    await expect(popoverH).toBeVisible({ timeout: 2000 });
+    await closePopover(page);
   });
 
-  // Mobile portrait — popovers must fit viewport and not occlude sibling headers
-  test('UX: popover stays within viewport on mobile and does not occlude adjacent headers', async ({ page, viewport }) => {
+  // Mobile portrait — popovers must fit viewport and not occlude sibling headers; hover may be unavailable
+  test('UX: popover stays within viewport on mobile; hover may be skipped if no touch support', async ({ page, viewport }) => {
     if (!viewport || viewport.width > 600) {
       test.skip(true, 'Mobile-only check');
       return;
@@ -311,8 +331,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
 
     const firstMetricTh = page.locator('.metrics-table th.num').first();
-    const btn = firstMetricTh.locator('button.info-btn').first();
-    await btn.click();
+    const label = firstMetricTh.locator('.metric-label').first();
+    await label.click();
 
     const popover = page.locator('[data-testid="metric-popover"]').first();
     await expect(popover).toBeVisible({ timeout: 3000 });

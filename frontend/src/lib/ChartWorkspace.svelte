@@ -916,6 +916,18 @@
   let _greeks     = $state(/** @type {any} */ (null));
   let _greeksError = $state('');
 
+  // Greeks-strip tooltip triggers — field-as-trigger (no separate chip,
+  // the strip is too tight for one). hideButton + anchor + bind:open,
+  // same mechanism as derivatives page's header chips.
+  let _cwGreekHintOpen = $state({ delta: false, gamma: false, theta: false, vega: false, rho: false, iv: false });
+  /** @type {Record<string, HTMLElement>} */
+  let _cwGreekHintAnchor = $state({});
+  /** Keyboard-activate a field-as-trigger hint anchor (Enter/Space), same
+   * affordance a native `<button>` gets for free. */
+  function _cwHintKeydown(/** @type {KeyboardEvent} */ e, /** @type {() => void} */ fn) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+  }
+
   async function _loadGreeks() {
     if (!_isOption || !symbol) { _greeks = null; return; }
     try {
@@ -2371,38 +2383,68 @@
         <span class="cw-err-text cw-greeks-err">{_greeksError}</span>
       {:else if _greeks}
         {@const g = _greeks}
-        <div class="cw-greek-item">
+        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.delta}
+             role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.delta}
+             onclick={() => { _cwGreekHintOpen.delta = !_cwGreekHintOpen.delta; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.delta = !_cwGreekHintOpen.delta)}>
           <span class="cw-gk-label">Δ</span>
           <span class="cw-gk-val">{_gv(g.delta ?? g.greeks?.delta)}</span>
-          <InfoHint popup panel title="Delta (Δ)" text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
+          <InfoHint popup hideButton id="cw-greek-hint-delta" anchor={_cwGreekHintAnchor.delta}
+            bind:open={_cwGreekHintOpen.delta}
+            panel title="Delta (Δ)" text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
         </div>
-        <div class="cw-greek-item">
+        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.gamma}
+             role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.gamma}
+             onclick={() => { _cwGreekHintOpen.gamma = !_cwGreekHintOpen.gamma; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.gamma = !_cwGreekHintOpen.gamma)}>
           <span class="cw-gk-label">Γ</span>
           <span class="cw-gk-val">{_gv(g.gamma ?? g.greeks?.gamma)}</span>
-          <InfoHint popup panel title="Gamma (Γ)" text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
+          <InfoHint popup hideButton id="cw-greek-hint-gamma" anchor={_cwGreekHintAnchor.gamma}
+            bind:open={_cwGreekHintOpen.gamma}
+            panel title="Gamma (Γ)" text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
         </div>
-        <div class="cw-greek-item">
+        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.theta}
+             role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.theta}
+             onclick={() => { _cwGreekHintOpen.theta = !_cwGreekHintOpen.theta; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.theta = !_cwGreekHintOpen.theta)}>
           <span class="cw-gk-label">Θ</span>
           <span class="cw-gk-val">{_gv(g.theta ?? g.greeks?.theta)}</span>
-          <InfoHint popup panel title="Theta (Θ)" text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
+          <InfoHint popup hideButton id="cw-greek-hint-theta" anchor={_cwGreekHintAnchor.theta}
+            bind:open={_cwGreekHintOpen.theta}
+            panel title="Theta (Θ)" text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
         </div>
-        <div class="cw-greek-item">
+        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.vega}
+             role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.vega}
+             onclick={() => { _cwGreekHintOpen.vega = !_cwGreekHintOpen.vega; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.vega = !_cwGreekHintOpen.vega)}>
           <span class="cw-gk-label">V</span>
           <span class="cw-gk-val">{_gv(g.vega ?? g.greeks?.vega)}</span>
-          <InfoHint popup panel title="Vega (V)" text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
+          <InfoHint popup hideButton id="cw-greek-hint-vega" anchor={_cwGreekHintAnchor.vega}
+            bind:open={_cwGreekHintOpen.vega}
+            panel title="Vega (V)" text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
         </div>
-        <div class="cw-greek-item">
+        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.rho}
+             role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.rho}
+             onclick={() => { _cwGreekHintOpen.rho = !_cwGreekHintOpen.rho; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.rho = !_cwGreekHintOpen.rho)}>
           <span class="cw-gk-label">ρ</span>
           <span class="cw-gk-val">{_gv(g.rho ?? g.greeks?.rho)}</span>
-          <InfoHint popup panel title="Rho (ρ)" text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
+          <InfoHint popup hideButton id="cw-greek-hint-rho" anchor={_cwGreekHintAnchor.rho}
+            bind:open={_cwGreekHintOpen.rho}
+            panel title="Rho (ρ)" text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
         </div>
         {#if (g.iv ?? g.greeks?.iv) != null}
-          <div class="cw-greek-item">
+          <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.iv}
+               role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.iv}
+               onclick={() => { _cwGreekHintOpen.iv = !_cwGreekHintOpen.iv; }}
+             onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.iv = !_cwGreekHintOpen.iv)}>
             <span class="cw-gk-label">IV</span>
             <span class="cw-gk-val cw-gk-amber">
               {((g.iv ?? g.greeks?.iv) * 100).toFixed(1)}%
             </span>
-            <InfoHint popup panel title="IV" text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
+            <InfoHint popup hideButton id="cw-greek-hint-iv" anchor={_cwGreekHintAnchor.iv}
+              bind:open={_cwGreekHintOpen.iv}
+              panel title="IV" text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
           </div>
         {/if}
         {#if (g.ltp ?? g.pricing?.ltp) != null}

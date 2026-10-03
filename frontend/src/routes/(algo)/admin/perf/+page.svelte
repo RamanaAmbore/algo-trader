@@ -54,6 +54,27 @@
   let loadingHistory     = $state(false);
   let error              = $state('');
 
+  // `.metric-label` tooltip triggers — field-as-trigger, no separate
+  // chip (abbreviated nowrap column/stat labels have no room). The
+  // headline-stat labels repeat per card inside `{#each feCards}` /
+  // `{#each beCards}`, so state + anchor are keyed dynamically by
+  // `${section}::${card.page_or_route}::${metric}` rather than a
+  // fixed metric name — every card instance needs its own
+  // open/anchor slot, not one shared across the whole loop.
+  let _perfHintOpen = $state(/** @type {Record<string, boolean>} */ ({}));
+  /** @type {Record<string, HTMLElement|undefined>} */
+  let _perfHintAnchor = $state({});
+  function _perfHintKey(/** @type {string} */ section, /** @type {any} */ card, /** @type {string} */ metric) {
+    return `${section}::${card?.page_or_route ?? ''}::${metric}`;
+  }
+  function _perfHintKeydown(/** @type {KeyboardEvent} */ e, /** @type {() => void} */ fn) {
+    if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); fn(); }
+  }
+  // Fixed single-site hotspot-table header hint (not inside an {#each}).
+  let _hotspotCcHintOpen = $state(false);
+  /** @type {HTMLElement|undefined} */
+  let _hotspotCcHintAnchor = $state();
+
   // ── Derived views ─────────────────────────────────────────────────────
   /** Top 8 FE pages by LOC desc. */
   const feCards = $derived(
@@ -367,20 +388,68 @@
             <!-- Headline stats row -->
             <div class="perf-stats">
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} panel title="LOC" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'loc')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'loc')]}
+                        onclick={() => { const k = _perfHintKey('fe', card, 'loc'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('fe', card, 'loc'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>LOC
+                    <InfoHint content={METRIC_META.loc} popup={true} hideButton id={'perf-hint-' + _perfHintKey('fe', card, 'loc')}
+                      anchor={_perfHintAnchor[_perfHintKey('fe', card, 'loc')]}
+                      bind:open={_perfHintOpen[_perfHintKey('fe', card, 'loc')]}
+                      panel title="LOC" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-info)">{fmtNum(card.loc)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} panel title="cc max" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'cc_max')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'cc_max')]}
+                        onclick={() => { const k = _perfHintKey('fe', card, 'cc_max'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('fe', card, 'cc_max'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>cc max
+                    <InfoHint content={METRIC_META.cc_max} popup={true} hideButton id={'perf-hint-' + _perfHintKey('fe', card, 'cc_max')}
+                      anchor={_perfHintAnchor[_perfHintKey('fe', card, 'cc_max')]}
+                      bind:open={_perfHintOpen[_perfHintKey('fe', card, 'cc_max')]}
+                      panel title="cc max" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_max)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} panel title="cc avg" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'cc_avg')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'cc_avg')]}
+                        onclick={() => { const k = _perfHintKey('fe', card, 'cc_avg'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('fe', card, 'cc_avg'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>cc avg
+                    <InfoHint content={METRIC_META.cc_avg} popup={true} hideButton id={'perf-hint-' + _perfHintKey('fe', card, 'cc_avg')}
+                      anchor={_perfHintAnchor[_perfHintKey('fe', card, 'cc_avg')]}
+                      bind:open={_perfHintOpen[_perfHintKey('fe', card, 'cc_avg')]}
+                      panel title="cc avg" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_avg)}</span>
               </span>
               {#if card.lcp_ms !== null && card.lcp_ms !== undefined}
                 <span class="perf-stat">
-                  <span class="perf-stat-label"><span class="metric-label">LCP<InfoHint content={METRIC_META.lcp_ms} popup={true} panel title="LCP" maxWidth="26rem" /></span></span>
+                  <span class="perf-stat-label">
+                    <span class="metric-label" style="cursor:help"
+                          bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'lcp_ms')]}
+                          role="button" tabindex="0"
+                          aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'lcp_ms')]}
+                          onclick={() => { const k = _perfHintKey('fe', card, 'lcp_ms'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                          onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('fe', card, 'lcp_ms'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>LCP
+                      <InfoHint content={METRIC_META.lcp_ms} popup={true} hideButton id={'perf-hint-' + _perfHintKey('fe', card, 'lcp_ms')}
+                        anchor={_perfHintAnchor[_perfHintKey('fe', card, 'lcp_ms')]}
+                        bind:open={_perfHintOpen[_perfHintKey('fe', card, 'lcp_ms')]}
+                        panel title="LCP" maxWidth="26rem" />
+                    </span>
+                  </span>
                   <span class="perf-stat-val" style="color:{latencyColor(card.lcp_ms, true)}">{fmtNum(card.lcp_ms)}ms</span>
                 </span>
               {/if}
@@ -471,20 +540,68 @@
 
             <div class="perf-stats">
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} panel title="LOC" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('be', card, 'loc')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'loc')]}
+                        onclick={() => { const k = _perfHintKey('be', card, 'loc'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('be', card, 'loc'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>LOC
+                    <InfoHint content={METRIC_META.loc} popup={true} hideButton id={'perf-hint-' + _perfHintKey('be', card, 'loc')}
+                      anchor={_perfHintAnchor[_perfHintKey('be', card, 'loc')]}
+                      bind:open={_perfHintOpen[_perfHintKey('be', card, 'loc')]}
+                      panel title="LOC" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-info)">{fmtNum(card.loc)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} panel title="cc max" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('be', card, 'cc_max')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'cc_max')]}
+                        onclick={() => { const k = _perfHintKey('be', card, 'cc_max'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('be', card, 'cc_max'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>cc max
+                    <InfoHint content={METRIC_META.cc_max} popup={true} hideButton id={'perf-hint-' + _perfHintKey('be', card, 'cc_max')}
+                      anchor={_perfHintAnchor[_perfHintKey('be', card, 'cc_max')]}
+                      bind:open={_perfHintOpen[_perfHintKey('be', card, 'cc_max')]}
+                      panel title="cc max" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_max)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} panel title="cc avg" maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label">
+                  <span class="metric-label" style="cursor:help"
+                        bind:this={_perfHintAnchor[_perfHintKey('be', card, 'cc_avg')]}
+                        role="button" tabindex="0"
+                        aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'cc_avg')]}
+                        onclick={() => { const k = _perfHintKey('be', card, 'cc_avg'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                        onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('be', card, 'cc_avg'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>cc avg
+                    <InfoHint content={METRIC_META.cc_avg} popup={true} hideButton id={'perf-hint-' + _perfHintKey('be', card, 'cc_avg')}
+                      anchor={_perfHintAnchor[_perfHintKey('be', card, 'cc_avg')]}
+                      bind:open={_perfHintOpen[_perfHintKey('be', card, 'cc_avg')]}
+                      panel title="cc avg" maxWidth="26rem" />
+                  </span>
+                </span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_avg)}</span>
               </span>
               {#if card.route_p95_ms !== null && card.route_p95_ms !== undefined}
                 <span class="perf-stat">
-                  <span class="perf-stat-label"><span class="metric-label">p95<InfoHint content={METRIC_META.route_p95_ms} popup={true} panel title="p95" maxWidth="26rem" /></span></span>
+                  <span class="perf-stat-label">
+                    <span class="metric-label" style="cursor:help"
+                          bind:this={_perfHintAnchor[_perfHintKey('be', card, 'p95')]}
+                          role="button" tabindex="0"
+                          aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'p95')]}
+                          onclick={() => { const k = _perfHintKey('be', card, 'p95'); _perfHintOpen[k] = !_perfHintOpen[k]; }}
+                          onkeydown={(e) => _perfHintKeydown(e, () => { const k = _perfHintKey('be', card, 'p95'); _perfHintOpen[k] = !_perfHintOpen[k]; })}>p95
+                      <InfoHint content={METRIC_META.route_p95_ms} popup={true} hideButton id={'perf-hint-' + _perfHintKey('be', card, 'p95')}
+                        anchor={_perfHintAnchor[_perfHintKey('be', card, 'p95')]}
+                        bind:open={_perfHintOpen[_perfHintKey('be', card, 'p95')]}
+                        panel title="p95" maxWidth="26rem" />
+                    </span>
+                  </span>
                   <span class="perf-stat-val" style="color:{latencyColor(card.route_p95_ms, false)}">{fmtNum(card.route_p95_ms)}ms</span>
                 </span>
               {/if}
@@ -558,7 +675,7 @@
           <tr>
             <th>Function</th>
             <th>Page / route</th>
-            <th class="algo-table-num"><span class="metric-label">cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} panel title="cc" maxWidth="26rem" /></span></th>
+            <th class="algo-table-num"><span class="metric-label" style="cursor:help" bind:this={_hotspotCcHintAnchor} role="button" tabindex="0" aria-expanded={_hotspotCcHintOpen} onclick={() => { _hotspotCcHintOpen = !_hotspotCcHintOpen; }} onkeydown={(e) => _perfHintKeydown(e, () => { _hotspotCcHintOpen = !_hotspotCcHintOpen; })}>cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} hideButton id="perf-hint-hotspot-cc" anchor={_hotspotCcHintAnchor} bind:open={_hotspotCcHintOpen} panel title="cc" maxWidth="26rem" /></span></th>
             <th class="algo-table-num">line</th>
           </tr>
         </thead>

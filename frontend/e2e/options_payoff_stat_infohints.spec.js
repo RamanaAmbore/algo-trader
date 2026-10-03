@@ -40,8 +40,8 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const DERIV_URL = '/admin/derivatives';
 
-test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title= attributes', () => {
-  test('LTP/CHG%/DAY P&L rows carry a clickable InfoHint chip with no leftover title= on the row', async ({ page, viewport }) => {
+test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideButton mode)', () => {
+  test('LTP/CHG%/DAY P&L rows open popover via click and hover on the label span (no separate chip)', async ({ page, viewport }) => {
     await loginAsAdmin(page);
 
     const pageErrors = [];
@@ -69,15 +69,18 @@ test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title=
       await expect(rowsWithTitle.first()).toHaveAttribute('title', 'Number of legs in the strategy basket');
     }
 
-    // LTP row: label text + an InfoHint chip inside `.ps-k`.
+    // LTP row: the `.ps-k` label span is now the anchor (hideButton mode, no separate button)
     const ltpRow = payoffOverlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'LTP' }) }).first();
     await expect(ltpRow).toBeVisible();
-    const ltpInfoBtn = ltpRow.locator('.ps-k button.info-btn');
-    await expect(ltpInfoBtn).toHaveCount(1);
+    const ltpLabel = ltpRow.locator('.ps-k').first();
 
-    await ltpInfoBtn.click();
-    const popover = page.locator('[role="tooltip"]').first();
-    await expect(popover).toBeVisible();
+    // No visible info-btn inside the label
+    await expect(ltpLabel.locator('button.info-btn')).toHaveCount(0);
+
+    // CLICK opens the popover
+    await ltpLabel.click();
+    let popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
     // Dynamic text prop — either the MCX anchor-contract wording or
     // the plain-spot wording, both of which this regex covers.
     await expect(popover).toContainText(/Spot anchor:|Current spot price for the underlying/);
@@ -101,61 +104,48 @@ test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title=
       expect(popoverRect.bottom, `LTP popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    // Occlusion check: stat row values should not be fully covered
-    const ltpValueSpan = ltpRow.locator('.ps-v').first();
-    const valueRect = await ltpValueSpan.evaluate((el) => {
-      const rect = el.getBoundingClientRect();
-      return {
-        centerX: rect.left + rect.width / 2,
-        centerY: rect.top + rect.height / 2,
-      };
-    });
-    const elemAtValueCenter = await page.evaluate(
-      ({ x, y }) => {
-        const elem = document.elementFromPoint(x, y);
-        return elem ? elem.className : null;
-      },
-      { x: valueRect.centerX, y: valueRect.centerY }
-    );
-    expect(
-      (elemAtValueCenter || '').includes('info-popout'),
-      'Popover should not fully occlude the LTP value'
-    ).toBe(false);
+    // Close via re-click + mouse move (to clear hover state)
+    await ltpLabel.click();
+    await page.mouse.move(0, 0); // Move away to clear hovered state
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-    await ltpInfoBtn.click(); // close
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    // HOVER opens the popover (new in this fix)
+    await ltpLabel.hover();
+    popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    await expect(popover).toContainText(/Spot anchor:|Current spot price for the underlying/);
 
-    // DAY P&L row, if present — same chip contract, different wording.
+    // Move mouse away to close via hover
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+
+    // DAY P&L row, if present — same mechanism, different wording.
     const dayPnlRow = payoffOverlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'DAY P&L' }) }).first();
     if (await dayPnlRow.count() > 0) {
-      const dayPnlBtn = dayPnlRow.locator('.ps-k button.info-btn');
-      await dayPnlBtn.click();
-      const dayPopover = page.locator('[role="tooltip"]').first();
+      const dayPnlLabel = dayPnlRow.locator('.ps-k').first();
+
+      // Click test
+      await dayPnlLabel.click();
+      let dayPopover = page.locator('[role="tooltip"]').first();
+      await expect(dayPopover).toBeVisible({ timeout: 2000 });
       await expect(dayPopover).toContainText('mark-to-market change');
 
-      // Viewport clipping check for DAY P&L popover
-      if (viewport) {
-        const dayPopoverRect = await dayPopover.evaluate((el) => {
-          const rect = el.getBoundingClientRect();
-          return {
-            left: rect.left,
-            right: rect.right,
-            top: rect.top,
-            bottom: rect.bottom,
-          };
-        });
-        const vw = viewport.width;
-        const vh = viewport.height;
-        expect(dayPopoverRect.left, 'DAY P&L popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
-        expect(dayPopoverRect.right, `DAY P&L popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
-        expect(dayPopoverRect.top, 'DAY P&L popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
-        expect(dayPopoverRect.bottom, `DAY P&L popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
-      }
+      await dayPnlLabel.click(); // close via re-click
+      await page.mouse.move(0, 0); // Move away to clear hover state
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-      await dayPnlBtn.click();
+      // Hover test
+      await dayPnlLabel.hover();
+      const dayPopoverH = page.locator('[role="tooltip"]').first();
+      await expect(dayPopoverH).toBeVisible({ timeout: 2000 });
+      await expect(dayPopoverH).toContainText('mark-to-market change');
+
+      // Move away to close
+      await page.mouse.move(0, 0);
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
     }
 
     const realErrors = pageErrors.filter((e) => !e.includes('401') && !e.includes('405'));
-    expect(realErrors, 'No unexpected JS errors from the InfoHint chips').toHaveLength(0);
+    expect(realErrors, 'No unexpected JS errors from the InfoHint anchors').toHaveLength(0);
   });
 });

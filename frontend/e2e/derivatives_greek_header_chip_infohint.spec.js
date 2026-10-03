@@ -260,6 +260,26 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
+  test('Regression: header chips now also open via HOVER (InfoHint anchor fix)', async ({ page, viewport }) => {
+    // This guards the Step A component fix: hideButton mode now listens
+    // to mouseenter/mouseleave on the anchor element.
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
+
+    const deltaChip = chips.nth(0);
+    const trigger = deltaChip.locator('button.greek-val-trigger');
+
+    // HOVER to open
+    await trigger.hover();
+    const popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    await expect(popover).toContainText('net directional exposure');
+
+    // Move mouse away to close via hover-out
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+  });
+
   test('Isolation: opening Gamma after Delta closes Delta and shows only Gamma text (viewport bounds check)', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
@@ -377,19 +397,77 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(tooltips.first()).not.toContainText('probability-weighted average payoff');
   });
 
-  test('Regression: Greeks (position) card — unrelated sibling InfoHint consumer — is unchanged', async ({ page }) => {
-    // The card still uses the (i)-button mode (no hideButton); scope the
-    // locator to the card's own container so we don't pick up a header
-    // chip's popover from an earlier test in this file.
-    const card = page.locator('.opt-kv.opt-kv-greeks');
-    await expect(card).toBeVisible({ timeout: 20_000 });
+  test('Regression: Header chips accept both CLICK and HOVER (Step A fix verified)', async ({ page }) => {
+    // Verify that the 6 header chips (5 Greeks + EV) that were already using
+    // hideButton+anchor pattern now also respond to hover, not just click.
+    // This is the main payoff of the Step A component fix.
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
-    const cardDeltaBtn = card.locator('button.info-btn').first();
-    await expect(cardDeltaBtn).toBeVisible();
-    await cardDeltaBtn.click();
+    // Test one header chip with both click and hover
+    const deltaChip = chips.nth(0);
+    const trigger = deltaChip.locator('button.greek-val-trigger');
+    await expect(trigger).toBeVisible();
+
+    // CLICK test
+    await trigger.click();
+    let popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    let text = (await popover.textContent()) || '';
+    expect(text).toContain('net directional exposure');
+    // Close via re-click
+    await trigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // HOVER test
+    await trigger.hover();
+    popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+    text = (await popover.textContent()) || '';
+    expect(text).toContain('net directional exposure');
+    // Close via mouse move
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+  });
+
+  test('Strategy Summary: converted Greeks kv-pairs now use field-as-trigger (hideButton mode)', async ({ page, viewport }) => {
+    // The Strategy Summary section below the header contains its own set of Greeks,
+    // R:R, EV, POP, etc. These have been converted from chip-mode to hideButton+anchor,
+    // same as the header chips. The `.kv-k` label span is now the anchor.
+    const strategyCard = page.locator('.opt-block').nth(0); // First block after header is Strategy Summary
+    await expect(strategyCard).toBeVisible({ timeout: 20_000 });
+
+    const deltaLabel = strategyCard.locator('.kv-k:has-text("Δ")').first();
+    if (await deltaLabel.count() === 0) {
+      test.skip(true, 'Strategy Summary section not rendered (no open strategy)');
+      return;
+    }
+
+    // No visible info-btn (hideButton mode)
+    await expect(deltaLabel.locator('button.info-btn')).toHaveCount(0);
+    // But the label has role=button
+    await expect(deltaLabel).toHaveAttribute('role', 'button');
+
+    // CLICK to open
+    await deltaLabel.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
-    const text = (await popover.textContent()) || '';
+    let text = (await popover.textContent()) || '';
     expect(text).toContain('net directional exposure');
+
+    // Close via re-click
+    await deltaLabel.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // HOVER to open
+    await deltaLabel.hover();
+    const popoverH = page.locator('[role="tooltip"]').first();
+    await expect(popoverH).toBeVisible({ timeout: 2000 });
+    text = (await popoverH.textContent()) || '';
+    expect(text).toContain('net directional exposure');
+
+    // Close via hover-out
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
   });
 });

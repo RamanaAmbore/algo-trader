@@ -43,18 +43,18 @@ describe('OptionsPayoff.svelte — stat overlay rows wire InfoHint instead of ti
     }
   });
 
-  it('LTP, CHG%, CLOSE, DAY P&L, P&L, ADJ, Exp P&L, DTE, and IV rows each have an InfoHint popup', () => {
+  it('LTP, CHG%, CLOSE, DAY P&L, P&L, ADJ, Exp P&L, DTE, and IV rows each have an InfoHint popup (hideButton mode)', () => {
     const labels = ['LTP', 'CHG%', 'CLOSE', 'DAY P&amp;L', 'P&amp;L', 'ADJ', 'Exp P&amp;L', 'DTE'];
     for (const label of labels) {
-      const idx = markupBlock.indexOf(`class="ps-k">${label}`);
-      expect(idx, `label "${label}" not found with InfoHint-ready markup`).toBeGreaterThan(-1);
-      const window = markupBlock.slice(idx, idx + 500);
-      expect(window).toMatch(/<InfoHint popup/);
+      // In hideButton mode, the .ps-k span has additional attributes (bind:this, role, tabindex, aria-expanded, onclick, onkeydown)
+      // spread across multiple lines. Look for class="ps-k" followed by the closing > and label text, then InfoHint hideButton.
+      // Increased char limit to 400 to account for the multiline attributes.
+      const pattern = new RegExp(`class="ps-k"[\\s\\S]{0,400}>${label}[\\s\\S]{0,500}<InfoHint[\\s\\S]{0,300}hideButton`);
+      expect(markupBlock, `label "${label}" not found with hideButton InfoHint pattern`).toMatch(pattern);
     }
-    // IV row label is "σ" + a nested .ps-k-hint "IV" span, not literal "IV" text.
-    const ivIdx = markupBlock.indexOf('class="ps-k">σ');
-    expect(ivIdx).toBeGreaterThan(-1);
-    expect(markupBlock.slice(ivIdx, ivIdx + 300)).toMatch(/<InfoHint popup/);
+    // IV row label is "σ" in a .ps-k span with InfoHint hideButton.
+    const ivPattern = /class="ps-k"[\s\S]{0,400}>σ[\s\S]{0,500}<InfoHint[\s\S]{0,300}hideButton/;
+    expect(markupBlock).toMatch(ivPattern);
   });
 
   it('InfoHint text props escape & as &amp; (payload goes through {@html})', () => {
