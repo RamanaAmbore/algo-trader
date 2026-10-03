@@ -190,11 +190,52 @@ export function getResetGen() {
 //
 // SSE tick bursts (10-30/sec under load) would write to localStorage every
 // tick without throttling, which hits a known ~50ms write penalty on some
-// browsers. Coalesce to one write per 500ms.
+// browsers. Coalesce to one write per _PERSIST_DEBOUNCE_MS.
+//
+// 2026-10 perf fix: was 500ms — while ticks flow continuously (the arm-
+// once timer resets its OWN deadline on every `_dirty = true` write, but
+// since a new write lands well inside the 500ms window virtually every
+// time during an active session, the EFFECTIVE write cadence was close
+// to 500-700ms, every one of them serialising the ENTIRE symbolStore map
+// — growing unboundedly across the session, since the only eviction was
+// the one-time prune at hydration (module-load). Bumped the debounce to
+// 5s (still an arm-once timer, not a resetting one — see _schedulePersist,
+// unchanged logic) AND apply `_PRUNE_AGE_MS` eviction on every write, not
+// just at hydration, so entries don't accumulate indefinitely before the
+// next cold reload happens to re-prune them.
 
 /** @type {ReturnType<typeof setTimeout> | null} */
 let _persistTimer = null;
 let _dirty = false;
+const _PERSIST_DEBOUNCE_MS = 5000;
+
+/**
+ * Build the persist payload from the live symbolStore entries, evicting
+ * any entry whose `touched_at` is older than `pruneAgeMs` — same rule as
+ * the one-time hydration-time prune above, now also applied on every
+ * write so the localStorage blob can't grow across a session between
+ * cold reloads. `touched === 0` (never properly stamped) is NEVER pruned,
+ * matching the hydration prune's own defensive convention.
+ *
+ * Exported (pure, entries-in/object-out) so Vitest can test the eviction
+ * rule directly — see symbolStorePersist.test.js's mirror + source-grep
+ * (this file has top-level $state calls and can't be imported directly).
+ *
+ * @param {Iterable<[string, MarketSnapshot]>} entries
+ * @param {number} now
+ * @param {number} pruneAgeMs
+ * @returns {Record<string, MarketSnapshot>}
+ */
+export function buildPersistPayload(entries, now, pruneAgeMs) {
+  /** @type {Record<string, MarketSnapshot>} */
+  const out = {};
+  for (const [sym, snap] of entries) {
+    const touched = Number(/** @type {any} */ (snap)?.touched_at) || 0;
+    if (touched && now - touched > pruneAgeMs) continue;
+    out[sym] = snap;
+  }
+  return out;
+}
 
 function _schedulePersist() {
   if (!browser) return;
@@ -205,14 +246,10 @@ function _schedulePersist() {
     if (!_dirty) return;
     _dirty = false;
     try {
-      /** @type {Record<string, MarketSnapshot>} */
-      const out = {};
-      for (const [sym, snap] of symbolStore.entries()) {
-        out[sym] = snap;
-      }
+      const out = buildPersistPayload(symbolStore.entries(), Date.now(), _PRUNE_AGE_MS);
       cachedWrite(_STORE_KEY, out, TTL.week);
     } catch { /* quota / privacy mode — non-fatal */ }
-  }, 500);
+  }, _PERSIST_DEBOUNCE_MS);
 }
 
 // ── Merge helpers ────────────────────────────────────────────────────────
