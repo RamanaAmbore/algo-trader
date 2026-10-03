@@ -62,7 +62,11 @@
     availableAccounts   = $bindable(/** @type {string[]} */ ([])),
     /** Active log level filter — bindable so a caller-owned control (or
      *  activityStore) can drive it. Default 'all' keeps pre-filter
-     *  behaviour; surfaces that want loud-rows-only pass 'error'. */
+     *  behaviour; surfaces that want loud-rows-only pass 'error'.
+     *  PARKED (2026-10-02, 6D audit) — see LogPanel.svelte's own
+     *  `levelFilter` prop doc for the full note: the UI control that
+     *  used to let an operator change this was removed in July and
+     *  never reintroduced. Restore-vs-retire decision deferred. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('warning')),
     /** Surface context — gates the context-derived 2-column magazine flow.
      *  Overridden entirely when `multiColumn` is provided explicitly.

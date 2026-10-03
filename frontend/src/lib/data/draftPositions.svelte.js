@@ -16,6 +16,19 @@
  *
  * The map is a Svelte 5 $state so any $derived that reads it will
  * recompute when addDraftPosition / removeDraftPosition mutate state.
+ *
+ * PARKED (2026-10-02, 6D audit): addDraftPosition / removeDraftPosition
+ * are NOT wired to any fill-event handler anywhere in the app — zero
+ * callers besides this file's own exports. `getDraftPositions()` (one
+ * caller, the derivatives page) therefore always reads an empty map.
+ * This is genuinely half-built, not dead code to delete outright — it's
+ * a distinct, separate concept from the fully-wired sibling
+ * `payoffDrafts.svelte.js` (used by OrderTicket's "Add to Payoff"
+ * button) and from `provisionalPositions.svelte.js` (post-fill,
+ * pre-broker-refresh rows, which IS wired up). Decision deferred:
+ * either wire this up to a real fill/add event, or delete it along with
+ * its (currently inert) consumer in the derivatives page. Not touched
+ * in this pass — revisit explicitly before extending or deleting.
  */
 
 /** @type {Map<string, any>} */

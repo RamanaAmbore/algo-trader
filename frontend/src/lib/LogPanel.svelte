@@ -132,6 +132,18 @@
      * land on actionable rows. When set, System / Conn rows are
      * filtered by line-start `(ERROR|WARNING|INFO|DEBUG)` token;
      * Agent rows by their event_type mapping; Order rows by status.
+     *
+     * PARKED (2026-10-02, 6D audit): the operator-facing control to
+     * change this value (`.act-level-sel` dropdown) was removed in
+     * commit 9ba89918 (2026-07-22, "tabs now scroll freely on
+     * mobile") and never reintroduced anywhere. This prop/filtering
+     * logic still works correctly (all 4 bind sites below still pass
+     * real values), it's just permanently stuck at each caller's own
+     * default with no way for an operator to change it live. Decision
+     * deferred: either restore a control for it, or retire the prop +
+     * its bind sites + `activity-panel.spec.ts`'s now-stale
+     * `.act-level-sel` visibility assertions. Not fixed in this pass —
+     * revisit explicitly before touching this again.
      */
     levelFilter = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('all')),
     /**
