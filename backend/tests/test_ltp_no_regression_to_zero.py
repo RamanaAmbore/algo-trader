@@ -53,10 +53,16 @@ def _fresh_ticker():
 
 
 def _capture_bus_publishes(tm):
-    """Replace tm._bus.publish with a list-appending stub and return the
-    list so the test can assert which payloads were published."""
+    """Replace tm._bus.publish_many with a list-extending stub and return
+    the list so the test can assert which payloads were published.
+
+    Perf fix (2026-10): _on_ticks now batches the whole tick frame into
+    one tm._bus.publish_many(list) call instead of calling .publish()
+    once per payload — stub the batched method so `published` still
+    ends up with one entry per payload, same shape tests already
+    assert against."""
     published: list = []
-    tm._bus.publish = lambda payload: published.append(payload)
+    tm._bus.publish_many = lambda batch: published.extend(batch)
     return published
 
 

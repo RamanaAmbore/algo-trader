@@ -203,7 +203,7 @@ class TestPollLoopSkipsUnregisteredTokens:
 
         published: list[dict] = []
         reader._bus = MagicMock()
-        reader._bus.publish = lambda d: published.append(d)
+        reader._bus.publish_many = lambda batch: published.extend(batch)
 
         loop = asyncio.get_event_loop()
         reader.set_loop(loop)
@@ -245,7 +245,7 @@ class TestPollLoopSkipsUnregisteredTokens:
         reader = MmapTickReader(path=tmp_buffer_path)
         published: list[dict] = []
         reader._bus = MagicMock()
-        reader._bus.publish = lambda d: published.append(d)
+        reader._bus.publish_many = lambda batch: published.extend(batch)
         loop = asyncio.get_event_loop()
         reader.set_loop(loop)
 
@@ -292,7 +292,7 @@ class TestPollLoopSkipsUnregisteredTokens:
         reader._sym_to_token["NIFTY 50"] = 100
         published: list[dict] = []
         reader._bus = MagicMock()
-        reader._bus.publish = lambda d: published.append(d)
+        reader._bus.publish_many = lambda batch: published.extend(batch)
         loop = asyncio.get_event_loop()
         reader.set_loop(loop)
 
@@ -309,6 +309,47 @@ class TestPollLoopSkipsUnregisteredTokens:
         assert len(zero_pubs) == 0, (
             f"Expected zero publishes with lp<=0; got {zero_pubs}"
         )
+
+    @pytest.mark.asyncio
+    async def test_poll_loop_batches_multiple_changed_ticks_into_one_call(self, tmp_buffer_path):
+        """Perf fix (2026-10) — when a poll cycle sees MULTIPLE changed
+        tokens, _poll_loop must call self._bus.publish_many() exactly
+        ONCE with all of them batched, not call publish() once per
+        token. This FAILS against the old per-token publish() loop
+        (which only ever had a `.publish` attribute, called N times)
+        and PASSES once the poller collects a batch and calls
+        publish_many() once per cycle."""
+        from backend.brokers.tick_buffer import DEFAULT_MAX_SLOTS
+        writer = TickBufferWriter(path=tmp_buffer_path, max_slots=DEFAULT_MAX_SLOTS)
+        writer.upsert(100, 24500.5)
+        writer.upsert(200, 500.25)
+        writer.upsert(300, 1234.0)
+        writer.close()
+
+        reader = MmapTickReader(path=tmp_buffer_path)
+        reader._token_to_sym[100] = "NIFTY 50"
+        reader._token_to_sym[200] = "RELIANCE"
+        reader._token_to_sym[300] = "SBIN"
+        reader._bus = MagicMock()
+        loop = asyncio.get_event_loop()
+        reader.set_loop(loop)
+
+        task = loop.create_task(reader._poll_loop())
+        await asyncio.sleep(0.15)
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+        reader._bus.publish_many.assert_called_once()
+        batch = reader._bus.publish_many.call_args[0][0]
+        batch_toks = sorted(p["tok"] for p in batch)
+        assert batch_toks == [100, 200, 300], (
+            f"Expected all 3 changed tokens in the single batched call; "
+            f"got {batch_toks}"
+        )
+        reader._bus.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

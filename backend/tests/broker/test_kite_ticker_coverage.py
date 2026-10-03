@@ -189,6 +189,69 @@ class TestBroadcastBus:
         finally:
             loop.close()
 
+    def test_publish_many_schedules_one_call_per_queue_not_per_payload(self):
+        """Perf fix (2026-10) — publish_many() must schedule exactly ONE
+        call_soon_threadsafe PER QUEUE for a whole batch of payloads,
+        not one per payload per queue. This test FAILS against the old
+        per-payload publish() loop (3 queues x 5 payloads = 15 schedule
+        calls) and PASSES once publish_many() batches to 3 (one per
+        queue)."""
+        from backend.brokers.kite_ticker import BroadcastBus
+
+        bus = BroadcastBus()
+        fake_loop = MagicMock()
+        bus.set_loop(fake_loop)
+        queues = [asyncio.Queue(), asyncio.Queue(), asyncio.Queue()]
+        for q in queues:
+            bus.register(q)
+
+        payloads = [{"tok": i, "ltp": float(i), "sym": f"SYM{i}", "ts": 0} for i in range(5)]
+        bus.publish_many(payloads)
+
+        assert fake_loop.call_soon_threadsafe.call_count == len(queues), (
+            f"Expected exactly {len(queues)} call_soon_threadsafe calls "
+            f"(one per queue, batching all 5 payloads), got "
+            f"{fake_loop.call_soon_threadsafe.call_count} — publish_many() "
+            f"is still scheduling per-payload instead of per-frame"
+        )
+
+        # Replay the recorded callback+args for each queue and verify every
+        # queue receives all 5 payloads, in order.
+        for call_args in fake_loop.call_soon_threadsafe.call_args_list:
+            func, q_arg, payloads_arg = call_args[0]
+            assert payloads_arg == payloads, (
+                f"Scheduled batch mismatch: {payloads_arg!r} != {payloads!r}"
+            )
+            func(q_arg, payloads_arg)
+
+        for q in queues:
+            delivered = []
+            while not q.empty():
+                delivered.append(q.get_nowait())
+            assert delivered == payloads, (
+                f"Queue did not receive all 5 payloads in order; got {delivered!r}"
+            )
+
+    def test_publish_single_payload_still_delegates_to_publish_many(self):
+        """Back-compat: publish(payload) must still deliver a single
+        payload to every registered queue (existing callers unaffected
+        by the publish_many refactor)."""
+        from backend.brokers.kite_ticker import BroadcastBus
+
+        loop = asyncio.new_event_loop()
+        try:
+            bus = BroadcastBus()
+            bus.set_loop(loop)
+            q = asyncio.Queue()
+            bus.register(q)
+            bus.publish({"tok": 42, "ltp": 7.5})
+            loop.run_until_complete(asyncio.sleep(0))
+            assert not q.empty()
+            item = q.get_nowait()
+            assert item == {"tok": 42, "ltp": 7.5}
+        finally:
+            loop.close()
+
 
 # ---------------------------------------------------------------------------
 # TICK-3: TickerManager._on_ticks
@@ -273,6 +336,54 @@ class TestOnTicks:
         call_args = mock_buf.upsert.call_args
         assert call_args[0][0] == 256265, f"upsert token mismatch: {call_args!r}"
         assert call_args[0][1] == 300.0, f"upsert ltp mismatch: {call_args!r}"
+
+    def test_tick_buffer_upsert_not_doubled_by_virtual_root_alias(self):
+        """Perf fix (2026-10) — a token with a virtual-root alias produces
+        TWO SSE payloads (real sym + alias) but must mirror to the mmap
+        buffer with exactly ONE upsert() call. This FAILS against the old
+        code (which looped `to_publish`, calling upsert once per payload —
+        twice for an aliased token with identical tok/ltp) and PASSES once
+        mirroring loops the deduped-by-token map instead."""
+        tm = _fresh_ticker()
+        mock_buf = MagicMock()
+        tm._tick_buffer = mock_buf
+        tm.set_virtual_root_alias(58312711, "CRUDEOIL")
+        ticks = [{"instrument_token": 58312711, "last_price": 7650.5}]
+
+        tm._on_ticks(MagicMock(), ticks)
+
+        assert mock_buf.upsert.call_count == 1, (
+            f"Expected exactly 1 mmap upsert for an aliased token (dedup by "
+            f"token), got {mock_buf.upsert.call_count} — _on_ticks is still "
+            f"mirroring per-SSE-payload instead of per-real-token"
+        )
+        call_args = mock_buf.upsert.call_args
+        assert call_args[0][0] == 58312711
+        assert call_args[0][1] == 7650.5
+
+    def test_on_ticks_publishes_whole_frame_in_one_batch_call(self):
+        """Perf fix (2026-10) — _on_ticks must call self._bus.publish_many()
+        exactly ONCE per tick frame with the full to_publish list, not call
+        publish() once per payload. Virtual-root aliasing doubles the
+        payload count for an aliased token (real sym + alias sym), so this
+        also proves the alias fan-out doesn't turn into N separate bus
+        calls."""
+        tm = _fresh_ticker()
+        tm.set_virtual_root_alias(58312711, "CRUDEOIL")
+        tm._bus.publish_many = MagicMock()
+        tm._bus.publish = MagicMock()
+        ticks = [
+            {"instrument_token": 58312711, "last_price": 7650.5},
+            {"instrument_token": 408065, "last_price": 2500.0},
+        ]
+
+        tm._on_ticks(MagicMock(), ticks)
+
+        tm._bus.publish_many.assert_called_once()
+        batch = tm._bus.publish_many.call_args[0][0]
+        # 2 real ticks + 1 virtual-root alias payload = 3 total.
+        assert len(batch) == 3, f"Expected 3 payloads (2 real + 1 alias); got {batch!r}"
+        tm._bus.publish.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

@@ -142,7 +142,7 @@ class TestPollLoopSymPayload:
 
         published: list[dict] = []
         reader._bus = MagicMock()
-        reader._bus.publish = lambda d: published.append(d)
+        reader._bus.publish_many = lambda batch: published.extend(batch)
 
         loop = asyncio.get_event_loop()
         reader.set_loop(loop)
@@ -175,7 +175,7 @@ class TestPollLoopSymPayload:
         # _token_to_sym intentionally empty — simulates the gap
 
         reader._bus = MagicMock()
-        reader._bus.publish = lambda d: None
+        reader._bus.publish_many = lambda batch: None
 
         loop = asyncio.get_event_loop()
         reader.set_loop(loop)

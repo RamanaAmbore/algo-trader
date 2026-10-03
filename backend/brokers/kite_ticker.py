@@ -89,9 +89,11 @@ class BroadcastBus:
       • set_loop() is called once at app startup with the running event loop.
       • SSE route handlers call register() on connect, unregister() on
         disconnect.
-      • _on_ticks calls bus.publish() for each tick frame. publish() uses
-        loop.call_soon_threadsafe() to schedule a put_nowait on every
-        registered queue without blocking the Twisted reactor.
+      • _on_ticks calls bus.publish_many() ONCE per tick frame with the
+        whole batch of payloads. publish_many() uses
+        loop.call_soon_threadsafe() to schedule a batched put_nowait on
+        every registered queue (one call_soon_threadsafe per queue per
+        frame, not per payload) without blocking the Twisted reactor.
 
     Backpressure: slow consumers whose queue is full silently drop the tick
     (put_nowait raises QueueFull which is caught and discarded). One missed
@@ -120,18 +122,42 @@ class BroadcastBus:
         """
         Called from the Twisted reactor thread.
 
-        Schedules a put_nowait on every registered asyncio.Queue via the
-        main event loop. Uses call_soon_threadsafe so the call is safe to
-        invoke from any thread. QueueFull and closed-loop errors are
-        swallowed silently to never block the Twisted hot path.
+        Single-payload convenience wrapper — delegates to publish_many()
+        so there is exactly one fan-out code path. Prefer publish_many()
+        on any hot path that already has a batch of payloads (e.g.
+        _on_ticks's per-frame tick list) to avoid scheduling one
+        call_soon_threadsafe per payload per queue.
         """
-        if not self._loop:
+        self.publish_many([payload])
+
+    def publish_many(self, payloads: list[dict]) -> None:
+        """
+        Called from the Twisted reactor thread (or any producer thread)
+        with a WHOLE FRAME of payloads at once.
+
+        Perf fix (2026-10) — schedules exactly ONE put_nowait-batch per
+        registered queue via call_soon_threadsafe, not one per payload.
+        Before this fix, publish() was called once per payload per
+        queue: a MODE_LTP frame of ~20-200 ticks, doubled by
+        virtual-root aliasing (_on_ticks appends a second payload per
+        aliased token), against N concurrent SSE subscriber queues,
+        scheduled up to 2 × ticks × N individual cross-thread event-loop
+        wakeups (Twisted reactor thread → asyncio loop thread) per
+        frame. Each call_soon_threadsafe is a real wakeup, not free —
+        batching to one call per queue per frame collapses that to N
+        wakeups regardless of frame size.
+
+        QueueFull and closed-loop errors are swallowed silently to
+        never block the Twisted hot path — same contract as the old
+        per-payload publish().
+        """
+        if not payloads or not self._loop:
             return
         with self._lock:
             queues = list(self._queues)
         for q in queues:
             try:
-                self._loop.call_soon_threadsafe(self._put_nowait, q, payload)
+                self._loop.call_soon_threadsafe(self._put_many_nowait, q, payloads)
             except RuntimeError:
                 # Event loop is closed — app shutting down; ignore.
                 pass
@@ -142,6 +168,20 @@ class BroadcastBus:
             q.put_nowait(payload)
         except asyncio.QueueFull:
             pass  # slow consumer — drop tick, stream will catch up
+
+    @staticmethod
+    def _put_many_nowait(q: asyncio.Queue, payloads: list[dict]) -> None:
+        """Runs on the asyncio event-loop thread (scheduled via
+        call_soon_threadsafe) — safe to loop synchronously here since
+        we're no longer crossing threads per payload. Each payload is
+        put individually (not a single list item) so queue consumers
+        keep seeing one dict per tick, matching the pre-batching
+        contract; QueueFull on one payload doesn't abort the rest."""
+        for payload in payloads:
+            try:
+                q.put_nowait(payload)
+            except asyncio.QueueFull:
+                pass  # slow consumer — drop this tick, continue the batch
 
 
 def _emit_conn_event(
@@ -1159,9 +1199,10 @@ class TickerManager:
         The lock hold-time is proportional to len(ticks), which for
         MODE_LTP frames is a flat list of {instrument_token, last_price}
         dicts — typically 20-200 entries per frame at 5 req/sec cadence.
-        Bus.publish() is called outside the lock to minimise hold time —
-        it acquires its own internal lock briefly to snapshot the queue
-        set.
+        Bus.publish_many() is called outside the lock to minimise hold
+        time — it acquires its own internal lock briefly to snapshot
+        the queue set, then schedules one batched delivery per queue
+        for the whole frame.
 
         Zero-LTP guard (Sleep audit Jun 2026 — LTP flicker definitive fix):
         Kite occasionally sends `last_price: 0` for a freshly-subscribed
@@ -1175,6 +1216,16 @@ class TickerManager:
         no zero ever lands in `_tick_map`, the SSE bus, or `/dev/shm`.
         """
         to_publish: list[dict] = []
+        # Perf fix (2026-10): mmap mirroring must write each REAL token
+        # exactly once per frame. to_publish fans a single real tick out
+        # into TWO payloads when a virtual-root alias exists (real sym +
+        # alias sym, same tok/ltp) — mirroring straight off to_publish
+        # previously called TickBufferWriter.upsert() twice for the same
+        # token with identical values, a pure wasted duplicate write.
+        # to_mirror is keyed by token so it naturally dedupes (and also
+        # collapses a token that legitimately appears twice in one WS
+        # frame down to its last value, matching "last write wins").
+        to_mirror: dict[int, float] = {}
         ts = int(time.time())
         ts_ns = time.time_ns()
         with self._lock:
@@ -1200,6 +1251,7 @@ class TickerManager:
                     "ltp": lp_f,
                     "ts":  ts,
                 })
+                to_mirror[tok] = lp_f
                 # Emit virtual root alias alongside the real sym so SSE clients
                 # can read getSnapshot("CRUDEOIL") at tick cadence.
                 vr = self._virtual_root_aliases.get(tok)
@@ -1209,23 +1261,24 @@ class TickerManager:
         # writer's only state is mmap byte positions; safe to call
         # concurrently with reads from other processes (we're the
         # single writer in this process). Cheap: each upsert is one
-        # hash + one struct.pack_into.
+        # hash + one struct.pack_into. Iterates to_mirror (one entry
+        # per real token), NOT to_publish (which double-counts aliased
+        # tokens — see comment above).
         if self._tick_buffer is not None:
-            for payload in to_publish:
+            for tok, lp_f in to_mirror.items():
                 try:
-                    self._tick_buffer.upsert(
-                        payload["tok"],
-                        payload["ltp"],
-                        ts_ns=ts_ns,
-                    )
+                    self._tick_buffer.upsert(tok, lp_f, ts_ns=ts_ns)
                 except Exception:
                     # Don't let a buffer write blow up the tick path.
                     # Worst case: readers see stale data — fine.
                     pass
-        # Publish outside the lock so the Twisted reactor is not held
-        # while the bus iterates its queue set.
-        for payload in to_publish:
-            self._bus.publish(payload)
+        # Publish the WHOLE frame as one batch per queue — see
+        # BroadcastBus.publish_many's docstring for why this replaces
+        # a per-payload publish() loop (one call_soon_threadsafe per
+        # payload per queue was a real per-tick cross-thread wakeup
+        # cost, doubled by virtual-root aliasing).
+        if to_publish:
+            self._bus.publish_many(to_publish)
 
     def _on_close(self, _ws, code, reason) -> None:
         import time

@@ -320,6 +320,14 @@ class MmapTickReader:
                 if v != self._last_version:
                     self._last_version = v
                     ts = int(time.time())
+                    # Perf fix (2026-10): collect the whole cycle's
+                    # changed ticks into one batch and publish_many()
+                    # once, instead of calling self._bus.publish() once
+                    # per changed token — same rationale as
+                    # kite_ticker.BroadcastBus.publish_many (one
+                    # call_soon_threadsafe per queue per poll cycle,
+                    # not one per tick).
+                    batch: list[dict] = []
                     for tok, lp, _pc, _av, _ts_ns in r.iter_active():
                         # Zero-LTP guard — never publish a torn-read
                         # zero or a stale-empty slot double. Matches the
@@ -348,12 +356,14 @@ class MmapTickReader:
                             # fires as a fresh delta.
                             continue
                         self._last_ltp[tok] = lp
-                        self._bus.publish({
+                        batch.append({
                             "tok": tok,
                             "sym": sym_str,
                             "ltp": lp,
                             "ts":  ts,
                         })
+                    if batch:
+                        self._bus.publish_many(batch)
                 await asyncio.sleep(_POLL_INTERVAL_S)
             except asyncio.CancelledError:
                 return

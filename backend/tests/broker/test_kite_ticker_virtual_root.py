@@ -132,8 +132,11 @@ class TestOnTicksEmitsVirtualRootAlias:
             }
         ]
 
-        # Mock the bus.publish to track calls
-        ticker._bus.publish = MagicMock()
+        # Mock the bus.publish_many to track the batched call — _on_ticks
+        # now publishes the whole frame as one call (perf fix 2026-10;
+        # see test_on_ticks_publishes_whole_frame_in_one_batch_call in
+        # test_kite_ticker_coverage.py for the dedicated batching test).
+        ticker._bus.publish_many = MagicMock()
 
         # Call _on_ticks with the required _ws argument (can be None)
         ticker._on_ticks(None, ticks)
@@ -143,14 +146,16 @@ class TestOnTicksEmitsVirtualRootAlias:
             f"Expected token {token} in tick_map after _on_ticks, got {ticker._tick_map.keys()}"
         )
 
-        # Verify bus.publish was called at least twice (once for real sym, once for virtual root)
-        publish_calls = ticker._bus.publish.call_args_list
-        assert len(publish_calls) >= 2, (
-            f"Expected at least 2 publish calls (real + virtual root), got {len(publish_calls)}"
+        # Verify publish_many was called once with at least 2 payloads
+        # (once for real sym, once for virtual root) in that single batch.
+        ticker._bus.publish_many.assert_called_once()
+        batch = ticker._bus.publish_many.call_args[0][0]
+        assert len(batch) >= 2, (
+            f"Expected at least 2 payloads in the batch (real + virtual root), got {len(batch)}"
         )
 
         # Check that both the real sym and virtual root were published
-        published_syms = [call[0][0].get("sym") for call in publish_calls if call[0]]
+        published_syms = [p.get("sym") for p in batch]
         assert sym in published_syms or "" in published_syms, (
             f"Expected real sym {sym} in published symbols, got {published_syms}"
         )
