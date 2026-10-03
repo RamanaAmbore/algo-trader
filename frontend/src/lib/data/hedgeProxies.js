@@ -93,9 +93,6 @@ export async function loadHedgeProxies(force = false) {
   return _loading;
 }
 
-/** Cached rows (possibly empty before first load resolves). */
-export function getHedgeProxies() { return _rows; }
-
 /**
  * Return the proxy symbols that hedge the given target.
  * @param {string} targetRoot
@@ -112,17 +109,6 @@ export function proxiesForTarget(targetRoot) {
  */
 export function targetsForProxy(proxySymbol) {
   return _byProxy[String(proxySymbol || '').toUpperCase()] || [];
-}
-
-/**
- * Is `proxySymbol` configured to hedge `targetRoot`?
- * @param {string} proxySymbol
- * @param {string} targetRoot
- */
-export function isProxyFor(proxySymbol, targetRoot) {
-  const arr = _byProxy[String(proxySymbol || '').toUpperCase()];
-  if (!arr) return false;
-  return arr.includes(String(targetRoot || '').toUpperCase());
 }
 
 // Factor helper retired — callers now derive `effective_qty` directly

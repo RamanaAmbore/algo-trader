@@ -361,7 +361,6 @@ export const fetchAccounts  = () => _get('/accounts/', { auth: _hasToken() });
 // ── Public endpoints (no JWT needed) ─────────────────────────────────────────
 export const fetchMarket = () => _get('/market/');
 export const fetchNews   = () => _get('/news/');
-export const fetchAbout  = () => _get('/config/about');
 
 // ── Agent endpoints (admin) ───────────────────────────────────────────────────
 export const fetchAgents      = () => _get('/agents/', { auth: true });
@@ -383,24 +382,22 @@ export const reloadGrammarRegistry = () => _post('/admin/grammar/reload', {}, { 
 // ── Agent templates — reusable notify / condition saved sub-trees ────
 // System templates toggle-only; custom support full CRUD. URL kept at
 // /admin/fragments for back-compat; underlying model + module renamed
-// to AgentTemplate / template_registry in v2.1.
-export const fetchAgentTemplates = (kind) =>
+// to AgentTemplate / template_registry in v2.1 — but every live caller
+// (automation/agent-templates page) still uses the pre-v2.1 "Fragment"
+// names below, so those are the canonical exports here. The "AgentTemplate"
+// names were never adopted by any caller and were removed as dead code
+// (dead-code audit, 2026-10).
+export const fetchAgentFragments = (kind) =>
   _get(`/admin/fragments/${kind ? `?kind=${encodeURIComponent(kind)}` : ''}`,
        { auth: true });
-export const createAgentTemplate = (payload) =>
+export const createAgentFragment = (payload) =>
   _post('/admin/fragments/', payload, { auth: true });
-export const patchAgentTemplate  = (id, payload) =>
+export const patchAgentFragment  = (id, payload) =>
   _patch(`/admin/fragments/${id}`, payload, { auth: true });
-export const deleteAgentTemplate = (id) =>
+export const deleteAgentFragment = (id) =>
   _del(`/admin/fragments/${id}`, { auth: true });
-export const reloadAgentTemplates = () =>
+export const reloadFragments     = () =>
   _post('/admin/fragments/reload', {}, { auth: true });
-// Pre-v2.1 names kept as aliases — remove in v2.2.
-export const fetchAgentFragments = fetchAgentTemplates;
-export const createAgentFragment = createAgentTemplate;
-export const patchAgentFragment  = patchAgentTemplate;
-export const deleteAgentFragment = deleteAgentTemplate;
-export const reloadFragments     = reloadAgentTemplates;
 
 // ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
 // submit time. System rows are toggle + tune; custom rows full CRUD.
@@ -457,8 +454,6 @@ export const fetchStrategyMetrics = (id, { days = 90 } = {}) =>
  *  a caller-managed AbortController timeout). */
 export const fetchNavHistory = ({ days = 90, signal = undefined } = {}) =>
   _get(`/nav/?days=${Number(days) || 90}`, { auth: _hasToken(), signal });
-export const fetchNavLatest  = () =>
-  _get('/nav/latest', { auth: _hasToken() });
 /** GET /api/nav/by-account — LIVE per-account NAV breakdown (same
  *  compute_firm_nav() v4 formula as the firm total). SSOT for
  *  PerformancePage's NAV grid — replaces the removed client-side
@@ -467,14 +462,6 @@ export const fetchNavLatest  = () =>
  *  /holdings), so no explicit auth flag is required. */
 export const fetchNavByAccount = () =>
   _get('/nav/by-account', { auth: _hasToken() });
-export const triggerNavCompute = () =>
-  _post('/nav/compute', {}, { auth: true });
-/** Per-investor NAV slice (slice 7k). Requires authenticated user. */
-export const fetchMyNavSlice    = () =>
-  _get('/nav/me',         { auth: true });
-export const fetchMyNavHistory  = ({ days = 90 } = {}) =>
-  _get(`/nav/me/history?days=${Number(days) || 90}`, { auth: true });
-
 /** Investor portal admin (slice 7L) — token mint/revoke per LP.
  *  Returned token from mint is shown ONCE; subsequent list calls
  *  surface only a preview. Mirrors MCP token mint UX. */
@@ -595,7 +582,6 @@ export const updateSetting     = (key, value) =>
          { auth: true });
 export const resetSetting      = (key) =>
   _post(`/admin/settings/${encodeURIComponent(key)}/reset`, {}, { auth: true });
-export const fetchAgentEvents = (slug, n = 50) => _get(`/agents/${slug}/events?n=${n}`, { auth: true });
 export const fetchRecentAgentEvents = (n = 100) => _get(`/agents/events/recent?n=${n}`, { auth: true });
 export const createAgent      = (payload) => _post('/agents/', payload, { auth: true });
 
@@ -771,7 +757,6 @@ export const replaySimIteration   = (slug) =>
 export const updateAgent     = (slug, payload) => _put(`/agents/${slug}`, payload, { auth: true });
 export const activateAgent   = (slug) => _put(`/agents/${slug}/activate`, undefined, { auth: true });
 export const deactivateAgent = (slug) => _put(`/agents/${slug}/deactivate`, undefined, { auth: true });
-export const deleteAgent     = (slug) => _del(`/agents/${slug}`, { auth: true });
 export const interpretAgent  = (command) => _post('/agents/interpret', { command }, { auth: true });
 
 // ── Order mutations (protected) ───────────────────────────────────────────────
@@ -1019,10 +1004,6 @@ export const fetchBrokerOrder = () => _get('/admin/brokers/order', { auth: true 
 /** GET /api/admin/brokers — list every broker account (no secrets). */
 export const fetchBrokerAccounts = () => _get('/admin/brokers', { auth: true });
 
-/** GET /api/admin/brokers/{account} — single account metadata. */
-export const fetchBrokerAccount = (acct) =>
-  _get(`/admin/brokers/${encodeURIComponent(acct)}`, { auth: true });
-
 /** GET /api/admin/brokers/{account}/capabilities — Sprint C: broker
  *  capability matrix (gtt_single / gtt_oco / gtt_modify / display_name
  *  / etc) so OrderTicket can render inline warnings on attach. Pure
@@ -1267,27 +1248,6 @@ export const fetchOrderEvents = (limit = 50, status = null) => {
 };
 
 
-/**
- * POST /api/admin/pnl/upload-csv  (multipart/form-data)
- * Caller builds and passes the FormData directly — not routed through
- * _request because multipart requires no Content-Type header override.
- */
-export async function uploadPnlCsv(formData) {
-  const token = /** @type {any} */ (typeof sessionStorage !== 'undefined'
-    ? sessionStorage.getItem('ramboq_token')
-    : null);
-  const res = await fetch(`${BASE}/admin/pnl/upload-csv`, {
-    method: 'POST',
-    headers: token ? { Authorization: `Bearer ${token}` } : {},
-    body: formData,
-  });
-  if (!res.ok) {
-    const body = await res.json().catch(() => ({}));
-    throw new Error(_friendlyError(res.status, body?.detail ?? null));
-  }
-  return res.json();
-}
-
 // ── Unified log feed ──────────────────────────────────────────────────
 /**
  * GET /api/logs/unified — merged order-event + agent-event stream.
@@ -1349,21 +1309,12 @@ export const fetchResearchThreads = (symbol = null, limit = 100) => {
 /** GET /api/research/threads/{id} — full transcript + thesis. */
 export const fetchResearchThread = (id) =>
   _get(`/research/threads/${id}`, { auth: true });
-/** POST /api/research/threads — create a new thread. */
-export const createResearchThread = (payload) =>
-  _post('/research/threads', payload, { auth: true });
-/** PATCH /api/research/threads/{id} — update title/thesis/transcript/draft_agent. */
-export const updateResearchThread = (id, payload) =>
-  _patch(`/research/threads/${id}`, payload, { auth: true });
 /** DELETE /api/research/threads/{id} — remove. */
 export const deleteResearchThread = (id) =>
   _del(`/research/threads/${id}`, { auth: true });
 /** GET /api/research/drafts — threads with linked inactive agents (joined view). */
 export const fetchResearchDrafts = (limit = 200) =>
   _get(`/research/drafts?limit=${limit}`, { auth: true });
-/** POST /api/research/threads/{id}/promote — create an inactive draft agent. */
-export const promoteResearchThread = (id, payload) =>
-  _post(`/research/threads/${id}/promote`, payload, { auth: true });
 /** POST /api/research/confirm-token — mint a 60s single-use token for one specific order. */
 export const mintConfirmToken = (payload) =>
   _post('/research/confirm-token', payload, { auth: true });

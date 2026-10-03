@@ -1,6 +1,8 @@
-// Architecture (a): createTickFlash, createFreshnessShimmer, and createTickBus
-// live here as sibling exports — they share the change-detection comparator
-// pattern and a common timer-cleanup idiom, so one file is cleaner than two.
+// Architecture (a): createTickFlash and createTickBus live here as sibling
+// exports — they share the change-detection comparator pattern and a common
+// timer-cleanup idiom, so one file is cleaner than two. (A third sibling,
+// createFreshnessShimmer, was removed as dead code — zero callers — in the
+// 2026-10 dead-code audit.)
 
 /**
  * Tick-flash helper — emits transient 'up' / 'down' classes when a
@@ -92,76 +94,6 @@ export function createTickFlash({ threshold = 0, pctThreshold = 0, durationMs = 
     classOf,
     dispose,
     setPctThreshold,
-  };
-}
-
-/**
- * Freshness-shimmer helper — emits a transient 'cell-freshness-pulse' class
- * on a tracked key whenever a new value arrives from the data stream,
- * regardless of whether the value actually changed. Distinct from
- * createTickFlash (directional) — this is a neutral "data just landed" signal.
- *
- * CSS contract: .cell-freshness-pulse::after renders the 1px gradient underline
- * sweep. Defined in app.css so ag-Grid :global selectors can reach it.
- *
- *   const shimmer = createFreshnessShimmer({ durationMs: 700 });
- *   // Call notify(key) whenever a fresh value arrives for that key.
- *   shimmer.notify('NIFTY');
- *   // In cellClass: `shimmer.classOf('NIFTY')`
- *
- * Tab-hidden guard: if document.visibilityState === 'hidden' when notify()
- * is called, the class is not applied — the CSS animation won't run in a
- * hidden tab, so we save the class churn and avoid orphaned classes if the
- * tab stays hidden past the cleanup window.
- *
- * @param {{ durationMs?: number }} options
- */
-export function createFreshnessShimmer({ durationMs = 700 } = {}) {
-  /** @type {Record<string, any>} */
-  const timers = {};
-  /** @type {Record<string, boolean>} */
-  let active = $state({});
-
-  /**
-   * Signal that key just received fresh data. Applies the shimmer class
-   * for durationMs, then removes it.
-   * @param {string} key
-   */
-  function notify(key) {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    // Set active — triggers reactive reads in cellClass.
-    active[key] = true;
-    if (timers[key]) clearTimeout(timers[key]);
-    timers[key] = setTimeout(() => {
-      active[key] = false;
-      delete timers[key];
-    }, durationMs);
-  }
-
-  /**
-   * Batch-notify multiple keys at once (e.g. after a snapshot diff).
-   * @param {Iterable<string>} keys
-   */
-  function notifyAll(keys) {
-    if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-    for (const k of keys) notify(k);
-  }
-
-  /** Return the CSS class name for a key — '' or 'cell-freshness-pulse'. */
-  function classOf(/** @type {string} */ key) {
-    return active[key] ? 'cell-freshness-pulse' : '';
-  }
-
-  function dispose() {
-    for (const t of Object.values(timers)) clearTimeout(t);
-  }
-
-  return {
-    get active() { return active; },
-    notify,
-    notifyAll,
-    classOf,
-    dispose,
   };
 }
 

@@ -1285,14 +1285,6 @@ export function startConnStatusPoller() {
   });
 }
 
-/** Public hook — re-fires the conn poll immediately. Used by the
- *  /signin form on successful login so the broker chip appears
- *  alongside the user pill on the post-login navigation, without
- *  waiting for the (algo)/+layout onMount to remount the poller. */
-export function refreshConnStatusNow() {
-  if (browser && _connPoll) _connPoll();
-}
-
 function stopConnStatusPoller() {
   if (_connPollerTeardown) {
     _connPollerTeardown();
