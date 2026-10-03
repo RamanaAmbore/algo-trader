@@ -319,22 +319,28 @@ module docstring.
 
 ## 12. Test Coverage Map
 
-### Backend
+### Backend — covered
 
-- `test_closed_hours_gate.py` — broker_fn never called when closed; snapshot path used
-- `test_snapshot_fallback_on_broker_error.py` — anti-flicker stale-live caching (120s window)
-- `test_raw_broker_cache.py` — 30s TTL, per-account deduplication
-- `test_ohlcv_fetch_ladder.py` — Tier 1 miss → Tier 2 → Tier 3, write-back
-- `test_instruments_fetch_ladder.py` — Kite-only walk, reject Dhan schema
-- `test_persistence_mode_soft.py` — Tier 1+2 bypass, broker always called
-- `test_holiday_calendar_pipeline.py` — four-tier fallback, immutable post-year
-- `test_intraday_5min_ttl.py` — today bars: 5-min Tier 1 TTL; history: DB persistent
-- `test_event_queue_bulk_insert.py` — workers start on boot, drain on shutdown
-- `test_completeness_gates.py` — OHLCV boundary + ≤4d gaps, instruments non-empty
+- `test_persistence_mode_cli.py` — persistence mode (off/soft/hard) flipping and TTL behavior
+- `test_holiday_refresh.py` — holiday calendar pipeline, daily refresh, retry logic
+- `test_fetch_holidays_tier_restructure.py` — four-tier holiday fallback chain
+- `test_ohlcv_equity_persistence.py` — OHLCV daily bars, Tier 1 miss → DB → broker
+- `test_intraday_store_db_only.py` — intraday bars: 5-min live TTL, DB persistent history
+- `test_retention_tables.py` — retention policy cleanup, table-specific windows
+- `test_retention_new_tables.py` — retention for new tables (nav_daily, daily_book, etc.)
+- `test_last_good_quote.py` — last-known-good quote cache, off-market staleness handling
 
-### Frontend
+### Backend — gaps
 
-- `closed_hours_snapshot.spec.js` — closed display shows snapshot with as_of timestamp
+- Closed-hours route gate (broker_fn never called when closed)
+- Anti-flicker stale-live caching (120s window on broker failures)
+- Raw broker cache (30s TTL, per-account deduplication)
+- Completeness gates (OHLCV boundary + ≤4d gaps, instruments non-empty)
+- Event queue bulk INSERT with worker lifecycle
+
+### Frontend — covered
+
+(No Playwright tests currently exist for closed-hours snapshot display)
 
 ---
 

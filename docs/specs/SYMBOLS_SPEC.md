@@ -226,18 +226,28 @@ contract name).
 
 ## 9. Test Coverage Map
 
-### Backend
+### Backend — covered
 
-- `test_symbol_resolver_list_active_futures.py` — settling-contract exclusion (today+1 vs today), limit truncation
-- `test_symbol_resolver_resolve.py` — front-month selection, _NEXT suffix, identity pass-through
-- `test_symbol_resolver_root_of.py` — reverse resolver round-trip, far-month detection
-- `test_symbol_resolver_fallback.py` — cache-lag fallback to all-futures, cold boot identity
-- `test_resolve_market_data_keys.py` — batch resolver with deduplication + re-keying
+- `test_virtual_root_endpoints.py` — `/api/symbols/resolve` and `/api/symbols/root_of` endpoints
+- `test_root_next_resolver.py` — _NEXT suffix resolution, back-month mapping
+- `test_near_month_rollover.py` — settling-contract exclusion, front-month selection during rollover
+- `test_symbols_search_augmented.py` — symbol search with virtual root injection
+- `broker/test_kite_ticker_virtual_root.py` — virtual root alias management in KiteTicker
 
-### Frontend
+### Backend — gaps
 
-- `symbol_resolver.spec.js` — `rootOf()` round-trip, `rootOfLabel()` display format, `resolveVirtual()` forward
-- `seed_root_map.spec.js` — `seedRootMapFromInstruments()` sorting + limit, monthly-only filtering (CDS weeklies excluded)
+- Batch resolver with deduplication + re-keying (market data resolution optimization)
+- Cache-lag fallback behavior (all-futures when active contracts expired)
+- Cold-boot identity pass-through (cache not yet seeded)
+
+### Frontend — covered
+
+(No Playwright tests currently exist for frontend symbol resolution or root mapping)
+
+### Frontend — gaps
+
+- `rootOf()` round-trip verification, `rootOfLabel()` display formatting, `resolveVirtual()` forward
+- `seedRootMapFromInstruments()` sorting + limit, monthly-only filtering (CDS weeklies excluded)
 
 ---
 

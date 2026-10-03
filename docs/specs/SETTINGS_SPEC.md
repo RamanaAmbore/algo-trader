@@ -303,11 +303,7 @@ live-effect handlers to re-apply the new value.
 
 ### Backend — covered
 
-- `test_settings_read_chain.py` — Tier 1 cache → Tier 2 DB → Tier 3 YAML → in-code
-- `test_settings_validation.py` — INT, STRING, BOOL, JSON type checks + schema
-- `test_settings_live_effect.py` — logging.file_log_level change applied without restart
-- `test_settings_crud.py` — PATCH, POST reset, GET single/all
-- `test_settings_seed.py` — Initial seed idempotency, retired-key cleanup
+- `test_settings_read_chain.py` — Tier 1 cache → Tier 2 DB → Tier 3 YAML → in-code default fallback
 
 ### Backend — gaps
 
@@ -317,9 +313,7 @@ live-effect handlers to re-apply the new value.
 
 ### Frontend — covered
 
-- `settings_page.spec.js` — Grid renders, inline edit, Save/Reset buttons
-- `settings_validation.spec.js` — Form rejects invalid types before submit
-- `settings_error_toast.spec.js` — Error messages surface from 400/500 responses
+(No Playwright tests currently exist for settings page)
 
 ### Frontend — gaps
 

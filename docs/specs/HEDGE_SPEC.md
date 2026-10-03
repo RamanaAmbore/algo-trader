@@ -234,21 +234,22 @@ intentionally stale regressions.
 
 ## 9. Test Coverage Map
 
-### Backend
+### Backend — covered
 
 - `test_hedge_proxy_regression_math.py` — β calculation from known return vectors (60d), r_squared
-- `test_hedge_proxy_15bar_guard.py` — reject < 15 overlapping bars, return error
-- `test_hedge_proxy_divide_by_zero.py` — guard target_spot = 0, no divide error
-- `test_hedge_proxy_auto_recompute_schedule.py` — age-check gate, skip fresh pairs (regression_at < 30d)
-- `test_hedge_proxy_mcx_rollover_window.py` — MCX commodities use 30d window not 60d
-- `test_hedge_proxy_effective_qty.py` — formula (β × market_value / target_spot / target_lot_size)
-- `test_hedge_proxy_target_resolution.py` — NSE index vs MCX commodity exchange hints
 
-### Frontend
+### Backend — gaps
 
-- `hedge_chip_display.spec.js` — PROXY chip renders with target, β, correlation icon
-- `hedge_correlation_warning.spec.js` — r < 0.7 shows amber icon + tooltip
-- `hedge_compute_button.spec.js` — POST /api/admin/hedge-proxies/{id}/compute, result persists
+- 15-bar minimum guard (reject insufficient overlapping history)
+- Target spot = 0 divide-by-zero guard
+- Auto-recompute schedule (age-check gate, stale regression detection)
+- MCX rollover window constraint (30d instead of 60d)
+- Effective hedge quantity formula (β × market_value / target_spot / target_lot_size)
+- Target symbol resolution (NSE index vs MCX commodity exchange hints)
+
+### Frontend — covered
+
+(No Playwright tests currently exist for hedge proxy UI or compute flow)
 
 ---
 

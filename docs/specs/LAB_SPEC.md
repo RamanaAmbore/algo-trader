@@ -273,31 +273,27 @@ Operators can query audit to see what Claude Code did + which tools confirmed vs
 
 ### Backend — covered
 
-- `test_mcp_tools_read.py` — get_positions, get_holdings, get_quote return correct shape
-- `test_mcp_tools_write_gated.py` — place_order, cancel_order require confirm token
-- `test_confirm_token_lifecycle.py` — generate, validate, consume, expire
-- `test_research_thread_crud.py` — create, update transcript, promote to agent
-- `test_mcp_audit_write.py` — every tool call logged, retention cleanup
+(No test files found for MCP server tools, confirm tokens, or research threads)
 
 ### Backend — gaps
 
-- MCP subprocess stdout/stdin protocol (tool request/response framing)
-- Tool input scrubbing (PII removal before audit logging)
-- Concurrent token consumption (race condition test)
-- Audit truncation (tool_output > 1000 chars)
+- MCP tool implementations (read-only + gated write paths)
+- Confirm token lifecycle (generate, validate, consume, expire, race conditions)
+- Research thread CRUD (create, update transcript, promote to agent)
+- MCP audit trail logging + retention cleanup
+- MCP subprocess stdout/stdin protocol + tool I/O framing
+- Tool input scrubbing (PII removal) + audit truncation (tool_output > 1000 chars)
 
 ### Frontend — covered
 
-- `lab_page.spec.js` — Thread list, detail panel, transcript render
-- `lab_promote_agent.spec.js` — Promote button creates Agent, updates draft_agent_id
-- `lab_confirm_token_modal.spec.js` — Confirm button sends token back to backend
+- `research_page_verify.spec.js` — Lab page rendering and basic workflow
+- `research_promote_verify.spec.js` — Promote thread to agent flow
+- `research_place_order_verify.spec.js` — Place order from lab research
 
 ### Frontend — gaps
 
-- Transcript auto-scroll (new messages append to bottom)
-- Tool result expand/collapse toggle
-- Archive thread (soft-delete UI)
-- Search / filter threads by symbol + title
+- Transcript auto-scroll, tool result expand/collapse, archive thread UI
+- Search / filter threads by symbol + title, concurrent tool execution
 
 ---
 

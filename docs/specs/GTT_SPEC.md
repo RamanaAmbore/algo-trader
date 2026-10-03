@@ -340,22 +340,24 @@ Every Broker subclass must implement:
 
 ## 10. Test Coverage Map
 
-### Backend
+### Backend — covered
 
-- `test_gtt_book_lifecycle.py` — place, cancel, trigger, reset operations
-- `test_gtt_book_crossing.py` — single and two-leg trigger detection, order fan-out
-- `test_apply_plan_sim.py` — simulated GTT attachment, paper-engine wing fills
-- `test_apply_plan_live.py` — live GTT placement, translate_qty for every leg, G1 guard
-- `test_template_plan_resolve.py` — TP/SL trigger calculation, lot_size propagation
-- `test_g1_guard_gtt.py` — lot-multiple validation, error return on failure
-- `test_trail_stop_modification.py` — ratcheting SL trigger on fixed 30s interval
-- `test_gtts_listing_api.py` — listing GTTs across accounts, filtering, normalization
-- `test_gtts_cancel_api.py` — cancelling standalone GTTs, error codes (404/501/400)
+- `test_sim_gtt_book.py` — SimGttBook registry: place, cancel, trigger, reset; crossing detection
+- `test_orders_gtt.py` — GTT lifecycle, trigger crossing, order fan-out
+- `test_template_attach.py` — template attachment to orders, plan resolution
+- `test_oco_pair_watcher.py` — OCO pair-watcher, double-trigger guard
+- `test_bg_oco_extended.py` — background OC O extension checks
+- `test_template_attach_paper_mode_safety.py` — paper-mode GTT attachment safety gates
 
-### Frontend
+### Backend — gaps
 
-- `template_preview.spec.js` — plan preview shape, GTT + wing lines display correctly
-- `template_attach_validation.spec.js` — G1 errors surface in UI, preview disabled
+- Live GTT placement with translate_qty and G1 guard (broker-specific testing)
+- Trail-stop modification (30s interval ratchet)
+- Standalone GTT listing and cancel API (per-broker variations)
+
+### Frontend — covered
+
+(No Playwright tests currently exist for GTT preview or template attachment UI)
 
 ---
 

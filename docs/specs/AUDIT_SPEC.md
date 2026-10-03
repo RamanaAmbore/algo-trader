@@ -6,7 +6,7 @@ to settings changes. Immutable, queryable, and retention-managed.
 
 **Version**: 1.0 — 2026-07-11  
 **Owner**: Platform  
-**Linked files**: `backend/api/models.py` · `backend/api/middleware/audit.py` · 
+**Linked files**: `backend/api/models.py` · `backend/api/audit.py` · 
 `backend/api/routes/audit.py` · `backend/api/routes/history.py` · 
 `frontend/src/routes/(algo)/admin/history/+page.svelte`
 
@@ -261,30 +261,28 @@ no redactions. operator cannot delete individual rows; only bulk retention pruni
 
 ### Backend — covered
 
-- `test_audit_middleware.py` — middleware skip logic (GET, HEAD, OPTIONS)
-- `test_audit_category_routing.py` — path → category assignment
-- `test_audit_write_event.py` — non-HTTP write path (postback, agent action)
-- `test_audit_query.py` — filter combinations, pagination, OR on category
-- `test_audit_retention.py` — daily cleanup, retention window, no current-day delete
+- `test_audit_middleware.py` — middleware skip logic (GET, HEAD, OPTIONS), actor + category extraction
+- `test_audit_summary_cap.py` — audit summary scoring and capability gating
+- `test_audit_route_perf.py` — audit route performance under load
 
 ### Backend — gaps
 
-- Actor role caching (refresh frequency, stale role reflection)
-- Request ID injection + propagation (trace correlation end-to-end)
-- Target extraction edge cases (URL vs body vs path, precedence)
-- Middleware performance impact (audit write latency on critical paths)
+- Category routing (path → category assignment for order.place, order.fill, agent, etc.)
+- Non-HTTP write path (postback, background task audit events)
+- Query filtering (filter combinations, pagination, OR on category, status/actor search)
+- Retention policy (daily cleanup, retention window, no current-day delete)
+- Actor role caching, request ID injection + propagation
+- Target extraction edge cases (URL vs body vs path precedence)
 
 ### Frontend — covered
 
-- `history_orders.spec.js` — Orders tab renders AuditLog rows, filters work
-- `history_trades.spec.js` — Trades tab pulls daily_book kind='trade'
-- `history_funds.spec.js` — Funds tab aggregates by date/account
+(No Playwright tests currently exist for history page or audit trail UI)
 
 ### Frontend — gaps
 
-- CSV export button (handler in CardControls component)
-- Status histogram + mode pill filters (backend aggregation query)
-- Deep-link to history with pre-filled filters (query param → filter state)
+- History tabs (Orders, Trades, Funds rendering and filtering)
+- CSV export, status histogram, mode pill filters
+- Deep-link with pre-filled filters (query param → filter state)
 
 ---
 
