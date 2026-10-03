@@ -2,6 +2,7 @@ import json as _json
 import os
 import random
 import threading
+import numpy as np
 import pandas as pd
 import polars as pl
 import time as _time
@@ -2182,37 +2183,63 @@ def _annotate_lot_size(df: "pd.DataFrame") -> None:
     # _LOT_INDEX is a plain module-level dict — no await needed.
     from backend.brokers.adapters.kite import _LOT_INDEX as _kite_lot_index
 
-    # Merge kite's dict into the module-level _LOT_INDEX in-place so that
-    # any entries already injected by tests (patch.dict) are preserved and
-    # take priority, while production data from kite fills in the rest.
-    # Using .update() (not reassignment) keeps the object identity intact so
-    # patch.dict('backend.brokers.broker_apis._LOT_INDEX', ...) works.
-    _LOT_INDEX.update(_kite_lot_index)
+    # Perf fix (2026-10): do NOT merge `_kite_lot_index` into the
+    # module-level `_LOT_INDEX` on every call. `_kite_lot_index` holds
+    # the full instruments-cache lot-size index — tens of thousands of
+    # entries once warm — and `_LOT_INDEX.update(_kite_lot_index)`
+    # previously COPIED THE WHOLE DICT on every single positions /
+    # holdings fetch cache-miss (this function runs once per account
+    # per fetch). Instead, look up the LOCAL `_LOT_INDEX` (left empty
+    # in production — only tests write to it via `patch.dict`) first,
+    # falling back to `_kite_lot_index` (the real data) on a miss —
+    # same "override wins, kite fills the rest" precedence as the old
+    # merge, at O(1) lookup cost per symbol instead of O(len(
+    # _kite_lot_index)) per call. `iterrows()` is also gone — it
+    # builds a fresh Series per row (dtype promotion + Index overhead),
+    # which was the other half of this hot path's cost.
+    #
+    # multiplier: NaN/unparsable/0 → 1 (same "or 1" default the old
+    # per-row code used — a missing multiplier means "not MCX/NCO").
+    _mult_num = pd.to_numeric(df['multiplier'], errors='coerce').fillna(0)
+    mult_arr = _mult_num.where(_mult_num != 0, 1).astype('int64').to_numpy()
 
-    lots_list: list[int] = []
-    lot_size_list: list[int] = []
+    if 'quantity' in df.columns:
+        qty_arr = pd.to_numeric(df['quantity'], errors='coerce').fillna(0).astype('int64').to_numpy()
+    else:
+        qty_arr = np.zeros(len(df), dtype='int64')
 
-    for i, row in df.iterrows():
-        mult = int(row.get('multiplier') or 1)
-        exch = str(row.get('exchange') or '')
-        sym  = str(row.get('tradingsymbol') or '')
-        qty  = row.get('quantity') or 0
+    if 'exchange' in df.columns:
+        exch_arr = df['exchange'].fillna('').astype(str).to_numpy()
+    else:
+        exch_arr = np.full(len(df), '', dtype=object)
+    if 'tradingsymbol' in df.columns:
+        sym_arr = df['tradingsymbol'].fillna('').astype(str).to_numpy()
+    else:
+        sym_arr = np.full(len(df), '', dtype=object)
 
-        if mult > 1:
-            # MCX / NCO: Kite qty is in LOTS
-            lots_list.append(int(qty))
-            lot_size_list.append(mult)
-        else:
-            # NFO / CDS / BFO / equity: Kite qty is already contracts.
-            # Read _LOT_INDEX (module-level) so patch.dict in tests takes effect.
-            ls = _LOT_INDEX.get((exch, sym), 1)
-            if ls < 1:
-                ls = 1
-            lots_list.append(int(qty) // ls)
-            lot_size_list.append(ls)
+    mcx_row_mask = mult_arr > 1
 
-    df['lots']     = lots_list
-    df['lot_size'] = lot_size_list
+    # MCX/NCO rows: lots = original (pre-scale) quantity, lot_size =
+    # the Kite multiplier itself. Vectorised — no lookup needed.
+    lots_arr = np.where(mcx_row_mask, qty_arr, 0).astype('int64')
+    lot_size_arr = np.where(mcx_row_mask, mult_arr, 1).astype('int64')
+
+    # NFO/CDS/BFO/equity rows: lot_size comes from a dict lookup keyed
+    # on (exchange, tradingsymbol) — inherently row-by-row, but this
+    # loop only ever touches NON-MCX rows (np.nonzero restricts it) and
+    # works over plain numpy scalars, not a per-row pandas Series.
+    for i in np.nonzero(~mcx_row_mask)[0]:
+        key = (exch_arr[i], sym_arr[i])
+        ls = _LOT_INDEX.get(key)
+        if ls is None:
+            ls = _kite_lot_index.get(key, 1)
+        if ls < 1:
+            ls = 1
+        lots_arr[i] = qty_arr[i] // ls
+        lot_size_arr[i] = ls
+
+    df['lots']     = lots_arr
+    df['lot_size'] = lot_size_arr
 
     # Scale MCX/NCO quantity columns to contracts (multiplier > 1 rows).
     _mult_series = df['multiplier']

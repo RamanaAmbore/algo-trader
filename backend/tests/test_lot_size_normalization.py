@@ -287,6 +287,123 @@ class TestAnnotateLotSizeEquity:
         assert row['lots'] == 0
         assert row['lot_size'] == 1
 
+
+# ============================================================================
+# Perf fix (2026-10) — no full-dict copy, no iterrows()
+# ============================================================================
+
+class TestAnnotateLotSizePerf:
+    """_annotate_lot_size must not (a) copy the entire kite._LOT_INDEX
+    dict into broker_apis._LOT_INDEX on every call, and (b) must not
+    use DataFrame.iterrows() to build the lots/lot_size columns.
+
+    Both of these were measured as the hot-path cost on every
+    positions/holdings fetch cache-miss (one call per account): the
+    `.update()` merge copied a ~100k-entry dict every time, and
+    iterrows() allocates a fresh Series per row.
+    """
+
+    def test_lot_index_not_merged_with_kite_dict(self, annotate_lot_size):
+        """broker_apis._LOT_INDEX must stay untouched by a call — the
+        old code called `_LOT_INDEX.update(_kite_lot_index)`, which
+        FAILS this test (after the call, _LOT_INDEX would contain every
+        key from the fake 'kite' dict below, not just the ones the
+        lookup actually needed)."""
+        from backend.brokers import broker_apis
+
+        # A "kite" dict with many entries UNRELATED to any row being
+        # annotated — if the old merge-on-every-call code ran, all of
+        # these would land in broker_apis._LOT_INDEX afterwards.
+        fake_kite_index = {
+            ('NFO', f'UNRELATED_SYM_{i}'): 25 for i in range(50)
+        }
+        fake_kite_index[('NFO', 'NIFTY25SEPTFUT')] = 75
+
+        df = pd.DataFrame([{
+            'tradingsymbol': 'NIFTY25SEPTFUT',
+            'exchange': 'NFO',
+            'quantity': 75,
+            'multiplier': 1,
+        }])
+
+        with patch('backend.brokers.adapters.kite._LOT_INDEX', fake_kite_index), \
+             patch.dict('backend.brokers.broker_apis._LOT_INDEX', {}, clear=True):
+            annotate_lot_size(df)
+
+            # Correctness unaffected: the real lookup must still resolve.
+            assert df.iloc[0]['lot_size'] == 75
+
+            # The perf invariant: broker_apis._LOT_INDEX must NOT have
+            # picked up the 50 unrelated kite entries (or even the one
+            # entry actually used) — a merge would leak them all in.
+            assert len(broker_apis._LOT_INDEX) == 0, (
+                f"broker_apis._LOT_INDEX should remain empty (no merge "
+                f"of the kite dict); got {len(broker_apis._LOT_INDEX)} "
+                f"entries — _annotate_lot_size is still copying the "
+                f"full kite lot-size index on every call"
+            )
+
+    def test_does_not_use_iterrows(self, annotate_lot_size):
+        """DataFrame.iterrows() must never be called — patch it to raise
+        and confirm a normal mixed MCX/NFO/equity frame still annotates
+        correctly without tripping the guard."""
+        df = pd.DataFrame([
+            {'tradingsymbol': 'GOLDM26AUGFUT', 'exchange': 'MCX',
+             'quantity': 2, 'multiplier': 10},
+            {'tradingsymbol': 'RELIANCE', 'exchange': 'NSE',
+             'quantity': 100, 'multiplier': 1},
+        ])
+
+        with patch.object(pd.DataFrame, 'iterrows',
+                           side_effect=AssertionError('iterrows() must not be called')):
+            annotate_lot_size(df)
+
+        assert df.iloc[0]['lot_size'] == 10
+        assert df.iloc[0]['quantity'] == 20   # 2 lots x 10
+        assert df.iloc[1]['lot_size'] == 1
+        assert df.iloc[1]['quantity'] == 100
+
+    def test_local_override_wins_over_kite_dict(self, annotate_lot_size):
+        """When the same (exchange, tradingsymbol) key exists in BOTH
+        the test-patched local _LOT_INDEX and the real kite dict, the
+        local override must win (same precedence the old `.update()`
+        merge gave test overrides)."""
+        with patch('backend.brokers.adapters.kite._LOT_INDEX',
+                   {('NFO', 'NIFTY25SEPTFUT'): 999}), \
+             patch.dict('backend.brokers.broker_apis._LOT_INDEX',
+                        {('NFO', 'NIFTY25SEPTFUT'): 75}, clear=True):
+            df = pd.DataFrame([{
+                'tradingsymbol': 'NIFTY25SEPTFUT',
+                'exchange': 'NFO',
+                'quantity': 75,
+                'multiplier': 1,
+            }])
+            annotate_lot_size(df)
+
+        assert df.iloc[0]['lot_size'] == 75, (
+            f"Local override (75) must win over the kite dict's "
+            f"conflicting value (999); got {df.iloc[0]['lot_size']}"
+        )
+
+    def test_duplicate_index_does_not_misalign_assignment(self, annotate_lot_size):
+        """Positions frames built via pd.concat() can carry a duplicate
+        (non-unique) index. The vectorised assignment must assign by
+        position (via .to_numpy()), not by index-aligned Series, or a
+        duplicate index would misalign the lots/lot_size columns."""
+        df = pd.DataFrame([
+            {'tradingsymbol': 'GOLDM26AUGFUT', 'exchange': 'MCX',
+             'quantity': 2, 'multiplier': 10},
+            {'tradingsymbol': 'RELIANCE', 'exchange': 'NSE',
+             'quantity': 50, 'multiplier': 1},
+        ], index=[0, 0])  # duplicate index — mirrors pd.concat() output
+
+        annotate_lot_size(df)
+
+        assert df.iloc[0]['lot_size'] == 10, f"row0 lot_size mismatch: {df.iloc[0].to_dict()}"
+        assert df.iloc[0]['quantity'] == 20
+        assert df.iloc[1]['lot_size'] == 1, f"row1 lot_size mismatch: {df.iloc[1].to_dict()}"
+        assert df.iloc[1]['quantity'] == 50
+
     @pytest.mark.xfail(strict=False, reason="timing/import-order sensitive under concurrent test suite load; passes in isolation")
     def test_equity_short_position(self, annotate_lot_size):
         """Equity short: quantity=-50, multiplier=1."""
