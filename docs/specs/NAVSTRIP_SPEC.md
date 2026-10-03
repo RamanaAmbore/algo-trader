@@ -360,7 +360,7 @@ Every value must match a canonical source to stay in sync with other surfaces.
 | M:1, M:2 | `/api/funds` response margin fields | `funds[].avail_margin`, `funds[].used_margin` |
 | C:1 | Broker's live cash (CA) | `fundsStore.load()` → `funds[].live_cash` |
 | C:2 | Option premium tied up in long positions | Derived from `positions[]` CE/PE rows |
-| H:1 | `holdingsDayPnlStore` (module-level singleton, Aug 2026) | `_liveHoldingsToday` ($derived); recomputed live via `(ltp − previous_close) × qty` when `ltp` from SSE or fallback `h.last_price`; post-settlement guard skips formula when price delta < 0.5 paise; realisedToday fallback uses `brokerDcv` not hardcoded 0; exports `total` + `byKey[symbol]`; 5s live / 30min closed cadence |
+| H:1 | `portfolioStore.holdings` (unified SSOT via `portfolioStore.svelte.js`) | Canonical source: computes holdings day P&L via `baseDayPnlForPosition()` using `(ltp − previous_close) × qty`. `previous_close` frozen from `daily_book.ltp` (prior-session settlement LTP, not stale Kite BHAV). Updated on 5s broker refresh + immediate on data invalidation. Consumed via thin shim `holdingsDayPnlStore` (backward-compat wrapper) which delegates `.total` and `.byKey[symbol]` directly to store fields. |
 | H:2 | MarketPulse Holdings grid TOTAL row, Value column | `pulseHoldingsStore` (shared with MarketPulse); three-tier fallback (commit adc5e1f0): (1) `symbolStore ltp × qty` (live SSE tick), (2) `h.last_price × qty` (broker's last seen price, prevents invented value when last_price=0), (3) `h.cur_val` (broker computed value) |
 | H:3 | MarketPulse Holdings grid TOTAL row, P&L column | `_liveHoldingsTotal` ($derived); `(ltp − avg_cost) × qty` from symbolStore, fallback to `h.pnl` |
 

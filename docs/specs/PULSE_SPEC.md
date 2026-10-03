@@ -5,7 +5,7 @@ and data sources. Code, tests, and documentation must stay in sync with this fil
 
 **Version**: 1.22 — 2026-09-24  
 **Owner**: Platform  
-**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
+**Linked files**: `frontend/src/lib/MarketPulse.svelte` · `frontend/src/lib/data/marketDataStores.svelte.js` · `frontend/src/lib/data/positionsDayPnlStore.svelte.js` · `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` · `frontend/src/app.css` · `frontend/src/lib/data/quoteStream.js` · `backend/api/background.py` · `backend/api/routes/quote.py` · `backend/api/routes/watchlist.py` · `backend/api/helpers/snapshot_gate.py` · `backend/api/algo/daily_snapshot.py` · `backend/api/routes/holdings.py`
 
 ---
 
@@ -601,88 +601,52 @@ with no live-SSE-tick dependency at all:
   (the sole Day P&L formula — `livePositionDayPnl` and its live-tick delta term were removed)
 - Closed: `daily_book` snapshot LTP + zero day P&L (no intraday MTM)
 
-**Throttle** — `_throttledTick` 4 Hz (250ms) max; SSE ticks can fire 100/sec under load
+**Throttle** — 4 Hz (250ms, `_LTP_PAINT_MS` constant in MarketPulse.svelte); SSE ticks can 
+fire 100/sec under load but are throttled to one paint per 250ms minimum
 
 ### 11.1 Position Day P&L SSOT (`positionsDayPnlStore`)
 
-Module-level singleton in `frontend/src/lib/data/positionsDayPnlStore.svelte.js` is the 
-canonical source of truth for live position day P&L across all Pulse surfaces. It exports 
-`{ total, byKey }` where:
+Module-level singleton in `frontend/src/lib/data/positionsDayPnlStore.svelte.js` is a 
+backward-compat shim that delegates to `portfolioStore.svelte.js`. It exports `{ total, 
+byKey }` where:
 - `total` — sum of all position day P&L (₹ value, real-time)
 - `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol (no exchange prefix)
+- `setFromPulse()` — no-op as of 2026-09 (Pulse no longer overrides store)
 
-**Update direction — Pulse is the authoritative writer**:
-- During market-open hours, `buildUnified()` writes accurate position day P&L values via 
-  `mergePositionRows()` (cq-computed, not broker-cached). These values flow directly into 
-  `unifiedRows` grid.
-- MarketPulse component aggregates position rows' `day_pnl` from `unifiedRows` (filtered by 
-  `r._majorGroup === 'positions'`) in a `$effect` that runs after each `unifiedRows` update.
-- Aggregation calls `positionsDayPnlStore.setFromPulse(pulseByKey, pulseTotal)` to write the 
-  canonical totals back to the store.
-- This **inverts the data flow**: Pulse computes → store captures, not store overrides → Pulse 
-  displays.
+**Underlying SSOT**: Computation has moved to `portfolioStore.svelte.js`, which consolidates 
+positions, holdings, and funds into one reactive computation via `$derived.by()`. The shim 
+provides backward compatibility for existing consumers.
 
 **Consumers**:
 - **PositionStrip P pill** (nav): reads `store.total` for hero nav badge
 - **Dashboard hero** (if applicable): reads `store.total` for quick-scan P&L
+- **MarketPulse positions grid TOTAL row**: reads from store for pinned-row aggregation
 
-**Rationale**: Pulse's `mergePositionRows` produces accurate cq-computed day P&L values 
-during market-open hours. Writing these back to the store ensures all surfaces (nav, 
-dashboard) read the same authoritative calculation. Decoupling from grid renders prevents 
-stale re-renders and eliminates the regression where stale broker-cached data would override 
-Pulse's accurate in-memory values.
+**Rationale**: Unified backend consolidation eliminates race conditions where separate 
+stores went null during poll refresh cycles, causing derived values to zero out.
 
 ### 11.2 Holdings Day P&L SSOT (`holdingsDayPnlStore`)
 
-Module-level singleton in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` (Aug 2026) 
-is the canonical source of truth for live holdings day P&L across all Pulse surfaces and 
-dashboard. It exports `{ total, byKey, byAccount, chgPctByKey }` where:
+Module-level singleton in `frontend/src/lib/data/holdingsDayPnlStore.svelte.js` is a 
+backward-compat shim that delegates to `portfolioStore.svelte.js`. It exports `{ total, 
+byKey, byAccount, chgPctByKey }` where:
 - `total` — sum of all holdings day P&L (₹ value, real-time)
 - `byKey` — symbol-to-day_pnl map, keyed by plain uppercase tradingsymbol
 - `byAccount` — per-account holdings day P&L breakdown + `'TOTAL'` for pulse-scope aggregate
-- `chgPctByKey` — symbol-to-day_pnl_percent map (commit 869e4b78); delegates to `portfolioStore.holdings.chgPctByKey ?? {}`; used by `_dayPnlPctValueGetter` in `pulseColumns.js` for holdings Chg% column
+- `chgPctByKey` — symbol-to-day_pnl_percent map
 
-**Update direction — background perf task + Pulse coordinate**:
-- Background `_perf_fetch_all_broker_data()` task in `backend/api/background.py` now 
-  calls `_override_stale_close_for_holdings` and `_override_stale_close_from_snapshot` 
-  after threadpool fetch returns, then rebuilds summaries via `_rebuild_holdings_summary`. 
-  This ensures NavStrip H and Pulse day P&L values use frozen `previous_close` 
-  (not stale `day_pnl` from broker), achieving parity with HTTP route values.
-- `holdingsDayPnlStore.byAccount['TOTAL']` now returns `_pulseTotal` when pulse is active 
-  (from `mergeHoldingRows` aggregation), ensuring NavStrip H:1 and Pulse H-grid 
-  TOTAL row show identical values.
-- Dashboard `_holdingsSummary`, `_todayPnl`, `_holdingsFor` all now use 
-  `(ltp - previous_close) × qty` formula (guarded: `previous_close > 0`) instead of 
-  raw `day_change_val` from broker.
-- **Pulse override fix (commit 869e4b78)**: When `setHoldingsFromPulse(byKey, total)` is called 
-  by MarketPulse, the pulse-override branch now returns `chgPctByKey: base.chgPctByKey` 
-  alongside existing `total/byKey/byAccount/chg_pct`. Without this, `holdingsDayPnlStore.chgPctByKey` 
-  fell back to `{}` after first pulse update → holdings Chg% column showed null instead of 
-  percent values.
-
-**Data flow**:
-1. Background task fetches raw broker holdings via `@for_all_accounts` fan-out
-2. `_rebuild_holdings_summary()` calls `_override_stale_close_for_holdings()` to patch 
-   `day_change_val` with formula `(ltp - previous_close) × qty`
-3. Rebuilt DataFrame written to store + used for NavStrip + Dashboard hero rendering
-4. Pulse `mergeHoldingRows()` independently computes per-row day P&L using `previous_close` 
-   (from merged broker + DB sources)
-5. MarketPulse aggregates holdings rows in a `$effect` and calls 
-   `holdingsDayPnlStore.setFromPulse(pulseByKey, byAccount, pulseTotal)` to write 
-   canonical totals back to store
-6. Result: NavStrip, Dashboard, and Pulse all read the same authoritative day P&L values
+**Underlying SSOT**: Computation has moved to `portfolioStore.svelte.js` (same unified 
+store as §11.1 positions). The shim provides backward compatibility for existing consumers.
 
 **Consumers**:
 - **PositionStrip H pill** (nav): reads `store.byAccount['TOTAL']` for hero nav badge
 - **Dashboard hero** (if applicable): reads `store.total` + `store.byAccount` for summary cards
-- **Pulse Holdings grid TOTAL row**: derived from `mergeHoldingRows` aggregation, 
-  written back to `store.byAccount['TOTAL']` for consistency
+- **Pulse Holdings grid TOTAL row**: uses same store for consistency
+- **NavStrip holdings display**: reads store directly
 
-**Rationale**: Holdings day P&L was previously stale when broker's `day_pnl` reset to 0 at 
-NSE settlement (16:15 IST) or MCX settlement (23:30 IST). By freezing `previous_close` at 
-write-time (via `COALESCE(daily_book.previous_close, daily_book.ltp)`) and computing 
-day P&L as `(ltp - previous_close) × qty`, all surfaces (NavStrip, Dashboard, Pulse, 
-background task) now show consistent values throughout closed-hours window.
+**Rationale**: Holdings day P&L previously stale when broker reset to 0 at settlement. 
+Unified store consolidation ensures consistent values across NavStrip, Dashboard, and Pulse 
+throughout closed-hours window.
 
 ---
 
@@ -876,14 +840,12 @@ payoff chart spot-price, and TOTAL row convergence with NavStrip.
    before positions and instruments finished loading.
 
 **TOTAL row NavStrip parity**:
-6. `_snapshotTotalDay` rewritten to use `livePositionDayPnl()` (the same SSOT function 
-   as `positionsDayPnlStore`) with live LTP sourced from `getSnapshot(sym)?.ltp` at 4Hz 
-   via `void _throttledTick`. The Snapshot grid TOTAL row now matches NavStrip P1 exactly 
-   when no equity intraday positions exist (eliminating prior discrepancies from separate 
-   day-P&L calculation paths). *(Superseded — §1 poll-only redesign, round 4:
-   `livePositionDayPnl` was removed entirely; positions Day P&L is purely poll-driven via
-   `baseDayPnlForPosition`, no live-SSE-tick delta term. See §13.3 for the current
-   per-row-sum TOTAL formula.)*
+6. `_snapshotTotalDay` rewritten to use `livePositionDayPnl()` with live LTP sourced from 
+   `getSnapshot(sym)?.ltp` at 4 Hz (250ms throttle via `_LTP_PAINT_MS`). The Snapshot grid 
+   TOTAL row now matches NavStrip P1 exactly when no equity intraday positions exist. 
+   *(Superseded — §1 poll-only redesign, round 4: `livePositionDayPnl` was removed entirely; 
+   positions Day P&L is purely poll-driven via `baseDayPnlForPosition`, no live-SSE-tick 
+   delta term. See §13.3 for the current per-row-sum TOTAL formula.)*
 
 **CandidateLegRow LTP reactivity**:
 7. LTP in CandidateLegRow now reads `getSnapshot(sym)?.ltp` first (SSE-reactive at 4Hz), 
@@ -1727,7 +1689,7 @@ language for real-time price and P&L movement throughout the platform.
 The derivatives page (`/admin/derivatives`) resolves underlying spot prices through 
 a unified front-month path shared with Pulse grids and NavStrip (see §17.1 for the 
 payoff marker's separate anchor-contract resolution). Previously it used a separate 
-`batchQuote` / `_throttledTick` stack gated on `isMarketOpen()`, causing MCX evening 
+`batchQuote` stack throttled at 4 Hz and gated on `isMarketOpen()`, causing MCX evening 
 session spot prices to go stale after NSE closed at 15:30 IST (commit 3f909237, 
 refined commit b1b946a8).
 
