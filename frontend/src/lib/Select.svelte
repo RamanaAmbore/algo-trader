@@ -14,6 +14,7 @@
 
   import { onMount, onDestroy } from 'svelte';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+  import { fitFixedPanel, watchFloatingPanel } from '$lib/utils/floatingPanel.js';
 
   let {
     value = $bindable(/** @type {any} */ ('')),
@@ -169,6 +170,22 @@
   }
   onMount(() => { document.addEventListener('mousedown', onDocClick); });
   onDestroy(() => { document.removeEventListener('mousedown', onDocClick); });
+
+  // Panel is `position: fixed` (see floatingPanel.js) so it can never be
+  // clipped by an ancestor's `overflow` (e.g. CardHeader's `.ch-left` /
+  // `.ch-middle`, which set `overflow-x: auto` and — per the CSS
+  // Overflow spec — the OTHER axis computes to `auto` too, clipping the
+  // panel to zero visible pixels). Fit runs synchronously (no
+  // `visibility: hidden` + rAF reveal like InfoHint's popup mode) —
+  // `toggle()` above autofocuses the search input via `queueMicrotask`
+  // immediately after open, and a transiently hidden panel would
+  // silently eat that `.focus()` call.
+  $effect(() => {
+    if (!open || !panelEl || !triggerEl || typeof window === 'undefined') return;
+    const fit = () => fitFixedPanel({ triggerEl, panelEl });
+    fit();
+    return watchFloatingPanel(fit, panelEl);
+  });
 </script>
 
 <div class="rbq-select rbq-select-{theme} {open ? 'rbq-select-open' : ''}">
@@ -289,14 +306,21 @@
   .rbq-select-open .rbq-select-caret { transform: translateY(-1px) rotate(180deg); }
 
   /* Popup panel — mirrors .popup-modal from OrderPopup: same gradient,
-     same amber-accent border, same box-shadow. Floats absolutely below
-     the trigger. The inner .rbq-select-options scrolls; the optional
-     search bar stays pinned at the top. */
+     same amber-accent border, same box-shadow.
+     `position: fixed` + JS-computed left/top/width (floatingPanel.js,
+     wired in the `$effect` above) — NOT `position: absolute` with
+     `left: 0; right: 0`. An absolute panel is clipped to zero visible
+     pixels by any ancestor with `overflow-x: auto` (CardHeader's
+     `.ch-left` / `.ch-middle`), because the CSS Overflow spec computes
+     the OTHER axis to `auto` too once one axis is non-`visible`. Fixed
+     positioning escapes that clipping entirely; `max-height` here is a
+     fallback cap, overridden per-open by the JS fit to the actual
+     available viewport space. The inner .rbq-select-options scrolls;
+     the optional search bar stays pinned at the top. */
   .rbq-select-panel {
-    position: absolute;
-    top: calc(100% + 4px);
+    position: fixed;
+    top: 0;
     left: 0;
-    right: 0;
     z-index: var(--z-dropdown);
     background: linear-gradient(180deg, #273552 0%, #1d2a44 100%);
     border: 1.5px solid rgba(251,191,36,0.35);

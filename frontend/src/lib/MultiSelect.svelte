@@ -10,6 +10,7 @@
   //   placeholder?, id?, disabled?, ariaLabel?
 
   import { onMount, onDestroy } from 'svelte';
+  import { fitFixedPanel, watchFloatingPanel } from '$lib/utils/floatingPanel.js';
 
   let {
     value = $bindable(/** @type {string[]} */([])),
@@ -44,7 +45,23 @@
     singleSelect = false,
   } = $props();
   let triggerEl;
+  /** @type {HTMLElement | undefined} */
+  let wrapEl = $state();
   let panelEl = $state(/** @type {HTMLElement | undefined} */ (undefined));
+
+  // Panel is `position: fixed` (see floatingPanel.js) so it can never be
+  // clipped by an ancestor's `overflow` (e.g. CardHeader's `.ch-left` /
+  // `.ch-middle`, which set `overflow-x: auto` and — per the CSS
+  // Overflow spec — the OTHER axis computes to `auto` too, clipping the
+  // panel to zero visible pixels). Measure `.rbq-multi-trigger-wrap`
+  // (not the bare trigger button) so the panel's width matches the full
+  // control, including the adjacent clear button.
+  $effect(() => {
+    if (!open || !panelEl || !wrapEl || typeof window === 'undefined') return;
+    const fit = () => fitFixedPanel({ triggerEl: wrapEl, panelEl });
+    fit();
+    return watchFloatingPanel(fit, panelEl);
+  });
 
   const displayLabel = $derived.by(() => {
     if (!value || !value.length) return placeholder || '';
@@ -114,7 +131,7 @@
 <div class="rbq-multi rbq-multi-{theme} {open ? 'rbq-multi-open' : ''}">
   <!-- Trigger wrap keeps the clear button as a sibling (not nested inside)
        the trigger button, avoiding an invalid button-in-button DOM structure. -->
-  <div class="rbq-multi-trigger-wrap">
+  <div class="rbq-multi-trigger-wrap" bind:this={wrapEl}>
     <button type="button" bind:this={triggerEl}
       {id} {disabled} aria-haspopup="listbox" aria-expanded={open} aria-label={ariaLabel}
       class="rbq-multi-trigger"
@@ -223,11 +240,19 @@
   }
   .rbq-multi-open .rbq-multi-caret { transform: translateY(-1px) rotate(180deg); }
 
+  /* `position: fixed` + JS-computed left/top/width (floatingPanel.js,
+     wired in the `$effect` above) — NOT `position: absolute` with
+     `left: 0; right: 0`. An absolute panel is clipped to zero visible
+     pixels by any ancestor with `overflow-x: auto` (CardHeader's
+     `.ch-left` / `.ch-middle`), because the CSS Overflow spec computes
+     the OTHER axis to `auto` too once one axis is non-`visible`. Fixed
+     positioning escapes that clipping entirely; `max-height` here is a
+     fallback cap, overridden per-open by the JS fit to the actual
+     available viewport space. */
   .rbq-multi-panel {
-    position: absolute;
-    top: calc(100% + 4px);
+    position: fixed;
+    top: 0;
     left: 0;
-    right: 0;
     z-index: var(--z-dropdown);
     margin: 0;
     padding: 0.2rem 0;
