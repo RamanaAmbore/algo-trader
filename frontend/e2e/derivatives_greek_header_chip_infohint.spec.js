@@ -313,6 +313,61 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     }
   });
 
+  test('Singleton (app-wide, bound-prop case): click-pinning Delta then HOVERING Gamma closes Delta — not just the click-outside listener', async ({ page }) => {
+    // The existing "Isolation" test above opens Gamma via a CLICK, which
+    // already triggers InfoHint's pre-existing click-outside-closes
+    // `mousedown` listener (Gamma's trigger is outside Delta's `wrap` and
+    // isn't Delta's own `anchor`, so that listener alone would already
+    // close Delta even WITHOUT the app-wide singleton). That test can pass
+    // on old code and proves nothing about the new singleton.
+    //
+    // This test closes that gap: open Gamma via HOVER instead — hover
+    // never fires a `mousedown` event, so the old click-outside listener
+    // cannot be what closes Delta. Only the new module-level
+    // `_activeInfoHintId` singleton effect can.
+    //
+    // It also proves the bound-prop case specifically: `aria-expanded` on
+    // `.greek-val-trigger` reads the PARENT's own `_greekHintOpen.delta`
+    // state (not some internal InfoHint copy), so asserting it flips to
+    // "false" proves the singleton's `open = false` assignment inside the
+    // child genuinely propagated back through `bind:open` to the parent —
+    // not just that the popover visually disappeared.
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
+
+    const deltaTrigger = chips.nth(0).locator('button.greek-val-trigger');
+    const gammaTrigger = chips.nth(1).locator('button.greek-val-trigger');
+
+    // Pin Delta open via CLICK (open=true, not just hovered).
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('net directional exposure');
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
+
+    // Open Gamma via HOVER only — no mousedown anywhere.
+    await gammaTrigger.hover();
+    const tooltips = page.locator('[role="tooltip"]');
+    await expect(tooltips).toHaveCount(1, { timeout: 2000 });
+    await expect(tooltips.first()).toContainText('rate-of-change of delta');
+    await expect(tooltips.first()).not.toContainText('net directional exposure');
+
+    // Bound-prop proof: the PARENT's own _greekHintOpen.delta flipped to
+    // false, reflected on the trigger's aria-expanded (reads parent state).
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'false');
+
+    // Close Gamma via hover-out, then Delta must re-open on a SINGLE click.
+    // If the bound-prop propagation had silently failed (parent still held
+    // `true` while the popover was merely hidden some other way), this
+    // click would toggle it to `false` and Delta would need a second click.
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('net directional exposure');
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
   test('UX: all 5 header chips open distinct, correctly-worded popovers via their value trigger (viewport bounds check)', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });

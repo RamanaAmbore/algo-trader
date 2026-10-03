@@ -1,3 +1,13 @@
+<script module>
+  // Single-tooltip-at-a-time coordination, app-wide. Module-level `$state`
+  // in Svelte 5 is shared across every component instance that imports this
+  // file (not per-instance), so this one variable is naturally a singleton
+  // without any store/context plumbing. Holds the `_uid` of whichever
+  // InfoHint instance currently "owns" visibility; every other instance
+  // watches it and closes itself the moment it changes to someone else's id.
+  let _activeInfoHintId = $state(null);
+</script>
+
 <script>
   // Compact (i) chip with a click-toggle / hover-preview popover.
   // Used across the algo admin pages to gloss page sections, stats,
@@ -119,6 +129,24 @@
 
   // Whether to render the popout right now.
   const visible = $derived(popup ? (open || hovered) : open);
+
+  // Claim the app-wide singleton the moment this instance's own popout
+  // becomes visible — covers both the click-driven `open` path and the
+  // hover-driven `hovered` path (default chip AND hideButton+anchor sites).
+  $effect(() => {
+    if (visible && _uid) _activeInfoHintId = _uid;
+  });
+  // If some OTHER instance just claimed the singleton, close this instance's
+  // own popout so only one InfoHint tooltip is ever visible on the page.
+  // For hideButton sites `open` is the externally `bind:open` prop — this
+  // assignment propagates back to the parent's own state via Svelte's
+  // bindable-prop plumbing, same as any other `open = false`.
+  $effect(() => {
+    if (_activeInfoHintId && _uid && _activeInfoHintId !== _uid) {
+      if (open) open = false;
+      if (hovered) hovered = false;
+    }
+  });
 
   // Viewport-bound the popup. Strategy:
   //   - the popup is `position: fixed` so its coordinates are
