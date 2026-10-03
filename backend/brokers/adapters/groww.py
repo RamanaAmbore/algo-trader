@@ -579,6 +579,14 @@ class GrowwBroker(Broker):
     def __init__(self, conn: "GrowwConnection") -> None:  # type: ignore[name-defined]
         super().__init__()
         self._conn = conn
+        # order_id -> Groww segment. Populated the first time order_status()
+        # resolves a given order_id via a full orders() scan; reused on every
+        # later poll of the SAME order_id so the chase loop's repeated status
+        # checks (every ~few seconds, same order_id) hit the targeted
+        # single-order endpoint instead of re-fetching the whole day book
+        # every tick. Best-effort only — a stale/missing entry just falls
+        # back to the cold path. Process-local, not persisted.
+        self._order_segment_cache: dict[str, str] = {}
 
     # ── Identity + escape hatch ───────────────────────────────────────
 
@@ -645,35 +653,129 @@ class GrowwBroker(Broker):
             pass
         return _normalise_margins(resp, segment)
 
+    # Confirmed via growwapi 1.5.0 source (`GrowwAPI.get_order_list`):
+    # the outgoing request only includes a `page` query param when
+    # `segment` is ALSO passed (`params = {"segment": segment, "page":
+    # page} if segment else {}`) — `page_size` is accepted by the
+    # Python method's own signature but is NEVER put into `params` at
+    # all, so passing a larger `page_size` is a complete no-op against
+    # the real API. A bare `get_order_list()` call therefore always
+    # returns just the server's own undocumented first-page default
+    # (assumed 25 per Groww's docs) with no way to ask for more without
+    # supplying `segment` too. Loop every known segment explicitly (the
+    # only way to get `page` transmitted at all) and page within each
+    # until a genuinely empty page comes back — not a size heuristic,
+    # since the true per-page size isn't confirmable from the SDK.
+    _GROWW_ORDER_LIST_SEGMENTS: tuple[str, ...] = ("CASH", "FNO", "COMMODITY", "CURRENCY")
+    # Safety cap against a pathological/looping API response — 50 pages
+    # per segment is comfortably above any realistic single-day order
+    # count for one account/segment.
+    _GROWW_ORDER_LIST_MAX_PAGES: int = 50
+
     @_retry_groww_auth
     def orders(self) -> list[dict]:
-        resp = self.groww.get_order_list()
-        return _normalise_orders(resp)
+        """Fetch the FULL day order book across every segment, paginated.
+
+        Pre-fix: `get_order_list()` called with no args silently
+        returned only the first ~25 orders of the day (see class-level
+        comment above for the confirmed SDK-level cause). Order #26+
+        then vanished from every caller of `orders()` — most visibly
+        `_resolve_exchange_from_order` raising ValueError for those
+        orders (`actions_live.py:554,603`). Chase itself passes
+        `exchange` directly to `modify_order`/`cancel_order` so it was
+        unaffected; this fix is for every OTHER caller that relies on
+        `orders()` seeing the whole book (order_status's cold path,
+        admin reconcile, etc.)."""
+        rows: list[dict] = []
+        for seg in self._GROWW_ORDER_LIST_SEGMENTS:
+            for page in range(self._GROWW_ORDER_LIST_MAX_PAGES):
+                _GROWW_RATE_LIMITER.throttle("data")
+                resp = self.groww.get_order_list(page=page, segment=seg)
+                page_rows = _iter_rows(_unwrap(resp), "order_list", "orders")
+                if not page_rows:
+                    break
+                rows.extend(page_rows)
+        return _normalise_orders(rows)
+
+    def _resolve_order_row(self, order_id: str) -> dict:
+        """Look up an open/recent order's full Kite-shape row via
+        self.orders(). Used whenever a caller omits exchange/quantity/
+        order_type (price-only modify, or order_status's cold path).
+        Returns {} when not found. Any failure degrades to {} rather
+        than raising — callers treat an empty row as "unresolvable"."""
+        try:
+            for o in self.orders():
+                if str(o.get("order_id", "")) == str(order_id):
+                    return o
+        except Exception as _e:
+            logger.debug(f"GrowwBroker._resolve_order_row({order_id}): {_e}")
+        return {}
 
     @_retry_groww_auth
     def order_status(self, order_id: str) -> dict:
-        """Audit fix (M-1) — per-id status endpoint. Pre-fix this fell
-        back to the ABC default (filter `orders()`) which fetched the
-        entire day book on every chase tick.
+        """Audit fix (M-1, re-fixed — 2026-10 audit) — per-id status
+        endpoint.
 
-        Uses Groww SDK's `get_order_detail` / `get_order_status_by_id`
-        (whichever the installed SDK version exposes). Falls back to
-        the ABC default when neither method exists. Returns Kite-shape
-        via `_normalise_orders` so the chase loop downstream parses
-        the result the same way regardless of SDK version."""
+        Pre-fix (M-1) this called `get_order_detail(str(order_id))`
+        with a single positional argument. The real growwapi 1.5.0
+        `get_order_detail(self, segment, groww_order_id, timeout=None)`
+        signature requires `segment` as well — every call raised
+        "missing a required argument: 'groww_order_id'" (confirmed via
+        `inspect.signature(GrowwAPI.get_order_detail).bind(...)` against
+        the installed SDK), silently swallowed by the broad `except`
+        below at debug level. Chase therefore never saw a Groww fill
+        via this path; `cancel_confirmed` stayed False forever, so
+        every Groww cancel-and-replace aborted with a CRITICAL alert.
+        Compounding bug: even with a correct call, `get_order_detail`
+        returns the single order's fields as a flat dict (no `data`
+        wrapper, no `order_list`/`orders` list key — confirmed via
+        `GrowwAPI._parse_response` source, which already unwraps
+        `payload`) — routing that through list-shaped `_normalise_orders`
+        (`_iter_rows` finds no list under either candidate key) always
+        returned `[]`.
+
+        Fix: `order_status` needs a `segment`, which this method's
+        signature doesn't carry and which Groww has no "any segment"
+        lookup for. Resolve it ONCE per order_id via a single
+        `self.orders()` scan (same cost as the ABC default fallback —
+        see `base.Broker.order_status`), cache it on `self`, and reuse
+        the cached segment for every subsequent poll of the SAME
+        order_id via the real targeted endpoint — the realistic chase
+        access pattern polls the same order_id every ~few seconds, so
+        this still delivers the intended single-order-endpoint win
+        after the first poll. The single-order response is normalised
+        directly via `_groww_order_row` (bypassing the list-only
+        `_normalise_orders`), fixing the second half of the bug."""
+        cached_seg = self._order_segment_cache.get(str(order_id))
+        if cached_seg is None:
+            row = self._resolve_order_row(order_id)
+            if not row:
+                return {}
+            exch = str(row.get("exchange") or "")
+            try:
+                _, seg = _groww_exchange_and_segment(exch)
+                if seg:
+                    self._order_segment_cache[str(order_id)] = seg
+            except ValueError:
+                pass
+            return row
         sdk = self.groww
-        single_fn = (getattr(sdk, "get_order_detail", None)
-                     or getattr(sdk, "get_order_status_by_id", None)
-                     or getattr(sdk, "get_order_by_id", None))
-        if single_fn is None:
+        get_detail = getattr(sdk, "get_order_detail", None)
+        if get_detail is None:
             return super().order_status(order_id)
         try:
-            resp = single_fn(str(order_id))
+            resp = get_detail(segment=cached_seg, groww_order_id=str(order_id))
         except Exception as e:
             logger.debug(f"GrowwBroker.order_status({order_id}) failed: {e}")
+            # Stale cache entry (e.g. order aged out) — drop it so the
+            # next poll re-resolves via the cold path instead of
+            # repeatedly failing against a bad cached segment.
+            self._order_segment_cache.pop(str(order_id), None)
             return {}
-        rows = _normalise_orders(resp)
-        return rows[0] if rows else {}
+        data = _unwrap(resp)
+        if not isinstance(data, dict) or not data:
+            return {}
+        return _groww_order_row(data)
 
     def trades(self) -> list[dict]:
         """Groww exposes per-order trade lookup (`get_trade_list_for_order`)
@@ -1034,14 +1136,11 @@ class GrowwBroker(Broker):
         """Look up an open order's exchange via self.orders() when the
         caller did not supply it.  Returns an empty string when not found
         so callers can raise a clear error rather than routing to a wrong
-        segment silently."""
-        try:
-            for o in self.orders():
-                if str(o.get("order_id", "")) == str(order_id):
-                    return str(o.get("exchange", ""))
-        except Exception as _e:
-            logger.debug(f"GrowwBroker._resolve_exchange_from_order({order_id}): {_e}")
-        return ""
+        segment silently. Thin wrapper over `_resolve_order_row` (shared
+        with `order_status`'s cold path and `modify_order`'s price-only
+        quantity/order_type resolution) so there's one scan helper, not
+        three copies."""
+        return str(self._resolve_order_row(order_id).get("exchange", ""))
 
     @_retry_groww_auth
     def modify_order(self, order_id: str, **kwargs: Any) -> str:

@@ -49,6 +49,34 @@ from backend.brokers.errors import (
 )
 
 
+def _one_page_mock(rows: list[dict], segment: str = "CASH") -> MagicMock:
+    """Build a `get_order_list` mock returning `rows` on page 0 of
+    `segment` and an empty page everywhere else.
+
+    2026-10 audit fix context: `orders()` now loops every Groww segment
+    AND pages within each until a genuinely empty page comes back (the
+    real SDK only transmits `page` when `segment` is also passed — see
+    `GrowwBroker.orders`'s docstring). A flat `MagicMock(return_value=…)`
+    that returns the same non-empty page regardless of segment/page
+    looks "non-empty forever" to that loop, which correctly keeps
+    paging up to its 50-page/segment safety cap looking for more data
+    that was never really there — functionally harmless (the extra
+    calls are deduped away by nothing, so the SAME order row repeats
+    200×) but needlessly slow under the real `TokenBucketLimiter`
+    throttle. Any test that feeds `get_order_list` into a path that
+    eventually calls `self.orders()` (orders() itself, order_status's
+    cold path, modify_order/cancel_order's exchange resolution) should
+    use this helper instead of a flat mock.
+    """
+    target_segment = segment
+
+    def fake(page=0, segment=None, **_kw):
+        if page == 0 and segment == target_segment:
+            return {"order_list": rows}
+        return {"order_list": []}
+    return MagicMock(side_effect=fake)
+
+
 # ============================================================================
 # PART A: Pure functions
 # ============================================================================
@@ -825,20 +853,31 @@ class TestGrowwBrokerOrders:
         return GrowwBroker(conn)
 
     def test_orders_returns_list(self, broker):
-        broker.groww.get_order_list = MagicMock(return_value={
-            "data": {
-                "order_list": [
-                    {
-                        "groww_order_id": "ORD123",
-                        "trading_symbol": "RELIANCE",
-                        "exchange": "NSE",
-                        "order_status": "EXECUTED",
-                        "quantity": 1,
-                        "filled_quantity": 1,
-                    }
-                ]
-            }
-        })
+        """2026-10 audit fix: `orders()` now paginates across every Groww
+        segment explicitly (the real SDK only transmits `page` when
+        `segment` is also passed — see `GrowwBroker.orders` docstring).
+        The mock must vary by segment/page and return an empty page once
+        exhausted, or the fix's own pagination loop (correctly) keeps
+        paging up to its safety cap looking for more data that was never
+        there, inflating a flat always-non-empty mock far past the
+        single fixture row it was meant to represent."""
+        def fake_get_order_list(page=0, segment=None, **_kw):
+            if segment == "CASH" and page == 0:
+                return {
+                    "order_list": [
+                        {
+                            "groww_order_id": "ORD123",
+                            "trading_symbol": "RELIANCE",
+                            "exchange": "NSE",
+                            "order_status": "EXECUTED",
+                            "quantity": 1,
+                            "filled_quantity": 1,
+                        }
+                    ]
+                }
+            return {"order_list": []}
+
+        broker.groww.get_order_list = MagicMock(side_effect=fake_get_order_list)
         result = broker.orders()
         assert isinstance(result, list)
         assert len(result) == 1
@@ -969,16 +1008,9 @@ class TestGrowwBrokerCancelOrder:
 
     def test_cancel_order_resolve_exchange_from_orders(self, broker):
         broker.groww.cancel_order = MagicMock()
-        broker.groww.get_order_list = MagicMock(return_value={
-            "data": {
-                "order_list": [
-                    {
-                        "groww_order_id": "ORD123",
-                        "exchange": "NFO",
-                    }
-                ]
-            }
-        })
+        broker.groww.get_order_list = _one_page_mock(
+            [{"groww_order_id": "ORD123", "exchange": "NFO"}], segment="FNO",
+        )
         result = broker.cancel_order("ORD123")
         assert result == "ORD123"
         broker.groww.cancel_order.assert_called_once()
@@ -1511,22 +1543,33 @@ class TestGrowwBrokerHoldingsPositionsOrdersPaths:
 
     def test_orders_normalizes_response(self, broker):
         """Test orders() calls groww.get_order_list()."""
-        broker.groww.get_order_list = MagicMock(return_value={
-            "data": [
-                {
-                    "groww_order_id": "ORD123",
-                    "tradingsymbol": "RELIANCE",
-                    "order_status": "COMPLETE",
-                    "quantity": "10",
-                }
-            ]
-        })
+        broker.groww.get_order_list = _one_page_mock([
+            {
+                "groww_order_id": "ORD123",
+                "tradingsymbol": "RELIANCE",
+                "order_status": "COMPLETE",
+                "quantity": "10",
+            }
+        ])
         result = broker.orders()
         assert isinstance(result, list)
 
 
 class TestGrowwBrokerOrderStatusMethod:
-    """Test broker.order_status() method with SDK version detection."""
+    """Test broker.order_status() method.
+
+    2026-10 audit fix: `get_order_detail` needs a real `segment` arg
+    (growwapi 1.5.0 signature: `get_order_detail(segment,
+    groww_order_id, timeout=None)`) which this method doesn't receive
+    from its own caller — it's resolved via one `orders()` scan (the
+    "cold path") and cached per order_id so the SAME order_id's next
+    poll (the realistic chase access pattern) hits the targeted
+    endpoint directly (the "warm path"). See
+    `backend/tests/broker/test_groww_adapter_audit_fixes.py` for the
+    full regression suite (real-signature binding, single-order
+    payload-shape normalisation, exception handling) — these three
+    tests just confirm the basic cold/warm/not-found shapes stay wired
+    through `GrowwBroker.__init__`'s `_order_segment_cache`."""
 
     @pytest.fixture
     def broker(self):
@@ -1535,30 +1578,38 @@ class TestGrowwBrokerOrderStatusMethod:
         conn.get_groww_conn = MagicMock()
         return GrowwBroker(conn)
 
-    def test_order_status_uses_get_order_detail(self, broker):
-        """Test order_status() prefers get_order_detail."""
-        broker.groww.get_order_detail = MagicMock(return_value={
-            "data": {
-                "groww_order_id": "ORD123",
-                "order_status": "COMPLETE",
-                "quantity": "10",
-            }
-        })
+    def test_order_status_cold_path_resolves_via_orders_scan(self, broker):
+        """No cached segment yet -> resolves via orders() (get_order_list),
+        NOT get_order_detail (which would need a segment we don't have)."""
+        broker.groww.get_order_list = _one_page_mock([{
+            "groww_order_id": "ORD123",
+            "order_status": "COMPLETE",
+            "quantity": "10",
+            "exchange": "NSE",
+        }])
         result = broker.order_status("ORD123")
         assert isinstance(result, dict)
-        broker.groww.get_order_detail.assert_called_once()
+        assert result["order_id"] == "ORD123"
+        assert result["status"] == "COMPLETE"
 
-    def test_order_status_uses_get_order_status_by_id_fallback(self, broker):
-        """Test order_status() falls back to get_order_status_by_id."""
-        broker.groww.get_order_detail = None
-        broker.groww.get_order_status_by_id = MagicMock(return_value={
-            "data": {"order_status": "COMPLETE"}
+    def test_order_status_warm_path_uses_get_order_detail(self, broker):
+        """A cached segment (set by a prior cold-path poll of the SAME
+        order_id) routes to the targeted single-order endpoint."""
+        broker._order_segment_cache["ORD123"] = "CASH"
+        broker.groww.get_order_detail = MagicMock(return_value={
+            "groww_order_id": "ORD123",
+            "order_status": "COMPLETE",
+            "quantity": "10",
         })
         result = broker.order_status("ORD123")
         assert isinstance(result, dict)
+        broker.groww.get_order_detail.assert_called_once_with(
+            segment="CASH", groww_order_id="ORD123"
+        )
 
     def test_order_status_handles_exception(self, broker):
         """Test order_status() handles exceptions gracefully."""
+        broker._order_segment_cache["ORD123"] = "CASH"
         broker.groww.get_order_detail = MagicMock(side_effect=Exception("API error"))
         result = broker.order_status("ORD123")
         assert result == {}
@@ -1709,16 +1760,14 @@ class TestGrowwBrokerModifyOrderExchangeResolution:
 
     def test_modify_order_resolves_missing_exchange(self, broker):
         """Test modify_order() resolves exchange from broker.orders()."""
-        broker.groww.modify_order = MagicMock()
-        broker.groww.get_order_list = MagicMock(return_value={
-            "data": [
-                {
-                    "groww_order_id": "ORD123",
-                    "exchange": "NSE",
-                    "tradingsymbol": "RELIANCE",
-                }
-            ]
-        })
+        broker.groww.modify_order = MagicMock(return_value={"status": "SUCCESS"})
+        broker.groww.get_order_list = _one_page_mock([
+            {
+                "groww_order_id": "ORD123",
+                "exchange": "NSE",
+                "tradingsymbol": "RELIANCE",
+            }
+        ])
         broker.modify_order("ORD123", quantity=10, order_type="LIMIT", price=2500.0)
         broker.groww.modify_order.assert_called_once()
 
