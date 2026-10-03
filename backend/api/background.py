@@ -2247,126 +2247,6 @@ def _html_inr(v: Optional[float]) -> str:
     return f"{sign}₹{int(round(abs_v)):,}"
 
 
-async def _task_strategy_snapshot() -> None:
-    """
-    Slice 7c — daily per-strategy roll-up at 15:45 IST (10 min after
-    NSE equity close, so the day's intraday closes are settled).
-    Writes one row per active strategy into `strategy_snapshots` with:
-      open_lots_count, open_notional, realised_pnl, unrealised_pnl.
-
-    Idempotent — `UNIQUE(strategy_id, as_of_date)` on the table; an
-    INSERT … ON CONFLICT DO UPDATE keeps re-runs (manual operator
-    triggers, restart-while-running) safe.
-
-    Powers the per-strategy P&L curve on /strategies/{id}. Until this
-    task fires for the first time the detail page shows the "no
-    snapshot yet" placeholder; after that the curve renders.
-
-    Failure of one strategy's roll-up doesn't break the others —
-    each is in its own try/except.
-    """
-    import asyncio as _asyncio
-    from datetime import date
-    from backend.api.database import async_session
-    from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder
-    from backend.api.algo.lot_ledger import (
-        compute_strategy_pnl, compute_unrealised_marked_to_ltp,
-    )
-    from sqlalchemy import select as _select, func as _func
-    from sqlalchemy.dialects.postgresql import insert as pg_insert
-    from backend.shared.helpers.date_time_utils import timestamp_indian
-
-    async def _do_snapshot() -> int:
-        async with async_session() as s:
-            strategies = (await s.execute(
-                _select(Strategy).where(Strategy.is_active.is_(True))
-            )).scalars().all()
-            today_ist = timestamp_indian().date()
-            written = 0
-            _open_states = ("OPEN", "CHASING", "PENDING")
-            for strat in strategies:
-                try:
-                    pnl = await compute_strategy_pnl(s, strat.id)
-                    # Open notional — sum (remaining_qty × open_price)
-                    # across open lots. Approximate (not LTP-marked)
-                    # until the LTP pass lands.
-                    notional = (await s.execute(
-                        _select(_func.coalesce(
-                            _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
-                            0.0,
-                        )).where(StrategyLot.strategy_id == strat.id,
-                                 StrategyLot.remaining_qty > 0)
-                    )).scalar_one() or 0.0
-                    # Unrealised — LTP-marked when the ledger has
-                    # open lots (slice 7d); falls back to AlgoOrder.
-                    # pnl SUM for strategies with no ledger entries
-                    # OR when the LTP feed is unavailable.
-                    if pnl["open_lots_count"] > 0:
-                        mtm = await compute_unrealised_marked_to_ltp(s, strat.id)
-                        if mtm is not None:
-                            unrealised = mtm
-                        else:
-                            unrealised = (await s.execute(
-                                _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
-                                .where(AlgoOrder.strategy_id == strat.id,
-                                       AlgoOrder.status.in_(_open_states))
-                            )).scalar_one() or 0.0
-                    else:
-                        unrealised = (await s.execute(
-                            _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
-                            .where(AlgoOrder.strategy_id == strat.id,
-                                   AlgoOrder.status.in_(_open_states))
-                        )).scalar_one() or 0.0
-                    stmt = pg_insert(StrategySnapshot).values(
-                        strategy_id=strat.id,
-                        as_of_date=today_ist,
-                        open_lots_count=pnl["open_lots_count"],
-                        open_notional=float(notional or 0.0),
-                        realised_pnl=pnl["realised_pnl"],
-                        unrealised_pnl=float(unrealised or 0.0),
-                    ).on_conflict_do_update(
-                        index_elements=["strategy_id", "as_of_date"],
-                        set_=dict(
-                            open_lots_count=pnl["open_lots_count"],
-                            open_notional=float(notional or 0.0),
-                            realised_pnl=pnl["realised_pnl"],
-                            unrealised_pnl=float(unrealised or 0.0),
-                        ),
-                    )
-                    await s.execute(stmt)
-                    written += 1
-                except Exception as exc:
-                    logger.warning(
-                        f"strategy_snapshot: failed for strategy "
-                        f"{strat.slug!r} (id={strat.id}): {exc}"
-                    )
-            await s.commit()
-            return written
-
-    while True:
-        # Schedule at 15:45 IST every day. Sleep until then; on
-        # boot if it's already past 15:45 the loop wakes
-        # immediately, fires once, then sleeps to the next day.
-        now_ist = timestamp_indian()
-        target = now_ist.replace(hour=15, minute=45, second=0, microsecond=0)
-        if now_ist >= target:
-            target = target.replace(day=now_ist.day) + timedelta(days=1)
-        sleep_s = max(0, (target - now_ist).total_seconds())
-        logger.info(
-            f"_task_strategy_snapshot: sleeping {sleep_s/3600:.2f}h "
-            f"until {target.isoformat()}"
-        )
-        await _asyncio.sleep(sleep_s)
-        try:
-            written = await _do_snapshot()
-            logger.info(
-                f"_task_strategy_snapshot: wrote {written} per-strategy "
-                f"snapshot rows for {timestamp_indian().date().isoformat()}"
-            )
-        except Exception as exc:
-            logger.warning(f"_task_strategy_snapshot: cycle failed: {exc}")
-
-
 async def trigger_close_snapshot(gate: str) -> None:
     """Fire the daily_book LTP close snapshot for *gate* (e.g. "NON-MCX" or "MCX").
 
@@ -7216,8 +7096,95 @@ async def _run_nav_compute_once(state: dict) -> None:
             pass
 
 
+async def _strategy_snapshot_notional_by_id(
+    s, strategy_ids: list[int],
+) -> dict[int, float]:
+    """One GROUP BY query for open notional across ALL active strategies
+    at once — replaces the old per-strategy SELECT inside the snapshot
+    loop (2026-10 audit fix: N+1 query consolidation). Returns a dict
+    keyed by strategy_id; a strategy with no open lots simply has no
+    entry (caller treats a missing key as 0.0)."""
+    from backend.api.models import StrategyLot
+    from sqlalchemy import select as _select, func as _func
+
+    if not strategy_ids:
+        return {}
+    rows = (await s.execute(
+        _select(
+            StrategyLot.strategy_id,
+            _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
+        )
+        .where(StrategyLot.strategy_id.in_(strategy_ids),
+               StrategyLot.remaining_qty > 0)
+        .group_by(StrategyLot.strategy_id)
+    )).all()
+    return {int(sid): float(total or 0.0) for sid, total in rows}
+
+
+async def _strategy_snapshot_algo_pnl_fallback_by_id(
+    s, strategy_ids: list[int], open_states: tuple[str, ...],
+) -> dict[int, float]:
+    """One GROUP BY query for the AlgoOrder.pnl SUM fallback (used when a
+    strategy has no ledger entries, or the LTP-marked unrealised feed is
+    unavailable) across ALL active strategies at once — same N+1
+    consolidation as `_strategy_snapshot_notional_by_id`.
+
+    Defensive try/except (2026-10 audit finding, out of this fix's
+    scope to resolve fully): `AlgoOrder` has NO `pnl` column on the
+    current model (verified via introspection — `hasattr(AlgoOrder,
+    'pnl')` is False). The ORIGINAL per-strategy query this replaces
+    referenced the same nonexistent attribute and relied on each
+    strategy's own try/except in the caller's loop to swallow the
+    resulting AttributeError — silently skipping the INSERT entirely
+    for every strategy that hit this branch (open_lots_count == 0, or
+    the LTP mark-to-market returned None), for as long as this task has
+    run. Hoisting the query to ONE call before the per-strategy loop
+    (this fix's whole point) would otherwise turn that into a single
+    failure that aborts the ENTIRE snapshot cycle for every strategy —
+    a regression. Catching here degrades to the same "fallback
+    unavailable, treat as 0.0" outcome per strategy, but — unlike the
+    original — still lets the rest of the snapshot (realised_pnl,
+    open_lots_count, notional) get written instead of silently writing
+    nothing. The underlying gap (AlgoOrder has no live P&L field;
+    `routes/strategies.py` references the same nonexistent column) is a
+    separate, pre-existing defect flagged for its own fix.
+    """
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import select as _select, func as _func
+
+    if not strategy_ids:
+        return {}
+    try:
+        rows = (await s.execute(
+            _select(AlgoOrder.strategy_id, _func.sum(AlgoOrder.pnl))
+            .where(AlgoOrder.strategy_id.in_(strategy_ids),
+                   AlgoOrder.status.in_(open_states))
+            .group_by(AlgoOrder.strategy_id)
+        )).all()
+        return {int(sid): float(total or 0.0) for sid, total in rows}
+    except Exception as exc:
+        logger.warning(
+            f"strategy_snapshot: AlgoOrder.pnl fallback query failed "
+            f"(pre-existing — AlgoOrder has no pnl column): {exc}"
+        )
+        return {}
+
+
 async def _run_strategy_snapshot_once(state: dict) -> None:
-    """Write per-strategy snapshots at 15:45 IST if not already done today."""
+    """Write per-strategy snapshots at 15:45 IST if not already done today.
+
+    2026-10 audit fix: this was duplicated near-verbatim in
+    `_task_strategy_snapshot` (an unscheduled, dead standalone-loop
+    task superseded by `_task_post_market_cron` calling this function —
+    removed in the same fix). The per-strategy notional and
+    AlgoOrder.pnl-fallback SELECTs (2 extra DB round-trips × N active
+    strategies) are now each ONE grouped query evaluated before the
+    loop. `compute_strategy_pnl` / `compute_unrealised_marked_to_ltp`
+    stay per-strategy calls — they're shared with the single-strategy
+    detail view (`routes/strategies.py`) and the latter does a
+    ticker/broker LTP lookup that doesn't reduce to a single SQL
+    aggregate — so this is a partial, not full, N+1 elimination.
+    """
     now   = timestamp_indian()
     today = now.date()
     if state.get("strategy_done") == today:
@@ -7227,11 +7194,11 @@ async def _run_strategy_snapshot_once(state: dict) -> None:
     state["strategy_done"] = today
     try:
         from backend.api.database import async_session as _async_session
-        from backend.api.models import Strategy, StrategyLot, StrategySnapshot, AlgoOrder
+        from backend.api.models import Strategy, StrategySnapshot
         from backend.api.algo.lot_ledger import (
             compute_strategy_pnl, compute_unrealised_marked_to_ltp,
         )
-        from sqlalchemy import select as _select, func as _func
+        from sqlalchemy import select as _select
         from sqlalchemy.dialects.postgresql import insert as pg_insert
 
         async with _async_session() as s:
@@ -7241,32 +7208,23 @@ async def _run_strategy_snapshot_once(state: dict) -> None:
             today_ist = timestamp_indian().date()
             written = 0
             _open_states = ("OPEN", "CHASING", "PENDING")
+            _strategy_ids = [strat.id for strat in strategies]
+            _notional_by_id = await _strategy_snapshot_notional_by_id(s, _strategy_ids)
+            _algo_pnl_fallback_by_id = await _strategy_snapshot_algo_pnl_fallback_by_id(
+                s, _strategy_ids, _open_states,
+            )
             for strat in strategies:
                 try:
                     pnl = await compute_strategy_pnl(s, strat.id)
-                    notional = (await s.execute(
-                        _select(_func.coalesce(
-                            _func.sum(StrategyLot.remaining_qty * StrategyLot.open_price),
-                            0.0,
-                        )).where(StrategyLot.strategy_id == strat.id,
-                                 StrategyLot.remaining_qty > 0)
-                    )).scalar_one() or 0.0
+                    notional = _notional_by_id.get(strat.id, 0.0)
                     if pnl["open_lots_count"] > 0:
                         mtm = await compute_unrealised_marked_to_ltp(s, strat.id)
-                        if mtm is not None:
-                            unrealised = mtm
-                        else:
-                            unrealised = (await s.execute(
-                                _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
-                                .where(AlgoOrder.strategy_id == strat.id,
-                                       AlgoOrder.status.in_(_open_states))
-                            )).scalar_one() or 0.0
+                        unrealised = (
+                            mtm if mtm is not None
+                            else _algo_pnl_fallback_by_id.get(strat.id, 0.0)
+                        )
                     else:
-                        unrealised = (await s.execute(
-                            _select(_func.coalesce(_func.sum(AlgoOrder.pnl), 0.0))
-                            .where(AlgoOrder.strategy_id == strat.id,
-                                   AlgoOrder.status.in_(_open_states))
-                        )).scalar_one() or 0.0
+                        unrealised = _algo_pnl_fallback_by_id.get(strat.id, 0.0)
                     stmt = pg_insert(StrategySnapshot).values(
                         strategy_id=strat.id,
                         as_of_date=today_ist,
