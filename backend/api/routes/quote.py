@@ -340,6 +340,38 @@ def _all_exchanges_closed(exchanges: set[str]) -> bool:
     return all(_is_exchange_segment_closed(e) for e in exchanges)
 
 
+async def _get_cached_batch_quote(broker_keys: list[str]) -> dict:
+    """Short-TTL cache + in-flight coalesce for `/quote/batch`'s broker
+    call (2026-10 audit fix). Kite's quote() budget is ~1 req/s; without
+    this, every independent frontend poller (Pulse grid, derivatives
+    Snapshot, NavStrip) hitting the same symbol set within the same
+    second each triggered its own broker round-trip.
+
+    Keyed on the sorted+deduped broker-key set, hashed to bound the
+    cache-store key length — only requests for the EXACT same symbol set
+    coalesce onto one fetch; a different symbol set gets its own key
+    (and its own broker call), matching the batch nature of this route.
+
+    Deliberately short (2s) TTL: long enough to absorb a burst of
+    near-simultaneous pollers, short enough that live LTP staleness is
+    imperceptible to the operator.
+    """
+    import hashlib
+    from backend.api.cache import get_or_fetch
+    from backend.brokers.registry import get_market_data_broker
+
+    dedup_keys = sorted(set(broker_keys))
+    cache_key = "quote_batch:" + hashlib.sha1(
+        ",".join(dedup_keys).encode()
+    ).hexdigest()
+
+    def _fetch() -> dict:
+        broker = get_market_data_broker()
+        return broker.quote(broker_keys)
+
+    return await get_or_fetch(cache_key, _fetch, ttl_seconds=2)
+
+
 # ── Instrument-token helper (shared by sparkline + watchlist Phase 2 hook) ───
 
 async def _qt_slow_walk_token(broker, sym: str, order: list) -> "int | None":
@@ -747,7 +779,6 @@ class QuoteController(Controller):
         show a staleness hint.
         """
         from datetime import datetime, timezone
-        from backend.brokers.registry import get_market_data_broker
         from backend.api.algo.symbol_resolver import resolve_market_data_keys
 
         # ── Normalise keys ─────────────────────────────────────────────────
@@ -765,11 +796,24 @@ class QuoteController(Controller):
             return await _serve_closed_hours_batch(keys, key_map)
 
         # ── Live path (market open) ────────────────────────────────────────
+        # 2026-10 audit fix: this used to hit Kite's REST quote() directly
+        # on EVERY call, with no cache or in-flight coalescing — against
+        # Kite's ~1 req/s budget, multiple independent frontend pollers
+        # (Pulse grid, derivatives Snapshot, NavStrip) requesting the same
+        # symbol set within the same second each triggered their own
+        # broker round-trip. A short 2s TTL cache keyed on the resolved
+        # broker-key set (sorted + deduped, hashed to bound key length)
+        # now sits in front via cache.py's existing get_or_fetch, which
+        # also coalesces concurrent identical-key requests onto ONE
+        # broker call via its per-key lock. A raised exception propagates
+        # out of get_or_fetch uncached (get_or_fetch only writes to the
+        # store on a successful fetch — see its own docstring), so a
+        # transient failure is retried on the very next request instead
+        # of being cached as an empty result.
         quote_data: dict = {}
         if key_map.broker_keys:
             try:
-                broker = get_market_data_broker()
-                quote_data = await asyncio.to_thread(broker.quote, key_map.broker_keys) or {}
+                quote_data = await _get_cached_batch_quote(key_map.broker_keys) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.warning(f"Batch quote failed: {exc}")
                 quote_data = {}
