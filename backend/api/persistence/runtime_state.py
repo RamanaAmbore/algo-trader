@@ -63,13 +63,6 @@ def is_bypass_on() -> bool:
     return _mode != "off"
 
 
-def is_ticker_reset_pending() -> bool:
-    """True when a HARD-mode transition has scheduled a ticker recycle
-    that has not yet run. The watchdog polls this and clears the flag
-    via `consume_ticker_reset_pending()` once the recycle has fired."""
-    return _recycle_pending
-
-
 def consume_ticker_reset_pending() -> bool:
     """Atomically read-and-clear the pending flag. Returns True iff the
     caller is now responsible for running the recycle. Called by the
@@ -85,8 +78,8 @@ def consume_ticker_reset_pending() -> bool:
 def set_mode(mode: ResetMode) -> None:
     """Flip the refresh-cycle mode. On a transition into HARD, schedules
     a one-shot ticker restart on the running event loop (best-effort —
-    if there's no running loop, the watchdog polls
-    is_ticker_reset_pending() and runs the recycle on its next tick)."""
+    if there's no running loop, the watchdog calls
+    consume_ticker_reset_pending() and runs the recycle on its next tick)."""
     global _mode, _recycle_pending
     if mode not in _VALID_MODES:
         raise ValueError(f"invalid mode {mode!r}; expected one of {_VALID_MODES}")
@@ -112,8 +105,8 @@ def set_mode(mode: ResetMode) -> None:
             loop.create_task(_recycle_ticker_async(), name="persistence-ticker-recycle")
         except RuntimeError:
             # No running loop (called from sync context). The watchdog
-            # task in background.py polls is_ticker_reset_pending() and
-            # will trigger the recycle on its next tick.
+            # task in background.py calls consume_ticker_reset_pending()
+            # and will trigger the recycle on its next tick.
             logger.info("persistence: ticker recycle deferred (no running loop)")
 
 
@@ -129,12 +122,6 @@ async def _recycle_ticker_async() -> None:
         ticker = get_ticker()
         ticker.recycle()
         logger.info("persistence: ticker recycled (hard-mode transition)")
-    except AttributeError:
-        logger.warning(
-            "persistence: ticker.recycle() not implemented — falling back "
-            "to no-op. Ticker will rebuild on the next watchdog cycle if "
-            "the WebSocket drops naturally."
-        )
     except Exception as exc:
         logger.warning(f"persistence: ticker recycle failed: {exc}")
     finally:
@@ -142,18 +129,6 @@ async def _recycle_ticker_async() -> None:
         # so the watchdog doesn't fire a second recycle attempt on its
         # next tick. A persistent failure surfaces in logs + ticker.status().
         _recycle_pending = False
-
-
-# ── Back-compat shims for callers that still use the old single-bool API ─────
-# Slice X shipped set_bypass(bool); keep both around so /admin endpoints +
-# old call sites don't break. Treat `set_bypass(True)` as switching to SOFT
-# (the conservative default — most operators flipping the switch don't want
-# their tick stream interrupted).
-
-def set_bypass(value: bool) -> None:
-    """Deprecated — use set_mode("off"|"soft"|"hard") instead.
-    Maps True → "soft" (safe default that preserves the ticker)."""
-    set_mode("soft" if value else "off")
 
 
 # ── Invalidation helpers ─────────────────────────────────────────────────────
