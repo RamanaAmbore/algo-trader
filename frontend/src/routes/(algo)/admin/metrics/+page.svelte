@@ -28,6 +28,8 @@
   import { userRole } from '$lib/rbac';
   import InfoHint from '$lib/InfoHint.svelte';
   import { METRIC_META } from '$lib/data/metricMetadata.js';
+  import ModalShell from '$lib/ModalShell.svelte';
+  import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /** Core metrics the operator wants charted side-by-side. Each entry
    * maps a CodeMetricsSnapshot column (or virtual test sub-key) to a
@@ -112,6 +114,22 @@
     selected = null;
     selectedPayload = null;
   }
+
+  // Escape-stack coordinator (layerStack.js) — ModalShell's own Escape
+  // handling is a plain bubble-phase `<svelte:window onkeydown>` with no
+  // stacking awareness. Registering a layer here (teardown-effect form,
+  // same shape as AddToPulseModal.svelte/OrderPairModal.svelte — this
+  // modal is never `{#if}`-gated at the page level either, `selected`
+  // just toggles ModalShell's internal `open`) means the capture-phase
+  // layerStack listener consumes Escape first (stopPropagation) and
+  // ModalShell's own listener never runs, so a nested layer opened on
+  // top of this drill-in modal gets first claim on Escape instead of
+  // this modal closing underneath it.
+  $effect(() => {
+    if (!selected) return;
+    const id = pushLayer(closeDrill);
+    return () => popLayer(id);
+  });
 
   function fmtTs(/** @type {string} */ iso) {
     if (!iso) return '';
@@ -317,18 +335,14 @@
 
 {/if}
 
-{#if selected}
-  <!-- Drill-in modal — raw_payload + per-page latency JSON. -->
-  <div class="metrics-modal-overlay" onclick={closeDrill} role="presentation">
-    <div
-      class="metrics-modal"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="metrics-modal-title"
-      onclick={(e) => e.stopPropagation()}
-      onkeydown={(e) => { if (e.key === 'Escape') closeDrill(); }}
-      tabindex="-1"
-    >
+<!-- Drill-in modal — raw_payload + per-page latency JSON. Canonical
+     ModalShell owns the backdrop, Esc-close, and dim level; this page
+     no longer hand-rolls its own overlay/keydown handling. -->
+<ModalShell open={!!selected} onClose={closeDrill}
+            ariaLabel={selected ? `Metrics detail — ${selected.release_tag}` : 'Metrics detail'}
+            zIndex="var(--z-modal)">
+  {#if selected}
+    <div class="metrics-modal" role="presentation" onclick={(e) => e.stopPropagation()}>
       <div class="metrics-modal-head">
         <h3 id="metrics-modal-title">
           <code>{selected.release_tag}</code>
@@ -392,8 +406,8 @@
         {/if}
       </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</ModalShell>
 
 <style>
   .metrics-trends {
@@ -499,16 +513,9 @@
   }
   .metrics-drill:hover { background: var(--c-info-22); }
 
-  /* Modal */
-  .metrics-modal-overlay {
-    position: fixed;
-    inset: 0;
-    background: rgba(0, 0, 0, 0.6);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    z-index: 100;
-  }
+  /* Modal — backdrop/Esc/z-index/dim now owned by ModalShell
+     (see <ModalShell> usage above); this class carries only the
+     panel's own chrome. */
   .metrics-modal {
     background: var(--panel-bg, #0f172a);
     border: 1px solid rgba(148, 163, 184, 0.3);
