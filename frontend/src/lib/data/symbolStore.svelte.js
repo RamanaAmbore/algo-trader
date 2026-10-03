@@ -131,6 +131,41 @@ function _bumpSnapTick() {
  */
 export const tickBus = createTickBus({ throttleMs: 250 });
 
+// ── Dirty-symbol tracking (perf fix, 2026-10) ───────────────────────────────
+//
+// Lets a consumer building an incremental snapshot (MarketPulse's
+// _liveLtpSnap) apply ONLY the symbols that actually changed since its
+// last drain instead of rescanning the entire map on every tick.
+// Deliberately NOT built on tickBus: tickBus throttles to 250ms PER SYM
+// and skips entirely while the tab is hidden or on a symbol's FIRST
+// write (no baseline yet, so no direction to report) — none of those
+// gates are acceptable here, where a consumer needs to know about every
+// write, including a brand-new symbol's first appearance, even while
+// backgrounded.
+//
+// `_resetGen` is bumped by softReset/hardReset — removals aren't tracked
+// by the dirty set (it only ever grows with written symbols), so a
+// consumer MUST do a full rebuild (not an incremental apply) whenever
+// the generation it last observed differs from the current one.
+let _dirtySyms = /** @type {Set<string>} */ (new Set());
+let _resetGen = 0;
+
+/**
+ * Drain and return the symbols written since the last drain, plus the
+ * current reset-generation counter.
+ * @returns {{ syms: Set<string>, gen: number }}
+ */
+export function drainDirtySyms() {
+  const syms = _dirtySyms;
+  _dirtySyms = new Set();
+  return { syms, gen: _resetGen };
+}
+
+/** Current reset-generation counter (no drain). */
+export function getResetGen() {
+  return _resetGen;
+}
+
 // ── Hydrate from localStorage ────────────────────────────────────────────
 //
 // Done at module-evaluation time so any consumer reading symbolStore.get(sym)
@@ -311,6 +346,7 @@ function _mergeSymbolWrite(sym, fields, ts = {}) {
   next.touched_at = Math.max(next.ltp_ts, next.snapshot_ts);
 
   symbolStore.set(key, next);
+  _dirtySyms.add(key);
 
   // Emit to tickBus when LTP actually changed — subscribers drive
   // unified flash animations (RefreshButton, MarketPulse, PositionStrip).
@@ -448,6 +484,11 @@ export function softReset() {
     _persistTimer = null;
   }
   _dirty = false;
+  // Bump the reset generation so a dirty-set-driven incremental consumer
+  // (MarketPulse's _liveLtpSnap) knows removals happened and does a full
+  // rebuild on its next flush instead of trusting the (removal-blind)
+  // dirty set.
+  _resetGen++;
   // BH6 fix: bump tickCount so consumers tracking symbolTickCount
   // (MarketPulse's _liveLtpSnap rebuilder, refresh-pulse $effects)
   // see the cleared state immediately. Without this, _liveLtpSnap
@@ -471,6 +512,8 @@ export function hardReset() {
     _persistTimer = null;
   }
   _dirty = false;
+  // See softReset's matching comment — removals aren't dirty-set-tracked.
+  _resetGen++;
   if (browser) {
     try {
       // Write an empty object through the cache layer so the next

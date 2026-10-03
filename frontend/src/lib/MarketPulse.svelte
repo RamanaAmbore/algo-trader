@@ -71,7 +71,7 @@
   import { fetchSettings } from '$lib/api';
   import { streamOpen, startQuoteStream, stopQuoteStream } from '$lib/data/quoteStream';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
-  import { getSnapshot, symbolStore, symbolTickCount, tickBus } from '$lib/data/symbolStore.svelte.js';
+  import { getSnapshot, symbolStore, symbolTickCount, tickBus, drainDirtySyms, getResetGen } from '$lib/data/symbolStore.svelte.js';
   import { bookChanged } from '$lib/data/bookChanged';
   import {
     fundsStore,
@@ -808,8 +808,24 @@
   // ag-Grid refreshCells without coalescing. Replaces the previous
   // liveLtp.subscribe-driven mirror; the `liveLtp` writable store is
   // deleted with this slice.
-  let _liveLtpSnap = $state(/** @type {Record<string, number>} */ ({}));
+  //
+  // 2026-10 perf fix: `_liveLtpSnap` used to be a deep-proxied `$state`
+  // object fully rebuilt (via a `symbolStore.entries()` scan of EVERY
+  // symbol) on every 50ms flush while ticks flow — up to 20Hz, over the
+  // whole map regardless of how many symbols actually changed. Fixed by
+  // (a) `$state.raw` — this snapshot is always replaced wholesale, never
+  // mutated in place, so the deep-proxy wrapping (and its per-property
+  // reactive-source bookkeeping) bought nothing; (b) only touching the
+  // symbols `drainDirtySyms()` reports as written since the last flush,
+  // instead of rescanning the entire symbolStore map every time.
+  let _liveLtpSnap = $state.raw(/** @type {Record<string, number>} */ ({}));
   let _liveLtpFlushTimer = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
+  // Reset-generation last observed by the incremental rebuilder — a
+  // mismatch against symbolStore's current getResetGen() means
+  // softReset/hardReset ran (removals, which the dirty set can't
+  // represent), so the next flush must do a full rebuild instead of an
+  // incremental apply.
+  let _liveLtpLastGen = -1;
   // Tick-flash for P&L columns on the right grid (Positions / Holdings).
   // LTP already has its own directional flash (_ltpFlashUp/_ltpFlashDown);
   // this instance covers Day P&L and P&L whose values change on each
@@ -820,6 +836,8 @@
   // Alpha is 0.13 (app.css .tf-up/.tf-down) — subtle, not alarming.
   const _mpFlash = createTickFlash({ threshold: 0.001, durationMs: 300 });
   /** Build a `{sym: ltp}` map snapshot from symbolStore for fast cell reads.
+   * Full scan — used ONLY for the initial mount seed and for a reset-
+   * generation catch-up (softReset/hardReset), NOT on every flush.
    *
    * LTP flicker fix (Jun 2026): include only strictly-positive values.
    * A stored 0 (legacy entry from before the symbolStore zero-guard
@@ -839,16 +857,50 @@
     }
     return out;
   }
+  /**
+   * Incremental flush — drains the dirty-symbol set accumulated since
+   * the last call and applies ONLY those symbols to a shallow copy of
+   * `_liveLtpSnap`, instead of rescanning the whole symbolStore map.
+   * Falls back to a full `_buildLtpSnap()` rebuild when the reset
+   * generation has advanced (softReset/hardReset — removals aren't
+   * representable by the dirty set). Reassigns `_liveLtpSnap` ONLY when
+   * something actually changed, so the downstream paint $effect's
+   * re-run is itself a reliable "something changed" signal.
+   */
+  function _refreshLtpSnapIncremental() {
+    const { syms: dirty, gen } = drainDirtySyms();
+    if (gen !== _liveLtpLastGen) {
+      _liveLtpLastGen = gen;
+      _liveLtpSnap = _buildLtpSnap();
+      _changedSincePaint = new Set(Object.keys(_liveLtpSnap));
+      return;
+    }
+    if (dirty.size === 0) return;
+    const next = { ..._liveLtpSnap };
+    let changed = false;
+    for (const sym of dirty) {
+      const v = symbolStore.get(sym)?.ltp;
+      if (v != null && Number.isFinite(v) && v > 0) {
+        if (next[sym] !== v) { next[sym] = v; changed = true; _changedSincePaint.add(sym); }
+      } else if (sym in next) {
+        delete next[sym];
+        changed = true;
+        _changedSincePaint.add(sym);
+      }
+    }
+    if (changed) _liveLtpSnap = next;
+  }
   $effect(() => {
     // Seed once on mount so a hydrated symbolStore (loaded from
     // localStorage at module init) paints into _liveLtpSnap before
     // any SSE tick fires — without this, cell renderers read empty
     // map on the first frame.
+    _liveLtpLastGen = getResetGen();
     _liveLtpSnap = _buildLtpSnap();
     const unsub = symbolTickCount.subscribe(() => {
       if (_liveLtpFlushTimer) return;
       _liveLtpFlushTimer = setTimeout(() => {
-        _liveLtpSnap = _buildLtpSnap();
+        _refreshLtpSnapIncremental();
         _liveLtpFlushTimer = null;
       }, 50);
     });
@@ -2322,6 +2374,11 @@
   let _lastPaintedSnap = /** @type {Record<string, number>} */ ({});
   let _ltpPaintTimer   = /** @type {ReturnType<typeof setTimeout>|null} */ (null);
   const _LTP_PAINT_MS  = 250; // 4 Hz
+  // Symbols touched by _refreshLtpSnapIncremental since the last paint —
+  // a paint timer coalesces several 50ms flushes, so this accumulates
+  // across all of them (cleared only at paint time) rather than losing
+  // earlier flushes' changes the way a per-flush-only set would.
+  let _changedSincePaint = /** @type {Set<string>} */ (new Set());
   // B1 — symbols whose LTP just changed; cleared after animation window.
   // Two sets so the LTP cell can flash GREEN on tick-up vs RED on tick-down.
   // Slice AS audit defect: the prior single-set + amber `ltp-flash` lost
@@ -2380,21 +2437,13 @@
   }
 
   $effect(() => {
-    const snap = _liveLtpSnap; // reactive subscribe — re-runs on every update
-
-    // Diff: skip paint when no value changed since the last paint.
-    let changed = false;
-    const snapKeys = Object.keys(snap);
-    for (const k of snapKeys) {
-      if (snap[k] !== _lastPaintedSnap[k]) { changed = true; break; }
-    }
-    if (!changed) {
-      // Also catch keys that were removed from the snap.
-      for (const k of Object.keys(_lastPaintedSnap)) {
-        if (!(k in snap)) { changed = true; break; }
-      }
-    }
-    if (!changed) return;
+    // Reactive subscribe — 2026-10 perf fix: _liveLtpSnap is now ONLY
+    // reassigned by _refreshLtpSnapIncremental/_buildLtpSnap when
+    // something genuinely changed (copy-on-write; see their own doc
+    // comments), so this effect firing at all already IS the "changed"
+    // signal — the former full Object.keys(snap) diff-scan against
+    // _lastPaintedSnap on every re-run is no longer needed.
+    void _liveLtpSnap;
 
     // Throttle: schedule one paint at most every _LTP_PAINT_MS.
     if (_ltpPaintTimer) return;
@@ -2408,17 +2457,25 @@
       _ltpPaintTimer = null;
       // Determine which symbols had an LTP change in this paint batch
       // so the cascade refresh only repaints cells that actually changed.
+      // _changedSincePaint accumulates across every 50ms flush this paint
+      // timer coalesced (bounded to O(dirty), not O(whole map)) — same
+      // semantics as the old Object.keys(cur) scan (skip a symbol with no
+      // PRIOR painted value — i.e. brand new since the last paint — same
+      // as the original `p === undefined → continue`).
       const prev = _lastPaintedSnap;
       const cur  = _liveLtpSnap;
       let hasCascade = false;
-      for (const k of Object.keys(cur)) {
+      for (const k of _changedSincePaint) {
         const p = prev[k];
         if (p === undefined) continue;
-        if (cur[k] !== p) hasCascade = true;
+        if (cur[k] !== p) { hasCascade = true; break; }
       }
-      // Capture the current snapshot at paint time (may have advanced
-      // further than when the timer was scheduled).
-      _lastPaintedSnap = { ..._liveLtpSnap };
+      _changedSincePaint = new Set();
+      // Alias, not spread: _refreshLtpSnapIncremental/_buildLtpSnap never
+      // mutate an already-published _liveLtpSnap object in place — every
+      // update builds a fresh object before reassigning — so it's safe
+      // for _lastPaintedSnap to hold the SAME reference going forward.
+      _lastPaintedSnap = cur;
       // Defer the actual ag-Grid refresh batch until the main thread
       // is idle so clicks always jump the queue. The flash class
       // assignments (now driven by tickBus subscriber) already happened
