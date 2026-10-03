@@ -1147,25 +1147,51 @@ class GrowwBroker(Broker):
         # Slice Q — resolve exchange when caller omits it (e.g. chase.py
         # doesn't pass exchange to broker.modify_order). Pre-fix: empty
         # string raised ValueError from _groww_exchange_and_segment.
+        #
+        # 2026-10 audit fix: a PRICE-ONLY modify (quantity/order_type
+        # omitted by the caller — the common case for a chase price
+        # update) used to default straight to `quantity=0` and
+        # `order_type="LIMIT"` regardless of the order's actual current
+        # values — sending `quantity=0` to Groww (effectively zeroing
+        # the order) and silently flipping e.g. an SL order to LIMIT.
+        # Resolve the current row ONCE (shared with the exchange
+        # resolution below — one scan, not two) whenever exchange,
+        # quantity, OR order_type is missing, and use its real values
+        # as the default instead of a hardcoded placeholder.
         exchange = str(kwargs.get("exchange") or "")
+        need_qty = kwargs.get("quantity") is None
+        need_otype = kwargs.get("order_type") is None
+        current_row: dict = {}
+        if not exchange or need_qty or need_otype:
+            current_row = self._resolve_order_row(order_id)
         if not exchange:
-            exchange = self._resolve_exchange_from_order(order_id)
+            exchange = str(current_row.get("exchange", ""))
         if not exchange:
             raise ValueError(
                 f"modify_order: exchange required and could not be resolved "
                 f"from broker.orders() for order_id={order_id!r}"
             )
         _, seg = _groww_exchange_and_segment(exchange)
-        self.groww.modify_order(
-            order_type=_ORDER_TYPE_TO_GROWW.get(kwargs.get("order_type", "LIMIT"),
-                                                 "LIMIT"),
+        quantity = (int(kwargs["quantity"]) if not need_qty
+                    else int(current_row.get("quantity") or 0))
+        order_type_kite = (kwargs["order_type"] if not need_otype
+                           else current_row.get("order_type") or "LIMIT")
+        resp = self.groww.modify_order(
+            order_type=_ORDER_TYPE_TO_GROWW.get(order_type_kite, "LIMIT"),
             segment=seg,
             groww_order_id=order_id,
-            quantity=int(kwargs.get("quantity", 0)),
+            quantity=quantity,
             price=(float(kwargs.get("price")) if kwargs.get("price") else None),
             trigger_price=(float(kwargs.get("trigger_price"))
                            if kwargs.get("trigger_price") else None),
         )
+        # 2026-10 audit fix: the response's own status was previously
+        # discarded entirely — a broker-side rejection (bad price,
+        # closed market, etc.) returned success to the caller. Mirrors
+        # the existing convention in this same file's modify_gtt/
+        # cancel_gtt (and Dhan's `status != "success"` pattern).
+        if isinstance(resp, dict) and str(resp.get("status", "")).upper() == "ERROR":
+            raise RuntimeError(f"Groww modify_order rejected: {resp}")
         return order_id
 
     @_retry_groww_auth
@@ -1181,7 +1207,11 @@ class GrowwBroker(Broker):
                 f"from broker.orders() for order_id={order_id!r}"
             )
         _, seg = _groww_exchange_and_segment(exchange)
-        self.groww.cancel_order(segment=seg, groww_order_id=order_id)
+        resp = self.groww.cancel_order(segment=seg, groww_order_id=order_id)
+        # 2026-10 audit fix: response status was previously discarded —
+        # see modify_order's identical fix above for rationale.
+        if isinstance(resp, dict) and str(resp.get("status", "")).upper() == "ERROR":
+            raise RuntimeError(f"Groww cancel_order rejected: {resp}")
         return order_id
 
     # ── GTT (Groww Smart Orders — single-trigger only) ────────────────

@@ -14,6 +14,10 @@ Items covered in this module so far:
   2. orders() — full pagination across every Groww segment (page_size
      is a no-op on the real SDK; `page` is only transmitted when
      `segment` is also passed).
+  5. modify_order() — price-only modify preserves the order's existing
+     quantity/order_type instead of defaulting to 0/LIMIT.
+  7. modify_order() — broker-rejected response status is no longer
+     discarded.
 """
 
 from __future__ import annotations
@@ -35,6 +39,10 @@ def _bound_get_order_detail(**kwargs) -> None:
 
 def _bound_get_order_list(**kwargs) -> None:
     inspect.signature(GrowwAPI.get_order_list).bind(MagicMock(), **kwargs)
+
+
+def _bound_modify_order(**kwargs) -> None:
+    inspect.signature(GrowwAPI.modify_order).bind(MagicMock(), **kwargs)
 
 
 def _one_page_per_segment(rows_by_segment: dict[str, list[dict]]) -> MagicMock:
@@ -181,3 +189,78 @@ class TestOrdersPagination:
         assert broker.orders() == []
         # Exactly one page probed per segment, not the full 50-page cap.
         assert broker.groww.get_order_list.call_count == 4
+
+
+# ── Item 5: modify_order() price-only qty/order_type preservation ───────
+
+
+class TestModifyOrderPreservesQuantityAndType:
+    def test_price_only_modify_preserves_quantity_and_order_type(self, broker):
+        """Pre-fix: omitting quantity/order_type on a price-only modify
+        sent `quantity=0` (zeroing the order) and silently forced
+        `order_type=LIMIT` regardless of the order's real type."""
+        broker.groww.get_order_list = _one_page_per_segment({
+            "COMMODITY": [{
+                "groww_order_id": "ORD123",
+                "exchange": "MCX",
+                "order_status": "OPEN",
+                "quantity": "50",
+                "order_type": "SL",
+            }],
+        })
+        captured = {}
+
+        def fake_modify_order(**kwargs):
+            _bound_modify_order(**kwargs)
+            captured.update(kwargs)
+            return {"status": "SUCCESS"}
+
+        broker.groww.modify_order = MagicMock(side_effect=fake_modify_order)
+        broker.modify_order("ORD123", price=105.5)
+
+        assert captured["quantity"] == 50
+        assert captured["order_type"] == "SL"
+        assert captured["price"] == 105.5
+
+    def test_explicit_quantity_and_order_type_are_honoured(self, broker):
+        """When the caller DOES supply quantity/order_type, no lookup is
+        needed and the explicit values pass through unchanged."""
+        broker.groww.modify_order = MagicMock(return_value={"status": "SUCCESS"})
+        broker.modify_order(
+            "ORD123", exchange="NSE", quantity=20, order_type="LIMIT", price=100,
+        )
+        kwargs = broker.groww.modify_order.call_args.kwargs
+        assert kwargs["quantity"] == 20
+        assert kwargs["order_type"] == "LIMIT"
+        # No orders() scan needed when exchange+quantity+order_type all given.
+        assert not hasattr(broker.groww, "get_order_list") or \
+            not broker.groww.get_order_list.called
+
+
+# ── Item 7: modify_order()/cancel_order() surfacing broker rejection ─────
+
+
+class TestModifyCancelOrderSurfaceRejection:
+    def test_modify_order_raises_on_broker_error_status(self, broker):
+        broker.groww.modify_order = MagicMock(return_value={"status": "ERROR",
+                                                              "message": "bad price"})
+        with pytest.raises(RuntimeError, match="rejected"):
+            broker.modify_order("ORD123", exchange="NSE", quantity=10,
+                                 order_type="LIMIT", price=100)
+
+    def test_modify_order_succeeds_on_success_status(self, broker):
+        broker.groww.modify_order = MagicMock(return_value={"status": "SUCCESS"})
+        result = broker.modify_order("ORD123", exchange="NSE", quantity=10,
+                                      order_type="LIMIT", price=100)
+        assert result == "ORD123"
+
+    def test_cancel_order_raises_on_broker_error_status(self, broker):
+        broker.groww.cancel_order = MagicMock(return_value={"status": "ERROR",
+                                                              "message": "already filled"})
+        with pytest.raises(RuntimeError, match="rejected"):
+            broker.cancel_order("ORD123", exchange="NSE")
+
+    def test_cancel_order_succeeds_on_success_status(self, broker):
+        broker.groww.cancel_order = MagicMock(return_value={"status": "SUCCESS"})
+        result = broker.cancel_order("ORD123", exchange="NSE")
+        assert result == "ORD123"
