@@ -182,7 +182,14 @@
        (--z-command: 10500) — previously a bare 9000 literal rendered
        this modal BEHIND an open full-screen card. */
     position: fixed; inset: 0; z-index: var(--z-modal-nested);
-    background: rgba(0,0,0,0.55);
+    /* Modal-dim audit (2026-10-02): was a stray rgba(0,0,0,0.55) — this
+       is a genuine centered dialog (fields + Pair/Cancel actions), the
+       same visual weight as a ModalShell consumer, so it takes
+       ModalShell's own canonical dim (.ms-dim: rgba(8,12,20,0.72) +
+       blur(2px)) rather than the lighter .canonical-modal-overlay
+       value used for drawers/popovers. */
+    background: rgba(8,12,20,0.72);
+    backdrop-filter: blur(2px);
     display: flex; align-items: center; justify-content: center;
   }
   .opm-card {

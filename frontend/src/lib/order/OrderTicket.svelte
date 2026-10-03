@@ -3218,7 +3218,16 @@
   .ot-overlay {
     position: fixed;
     inset: 0;
-    background: rgba(0,0,0,0.55);
+    /* Modal-dim audit (2026-10-02): was a stray rgba(0,0,0,0.55) —
+       this is a full top-level modal sheet (same visual family as
+       ChartModal/ActivityLogModal below), so it takes ModalShell's own
+       canonical dim (.ms-dim: rgba(8,12,20,0.72) + blur(2px)) rather
+       than the lighter .canonical-modal-overlay value. Practically
+       dead per the comment below (only live caller renders
+       `.ot-overlay-embedded` instead), but kept in the same family for
+       the hypothetical future standalone mount. */
+    background: rgba(8,12,20,0.72);
+    backdrop-filter: blur(2px);
     display: flex;
     align-items: flex-start;
     justify-content: center;

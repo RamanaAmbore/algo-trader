@@ -200,12 +200,16 @@
 {/if}
 
 <style>
-  /* Semi-transparent backdrop */
+  /* Semi-transparent backdrop. Modal-dim audit (2026-10-02): was a
+     stray rgba(0,0,0,0.45) — this is a lighter right-edge slide-in
+     panel, not a centered dialog, so it takes the lighter canonical
+     `.canonical-modal-overlay` dim value (rgba(8,12,20,0.42), no blur)
+     instead of ModalShell's heavier 0.72+blur(2px). */
   .otd-backdrop {
     position: fixed;
     inset: 0;
     z-index: var(--z-drawer);
-    background: rgba(0, 0, 0, 0.45);
+    background: rgba(8, 12, 20, 0.42);
   }
 
   /* Drawer panel — right-edge, 360px, slides in from the right */

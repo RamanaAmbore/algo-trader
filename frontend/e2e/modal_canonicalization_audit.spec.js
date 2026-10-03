@@ -11,6 +11,12 @@
  *      z-index:100, element-level Escape listener).
  *   2. OrderPairModal's native <select> elements → the canonical
  *      Select component.
+ *   3. Drifted modal dim levels (all pure-black) brought onto the
+ *      canonical rgba(8,12,20,α) scale — OrderTicket.svelte's
+ *      `.ot-overlay` and OrderPairModal.svelte's `.opm-overlay` (both
+ *      full dialogs → ModalShell's 0.72+blur(2px)); OrderTimelineDrawer's
+ *      `.otd-backdrop` (a lighter side drawer → the 0.42
+ *      canonical-modal-overlay value, no blur).
  *
  * Five quality dimensions (matches this repo's e2e convention):
  *   1. SSOT   — z-index/dim read from app.css custom properties at
@@ -207,5 +213,68 @@ test.describe('Functional — OrderPairModal (real browser)', () => {
     await expect(childSelect).toHaveClass(/rbq-select-trigger/);
 
     await expect(page.locator('.opm-card select')).toHaveCount(0);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Item 3 — drifted modal dim levels brought onto the canonical scale
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — modal dim levels match their role', () => {
+  test('OrderTicket .ot-overlay uses ModalShell\'s dim (0.72 + blur), not pure black', () => {
+    const orderTicket = readFile('src/lib/order/OrderTicket.svelte');
+    const start = orderTicket.indexOf('.ot-overlay {');
+    expect(start, '.ot-overlay rule must exist').toBeGreaterThan(-1);
+    const close = orderTicket.indexOf('\n  }', start);
+    const ruleBody = orderTicket.slice(start, close);
+    expect(ruleBody).toMatch(/background:\s*rgba\(8,12,20,0\.72\);/);
+    expect(ruleBody).toMatch(/backdrop-filter:\s*blur\(2px\);/);
+    expect(ruleBody).not.toMatch(/background:\s*rgba\(0,0,0,0\.55\);/);
+  });
+
+  test('OrderPairModal .opm-overlay uses ModalShell\'s dim (0.72 + blur), not pure black', () => {
+    const opm = readFile('src/lib/order/OrderPairModal.svelte');
+    const start = opm.indexOf('.opm-overlay {');
+    expect(start, '.opm-overlay rule must exist').toBeGreaterThan(-1);
+    const close = opm.indexOf('\n  }', start);
+    const ruleBody = opm.slice(start, close);
+    expect(ruleBody).toMatch(/background:\s*rgba\(8,12,20,0\.72\);/);
+    expect(ruleBody).toMatch(/backdrop-filter:\s*blur\(2px\);/);
+    expect(ruleBody).not.toMatch(/background:\s*rgba\(0,0,0,0\.55\);/);
+  });
+
+  test('OrderTimelineDrawer .otd-backdrop uses the lighter canonical-modal-overlay dim (0.42, no blur)', () => {
+    const drawer = readFile('src/lib/order/OrderTimelineDrawer.svelte');
+    const start = drawer.indexOf('.otd-backdrop {');
+    expect(start, '.otd-backdrop rule must exist').toBeGreaterThan(-1);
+    const close = drawer.indexOf('\n  }', start);
+    const ruleBody = drawer.slice(start, close);
+    expect(ruleBody).toMatch(/background:\s*rgba\(8, 12, 20, 0\.42\);/);
+    expect(ruleBody).not.toMatch(/backdrop-filter/);
+    expect(ruleBody).not.toMatch(/rgba\(0, 0, 0, 0\.45\)/);
+  });
+});
+
+test.describe('Functional — OrderPairModal dim resolves to ModalShell\'s canonical value at runtime', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('.opm-overlay computed background/backdrop-filter match the 0.72+blur(2px) canonical dim', async ({ page }) => {
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+
+    const pairBtn = page.locator('button.mp-pair-btn').first();
+    await expect(pairBtn).toBeVisible({ timeout: 15_000 });
+    await pairBtn.click();
+
+    const overlay = page.locator('.opm-overlay');
+    await expect(overlay).toBeVisible({ timeout: 5_000 });
+
+    const [bg, blur] = await Promise.all([
+      overlay.evaluate((el) => getComputedStyle(el).backgroundColor),
+      overlay.evaluate((el) => getComputedStyle(el).backdropFilter),
+    ]);
+    expect(bg).toBe('rgba(8, 12, 20, 0.72)');
+    expect(blur).toContain('blur(2px)');
   });
 });
