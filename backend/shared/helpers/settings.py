@@ -646,6 +646,20 @@ SEEDS: list[tuple] = [
      "Leave OFF on prod day-to-day — emits one line per fetch when "
      "the result is empty or partial.",
      None, None),
+
+    # ── Compliance ───────────────────────────────────────────────────────
+    # Sprint 1a placeholder (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md
+    # §9) — SEBI-style algo ID tag. Empty string today; no order-placement
+    # code reads this yet (that wiring is Sprint 1b, gated on `source`
+    # tagging being wired up first). Once a real SEBI-issued ID exists,
+    # updating this one setting is meant to propagate everywhere
+    # automatically — same DB-backed settings pattern as
+    # performance.refresh_interval, not hardcoded/independently set per
+    # call site.
+    ("compliance", "compliance.algo_id", "string", "",
+     "SEBI-issued algo ID tag, carried on AlgoOrder.algo_id once wired up. "
+     "Empty placeholder — no order-placement code reads this setting yet.",
+     None, None),
 ]
 
 

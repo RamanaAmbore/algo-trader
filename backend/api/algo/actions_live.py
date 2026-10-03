@@ -130,10 +130,18 @@ async def _place_order_preflight_block(
 
 async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
-                                    side: str, qty: int, price) -> "int | None":
+                                    side: str, qty: int, price,
+                                    product: str = "NRML",
+                                    template_id=None) -> "int | None":
     """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort).
 
     Returns the AlgoOrder row id so callers can pass algo_order_id to chase_order.
+
+    `product`/`template_id` are applied via `_place_order_set_product_template`
+    AFTER `_write_live_order` returns — that shared constructor (used by
+    close_position/chase_close_positions too) is never touched. The helper
+    swallows its own exceptions, so a failure there can never turn a real
+    `intent_id` into None here.
     """
     from backend.api.algo.actions import _write_live_order
 
@@ -145,6 +153,7 @@ async def _place_order_write_intent(agent_shim, pf: dict,
             status="OPEN",
         )
         if intent_id:
+            await _place_order_set_product_template(intent_id, product, template_id)
             from backend.api.algo.order_events import write_event as _write_ev_ok
             import asyncio as _aio
             _aio.create_task(_write_ev_ok(
@@ -191,14 +200,26 @@ async def _place_order_on_failure(
 
 
 def _al_place_resolve_params(
-    context: dict, params: dict
-) -> "tuple[object, str, str, str, str, int, object, str]":
+    agent, context: dict, params: dict
+) -> "tuple[object, str, str, str, str, int, object, str, object]":
     """Resolve _action_place_order params and build the _AgentShim sentinel.
 
-    Returns (shim, account, symbol, exchange, side, qty, price, product).
+    `agent` is the real Agent DB row the caller (`_dispatch_live_action`)
+    already has — captured onto plain class attributes (not held as a
+    live reference) so the shim is safe to read across the async
+    boundaries below even if `agent` is a detached ORM instance.
+    Pre-fix, this shim only ever carried `slug` (and only the context
+    fallback string "place_order", since `context["agent_slug"]` is
+    never actually populated by the caller) — `_write_live_order`'s
+    `agent_id=getattr(agent, "id", None)` therefore always wrote NULL
+    for every live agent-placed order. Fixed 2026-10 (Sprint 1a).
+
+    Returns (shim, account, symbol, exchange, side, qty, price, product,
+    template_id).
     """
     class _AgentShim:
-        slug = context.get("agent_slug", "place_order")
+        slug = getattr(agent, "slug", None) or context.get("agent_slug", "place_order")
+        id   = getattr(agent, "id", None)
 
     return (
         _AgentShim(),
@@ -209,10 +230,64 @@ def _al_place_resolve_params(
         int(params.get("quantity") or 0),
         params.get("price"),
         str(params.get("product") or "NRML"),
+        params.get("template_id"),
     )
 
 
-async def _action_place_order(context: dict, params: dict):
+async def _place_order_set_product_template(
+    row_id: int, product: str, template_id,
+) -> None:
+    """Set product/template_id on a freshly-written place_order AlgoOrder row.
+
+    Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2): the
+    shared `_write_live_order` constructor (actions.py) is also used by
+    `close_position` and `chase_close_positions` — neither of which sets
+    these fields today — so this is deliberately NOT added there.
+    Instead it's a narrow, place_order-only follow-up UPDATE scoped to
+    the single row just created, run immediately after
+    `_write_live_order` returns so the postback / chase-terminal
+    template-auto-attach path (which reads `AlgoOrder.template_id`,
+    e.g. `orders_postback.py`, `chase.py:184`) sees the value the agent
+    action requested on fill.
+
+    Behavioral note: this is the first time a live agent-placed
+    `place_order` action can carry a non-NULL `template_id` through to
+    its AlgoOrder row — until now that auto-attach path only ever fired
+    for OrderTicket/basket-submitted orders. An agent action that
+    specifies `params.template_id` will now have real exit GTTs (and
+    possibly a wing order) armed on fill, exactly like a manually
+    ticketed templated order. Swallows all exceptions (logs + returns)
+    so a failure here can never take down the caller's `intent_id`.
+    """
+    if not product and template_id is None:
+        return
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import update as sa_update
+
+    values: dict = {}
+    if product:
+        values["product"] = str(product)
+    if template_id is not None:
+        try:
+            values["template_id"] = int(template_id)
+        except (TypeError, ValueError):
+            logger.warning(f"[LIVE] place_order ignoring non-numeric template_id={template_id!r}")
+    if not values:
+        return
+    try:
+        async with async_session() as s:
+            await s.execute(
+                sa_update(AlgoOrder).where(AlgoOrder.id == row_id).values(**values)
+            )
+            await s.commit()
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] place_order product/template_id update failed for row {row_id}: {e}"
+        )
+
+
+async def _action_place_order(agent, context: dict, params: dict):
     """
     Place an order using the chase engine (live mode).
 
@@ -227,8 +302,8 @@ async def _action_place_order(context: dict, params: dict):
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.brokers import get_broker
 
-    _shim, account, symbol, exchange, side, qty, price, product = (
-        _al_place_resolve_params(context, params)
+    _shim, account, symbol, exchange, side, qty, price, product, template_id = (
+        _al_place_resolve_params(agent, context, params)
     )
 
     # Fetch LTP as the initial limit price (best-effort).
@@ -255,7 +330,10 @@ async def _action_place_order(context: dict, params: dict):
         return  # abort without placing
 
     # Emit preflight_ok event (fire-and-forget); capture row id for chase.
-    _oid = await _place_order_write_intent(_shim, pf, account, symbol, exchange, side, qty, price)
+    _oid = await _place_order_write_intent(
+        _shim, pf, account, symbol, exchange, side, qty, price,
+        product=product, template_id=template_id,
+    )
 
     cfg = ChaseConfig(exchange=exchange, product=product)
     try:

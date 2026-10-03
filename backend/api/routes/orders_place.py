@@ -400,6 +400,13 @@ async def _fetch_net_position_qty(sym: str, exchange: str, account: str) -> floa
                 (c for c in df.columns if "account" in c.lower() or "user" in c.lower()),
                 None,
             )
+            if acct_col is None:
+                # Can't identify an account column on this broker's
+                # DataFrame — without it the symbol-only mask below would
+                # silently match the first row from ANY account, returning
+                # a wrong-account quantity instead of failing closed. Sprint
+                # 1a fix: refuse rather than guess.
+                return None
             mask = df["tradingsymbol"].str.upper() == sym.upper()
             if acct_col:
                 mask &= df[acct_col].astype(str).str.upper() == account.upper()

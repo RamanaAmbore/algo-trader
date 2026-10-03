@@ -878,6 +878,43 @@ class AlgoOrder(Base):
         nullable=True, index=True,
     )
 
+    # Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2/§7.1) —
+    # additive schema foundation for the unified order-lifecycle model.
+    # All four columns below are nullable, no-default, no-backfill: existing
+    # rows simply read NULL. Nothing writes `chase_session_id`/`oco_pair_id`/
+    # `algo_id` yet (Sprint 1b+ wiring); `source` and `algo_id` are the only
+    # two with any writer at all so far (see settings `compliance.algo_id`
+    # and the orders-page audit note on `source`).
+    #
+    # Orthogonal to the existing `engine` column (sim/paper/live/replay/
+    # shadow/expiry/manual) — `source` instead tags WHICH CODE PATH created
+    # the row (ticket / basket / agent / chase / template_exit / ...).
+    source: Mapped[Optional[str]] = mapped_column(String(32), nullable=True, index=True)
+    # Groups chase attempts across cancel-and-replace cycles so a future
+    # UI/audit can show "chase session A1 → 3 attempts → filled" without
+    # inferring it from timing alone. String (not int) — matches the
+    # existing `request_id` UUID-string convention on this same model.
+    chase_session_id: Mapped[Optional[str]] = mapped_column(
+        String(36), nullable=True, index=True,
+    )
+    # Self-referencing link for a native two-leg OCO pair (relevant to
+    # brokers — e.g. Groww — that need two separate AlgoOrder rows to
+    # describe one OCO relationship; Kite/Dhan express OCO as a single
+    # native two-leg GTT and don't need this). Added as a plain nullable
+    # FK; the proposal calls for the Postgres constraint itself to be
+    # added NOT VALID on existing (non-empty) deployments — see
+    # `_migrate_algo_orders_sprint1a_columns` in database.py — since a
+    # fresh `create_all()` table has no rows to validate against anyway.
+    oco_pair_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("algo_orders.id", ondelete="SET NULL"),
+        nullable=True, index=True,
+    )
+    # SEBI-style algo ID tag. Sourced from the single `compliance.algo_id`
+    # DB-backed setting (empty-string placeholder today) — no order-
+    # placement code reads/writes this column yet; that wiring is Sprint 1b,
+    # gated on `source` tagging being wired up first.
+    algo_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     # Sprint E (audit #7) — composite (mode, status) index. The trail-
     # stop poller, OCO pair-watcher, and paper recovery all hit
     # `WHERE mode = ? AND status = ?` on every cycle. With only the
@@ -928,6 +965,14 @@ class AlgoOrderEvent(Base):
     message: Mapped[str]  = mapped_column(String(500), nullable=False, default="")
     # Structured detail (limit, qty, slippage, broker_response, …). Nullable.
     payload_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.3) — the
+    # broker order id as of THIS event, distinct from the parent AlgoOrder's
+    # current `broker_order_id` (which chase's cancel-and-replace mutates
+    # over time). Nullable, no backfill: existing event rows read NULL.
+    # Nothing writes this yet — additive schema only, Sprint 1b wires it.
+    broker_order_id_at_event: Mapped[Optional[str]] = mapped_column(
+        String(32), nullable=True,
+    )
 
 
 # ---------------------------------------------------------------------------

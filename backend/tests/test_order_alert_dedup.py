@@ -249,6 +249,12 @@ class TestPreflightBlockRouting:
         calls send_order_failure_alert (not _dispatch directly)."""
         import backend.api.algo.actions as actions_mod
 
+        agent = MagicMock()
+        agent.slug = "test-agent"
+        agent.id = 1
+        # Unrelated to this sprint's shim fix: the preflight-block alert's
+        # `source=` still reads context['agent_slug'] directly (not the
+        # agent/shim) — unchanged pre-existing behaviour, preserved here.
         context = {"agent_slug": "test-agent"}
         params = {
             "account": "ZG1234",
@@ -276,7 +282,7 @@ class TestPreflightBlockRouting:
             ) as mock_alert,
             patch.object(actions_mod, "_write_live_order", return_value=None),
         ):
-            asyncio.run(actions_mod._action_place_order(context, params))
+            asyncio.run(actions_mod._action_place_order(agent, context, params))
 
         # send_order_failure_alert must have been called with the correct args.
         mock_alert.assert_called_once()
@@ -291,7 +297,10 @@ class TestPreflightBlockRouting:
         """_dispatch is NOT called directly on preflight block (bypass eliminated)."""
         import backend.api.algo.actions as actions_mod
 
-        context = {"agent_slug": "test-agent"}
+        agent = MagicMock()
+        agent.slug = "test-agent"
+        agent.id = 1
+        context: dict = {}
         params = {
             "account": "ZG1234",
             "symbol": "CRUDEOIL24JULFUT",
@@ -315,6 +324,6 @@ class TestPreflightBlockRouting:
             patch("backend.shared.helpers.alert_utils.send_order_failure_alert"),
             patch.object(actions_mod, "_write_live_order", return_value=None),
         ):
-            asyncio.run(actions_mod._action_place_order(context, params))
+            asyncio.run(actions_mod._action_place_order(agent, context, params))
 
         mock_dispatch.assert_not_called()

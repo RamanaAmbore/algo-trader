@@ -132,7 +132,10 @@ async def test_action_place_order_ltp_fetched_via_helper():
 
     broker = _make_broker_stub(ltp_value=23500.0)
     conns  = _make_conns_stub("ZG0790")
-    context = {"agent_slug": "test-agent"}
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
     params = {
         "account":  "ZG0790",
         "symbol":   "NIFTY25JULFUT",
@@ -151,13 +154,17 @@ async def test_action_place_order_ltp_fetched_via_helper():
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
          patch("backend.api.algo.actions._write_live_order",
                new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()) as mock_set_pt, \
          patch("backend.brokers.get_broker",              return_value=broker), \
          patch("backend.brokers.client.is_cutover_on",    return_value=False):
 
-        await _action_place_order(context, params)
+        await _action_place_order(agent, context, params)
 
     # chase_order called — LTP fetch succeeded and preflight didn't block.
     mock_chase.assert_called_once()
+    # product/template_id follow-up write was attempted for the intent row.
+    mock_set_pt.assert_called_once_with(42, "NRML", None)
 
 
 # ---------------------------------------------------------------------------

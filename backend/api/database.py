@@ -863,6 +863,108 @@ async def _migrate_order_templates_wing_max_spread_pct(conn) -> None:
     ))
 
 
+async def _migrate_algo_orders_sprint1a_columns(conn) -> None:
+    """Sprint 1a — additive nullable columns for the unified order-lifecycle
+    data model (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2/§7.1/§7.3).
+
+    Runs INSIDE init_db's normal `engine.begin()` transaction (conn is that
+    transaction's connection) — plain `ADD COLUMN IF NOT EXISTS`, nullable,
+    no default, no backfill. `SET LOCAL lock_timeout` bounds how long this
+    step can wait behind any in-flight transaction already holding a lock
+    on algo_orders/algo_order_events (e.g. a live `FOR UPDATE` chase/
+    postback row-lock) — on timeout this ALTER (and therefore init_db)
+    fails loudly with a clear Postgres `lock_timeout` error instead of
+    hanging the whole API startup indefinitely. `SET LOCAL` scopes the
+    timeout to this transaction only — it never leaks to any later
+    migration step or caller.
+
+    The `oco_pair_id` self-referencing FK is added separately via a
+    `pg_constraint`-guarded `DO $$ ... $$` block (`ADD CONSTRAINT` has no
+    `IF NOT EXISTS` clause) and marked `NOT VALID` so it never has to scan/
+    lock the whole (potentially large) existing `algo_orders` table — a
+    future background `VALIDATE CONSTRAINT` pass can upgrade it later.
+
+    Indexes on the new columns are deliberately NOT created here — see
+    `_migrate_algo_orders_sprint1a_indexes_concurrent()`, which MUST run
+    via a separate AUTOCOMMIT connection OUTSIDE this transaction entirely
+    (Postgres hard-errors on `CREATE INDEX CONCURRENTLY` inside a
+    transaction block, which would abort this whole transaction — not just
+    the index — and crash every migration step still queued behind it in
+    `init_db()`).
+    """
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    for stmt in (
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS source VARCHAR(32)",
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS chase_session_id VARCHAR(36)",
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS oco_pair_id INTEGER",
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS algo_id VARCHAR(32)",
+        "ALTER TABLE algo_order_events ADD COLUMN IF NOT EXISTS "
+        "broker_order_id_at_event VARCHAR(32)",
+    ):
+        await conn.execute(text(stmt))
+    await conn.execute(text("""
+        DO $$
+        BEGIN
+            IF NOT EXISTS (
+                SELECT 1 FROM pg_constraint WHERE conname = 'fk_algo_orders_oco_pair_id'
+            ) THEN
+                ALTER TABLE algo_orders
+                    ADD CONSTRAINT fk_algo_orders_oco_pair_id
+                    FOREIGN KEY (oco_pair_id) REFERENCES algo_orders (id)
+                    ON DELETE SET NULL
+                    NOT VALID;
+            END IF;
+        END $$;
+    """))
+
+
+# Sprint 1a — CREATE INDEX CONCURRENTLY statements for the three new
+# algo_orders columns. Index names deliberately match the names
+# SQLAlchemy's default `index=True` naming convention produces
+# (`ix_<table>_<column>`) for the equivalent mapped_column declarations in
+# models.py, so a brand-new DB's `create_all()` (which DOES build these
+# indexes transactionally, since the table has zero rows at creation time)
+# and this idempotent CONCURRENTLY statement never race to create two
+# differently-named indexes for the same column.
+_SPRINT1A_CONCURRENT_INDEX_STATEMENTS: tuple[str, ...] = (
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_algo_orders_source "
+    "ON algo_orders (source)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_algo_orders_chase_session_id "
+    "ON algo_orders (chase_session_id)",
+    "CREATE INDEX CONCURRENTLY IF NOT EXISTS ix_algo_orders_oco_pair_id "
+    "ON algo_orders (oco_pair_id)",
+)
+
+
+async def _migrate_algo_orders_sprint1a_indexes_concurrent() -> None:
+    """Create the Sprint 1a indexes via `CREATE INDEX CONCURRENTLY`.
+
+    MUST be called AFTER init_db's `engine.begin()` block has exited (so
+    the columns from `_migrate_algo_orders_sprint1a_columns` already exist)
+    and MUST NOT be called with that block's `conn` — `CREATE INDEX
+    CONCURRENTLY` cannot run inside any transaction at all. Each statement
+    runs on its own connection opened via `engine.connect()` with
+    `isolation_level="AUTOCOMMIT"` (no implicit transaction is ever opened
+    on it), and is wrapped in its own try/except: a single index failure
+    (e.g. a stale `INVALID` index left by a previously-interrupted
+    CONCURRENTLY build, or a lock-wait timeout) logs and continues rather
+    than raising — `init_db()` must never fail to boot the whole API over
+    a non-critical index.
+    """
+    from sqlalchemy import text
+    for stmt in _SPRINT1A_CONCURRENT_INDEX_STATEMENTS:
+        try:
+            async with engine.connect() as conn:
+                await conn.execution_options(isolation_level="AUTOCOMMIT")
+                await conn.execute(text(stmt))
+        except Exception as e:
+            logger.error(
+                f"Database: Sprint 1a CONCURRENTLY index step failed "
+                f"({stmt[:70]}...): {e}"
+            )
+
+
 async def init_db() -> None:
     """Create all tables (idempotent).
 
@@ -903,7 +1005,14 @@ async def init_db() -> None:
         await _migrate_exchange_schedule_table(conn)
         await _migrate_app_messages_table(conn)
         await _migrate_order_templates_wing_max_spread_pct(conn)
+        await _migrate_algo_orders_sprint1a_columns(conn)
     logger.info("Database: tables verified")
+
+    # Sprint 1a — CONCURRENTLY index creation. MUST run after the
+    # `engine.begin()` block above has exited (columns must already exist,
+    # and CONCURRENTLY itself cannot run inside any transaction). Never
+    # raises — see the function's own docstring.
+    await _migrate_algo_orders_sprint1a_indexes_concurrent()
 
     # broker_accounts schema lives on the SHARED engine (ramboq DB) — always
     # points at prod's broker_accounts regardless of deploy_branch. Run

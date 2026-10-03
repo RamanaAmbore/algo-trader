@@ -177,7 +177,7 @@ async def _dispatch_live_action(agent, action_type: str, params: dict, context: 
     if action_type in ("chase_close", "chase_close_positions"):
         await _action_live_chase_close_positions(agent, context, params)
     elif action_type == "place_order":
-        await _action_place_order(context, params)
+        await _action_place_order(agent, context, params)
     elif action_type == "close_position":
         await _action_live_close_position(agent, context, params)
     elif action_type == "modify_order":
