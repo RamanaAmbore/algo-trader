@@ -1979,6 +1979,30 @@ async def _build_paper_positions_response() -> PositionsResponse:
     # replaces them so day_change_val can be computed correctly.
     await _override_stale_close_from_snapshot(raw)
 
+    # Day P&L baseline (prev_settlement_pnl) for paper rows — computed
+    # DIRECTLY from the paper fill ledger (synthesize_paper_positions()'s
+    # `_prev_net_qty`/`_prev_notional` scratch columns), not from
+    # daily_book. Paper positions have no daily_book snapshot lineage of
+    # their own, so the generic `_backfill_prev_settlement_pnl` call
+    # inside `_override_stale_close_from_snapshot` above almost always
+    # finds no match for a genuine paper-only position — and when the
+    # same (account, symbol) ALSO happens to carry a real LIVE position,
+    # it would wrongly borrow that live baseline for this paper row.
+    # This always overwrites with the paper-specific value once
+    # `prev_close` (real market settlement price) is known. A position
+    # with no fills before today's session boundary (prev_qty == 0) gets
+    # `prev_settlement_pnl = NaN` here — converted to None below, the
+    # same "no baseline yet" convention the live-position path uses for
+    # a position opened today (base_pnl=0 in the frontend formula, so
+    # today's full lifetime P&L correctly IS the Day P&L).
+    if {'_prev_net_qty', '_prev_notional', 'prev_close'}.issubset(raw.columns):
+        _prev_qty = pd.to_numeric(raw['_prev_net_qty'], errors='coerce').fillna(0)
+        _prev_notional = pd.to_numeric(raw['_prev_notional'], errors='coerce').fillna(0)
+        _cls_p = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
+        _had_overnight = _prev_qty != 0
+        _prev_pnl_calc = _cls_p * _prev_qty - _prev_notional
+        raw['prev_settlement_pnl'] = _prev_pnl_calc.where(_had_overnight, other=float('nan'))
+
     # Recompute pnl = (last_price - average_price) × quantity.
     # Paper rows don't have broker-side unrealised; we compute from scratch.
     if 'last_price' in raw.columns and 'average_price' in raw.columns:
@@ -2005,13 +2029,22 @@ async def _build_paper_positions_response() -> PositionsResponse:
             raw['day_change_val'] / _prev_val.replace(0, float('nan')) * 100
         ).fillna(0)
 
+    # prev_settlement_pnl is deliberately excluded from the blanket
+    # numeric fillna(0) below — NaN there means "no overnight baseline"
+    # (every fill happened today) and must reach PositionRow as None,
+    # not a coerced 0/NaN (msgspec/JSON can't serialize a float NaN).
     numeric = raw.select_dtypes(include='number').columns
+    numeric = numeric.drop('prev_settlement_pnl', errors='ignore')
     raw[numeric] = raw[numeric].fillna(0)
 
     rows: list[PositionRow] = []
     valid = set(PositionRow.__struct_fields__)
     for r in raw.to_dict(orient='records'):
         kwargs = {k: (r[k] if r[k] is not None else 0) for k in r}
+        # pandas represents a missing float as NaN, not None, so the
+        # generic `is not None` check above doesn't catch it here.
+        if 'prev_settlement_pnl' in kwargs and pd.isna(kwargs['prev_settlement_pnl']):
+            kwargs['prev_settlement_pnl'] = None
         kwargs.setdefault('last_price_stale', False)
         kwargs['mode'] = 'paper'
         kwargs = {k: v for k, v in kwargs.items() if k in valid}

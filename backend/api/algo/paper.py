@@ -1151,8 +1151,20 @@ def _paper_update_row_fields(row, kind: str, order: dict, tag: str) -> None:
 # ═════════════════════════════════════════════════════════════════════════
 
 
-def _paper_accumulate_one_row(g: dict, r) -> None:
-    """Accumulate one FILLED AlgoOrder `r` into group dict `g`."""
+def _paper_accumulate_one_row(g: dict, r, cutoff_ts=None) -> None:
+    """Accumulate one FILLED AlgoOrder `r` into group dict `g`.
+
+    When `cutoff_ts` is given, also accumulates a PARALLEL "as-of-cutoff"
+    net_qty/notional (`prev_net_qty`/`prev_notional`) using only fills
+    whose `filled_at` is strictly before `cutoff_ts` — the overnight Day
+    P&L baseline `synthesize_paper_positions()` needs (see that
+    function's docstring). `r.filled_at < cutoff_ts` is a tz-aware
+    comparison (both sides carry tzinfo); a row with no `filled_at`
+    (shouldn't happen for a genuinely FILLED row, but tolerated
+    defensively) is treated as NOT before cutoff — i.e. as today's fill
+    — rather than silently crediting an unknown-timestamp fill as
+    overnight.
+    """
     qty_filled = int(r.filled_quantity or r.quantity or 0)
     fill_px = float(r.fill_price or r.initial_price or 0.0)
     sign = 1 if str(r.transaction_type or "BUY").upper() == "BUY" else -1
@@ -1162,20 +1174,35 @@ def _paper_accumulate_one_row(g: dict, r) -> None:
         g["exchange"] = str(r.exchange or "NFO")
     if r.product:
         g["product"] = str(r.product)
+    try:
+        is_before_cutoff = (
+            cutoff_ts is not None and r.filled_at is not None and r.filled_at < cutoff_ts
+        )
+    except TypeError:
+        # filled_at isn't a comparable datetime (defensive — shouldn't
+        # happen for a real FILLED row). Treat as NOT before cutoff
+        # rather than raising, same fail-safe stance as a None filled_at.
+        is_before_cutoff = False
+    if is_before_cutoff:
+        g["prev_net_qty"]  += sign * qty_filled
+        g["prev_notional"] += sign * qty_filled * fill_px
 
 
-def _paper_accumulate_groups(rows) -> dict:
+def _paper_accumulate_groups(rows, cutoff_ts=None) -> dict:
     """Group FILLED AlgoOrder rows by (account, symbol), accumulating net qty + notional.
 
     BUY = +qty, SELL = -qty. Used by synthesize_paper_positions to compute
-    the weighted-average fill price per net position.
+    the weighted-average fill price per net position. `cutoff_ts` (when
+    given) also accumulates the as-of-cutoff `prev_net_qty`/`prev_notional`
+    pair — see `_paper_accumulate_one_row()`'s docstring.
     """
     from collections import defaultdict
     groups: dict[tuple[str, str], dict] = defaultdict(lambda: {
         "net_qty": 0, "notional": 0.0, "exchange": "", "product": "NRML",
+        "prev_net_qty": 0, "prev_notional": 0.0,
     })
     for r in rows:
-        _paper_accumulate_one_row(groups[(str(r.account), str(r.symbol))], r)
+        _paper_accumulate_one_row(groups[(str(r.account), str(r.symbol))], r, cutoff_ts)
     return groups
 
 
@@ -1192,6 +1219,21 @@ async def synthesize_paper_positions() -> list[dict]:
       close_price (0.0 — caller patches from daily_book), last_price (0.0
       — caller patches from KiteTicker), pnl (0.0 — caller recomputes),
       day_change_val (0.0 — caller recomputes), plus mode="paper".
+
+    Also carries two underscore-prefixed scratch fields the caller
+    (`positions.py:_build_paper_positions_response`) uses to compute
+    `prev_settlement_pnl` (the Day P&L baseline) once it knows the
+    symbol's real `prev_close`: `_prev_net_qty` / `_prev_notional` are
+    the SAME net_qty/notional accumulation, but restricted to fills from
+    BEFORE today's 08:00 IST session boundary. Paper positions have no
+    daily_book snapshot lineage of their own (nothing ever snapshots a
+    synthetic paper position at session close) — this reconstructs the
+    "as of yesterday's close" state directly from the fill ledger
+    instead, so an overnight paper position gets a real baseline rather
+    than showing its full lifetime P&L as today's Day P&L. Both are 0
+    when every fill happened today (no overnight component) — the
+    caller leaves `prev_settlement_pnl` as None in that case, same
+    "no baseline yet" convention the live-position path uses.
 
     Only rows with status FILLED are included — OPEN orders (still in
     the chase queue) have not yet resulted in a real filled quantity.
@@ -1216,7 +1258,14 @@ async def synthesize_paper_positions() -> list[dict]:
     if not rows:
         return []
 
-    groups = _paper_accumulate_groups(rows)
+    try:
+        from backend.api.helpers.exchange_clock import settlement_cutoff_for
+        cutoff_ts = await settlement_cutoff_for("NON-MCX")
+    except Exception as e:
+        logger.warning(f"synthesize_paper_positions: settlement_cutoff_for failed: {e}")
+        cutoff_ts = None
+
+    groups = _paper_accumulate_groups(rows, cutoff_ts)
     result: list[dict] = []
     for (account, symbol), g in groups.items():
         net_qty = g["net_qty"]
@@ -1238,6 +1287,8 @@ async def synthesize_paper_positions() -> list[dict]:
             "day_change_val": 0.0,
             "day_change_percentage": 0.0,
             "mode": "paper",
+            "_prev_net_qty": g["prev_net_qty"],
+            "_prev_notional": g["prev_notional"],
         })
 
     return result

@@ -18,6 +18,7 @@ Five quality dimensions:
 from __future__ import annotations
 
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -92,6 +93,12 @@ def _make_order(
     product: str = "NRML",
     mode: str = "paper",
     status: str = "FILLED",
+    # Real production FILLED rows always carry a tz-aware filled_at
+    # (set by the paper fill-apply path — see paper.py:_pt_apply_fill).
+    # Default here is "now" (today's fill, not overnight) so existing
+    # callers that don't care about the Day P&L baseline split keep
+    # their old "everything is today" semantics unchanged.
+    filled_at: "datetime | None" = None,
 ) -> MagicMock:
     o = MagicMock()
     o.id = id
@@ -106,6 +113,7 @@ def _make_order(
     o.product = product
     o.mode = mode
     o.status = status
+    o.filled_at = filled_at if filled_at is not None else datetime.now(timezone.utc)
     return o
 
 
@@ -304,6 +312,161 @@ async def test_build_paper_response_ltp_mark_fires():
     )
     assert close_patch_mock.call_count == 1, (
         "_override_stale_close_from_snapshot must be called once for paper close_price"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Day P&L baseline (prev_settlement_pnl) for overnight paper positions
+# (Tier 1 item #11 fix) — paper positions have no daily_book snapshot
+# lineage of their own, so synthesize_paper_positions() reconstructs an
+# "as-of-yesterday's-close" baseline directly from the fill ledger via
+# `_prev_net_qty`/`_prev_notional`. _build_paper_positions_response must
+# turn that into a real `prev_settlement_pnl` once `prev_close` is known.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_build_paper_response_overnight_position_gets_real_baseline():
+    """An overnight paper position (fills before today's session, carried
+    into today) must get `prev_settlement_pnl` computed from the real
+    prev_close × the as-of-yesterday net qty/notional — NOT left at 0,
+    which would inflate today's Day P&L to the full lifetime P&L."""
+    synth_rows = [
+        {
+            "account": "ZG0790",
+            "tradingsymbol": "CRUDEOIL26OCTFUT",
+            "exchange": "MCX",
+            "product": "NRML",
+            "quantity": 10,
+            "average_price": 5500.0,
+            "close_price": 0.0,
+            "last_price": 0.0,
+            "pnl": 0.0,
+            "pnl_percentage": 0.0,
+            "day_change_val": 0.0,
+            "day_change_percentage": 0.0,
+            "mode": "paper",
+            # Entire 10-lot position was opened BEFORE today (overnight) —
+            # as-of-yesterday net_qty/notional equal the current ones.
+            "_prev_net_qty": 10,
+            "_prev_notional": 55000.0,   # 10 × 5500
+        }
+    ]
+
+    async def _fake_synth():
+        return synth_rows
+
+    async def _fake_close_override(raw):
+        # Real production sets prev_close in place from daily_book.ltp.
+        raw["prev_close"] = 5600.0
+
+    with patch("backend.api.algo.paper.synthesize_paper_positions", new=_fake_synth), \
+         patch("backend.api.routes.positions._override_stale_ltp_from_ticker", return_value=None), \
+         patch("backend.api.routes.positions._override_stale_close_from_snapshot",
+               new=_fake_close_override):
+
+        from backend.api.routes.positions import _build_paper_positions_response
+        resp = await _build_paper_positions_response()
+
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+    # prev_settlement_pnl = prev_close × prev_qty − prev_notional
+    #                     = 5600 × 10 − 55000 = 1000
+    assert row.prev_settlement_pnl == pytest.approx(1000.0), (
+        f"Expected overnight baseline 1000.0, got {row.prev_settlement_pnl!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_build_paper_response_same_day_position_has_no_baseline():
+    """A paper position opened ENTIRELY today (no fills before the
+    session boundary) must get `prev_settlement_pnl=None` — the
+    'no overnight baseline' convention — not 0/NaN, and not the
+    overnight formula applied to a zero as-of-yesterday quantity."""
+    synth_rows = [
+        {
+            "account": "ZG0790",
+            "tradingsymbol": "RELIANCE",
+            "exchange": "NSE",
+            "product": "MIS",
+            "quantity": 10,
+            "average_price": 2800.0,
+            "close_price": 0.0,
+            "last_price": 0.0,
+            "pnl": 0.0,
+            "pnl_percentage": 0.0,
+            "day_change_val": 0.0,
+            "day_change_percentage": 0.0,
+            "mode": "paper",
+            "_prev_net_qty": 0,
+            "_prev_notional": 0.0,
+        }
+    ]
+
+    async def _fake_synth():
+        return synth_rows
+
+    async def _fake_close_override(raw):
+        raw["prev_close"] = 2850.0
+
+    with patch("backend.api.algo.paper.synthesize_paper_positions", new=_fake_synth), \
+         patch("backend.api.routes.positions._override_stale_ltp_from_ticker", return_value=None), \
+         patch("backend.api.routes.positions._override_stale_close_from_snapshot",
+               new=_fake_close_override):
+
+        from backend.api.routes.positions import _build_paper_positions_response
+        resp = await _build_paper_positions_response()
+
+    assert len(resp.rows) == 1
+    row = resp.rows[0]
+    assert row.prev_settlement_pnl is None, (
+        f"Expected no baseline (None) for a same-day paper position, "
+        f"got {row.prev_settlement_pnl!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_synthesize_paper_positions_splits_overnight_vs_today_fills():
+    """Direct unit test of the fill-ledger split: one fill before the
+    session cutoff (overnight) + one fill after (today) on the SAME
+    (account, symbol) must produce `_prev_net_qty`/`_prev_notional`
+    reflecting ONLY the pre-cutoff fill, while `quantity`/`average_price`
+    (the all-time accumulation) reflect BOTH fills."""
+    from datetime import timedelta
+    from backend.api.algo.paper import synthesize_paper_positions
+
+    orders = [
+        _make_order(
+            id=1, account="ZG0790", symbol="GOLDM25JANFUT",
+            quantity=10, filled_quantity=10, fill_price=6000.0,
+            filled_at=datetime(2026, 1, 1, tzinfo=timezone.utc),  # well before cutoff
+        ),
+        _make_order(
+            id=2, account="ZG0790", symbol="GOLDM25JANFUT",
+            quantity=10, filled_quantity=10, fill_price=6200.0,
+            filled_at=datetime.now(timezone.utc),  # today
+        ),
+    ]
+
+    mock_scalars = MagicMock()
+    mock_scalars.all.return_value = orders
+    mock_result = MagicMock()
+    mock_result.scalars.return_value = mock_scalars
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__  = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=mock_result)
+
+    with patch("backend.api.database.async_session", return_value=mock_session):
+        rows = await synthesize_paper_positions()
+
+    assert len(rows) == 1
+    row = rows[0]
+    assert row["quantity"] == 20, f"All-time net qty must include both fills: {row}"
+    assert row["_prev_net_qty"] == 10, (
+        f"As-of-cutoff net qty must reflect ONLY the overnight fill: {row}"
+    )
+    assert row["_prev_notional"] == pytest.approx(60000.0), (
+        f"As-of-cutoff notional must reflect ONLY the overnight fill (10×6000): {row}"
     )
 
 
