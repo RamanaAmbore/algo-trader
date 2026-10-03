@@ -902,24 +902,20 @@
   <div class="conn-filter-bar">
     <div class="conn-filter-field">
       <label class="field-label" for="conn-acct">Account</label>
-      <select id="conn-acct" class="field-input conn-select"
+      <Select id="conn-acct" ariaLabel="Account"
               bind:value={connFilterAccount}
-              onchange={loadConnEvents}>
-        <option value="">All accounts</option>
-        {#each accounts as a}
-          <option value={a.account}>{a.account}</option>
-        {/each}
-      </select>
+              onValueChange={loadConnEvents}
+              options={[
+                { value: '', label: 'All accounts' },
+                ...accounts.map(a => ({ value: a.account, label: a.account })),
+              ]} />
     </div>
     <div class="conn-filter-field">
       <label class="field-label" for="conn-evtype">Event type</label>
-      <select id="conn-evtype" class="field-input conn-select"
+      <Select id="conn-evtype" ariaLabel="Event type"
               bind:value={connFilterEventType}
-              onchange={loadConnEvents}>
-        {#each CONN_EVENT_TYPES as et}
-          <option value={et.value}>{et.label}</option>
-        {/each}
-      </select>
+              onValueChange={loadConnEvents}
+              options={CONN_EVENT_TYPES} />
     </div>
     <div class="conn-filter-field">
       <label class="field-label" for="conn-since">Since</label>
@@ -1257,7 +1253,6 @@
     gap: 0.1rem;
     min-width: 0;
   }
-  .conn-select,
   .conn-date {
     font-family: monospace;
     font-size: var(--fs-sm);
@@ -1270,8 +1265,8 @@
     outline: none;
     height: 1.6rem;
   }
-  .conn-select:focus,
   .conn-date:focus { border-color: rgba(251, 191, 36, 0.45); }
+  .conn-filter-field :global(.rbq-select) { min-width: 9rem; }
 
   .conn-table {
     width: 100%;
@@ -1322,6 +1317,7 @@
 
   @media (max-width: 600px) {
     .conn-filter-bar { flex-direction: column; }
-    .conn-select, .conn-date { width: 100%; }
+    .conn-date { width: 100%; }
+    .conn-filter-field :global(.rbq-select) { min-width: 0; width: 100%; }
   }
 </style>

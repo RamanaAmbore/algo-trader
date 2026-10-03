@@ -766,13 +766,10 @@
 
           <label for="sched-gate" class="opacity-70 self-center">Gate</label>
           <div>
-            <select id="sched-gate" class="field-input"
+            <Select id="sched-gate" ariaLabel="Gate"
                     value={scheduleForm.gate}
-                    onchange={(e) => onScheduleGateChange(e.currentTarget.value)}>
-              {#each Object.keys(GATE_EXCHANGES) as g}
-                <option value={g}>{g}</option>
-              {/each}
-            </select>
+                    onValueChange={(v) => onScheduleGateChange(String(v))}
+                    options={Object.keys(GATE_EXCHANGES).map(g => ({ value: g, label: g }))} />
           </div>
 
           <label for="sched-date" class="opacity-70 self-center">Date

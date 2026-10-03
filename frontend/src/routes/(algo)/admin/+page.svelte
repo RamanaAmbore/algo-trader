@@ -1257,11 +1257,12 @@
         <div class="ip-modal-mint-row">
           <label class="ip-modal-field">
             <span class="ip-modal-field-lbl">Type</span>
-            <select class="field-input" bind:value={evForm.event_type}>
-              <option value="subscription">Subscription</option>
-              <option value="redemption">Redemption</option>
-              <option value="bootstrap">Bootstrap</option>
-            </select>
+            <Select ariaLabel="Event type" bind:value={evForm.event_type}
+              options={[
+                { value: 'subscription', label: 'Subscription' },
+                { value: 'redemption',   label: 'Redemption' },
+                { value: 'bootstrap',    label: 'Bootstrap' },
+              ]} />
           </label>
           <label class="ip-modal-field">
             <span class="ip-modal-field-lbl">Date</span>
