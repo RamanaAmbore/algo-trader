@@ -42,6 +42,7 @@ from collections import deque
 from typing import Any, Literal, Type
 
 from sqlalchemy import insert
+from sqlalchemy.exc import DataError, IntegrityError
 
 from backend.api.database import async_session
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -214,14 +215,65 @@ class EventQueue:
                 await session.commit()
             self._last_flush = time.time()
             self._last_batch = len(batch)
+        except (IntegrityError, DataError) as exc:
+            # Bad data in ONE specific row (e.g. an FK pointing at a row
+            # already deleted elsewhere, or a value too long/wrong-typed
+            # for its column) — genuinely safe to isolate and drop that
+            # row only. Every other exception below (connection-level,
+            # transient) preserves the original whole-batch re-queue.
+            logger.warning(
+                f"event_queue[{self.name}]: bulk flush hit a bad-row error "
+                f"({len(batch)} rows): {exc} — falling back to per-row insert"
+            )
+            await self._flush_rows_individually(batch)
         except Exception as exc:
             logger.warning(
                 f"event_queue[{self.name}]: bulk flush failed "
                 f"({len(batch)} rows): {exc}"
             )
             # Re-queue failed batch at the front so items aren't silently
-            # lost on transient DB errors (next cycle will retry).
+            # lost on transient DB errors (next cycle will retry). This is
+            # the ONLY path for connection-level failures (OperationalError,
+            # InterfaceError, etc.) — McpAudit's on_full="sync" land-every-
+            # row guarantee depends on a transient outage being retried,
+            # not dropped, so this branch must never be weakened.
             self._queue.extendleft(reversed(batch))
+
+    async def _flush_rows_individually(self, batch: list[dict]) -> None:
+        """Per-row fallback after a bulk flush raised IntegrityError/DataError.
+
+        Inserts rows one at a time, each in its own fresh session. A row
+        that raises the SAME bad-data error class is logged and dropped —
+        it's the one actually at fault. Any OTHER exception encountered
+        mid-loop (e.g. a connection drop between rows) is NOT a bad-data
+        error — that row and every remaining not-yet-attempted row are
+        re-queued at the front (preserving the whole-batch retry guarantee
+        for transient failures) and the loop stops immediately. Rows
+        already committed earlier in the loop are never re-queued, so a
+        retry can never re-insert a duplicate.
+        """
+        for i, row in enumerate(batch):
+            try:
+                async with self._session_factory() as session:
+                    await session.execute(insert(self.table_model), [row])
+                    await session.commit()
+            except (IntegrityError, DataError) as row_exc:
+                self._dropped += 1
+                logger.warning(
+                    f"event_queue[{self.name}]: dropping bad row "
+                    f"({row_exc.__class__.__name__}): {row_exc}"
+                )
+                continue
+            except Exception as other_exc:
+                remaining = batch[i:]
+                logger.warning(
+                    f"event_queue[{self.name}]: per-row fallback hit a "
+                    f"non-bad-data error ({other_exc.__class__.__name__}) — "
+                    f"re-queuing this row and {len(remaining) - 1} remaining "
+                    f"unattempted row(s) for retry: {other_exc}"
+                )
+                self._queue.extendleft(reversed(remaining))
+                return
 
     async def _sync_insert(self, kwargs: dict) -> None:
         """Insert one row directly (queue-full sync fallback)."""

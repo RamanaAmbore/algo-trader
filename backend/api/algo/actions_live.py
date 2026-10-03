@@ -969,7 +969,9 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
     BUY for short), fetches LTP for the initial limit, writes an
     AlgoOrder(mode='live') row, then fires chase_order() as an asyncio
     task so multiple positions close concurrently (same pattern as the
-    expiry engine).
+    expiry engine). FUTURE: this is the clearest example of why a shared
+    rate limiter across concurrent chases would matter — see the note at
+    chase.py's chase_order() docstring. Not implemented yet.
 
     We deliberately do NOT use ExpiryEngine.scan_positions() here because
     that scanner applies expiry-day ITM/NTM filters that are irrelevant

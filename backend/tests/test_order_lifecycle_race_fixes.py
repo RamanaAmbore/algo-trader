@@ -259,6 +259,56 @@ async def test_sync_algo_order_rows_ledger_write_actually_invoked():
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# Sprint 1b-i item 4 — Dhan/Groww postback uses the canonical "postback"
+# kind (matching Kite's own inline path), not the legacy "broker_postback"
+# string.
+# ─────────────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_sync_algo_order_rows_writes_postback_kind_not_broker_postback():
+    """Behavioral check (not just source grep) — patches write_event at
+    its lazy-import source (backend.api.algo.order_events.write_event),
+    the same way _sync_algo_order_rows actually imports it, and asserts
+    the real `kind` argument passed is the canonical 'postback' string."""
+    from backend.api.routes import orders_postback as m
+
+    mock_row = MagicMock()
+    mock_row.id = 42
+    mock_row.status = "OPEN"
+    mock_row.broker_order_id = "bo-1"
+
+    _rows_result = MagicMock()
+    _rows_result.scalars.return_value.all.return_value = [mock_row]
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__ = AsyncMock(return_value=mock_session)
+    mock_session.__aexit__ = AsyncMock(return_value=False)
+    mock_session.execute = AsyncMock(return_value=_rows_result)
+    mock_session.commit = AsyncMock()
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch.object(m, "_sync_apply_row_status", return_value=True), \
+         patch.object(m, "_pb_write_ledger_fills", new=AsyncMock()), \
+         patch(
+             "backend.api.algo.order_events.write_event",
+             new_callable=AsyncMock,
+         ) as mock_we:
+        await m._sync_algo_order_rows(
+            broker_id="dhan", order_id="bo-1", status="TRADED",
+            price=101.0, status_message="", qty=50,
+        )
+
+    mock_we.assert_awaited_once()
+    args = mock_we.call_args.args
+    assert args[0] == 42
+    assert args[1] == "postback", (
+        f"expected canonical kind='postback' (matching Kite's own inline "
+        f"path and VALID_KINDS), got {args[1]!r} — the legacy "
+        f"'broker_postback' string must no longer be used"
+    )
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # #1 — TP double-arm race: parent row locked BEFORE the existence check
 # ─────────────────────────────────────────────────────────────────────────
 

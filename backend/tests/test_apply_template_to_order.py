@@ -958,3 +958,396 @@ async def test_apply_template_to_order_integration_full_flow():
     assert tp_trigger == pytest.approx(1000.0 * 1.15, rel=0.01), (
         "Operator override tp_pct=15% should be used"
     )
+
+
+# ── Sprint 1b-i — lifecycle event wiring ──────────────────────────
+#
+# `apply_template_to_order` is now a thin async wrapper around
+# `_apply_template_to_order_impl` (unchanged internals — see
+# `test_apply_plan_live_untouched_and_still_sync` below). The wrapper
+# calls the impl EXACTLY ONCE and fires write_event based solely on the
+# single returned value, regardless of which internal branch produced
+# it. Patched at its lazy-import source (`backend.api.algo.order_events
+# .write_event`) — matching exactly how the wrapper imports it at call
+# time (mirrors paper.py's own write_event pattern).
+#
+# Known, accepted consequence of the exact wrapper spec (flagged here,
+# not carved around): `template_attach_started` fires unconditionally
+# whenever `parent_order_id` is set AND `apply_path != "preview"`,
+# including for the `None`-return skip case (an "orphan started" with
+# no matching ok/failed), demonstrated explicitly below rather than
+# silently avoided.
+#
+# `apply_path="preview"` is the opposite case: it NEVER fires any event
+# (not even `started`), for ANY outcome — a preview only resolves the
+# plan for UI display and never actually attaches anything, so there is
+# no "attach outcome" to log. See `test_apply_template_to_order_preview_
+# path_fires_zero_events_even_with_parent_order_id` below.
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_none_return_fires_only_started():
+    """Impl returns None (no template/overrides) + parent_order_id set +
+    a non-preview apply_path → exactly one `template_attach_started`
+    event, ZERO ok/failed events — the 'orphan started' case called out
+    in the Sprint 1b-i plan review. Uses apply_path='live' (not
+    'preview') because preview now fires zero events unconditionally,
+    regardless of the impl's return value — see the preview-specific
+    test below.
+    """
+    with patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=None,
+            template_slug=None,
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_order_id=777,
+            apply_path="live",
+        )
+
+    assert result is None
+    kinds = [c.args[1] for c in mock_we.call_args_list]
+    assert kinds == ["template_attach_started"], (
+        f"expected exactly one started event and no ok/failed event for a "
+        f"None return, got {kinds}"
+    )
+    assert mock_we.call_args_list[0].args[0] == 777
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_preview_path_fires_zero_events_even_with_parent_order_id():
+    """`apply_path='preview'` + a non-None `parent_order_id` → ZERO
+    write_event calls (not even `started`), even though the impl
+    resolves a real, error-free plan. A preview never actually attaches
+    anything (`_route_apply_path` short-circuits to `AttachResult(plan)`
+    with no broker/sim/GTT calls), so logging a `template_attach_ok`
+    here would misleadingly read as 'protection was armed' in the audit
+    trail when it never was. Regression test for the orders.py:1966 /
+    orders_place.py:873 preview-path call sites, both of which pass a
+    real (non-None) `parent_order_id`. This covers the success outcome;
+    the error and None-return outcomes are covered by the two tests
+    immediately below (same guard, three different impl return shapes)."""
+    template = _base_template()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_order_id=4242,
+            apply_path="preview",
+        )
+
+    assert result is not None
+    assert not result.errors
+    mock_we.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_preview_path_fires_zero_events_on_error_outcome():
+    """`apply_path='preview'` + a non-None `parent_order_id`, where the
+    resolved plan ITSELF carries an error (MCX lot_size cache-miss) →
+    still ZERO write_event calls. Proves the preview guard is
+    unconditional on the impl's return value — not just skipping the
+    `ok` branch while still (wrongly) firing `started`/`failed`."""
+    template = _base_template()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.brokers.adapters.kite.get_lot_size",
+        new=AsyncMock(return_value=0),  # cache miss
+    ), patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="CRUDEOIL25AUGFUT",
+            parent_side="BUY",
+            parent_qty=100,
+            parent_exchange="MCX",
+            parent_fill_price=5000.0,
+            parent_order_id=5151,
+            apply_path="preview",
+        )
+
+    assert result is not None and result.errors
+    mock_we.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_preview_path_fires_zero_events_on_none_return():
+    """`apply_path='preview'` + a non-None `parent_order_id`, where the
+    impl returns `None` (no template/overrides) → still ZERO
+    write_event calls — including no orphan `started` event, unlike
+    the non-preview 'None return' case covered by
+    `test_apply_template_to_order_none_return_fires_only_started`."""
+    with patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=None,
+            template_slug=None,
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_order_id=6262,
+            apply_path="preview",
+        )
+
+    assert result is None
+    mock_we.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_no_parent_order_id_fires_zero_events():
+    """No `parent_order_id` at all → zero write_event calls, for any
+    outcome (guard applies identically to started/ok/failed)."""
+    template = _base_template()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            apply_path="preview",
+            # parent_order_id intentionally omitted (defaults to None)
+        )
+
+    assert result is not None
+    mock_we.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_success_fires_started_then_ok():
+    """Success path (no errors) + parent_order_id set + a non-preview
+    apply_path → exactly one `started` followed by exactly one `ok`
+    event, two total. Uses apply_path='sim' (not 'preview') because a
+    preview never actually attaches anything and now fires zero events
+    unconditionally — this test exercises a genuine attach outcome."""
+    template = _base_template()
+    mock_driver = _make_mock_sim_driver()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.api.algo.sim.driver.SimDriver",
+    ) as mock_sim_class, patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        mock_sim_class.instance.return_value = mock_driver
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_order_id=888,
+            apply_path="sim",
+        )
+
+    assert result is not None
+    assert not result.errors
+    kinds = [c.args[1] for c in mock_we.call_args_list]
+    assert kinds == ["template_attach_started", "template_attach_ok"], (
+        f"expected started→ok, got {kinds}"
+    )
+    assert all(c.args[0] == 888 for c in mock_we.call_args_list)
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_lot_size_failure_fires_started_then_failed():
+    """Failure branch #1 (lot_size cache-miss, inside the impl's F&O
+    lot_size resolution) + parent_order_id set + a non-preview
+    apply_path → started→failed, two total — proves the WRAPPER (not a
+    scattered per-branch call) is what's firing, by using the same
+    assertion shape as the success case and the OTHER failure branch
+    below. Uses apply_path='sim' (not 'preview', and not 'live' either)
+    because lot_size resolution happens unconditionally before the
+    sim/live/preview split, but a preview call itself now fires zero
+    events — and the 'live' path additionally runs a capabilities_for()
+    lookup + MCX-GTT-support guard BEFORE lot_size resolution, which
+    would reject this unmocked ACC1/MCX combination for an unrelated
+    reason and mask the branch this test is meant to pin. 'sim' skips
+    that capability lookup entirely (it's gated on apply_path in
+    ('live', 'auto')), so lot_size resolution is the first and only
+    failure point reached. The error-text assertion below pins the
+    branch explicitly so a future refactor can't silently swap in a
+    different failure path and still pass."""
+    template = _base_template()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.brokers.adapters.kite.get_lot_size",
+        new=AsyncMock(return_value=0),  # cache miss
+    ), patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="CRUDEOIL25AUGFUT",
+            parent_side="BUY",
+            parent_qty=100,
+            parent_exchange="MCX",
+            parent_fill_price=5000.0,
+            parent_order_id=999,
+            apply_path="sim",
+        )
+
+    assert result is not None and result.errors
+    assert any("GTT-QTY-GUARD" in e and "cache miss" in e for e in result.errors), (
+        f"expected the lot_size cache-miss branch specifically, got {result.errors}"
+    )
+    kinds = [c.args[1] for c in mock_we.call_args_list]
+    assert kinds == ["template_attach_started", "template_attach_failed"], (
+        f"expected started→failed, got {kinds}"
+    )
+    failed_call = mock_we.call_args_list[1]
+    assert failed_call.args[0] == 999
+    assert failed_call.args[3]["errors"] == result.errors
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_broker_lookup_failure_fires_started_then_failed():
+    """Failure branch #2 (live broker resolution, a DIFFERENT internal
+    exit point than the lot_size branch above) + parent_order_id set →
+    started→failed, two total — same wrapper call site, different
+    impl branch, same single-ownership firing shape."""
+    template = _base_template()
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=template),
+    ), patch(
+        "backend.brokers.registry.get_broker",
+        side_effect=RuntimeError("broker not found for ACC1"),
+    ), patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_order_id=1001,
+            apply_path="live",
+        )
+
+    assert result is not None and result.errors
+    kinds = [c.args[1] for c in mock_we.call_args_list]
+    assert kinds == ["template_attach_started", "template_attach_failed"], (
+        f"expected started→failed, got {kinds}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_calls_impl_exactly_once():
+    """The wrapper must call `_apply_template_to_order_impl` exactly
+    once and forward every kwarg unchanged — the structural guarantee
+    that there is only one call site for this function's events."""
+    from backend.api.algo.template_attach import AttachResult, TemplatePlan
+
+    plan = TemplatePlan(
+        template_id=1, template_name="t", template_slug="s",
+        parent_account="ACC1", parent_symbol="RELIANCE", parent_side="BUY",
+        parent_qty=10, parent_exchange="NSE", parent_fill_price=1000.0,
+    )
+    fake_result = AttachResult(plan=plan)
+
+    with patch(
+        "backend.api.algo.template_attach._apply_template_to_order_impl",
+        new=AsyncMock(return_value=fake_result),
+    ) as mock_impl, patch(
+        "backend.api.algo.order_events.write_event", new_callable=AsyncMock,
+    ) as mock_we:
+        result = await apply_template_to_order(
+            template_id=1,
+            template_slug="default-bull",
+            overrides={"tp_pct": 12.0},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            parent_product="MIS",
+            parent_order_id=2002,
+            apply_path="live",
+        )
+
+    assert result is fake_result
+    mock_impl.assert_awaited_once_with(
+        template_id=1,
+        template_slug="default-bull",
+        overrides={"tp_pct": 12.0},
+        parent_account="ACC1",
+        parent_symbol="RELIANCE",
+        parent_side="BUY",
+        parent_qty=10,
+        parent_exchange="NSE",
+        parent_fill_price=1000.0,
+        parent_product="MIS",
+        parent_order_id=2002,
+        apply_path="live",
+    )
+    kinds = [c.args[1] for c in mock_we.call_args_list]
+    assert kinds == ["template_attach_started", "template_attach_ok"]
+
+
+def test_apply_plan_live_untouched_and_still_sync():
+    """Structural regression guard (Sprint 1b-i plan review item #2):
+    `apply_plan_live` must remain a plain sync `def`, never converted to
+    async — the wrapper's event-writing is restricted to the outer
+    `apply_template_to_order` only."""
+    import inspect
+    from backend.api.algo.template_attach import apply_plan_live
+
+    assert not inspect.iscoroutinefunction(apply_plan_live), (
+        "apply_plan_live must stay sync — converting it to async would "
+        "contradict the Sprint 1b-i plan review's explicit constraint"
+    )

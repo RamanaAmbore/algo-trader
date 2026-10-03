@@ -1432,6 +1432,16 @@ async def _ch_exhaust_max_attempts(
         )
     except Exception as _alert_exc:
         logger.warning(f"Chase {symbol}: max-attempts alert failed: {_alert_exc}")
+    # Sprint 1b-i — chase_exhausted timeline event. Independent of the
+    # `result.order_id` gate below (which only governs the terminal
+    # chase_unfilled AlgoOrder-status transition) — exhaustion itself is
+    # always worth recording on the row when one exists.
+    await _ch_write_order_event(
+        algo_order_id, "chase_exhausted",
+        f"Chase exhausted after {cfg.max_attempts} attempts "
+        f"(cancel_failed={_cancel_failed})",
+        {"max_attempts": cfg.max_attempts, "cancel_failed": _cancel_failed},
+    )
     if result.order_id:
         import asyncio as _asyncio
         _asyncio.create_task(_emit_chase_terminal(
@@ -1458,6 +1468,65 @@ def _ch_make_emit(
             except Exception:
                 pass
     return emit
+
+
+# ── Sprint 1b-i: per-order timeline events (algo_order_events) ─────────
+#
+# `algo_order_id` is Optional throughout chase.py (legacy callers and
+# some recovery paths never set it) — every write here is guarded so a
+# None id never reaches `write_event` (which would otherwise become
+# exactly the kind of poison row the event_queue per-row fallback exists
+# to handle). Mirrors paper.py's `_paper_write_terminal_event` pattern.
+
+async def _ch_write_order_event(
+    algo_order_id: "int | None", kind: str, message: str,
+    payload: dict | None = None,
+) -> None:
+    """Write one algo_order_events row for a chase lifecycle event.
+
+    No-op when there's no AlgoOrder row to attach the event to.
+    """
+    if algo_order_id is None:
+        return
+    from backend.api.algo.order_events import write_event
+    await write_event(algo_order_id, kind, message, payload)
+
+
+async def _ch_write_chase_modify_event(
+    algo_order_id: "int | None", attempt: int, transaction_type: str,
+    remaining_qty: int, price: float, current_order_id: "str | None",
+) -> None:
+    """Write a chase_modify event for a cancel-and-replace attempt.
+
+    Attempt 1 is the initial placement, not a replace of a prior resting
+    order, so it's skipped — only attempt 2+ represents an actual
+    cancel-and-replace.
+    """
+    if attempt <= 1:
+        return
+    await _ch_write_order_event(
+        algo_order_id, "chase_modify",
+        f"Chase attempt {attempt}: {transaction_type} {remaining_qty} @ {price}",
+        {"order_id": current_order_id, "price": price, "attempt": attempt,
+         "remaining_qty": remaining_qty},
+    )
+
+
+async def _ch_write_cancel_confirmed_event(
+    algo_order_id: "int | None", current_order_id: "str | None",
+    attempt: int, remaining_qty: int,
+) -> None:
+    """Write chase_cancel_confirmed once a cancel-and-replace's cancel is
+    confirmed gone at the broker, just before the caller places the
+    replacement order.
+    """
+    await _ch_write_order_event(
+        algo_order_id, "chase_cancel_confirmed",
+        f"Cancel confirmed for order {current_order_id} before replace "
+        f"(attempt {attempt})",
+        {"order_id": current_order_id, "attempt": attempt,
+         "remaining_qty": remaining_qty},
+    )
 
 
 async def _ch_cancel_previous(
@@ -1699,6 +1768,13 @@ async def _ch_cancel_and_capture(
             current_order_id, algo_order_id, emit, late_avg_price,
         )
         return cumulative_filled, current_order_filled, remaining_qty, early
+    # Reaching here means current_order_id was set AND cancel_confirmed
+    # was True (both abort branches above already returned otherwise) —
+    # i.e. the cancel genuinely landed and the caller is about to place
+    # the replacement order.
+    await _ch_write_cancel_confirmed_event(
+        algo_order_id, current_order_id, attempt, remaining_qty,
+    )
     return cumulative_filled, current_order_filled, remaining_qty, None
 
 
@@ -1831,6 +1907,22 @@ async def chase_order(
     Returns:
         ChaseResult with fill details
     """
+    # FUTURE (not yet implemented): each call to chase_order() is its own
+    # independent coroutine/task — multiple orders chase concurrently with
+    # no coordination between them (see actions_live.py's
+    # chase_close_positions, which explicitly fires one asyncio task per
+    # position "so multiple positions close concurrently"). Nothing today
+    # caps the AGGREGATE rate of cancel/replace actions this function's
+    # concurrent instances send to the broker. A shared rate limiter
+    # (token bucket, not a semaphore — the constraint is actions-per-SECOND,
+    # not max-concurrent) acquired once per actual broker action (around
+    # the cancel + replace calls below) would bound that aggregate rate
+    # without touching each chase's own independent pricing/retry logic.
+    # Relevant for two reasons: Kite's own API rate limits, and SEBI's
+    # retail-algo framework auto-tagging any order stream exceeding ~10
+    # orders/second as "algo" (see docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md
+    # §9). Deliberately out of scope for Sprint 1b — logging only, no
+    # behavior change — flagged here so it isn't lost.
     from backend.shared.helpers.utils import is_prod_branch
     if not is_prod_branch():
         logger.warning("[CHASE] chase_order called on non-prod branch — aborting")
@@ -1979,6 +2071,13 @@ async def chase_order(
                 algo_order_id, current_order_id,
                 current_limit=price,
                 interval_seconds=cfg.interval_seconds,
+            )
+            # Sprint 1b-i — chase_modify timeline event, mirroring
+            # paper.py's write_event pattern. No-op for attempt 1 (the
+            # initial placement) and for a None algo_order_id.
+            await _ch_write_chase_modify_event(
+                algo_order_id, attempt, transaction_type,
+                remaining_qty, price, current_order_id,
             )
 
             # Audit fix (C-2) — operator-kill race: re-check the NEW id

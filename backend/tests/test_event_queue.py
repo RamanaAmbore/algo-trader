@@ -346,6 +346,197 @@ def test_mcp_audit_queue_singleton_defined():
     assert isinstance(research.mcp_audit_queue, EventQueue)
 
 
+# ── Sprint 1b-i — exception-class triage in _flush() ─────────────────────────
+#
+# Only IntegrityError/DataError (bad data in ONE row) fall back to a
+# per-row insert that drops just the offending row. Any other exception
+# (OperationalError, InterfaceError, anything else — connection-level,
+# transient) must preserve the EXISTING whole-batch re-queue-at-front
+# behavior unchanged. McpAudit's `on_full="sync"` queue depends on this:
+# a transient outage must be retried in full, never partially dropped.
+
+@pytest_asyncio.fixture
+async def sqlite_factory_no_defaults():
+    """Like `sqlite_factory`, but `kind` has NO client-side default.
+
+    The shared `sqlite_factory` model declares `default=""` on both
+    `kind` and `message` — SQLAlchemy's executemany default-processing
+    treats an explicitly-passed `None` the SAME as an omitted key when a
+    Python-side default exists, silently substituting `""` instead of
+    sending SQL NULL. That makes a genuine NOT NULL violation
+    unreachable via `kind=None` on that model. This fixture's model has
+    no default on `kind`, so `kind=None` really sends NULL and SQLite's
+    NOT NULL constraint genuinely raises IntegrityError — reused only by
+    the exception-triage tests below, to avoid changing the shared
+    fixture's behavior for any other existing test.
+    """
+    from sqlalchemy import Column, Integer, String
+    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.ext.asyncio import (
+        create_async_engine, async_sessionmaker, AsyncSession,
+    )
+
+    class _Base(DeclarativeBase):
+        pass
+
+    class _EventNoDefault(_Base):
+        __tablename__ = "test_events_no_default"
+        id      = Column(Integer, primary_key=True, autoincrement=True)
+        kind    = Column(String(32), nullable=False)
+        message = Column(String(500), nullable=False, default="")
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.create_all)
+
+    factory = async_sessionmaker(engine, class_=AsyncSession,
+                                 expire_on_commit=False)
+
+    yield factory, _EventNoDefault
+
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_flush_integrity_error_drops_bad_row_keeps_good_rows(
+    sqlite_factory_no_defaults,
+):
+    """A bad row (genuine NOT NULL violation on `kind`) mixed with good
+    rows: good rows land, the bad row is dropped+logged, and the queue
+    is NOT left with a re-queued batch (no infinite re-queue loop)."""
+    from sqlalchemy import select
+    factory, Model = sqlite_factory_no_defaults
+    from backend.api.persistence.event_queue import EventQueue
+
+    q = EventQueue(Model, name="t", batch_size=10, flush_interval_s=60.0,
+                   max_queue=50, session_factory=factory)
+    await q.enqueue(kind="placed", message="good-1")
+    await q.enqueue(kind=None, message="bad-row")   # NOT NULL violation
+    await q.enqueue(kind="placed", message="good-2")
+
+    await q._flush()
+
+    assert len(q._queue) == 0, (
+        "bad row must be dropped, not re-queued — otherwise it blocks "
+        "the whole queue forever"
+    )
+    assert q._dropped == 1
+
+    async with factory() as s:
+        rows = (await s.execute(select(Model))).scalars().all()
+    assert len(rows) == 2
+    assert {r.message for r in rows} == {"good-1", "good-2"}, (
+        "both good rows must have landed despite the bad row in the "
+        "same batch"
+    )
+
+
+@pytest.mark.asyncio
+async def test_flush_operational_error_requeues_whole_batch_mcp_audit():
+    """A connection-level OperationalError during flush must preserve the
+    EXISTING whole-batch re-queue-at-front behavior unchanged — no
+    per-row fallback may run. This is McpAudit's own queue
+    (on_full='sync') — its land-every-row compliance guarantee depends
+    on a transient outage being retried in full, not partially dropped."""
+    from unittest.mock import AsyncMock, MagicMock
+    from sqlalchemy.exc import OperationalError
+    from backend.api.models import McpAudit
+    from backend.api.persistence.event_queue import EventQueue
+
+    q = EventQueue(McpAudit, name="mcp_audit", batch_size=10,
+                   flush_interval_s=60.0, max_queue=100, on_full="sync")
+    await q.enqueue(tool="place_order", args_redacted={"a": 1}, result_status="ok")
+    await q.enqueue(tool="cancel_order", args_redacted={"b": 2}, result_status="ok")
+    assert len(q._queue) == 2
+
+    op_err = OperationalError("INSERT", {}, Exception("conn reset"))
+    broken_cm = MagicMock()
+    broken_cm.__aenter__ = AsyncMock(side_effect=op_err)
+    broken_cm.__aexit__  = AsyncMock(return_value=False)
+    fake_factory = MagicMock(return_value=broken_cm)
+    q._session_factory = fake_factory
+
+    await q._flush()
+
+    assert len(q._queue) == 2, (
+        "the ENTIRE batch must be re-queued unchanged on a connection-"
+        "level failure — dropping even one row here would break "
+        "McpAudit's land-every-row guarantee"
+    )
+    assert [item["tool"] for item in q._queue] == ["place_order", "cancel_order"], (
+        "re-queued order must be preserved"
+    )
+    assert fake_factory.call_count == 1, (
+        "no per-row fallback must run for a non-bad-data exception — "
+        "the session factory is only entered once (the bulk attempt)"
+    )
+    assert q._dropped == 0
+
+
+@pytest.mark.asyncio
+async def test_flush_integrity_error_then_operational_error_in_fallback(sqlite_factory):
+    """Mixed failure: the BULK flush raises IntegrityError (triggering
+    the per-row fallback), then the per-row fallback itself hits an
+    OperationalError on the second row. Row 1 must have committed
+    (already succeeded before the error); rows 2..n must be re-queued
+    at the front — a connection-level failure mid-fallback must never
+    silently drop rows, same guarantee as the whole-batch path."""
+    from sqlalchemy import select
+    from sqlalchemy.exc import IntegrityError, OperationalError
+    from unittest.mock import AsyncMock, MagicMock
+    from backend.api.persistence.event_queue import EventQueue
+
+    real_factory, Model = sqlite_factory
+    call_count = {"n": 0}
+
+    def _fake_factory():
+        call_count["n"] += 1
+        n = call_count["n"]
+        if n == 1:
+            # Bulk flush attempt — simulate a bad-row error.
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(
+                side_effect=IntegrityError("INSERT", {}, Exception("bad fk"))
+            )
+            cm.__aexit__ = AsyncMock(return_value=False)
+            return cm
+        if n == 2:
+            # Per-row fallback, row 1 — real DB, succeeds.
+            return real_factory()
+        if n == 3:
+            # Per-row fallback, row 2 — connection-level failure.
+            cm = MagicMock()
+            cm.__aenter__ = AsyncMock(
+                side_effect=OperationalError("INSERT", {}, Exception("conn reset"))
+            )
+            cm.__aexit__ = AsyncMock(return_value=False)
+            return cm
+        raise AssertionError(
+            "row 3 must never be attempted once row 2 hits a "
+            "connection-level error — it must be re-queued, not tried"
+        )
+
+    q = EventQueue(Model, name="t", batch_size=10, flush_interval_s=60.0,
+                   max_queue=50, session_factory=_fake_factory)
+    await q.enqueue(kind="placed", message="row-0")
+    await q.enqueue(kind="placed", message="row-1")
+    await q.enqueue(kind="placed", message="row-2")
+
+    await q._flush()
+
+    # row-0 committed to the real DB during the fallback.
+    async with real_factory() as s:
+        rows = (await s.execute(select(Model))).scalars().all()
+    assert [r.message for r in rows] == ["row-0"]
+
+    # row-1 and row-2 re-queued at the front, in original order, for retry.
+    assert len(q._queue) == 2
+    assert [item["message"] for item in q._queue] == ["row-1", "row-2"]
+    assert q._dropped == 0, "no row should be counted as dropped — all 3 are accounted for"
+
+
 def test_algo_ws_uses_event_queue():
     """algo.py _broadcast_event must use EventQueue, not a raw list buffer."""
     from backend.api.routes import algo

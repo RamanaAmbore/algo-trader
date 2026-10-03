@@ -2609,7 +2609,7 @@ async def _resolve_wing_pricing(
     return overrides, (wing_scan_note or offset_note), (wing_skipped_reason or offset_skip)
 
 
-async def apply_template_to_order(
+async def _apply_template_to_order_impl(
     *,
     template_id:        Optional[int],
     template_slug:      Optional[str],
@@ -2790,4 +2790,102 @@ async def apply_template_to_order(
             account=parent_account,
             errors=result.errors,
         )
+    return result
+
+
+async def apply_template_to_order(
+    *,
+    template_id:        Optional[int],
+    template_slug:      Optional[str],
+    overrides:          dict,
+    parent_account:     str,
+    parent_symbol:      str,
+    parent_side:        str,
+    parent_qty:         int,
+    parent_exchange:    str,
+    parent_fill_price:  float,
+    parent_product:     str = "NRML",
+    parent_order_id:    Optional[int] = None,
+    apply_path:         str = "auto",  # 'auto' | 'sim' | 'live' | 'preview'
+) -> Optional[AttachResult]:
+    """Public entry point — thin async wrapper around
+    `_apply_template_to_order_impl`, single-ownership point for
+    template-attach lifecycle events (Sprint 1b-i).
+
+    The impl (unchanged, including its sync call into `apply_plan_live` —
+    that function is NOT touched by this wrapper; see the Sprint 1b-i plan
+    review) has 7+ distinct exit points. Rather than wiring `write_event`
+    at each one (risking double-firing on paths that already call
+    `_fire_attach_fail_alert` internally), this wrapper calls the impl
+    EXACTLY ONCE and inspects the single returned value:
+
+      - `apply_path == "preview"` — NO events fired at all (not even
+        `started`). A preview only resolves the plan for UI display
+        (`/ticket/preview`, `_maybe_attach_template_to_ticket`) and never
+        places anything against a real GTT/broker/sim book — there is no
+        "attach outcome" to log, and firing started/ok here would read in
+        the audit trail as "protection was armed" when it never was.
+      - `template_attach_started` — for any other `apply_path`, written
+        unconditionally before the impl runs, so a crash mid-impl still
+        leaves a trace of the attempt.
+      - impl returns `None` (no template/overrides supplied, or an
+        applies_to guard mismatch) — no further event.
+      - impl returns an `AttachResult` with non-empty `.errors` —
+        exactly one `template_attach_failed` event.
+      - impl returns an `AttachResult` with no errors — exactly one
+        `template_attach_ok` event.
+
+    Every write is guarded on `parent_order_id is not None` — there is no
+    AlgoOrder row to attach an event to otherwise.
+    """
+    from backend.api.algo.order_events import write_event
+
+    _fire_events = apply_path != "preview"
+
+    if _fire_events and parent_order_id is not None:
+        await write_event(
+            parent_order_id, "template_attach_started",
+            f"Template attach started for {parent_symbol} "
+            f"(template_id={template_id}, slug={template_slug!r}, "
+            f"path={apply_path})",
+            {"template_id": template_id, "template_slug": template_slug,
+             "apply_path": apply_path},
+        )
+
+    result = await _apply_template_to_order_impl(
+        template_id=template_id,
+        template_slug=template_slug,
+        overrides=overrides,
+        parent_account=parent_account,
+        parent_symbol=parent_symbol,
+        parent_side=parent_side,
+        parent_qty=parent_qty,
+        parent_exchange=parent_exchange,
+        parent_fill_price=parent_fill_price,
+        parent_product=parent_product,
+        parent_order_id=parent_order_id,
+        apply_path=apply_path,
+    )
+
+    if result is None:
+        return result
+
+    if _fire_events and parent_order_id is not None:
+        if result.errors:
+            await write_event(
+                parent_order_id, "template_attach_failed",
+                f"Template attach failed for {parent_symbol}: "
+                f"{'; '.join(result.errors)[:400]}",
+                {"errors": result.errors, "gtt_ids": result.gtt_ids,
+                 "wing_order_id": result.wing_order_id},
+            )
+        else:
+            await write_event(
+                parent_order_id, "template_attach_ok",
+                f"Template attach OK for {parent_symbol} "
+                f"({len(result.gtt_ids)} GTT(s), "
+                f"wing={'yes' if result.wing_order_id else 'no'})",
+                {"gtt_ids": result.gtt_ids, "wing_order_id": result.wing_order_id},
+            )
+
     return result

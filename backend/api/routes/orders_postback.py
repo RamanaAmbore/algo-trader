@@ -295,7 +295,7 @@ async def _sync_algo_order_rows(
         for _r in _rows:
             try:
                 await _write_event(
-                    _r.id, "broker_postback",
+                    _r.id, "postback",
                     f"{status}{(' · ' + status_message) if status_message else ''}",
                     payload={"broker_id": broker_id, "broker_order_id": order_id,
                              "status": status, "qty": qty, "price": price},

@@ -40,6 +40,10 @@ order_event_queue: _EventQueue = _make_order_event_queue()
 VALID_KINDS = frozenset({
     "placed", "agent_trigger", "chase_modify", "fill", "unfill", "reject", "cancel",
     "postback", "margin_check", "preflight_ok", "preflight_block", "error",
+    # Sprint 1b-i — chase cancel-and-replace lifecycle observability.
+    "chase_cancel_confirmed", "chase_exhausted",
+    # Sprint 1b-i — template-attach lifecycle observability.
+    "template_attach_started", "template_attach_ok", "template_attach_failed",
 })
 
 
