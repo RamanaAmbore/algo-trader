@@ -835,11 +835,11 @@
     <article class="lab-card">
       <h2>4. Safety</h2>
       <ul class="safety-list">
-        <li>No order placement from MCP yet. The server cannot move money.</li>
+        <li>MCP <b>can</b> place / cancel / modify orders (<code>place_order</code> / <code>cancel_order</code> / <code>modify_order</code>) — but every call requires an <b>operator-minted confirm token</b> (see 0. above): single-use, expires in 60 seconds, and bound to the exact order parameters (account/symbol/side/qty/mode/price/trigger — new qty/price too for modify). A mismatched, reused, or expired token is rejected with 403; the LLM cannot mint a token for itself.</li>
         <li><code>save_agent_draft</code> creates agents that ship <b>status=inactive</b> + <b>trade_mode=paper</b>. The endpoint cannot create an active or live agent.</li>
         <li>Operator's next step on every draft: <b>Run in Simulator</b> on /automation to validate the condition tree before activating.</li>
         <li>The JWT inherits your admin role. Don't paste it into untrusted MCP servers.</li>
-        <li>Industry convention (Composer / IBKR TraderGPT): every LLM-initiated order requires explicit human confirm. Phase 3 will match.</li>
+        <li>Industry convention (Composer / IBKR TraderGPT): every LLM-initiated order requires explicit human confirm — the token gate above is exactly that, per-call, not a one-time opt-in.</li>
       </ul>
     </article>
 

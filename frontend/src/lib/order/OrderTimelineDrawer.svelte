@@ -4,16 +4,25 @@
    * timeline for every OPEN chase order.
    *
    * Props:
-   *   open       {boolean}   — whether the drawer is visible
-   *   orders     {Array}     — array of order objects from fetchOrderEvents
-   *   onClose    {Function}  — called when the drawer should be dismissed
+   *   open          {boolean}   — whether the drawer is visible
+   *   orders        {Array}     — flat AlgoOrderEventInfo[] from
+   *                                fetchOrderEvents (id, order_id, ts, kind,
+   *                                message, payload_json — see
+   *                                orderTimelineLogic.js header comment)
+   *   orderContext  {Object}    — {[order_id]: {symbol, side, qty, mode}},
+   *                                built by the caller from AlgoOrderInfo
+   *                                rows (fetchAlgoOrdersRecent). Events
+   *                                carry no symbol/side/qty/mode of their
+   *                                own — see orderTimelineLogic.js.
+   *   onClose       {Function}  — called when the drawer should be dismissed
    */
   import { onMount, onDestroy } from 'svelte';
   import { priceFmt } from '$lib/format';
   import { logTime } from '$lib/stores';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
+  import { groupOrderEvents, isTerminalSection } from '$lib/order/orderTimelineLogic.js';
 
-  const { open = false, orders = [], onClose } = $props();
+  const { open = false, orders = [], orderContext = {}, onClose } = $props();
 
   // ── Kind → color mapping ──────────────────────────────────────────────
   const KIND_COLOR = {
@@ -39,19 +48,23 @@
     postback:         'rgba(167,139,250,0.15)',
   };
 
-  const TERMINAL_KINDS = new Set(['fill', 'unfill', 'reject', 'cancel']);
-
-  /** True if an order is in a terminal state (all events have a terminal kind). */
-  function isTerminal(/** @type {any[]} */ events) {
-    return events.some(e => TERMINAL_KINDS.has(e.kind));
-  }
-
-  /** CSS class suffix for the mode pill — matches LogPanel + CLAUDE.md palette. */
+  /** CSS class suffix for the mode pill — matches LogPanel + CLAUDE.md
+   *  palette. No `'paper'` fallback — an order with no resolved context
+   *  (yet) renders as explicitly unknown, never silently mislabeled. */
   function modeCls(/** @type {string} */ mode) {
     if (mode === 'sim')   return 'otd-mode-sim';
     if (mode === 'paper') return 'otd-mode-paper';
     if (mode === 'live')  return 'otd-mode-live';
     return 'otd-mode-unknown';
+  }
+
+  /** CSS class suffix for the side pill — neutral when side is unresolved,
+   *  never defaults to BUY's green. */
+  function sideCls(/** @type {string} */ side) {
+    const s = (side || '').toUpperCase();
+    if (s === 'SELL') return 'otd-side-sell';
+    if (s === 'BUY')  return 'otd-side-buy';
+    return 'otd-side-unknown';
   }
 
   // Order events are trading-critical — fill time matters per second
@@ -64,65 +77,10 @@
     return iso ? (logTime(iso) || '') : '';
   }
 
-  /**
-   * Comparator: non-terminal sections first, terminal last;
-   * within each group newest-event-first by created_at.
-   * @param {any} a @param {any} b @returns {number}
-   */
-  function _sectionComparator(a, b) {
-    const at = isTerminal(a.events ?? []);
-    const bt = isTerminal(b.events ?? []);
-    if (at !== bt) return at ? 1 : -1;
-    const aTs = (a.events?.[0]?.created_at) ?? '';
-    const bTs = (b.events?.[0]?.created_at) ?? '';
-    return bTs.localeCompare(aTs);
-  }
-
-  /**
-   * Sort an already-shaped (per-order) orders array — non-terminal first,
-   * terminal last; within group newest first.
-   * @param {any[]} shaped @returns {any[]}
-   */
-  function _sortPreShapedOrders(shaped) {
-    return [...shaped].sort(_sectionComparator);
-  }
-
-  /**
-   * Collapse a flat event list into per-order section objects, then sort.
-   * @param {any[]} evList @returns {any[]}
-   */
-  function _groupFlatEvents(evList) {
-    /** @type {Map<string, {order_id: string, symbol: string, side: string, qty: number, mode: string, events: any[]}>} */
-    const map = new Map();
-    for (const ev of evList) {
-      const id = ev.order_id ?? ev.id ?? 'unknown';
-      if (!map.has(id)) {
-        map.set(id, {
-          order_id: id,
-          symbol:   ev.symbol  ?? ev.tradingsymbol ?? '',
-          side:     ev.side    ?? '',
-          qty:      ev.qty     ?? ev.quantity ?? 0,
-          mode:     ev.mode    ?? 'paper',
-          events:   [],
-        });
-      }
-      map.get(id).events.push(ev);
-    }
-    return Array.from(map.values()).sort(_sectionComparator);
-  }
-
-  /** Group flat events array into per-order sections.
-   *  orders is already shaped per-order from the API; if it's a flat list
-   *  we group by order_id here. */
-  const grouped = $derived.by(() => {
-    if (!orders?.length) return [];
-    // If the API returns per-order objects with .events, use them directly.
-    if (orders[0] && 'events' in orders[0]) {
-      return _sortPreShapedOrders(orders);
-    }
-    // Flat event array — group by order_id.
-    return _groupFlatEvents(orders);
-  });
+  /** Group the flat AlgoOrderEventInfo[] by order_id, merge in per-order
+   *  context, and sort (non-terminal first; newest-activity first within
+   *  group) — see orderTimelineLogic.js for the full rationale. */
+  const grouped = $derived.by(() => groupOrderEvents(orders, orderContext));
 
   // ── Keyboard dismiss ──────────────────────────────────────────────────
   function onKeyDown(/** @type {KeyboardEvent} */ e) {
@@ -167,27 +125,31 @@
         <div class="otd-empty">No open chase orders</div>
       {:else}
         {#each grouped as section (section.order_id)}
-          {@const terminal = isTerminal(section.events ?? [])}
+          {@const terminal = isTerminalSection(section.events ?? [])}
           <div class="otd-section {terminal ? 'otd-section-terminal' : ''}">
             <!-- Order header -->
             <div class="otd-order-header">
-              <span class="otd-symbol">{formatSymbol(section.symbol)}</span>
-              <span class="otd-side {section.side?.toUpperCase() === 'SELL' ? 'otd-side-sell' : 'otd-side-buy'}"
-              >{section.side?.toUpperCase() ?? ''}</span>
-              <span class="otd-qty">{section.qty}</span>
+              <span class="otd-symbol"
+              >{section.symbol ? formatSymbol(section.symbol) : `Order #${section.order_id}`}</span>
+              {#if section.side}
+                <span class="otd-side {sideCls(section.side)}">{section.side.toUpperCase()}</span>
+              {/if}
+              {#if section.qty != null}
+                <span class="otd-qty">{section.qty}</span>
+              {/if}
               <span class="otd-mode-pill {modeCls(section.mode)}"
-              >{(section.mode ?? '').toUpperCase()}</span>
+              >{section.mode ? section.mode.toUpperCase() : '—'}</span>
             </div>
             <!-- Event rows — reverse-chronological -->
             <div class="otd-events">
               {#each [...(section.events ?? [])].reverse() as ev}
                 <div class="otd-event-row">
-                  <span class="otd-ev-time">{shortTime(ev.created_at ?? ev.timestamp)}</span>
+                  <span class="otd-ev-time">{shortTime(ev.ts)}</span>
                   <span class="otd-ev-kind"
                         style="color:{KIND_COLOR[ev.kind] ?? '#94a3b8'};background:{KIND_BG[ev.kind] ?? 'rgba(148,163,184,0.1)'}"
                   >{ev.kind ?? ''}</span>
-                  {#if ev.price != null || ev.limit_price != null}
-                    <span class="otd-ev-price">₹{priceFmt(ev.price ?? ev.limit_price)}</span>
+                  {#if ev.price != null}
+                    <span class="otd-ev-price">₹{priceFmt(ev.price)}</span>
                   {/if}
                 </div>
               {/each}
@@ -380,8 +342,9 @@
   }
 
   /* Side colors — matches ChaseCard .cc-side-buy / .cc-side-sell */
-  .otd-side-buy  { color: var(--algo-green, var(--c-long)); }
-  .otd-side-sell { color: var(--algo-red,   var(--c-short)); }
+  .otd-side-buy     { color: var(--algo-green, var(--c-long)); }
+  .otd-side-sell    { color: var(--algo-red,   var(--c-short)); }
+  .otd-side-unknown { color: rgba(180, 200, 230, 0.5); }
 
   /* Mode pill colors — matches LogPanel + CLAUDE.md palette */
   .otd-mode-sim     { color: var(--c-action); background: rgba(251,191,36,0.15);  border-color: var(--c-action); }

@@ -120,7 +120,7 @@ def test_build_order_row_shapes_all_fields():
         id=99, ts=ts, kind="fill", message="hi",
         order_id=42, payload_json='{"account":"ZG0790"}',
     )
-    row = _build_order_row(oe, "ZG0790", mask=_mask_account, mask_p=_mask_payload)
+    row = _build_order_row(oe, "ZG0790", "live", mask=_mask_account, mask_p=_mask_payload)
     assert row.id == 99
     assert row.source == "order"
     assert row.ts == ts.isoformat()
@@ -137,9 +137,43 @@ def test_build_order_row_null_ts_yields_empty_string():
     oe = SimpleNamespace(
         id=1, ts=None, kind="k", message=None, order_id=None, payload_json=None,
     )
-    row = _build_order_row(oe, None, mask=_identity, mask_p=_identity)
+    row = _build_order_row(oe, None, "live", mask=_identity, mask_p=_identity)
     assert row.ts == ""
     assert row.message == ""
+
+
+# ---------------------------------------------------------------------------
+# sim_mode reflects the real AlgoOrder.mode (Sprint 2a fix — was previously
+# hard-coded False for every order event, i.e. "order events are real-
+# broker only," which is false since paper/sim AlgoOrders also write
+# algo_order_events).
+# ---------------------------------------------------------------------------
+
+def test_build_order_row_sim_mode_true_for_sim_order():
+    oe = SimpleNamespace(
+        id=2, ts=None, kind="fill", message=None, order_id=5, payload_json=None,
+    )
+    row = _build_order_row(oe, "ZG0790", "sim", mask=_identity, mask_p=_identity)
+    assert row.sim_mode is True
+
+
+def test_build_order_row_sim_mode_false_for_paper_order():
+    """Paper orders also write algo_order_events, but per the UnifiedLogRow
+    docstring sim_mode is False for real (live + paper) — only a genuine
+    simulator run ('sim') maps to True."""
+    oe = SimpleNamespace(
+        id=3, ts=None, kind="fill", message=None, order_id=6, payload_json=None,
+    )
+    row = _build_order_row(oe, "ZG0790", "paper", mask=_identity, mask_p=_identity)
+    assert row.sim_mode is False
+
+
+def test_build_order_row_sim_mode_false_for_none_mode():
+    oe = SimpleNamespace(
+        id=4, ts=None, kind="fill", message=None, order_id=7, payload_json=None,
+    )
+    row = _build_order_row(oe, "ZG0790", None, mask=_identity, mask_p=_identity)
+    assert row.sim_mode is False
 
 
 # ---------------------------------------------------------------------------

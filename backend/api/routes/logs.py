@@ -114,10 +114,11 @@ def _identity(x):
 
 async def _fetch_order_events(
     session, *, limit: int, kind_set: set[str], since_dt: datetime | None,
+    sim_filter: bool | None = None,
 ):
     from sqlalchemy import desc, select
     q = (
-        select(AlgoOrderEvent, AlgoOrder.account)
+        select(AlgoOrderEvent, AlgoOrder.account, AlgoOrder.mode)
         .join(AlgoOrder, AlgoOrderEvent.order_id == AlgoOrder.id)
         .order_by(desc(AlgoOrderEvent.ts))
         .limit(limit * 2)
@@ -126,6 +127,17 @@ async def _fetch_order_events(
         q = q.where(AlgoOrderEvent.ts > since_dt)
     if kind_set:
         q = q.where(AlgoOrderEvent.kind.in_(kind_set))
+    # Sprint 2a fix — now that sim_mode correctly reflects AlgoOrder.mode
+    # (see _build_order_row), the `sim_mode=` query param must also
+    # filter order-event rows, not just agent-event rows. Pre-fix this
+    # was a no-op for order rows because sim_mode was always False, so
+    # the gap was invisible; now a real 'sim' row would otherwise leak
+    # through a `sim_mode=false` ("real only") request and vice versa.
+    if sim_filter is not None:
+        if sim_filter:
+            q = q.where(AlgoOrder.mode == "sim")
+        else:
+            q = q.where(AlgoOrder.mode != "sim")
     return (await session.execute(q)).all()
 
 
@@ -164,7 +176,13 @@ def _order_matches_account(account: str | None, payload_raw: str | None,
     return any(a in raw or a in payload for a in acct_set)
 
 
-def _build_order_row(oe, account, *, mask, mask_p) -> UnifiedLogRow:
+def _build_order_row(oe, account, mode, *, mask, mask_p) -> UnifiedLogRow:
+    # Sprint 2a fix (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §2) —
+    # previously hard-coded False, assuming "order events are real-broker
+    # only." False: paper AND sim AlgoOrders also write algo_order_events.
+    # sim_mode here mirrors the UnifiedLogRow docstring's definition
+    # ("True when the row came from a simulator run; False for real —
+    # live + paper"), so only AlgoOrder.mode == 'sim' maps to True.
     return UnifiedLogRow(
         id=oe.id,
         source="order",
@@ -175,7 +193,7 @@ def _build_order_row(oe, account, *, mask, mask_p) -> UnifiedLogRow:
         agent_slug=None,
         account=mask(account),
         payload_json=mask_p(oe.payload_json),
-        sim_mode=False,   # order events are real-broker only
+        sim_mode=(str(mode or "").lower() == "sim"),
     )
 
 
@@ -260,6 +278,7 @@ class LogsController(Controller):
         async with async_session() as s:
             oe_rows = await _fetch_order_events(
                 s, limit=limit, kind_set=kind_set, since_dt=since_dt,
+                sim_filter=sim_filter,
             )
             ae_rows = await _fetch_agent_events(
                 s, limit=limit, kind_set=kind_set, since_dt=since_dt,
@@ -267,8 +286,8 @@ class LogsController(Controller):
             )
 
         rows: list[UnifiedLogRow] = [
-            _build_order_row(oe, account, mask=mask, mask_p=mask_p)
-            for oe, account in oe_rows
+            _build_order_row(oe, account, mode, mask=mask, mask_p=mask_p)
+            for oe, account, mode in oe_rows
             if _order_matches_account(account, oe.payload_json, acct_set)
         ]
         rows.extend(

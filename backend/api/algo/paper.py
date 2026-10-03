@@ -283,12 +283,22 @@ class PaperTradeEngine:
 
     # ── Operator-initiated lifecycle (Phase 5: MCP cancel/modify) ────
 
-    def cancel_paper_order(self, algo_order_id: int) -> bool:
+    def cancel_paper_order(self, algo_order_id: int, *, source: str = "operator") -> bool:
         """Cancel a paper order by its AlgoOrder.id. Marks the row
         CANCELLED in the engine + schedules the DB update via the
         existing _record_event pipeline (kind='unfilled' so the same
         terminal-status path runs). Returns True if a matching OPEN
         order was found, False otherwise.
+
+        `source` identifies the real caller for event-log attribution —
+        pass `source="mcp"` from the MCP cancel_order tool; the default
+        `"operator"` covers the ordinary ChaseCard/OrderBook Kill button
+        (`_rco_kill_paper_mode` in orders.py). Sprint 2a fix
+        (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §2): previously this
+        function hard-coded "via MCP" in both the event note and the
+        AlgoOrder.detail string regardless of which caller invoked it, so
+        every manual operator Kill was mislabeled as an MCP action in the
+        event log.
 
         Idempotent — calling twice on the same id returns False on
         the second call (order is already gone). Safe to invoke from
@@ -309,11 +319,14 @@ class PaperTradeEngine:
         # CANCELLED — but actually we want CANCELLED, not UNFILLED. We
         # write a dedicated event payload below + bypass the kind-based
         # status flip by calling _update_algo_order_cancel directly.
-        self._record_event(target, kind="cancel",
-                           note="operator-initiated cancel via MCP")
+        _note = "operator-initiated cancel via MCP" if source == "mcp" \
+            else "operator-initiated cancel"
+        self._record_event(target, kind="cancel", note=_note)
         try:
             import asyncio
-            task = asyncio.create_task(self._safe_update_algo_order_cancel(target))
+            task = asyncio.create_task(
+                self._safe_update_algo_order_cancel(target, source=source)
+            )
             self._pending_updates.add(task)
             task.add_done_callback(self._pending_updates.discard)
         except RuntimeError:
@@ -378,12 +391,14 @@ class PaperTradeEngine:
                            note=f"operator override: {' '.join(changed_parts)}")
         return True
 
-    def _paper_cancel_fanout(self, order: dict) -> None:
+    def _paper_cancel_fanout(self, order: dict, *, source: str = "operator") -> None:
         """Broadcast CANCELLED status via _postback_broadcast_fanout."""
         try:
             from backend.api.routes.orders import _postback_broadcast_fanout
             from backend.shared.helpers.utils import mask_account
             _acct = str(order.get("account") or "")
+            _status_message = "operator cancel via MCP" if source == "mcp" \
+                else "operator cancel"
             _postback_broadcast_fanout(
                 status="CANCELLED",
                 order_id=order["algo_order_id"],
@@ -403,7 +418,7 @@ class PaperTradeEngine:
                 # contracts multiply.
                 broker="paper",
                 exchange=str(order.get("exchange") or ""),
-                status_message="operator cancel via MCP",
+                status_message=_status_message,
             )
         except Exception as _fe:
             logger.warning(
@@ -411,15 +426,23 @@ class PaperTradeEngine:
                 f"fanout failed (id={order.get('algo_order_id')}): {_fe}"
             )
 
-    async def _safe_update_algo_order_cancel(self, order: dict) -> None:
+    async def _safe_update_algo_order_cancel(
+        self, order: dict, *, source: str = "operator"
+    ) -> None:
         """DB update for an operator-cancelled paper order. Sets
         status=CANCELLED + writes a 'cancel' AlgoOrderEvent. Mirrors
-        _safe_update_algo_order but for the CANCELLED terminal state."""
+        _safe_update_algo_order but for the CANCELLED terminal state.
+
+        `source` is threaded through from `cancel_paper_order` so the
+        event/detail label correctly distinguishes a genuine MCP-initiated
+        cancel from an ordinary operator Kill-button cancel (Sprint 2a fix,
+        see `cancel_paper_order`'s docstring)."""
         try:
             from backend.api.database import async_session
             from backend.api.models  import AlgoOrder
             from sqlalchemy          import select as _select
             from backend.api.algo.order_events import write_event
+            _via_mcp = source == "mcp"
             async with async_session() as s:
                 row = (await s.execute(
                     _select(AlgoOrder).where(AlgoOrder.id == order["algo_order_id"])
@@ -432,15 +455,18 @@ class PaperTradeEngine:
                 side   = order.get("side") or "?"
                 qty    = order.get("qty") or 0
                 symbol = order.get("symbol") or "?"
-                row.detail = f"[{tag}] CANCELLED by operator via MCP · {side} {qty} {symbol}"
+                _by = "operator via MCP" if _via_mcp else "operator"
+                row.detail = f"[{tag}] CANCELLED by {_by} · {side} {qty} {symbol}"
                 await s.commit()
+            _note = "operator-initiated cancel via MCP" if _via_mcp \
+                else "operator-initiated cancel"
             await write_event(
                 order["algo_order_id"], "cancel",
-                f"[{self._label.upper()}] operator-initiated cancel via MCP",
-                payload={"source": "mcp"},
+                f"[{self._label.upper()}] {_note}",
+                payload={"source": source},
             )
             # Cache invalidation + WS broadcast for CANCELLED terminal state.
-            self._paper_cancel_fanout(order)
+            self._paper_cancel_fanout(order, source=source)
         except Exception as e:
             logger.warning(
                 f"[{self._label.upper()}] _safe_update_algo_order_cancel "

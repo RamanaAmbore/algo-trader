@@ -443,6 +443,9 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         interval_seconds=(int(r.interval_seconds) if getattr(r, "interval_seconds", None) is not None else None),
         last_attempt_at=(float(r.last_attempt_at) if getattr(r, "last_attempt_at", None) is not None else None),
         next_attempt_at=(float(r.next_attempt_at) if getattr(r, "next_attempt_at", None) is not None else None),
+        broker_order_id=r.broker_order_id,
+        source=getattr(r, "source", None),
+        agent_id=getattr(r, "agent_id", None),
     )
 
 

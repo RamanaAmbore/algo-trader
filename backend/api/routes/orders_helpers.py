@@ -666,6 +666,17 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     interval_seconds: Optional[int] = None
     next_attempt_at: Optional[float] = None
     last_attempt_at: Optional[float] = None
+    # Sprint 2a (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §1 finding 2,
+    # §2) — broker_order_id was already a real AlgoOrder column but never
+    # surfaced here, so the frontend had no shared identity key to dedup
+    # a broker-fetched order row against its algo-tracked counterpart
+    # (OrderBook.svelte's dedup and ChaseCard's own dedup both compared
+    # against this field assuming it existed). source/agent_id are also
+    # real AlgoOrder columns (Sprint 1a/1b-i) not yet surfaced — needed by
+    # an upcoming "Origin" chip fix.
+    broker_order_id: Optional[str] = None
+    source: Optional[str] = None
+    agent_id: Optional[int] = None
 
 
 async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, list[int]]:

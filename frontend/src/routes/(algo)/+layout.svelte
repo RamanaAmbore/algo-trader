@@ -18,6 +18,7 @@
   import { userRole, hasCap, userCaps } from '$lib/rbac';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
+  import { TERMINAL_KINDS as TERMINAL_CHASE_KINDS } from '$lib/order/orderTimelineLogic.js';
   import { portal } from '$lib/portal';
   import PositionStrip from '$lib/PositionStrip.svelte';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
@@ -709,33 +710,66 @@
   }
 
   // ── Chase chip + timeline drawer ───────────────────────────────────
-  let chaseOrders     = $state(/** @type {any[]} */ ([]));
-  let drawerOpen      = $state(false);
-  let lastTerminalAt  = $state(/** @type {Date|null} */ (null));
-  let chaseInteracted = $state(false);  // tracks hover/click in the 60s auto-hide window
+  // Sprint 2a fix (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §1 finding 1,
+  // §4.2): this feed previously assumed events carried `status`/`symbol`/
+  // `created_at` fields that don't exist on the real `AlgoOrderEventInfo`
+  // shape (`id, order_id, ts, kind, message, payload_json`) — openOrderIds
+  // was always empty and lastTerminalAt always resolved to the 1970 epoch,
+  // so `showChaseChip` was always false and the chip/drawer were never
+  // reachable at all. Fixed below; `chaseOrderContext` supplies the
+  // symbol/side/qty/mode the events themselves don't carry (see
+  // orderTimelineLogic.js), built from AlgoOrderInfo rows keyed by id.
+  let chaseOrders       = $state(/** @type {any[]} */ ([]));
+  let chaseOrderContext = $state(/** @type {Record<string, {symbol:string, side:string, qty:number, mode:string}>} */ ({}));
+  let drawerOpen        = $state(false);
+  let lastTerminalAt    = $state(/** @type {Date|null} */ (null));
+  let chaseInteracted   = $state(false);  // tracks hover/click in the 60s auto-hide window
 
-  // Open order count derived from chaseOrders (flat event list grouped by order_id).
+  // Every row returned by fetchOrderEvents(50, 'open') belongs to an order
+  // the backend already filtered to AlgoOrder.status === 'OPEN' (see
+  // orders.py:recent_order_events) — no per-event status field exists to
+  // re-check here.
   const openOrderIds = $derived.by(() => {
     const ids = new Set();
     for (const ev of chaseOrders) {
-      if ((ev.status ?? ev.kind) === 'open' || ev.order_status === 'OPEN') {
-        ids.add(ev.order_id ?? ev.id);
-      }
+      if (ev.order_id != null) ids.add(ev.order_id);
     }
     return ids;
   });
 
-  /** Unique symbols in open orders — shown in the hover tooltip. */
+  /** Unique symbols in open orders — shown in the hover tooltip. Events
+   *  carry no symbol of their own; resolved via chaseOrderContext. */
   const openSymbols = $derived.by(() => {
     const syms = new Set();
-    for (const ev of chaseOrders) {
-      if (openOrderIds.has(ev.order_id ?? ev.id)) {
-        const sym = ev.symbol ?? ev.tradingsymbol;
-        if (sym) syms.add(sym);
-      }
+    for (const id of openOrderIds) {
+      const sym = chaseOrderContext[id]?.symbol;
+      if (sym) syms.add(sym);
     }
     return [...syms];
   });
+
+  /** Best-effort fill-in of order context (symbol/side/qty/mode) for any
+   *  order id not yet cached — fetchAlgoOrdersRecent's 2nd arg is `mode`
+   *  (live/sim/paper/replay/shadow/all), NOT a status filter, so 'all' is
+   *  the correct call here, mirroring _fillWatchTick's own usage below. */
+  async function _ensureChaseOrderContext(/** @type {any[]} */ ids) {
+    const missing = ids.filter(id => id != null && !(id in chaseOrderContext));
+    if (!missing.length) return;
+    try {
+      const rows = await fetchAlgoOrdersRecent(100, 'all');
+      const next = { ...chaseOrderContext };
+      for (const o of (Array.isArray(rows) ? rows : [])) {
+        if (o?.id == null) continue;
+        next[o.id] = {
+          symbol: o.symbol ?? '',
+          side:   o.transaction_type ?? '',
+          qty:    o.quantity ?? null,
+          mode:   o.mode ?? '',
+        };
+      }
+      chaseOrderContext = next;
+    } catch (_) { /* keep stale context on error */ }
+  }
 
   async function pollChase() {
     try {
@@ -743,13 +777,11 @@
       // Accept { events: [...] } or bare array.
       const raw = Array.isArray(res) ? res : (res?.events ?? res?.orders ?? []);
       chaseOrders = raw;
+      _ensureChaseOrderContext(raw.map(e => e.order_id));
       // Track last terminal event for auto-hide timer.
-      const terminal = raw.filter(e => {
-        const k = e.kind ?? e.event_type ?? '';
-        return ['fill','unfill','reject','cancel'].includes(k);
-      });
+      const terminal = raw.filter(e => TERMINAL_CHASE_KINDS.has(e.kind));
       if (terminal.length) {
-        const ts = terminal.map(e => new Date(e.created_at ?? e.timestamp ?? 0));
+        const ts = terminal.map(e => new Date(e.ts ?? 0));
         const newest = new Date(Math.max(...ts.map(d => d.getTime())));
         if (!lastTerminalAt || newest > lastTerminalAt) lastTerminalAt = newest;
       }
@@ -1455,6 +1487,7 @@
     <OrderTimelineDrawer
       open={drawerOpen}
       orders={chaseOrders}
+      orderContext={chaseOrderContext}
       onClose={() => { drawerOpen = false; }}
     />
 

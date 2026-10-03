@@ -965,7 +965,11 @@ async def _res_cancel_paper(
     try:
         from backend.api.algo.paper import get_prod_paper_engine
         engine = get_prod_paper_engine()
-        ok = engine.cancel_paper_order(algo_order_id)
+        # Sprint 2a fix — explicitly tag this as the genuine MCP-initiated
+        # cancel path so the event log says "via MCP" here and only here,
+        # not for the ordinary operator Kill button (orders.py's
+        # _rco_kill_paper_mode, which uses the "operator" default).
+        ok = engine.cancel_paper_order(algo_order_id, source="mcp")
     except Exception as e:
         await audit_fn("error", f"paper engine raised: {e}")
         logger.exception("MCP paper cancel raised")
