@@ -33,7 +33,7 @@
    *                    `_activeStatus` — see `_defaultActiveId`.
    */
   import { onMount, onDestroy, untrack } from 'svelte';
-  import { visibleInterval, formatDualTz } from '$lib/stores';
+  import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
   import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt } from '$lib/api';
   import { priceFmt } from '$lib/format';
@@ -269,10 +269,28 @@
   const _intervals = [];
 
   onMount(() => {
-    _loadOrders();
-    _loadGtts();
+    // In-flight guard on the poll cadence (audit fix, 2026-10-02) — a slow
+    // response (network blip, broker lag) could previously still be
+    // in-flight when the next visibleInterval tick fired, stacking a
+    // second concurrent fetch for the same resource. Mirrors LogPanel's
+    // `_every()` (LogPanel.svelte:392-404): the immediate call and every
+    // interval tick share the SAME guarded instance. Two independent
+    // guards (own `_running` flag each, per withGuard's contract) so a
+    // slow GTT fetch never blocks the orders poll and vice versa — they
+    // already have separate freeze-to-last-good semantics.
+    //
+    // Manual triggers (_cancelRow/_reconcileRow's post-action reload,
+    // _cancelGttRow's post-cancel reload, CardHeader's onRefresh button)
+    // deliberately keep calling the RAW _loadOrders/_loadGtts below, NOT
+    // these guarded wrappers — an operator-initiated refresh must never be
+    // silently dropped (guarded call returns undefined, no-op) just
+    // because a routine poll tick happens to be in-flight at that instant.
+    const _guardedLoadOrders = withGuard(_loadOrders);
+    const _guardedLoadGtts = withGuard(_loadGtts);
+    _guardedLoadOrders();
+    _guardedLoadGtts();
     if (pollMs > 0 && typeof document !== 'undefined') {
-      const teardown = visibleInterval(() => { _loadOrders(); _loadGtts(); }, pollMs);
+      const teardown = visibleInterval(() => { _guardedLoadOrders(); _guardedLoadGtts(); }, pollMs);
       _intervals.push(teardown);
     }
   });
