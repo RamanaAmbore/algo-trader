@@ -48,12 +48,13 @@ test(`pulse full workflow + screenshots [${BASE}]`, async ({ page }) => {
   await page.screenshot({ path: `test-results/wf-${slug}-3-typeahead.png` });
   console.log('3: typeahead visible');
 
-  // Capture typeahead suggestions
-  const suggestions = await page.locator('.search-typeahead .search-typeahead-item').allTextContents();
+  // Capture result rows (SymbolSearchInput's `.ssi-row`, 2026-10
+  // canonical-component migration — was `.search-typeahead .search-typeahead-item`)
+  const suggestions = await page.locator('.ssi-drop .ssi-row').allTextContents();
   console.log(`typeahead suggestions: ${JSON.stringify(suggestions.slice(0, 5))}`);
 
   // Click the first suggestion
-  const firstSuggestion = page.locator('.search-typeahead .search-typeahead-item').first();
+  const firstSuggestion = page.locator('.ssi-drop .ssi-row').first();
   if (await firstSuggestion.isVisible().catch(() => false)) {
     const sugText = (await firstSuggestion.textContent() ?? '').trim();
     console.log(`clicking first suggestion: ${sugText}`);

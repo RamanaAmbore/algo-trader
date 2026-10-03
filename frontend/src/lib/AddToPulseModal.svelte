@@ -2,7 +2,8 @@
   import { tick } from 'svelte';
   import Select from '$lib/Select.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
-  import { displaySymbol } from '$lib/data/displaySymbol.js';
+  import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
+  import { getInstrument } from '$lib/data/instruments.js';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
 
   /**
@@ -10,9 +11,16 @@
    *
    * All mutable form state is $bindable so MarketPulse retains the SSOT
    * for every value — the async backend-calling functions (addRow,
-   * dropList, commitRename, cancelRename, searchSymbols, pickFromTypeahead,
+   * dropList, commitRename, cancelRename, pickFromTypeahead,
    * loadActive, closeSearch) stay in MarketPulse and are wired in as
    * callbacks.
+   *
+   * Symbol search (2026-10) uses the canonical $lib/SymbolSearchInput
+   * component — same one SymbolPanel.svelte / ChartWorkspace.svelte use
+   * for order entry — instead of a bespoke input + result list. See
+   * `_handleSymbolPick` below for the adapter that keeps
+   * `onPickTypeahead` (still owned by MarketPulse's `pickFromTypeahead`)
+   * receiving the same `{s, e, virtual}` shape it always has.
    */
 
   let {
@@ -24,8 +32,6 @@
     symInput     = $bindable(''),
     typeInput    = $bindable(/** @type {'EQ'|'FU'|'CE'|'PE'} */ ('EQ')),
     aliasInput   = $bindable(''),
-    typeahead    = $bindable(/** @type {any[]} */ ([])),
-    typeaheadOpen = $bindable(false),
     renameId     = $bindable(/** @type {number|null} */ (null)),
     renameName   = $bindable(''),
     renameError  = $bindable(''),
@@ -35,8 +41,7 @@
     onDropList,       // (id) => Promise<void>
     onCommitRename,   // () => Promise<void>
     onCancelRename,   // () => void
-    onSearchSymbols,  // (q) => Promise<void>  — populates typeahead
-    onPickTypeahead,  // (inst) => void         — picks first match
+    onPickTypeahead,  // (inst) => void         — picks a match ({s, e, virtual})
     onClose,          // () => void             — caller sets open=false + clears inputs
     // Forwarded to the internal ModalShell — caller overrides for
     // stacking (e.g. "var(--z-modal-nested)" when opened from inside a
@@ -45,16 +50,53 @@
     zIndex = /** @type {number | string} */ (200),
   } = $props();
 
-  /** @type {HTMLInputElement | null} */
-  let symInputEl = $state(null);
+  /** @type {HTMLDivElement | null} */
+  let symWrapEl = $state(null);
+  // True for one keystroke-cycle once SymbolSearchInput's own onPick
+  // fires synchronously inside its Enter handler — lets the wrapper's
+  // bubbled keydown (below) tell "operator picked a row" apart from
+  // "no match, fall through to manual Add", matching the original
+  // inline-input's own Enter branch.
+  let _pickedViaSearch = $state(false);
 
-  // Auto-focus the symbol input when the modal opens.
+  // Auto-focus the symbol input when the modal opens. SymbolSearchInput
+  // owns its own <input> internally (no exposed element binding), so
+  // reach it via the wrapper div instead of a direct element ref.
   $effect(() => {
     if (open) {
       // Defer until the modal is painted (same tick as Svelte render).
-      tick().then(() => { symInputEl?.focus(); symInputEl?.select(); });
+      tick().then(() => {
+        const el = symWrapEl?.querySelector('input');
+        el?.focus(); el?.select();
+      });
     }
   });
+
+  // NSE index underlyings (NIFTY, BANKNIFTY, …) have no virtual-root
+  // equivalent — those only exist for MCX/CDS roots (GOLD, CRUDEOIL,
+  // USDINR, …) — so SymbolSearchInput's own bare-underlying filter
+  // (instruments.js tradable guard) drops their raw index row from
+  // search results entirely. That bare row is exactly what
+  // `pickFromTypeahead` (MarketPulse.svelte) needs to open the F&O
+  // option-chain picker for an index. Surfaced here as pins so they
+  // stay reachable (shown below the 3-char search threshold) without
+  // reaching into SymbolSearchInput's own filtering.
+  const _NSE_INDEX_PINS = ['NIFTY', 'BANKNIFTY', 'FINNIFTY', 'MIDCPNIFTY', 'NIFTYNXT50', 'SENSEX', 'BANKEX'];
+
+  /** Adapter: SymbolSearchInput's onPick(sym, meta) → the
+   *  `{s, e, virtual}` shape `onPickTypeahead`/`pickFromTypeahead` has
+   *  always received from the old raw-typeahead button's `inst`. */
+  function _handleSymbolPick(/** @type {string} */ sym, /** @type {any} */ meta) {
+    _pickedViaSearch = true;
+    let exch = meta?.exchange || '';
+    let virtual = !!meta?.virtual;
+    if (!exch && meta?.pinLabel) exch = 'NSE'; // our own NSE index shortcut pins
+    if (!exch) {
+      const inst = getInstrument(sym);
+      if (inst) { exch = inst.e || ''; virtual = virtual || !!inst.virtual; }
+    }
+    onPickTypeahead({ s: sym, e: exch, virtual });
+  }
 
   // Escape-stack coordinator (layerStack.js) — this component is always
   // mounted by MarketPulse (never `{#if}`-gated; `open` just toggles its
@@ -90,11 +132,15 @@
   //     so the caller's own cleanup (MarketPulse's `closeSearch()`
   //     resets typeahead/newListName/aliasInput/rename state) still
   //     runs, same as every other close path in this component.
-  // A third case — "first Esc closes the typeahead suggestions" — was
-  // NOT ported: `typeaheadOpen` never gated the suggestion list's own
-  // markup (`{#if typeahead.length}`, independent of `typeaheadOpen`),
-  // so toggling it off was already a visual no-op pre-existing this fix;
-  // only `onClose()` is live-equivalent to port forward.
+  // A third case — "first Esc closes the symbol-search dropdown, not
+  // the whole modal" — is now real again (2026-10, SymbolSearchInput
+  // migration): SymbolSearchInput pushes its OWN layer while its
+  // dropdown is open (see its own layerStack effect), so it sits ABOVE
+  // this modal's layer on the stack. The first Escape hits that
+  // topmost layer and only closes the dropdown; this callback — the
+  // modal's own close — only runs on a subsequent Escape once the
+  // dropdown layer has popped. No code change needed here for that;
+  // noted because it changes the operator-visible Escape count.
   $effect(() => {
     if (!open) return;
     const id = pushLayer(() => {
@@ -234,20 +280,41 @@
                matched instrument's tradingsymbol suffix. -->
           <div class="mp-add-section-label">Add symbol</div>
           <div class="search-row">
-            <input bind:this={symInputEl} bind:value={symInput}
-              oninput={(e) => { onSearchSymbols(e.currentTarget.value); typeaheadOpen = true; }}
-              onfocus={() => typeaheadOpen = true}
+            <!-- SymbolSearchInput only writes its bindable `value` prop
+                 on a pick, never on every keystroke, so the wrapper's
+                 own `oninput`/`onkeydown` (native events bubble up from
+                 its nested <input>) is what keeps `symInput` live for
+                 the manual Add button and the Enter-with-no-match
+                 fallback below — same two behaviours the old inline
+                 input had via its own bind:value + onkeydown. -->
+            <!-- svelte-ignore a11y_no_static_element_interactions -- this div
+                 is a pure event-bubbling relay around SymbolSearchInput's own
+                 real <input> (which already owns keyboard/focus semantics);
+                 it holds no independent interactive role of its own. -->
+            <div class="flex-1 atp-sym-pick" role="presentation"
+              bind:this={symWrapEl}
+              oninput={(e) => {
+                _pickedViaSearch = false;
+                symInput = /** @type {HTMLInputElement} */ (e.target).value;
+              }}
               onkeydown={(e) => {
-                if (e.key === 'Enter') {
-                  e.preventDefault();
-                  if (typeaheadOpen && typeahead.length && symInput.trim()) onPickTypeahead(typeahead[0]);
-                  else onAdd();
-                }
+                // SymbolSearchInput's own onkeydown (bound directly on
+                // its <input>) runs first and always preventDefault()s
+                // on Enter; it also calls onPick synchronously when it
+                // has a row/pin match, which flips _pickedViaSearch via
+                // _handleSymbolPick before this bubbled handler runs.
+                if (e.key === 'Enter' && !_pickedViaSearch) onAdd();
                 // Escape is handled by the layerStack coordinator (pushLayer
                 // in <script> above) instead of here — see its comment.
-              }}
-              class="field-input text-[0.7rem] py-1 px-2 flex-1"
-              placeholder="Symbol (≥ 3 chars) — stocks, futures, options" autocomplete="off" />
+              }}>
+              <SymbolSearchInput
+                value={symInput}
+                placeholder="Symbol (≥ 3 chars) — stocks, futures, options"
+                ariaLabel="Symbol search — stocks, futures, options"
+                pins={_NSE_INDEX_PINS}
+                resolvePin={(label) => label}
+                onPick={_handleSymbolPick} />
+            </div>
             <div class="w-16">
               <Select ariaLabel="Type" bind:value={typeInput}
                 options={[
@@ -278,19 +345,6 @@
               placeholder="Display name (optional) — e.g. Crude oil"
               autocomplete="off" />
           </div>
-          {#if typeahead.length}
-            <div class="search-typeahead">
-              {#each typeahead as inst}
-                <button onclick={() => onPickTypeahead(inst)}
-                  class="search-typeahead-item">
-                  <!-- displaySymbol renders GOLD_NEXT → GOLD.NEXT for virtual roots;
-                       real contracts pass through unchanged. -->
-                  <span class="font-mono text-[var(--c-action)]">{displaySymbol(inst.s)}</span>
-                  <span class="text-[0.6rem] text-[var(--c-muted)] ml-2">{inst.e}{inst.virtual ? ' · virtual' : ''}</span>
-                </button>
-              {/each}
-            </div>
-          {/if}
           <div class="search-hint">
             Type ≥ 3 characters · Enter picks the first match · F&amp;O underlyings open the option chain picker
           </div>
@@ -298,3 +352,15 @@
       </div>
     </div>
 </ModalShell>
+
+<style>
+  /* SymbolSearchInput's native width is a fixed 11rem (its compact
+     default for inline order-entry toolbars) — stretch it to fill this
+     row's flex-1 slot like every other field in this modal. Scoped to
+     .atp-sym-pick so SymbolPanel/ChartWorkspace's own native sizing is
+     untouched. Palette (amber-on-navy) is left as-is — same canonical
+     symbol-picker look those two surfaces already use. */
+  .atp-sym-pick { display: flex; }
+  .atp-sym-pick :global(.ssi-wrap) { flex: 1; display: flex; }
+  .atp-sym-pick :global(.ssi-input) { width: 100%; }
+</style>

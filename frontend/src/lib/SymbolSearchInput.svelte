@@ -56,15 +56,21 @@
   // keydown kept bubbling to any ancestor modal's own Escape listener
   // and could close the whole modal instead of just this dropdown
   // (2026-09-30 stacking-defect audit, Wave A).
-  /** @type {string | null} */
-  let _layerId = null;
+  //
+  // Teardown form (not push-if/pop-else) — required because this
+  // component can be unmounted by an ancestor `{#if open}` (e.g.
+  // ModalShell) WHILE `_symOpen` is still true (focus opens the
+  // dropdown immediately on mount; the operator can dismiss the whole
+  // modal with one Escape/backdrop-click before ever closing the
+  // dropdown itself). The push-if/pop-else form never runs again once
+  // the effect's owning component is destroyed, so the pushed layer
+  // would leak forever, silently swallowing every future page-level
+  // Escape (same class of bug AddToPulseModal's own comment above
+  // documents and avoids via this exact form).
   $effect(() => {
-    if (_symOpen) {
-      _layerId = pushLayer(() => { _symOpen = false; _symSuggestions = []; });
-    } else if (_layerId) {
-      popLayer(_layerId);
-      _layerId = null;
-    }
+    if (!_symOpen) return;
+    const id = pushLayer(() => { _symOpen = false; _symSuggestions = []; });
+    return () => popLayer(id);
   });
 
   // Warm the instruments cache as soon as the component mounts. Without

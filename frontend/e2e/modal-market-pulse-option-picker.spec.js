@@ -5,8 +5,16 @@
  * The option picker opens from inside AddToPulseModal when clicking an F&O underlying.
  * After ModalShell migration it renders as role="dialog".
  *
- * Flow: /pulse → Manage watchlists → type NIFTY → click .search-typeahead-item → option picker opens.
- * Tests skip gracefully if typeahead returns no results.
+ * Flow: /pulse → Manage watchlists → type NIFTY → click a SymbolSearchInput
+ * result row (`.ssi-row`, 2026-10 canonical-component migration) → option
+ * picker opens. Tests skip gracefully if the search returns no results.
+ *
+ * Escape count (2026-10): AddToPulseModal auto-focuses its symbol input on
+ * open, and SymbolSearchInput opens its own dropdown (showing a few pinned
+ * shortcuts) on focus — pushing its own dismissible layer ABOVE the modal's.
+ * The first Escape now closes that dropdown layer, not necessarily the
+ * whole modal; tests below press Escape up to twice and poll for the
+ * actual end state rather than assuming a fixed count.
  */
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
@@ -32,7 +40,12 @@ test.describe('MarketPulse option picker modal — open/close/ESC', () => {
   test('AddToPulseModal smoke — opens and closes via ESC', async ({ page }) => {
     const modal = await openAddToPulseModal(page);
     await expect(modal).toBeVisible();
+    // First Escape may only close SymbolSearchInput's own pinned-shortcut
+    // dropdown (it auto-opens on the modal's auto-focus) — press a second
+    // time if the modal itself is still visible. See file header comment.
     await page.keyboard.press('Escape');
+    const stillOpen = await modal.isVisible().catch(() => false);
+    if (stillOpen) await page.keyboard.press('Escape');
     await expect(modal).not.toBeVisible({ timeout: 3000 });
   });
 
@@ -44,8 +57,8 @@ test.describe('MarketPulse option picker modal — open/close/ESC', () => {
     await searchInput.fill('NIFTY');
     await page.waitForTimeout(1000);
 
-    // Look for NIFTY in typeahead items (class="search-typeahead-item")
-    const result = page.locator('.search-typeahead-item:has-text("NIFTY")').first();
+    // Look for NIFTY in SymbolSearchInput's result rows (class="ssi-row")
+    const result = page.locator('.ssi-row:has-text("NIFTY")').first();
     if (!await result.isVisible({ timeout: 3000 }).catch(() => false)) {
       test.skip(true, 'No NIFTY in typeahead — data unavailable or market closed');
       return;

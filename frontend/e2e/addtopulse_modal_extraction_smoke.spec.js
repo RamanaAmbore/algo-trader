@@ -172,9 +172,16 @@ test.describe('AddToPulseModal extraction smoke test', () => {
     const modal = page.locator('[role="dialog"]');
     await expect(modal).toBeVisible({ timeout: 3000 });
 
-    // Press Escape
+    // Press Escape. The symbol input auto-focuses on open, which opens
+    // SymbolSearchInput's own pinned-shortcut dropdown (its own
+    // dismissible layer, above the modal's) — the first Escape may only
+    // close that, so press a second time if the modal is still visible.
     await page.keyboard.press('Escape');
     await page.waitForTimeout(300);
+    if (await modal.isVisible().catch(() => false)) {
+      await page.keyboard.press('Escape');
+      await page.waitForTimeout(300);
+    }
 
     // Modal should be gone
     await expect(modal).toBeHidden();

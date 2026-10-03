@@ -243,8 +243,6 @@
   // direct-adds without picking from the typeahead. Typeahead picks
   // override with the instrument's actual exchange.
   let typeInput  = $state(/** @type {'EQ'|'FU'|'CE'|'PE'} */ ('EQ'));
-  let typeahead  = $state(/** @type {any[]} */ ([]));
-  let typeaheadOpen = $state(false);
   // Target watchlist for the next add. Either an existing list id or
   // the literal 'NEW' (reveals the inline new-list name input). Seeded
   // from the user's default watchlist when the Add popup opens.
@@ -375,7 +373,7 @@
       );
       if (!inst) { error = 'Symbol not in cache — retry.'; return; }
       await addToWatchlistDeduped(targetId, inst.s, inst.e || 'NFO');
-      symInput = ''; typeahead = []; typeaheadOpen = false;
+      symInput = '';
       closeOptionPicker();
       await loadActive();
     } catch (e) { error = e.message; }
@@ -394,7 +392,7 @@
     const exch = (sym === 'SENSEX' || sym === 'BANKEX') ? 'BSE' : 'NSE';
     try {
       await addToWatchlistDeduped(targetId, sym, exch);
-      symInput = ''; typeahead = []; typeaheadOpen = false;
+      symInput = '';
       closeOptionPicker();
       await loadActive();
     } catch (e) { error = e.message; }
@@ -3173,20 +3171,13 @@
 
   // ── Add / remove ────────────────────────────────────────────────
 
-  async function searchSymbols(q) {
-    if (!q || q.length < 3) { typeahead = []; return; }
-    try {
-      const { searchByPrefix } = await import('$lib/data/instruments');
-      typeahead = await searchByPrefix(q.toUpperCase(), 12);
-    } catch { typeahead = []; }
-  }
-
   // Map the EQ/FU/CE/PE picker to the broker exchange used by
   // addToWatchlistDeduped. Cash equities live on NSE (BSE quotes
-  // are reachable by typing the symbol explicitly via typeahead, which
-  // overrides this); every derivative variant lands on NFO. MCX /
-  // CDS instruments come in via the typeahead path which carries
-  // the real exchange in inst.e.
+  // are reachable by typing the symbol explicitly via the symbol
+  // search dropdown, which overrides this); every derivative variant
+  // lands on NFO. MCX / CDS instruments come in via the search-pick
+  // path (AddToPulseModal's `_handleSymbolPick`), which carries the
+  // real exchange in inst.e.
   function _exchangeForType(t) {
     return t === 'EQ' ? 'NSE' : 'NFO';
   }
@@ -3240,14 +3231,12 @@
         aliasInput.trim() || null,
       );
       symInput = ''; aliasInput = '';
-      typeahead = []; typeaheadOpen = false;
       searchOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
   }
 
   async function pickFromTypeahead(inst) {
-    typeaheadOpen = false;
     // Sync the EQ/FU/CE/PE picker to whatever the operator just chose
     // — purely a UI hint; the actual exchange used below comes from
     // inst.e (the broker's authoritative value).
@@ -3277,14 +3266,12 @@
     try {
       await addToWatchlistDeduped(targetId, inst.s, inst.e, aliasInput.trim() || null);
       symInput = ''; aliasInput = '';
-      typeahead = []; typeaheadOpen = false;
       await loadActive();
     } catch (e) { error = e.message; }
   }
 
   function openSearch() {
     searchOpen = true;
-    typeaheadOpen = false;
     // Seed the watchlist dropdown to the default list (or the
     // currently-focused list) so a fresh popup always has a sensible
     // target pre-selected. Operator can flip to "+ New watchlist" or
@@ -3295,7 +3282,6 @@
   }
   function closeSearch() {
     searchOpen = false;
-    typeaheadOpen = false;
     // Reset transient form state so the popup opens clean next time.
     newListName = '';
     aliasInput  = '';
@@ -4220,10 +4206,14 @@
     if (ev.key === 'Escape') {
       if (ctxMenu) { closeContextMenu(); return; }
       if (optionPickerUnderlying) { closeOptionPicker(); return; }
-      // Only consume Esc for an actually-rendered typeahead (open AND
-      // non-empty). With typeaheadOpen-on-focus + empty list, the old
-      // guard swallowed Esc when there was nothing visible to close.
-      if (typeaheadOpen && typeahead.length) { typeaheadOpen = false; return; }
+      // This whole `searchOpen` branch (and everything above it in this
+      // function) is already unreachable while the Add popup is open —
+      // AddToPulseModal / SymbolSearchInput register their own
+      // layerStack layers, and that coordinator's capture-phase
+      // document listener calls stopPropagation() before this bubble-
+      // phase `document` listener ever runs. Left as a harmless no-op
+      // fallback rather than removed, matching the pre-existing
+      // (already dead) code directly below it.
       if (searchOpen) { closeSearch(); return; }
       ticketProps = null;
       return;
@@ -4662,13 +4652,11 @@
   {lists} {focusedListId} {isDemo}
   bind:targetListId bind:newListName
   bind:symInput bind:typeInput bind:aliasInput
-  bind:typeahead bind:typeaheadOpen
   bind:renameId={_renameId} bind:renameName={_renameName} bind:renameError={_renameError}
   onAdd={addRow}
   onDropList={dropList}
   onCommitRename={commitRename}
   onCancelRename={cancelRename}
-  onSearchSymbols={searchSymbols}
   onPickTypeahead={pickFromTypeahead}
   onClose={closeSearch}
 />
@@ -5671,24 +5659,6 @@
     align-items: stretch;
     gap: 0.35rem;
   }
-  :global(.search-typeahead) {
-    max-height: 16rem;
-    overflow-y: auto;
-    background: #0c1830;
-    border: 1px solid rgba(251, 191, 36, 0.25);
-    border-radius: 4px;
-  }
-  :global(.search-typeahead-item) {
-    display: block;
-    width: 100%;
-    text-align: left;
-    padding: 0.4rem 0.7rem;
-    font-size: var(--fs-lg);
-    background: transparent;
-    border: none;
-    cursor: pointer;
-  }
-  :global(.search-typeahead-item:hover) { background: rgba(251, 191, 36, 0.1); }
   :global(.search-hint) {
     font-size: var(--fs-sm);
     color: var(--c-muted);
