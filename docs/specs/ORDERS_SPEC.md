@@ -328,7 +328,7 @@ cache; F&O (lot_size > 1) shows lots field; equity (≤1) shows qty.
 - Remaining defenses:
   - `_arm_take_profit` live path has inline G1 before broker.place_order
   - `apply_plan_live` GTT layer has synchronous G1 check
-  - `kite.py` adapter 50-lot ceiling (hard-blocked, no intent bypass)
+  - `kite.py` adapter 50-lot ceiling (bypassed for close intent; close orders of any size allowed through)
 
 ### Price (Limit / SL Price)
 
@@ -599,7 +599,7 @@ POST /api/orders/basket/margin
 **Trigger**: Before submitting a multi-leg order in the Chain tab with a
 wing-bearing template attached, the spread-check gate validates bid-ask spread
 on both the primary leg and the computed offset/wing leg against the template's
-`wing_max_spread_pct` threshold (default 10%, operator-editable per template or
+`wing_max_spread_pct` threshold (default 0.5%, operator-editable per template or
 global setting).
 
 **Four resolution paths** (operator chooses one; loop bounded by max attempts +
@@ -1270,7 +1270,7 @@ List concrete things to verify in an audit:
 
 9. **Chase attempts incremented correctly**
    - `attempts` counter increases on each retry
-   - Stops at `max_attempts` (default 3)
+   - Stops at `max_attempts` (default 20 for live mode, 5 for paper mode)
 
 10. **Template attach fires only once per parent fill** (via `attached_gtts_json` check)
     - Duplicate postbacks don't double-place GTTs

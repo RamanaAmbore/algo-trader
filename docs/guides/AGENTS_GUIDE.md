@@ -245,11 +245,11 @@ of `order_failure` alerts — operators monitoring ntfy see loss events immediat
   loss from prior close). Suppressed by `loss-positions-total` when both fire on the
   same tick. Routes to ntfy, Telegram, email at urgent priority.
 
-- **`loss-rate-acct`** (critical tier, 10-min cooldown + 10-min baseline window) —
+- **`loss-rate-acct`** (critical tier, 10-min cooldown + 15-min baseline window) —
   per-account rate-of-loss. Fires only when **both** conditions breach simultaneously:
   absolute loss rate ≤ -₹10,000/min **AND** percentage loss rate ≤ -0.25%/min. Single-
   condition breaches (only absolute OR only percentage) do not trigger. Blocked from
-  firing for the first 10 minutes after market open (baseline window, by design) — no
+  firing for the first 15 minutes after market open (baseline window, by design) — no
   early false alarms. Routes to ntfy, Telegram, email at urgent priority.
 
 - **`loss-positions-total`** (critical tier, suppresses per-acct) — book-wide absolute
