@@ -213,7 +213,13 @@
   .bh-overlay {
     position: fixed;
     inset: 0;
-    z-index: 9990;
+    /* z-index audit (2026-10-02): was a bare 9990 literal, well below
+       this badge's own .bh-modal (var(--z-drawer)=20001, below) —
+       matched to the same named tier so overlay + panel are co-located
+       on the scale. Purely decorative today (transparent,
+       pointer-events:none), kept in lockstep for whenever that
+       changes. */
+    z-index: var(--z-drawer);
     background: transparent;
     pointer-events: none;
   }

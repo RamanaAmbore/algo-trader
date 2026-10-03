@@ -68,8 +68,10 @@
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<!-- overlay sits at z-index 10600 (above SymbolPanel at 10500) so
-     ChartModal is never hidden behind it. pointer-events:auto enables
+<!-- overlay sits at --z-modal-nested (10700) — above SymbolPanel's
+     --z-command tier (10500) AND clear of its portalled
+     .mode-combo-overlay/-dropdown siblings (10600/10601), so ChartModal
+     is never hidden behind either. pointer-events:auto enables
      backdrop click-to-close (clicking outside the panel calls onClose). -->
 <div class="canonical-modal-overlay cm-overlay" class:cm-busy={_loading}
      role="dialog" aria-modal="true"
@@ -143,11 +145,17 @@
      chrome below. */
 
   /* Override the global .canonical-modal-overlay z-index (10500, shared
-     with SymbolPanel) so ChartModal always renders on top. Also enable
-     pointer-events so clicking the backdrop (outside the panel) closes
-     the modal — .cm-modal restores auto on the panel itself. */
+     with SymbolPanel) so ChartModal always renders on top. z-index
+     audit (2026-10-02): the old bare 10600 literal collided exactly
+     with .mode-combo-overlay's computed z-index
+     (calc(var(--z-command)+100)=10600, defined in (algo)/+layout.svelte)
+     — moved onto the named --z-modal-nested tier (10700) instead, which
+     clears both SymbolPanel's --z-command (10500) and the mode-combo
+     pair (10600/10601). Also enable pointer-events so clicking the
+     backdrop (outside the panel) closes the modal — .cm-modal restores
+     auto on the panel itself. */
   .cm-overlay {
-    z-index: 10600;
+    z-index: var(--z-modal-nested);
     pointer-events: auto;
   }
 

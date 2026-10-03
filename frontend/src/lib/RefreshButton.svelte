@@ -689,11 +689,18 @@
     position: relative;
     display: inline-flex;
   }
+  /* z-index audit (2026-10-02): the old bare 1000/1001 literals sat far
+     below --z-command (10500), so a RefreshButton mounted inside a
+     modal (SymbolPanel, OrderTicket) would render this popup BEHIND
+     the host modal's own backdrop. RefreshButton mounts in many such
+     contexts — matched to the --z-dropdown / --z-dropdown+1 pair, the
+     same overlay/panel-above-overlay convention already used by
+     .mode-combo-overlay/-dropdown, which clears every modal tier. */
   .rf-closed-overlay {
     position: fixed;
     inset: 0;
     background: transparent;
-    z-index: 1000;
+    z-index: var(--z-dropdown);
   }
   .rf-closed-popup {
     /* Composes .algo-modal chrome (gradient + amber halo + shadow +
@@ -708,7 +715,7 @@
     position: absolute;
     top: calc(100% + 0.4rem);
     right: 0;
-    z-index: 1001;
+    z-index: calc(var(--z-dropdown) + 1);
     min-width: 16rem;
     max-width: min(18rem, 92vw);
     padding: 0.7rem 0.85rem 0.65rem;

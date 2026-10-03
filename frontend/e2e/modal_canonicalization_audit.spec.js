@@ -17,6 +17,11 @@
  *      full dialogs → ModalShell's 0.72+blur(2px)); OrderTimelineDrawer's
  *      `.otd-backdrop` (a lighter side drawer → the 0.42
  *      canonical-modal-overlay value, no blur).
+ *   4. z-index literals outside the shared app.css scale — ChartModal
+ *      (10600, collided with .mode-combo-overlay → --z-modal-nested),
+ *      ActivityLogModal (bare 10500 → var(--z-command)),
+ *      BrokerHealthBadge (9990 → var(--z-drawer), matching its own
+ *      modal's tier), RefreshButton (1000/1001 → --z-dropdown pair).
  *
  * Five quality dimensions (matches this repo's e2e convention):
  *   1. SSOT   — z-index/dim read from app.css custom properties at
@@ -276,5 +281,101 @@ test.describe('Functional — OrderPairModal dim resolves to ModalShell\'s canon
     ]);
     expect(bg).toBe('rgba(8, 12, 20, 0.72)');
     expect(blur).toContain('blur(2px)');
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Item 4 — z-index literals outside the shared app.css scale
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — z-index literals replaced with app.css scale tokens', () => {
+  test('ChartModal .cm-overlay uses --z-modal-nested, not the old bare 10600 (collided with mode-combo-overlay)', () => {
+    const chartModal = readFile('src/lib/ChartModal.svelte');
+    expect(chartModal).toMatch(/z-index:\s*var\(--z-modal-nested\);/);
+    expect(chartModal).not.toMatch(/z-index:\s*10600;/);
+  });
+
+  test('ActivityLogModal uses var(--z-command), not the old bare 10500 literal', () => {
+    const activityLogModal = readFile('src/lib/ActivityLogModal.svelte');
+    expect(activityLogModal).toMatch(/style="z-index:var\(--z-command\)"/);
+    expect(activityLogModal).not.toMatch(/style="z-index:10500"/);
+  });
+
+  test('BrokerHealthBadge .bh-overlay uses var(--z-drawer) (matches its own .bh-modal tier), not the old bare 9990', () => {
+    const bh = readFile('src/lib/BrokerHealthBadge.svelte');
+    const start = bh.indexOf('.bh-overlay {');
+    expect(start, '.bh-overlay rule must exist').toBeGreaterThan(-1);
+    const close = bh.indexOf('\n  }', start);
+    const ruleBody = bh.slice(start, close);
+    expect(ruleBody).toMatch(/z-index:\s*var\(--z-drawer\);/);
+    expect(ruleBody).not.toMatch(/z-index:\s*9990;/);
+  });
+
+  test('RefreshButton market-closed popup uses the --z-dropdown pair, not the old bare 1000/1001', () => {
+    const refreshButton = readFile('src/lib/RefreshButton.svelte');
+    expect(refreshButton).toMatch(/\.rf-closed-overlay\s*\{[\s\S]*?z-index:\s*var\(--z-dropdown\);/);
+    expect(refreshButton).toMatch(/\.rf-closed-popup\s*\{[\s\S]*?z-index:\s*calc\(var\(--z-dropdown\)\s*\+\s*1\);/);
+    expect(refreshButton).not.toMatch(/z-index:\s*1000;/);
+    expect(refreshButton).not.toMatch(/z-index:\s*1001;/);
+  });
+});
+
+test.describe('Functional — z-index tiers resolve correctly at runtime (real browser)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('ChartModal (`k` shortcut) resolves to --z-modal-nested, above --z-command and the mode-combo pair', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('k');
+
+    const overlay = page.locator('.cm-overlay');
+    await expect(overlay, 'ChartModal overlay should open on `k`').toBeVisible({ timeout: 10_000 });
+
+    const [zIndex, zModalNested, zCommand] = await Promise.all([
+      overlay.evaluate((el) => Number(getComputedStyle(el).zIndex)),
+      page.evaluate(() => Number(getComputedStyle(document.documentElement).getPropertyValue('--z-modal-nested').trim())),
+      page.evaluate(() => Number(getComputedStyle(document.documentElement).getPropertyValue('--z-command').trim())),
+    ]);
+    expect(zIndex).toBe(zModalNested);
+    expect(zIndex).toBeGreaterThan(zCommand);
+    expect(zIndex).not.toBe(10600); // old literal — must not collide with mode-combo-overlay
+  });
+
+  test('ActivityLogModal (`h` shortcut) resolves to --z-command', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+    await page.locator('body').click({ position: { x: 5, y: 5 } });
+    await page.keyboard.press('h');
+
+    const overlay = page.locator('[aria-label="Activity log"]');
+    await expect(overlay, 'ActivityLogModal overlay should open on `h`').toBeVisible({ timeout: 10_000 });
+
+    const [zIndex, zCommand] = await Promise.all([
+      overlay.evaluate((el) => Number(getComputedStyle(el).zIndex)),
+      page.evaluate(() => Number(getComputedStyle(document.documentElement).getPropertyValue('--z-command').trim())),
+    ]);
+    expect(zIndex).toBe(zCommand);
+  });
+
+  test('BrokerHealthBadge popover resolves to --z-drawer, matching its own .bh-modal tier', async ({ page }) => {
+    await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
+
+    const brokerChip = page.locator('.broker-chip:visible').first();
+    const chipVisible = await brokerChip.isVisible({ timeout: 8_000 }).catch(() => false);
+    test.skip(!chipVisible, 'no broker chip rendered in this environment (no connected broker accounts)');
+
+    await brokerChip.click();
+    const modal = page.locator('.bh-modal');
+    await expect(modal, 'broker health modal should open').toBeVisible({ timeout: 5_000 });
+
+    const overlay = page.locator('.bh-overlay');
+    const [overlayZ, modalZ, zDrawer] = await Promise.all([
+      overlay.evaluate((el) => Number(getComputedStyle(el).zIndex)),
+      modal.evaluate((el) => Number(getComputedStyle(el).zIndex)),
+      page.evaluate(() => Number(getComputedStyle(document.documentElement).getPropertyValue('--z-drawer').trim())),
+    ]);
+    expect(overlayZ).toBe(zDrawer);
+    expect(modalZ).toBe(zDrawer);
   });
 });

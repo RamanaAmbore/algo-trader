@@ -68,7 +68,7 @@
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <!-- svelte-ignore a11y_click_events_have_key_events -->
-<div class="canonical-modal-overlay" style="z-index:10500"
+<div class="canonical-modal-overlay" style="z-index:var(--z-command)"
      role="dialog" aria-modal="true" aria-label="Activity log"
      use:portal>
   <div class="canonical-modal-panel alm-panel" bind:this={_modalEl}>
