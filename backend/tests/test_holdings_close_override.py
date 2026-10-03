@@ -215,6 +215,59 @@ class TestHoldingsCloseOverrideForHoldings:
         t1_infy = df[(df['account'] == 'TEST001') & (df['tradingsymbol'] == 'INFY')].iloc[0]
         assert abs(t1_infy['prev_close'] - 1500.0) < 0.01, "TEST001/INFY must not be patched"
 
+    def test_cold_ltp_does_not_zero_day_change_val(self):
+        """2026-10 audit fix: last_price=0 (cold quote / rate-limited broker
+        call / pre-tick startup) must NOT overwrite day_change_val with a
+        phantom full-value loss `(0 - prev_close) × qty`. The existing
+        day_change_val (whatever _enrich_holdings last computed) must be
+        preserved untouched on cold-LTP rows, mirroring the guard already
+        applied in positions.py:1941."""
+        qty = 50
+        avg = 140.0
+        existing_dcv = 123.45  # whatever _enrich_holdings last computed
+        df = _make_holdings_df(
+            account="TEST001", tradingsymbol="RELIANCE",
+            quantity=qty, last_price=0.0, close_price=150.0,
+            average_price=avg,
+        )
+        df.at[0, 'day_change_val'] = existing_dcv
+
+        snapshot_rows = [("TEST001", "RELIANCE", 145.0)]
+        df = _run_close_override_for_holdings(df, snapshot_rows)
+
+        # prev_close is still patched from the snapshot — only day_change_val
+        # (the P&L-bearing field) is guarded against the cold LTP.
+        assert abs(df.iloc[0]['prev_close'] - 145.0) < 0.01
+
+        phantom_loss = (0.0 - 145.0) * qty
+        assert abs(df.iloc[0]['day_change_val'] - phantom_loss) > 1.0, (
+            "day_change_val must NOT be the phantom full-value loss"
+        )
+        assert abs(df.iloc[0]['day_change_val'] - existing_dcv) < 0.01, (
+            f"day_change_val should be preserved at {existing_dcv} when "
+            f"last_price is cold (0), got {df.iloc[0]['day_change_val']}"
+        )
+
+    def test_warm_ltp_still_recomputes_day_change_val(self):
+        """Sanity companion to the cold-LTP guard — a genuine positive LTP
+        must still recompute day_change_val normally (guard is not a
+        blanket freeze)."""
+        qty = 50
+        df = _make_holdings_df(
+            account="TEST001", tradingsymbol="RELIANCE",
+            quantity=qty, last_price=160.0, close_price=150.0,
+            average_price=140.0,
+        )
+        df.at[0, 'day_change_val'] = 0.0
+
+        snapshot_rows = [("TEST001", "RELIANCE", 145.0)]
+        df = _run_close_override_for_holdings(df, snapshot_rows)
+
+        expected_dcv = (160.0 - 145.0) * qty
+        assert abs(df.iloc[0]['day_change_val'] - expected_dcv) < 0.01, (
+            f"expected day_change_val={expected_dcv}, got {df.iloc[0]['day_change_val']}"
+        )
+
     def test_close_price_patch_enables_correct_dcv_after_enrich(self):
         """Complementary path: when day_change_val column is absent, override
         cannot recompute it (guard skips), so _enrich_holdings must compute it

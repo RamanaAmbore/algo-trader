@@ -488,13 +488,25 @@ async def _override_stale_close_for_holdings(raw: pd.DataFrame) -> None:
     # just the newly-patched rows. Rows that already had the correct value
     # still need a fresh (ltp − prev_close) × qty because _enrich_holdings
     # ran against the broker's own close before this function was called.
+    #
+    # Cold-LTP guard (2026-10 audit fix, mirrors positions.py:1941): when
+    # `last_price` is 0/missing (a cold quote, rate-limited broker call, or
+    # pre-tick startup window), (0 − prev_close) × qty computes a phantom
+    # loss equal to the holding's ENTIRE value. Only overwrite
+    # `day_change_val` where last_price is genuinely > 0; rows with a cold
+    # LTP keep whatever value they already had (broker's own day_change_val
+    # from `_enrich_holdings`, or 0 if that was never populated either).
     pc_series = pd.to_numeric(raw['prev_close'], errors='coerce').fillna(0)
     all_pc_indices = raw.index[pc_series > 0].tolist()
     if all_pc_indices and 'day_change_val' in raw.columns:
         _ltp = pd.to_numeric(raw.loc[all_pc_indices, 'last_price'], errors='coerce').fillna(0)
         _cls = pc_series.loc[all_pc_indices]
         _qty = pd.to_numeric(raw.loc[all_pc_indices, 'quantity'], errors='coerce').fillna(0)
-        raw.loc[all_pc_indices, 'day_change_val'] = (_ltp - _cls) * _qty
+        _new_dcv = (_ltp - _cls) * _qty
+        _existing_dcv = pd.to_numeric(
+            raw.loc[all_pc_indices, 'day_change_val'], errors='coerce'
+        ).fillna(0)
+        raw.loc[all_pc_indices, 'day_change_val'] = _new_dcv.where(_ltp > 0, _existing_dcv)
         # Also update per-share day_change so percentage columns are consistent.
         _nonzero_qty = _qty.replace(0, float('nan'))
         raw.loc[all_pc_indices, 'day_change'] = (
