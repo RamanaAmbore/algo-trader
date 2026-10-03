@@ -191,7 +191,7 @@ def resolve_role_from_connection(connection) -> str:
 # The capability matrix above is VERTICAL — it answers "can role X do
 # action Y?". Horizontal scoping answers "on which accounts / strategies
 # can role X act?". The two compose: cap_guard rejects before the route
-# runs; account_scope_filter narrows the result set.
+# runs; user_scope_for_connection() narrows the result set.
 #
 # Default policy per role:
 #   designated / risk / admin / partner / demo → ALL (firm-wide visibility)
@@ -207,27 +207,6 @@ def resolve_role_from_connection(connection) -> str:
 #: all others see everything (subject to the cap matrix's vertical
 #: gates).
 _FIRM_WIDE_ROLES = frozenset({"designated", "risk", "admin", "partner", "demo"})
-
-
-def accounts_in_scope(role: str | None, assigned: list[str] | None,
-                       all_accounts: list[str]) -> list[str]:
-    """Effective broker-account scope for the current user.
-
-    - Firm-wide roles → `all_accounts` (the live broker registry).
-    - Trader → `assigned` (the per-user list). Empty list = empty
-      result (the trader explicitly has no accounts assigned).
-    - Unknown role → empty list (fail-closed).
-
-    Callers pass `all_accounts` because it depends on the live
-    Connections registry which is request-scope-irrelevant — let the
-    caller fetch it once.
-    """
-    r = normalise_role(role)
-    if r in _FIRM_WIDE_ROLES:
-        return list(all_accounts)
-    if r == "trader":
-        return [a for a in (assigned or []) if a in all_accounts]
-    return []
 
 
 async def user_scope_for_connection(connection) -> tuple[list[str], list[int]]:
@@ -326,13 +305,3 @@ def cap_guard(cap: str):
 
     _guard.__name__ = f"cap_guard__{cap}"
     return _guard
-
-
-# ── Convenience: capability sets exported for the frontend ──────────────
-
-def export_role_to_caps() -> dict[str, list[str]]:
-    """Build a `{role: [caps]}` map for the frontend bootstrap. Called
-    once from the /auth/me endpoint so the SPA doesn't have to mirror
-    the matrix by hand."""
-    return {role: caps_for_role(role)
-            for role in (*ASSIGNABLE_ROLES, "demo")}
