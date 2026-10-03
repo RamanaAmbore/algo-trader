@@ -61,12 +61,67 @@ if (browser) {
 /** @type {{ positions: any, holdings: any, funds: any }|null} */
 let _last = null;
 
+// ── prev_mv-null diagnostic — warn once per distinct condition ───────────────
+//
+// 2026-10 perf/noise fix (Defect 2 follow-up): `_posTier2` recomputes at
+// up to 4Hz (on every relevant SSE tick), so a position that genuinely has
+// no resolvable prev_mv (bad/missing broker data) warned on EVERY tick —
+// console spam, not a diagnostic signal. Dedup key is (sym, prev_close, oq):
+// if the SAME broker-reported condition recurs tick after tick, warn once;
+// if the underlying values change (e.g. the position's prev_close gets
+// backfilled, or oq rolls to a new session), a fresh warning fires for the
+// new state.
+const _prevMvWarnedKeys = new Set();
+/**
+ * @param {string} sym
+ * @param {number | null | undefined} prevClose
+ * @param {number} oq
+ * @param {(...args: any[]) => void} [warner]  injectable for testing
+ */
+export function warnPrevMvNullOnce(sym, prevClose, oq, warner = console.warn) {
+  const key = `${sym}|${prevClose}|${oq}`;
+  if (_prevMvWarnedKeys.has(key)) return false;
+  _prevMvWarnedKeys.add(key);
+  warner('[portfolioStore] prev_mv null:', sym, 'prev_close=', prevClose, 'oq=', oq);
+  return true;
+}
+
 // ── Root spot cache ──────────────────────────────────────────────────────────
-const _rootSpotCache = $derived.by(() => {
-  void _tick;
-  const posRows = positionsStore.value;
-  if (!posRows) return {};
-  const cache = {};
+
+/** Shared empty-cache constant — returned (not a fresh `{}`) when there are
+ *  no position rows, so repeated no-position ticks also stay reference-stable. */
+const _EMPTY_ROOT_SPOT_CACHE = /** @type {Record<string, number>} */ ({});
+
+/**
+ * Pure builder for the per-root underlying-spot cache. Extracted from the
+ * `_rootSpotCache` $derived.by body so (a) the reference-stability logic
+ * is unit-testable (portfolioStore.svelte.js has top-level $state/$derived
+ * calls and can't be imported directly by this project's Vitest config —
+ * see the R4a header note on the source-grep tests below; a hand-mirrored
+ * copy of this function is what's actually exercised in
+ * portfolioStore.test.js) and (b) it's reusable without duplicating the
+ * isFOSymbol/decompose wiring.
+ *
+ * 2026-10 perf fix (Defect 2): `_tick` bumps at 4Hz on ANY symbol's SSE
+ * tick, not just roots this cache cares about. Before this fix, every
+ * bump rebuilt a BRAND-NEW `{}` object even when every resolved root's
+ * spot value was unchanged — `_posTier2`/`_posAgg`/`_portfolio` all read
+ * `_rootSpotCache` by reference (directly or transitively), so Svelte's
+ * dependency tracking saw a "changed" value on every tick and recomputed
+ * the whole positions chain at 4Hz regardless of relevance. Returning the
+ * SAME `prev` reference when nothing actually changed lets Svelte's
+ * equality check skip invalidating those downstream deriveds.
+ *
+ * @param {any[] | null | undefined} posRows
+ * @param {(sym: string) => boolean} isFO
+ * @param {(sym: string) => { root: string | null }} decompose
+ * @param {(root: string) => number} getSpot
+ * @param {Record<string, number>} prev
+ * @returns {Record<string, number>}
+ */
+export function computeRootSpotCache(posRows, isFO, decompose, getSpot, prev) {
+  if (!posRows) return _EMPTY_ROOT_SPOT_CACHE;
+  const next = /** @type {Record<string, number>} */ ({});
   for (const p of posRows) {
     const sym  = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
     // 2026-09 R4 post-ship audit fix: was `FO_EXCHS.has(exch)` (the old
@@ -77,14 +132,40 @@ const _rootSpotCache = $derived.by(() => {
     // Commit 7 already fixed the SAME row's `_isFO` classification two
     // tiers downstream (`_posTier2`) to use `isFOSymbol` instead —
     // completing what Commit 7 was meant to do everywhere in this file.
-    if (!isFOSymbol(sym) || !sym) continue;
-    const root = (decomposeSymbol(sym).root || sym).toUpperCase();
-    if (root && !(root in cache)) {
-      const live = untrack(() => getUnderlyingSpot(root));
-      cache[root] = live > 0 ? live : (Number(p?.underlying_ltp) || 0);
+    if (!isFO(sym) || !sym) continue;
+    const root = (decompose(sym).root || sym).toUpperCase();
+    if (root && !(root in next)) {
+      const live = getSpot(root);
+      next[root] = live > 0 ? live : (Number(p?.underlying_ltp) || 0);
     }
   }
-  return cache;
+  // Reference-stability check (Defect 2 fix): if `next` has exactly the
+  // same keys and values as `prev`, discard `next` and return `prev` so
+  // the caller's $derived.by sees an UNCHANGED reference.
+  const prevKeys = Object.keys(prev || {});
+  const nextKeys = Object.keys(next);
+  if (prevKeys.length === nextKeys.length) {
+    let identical = true;
+    for (const k of nextKeys) {
+      if (prev[k] !== next[k]) { identical = false; break; }
+    }
+    if (identical) return prev;
+  }
+  return next;
+}
+
+let _rootSpotCacheLast = /** @type {Record<string, number>} */ (_EMPTY_ROOT_SPOT_CACHE);
+const _rootSpotCache = $derived.by(() => {
+  void _tick;
+  const posRows = positionsStore.value;
+  _rootSpotCacheLast = computeRootSpotCache(
+    posRows,
+    isFOSymbol,
+    decomposeSymbol,
+    (root) => untrack(() => getUnderlyingSpot(root)),
+    _rootSpotCacheLast,
+  );
+  return _rootSpotCacheLast;
 });
 
 // ── Tier 1 — raw + LTP ───────────────────────────────────────────────────────
@@ -134,7 +215,7 @@ const _posTier2 = $derived.by(() => {
       : oq === 0 && p._avg > 0                    ? p._avg       * Math.abs(p._qty)
       : null;
     if (prev_mv === null && oq !== 0)
-      console.warn('[portfolioStore] prev_mv null:', p._sym, 'prev_close=', p._prev_close, 'oq=', oq);
+      warnPrevMvNullOnce(p._sym, p._prev_close, oq);
 
     let exp_pnl = null, extrinsic = null;
     // Per-piece Exp P&L (2026-09 Commit 5) — parallel to `exp_pnl`

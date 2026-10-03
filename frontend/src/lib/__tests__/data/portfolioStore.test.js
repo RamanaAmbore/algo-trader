@@ -48,14 +48,27 @@ import portfolioStoreSrc from '$lib/data/portfolioStore.svelte.js?raw';
 describe('portfolioStore.svelte.js — R4a source-grep guard (real file, not the mirror)', () => {
   const src = portfolioStoreSrc;
 
-  it('_rootSpotCache gates on the shared isFOSymbol predicate', () => {
-    const idx = src.indexOf('const _rootSpotCache = $derived.by(() => {');
-    expect(idx, '_rootSpotCache must exist').toBeGreaterThan(0);
-    const blockEnd = src.indexOf('\n});', idx);
+  it('_rootSpotCache (via computeRootSpotCache) gates on the shared isFOSymbol predicate', () => {
+    // 2026-10 Defect 2 fix moved the per-root build loop out of the
+    // $derived.by body into the exported, testable computeRootSpotCache
+    // function (see the dedicated describe block below) — the gate now
+    // lives there, parameterised as `isFO` rather than calling
+    // isFOSymbol directly by name, but it's still the SAME shared
+    // predicate (passed in by _rootSpotCache as `isFOSymbol` itself).
+    const idx = src.indexOf('export function computeRootSpotCache(');
+    expect(idx, 'computeRootSpotCache must exist').toBeGreaterThan(0);
+    const blockEnd = src.indexOf('\n}', idx);
     const block = src.slice(idx, blockEnd);
     expect(
-      block.includes('if (!isFOSymbol(sym) || !sym) continue;'),
-      'R4a: _rootSpotCache must gate on isFOSymbol(sym), not an exchange-set check'
+      block.includes('if (!isFO(sym) || !sym) continue;'),
+      'R4a: computeRootSpotCache must gate on isFO(sym), not an exchange-set check'
+    ).toBe(true);
+    const callerIdx = src.indexOf('const _rootSpotCache = $derived.by(() => {');
+    const callerEnd = src.indexOf('\n});', callerIdx);
+    const callerBlock = src.slice(callerIdx, callerEnd);
+    expect(
+      callerBlock.includes('isFOSymbol,'),
+      'R4a: _rootSpotCache must pass the shared isFOSymbol predicate into computeRootSpotCache'
     ).toBe(true);
   });
 
@@ -78,6 +91,164 @@ describe('portfolioStore.svelte.js — R4a source-grep guard (real file, not the
       src.includes('const isFO = isFOSymbol(p._sym);'),
       'R4a: _posTier2 must classify via isFOSymbol, matching _rootSpotCache'
     ).toBe(true);
+  });
+});
+
+// ── 2026-10 Defect 2 fix — _rootSpotCache reference stability ──────────────
+//
+// portfolioStore.svelte.js can't be imported directly (see file-header
+// note above), so computeRootSpotCache's reference-stability contract is
+// exercised here via a hand-mirrored copy (same convention as
+// _computePortfolioPositions below) plus a source-grep confirming the
+// real file's `_rootSpotCache` $derived.by actually delegates to the real
+// `computeRootSpotCache` function (not an inline rebuild that silently
+// drifts from this mirror).
+
+const _EMPTY_ROOT_SPOT_CACHE_MIRROR = {};
+
+/** Hand-mirror of computeRootSpotCache — see portfolioStore.svelte.js. */
+function computeRootSpotCacheMirror(posRows, isFO, decompose, getSpot, prev) {
+  if (!posRows) return _EMPTY_ROOT_SPOT_CACHE_MIRROR;
+  const next = {};
+  for (const p of posRows) {
+    const sym = String(p?.tradingsymbol || p?.symbol || '').toUpperCase();
+    if (!isFO(sym) || !sym) continue;
+    const root = (decompose(sym).root || sym).toUpperCase();
+    if (root && !(root in next)) {
+      const live = getSpot(root);
+      next[root] = live > 0 ? live : (Number(p?.underlying_ltp) || 0);
+    }
+  }
+  const prevKeys = Object.keys(prev || {});
+  const nextKeys = Object.keys(next);
+  if (prevKeys.length === nextKeys.length) {
+    let identical = true;
+    for (const k of nextKeys) {
+      if (prev[k] !== next[k]) { identical = false; break; }
+    }
+    if (identical) return prev;
+  }
+  return next;
+}
+
+describe('computeRootSpotCache (mirror) — reference stability (Defect 2 fix)', () => {
+  const isFO = () => true;
+  const decompose = (sym) => ({ root: sym.slice(0, 5) });
+
+  it('returns the SAME object reference when no resolved root spot changed', () => {
+    const rows = [{ tradingsymbol: 'NIFTY25OCT24000CE', underlying_ltp: 24000 }];
+    const getSpot = () => 24000;
+    const first = computeRootSpotCacheMirror(rows, isFO, decompose, getSpot, _EMPTY_ROOT_SPOT_CACHE_MIRROR);
+    const second = computeRootSpotCacheMirror(rows, isFO, decompose, getSpot, first);
+    expect(second).toBe(first); // reference equality — the actual Defect 2 assertion
+    expect(second).toEqual({ NIFTY: 24000 });
+  });
+
+  it('returns a NEW object reference when a resolved root spot DID change', () => {
+    const rows = [{ tradingsymbol: 'NIFTY25OCT24000CE', underlying_ltp: 24000 }];
+    const first = computeRootSpotCacheMirror(rows, isFO, decompose, () => 24000, _EMPTY_ROOT_SPOT_CACHE_MIRROR);
+    const second = computeRootSpotCacheMirror(rows, isFO, decompose, () => 24050, first);
+    expect(second).not.toBe(first);
+    expect(second).toEqual({ NIFTY: 24050 });
+  });
+
+  it('returns a NEW reference when the root SET changes (new root appears)', () => {
+    const first = computeRootSpotCacheMirror(
+      [{ tradingsymbol: 'NIFTY25OCT24000CE', underlying_ltp: 24000 }],
+      isFO, decompose, () => 24000, _EMPTY_ROOT_SPOT_CACHE_MIRROR,
+    );
+    const second = computeRootSpotCacheMirror(
+      [
+        { tradingsymbol: 'NIFTY25OCT24000CE', underlying_ltp: 24000 },
+        { tradingsymbol: 'BANKN25OCT51000CE', underlying_ltp: 51000 },
+      ],
+      isFO, decompose, (root) => (root === 'NIFTY' ? 24000 : 51000), first,
+    );
+    expect(second).not.toBe(first);
+  });
+
+  it('returns the shared empty-cache constant (not a fresh {}) when posRows is null', () => {
+    const a = computeRootSpotCacheMirror(null, isFO, decompose, () => 0, {});
+    const b = computeRootSpotCacheMirror(null, isFO, decompose, () => 0, {});
+    expect(a).toBe(b); // same shared constant both times
+  });
+
+  it('calls getSpot once per distinct root even across multiple legs on the same root', () => {
+    const getSpot = vi.fn(() => 24000);
+    const rows = [
+      { tradingsymbol: 'NIFTY25OCT24000CE', underlying_ltp: 24000 },
+      { tradingsymbol: 'NIFTY25OCT24100PE', underlying_ltp: 24000 },
+    ];
+    computeRootSpotCacheMirror(rows, isFO, decompose, getSpot, {});
+    expect(getSpot).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('portfolioStore.svelte.js — _rootSpotCache wires to computeRootSpotCache (real file)', () => {
+  const src = portfolioStoreSrc;
+
+  it('exports computeRootSpotCache with the reference-stability check', () => {
+    expect(src).toMatch(/export function computeRootSpotCache\(/);
+    const idx = src.indexOf('export function computeRootSpotCache(');
+    const blockEnd = src.indexOf('\n}', idx);
+    const block = src.slice(idx, blockEnd);
+    expect(block, 'computeRootSpotCache must return prev on an identical rebuild').toContain('return prev;');
+  });
+
+  it('_rootSpotCache $derived.by delegates to computeRootSpotCache, not an inline rebuild', () => {
+    const idx = src.indexOf('const _rootSpotCache = $derived.by(() => {');
+    expect(idx, '_rootSpotCache not found').toBeGreaterThan(-1);
+    const blockEnd = src.indexOf('\n});', idx);
+    const block = src.slice(idx, blockEnd);
+    expect(block).toContain('computeRootSpotCache(');
+    expect(block).toContain('_rootSpotCacheLast');
+  });
+});
+
+// ── 2026-10 Defect 2 follow-up — warn-once gate on the prev_mv-null diagnostic
+describe('warnPrevMvNullOnce (mirror) — warns once per distinct (sym, prev_close, oq)', () => {
+  function makeWarnOnce() {
+    const keys = new Set();
+    return function warnPrevMvNullOnceMirror(sym, prevClose, oq, warner) {
+      const key = `${sym}|${prevClose}|${oq}`;
+      if (keys.has(key)) return false;
+      keys.add(key);
+      warner('[portfolioStore] prev_mv null:', sym, 'prev_close=', prevClose, 'oq=', oq);
+      return true;
+    };
+  }
+
+  it('warns exactly once for two calls with the identical (sym, prev_close, oq)', () => {
+    const warner = vi.fn();
+    const warnOnce = makeWarnOnce();
+    warnOnce('GOLDM26SEP148000PE', 0, 10, warner);
+    warnOnce('GOLDM26SEP148000PE', 0, 10, warner);
+    expect(warner).toHaveBeenCalledTimes(1);
+  });
+
+  it('warns again when the condition actually changes (prev_close backfilled)', () => {
+    const warner = vi.fn();
+    const warnOnce = makeWarnOnce();
+    warnOnce('GOLDM26SEP148000PE', 0, 10, warner);
+    warnOnce('GOLDM26SEP148000PE', 100, 10, warner);
+    expect(warner).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe('portfolioStore.svelte.js — _posTier2 uses the warn-once gate (real file)', () => {
+  const src = portfolioStoreSrc;
+
+  it('exports warnPrevMvNullOnce with a dedup Set', () => {
+    expect(src).toMatch(/export function warnPrevMvNullOnce\(/);
+    expect(src).toContain('_prevMvWarnedKeys');
+  });
+
+  it('_posTier2 calls warnPrevMvNullOnce, not a raw console.warn', () => {
+    const idx = src.indexOf('if (prev_mv === null && oq !== 0)');
+    expect(idx, 'prev_mv null guard not found').toBeGreaterThan(-1);
+    const line = src.slice(idx, src.indexOf('\n', idx + 1) + 80);
+    expect(line).toContain('warnPrevMvNullOnce(');
+    expect(line).not.toContain('console.warn(');
   });
 });
 
