@@ -127,6 +127,53 @@ def _funds_from_df(df) -> tuple[float, list[str]]:
     return cash_sum, accounts
 
 
+def _funds_null_cash_accounts(df) -> list[str]:
+    """Return accounts in `df` whose cash figure (avail opening_balance /
+    cash) is genuinely null — sibling to `_funds_from_df`, which
+    `fill_null(0.0)`s this same column for arithmetic. Callers append an
+    `_UNDERSTATED_TAG`-prefixed entry per account this returns, so a
+    broker-confirmed missing cash figure defers the NAV write instead of
+    silently landing as a confirmed ₹0 (2026-10 audit fix).
+
+    Deliberately scoped to the CASH component only — NOT the premium
+    column (`util option_premium` / `option_premium`). Groww's margins
+    endpoint has no confirmed source field for option premium at all
+    (see `groww.py:_groww_margin_utilised`'s docstring — "no confirmed
+    Groww source field on this endpoint at all"), so a null premium
+    there is a permanent, by-design limitation of that broker, not a
+    per-cycle fetch gap. Tagging every Groww-account null premium as
+    UNDERSTATED would mark every NAV snapshot for any firm with an
+    active Groww account understated forever, defeating the entire
+    purpose of the skip/force-write policy (see `_UNDERSTATED_TAG`'s own
+    docstring) rather than catching a genuine gap. Dhan's `sodLimit`
+    (mapped to `avail opening_balance`/cash) IS expected to be present
+    on a healthy response, so a null there is the kind of "broker didn't
+    tell us this cycle" gap this check exists to catch.
+    """
+    if df is None or df.empty or "account" not in df.columns:
+        return []
+    lf = pl.from_pandas(df, nan_to_null=True)
+    if "avail opening_balance" in lf.columns:
+        cash_col = pl.col("avail opening_balance")
+    elif "cash" in lf.columns:
+        cash_col = pl.col("cash")
+    else:
+        # No cash-ish column present at all — _funds_from_df already
+        # treats this as a flat lit(0.0) for the whole frame, which is
+        # a shape mismatch (not a per-account gap); not reported here.
+        return []
+    return (
+        lf.filter(
+            cash_col.is_null()
+            & pl.col("account").is_not_null()
+            & (pl.col("account").cast(str) != "TOTAL")
+        )
+        .select(pl.col("account").cast(str))
+        .to_series()
+        .to_list()
+    )
+
+
 def _positions_from_df(df) -> tuple[float, list[str]]:
     """Vectorized extraction of (positions_mtm, accounts) from a positions DataFrame.
 
@@ -586,13 +633,25 @@ def _fetch_funds_from_cache(
             acct = str(getattr(row, "account", "") or "")
             if acct == "TOTAL":
                 continue
-            cash = float(getattr(row, "cash", 0) or 0)
+            _raw_cash = getattr(row, "cash", None)
+            cash = float(_raw_cash or 0)
             premium = float(getattr(row, "option_premium", 0) or 0)
             total += cash + premium
             if acct:
                 accts.append(acct)
                 if by_account is not None:
                     by_account[acct] = by_account.get(acct, 0.0) + cash + premium
+                # 2026-10 audit fix — sibling to the broker-path check in
+                # `_fetch_funds_from_broker`: a FundsRow.cash of None
+                # (the missing-vs-zero convention — see CLAUDE.md) means
+                # the cached route itself never resolved a cash figure
+                # for this account, not a confirmed real ₹0. Deliberately
+                # NOT applied to `premium` — see `_funds_null_cash_accounts`.
+                if _raw_cash is None:
+                    errors.append(
+                        f"{_UNDERSTATED_TAG}funds: {acct} cash figure "
+                        f"missing (cached)"
+                    )
         _merge_accounts(accounts_in, accts)
         _stale_accts = getattr(cached_funds, "stale_accounts", None)
         if isinstance(_stale_accts, (list, tuple, set)) and _stale_accts:
@@ -650,6 +709,18 @@ async def _fetch_funds_from_broker(
             _merge_accounts(accounts_in, accts)
             if by_account is not None:
                 _accumulate_by_account(df, by_account, _funds_from_df)
+            # 2026-10 audit fix: `_funds_from_df` fills a missing cash
+            # figure to 0.0 for arithmetic — tag it UNDERSTATED here so a
+            # genuine broker-side gap (e.g. Dhan's sodLimit key absent
+            # from a response that otherwise succeeded) defers the NAV
+            # write instead of silently landing as a confirmed ₹0. See
+            # `_funds_null_cash_accounts`'s docstring for why this is
+            # scoped to cash only, not option_premium.
+            for _null_acct in _funds_null_cash_accounts(df):
+                errors.append(
+                    f"{_UNDERSTATED_TAG}funds: {_null_acct} cash figure "
+                    f"missing from broker response"
+                )
         total += _recover_missing_margins_accounts(
             expected_accounts, attempted, accounts_in, errors, by_account,
         )
