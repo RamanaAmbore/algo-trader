@@ -39,7 +39,19 @@ def _holding_row_line(row) -> "tuple[str, str] | None":
     qty = int(row.get('quantity', 0) or 0)
     if qty == 0:
         return None
-    ltp     = float(row.get('close_price', 0) or 0)
+    # 2026-10 audit fix: `fetch_holdings()` (backend/brokers/broker_apis.py)
+    # renames the raw broker column 'close_price' -> 'prev_close' as part
+    # of the prev_close/ltp invariant (see CLAUDE.md "close_price / ltp
+    # invariant"), so by the time this row reaches genai_api.py the
+    # 'close_price' key is simply absent -- `row.get('close_price', 0)`
+    # always fell through to 0, sending every holding to Gemini with
+    # ltp=₹0.00. The live current-price column is 'last_price' (current
+    # LTP), NOT 'prev_close' (prior session's close -- a different,
+    # intentionally-stale figure that would be semantically wrong here
+    # too). Mirrors the fallback chain `_position_row_line` already uses
+    # a few lines below, which is why that sibling function was never
+    # broken by the same rename.
+    ltp     = float(row.get('close_price', 0) or row.get('last_price', 0) or 0)
     avg     = float(row.get('average_price', 0) or 0)
     pnl     = float(row.get('pnl', 0) or 0)
     day_chg = float(row.get('day_change_val', 0) or 0)
