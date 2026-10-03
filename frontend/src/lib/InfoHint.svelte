@@ -310,6 +310,25 @@
     color: var(--algo-slate);
     line-height: 1.5;
     flex: 1 1 100%;
+    /* Reset `white-space` at the popout's own root instead of relying on
+       whatever the trigger element happens to set. `white-space` is an
+       inherited CSS property and inheritance follows the DOM tree, NOT
+       layout/positioning — a hideButton+anchor trigger (`.metric-label`,
+       dense kv-row labels, etc.) commonly sets `white-space: nowrap` on
+       itself so its own short label text never wraps, but since the
+       popout renders as a DOM descendant of that same trigger element
+       (position:fixed only changes its containing block for placement,
+       it does not break the inheritance chain), the nowrap value was
+       leaking into the popout's prose body, forcing multi-sentence
+       tooltip text onto one unbroken line that ran hundreds of px past
+       the panel's own max-width box. The panel's background never
+       covered that overflow, so page content behind it showed through —
+       looked like a transparency bug but was actually unclipped
+       nowrap text escaping an opaque, correctly-sized box. `.info-dt`
+       below re-asserts nowrap for its own short "What/Ideal/Impact/Fix"
+       labels specifically; nothing else in the popout should ever
+       inherit nowrap from outside. */
+    white-space: normal;
   }
   /* Popup variant — `position: fixed` so the popup is positioned
      relative to the viewport, not any ancestor. Coordinates (`left`
