@@ -1,6 +1,7 @@
 <script>
   import { onMount, onDestroy, tick, untrack } from 'svelte';
   import { acctColor } from '$lib/account';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { tickBus } from '$lib/data/symbolStore.svelte.js';
   // ag-Grid is lazy-loaded in onMount so it doesn't bloat the initial bundle
@@ -1430,21 +1431,22 @@
     applyAccountFilter();
   }
 
-  /** Brief amber toast at the top-right confirming the fill. Auto-clears
-   *  after 3 s. Multiple concurrent fills collapse into the most recent
-   *  message — operator doesn't care about old fills. */
-  let _fillToast = $state(/** @type {string} */ (''));
-  /** @type {ReturnType<typeof setTimeout> | null} */
-  let _fillToastTimer = null;
+  /** Brief fill confirmation via the shared toastStore (success kind —
+   *  3 s auto-dismiss, checkmark icon built in). Multiple concurrent
+   *  fills collapse into the most recent message — operator doesn't
+   *  care about old fills — by dismissing the previous toast (if still
+   *  showing) before pushing the new one. */
+  /** @type {number | null} */
+  let _lastFillToastId = null;
   function _flashFillToast(msg) {
     const side  = (Number(msg.qty) > 0) ? 'BUY' : 'SELL';
     const qty   = Math.abs(Number(msg.qty));
     const sym   = msg.tradingsymbol;
     const price = Number(msg.fill_price);
-    _fillToast = `✓ Filled: ${side} ${qty} ${sym}` +
+    const text = `Filled: ${side} ${qty} ${sym}` +
       (price > 0 ? ` @₹${priceFmt(price)}` : '');
-    if (_fillToastTimer) clearTimeout(_fillToastTimer);
-    _fillToastTimer = setTimeout(() => { _fillToast = ''; }, 3000);
+    if (_lastFillToastId != null) toast.dismiss(_lastFillToastId);
+    _lastFillToastId = toast.success(text);
   }
 
   onDestroy(() => {
@@ -1454,7 +1456,6 @@
     _perfTickUnsub?.();
     _perfLtpTimers.forEach(t => clearTimeout(t));
     _perfLtpTimers.clear();
-    if (_fillToastTimer) { clearTimeout(_fillToastTimer); _fillToastTimer = null; }
     _perfFlash.dispose();
     _unsubPerfFlashPct();
     [fundsGrid, navGrid, holdingsSummaryGrid, holdingsAllGrid,
@@ -1465,13 +1466,11 @@
 
 <div class="perf-root" class:perf-dark={isDark}>
 
-{#if _fillToast}
-  <!-- Fill confirmation — fires within a frame of the Kite postback
-       `position_filled` event. Lives only 3 s; an actively-trading
-       operator sees the broker's ack arrive before they look away from
-       the page. -->
-  <div class="perf-fill-toast" role="status" aria-live="polite">{_fillToast}</div>
-{/if}
+<!-- Fill confirmation (position_filled postback) now renders through the
+     shared toastStore/ToastContainer — see _flashFillToast above. No
+     private markup here any more; ToastContainer is mounted once per
+     layout (both (algo) and (public), so this page's fill toast is
+     visible regardless of which layout currently hosts it). -->
 
 {#if error}
   <!-- Graceful banner. Errors fall into two buckets:
@@ -1866,33 +1865,6 @@
     line-height: 1.25;
     margin-bottom: 0.75rem;
     font-family: var(--font-numeric);
-  }
-  /* Fill toast — momentary confirmation that a Kite postback fired.
-     Sticks to the top-right, fades in/out, doesn't push the page
-     content down (position: fixed). Amber accent matches the algo
-     theme's "money" tone. */
-  .perf-fill-toast {
-    position: fixed;
-    top: 0.75rem;
-    right: 0.75rem;
-    z-index: 1000;
-    background: rgba(251,191,36,0.18);
-    border: 1px solid var(--algo-amber-border);
-    color: var(--c-action);
-    padding: 0.4rem 0.7rem;
-    border-radius: 4px;
-    font-size: var(--fs-lg);
-    font-weight: 700;
-    font-family: var(--font-numeric);
-    box-shadow: 0 2px 10px rgba(0,0,0,0.35);
-    animation: perf-fill-toast-in 0.18s ease-out;
-  }
-  @keyframes perf-fill-toast-in {
-    from { opacity: 0; transform: translateY(-6px); }
-    to   { opacity: 1; transform: translateY(0); }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .perf-fill-toast { animation: none; }
   }
   .perf-banner-icon {
     font-size: var(--fs-xl);

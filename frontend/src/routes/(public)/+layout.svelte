@@ -1,11 +1,32 @@
 <script>
+  import { onMount } from 'svelte';
   import { goto, onNavigate, afterNavigate, preloadCode } from '$app/navigation';
   import { page } from '$app/state';
   import { authStore } from '$lib/stores';
+  import { toast } from '$lib/data/toastStore.svelte.js';
   import ImpersonationBanner from '$lib/ImpersonationBanner.svelte';
   import NavigationIndicator from '$lib/NavigationIndicator.svelte';
+  import ToastContainer from '$lib/ToastContainer.svelte';
 
   const { children } = $props();
+
+  // Expose `toast` on window.__stores for Playwright specs (dev only) —
+  // mirrors the identical (algo)/+layout.svelte hook so a spec can push
+  // a toast burst directly via `window.__stores.toast.warning(...)`
+  // without needing to drive a real backend event for every toast kind.
+  // Needed on THIS layout specifically because PerformancePage's
+  // `_flashFillToast` (the only current toast.success() caller reachable
+  // from a public route) only ever mounts under /performance, which is
+  // (public)-layout-only.
+  onMount(() => {
+    if (typeof window !== 'undefined' &&
+        (window.location.hostname === 'dev.ramboq.com' ||
+         window.location.hostname === 'localhost' ||
+         window.location.hostname === '127.0.0.1')) {
+      /** @type {any} */ (window).__stores = /** @type {any} */ (window).__stores || {};
+      /** @type {any} */ (window).__stores.toast = toast;
+    }
+  });
 
   function isActive(/** @type {string} */ href) {
     return page.url.pathname.startsWith(href);
@@ -193,6 +214,14 @@
     <main class="pub-content">
       {@render children()}
     </main>
+
+    <!-- Programmatic toast system: success / error / info / warning.
+         Mounted once per layout (mirrors (algo)/+layout.svelte); the
+         public (cream) PerformancePage instance (/market, /performance)
+         fires position_filled fill toasts via the same shared store, so
+         this layout needs its own ToastContainer too — see
+         PerformancePage.svelte's _flashFillToast. -->
+    <ToastContainer />
 
     <footer class="pub-footer">
       <p class="hidden md:block text-center leading-none pub-footer-text">
