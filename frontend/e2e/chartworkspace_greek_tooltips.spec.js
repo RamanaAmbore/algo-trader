@@ -168,6 +168,17 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
       let text = (await popover.textContent()) || '';
       expect(text).toMatch(greekPatterns[i].text);
       await item.click(); // close
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+      // Move the mouse away first — InfoHint.svelte's Bug 1 fix clears
+      // `hovered` whenever `open` transitions to false, so the popover is
+      // now genuinely closed after the click above even though the cursor
+      // is still resting on the item. Re-arming the hover preview requires
+      // a real leave-then-return mouse transition (a plain `.hover()`
+      // while already positioned there doesn't cross the element
+      // boundary, so no fresh `mouseenter` fires).
+      await page.mouse.move(0, 0);
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
       // HOVER test
       await item.hover();

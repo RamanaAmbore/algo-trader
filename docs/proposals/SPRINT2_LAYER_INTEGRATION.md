@@ -26,6 +26,26 @@ free), the paper-kill-mislabeled-as-MCP fix, the `logs.py` `sim_mode`
 hardcode fix, and the Lab page's stale Safety card fix. Lowest risk,
 highest immediate value, no new functionality.
 
+**Added to Sprint 2a (operator-reported, found and fixed independently
+of the items above, same "pre-existing bug, no Sprint 1 dependency"
+category):** two real `InfoHint.svelte` bugs, both confirmed via live
+reproduction before fixing — (a) a "stuck open" bug where
+`hideButton`+`anchor` sites (parent owns the click handler, can only
+toggle the bound `open` prop) never cleared InfoHint's internal
+`hovered` state, so a second click to close silently did nothing if the
+mouse was still resting on the trigger; fixed with one `$effect` that
+clears `hovered` whenever `open` goes false, app-wide, one time, in the
+component itself. (b) The derivatives page's Strategy Summary card
+headings ("Greeks (position)", "Risk & expected value") are themselves
+tooltip anchors sitting directly above the row they head — hovering
+near the heading on the way to a value below opened an unwanted
+heading-tooltip that blocked the target, read as "appear-disappear-
+appear." Fixed with a new, narrowly-scoped `hoverPreview` prop
+(default `true`, backward-compatible) set to `false` on just those two
+sites — click-only for card-level "what is this section" notes, hover
+preview untouched everywhere else including the individual Greek/Risk/
+EV value chips below them.
+
 **Sprint 2b — Source/Origin plumbing (§3, §4.1 first half).** Depends on
 Sprint 1's `source`/`agent_id`/relationship columns existing. Resolve the
 naming-collision decision (§3), thread the new fields onto

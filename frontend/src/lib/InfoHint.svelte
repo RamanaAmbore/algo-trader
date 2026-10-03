@@ -46,6 +46,7 @@
    *   hideButton?: boolean,
    *   open?: boolean,
    *   anchor?: HTMLElement,
+   *   hoverPreview?: boolean,
    * }} */
   let {
     children,
@@ -66,6 +67,14 @@
     // the click trigger instead. Every existing caller omits both props
     // and gets byte-identical behavior to before this was added.
     hideButton = false,
+    // Additive, opt-in: hideButton+anchor sites get hover-to-preview for
+    // free (see the mouseenter/mouseleave wiring effect below) — true for
+    // every existing caller by default, so nothing changes for them. Set
+    // to false to make a hideButton+anchor site click-only: its anchor sits
+    // directly above a denser row of its own child InfoHint anchors, so a
+    // hover preview on the way to a child below causes an unwanted
+    // open/close/reopen flicker. Ignored outside hideButton+anchor mode.
+    hoverPreview = true,
     // Bindable so an external trigger (e.g. a clickable value span) can
     // open/close this InfoHint's popout directly. Defaults from the same
     // one-time `defaultOpen` seed as before for callers that don't bind it.
@@ -116,7 +125,7 @@
   // anchor element so hover and click both work identically to the
   // default chip.
   $effect(() => {
-    if (!hideButton || !anchor) return;
+    if (!hideButton || !anchor || !hoverPreview) return;
     function onEnter() { hovered = true; }
     function onLeave() { hovered = false; }
     anchor.addEventListener('mouseenter', onEnter);
@@ -125,6 +134,23 @@
       anchor.removeEventListener('mouseenter', onEnter);
       anchor.removeEventListener('mouseleave', onLeave);
     };
+  });
+
+  // In hideButton+anchor mode the PARENT page owns the click handler and
+  // only ever toggles the bound `open` prop — it has no way to reach into
+  // InfoHint and clear its internal `hovered` state. If the mouse is still
+  // resting on the trigger when the operator clicks a second time, `open`
+  // flips to false but `hovered` stays true (set by the hover-wiring effect
+  // above), so `visible` below never actually goes false and the popup
+  // appears stuck open. Clearing `hovered` whenever `open` transitions to
+  // false fixes this for both hideButton+anchor (external click owner) and
+  // the default chip's own button (which already does this inline on
+  // click, making this a harmless no-op there). Only `open` is read here,
+  // so a pure hover-preview interaction — where `open` never changes and
+  // only `hovered` toggles — never re-triggers this effect and is
+  // unaffected.
+  $effect(() => {
+    if (!open) hovered = false;
   });
 
   // Whether to render the popout right now.

@@ -498,6 +498,22 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await trigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
+    // Move the mouse away first — the Bug 1 fix (InfoHint.svelte clears
+    // `hovered` whenever `open` transitions to false) means the popover is
+    // now genuinely closed after the click above, with `hovered` also
+    // reset to false even though the cursor is still resting on the
+    // trigger. On baseline (pre-Bug-1-fix) this exact click→click→hover
+    // sequence passed without an explicit move-away, because `hovered`
+    // never got cleared on close — the popover stayed open the whole time
+    // and the "HOVER test" below was incidentally a no-op that still saw
+    // a visible popover. Re-arming the hover preview now requires a real
+    // leave-then-return mouse transition (a plain `.hover()` while already
+    // positioned there doesn't cross the element boundary, so no fresh
+    // `mouseenter` fires), hence the explicit move-away before the next
+    // `.hover()` call — this is the correct, intended behavior post-fix.
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
     // HOVER test
     await trigger.hover();
     popover = page.locator('[role="tooltip"]').first();
@@ -538,6 +554,18 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await deltaLabel.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
+    // Move the mouse away first — the Bug 1 fix (InfoHint.svelte clears
+    // `hovered` whenever `open` transitions to false) means the popover is
+    // now genuinely closed after the click above, with `hovered` also
+    // reset to false even though the cursor is still resting on deltaLabel.
+    // Re-arming the hover preview requires a real leave-then-return mouse
+    // transition (a plain `.hover()` while already positioned there is a
+    // no-op — the cursor never crosses the element boundary, so no fresh
+    // `mouseenter` fires), hence the explicit move-away before the next
+    // `.hover()` call.
+    await page.mouse.move(0, 0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
     // HOVER to open
     await deltaLabel.hover();
     const popoverH = page.locator('[role="tooltip"]').first();
@@ -548,5 +576,77 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     // Close via hover-out
     await page.mouse.move(0, 0);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+  });
+
+  test('Strategy Summary card headings (Greeks / Risk) are click-only — hover never opens their popover; child Greek/Risk chips are unaffected', async ({ page }) => {
+    // Bug 2 fix: `greeksNote` and `riskNote` sit directly above a dense
+    // row of their own child InfoHint anchors (Δ Γ Θ 𝒱 ρ / R:R, Risk-of-
+    // ruin, Breakevens, POP...). Their popups land only ~6px below the
+    // heading but are 60-90 px tall, so a hover preview on the way to a
+    // row below used to cause an unwanted open/close/reopen flicker.
+    // Fixed via `hoverPreview={false}` on just these two InfoHint
+    // instances, which skips wiring the anchor's mouseenter/mouseleave
+    // listeners entirely — `hovered` is simply never set at this site, so
+    // there's nothing for Bug 1's fix to clear here. Click still
+    // opens/closes them via `open` alone, same as any other hideButton
+    // site.
+    const greeksCard = page.locator('.opt-block').nth(0);
+    const riskCard = page.locator('.opt-block').nth(1);
+    await expect(greeksCard).toBeVisible({ timeout: 20_000 });
+
+    const greeksHeading = greeksCard.locator('.opt-block-h', { hasText: 'Greeks (position)' }).first();
+    if (await greeksHeading.count() === 0) {
+      test.skip(true, 'Strategy Summary section not rendered (no open strategy)');
+      return;
+    }
+
+    // HOVER on the Greeks heading must NOT open its popover.
+    await greeksHeading.hover();
+    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
+
+    // Move away, then CLICK — must open, and close again on a second click
+    // (this exercises the Bug 1 open/hovered-clear fix at a hoverPreview=false
+    // site too, since clicking after a hover attempt still left `hovered`
+    // untouched here — hoverPreview=false means the anchor never wired
+    // `hovered` listeners at all).
+    await page.mouse.move(0, 0);
+    await greeksHeading.click();
+    const greeksPopover = page.locator('#sum-hint-greeks-note');
+    await expect(greeksPopover).toBeVisible({ timeout: 2000 });
+    await expect(greeksPopover).toContainText('signed-qty Greeks');
+    await greeksHeading.click();
+    await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
+
+    // Positive control: the Δ chip BELOW the heading still opens via hover
+    // (proves hover isn't broken app-wide, only disabled at this one site).
+    await page.mouse.move(0, 0);
+    const deltaLabel = greeksCard.locator('.kv-k:has-text("Δ")').first();
+    await deltaLabel.hover();
+    await expect(page.locator('#sum-hint-delta')).toBeVisible({ timeout: 2000 });
+    await page.mouse.move(0, 0);
+    await expect(page.locator('#sum-hint-delta')).toHaveCount(0);
+
+    // Risk & expected value heading — identical click-only behavior.
+    const riskHeading = riskCard.locator('.opt-block-h', { hasText: 'Risk & expected value' }).first();
+    await riskHeading.hover();
+    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
+
+    await page.mouse.move(0, 0);
+    await riskHeading.click();
+    const riskPopover = page.locator('#sum-hint-risk-note');
+    await expect(riskPopover).toBeVisible({ timeout: 2000 });
+    await expect(riskPopover).toContainText('Aggregate risk');
+    await riskHeading.click();
+    await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
+
+    // Positive control: the R:R chip below the Risk heading still opens via hover.
+    await page.mouse.move(0, 0);
+    const rrLabel = riskCard.locator('.kv-k:has-text("R:R")').first();
+    await rrLabel.hover();
+    await expect(page.locator('#sum-hint-rr')).toBeVisible({ timeout: 2000 });
+    await page.mouse.move(0, 0);
+    await expect(page.locator('#sum-hint-rr')).toHaveCount(0);
   });
 });

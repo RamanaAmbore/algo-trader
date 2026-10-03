@@ -67,4 +67,28 @@ describe('InfoHint.svelte — hideButton / bindable open / anchor source audit',
     expect(markupBlock).toMatch(/\{#if !hideButton\}/);
     expect(markupBlock).toMatch(/class="info-btn"/);
   });
+
+  // Guards for the two Bug 1 / Bug 2 fixes (2026-10):
+  //   Bug 1 — a hideButton+anchor site's `open` prop is owned by the
+  //   parent page; the parent has no way to clear InfoHint's own internal
+  //   `hovered` state, so a second click while the mouse still rests on
+  //   the trigger used to leave the popup stuck open (`visible = open ||
+  //   hovered` never both false). Fixed by an `$effect` that clears
+  //   `hovered` whenever `open` transitions to false.
+  //   Bug 2 — additive `hoverPreview` prop (default true, backward-
+  //   compatible for every existing caller) lets a specific hideButton+
+  //   anchor site opt out of hover-triggering entirely (click-only),
+  //   for sites whose popup would otherwise flicker open on the way to
+  //   a denser row of child InfoHint anchors just below it.
+  it('hoverPreview prop defaults to true (backward-compatible for every existing hideButton+anchor caller)', () => {
+    expect(scriptBlock).toMatch(/hoverPreview\s*=\s*true/);
+  });
+
+  it('the hideButton hover-wiring effect is gated on hoverPreview', () => {
+    expect(scriptBlock).toMatch(/!hideButton\s*\|\|\s*!anchor\s*\|\|\s*!hoverPreview/);
+  });
+
+  it('an $effect clears `hovered` whenever `open` becomes false (Bug 1 fix)', () => {
+    expect(scriptBlock).toMatch(/if\s*\(!open\)\s*hovered\s*=\s*false;/);
+  });
 });
