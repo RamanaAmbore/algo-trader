@@ -1448,10 +1448,18 @@ class GrowwBroker(Broker):
         """Cancel a Groww GTT (Smart Order). Returns the cancelled gtt_id.
 
         Sprint C — compound OCO ids dispatch to both singles, each
-        cancelled independently. A single-leg failure logs but does not
-        block the other side from being attempted (operator hits an
-        all-or-nothing situation otherwise — better one cancelled than
-        zero).
+        cancelled independently so one leg's failure doesn't block the
+        other side from being attempted (operator hits an all-or-nothing
+        situation otherwise — better one cancelled than zero).
+
+        2026-10 audit fix: pre-fix, a lone leg0 failure with a
+        successful leg1 fell through to `return gtt_id` reporting
+        unconditional success — only "both legs failed" raised. The
+        caller then believed the OCO was fully cancelled while one leg
+        was still LIVE on the book. Now ANY leg failure raises (both
+        attempts still always run — this only changes whether the
+        caller finds out), so the operator is told exactly which leg(s)
+        remain armed instead of being told "cancelled" when they are not.
 
         `exchange` kwarg, when present, lets us resolve the Groww
         segment without the four-way blind retry (CASH → FNO →
@@ -1462,6 +1470,7 @@ class GrowwBroker(Broker):
         if oco is not None:
             leg0_id, leg1_id = oco
             err0 = None
+            err1 = None
             try:
                 self.cancel_gtt(leg0_id, exchange=exchange)
             except Exception as e:
@@ -1472,13 +1481,24 @@ class GrowwBroker(Broker):
             try:
                 self.cancel_gtt(leg1_id, exchange=exchange)
             except Exception as e:
+                err1 = e
                 logger.warning(
                     f"GrowwBroker.cancel_gtt OCO leg1={leg1_id} failed: {e}"
                 )
-                if err0 is not None:
-                    raise RuntimeError(
-                        f"Groww cancel_gtt: both legs failed (leg0={err0}, leg1={e})"
-                    )
+            if err0 is not None and err1 is not None:
+                raise RuntimeError(
+                    f"Groww cancel_gtt: both legs failed (leg0={err0}, leg1={err1})"
+                )
+            if err0 is not None:
+                raise RuntimeError(
+                    f"Groww cancel_gtt: leg1={leg1_id} cancelled but "
+                    f"leg0={leg0_id} is still live — leg0 failed: {err0}"
+                )
+            if err1 is not None:
+                raise RuntimeError(
+                    f"Groww cancel_gtt: leg0={leg0_id} cancelled but "
+                    f"leg1={leg1_id} is still live — leg1 failed: {err1}"
+                )
             return gtt_id
         # cancel_smart_order needs segment + smart_order_type.
         # Audit fix (M-4) — REQUIRE the `exchange` kwarg. Pre-fix

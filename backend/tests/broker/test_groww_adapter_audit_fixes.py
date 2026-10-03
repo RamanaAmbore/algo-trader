@@ -16,6 +16,8 @@ Items covered in this module so far:
      `segment` is also passed).
   5. modify_order() — price-only modify preserves the order's existing
      quantity/order_type instead of defaulting to 0/LIMIT.
+  6. cancel_gtt() OCO — a single-leg failure now raises instead of
+     silently reporting success.
   7. modify_order() — broker-rejected response status is no longer
      discarded.
 """
@@ -235,6 +237,54 @@ class TestModifyOrderPreservesQuantityAndType:
         # No orders() scan needed when exchange+quantity+order_type all given.
         assert not hasattr(broker.groww, "get_order_list") or \
             not broker.groww.get_order_list.called
+
+
+# ── Item 6: cancel_gtt() OCO partial-failure reporting ───────────────────
+
+
+class TestCancelGttOcoPartialFailure:
+    def test_single_leg_failure_raises_not_silently_succeeds(self, broker):
+        """Pre-fix: leg0 fails, leg1 succeeds -> fell through to `return
+        gtt_id` (success) since only 'both failed' raised. One leg was
+        left live on the book with no signal to the caller."""
+        calls = []
+
+        def fake_cancel_gtt(leg_id, *, exchange=None):
+            calls.append(leg_id)
+            if leg_id == "leg0":
+                raise RuntimeError("leg0 broker rejection")
+            return leg_id
+
+        broker.cancel_gtt = MagicMock(side_effect=fake_cancel_gtt)
+        # Call the REAL bound method (not the mock) by invoking it via
+        # the class, since we replaced the instance attribute above only
+        # to intercept the recursive single-leg calls.
+        real_cancel_gtt = GrowwBroker.cancel_gtt.__wrapped__ \
+            if hasattr(GrowwBroker.cancel_gtt, "__wrapped__") else GrowwBroker.cancel_gtt
+
+        with pytest.raises(RuntimeError, match="leg0.*still live|leg0 broker rejection"):
+            real_cancel_gtt(broker, "oco:leg0+leg1", exchange="MCX")
+        assert set(calls) == {"leg0", "leg1"}
+
+    def test_both_legs_succeed_returns_normally(self, broker):
+        def fake_cancel_gtt(leg_id, *, exchange=None):
+            return leg_id
+
+        broker.cancel_gtt = MagicMock(side_effect=fake_cancel_gtt)
+        real_cancel_gtt = GrowwBroker.cancel_gtt.__wrapped__ \
+            if hasattr(GrowwBroker.cancel_gtt, "__wrapped__") else GrowwBroker.cancel_gtt
+        result = real_cancel_gtt(broker, "oco:leg0+leg1", exchange="MCX")
+        assert result == "oco:leg0+leg1"
+
+    def test_both_legs_fail_raises_both_failed_message(self, broker):
+        def fake_cancel_gtt(leg_id, *, exchange=None):
+            raise RuntimeError(f"{leg_id} broker rejection")
+
+        broker.cancel_gtt = MagicMock(side_effect=fake_cancel_gtt)
+        real_cancel_gtt = GrowwBroker.cancel_gtt.__wrapped__ \
+            if hasattr(GrowwBroker.cancel_gtt, "__wrapped__") else GrowwBroker.cancel_gtt
+        with pytest.raises(RuntimeError, match="both legs failed"):
+            real_cancel_gtt(broker, "oco:leg0+leg1", exchange="MCX")
 
 
 # ── Item 7: modify_order()/cancel_order() surfacing broker rejection ─────
