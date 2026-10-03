@@ -172,15 +172,14 @@ Main SELECT:
 **13-column tuple:** account, symbol, exchange, qty, avg_cost, ltp, day_pnl, total_pnl,
 payload_json, captured_at, previous_close, prev_ltp, prev_settlement_pnl
 
-**Row reconstruction** [backend/api/helpers/positions_helpers.py](backend/api/helpers/positions_helpers.py#L298) `build_row_from_snapshot_raw()`:
+**Row reconstruction** [backend/api/routes/positions_helpers.py](backend/api/routes/positions_helpers.py#L499) `build_row_from_snapshot_raw()`:
 
 1. Extract snapshot_extras from payload_json via `extract_snapshot_extras()`
-   [backend/api/helpers/positions_helpers.py](backend/api/helpers/positions_helpers.py#L90)
-2. Extract multiplier from payload_json via `extract_snapshot_multiplier()`
-   [backend/api/helpers/positions_helpers.py](backend/api/helpers/positions_helpers.py#L107):
-   - 1 for NSE/NFO
-   - actual lot_size for MCX/NCO
-3. `effective_qty = qty × multiplier`
+   [backend/api/routes/positions_helpers.py](backend/api/routes/positions_helpers.py#L295)
+2. Qty handling — `daily_book.qty is already in CONTRACTS` (multiplier conversion
+   happens upstream before row is written; no per-row conversion needed here):
+   - `effective_qty = qty or 0`
+3. Multiplier details:
 4. close_price resolution order: previous_close (if > 0) → prev_ltp (if > 0) → ltp
 5. Computed day_pnl:
    - If previous_close available: `(ltp - previous_close) × effective_qty`

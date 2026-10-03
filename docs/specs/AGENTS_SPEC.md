@@ -177,6 +177,7 @@ RamboQuant Agent: <agent_long_name>
 ### Alert cooldown
 
 After an agent fires, it enters a cooldown window (default 30 min, tunable via
+`alerts.cooldown_minutes` setting in `/admin/settings`, which falls back to
 `alert_cooldown_minutes` in backend_config.yaml). Re-evaluation during cooldown:
 - Condition still checked on every cycle
 - Alert NOT dispatched until cooldown expires

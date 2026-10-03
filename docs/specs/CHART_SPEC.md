@@ -51,7 +51,8 @@ header). Optional symbol and exchange prefill. Closed via Esc key, overlay click
 - Keyboard shortcut `k` (no args — opens with last-used symbol from chartStore)
 - Context menu "Open Chart" from Pulse positions/holdings/watchlist rows
   (symbol pre-filled)
-- Programmatic `openChartModalTrigger()` called from other surfaces
+- Programmatic `openChartModal()` called from other surfaces (global store
+  in `frontend/src/lib/stores.js`)
 
 **Props**:
 - `symbol` (optional) — initial tradingsymbol; defaults to chartStore.symbol

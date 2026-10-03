@@ -84,13 +84,14 @@ from the agent's condition tree:
 
 ### Per-tick lifecycle
 
-1. **Price generation** — `_tick_generator()` yields a new move (pct, scenario-driven)
-2. **Position update** — `_mutate_positions(pct)` updates `last_price` on matching symbols
-3. **PnL recompute** — Backend automatically recalculates `pnl` from new LTP
-4. **GTT check** — `_gtt_book.check_triggers()` walks GTT orders, fires those within new bid/ask
-5. **Paper fills** — `_paper.step()` checks open orders against new bid/ask, produces fills
-6. **Recording** — If `_recording_active`, append event to `_recording_events`
-7. **Broadcast** — Push tick_log snapshot to WebSocket so UI refreshes
+Driven by `SimDriver.step()` (`backend/api/algo/sim/driver.py`), which orchestrates:
+
+1. **Price generation** — Scenario-driven tick (% move, random walk, or preset sequence)
+2. **Position update** — Updates position `last_price` and `pnl` from new tick
+3. **GTT check** — `_gtt_book.check_triggers()` evaluates GTT conditions, fires matching orders
+4. **Paper fills** — `_paper.step()` matches open orders against new bid/ask, produces fills
+5. **Recording** — If recording active, append event to `_recording_events`
+6. **Broadcast** — Push tick_log snapshot to WebSocket so UI refreshes in real time
 
 ### Tick rate control
 
