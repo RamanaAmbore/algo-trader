@@ -538,7 +538,7 @@
   let _ctxExch = $state('');
 </script>
 
-<div class="ob-root" class:ob-fs={isFullscreen}>
+<div class="ob-root" class:fs-card-on={isFullscreen}>
 
 <!-- Header -->
 <CardHeader title={title} showSearch={false} bind:isCollapsed bind:isFullscreen
@@ -743,20 +743,44 @@
 
 <style>
   /* Fullscreen wrapper — transparent by default (display:contents passes
-     layout through to children); switches to a fixed-position modal frame
-     when ob-fs activates. Modals inside (ChartModal, SymbolPanel, etc.)
-     use fixed positioning themselves so display:contents doesn't trap them. */
+     layout through to children); promotes onto the SHARED `.fs-card-on`
+     global pattern (app.css) when fullscreen, instead of a hand-rolled
+     fixed overlay (audit fix, 2026-10-02 — was `.ob-fs { position: fixed;
+     inset: 0; z-index: 9000; }`, a second, competing fullscreen mechanism
+     that ignored the live-measured `--fs-card-top` chrome offset
+     `DefaultSizeButton.svelte` sets, so a fullscreened OrderBook painted
+     from the viewport's true top edge (y=0) and covered the real navbar
+     + page-header + NavStrip. Its z-index 9000 also sat BELOW the shared
+     `.fs-backdrop`/`.fs-backdrop-catch` tier (9998) that DefaultSizeButton
+     portals to document.body on ANY card's fullscreen entry — including
+     OrderBook's own, since its CardHeader already mounts CardControls →
+     FullscreenButton/DefaultSizeButton unconditionally — so the dim
+     backdrop rendered ON TOP of OrderBook's own fullscreen content.
+     `.fs-card-on` fixes both: it reads `--fs-card-top` for the inset and
+     sits at the correct z-index 9999 tier.
+
+     OrderBook keeps its OWN `.fs-card-on` application (not just relying
+     on a host wrapper) because it's mounted in two different contexts:
+     the host `<section>` on /orders ALSO carries `class:fs-card-on` (its
+     own wrapper, bound to the same isFullscreen), but `SymbolPanel.svelte`
+     embeds OrderBook directly with no such wrapper at all — there,
+     `.ob-root`'s own `.fs-card-on` is the ONLY fullscreen mechanism. On
+     /orders this produces two nested elements both resolving to the
+     identical `--fs-card-top`-derived rect (harmless, visually a no-op
+     duplicate — not the escaping/overlap bug `.ob-fs` had, since both
+     now agree on the same offset+z-index). Only `display`, layout and
+     background/padding are added here; inset/z-index/overflow all come
+     from the shared global rule. Modals inside (ChartModal, SymbolPanel,
+     etc.) use fixed positioning themselves so display:contents doesn't
+     trap them in the non-fullscreen case. */
   .ob-root { display: contents; }
-  .ob-fs {
+  .ob-root.fs-card-on {
     display: flex;
     flex-direction: column;
-    position: fixed;
-    inset: 0;
-    z-index: 9000;
     background: var(--algo-navy, #0f1c36);
     padding: 0.5rem;
   }
-  .ob-fs .ob-scroll { flex: 1 1 0; min-height: 0; }
+  .ob-root.fs-card-on .ob-scroll { flex: 1 1 0; min-height: 0; }
 
   .ob-count {
     font-size: var(--fs-md);
