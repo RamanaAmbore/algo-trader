@@ -341,4 +341,46 @@ test.describe('PositionStrip mobile — internal scroll only, no page-level shif
     expect(post.scrollX, 'the whole page shifted right on strip swipe').toBe(0);
     expect(post.docScrollWidth).toBeLessThanOrEqual(412 + 1);
   });
+
+  test('ps-strip backfills the navbar seam so no scroll-repaint gap can expose page content', async ({ page }) => {
+    // 2026-10-03 fix: navbar (fixed, z-index 50) and .ps-strip (fixed,
+    // z-index 49, top:49px) are independently-composited fixed layers
+    // that ABUT exactly rather than overlap. On fractional-DPR mobile
+    // screens this can round to a 1px gap during scroll repaint,
+    // exposing page content through the seam. Fix is a `box-shadow`
+    // that extends ps-strip's own background 2px upward with the same
+    // tone as the navbar, backfilling the seam regardless of which
+    // side mis-rounds. This is a static CSS property, not a runtime
+    // layout state — assert it directly rather than trying to detect a
+    // sub-pixel rendering artifact, plus confirm the two layers' edges
+    // still land flush (no *intentional* gap was introduced).
+    await loginAsAdmin(page);
+    await mockMarketOpen(page);
+    await mockBook(page);
+
+    await page.goto('/dashboard', { waitUntil: 'domcontentloaded' });
+    const strip = page.locator('.ps-strip');
+    await expect(strip).toBeVisible({ timeout: TIMEOUT });
+
+    const geometry = await page.evaluate(() => {
+      const stripEl = document.querySelector('.ps-strip');
+      const navEl = document.querySelector('.algo-navbar');
+      const stripStyle = getComputedStyle(stripEl);
+      return {
+        boxShadow: stripStyle.boxShadow,
+        stripTop: stripEl.getBoundingClientRect().top,
+        navBottom: navEl ? navEl.getBoundingClientRect().bottom : null,
+      };
+    });
+
+    // The seam-backfill shadow is present (negative vertical offset =
+    // extends upward, toward the navbar; zero spread/blur by design so
+    // it reads as a solid backfill, not a soft shadow).
+    expect(geometry.boxShadow, 'ps-strip is missing the navbar-seam backfill').toMatch(/-2px 0px 0px/);
+    // The two layers still land flush in normal layout (this fix must
+    // not introduce a REAL gap to paper over the rounding one).
+    if (geometry.navBottom != null) {
+      expect(Math.abs(geometry.stripTop - geometry.navBottom)).toBeLessThanOrEqual(1);
+    }
+  });
 });

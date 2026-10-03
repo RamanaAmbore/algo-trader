@@ -869,6 +869,26 @@
     left: 0;
     right: 0;
     z-index: 49;
+    /* Operator (mobile): "very thin gap between navstrip top and the
+       navbar's border, showing page text through the slit when
+       scrolling." Root cause: navbar (position:fixed, z-index 50) and
+       ps-strip (position:fixed, z-index 49) are two independently
+       composited fixed layers that ABUT exactly at 49px rather than
+       overlapping. On mobile (fractional device-pixel-ratio screens,
+       and iOS/Android's per-layer sub-pixel snapping during scroll
+       repaints), each layer's edge can round to a different physical
+       pixel, leaving a hairline strip where NEITHER layer paints —
+       exposing whatever scrolls underneath. Fix: extend ps-strip's own
+       background 2 CSS px upward via box-shadow (no blur, no layout
+       impact — top/height/z-index all unchanged, so the page-header /
+       algo-content calc() offsets elsewhere stay valid). In normal
+       rendering this sits entirely underneath the navbar's own opaque
+       paint (higher z-index) and is invisible; it only matters in the
+       rounding-gap case, where it backfills the seam with the same
+       --algo-bg-elev1 tone as both the navbar and this strip's own top
+       gradient stop, so no seam can show through regardless of which
+       side mis-rounds. */
+    box-shadow: 0 -2px 0 0 var(--algo-bg-elev1);
     display: flex;
     align-items: center;
     justify-content: flex-start;
