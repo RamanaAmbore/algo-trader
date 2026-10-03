@@ -5,10 +5,10 @@
  * rgba(126,151,184,0.10) slate-divider values repointed to the `--sep-color`
  * token (established in app.css by the prior Wave 2a/1 fix, commit
  * e9cbdf53), literal rgba(251,191,36,0.30) amber-border values repointed to
- * `--algo-amber-border-soft`, a handful of one-off hex text colors
- * converged onto their exact-matching named tokens, and DayPnlBreakup's
- * literal font-size values converged onto the `--fs-*` scale where they
- * matched exactly.
+ * `--algo-amber-border-soft`, and a handful of one-off hex text colors
+ * converged onto their exact-matching named tokens. (DayPnlBreakup's own
+ * font-size convergence tests were removed along with the component —
+ * see docs/specs/NAVSTRIP_SPEC.md "Slot 1 Day P&L Breakup modal (REMOVED)".)
  *
  * Static source-pattern checks only — no browser needed, these are pure
  * CSS-property-value swaps with identical rendered output (token resolves
@@ -104,15 +104,6 @@ test.describe('--algo-amber-border-soft token swap (exact 0.30 amber literal, he
 });
 
 test.describe('One-off hex text colors converged onto exact-matching named tokens', () => {
-  test('DayPnlBreakup.svelte .dpb-warn uses var(--algo-amber) and var(--fs-sm)', () => {
-    const content = readFile('src/lib/DayPnlBreakup.svelte');
-    const body = ruleBody(content, '.dpb-warn');
-    expect(body, '.dpb-warn rule must exist').not.toBeNull();
-    expect(body).toMatch(/color:\s*var\(--algo-amber\)/);
-    expect(body).toMatch(/font-size:\s*var\(--fs-sm\)/);
-    expect(body).not.toMatch(/#f59e0b/);
-  });
-
   test('PnlAnalysis.svelte muted-text selectors converge #4e6080 onto var(--algo-muted)', () => {
     const content = readFile('src/lib/PnlAnalysis.svelte');
     for (const selector of ['.muted', '.chart-placeholder', '.pnl-tbl .muted', '.empty-hint', '.drop-prompt']) {
@@ -157,28 +148,5 @@ test.describe('One-off hex text colors converged onto exact-matching named token
     const body = ruleBody(content, '.sim-summary-total td');
     expect(body, '.sim-summary-total td rule must exist').not.toBeNull();
     expect(body).toMatch(/color:\s*var\(--algo-amber-text\)/);
-  });
-});
-
-test.describe('DayPnlBreakup.svelte font-size literal -> --fs-* token convergence', () => {
-  test('exact 0.65rem literals converge onto var(--fs-md)', () => {
-    const content = readFile('src/lib/DayPnlBreakup.svelte');
-    expect(content).not.toMatch(/font-size:\s*0\.65rem/);
-    // .dpb-th-left / .dpb-th-right share a compound selector rule —
-    // ruleBody() only matches a selector immediately followed by `{`,
-    // so check the compound rule directly instead.
-    expect(content).toMatch(/\.dpb-th-left,\s*\n\s*\.dpb-th-right\s*\{[^}]*font-size:\s*var\(--fs-md\)/);
-    for (const selector of ['.dpb-td-acct', '.dpb-formula', '.dpb-subtotal-label']) {
-      const body = ruleBody(content, selector);
-      expect(body, `${selector} rule must exist`).not.toBeNull();
-      expect(body).toMatch(/font-size:\s*var\(--fs-md\)/);
-    }
-  });
-
-  test('0.8rem literal (no exact --fs-* match) is deliberately left as a literal', () => {
-    // --fs-xl is 0.85rem, not an exact match for 0.8rem — per task
-    // instructions this is reported, not force-converted.
-    const content = readFile('src/lib/DayPnlBreakup.svelte');
-    expect(content).toMatch(/font-size:0\.8rem/);
   });
 });

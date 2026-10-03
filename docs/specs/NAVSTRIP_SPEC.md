@@ -34,8 +34,7 @@ Clicking any P/M/C/H pill **label** (the letter identifier) opens a **NavBreakdo
 showing a per-account breakdown of that pill's aggregate value. The panel appears as a
 fixed overlay below the NavStrip, anchored to the right edge, spanning `min(28rem, 100vw)`
 in width. Content scrolls vertically if needed. Dismiss via Escape key or clicking outside
-the panel. The panel coexists independently with any modal on the pill's **value slot**
-(e.g., the DayPnlBreakup modal on P:1 value).
+the panel. The panel coexists independently with any modal on the pill's **value slot**.
 
 **NavBreakdown panel header** (commit 7ccb2e50): The breakdown panel now uses a 
 `canonical-modal-header` bar with a slot-mapped title. Each breakdown panel displays:
@@ -67,7 +66,7 @@ Formula: three slots displaying position profit from three perspectives.
 
 | Slot | Value | Scope | Formula |
 |---|---|---|---|
-| 1 | Today's Day P&L (clickable) | All positions (NSE/BSE/NFO/MCX/CDS) | `positionsDerivedStore.total.day_pnl` (5s cadence) |
+| 1 | Today's Day P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `positionsDerivedStore.total.day_pnl` (5s cadence) |
 | 2 | Lifetime P&L | All positions (NSE/BSE/NFO/MCX/CDS) | `Σ p.pnl` + live-tick delta |
 | 3 | F&O expiry profit | Derivatives only (NFO/MCX/CDS/BFO) | `positionsDerivedStore.total.exp_pnl` (5s cadence) |
 
@@ -75,24 +74,12 @@ Formula: three slots displaying position profit from three perspectives.
 AND `pnl ≠ 0`, the broker omitted intraday decomposition. Fall back to lifetime `pnl` as the
 safest approximation. Applied by `baseDayPnlForPosition()`.
 
-#### Slot 1 Day P&L Breakup modal
+#### Slot 1 Day P&L Breakup modal (REMOVED)
 
-Clicking the **Day P&L value in slot 1** opens a `DayPnlBreakup` modal displaying the detailed
-composition of today's intraday profit/loss:
-
-- **Header**: per-account subtotal and grand total across all accounts
-- **Table rows**: one row per (account, symbol) pair with non-zero day P&L contribution
-- **Columns**: 
-  - prev_close (frozen at first intraday snapshot, from `daily_book.previous_close`)
-  - ltp (current last-traded price)
-  - overnight_qty (qty held from prior close)
-  - buy/sell volumes (intraday buy and sell leg quantities + values)
-  - lifetime_pnl (cumulative P&L on the position)
-  - settlement_pnl (yesterday's closed-out settled value, from daily_book)
-  - computed_day_pnl (derived per the baseDayPnlForPosition formula)
-- **Zero-row treatment**: rows with zero day P&L show a ⚠ icon with a tooltip explaining why
-  (e.g., "Position held overnight, no settlement differential")
-- **Close**: Esc key or backdrop click closes the modal
+The `DayPnlBreakup` modal (previously opened by clicking the Day P&L value in slot 1,
+showing a per-account/per-symbol intraday breakup table) was unmounted and deleted
+(frontend dead-code pass, 2026-10) — no caller referenced it. Slot 1's value is no
+longer clickable; it displays the aggregate only.
 
 #### EXP Slot Specification (Slot 3)
 
@@ -532,8 +519,9 @@ richer floating overlay distinct from the compact tooltip style used elsewhere:
 - **Title**: uppercase, 700-weight, in the pill accent color, separated by a thin divider
 - **Body**: `var(--fs-sm)`, `var(--algo-slate)`, line-height 1.5
 
-This panel aesthetic matches the DayPnlBreakup modal so all overlay surfaces in the strip
-have a unified visual language.
+This panel aesthetic is the unified visual language for overlay surfaces in the strip
+(the DayPnlBreakup modal previously shared this aesthetic before its removal — see
+§Slot 1 Day P&L Breakup modal (REMOVED) above).
 
 #### NavBreakdown TOTAL row styling
 

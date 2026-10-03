@@ -1507,7 +1507,6 @@ const CLOSE_BTN_SITES = [
   { file: 'src/lib/order/OrderTicket.svelte', cls: '.ot-demo-close', family: 'neutral' },
   { file: 'src/routes/(algo)/admin/+page.svelte', cls: '.ip-modal-x', family: 'neutral' },
   { file: 'src/routes/(algo)/admin/metrics/+page.svelte', cls: '.metrics-modal-close', family: 'neutral' },
-  { file: 'src/lib/DayPnlBreakup.svelte', cls: '.dpb-close', family: 'neutral' },
   { file: 'src/lib/PnlAnalysis.svelte', cls: '.modal-x', family: 'neutral' },
   { file: 'src/lib/order/OrderTimelineDrawer.svelte', cls: '.otd-close', family: 'neutral' },
   { file: 'src/lib/ShortcutCheatsheet.svelte', cls: '.sc-close', family: 'neutral' },
