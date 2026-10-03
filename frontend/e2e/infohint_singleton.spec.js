@@ -119,4 +119,28 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(tooltips.first()).toContainText('Order templates');
     await expect(coverageBtn).toHaveAttribute('aria-expanded', 'false');
   });
+
+  test('clicking the same field twice opens then closes it (singleton claim does not break same-instance toggle)', async ({ page }) => {
+    // The singleton's "close effect" only fires for an instance when
+    // _activeInfoHintId points to a DIFFERENT instance's uid. Closing via
+    // a second click on the SAME field sets `open = false` directly and
+    // never changes _activeInfoHintId, so this must keep working exactly
+    // as it did before the singleton fix — explicit regression coverage
+    // for the operator's direct follow-up question about this.
+    const titleBtn = page.locator('.algo-title-group .info-wrap button.info-btn');
+
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
+
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'false');
+
+    // And a third click reopens it — proves the toggle keeps cycling, not
+    // just a one-way close.
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
+  });
 });

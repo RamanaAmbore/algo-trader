@@ -368,6 +368,30 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
   });
 
+  test('Singleton (bound-prop case): clicking the same chip twice opens then closes it', async ({ page }) => {
+    // Same regression concern as the default chip-mode spec's equivalent
+    // test — the singleton's close effect only fires for a DIFFERENT
+    // instance's uid, so closing via a second click on the SAME chip must
+    // keep working exactly as before. For the bound-prop case this also
+    // confirms the parent's own `_greekHintOpen.delta` toggles both ways,
+    // not just open→closed once.
+    const chips = page.locator('.opt-section-tag.tag-greek');
+    await expect(chips).toHaveCount(5, { timeout: 20_000 });
+    const deltaTrigger = chips.nth(0).locator('button.greek-val-trigger');
+
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
+
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'false');
+
+    await deltaTrigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
+  });
+
   test('UX: all 5 header chips open distinct, correctly-worded popovers via their value trigger (viewport bounds check)', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
