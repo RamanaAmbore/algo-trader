@@ -1379,13 +1379,38 @@ class DhanBroker(Broker):
         return str(resp.get("data", {}).get("orderId", ""))
 
     def modify_order(self, order_id: str, **kwargs: Any) -> str:
+        # 2026-10 audit fix: dhanhq 2.2.0's `modify_order(self, order_id,
+        # order_type, leg_name, quantity, price, trigger_price,
+        # disclosed_quantity, validity)` has NO default value for any
+        # parameter (confirmed via `inspect.signature(dhanhq.modify_order)`
+        # against the installed SDK) — calling it with only order_id/
+        # quantity/price/trigger_price/order_type (as this adapter did
+        # pre-fix) raised `TypeError: missing 3 required positional
+        # arguments: 'leg_name', 'disclosed_quantity', and 'validity'`
+        # on EVERY call, so no Groww-style chase price-update or
+        # take-profit-ratchet modify ever reached Dhan at all.
+        #
+        # Defaults: `leg_name="ENTRY_LEG"` matches this adapter's own
+        # convention for a single (non-bracket) order leg (see
+        # `_dhan_modify_forever_leg`'s identical "ENTRY_LEG" literal a
+        # few hundred lines up — this is a plain order modify, not a
+        # multi-leg bracket/forever order, so there is exactly one leg).
+        # `disclosed_quantity=0` mirrors the same helper's default.
+        # `validity="DAY"` mirrors `place_order`'s own default a few
+        # lines above — the order's own variety isn't tracked on this
+        # adapter's AlgoOrder-less call path, so DAY (the only validity
+        # this adapter ever places orders with) is the correct default
+        # rather than inventing a new convention here.
         resp = self._sdk.modify_order(
             order_id=order_id,
+            order_type=_ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", ""), None),
+            leg_name=kwargs.get("leg_name") or "ENTRY_LEG",
             quantity=int(kwargs.get("quantity", 0)) if kwargs.get("quantity") else None,
             price=float(kwargs.get("price") or 0) if kwargs.get("price") else None,
             trigger_price=(float(kwargs.get("trigger_price") or 0)
                            if kwargs.get("trigger_price") else None),
-            order_type=_ORDER_TYPE_TO_DHAN.get(kwargs.get("order_type", ""), None),
+            disclosed_quantity=int(kwargs.get("disclosed_quantity") or 0),
+            validity=kwargs.get("validity") or "DAY",
         )
         if not isinstance(resp, dict) or resp.get("status") != "success":
             raise RuntimeError(f"Dhan modify_order rejected: {resp}")
