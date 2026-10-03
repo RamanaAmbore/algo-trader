@@ -596,14 +596,6 @@ def _get_depth(account: str, exchange: str, symbol: str) -> dict:
     return data[key].get("depth", {})
 
 
-def _get_ltp(account: str, exchange: str, symbol: str) -> float:
-    """Fetch last traded price."""
-    broker = _get_broker(account)
-    key = f"{exchange}:{symbol}"
-    data = broker.ltp([key])
-    return data.get(key, {}).get("last_price", 0.0)
-
-
 def _ch_snap_sell_price(mid: float, spread: float, aggression: float,
                         tick: float, best_bid: float) -> float:
     """Compute tick-snapped SELL limit price: mid → best_bid as aggression grows."""

@@ -1,7 +1,6 @@
 import os
 import re
 from datetime import datetime, timedelta
-from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 
 import pandas as pd
@@ -175,13 +174,6 @@ def capitalize(text):
 def generate_totp(totp_key):
     """Generate a valid TOTP using the secret key."""
     return pyotp.TOTP(totp_key).now()
-
-
-def to_decimal(value, precision="0.01"):
-    """Convert float to Decimal with specified precision."""
-    return Decimal(value).quantize(Decimal(precision), rounding=ROUND_DOWN)
-
-
 
 
 def round_down_to_interval(dt: datetime, interval_minutes: int) -> datetime:
@@ -359,14 +351,6 @@ def mask_account_in_text(text: str | None) -> str | None:
     return _ACCT_IN_TEXT_RE.sub(lambda m: mask_account(m.group(1)), text)
 
 
-def add_comma_to_df_numbers(df):
-    # Format numeric cols with Indian commas
-    num_cols = df.select_dtypes(include=["number"]).columns.tolist()
-    for col in num_cols:
-        df[col] = df[col].apply(add_comma_to_number)
-    return df
-
-
 def add_comma_to_number(x):
     if pd.isna(x):
         return ""
@@ -413,35 +397,4 @@ def validate_password_standard(password: str) -> tuple[bool, str]:
         return False, "Password must contain at least one special character."
 
     return True, "Password is valid."
-
-
-def validate_captcha(answer, result):
-    try:
-        if float(answer) == result:
-            return True, "Captcha validated successfully."
-        else:
-            return False, "Captcha answer is incorrect."
-    except ValueError:
-        return False, "Please enter a numeric answer for the captcha."
-
-
-def validate_phone(country_code: str, phone_number: str):
-    # Keep only digits in country code
-
-    if not country_code:
-        return False, "❌ Phone country code is not selected", None
-
-    phone_pattern = r"^[0-9+\s()]+$"
-    if not re.match(phone_pattern, phone_number):
-        return False, "❌ Phone number may only contain digits, +, spaces, ( and )", None
-
-    digits_only = re.sub(r"\D", "", phone_number)
-    if not (7 <= len(digits_only) <= 15):
-        return False, "❌ Phone number must be between 7 and 15 digits", None
-
-    return True, "", digits_only
-
-
-
-
 

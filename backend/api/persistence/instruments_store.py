@@ -209,30 +209,6 @@ async def get_or_fetch_instruments(
     return await _instruments_store.get(key, bypass_cache=bypass_cache)
 
 
-@ssot_fetch(mode="coalesce", key="all_today")
-async def get_or_fetch_all_today() -> dict[tuple[str, str], int]:
-    """Fetch all 6 sparkline exchanges in parallel and return the union map.
-
-    This is what _get_today_token_map in quote.py should delegate to.
-
-    Concurrent callers coalesce on a single in-flight Task via @ssot_fetch;
-    per-exchange calls also coalesce via @ssot_fetch on get_or_fetch_instruments,
-    so even if get_or_fetch_all_today and an independent get_or_fetch_instruments
-    call race, the broker is called at most once per (date, exchange) pair.
-    """
-    results = await asyncio.gather(
-        *[get_or_fetch_instruments(exch) for exch in _SPARKLINE_EXCHANGES],
-        return_exceptions=True,
-    )
-    union: dict[tuple[str, str], int] = {}
-    for exch, result in zip(_SPARKLINE_EXCHANGES, results):
-        if isinstance(result, Exception):
-            logger.warning(f"instruments_store: get_or_fetch_instruments({exch}) failed: {result}")
-            continue
-        union.update(result)
-    return union
-
-
 # Module-level alias so quote.py's sync-path Tier-1 check can import a
 # plain function (instead of binding to the instance method on the
 # singleton). Slice AQ caught the import as silently failing: the prior

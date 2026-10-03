@@ -118,8 +118,3 @@ def get_logger(name="app_logger"):
         # parent installed an earlier handler).
         logger.propagate = False
     return logger
-
-
-def shutdown_logger():
-    """Gracefully stop the queue listener (to be called at shutdown)."""
-    queue_listener.stop()

@@ -362,15 +362,6 @@ def is_any_segment_open(now) -> bool:
     return False
 
 
-def convert_to_timezone(date_str, format='%Y-%m-%d', return_date=True, tz=INDIAN_TIMEZONE):
-    try:
-        dt = datetime.strptime(date_str, format).replace(tzinfo=tz)  # Assign the correct timezone
-        return dt if return_date is None else (dt.date() if return_date else dt.time())
-    except Exception:
-        logger.warning(f"Invalid date format: {date_str}")
-        return None
-
-
 # Test Code in __main__
 if __name__ == "__main__":
     logger.info(f"EST timestamp: {timestamp_est()}")

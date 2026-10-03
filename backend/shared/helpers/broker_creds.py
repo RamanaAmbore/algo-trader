@@ -21,7 +21,6 @@ Key derivation
 Public API
   encrypt(plaintext: str) -> str         (returns base64 ciphertext)
   decrypt(ciphertext: str) -> str
-  encrypt_dict(d: dict, fields: list[str]) -> dict
 """
 
 from __future__ import annotations
@@ -92,24 +91,3 @@ def decrypt(ciphertext: str) -> str:
             "Failed to decrypt broker credential — likely cookie_secret "
             "rotated since the row was written. Re-add the account."
         ) from e
-
-
-def encrypt_dict(payload: dict, fields: list[str]) -> dict:
-    """Return a shallow copy of `payload` with each named field encrypted.
-    Missing / None / empty values pass through to "". Used by the route
-    layer to encrypt POST/PATCH bodies before persisting."""
-    out = dict(payload)
-    for f in fields:
-        v = out.get(f)
-        out[f] = encrypt(str(v)) if v else ""
-    return out
-
-
-def decrypt_dict(row: dict, fields: list[str]) -> dict:
-    """Inverse of `encrypt_dict` — decrypts the named fields. Used by
-    Connections when loading creds out of the DB into memory."""
-    out = dict(row)
-    for f in fields:
-        v = out.get(f)
-        out[f] = decrypt(str(v)) if v else ""
-    return out

@@ -186,17 +186,6 @@ def _per_acct_share(target: float, kind: str, n_accounts: int) -> float:
     return target / max(1, n_accounts)
 
 
-def _section_of(scope: str) -> str:
-    """Return 'holdings' | 'positions' | 'funds' based on the scope prefix."""
-    if scope.startswith("holdings"):
-        return "holdings"
-    if scope.startswith("positions"):
-        return "positions"
-    if scope.startswith("funds") or scope.startswith("margins"):
-        return "funds"
-    return "positions"   # fall back — positions is the most common
-
-
 def _default_position_row(account: str) -> dict:
     # Default long option position — positive quantity so target_pnl negative
     # moves work without mixed-sign refusal.
