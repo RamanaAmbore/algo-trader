@@ -4,7 +4,7 @@
    *
    * Same composition as ActivityLogModal + the /orders Activity card:
    *
-   *    ActivityHeaderFilters  (account + level dropdowns, header)
+   *    ActivityAccountSelect  (account dropdown, rendered inside LogPanel)
    *    ActivityLogSurface     (configured LogPanel, body)
    *
    * Operator: "Do you think activity should also have a separate

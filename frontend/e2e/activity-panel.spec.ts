@@ -17,7 +17,7 @@
  *        - .lp-label (card title)
  *        - .lp-sep (vertical separator)
  *        - .algo-tabs-strip (tab buttons)
- *        - .act-filters (account + level selectors)
+ *        - .act-acct / .act-level-sel (account + level selectors)
  *        - .lp-card-btns (button group: search, expand/contract, collapse/expand,
  *          fullscreen/close, download)
  *
@@ -72,15 +72,6 @@ async function clickTab(panel: Locator, label: RegExp | string, timeoutMs = 10_0
   await tab.click();
   // Give Svelte a tick to update derived visibility state.
   await tab.page().waitForTimeout(200);
-}
-
-/**
- * Returns the ActivityHeaderFilters span (.act-filters) scoped to the
- * given container. This is the parent of both the account multiselect
- * (.act-acct) and the level selector (.act-level-sel).
- */
-function filtersLocator(container: Locator): Locator {
-  return container.locator('.act-filters').first();
 }
 
 /**

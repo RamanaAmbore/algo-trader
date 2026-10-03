@@ -195,20 +195,6 @@ test.describe('drift fixes — left-aligned content', () => {
     }
   });
 
-  test('/activity ActivityHeaderFilters on LEFT', async ({ page }) => {
-    await page.goto('/activity', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
-    const header = page.locator('.page-header').first();
-    const headerBox = await header.boundingBox();
-    if (!headerBox) return;
-    const filters = header.locator('.act-filters').first();
-    if (!(await filters.count())) return;
-    const fb = await filters.boundingBox();
-    if (!fb) return;
-    expect(fb.x + fb.width / 2,
-      '/activity filters must sit on LEFT half')
-      .toBeLessThan(headerBox.x + headerBox.width / 2);
-  });
 });
 
 // ── Mobile parity — single page (representative) at 360 px to keep

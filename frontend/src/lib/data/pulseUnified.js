@@ -527,11 +527,18 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
     const liveQ = cq?.[`${exch}:${sym}`];
     const _snapLtp = snap?.ltp;
     const _hadLtp  = _applyQuoteFields(row, snap, liveQ);
-    // Holdings snap-branch: close falls back to broker r.close_price when
+    // Holdings snap-branch: close falls back to broker r.prev_close when
     // snap.close / liveQ.close / row.close are all null (position branch
-    // does NOT have this extra tail — holdings-specific).
+    // does NOT have this extra tail — holdings-specific). `close_price`
+    // was renamed to `prev_close` (commit 933a9a88) — reading the dead
+    // field here produced `Number(undefined) === NaN`, which `?? null`
+    // never catches (nullish-coalescing only fires on null/undefined,
+    // not NaN), silently corrupting row.close to NaN for every holding.
+    // `> 0` guard (not `!= null`) matches HoldingRow.prev_close's
+    // "0.0 means not yet available" convention.
     if (_snapLtp != null && row.close == null) {
-      row.close = Number(r.close_price) ?? null;
+      const pc = Number(r.prev_close);
+      if (pc > 0) row.close = pc;
     }
     if (!_hadLtp) {
       // r.last_price is the broker-seed value (ltp_ts=0); valid fallback before first SSE tick
@@ -540,8 +547,8 @@ export function mergeHoldingRows(byKey, hold, includeHold, cq, ctx) {
         row.change = Number(r.day_change);
       if (r.day_change_percentage != null && row.change_pct == null)
         row.change_pct = Number(r.day_change_percentage);
-      if (row.close == null && r.close_price != null)
-        row.close = Number(r.close_price);
+      if (row.close == null && Number(r.prev_close) > 0)
+        row.close = Number(r.prev_close);
     }
     if (liveQ?.volume != null) row.volume = liveQ.volume;
     if (liveQ?.oi     != null) row.oi     = liveQ.oi;

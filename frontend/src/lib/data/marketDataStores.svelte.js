@@ -103,7 +103,11 @@ function _publishPositionsRows(rows) {
       sym,
       fields: {
         ltp:        r.last_price,
-        close:      r.close_price,
+        // `prev_close` rename (commit 933a9a88) — PositionRow no longer
+        // carries `close_price`; the frozen prior-session settlement
+        // price (daily_book.ltp basis) lives in `prev_close` now. See
+        // backend/api/schemas.py:PositionRow.prev_close.
+        close:      r.prev_close,
         // BH6 fix: symbolStore.day_change is per-share (matches the
         // semantics of watchQuotes / pulseQuotes / movers which write
         // `q.change` = last_price − close_price). Earlier this wrote
@@ -133,7 +137,9 @@ function _publishHoldingsRows(rows) {
       sym,
       fields: {
         ltp:            r.last_price,
-        close:          r.close_price,
+        // `prev_close` rename (commit 933a9a88) — HoldingRow no longer
+        // carries `close_price`; see backend/api/schemas.py:HoldingRow.prev_close.
+        close:          r.prev_close,
         // BH6: holdings publisher mirrors positions — symbolStore's
         // day_change slot is per-share, not portfolio-total. Holdings
         // backend exposes both: `day_change` (per-share = ltp − close)

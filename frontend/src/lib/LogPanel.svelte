@@ -900,7 +900,8 @@
   });
   // Sync _internalAccountFilter ↔ parent's accountFilter bindable.
   // When parent provides accountFilter, prime _internalAccountFilter
-  // from it (one-time seed, then ActivityHeaderFilters owns local writes).
+  // from it (one-time seed, then ActivityAccountSelect's own
+  // bind:value={_internalAccountFilter} below owns local writes).
   $effect(() => {
     const ext = accountFilter;
     if (ext !== undefined) {

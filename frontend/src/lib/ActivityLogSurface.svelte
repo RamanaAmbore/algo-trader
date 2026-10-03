@@ -60,9 +60,9 @@
     accountFilter       = $bindable(/** @type {string[]} */ ([])),
     /** Account codes from current order rows — bindable so parent renders the dropdown. */
     availableAccounts   = $bindable(/** @type {string[]} */ ([])),
-    /** Active log level filter — bindable so parent's ActivityHeaderFilters
-     *  drives it. Default 'all' keeps pre-filter behaviour; surfaces that
-     *  want loud-rows-only pass 'error'. */
+    /** Active log level filter — bindable so a caller-owned control (or
+     *  activityStore) can drive it. Default 'all' keeps pre-filter
+     *  behaviour; surfaces that want loud-rows-only pass 'error'. */
     levelFilter         = $bindable(/** @type {'all'|'error'|'warning'|'info'} */ ('warning')),
     /** Surface context — gates the context-derived 2-column magazine flow.
      *  Overridden entirely when `multiColumn` is provided explicitly.
@@ -138,8 +138,9 @@
      * (ActivityLogModal, /activity page) pass no value or true.
      * Simple mounts that want the inline filter (SymbolPanel bottom
      * panel, execution panels) pass false.
-     * Retained for backwards compat; no longer used for rendering
-     * (ActivityHeaderFilters is always rendered in LogPanel).
+     * Retained for backwards compat; no longer used for rendering —
+     * LogPanel renders the account dropdown itself via
+     * `ActivityAccountSelect`, not via this prop.
      */
     hideInlineAccountFilter = true,
   } = $props();

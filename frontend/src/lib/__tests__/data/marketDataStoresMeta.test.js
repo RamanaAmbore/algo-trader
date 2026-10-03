@@ -118,3 +118,44 @@ describe('marketDataStores.svelte.js — meta extractor wired into every book st
     expect(block).not.toMatch(/meta:\s*_bookStaleMeta,/);
   });
 });
+
+// ── close_price → prev_close rename (2026-10) ─────────────────────────────
+//
+// PositionRow/HoldingRow dropped `close_price` in favour of `prev_close`
+// (backend commit 933a9a88; see backend/api/schemas.py). The frontend
+// dual-write publishers here still read the removed field, so `close`
+// was published as `undefined` for every held symbol for every positions/
+// holdings poll — the symbolStore merge guard silently drops a non-
+// positive/undefined `close` write (see symbolStore.svelte.js's
+// price-zero guard), so the bug was invisible until a consumer tried to
+// read `close` back out and got nothing instead of the frozen
+// prior-session settlement price.
+describe('marketDataStores.svelte.js — publishers read prev_close, not the removed close_price', () => {
+  function extractFn(name) {
+    const marker = `function ${name}(`;
+    const start = src.indexOf(marker);
+    expect(start, `${name} not found`).toBeGreaterThan(-1);
+    const bodyStart = src.indexOf('{', start);
+    let depth = 0;
+    for (let i = bodyStart; i < src.length; i++) {
+      if (src[i] === '{') depth++;
+      else if (src[i] === '}') {
+        depth--;
+        if (depth === 0) return src.slice(bodyStart, i + 1);
+      }
+    }
+    throw new Error(`unterminated function body for ${name}`);
+  }
+
+  it('_publishPositionsRows writes close: r.prev_close', () => {
+    const block = extractFn('_publishPositionsRows');
+    expect(block).toMatch(/close:\s*r\.prev_close,/);
+    expect(block).not.toMatch(/close:\s*r\.close_price,/);
+  });
+
+  it('_publishHoldingsRows writes close: r.prev_close', () => {
+    const block = extractFn('_publishHoldingsRows');
+    expect(block).toMatch(/close:\s*r\.prev_close,/);
+    expect(block).not.toMatch(/close:\s*r\.close_price,/);
+  });
+});

@@ -1144,11 +1144,11 @@
     }
   }
 
-  // Activity card filter state — bound to ActivityHeaderFilters in
-  // the activity card's header strip and threaded into
-  // ActivityLogSurface. Same per-surface state pattern /activity and
-  // /orders use; account + level filters persist while the operator
-  // flips tabs inside the activity surface.
+  // Activity card filter state — threaded into ActivityLogSurface
+  // (account filter renders via LogPanel's own ActivityAccountSelect).
+  // Same per-surface state pattern /activity and /orders use; account
+  // + level filters persist while the operator flips tabs inside the
+  // activity surface.
   /** @type {string[]} */
   let _actAccountFilter     = $state([]);
   /** @type {string[]} */
@@ -1994,8 +1994,8 @@
      Terminal / Conn / System / Ticks for the wider operator paper
      trail without leaving the page. Same composition as /activity +
      ActivityLogModal + the /orders Activity card — single shared
-     ActivityHeaderFilters + ActivityLogSurface pair, so the four
-     mounts can't drift on filter UI or LogPanel config. -->
+     ActivityLogSurface (wrapping LogPanel), so the four mounts
+     can't drift on filter UI or LogPanel config. -->
 <section class="bucket-card dash-activity"
   class:is-collapsed={_colActivity}>
   <div class="card-body">

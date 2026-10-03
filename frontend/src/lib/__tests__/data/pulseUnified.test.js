@@ -331,3 +331,55 @@ describe('mergeHoldingRows — holdClose guard', () => {
     expect(result.pnl).toBe(25000);
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// mergeHoldingRows — row.close display fallback (close_price → prev_close
+// rename fix, 2026-10). Distinct from the holdClose/day_pnl guard above —
+// this covers the DISPLAY field (Pulse's close/Chg% column), which reads
+// `r.close_price` (removed from HoldingRow — see backend commit 933a9a88)
+// via a separate code path (_snapLtp-gated block + the !_hadLtp fallback).
+// Before the fix: `Number(undefined) ?? null` evaluates to NaN (the `??`
+// operator never triggers on NaN, only null/undefined), so row.close
+// silently became NaN instead of falling back to prev_close.
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe('mergeHoldingRows — row.close reads prev_close, not the removed close_price', () => {
+  it('snap has ltp but no close: row.close falls back to prev_close (not NaN)', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({ prev_close: 2650, close_price: 9999 });
+    // snap.ltp present, snap.close absent → _applyQuoteFields leaves
+    // row.close null, so the _snapLtp-gated fallback (line ~533) fires.
+    const ctx = makeHoldingCtx({ TCS: { ltp: 2700 } });
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result.close).toBe(2650);
+    expect(result.close).not.toBeNaN();
+    expect(result.close).not.toBe(9999); // close_price must be ignored
+  });
+
+  it('no snap, no liveQ: row.close falls back to prev_close via the !_hadLtp branch', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({ prev_close: 2650, close_price: 9999, last_price: 2700 });
+    const ctx = makeHoldingCtx(); // no snap for TCS
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result.close).toBe(2650);
+    expect(result.close).not.toBeNaN();
+  });
+
+  it('prev_close unavailable (0.0 default): row.close stays null, never NaN', () => {
+    const byKey = {};
+    const holdingRow = makeHoldingRow({ prev_close: 0, close_price: 9999, last_price: 2700 });
+    const ctx = makeHoldingCtx();
+
+    mergeHoldingRows(byKey, [holdingRow], true, {}, ctx);
+
+    const result = byKey['TCS__hold'];
+    expect(result.close).not.toBeNaN();
+    expect(result.close == null).toBe(true);
+  });
+});
