@@ -352,6 +352,101 @@ async def test_enrich_position_greeks_direct_call():
 
 
 @pytest.mark.asyncio
+async def test_enrich_position_greeks_mcx_dispatches_black_76():
+    """MCX commodity option rows must compute Greeks via `greeks_76()`/
+    `implied_vol_76()` (Black-76 — the resolved spot is the matching
+    futures contract price), not plain `greeks()`/`implied_vol()` (cash-
+    spot BS). Spies on the real `derivatives` module functions that
+    `_enrich_position_greeks`'s local import binds at call time, so a
+    regression reverting the branch back to plain BS fails this test."""
+    from unittest.mock import patch
+    from backend.api.routes.positions import _enrich_position_greeks
+    from backend.api.schemas import PositionRow
+    from backend.api.algo import derivatives as deriv_mod
+
+    rows = [
+        PositionRow(
+            account="ZG0790",
+            tradingsymbol="CRUDEOIL25OCT9400CE",
+            exchange="MCX",
+            product="NRML",
+            quantity=10,
+            average_price=150.0,
+            prev_close=150.0,
+            pnl=0.0,
+            last_price=150.0,
+            underlying_ltp=None,
+        ),
+    ]
+
+    def mock_batch_fetch(underlying_keys: set[str]) -> dict[str, float]:
+        return {k: 9400.0 for k in underlying_keys}
+
+    with patch(
+        "backend.api.routes.positions._batch_fetch_spots",
+        side_effect=mock_batch_fetch,
+    ), patch.object(
+        deriv_mod, "greeks_76", wraps=deriv_mod.greeks_76,
+    ) as spy_76, patch.object(
+        deriv_mod, "implied_vol_76", wraps=deriv_mod.implied_vol_76,
+    ) as spy_iv76, patch.object(
+        deriv_mod, "greeks", wraps=deriv_mod.greeks,
+    ) as spy_bs, patch.object(
+        deriv_mod, "implied_vol", wraps=deriv_mod.implied_vol,
+    ) as spy_iv_bs:
+        _enrich_position_greeks(rows)
+
+    assert spy_76.called, "MCX option row must dispatch through greeks_76 (Black-76)"
+    assert spy_iv76.called, "MCX option row must calibrate IV via implied_vol_76"
+    assert not spy_bs.called, "MCX option row must NOT fall through to plain BS greeks()"
+    assert not spy_iv_bs.called, "MCX option row must NOT fall through to plain BS implied_vol()"
+    # delta_pos must actually be populated (not left at the 0.0 default).
+    assert rows[0].delta_pos != 0.0
+
+
+@pytest.mark.asyncio
+async def test_enrich_position_greeks_nse_stays_on_plain_bs():
+    """NSE/NFO option rows must keep using plain `greeks()`/`implied_vol()`
+    — the is_mcx branch must default to False for non-commodity underlyings,
+    so existing NSE Greeks are byte-identical to before the branch existed."""
+    from unittest.mock import patch
+    from backend.api.routes.positions import _enrich_position_greeks
+    from backend.api.schemas import PositionRow
+    from backend.api.algo import derivatives as deriv_mod
+
+    rows = [
+        PositionRow(
+            account="ZG0790",
+            tradingsymbol="RELIANCE25OCT2800CE",
+            exchange="NFO",
+            product="MIS",
+            quantity=10,
+            average_price=50.0,
+            prev_close=50.0,
+            pnl=0.0,
+            last_price=50.0,
+            underlying_ltp=None,
+        ),
+    ]
+
+    def mock_batch_fetch(underlying_keys: set[str]) -> dict[str, float]:
+        return {k: 2800.0 for k in underlying_keys}
+
+    with patch(
+        "backend.api.routes.positions._batch_fetch_spots",
+        side_effect=mock_batch_fetch,
+    ), patch.object(
+        deriv_mod, "greeks_76", wraps=deriv_mod.greeks_76,
+    ) as spy_76, patch.object(
+        deriv_mod, "greeks", wraps=deriv_mod.greeks,
+    ) as spy_bs:
+        _enrich_position_greeks(rows)
+
+    assert spy_bs.called, "NSE option row must use plain BS greeks()"
+    assert not spy_76.called, "NSE option row must NOT dispatch through greeks_76"
+
+
+@pytest.mark.asyncio
 async def test_enrich_position_greeks_empty_rows():
     """_enrich_position_greeks must handle empty rows gracefully."""
     from backend.api.routes.positions import _enrich_position_greeks

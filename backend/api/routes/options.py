@@ -939,15 +939,21 @@ def _resolve_iv_for_analytics(
     K: float,
     T_yrs: float,
     opt_type: str,
+    is_mcx: bool = False,
 ) -> tuple[float, str]:
     """Resolve the implied-vol (sigma) to use for analytics, plus the source label.
 
     Priority: explicit override > calibrated from LTP > default IV.
     Falls back to 'default' when calibration round-trips on an estimated LTP.
+
+    `is_mcx` selects `implied_vol_76()` (Black-76, `S` is a futures price)
+    instead of `implied_vol()` (cash-spot BS). Defaults to False — non-MCX
+    callers are byte-identical to before this parameter existed.
     """
     if iv is not None and iv > 0:
         return float(iv), "override"
-    calibrated = implied_vol(ltp_val, S, K, T_yrs, DEFAULT_RISK_FREE, opt_type)
+    calibrator = implied_vol_76 if is_mcx else implied_vol
+    calibrated = calibrator(ltp_val, S, K, T_yrs, DEFAULT_RISK_FREE, opt_type)
     # When the calibrated value equals DEFAULT_IV (bisection failed / degenerate
     # inputs), or when the LTP itself came from a fallback source, treat as default
     # so the UI can flag lower confidence.
@@ -1396,15 +1402,22 @@ async def _ltp_broker_quote(symbol: str) -> Optional[tuple[float, str]]:
 
 
 def _ltp_bs_estimate(estimate_inputs: dict) -> Optional[tuple[float, str]]:
-    """Synthesise an LTP via Black-Scholes at DEFAULT_IV as the last resort.
-    Returns (price, 'estimated') when inputs are valid, else None.
+    """Synthesise an LTP via Black-Scholes (or Black-76) at DEFAULT_IV as
+    the last resort. Returns (price, 'estimated') when inputs are valid,
+    else None.
+
+    `estimate_inputs['is_mcx']` (MCX commodity underlying — `spot` is a
+    futures contract price, not cash spot) selects `black_76` instead of
+    `black_scholes`. Absent/False keeps the original BS behavior.
     """
     S = float(estimate_inputs.get("spot") or 0)
     K = float(estimate_inputs.get("strike") or 0)
     T = float(estimate_inputs.get("T_years") or 0)
     opt = str(estimate_inputs.get("opt_type") or "CE")
+    is_mcx = bool(estimate_inputs.get("is_mcx"))
     if S > 0 and K > 0 and T > 0:
-        est = black_scholes(S, K, T, DEFAULT_RISK_FREE, DEFAULT_IV, opt)
+        pricer = black_76 if is_mcx else black_scholes
+        est = pricer(S, K, T, DEFAULT_RISK_FREE, DEFAULT_IV, opt)
         if est > 0:
             return (est, "estimated")
     return None
@@ -2505,20 +2518,28 @@ def _analytics_compute_metrics(
     span_sigmas: float,
     points: int,
     time_slices: int,
+    is_mcx: bool = False,
 ) -> tuple:
-    """Compute BS price, greeks, risk metrics, payoff curves, and EV for one option.
+    """Compute BS/Black-76 price, greeks, risk metrics, payoff curves, and
+    EV for one option.
+
+    `is_mcx` (MCX commodity underlying — `S` is a futures contract price,
+    not cash spot) selects `black_76`/`greeks_76` instead of
+    `black_scholes`/`greeks`. Defaults to False so non-MCX callers are
+    byte-identical to before this parameter existed.
 
     Returns a 13-tuple:
       (theo, disc, disc_pct, g_per, g_pos, entry, risk,
        span_pct_resolved, curve, slices, ev, ev_pct, rr)
     """
-    theo = black_scholes(S, parsed["strike"], T_yrs,
-                         DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
+    price_fn, greeks_fn = (black_76, greeks_76) if is_mcx else (black_scholes, greeks)
+    theo = price_fn(S, parsed["strike"], T_yrs,
+                    DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
     disc = ltp_val - theo
     disc_pct = (disc / theo * 100.0) if theo else 0.0
 
-    g_per = greeks(S, parsed["strike"], T_yrs,
-                   DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
+    g_per = greeks_fn(S, parsed["strike"], T_yrs,
+                      DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
     g_pos = {k: v * qty_resolved for k, v in g_per.items()}
 
     entry = avg_resolved if avg_resolved > 0 else ltp_val
@@ -2602,12 +2623,15 @@ class OptionsController(Controller):
             fallback=parsed["strike"],
             expiry_hint=parsed["expiry"],
             option_symbol=sym)
-        _close_time = (23, 30) if is_mcx_underlying(parsed["root"]) else (15, 30)
+        _is_mcx = is_mcx_underlying(parsed["root"])
+        _close_time = (23, 30) if _is_mcx else (15, 30)
         T_yrs = days_to_expiry(parsed["expiry"], close_time=_close_time) / 365.0
         # Pass avg_cost AND estimated-BS inputs as last-resort fallbacks
         # so a stale broker quote on an illiquid contract still produces
         # a usable payoff curve. ltp_source='estimated' tells the UI it
-        # came from BS at default IV against the resolved spot.
+        # came from BS at default IV against the resolved spot. `is_mcx`
+        # routes the estimate through Black-76 (S is a futures price for
+        # MCX commodities, not cash spot).
         ltp_val, ltp_src = await _resolve_ltp(
             sym, mode, acct_resolved or account, ltp,
             avg_cost_hint=avg_resolved if avg_resolved > 0 else avg_cost,
@@ -2616,6 +2640,7 @@ class OptionsController(Controller):
                 "strike":    parsed["strike"],
                 "T_years":   T_yrs,
                 "opt_type":  parsed["opt_type"],
+                "is_mcx":    _is_mcx,
             },
         )
         # IV: explicit override > calibrate from current LTP > default
@@ -2627,12 +2652,14 @@ class OptionsController(Controller):
         sigma, iv_src = _resolve_iv_for_analytics(
             iv, ltp_val, ltp_src,
             S, parsed["strike"], T_yrs, parsed["opt_type"],
+            _is_mcx,
         )
 
         (theo, disc, disc_pct, g_per, g_pos, entry, risk,
          span_pct_resolved, curve, slices, ev, ev_pct, rr) = _analytics_compute_metrics(
             S, parsed, T_yrs, sigma, ltp_val, qty_resolved, avg_resolved,
             span_pct, span_sigmas, int(points), int(time_slices),
+            is_mcx=_is_mcx,
         )
 
         return OptionAnalyticsResponse(
@@ -2911,6 +2938,7 @@ class OptionsController(Controller):
         rows = _chain_snapshot_compute_rows(
             sym_by_strike, window_strikes, quote_resp, spot, T_yrs,
             ChainSnapshotLeg, ChainSnapshotRow,
+            is_mcx_underlying(und),
         )
 
         return ChainSnapshotResponse(

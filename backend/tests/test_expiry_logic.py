@@ -332,3 +332,70 @@ def test_fetch_underlying_ltps_uses_correct_nifty_key():
     assert result.get("NIFTY") == 24900.0, (
         f"Result must map NIFTY 50 back to NIFTY, got {result}"
     )
+
+
+def test_compute_theta_mcx_dispatches_black_76():
+    """`_compute_theta` prices MCX commodity positions' theta via
+    `greeks_76()` (Black-76 — `underlying_ltp` is the matching futures
+    contract price for MCX, not a cash spot), not plain `greeks()`.
+    Spies on the real `derivatives` module functions that `_compute_theta`'s
+    local import binds at call time, so a regression reverting the branch
+    to always-BS fails this test."""
+    from datetime import date, timedelta
+    from unittest.mock import patch
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+    from backend.api.algo import derivatives as deriv_mod
+
+    engine = ExpiryEngine()
+    pos = OptionPosition(
+        account="test_account",
+        tradingsymbol="CRUDEOIL26NOV5500CE",
+        exchange="MCX",
+        instrument_type="CE",
+        underlying="CRUDEOIL",
+        strike=5500.0,
+        expiry=date.today() + timedelta(days=30),
+        quantity=1,
+        product="NRML",
+        underlying_ltp=5500.0,
+    )
+
+    with patch.object(deriv_mod, "greeks_76", wraps=deriv_mod.greeks_76) as spy_76, \
+         patch.object(deriv_mod, "greeks", wraps=deriv_mod.greeks) as spy_bs:
+        theta = engine._compute_theta(pos)
+
+    assert spy_76.called, "MCX position theta must dispatch through greeks_76"
+    assert not spy_bs.called, "MCX position theta must NOT fall through to plain BS greeks()"
+    assert theta != 0.0
+
+
+def test_compute_theta_nfo_stays_on_plain_bs():
+    """NFO (equity/index) positions must keep using plain `greeks()` for
+    theta — the is_mcx branch keys off `pos.exchange == 'MCX'`, so a
+    non-MCX exchange must never dispatch through greeks_76."""
+    from datetime import date, timedelta
+    from unittest.mock import patch
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+    from backend.api.algo import derivatives as deriv_mod
+
+    engine = ExpiryEngine()
+    pos = OptionPosition(
+        account="test_account",
+        tradingsymbol="NIFTY26NOV25000CE",
+        exchange="NFO",
+        instrument_type="CE",
+        underlying="NIFTY",
+        strike=25000.0,
+        expiry=date.today() + timedelta(days=30),
+        quantity=50,
+        product="NRML",
+        underlying_ltp=25000.0,
+    )
+
+    with patch.object(deriv_mod, "greeks_76", wraps=deriv_mod.greeks_76) as spy_76, \
+         patch.object(deriv_mod, "greeks", wraps=deriv_mod.greeks) as spy_bs:
+        theta = engine._compute_theta(pos)
+
+    assert spy_bs.called, "NFO position theta must use plain BS greeks()"
+    assert not spy_76.called, "NFO position theta must NOT dispatch through greeks_76"
+    assert theta != 0.0

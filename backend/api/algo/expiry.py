@@ -308,17 +308,23 @@ class ExpiryEngine:
         on degenerate inputs (no spot, no strike, expired). Safe to
         call for every position; failures fall back to 0."""
         try:
-            from backend.api.algo.derivatives import greeks, days_to_expiry, DEFAULT_RISK_FREE
+            from backend.api.algo.derivatives import (
+                greeks, greeks_76, days_to_expiry, DEFAULT_RISK_FREE,
+            )
             if pos.underlying_ltp <= 0 or pos.strike <= 0:
                 return 0.0
-            close_time = (23, 30) if pos.exchange == "MCX" else (15, 30)
+            is_mcx = pos.exchange == "MCX"
+            close_time = (23, 30) if is_mcx else (15, 30)
             d = float(days_to_expiry(pos.expiry, close_time=close_time))
             T_years = d / 365.25
             if T_years <= 0:
                 return 0.0
             sigma = 0.15
-            g = greeks(pos.underlying_ltp, pos.strike, T_years,
-                       DEFAULT_RISK_FREE, sigma, pos.instrument_type)
+            # MCX commodity options: underlying_ltp is the matching futures
+            # contract price, not a cash spot — price via Black-76.
+            g_fn = greeks_76 if is_mcx else greeks
+            g = g_fn(pos.underlying_ltp, pos.strike, T_years,
+                     DEFAULT_RISK_FREE, sigma, pos.instrument_type)
             return float(g.get("theta", 0.0))
         except Exception:
             return 0.0

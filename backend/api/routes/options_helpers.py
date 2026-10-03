@@ -41,7 +41,9 @@ from backend.api.algo.derivatives import (
     days_to_expiry,
     futures_symbol_for_expiry,
     greeks,
+    greeks_76,
     implied_vol,
+    implied_vol_76,
     is_mcx_underlying,
     lookup_future_for_option,
     lookup_mcx_front_month_future,
@@ -844,19 +846,26 @@ def _chain_snapshot_iv_greeks(
     strike: float,
     T_yrs: float,
     side: str,
+    is_mcx: bool = False,
 ) -> tuple[Optional[float], Optional[dict]]:
-    """Compute (iv, greeks_dict) from market LTP via bisection + BS.
+    """Compute (iv, greeks_dict) from market LTP via bisection + BS/Black-76.
     Returns (None, None) when ltp is absent or T_yrs is zero.
+
+    `is_mcx` (MCX commodity underlying — `spot` is the matching futures
+    contract price, not a cash spot) selects the Black-76 variants
+    (`implied_vol_76`/`greeks_76`) instead of plain BS. Defaults to False
+    so non-MCX callers are unaffected.
     """
     if not (ltp and ltp > 0 and T_yrs > 0):
         return None, None
+    iv_fn, g_fn = (implied_vol_76, greeks_76) if is_mcx else (implied_vol, greeks)
     try:
-        iv: Optional[float] = implied_vol(ltp, spot, strike, T_yrs, DEFAULT_RISK_FREE, side)
+        iv: Optional[float] = iv_fn(ltp, spot, strike, T_yrs, DEFAULT_RISK_FREE, side)
     except Exception:
         iv = None
     sigma_eff = iv if iv else DEFAULT_IV
     try:
-        g: Optional[dict] = greeks(spot, strike, T_yrs, DEFAULT_RISK_FREE, sigma_eff, side)
+        g: Optional[dict] = g_fn(spot, strike, T_yrs, DEFAULT_RISK_FREE, sigma_eff, side)
     except Exception:
         g = None
     return iv, g
@@ -870,6 +879,7 @@ def _chain_snapshot_compute_leg(
     T_yrs: float,
     side: str,
     ChainSnapshotLegCls: type,
+    is_mcx: bool = False,
 ) -> object:
     """Compute one ChainSnapshotLeg (CE or PE) for a given strike+side."""
     qk = option_quote_key(sym) if sym else None
@@ -878,7 +888,7 @@ def _chain_snapshot_compute_leg(
     ltp = q.get("last_price") or None
     bid = _chain_snapshot_best_depth(depth.get("buy"))
     ask = _chain_snapshot_best_depth(depth.get("sell"))
-    iv, g = _chain_snapshot_iv_greeks(ltp, spot, strike, T_yrs, side)
+    iv, g = _chain_snapshot_iv_greeks(ltp, spot, strike, T_yrs, side, is_mcx)
     gd = g or {}
     return ChainSnapshotLegCls(  # type: ignore[operator]
         ltp=ltp, bid=bid, ask=ask, iv=iv,
@@ -898,12 +908,14 @@ def _chain_snapshot_compute_rows(
     T_yrs: float,
     ChainSnapshotLegCls: type,
     ChainSnapshotRowCls: type,
+    is_mcx: bool = False,
 ) -> list:
     """Compute per-strike ChainSnapshotRow objects with IV + Greeks.
 
     For each strike in *window_strikes*, computes IV via bisection and
-    per-share Greeks using Black-Scholes.  Gracefully handles missing
-    LTPs and zero T_yrs.
+    per-share Greeks using Black-Scholes (or Black-76 when `is_mcx` —
+    MCX commodity underlyings quote `spot` as a futures price).
+    Gracefully handles missing LTPs and zero T_yrs.
     """
     rows = []
     for strike in window_strikes:
@@ -911,6 +923,7 @@ def _chain_snapshot_compute_rows(
             side: _chain_snapshot_compute_leg(
                 sym_by_strike[strike].get(side) or "",
                 quote_resp, spot, float(strike), T_yrs, side, ChainSnapshotLegCls,
+                is_mcx,
             )
             for side in ("CE", "PE")
         }

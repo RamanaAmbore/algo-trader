@@ -2058,7 +2058,7 @@ def _enrich_position_greeks(rows: list) -> None:
         return
     from backend.api.algo.derivatives import (
         parse_tradingsymbol, implied_vol, greeks, option_underlying_quote_key,
-        DEFAULT_RISK_FREE,
+        DEFAULT_RISK_FREE, is_mcx_underlying, implied_vol_76, greeks_76,
     )
 
     # Pass 1 — parse + collect unique underlying keys we need spots for.
@@ -2109,8 +2109,14 @@ def _enrich_position_greeks(rows: list) -> None:
         T_days = max((expiry - today).days, 0)
         T_years = max(T_days, 1) / 365.0   # never let T hit zero
         try:
-            sigma = implied_vol(row.last_price, S, K, T_years, DEFAULT_RISK_FREE, p["opt_type"])
-            g = greeks(S, K, T_years, DEFAULT_RISK_FREE, sigma, p["opt_type"])
+            # MCX commodity options resolve underlying spot as the matching
+            # futures contract (option_underlying_quote_key above) — price
+            # that via Black-76, not cash-spot BS (see derivatives.py
+            # module comment on `_gbs_price`'s cost-of-carry `b`).
+            is_mcx = is_mcx_underlying(p.get("root") or "")
+            iv_fn, g_fn = (implied_vol_76, greeks_76) if is_mcx else (implied_vol, greeks)
+            sigma = iv_fn(row.last_price, S, K, T_years, DEFAULT_RISK_FREE, p["opt_type"])
+            g = g_fn(S, K, T_years, DEFAULT_RISK_FREE, sigma, p["opt_type"])
             row.delta_pos = g["delta"] * row.quantity
             row.theta_pos = g["theta"] * row.quantity
         except Exception:

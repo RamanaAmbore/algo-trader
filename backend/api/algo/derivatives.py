@@ -417,17 +417,6 @@ def implied_vol_76(price: float, F: float, K: float, T_years: float,
                             max_iter=max_iter, tol=tol)
 
 
-# ── Helpers used by the simulator ─────────────────────────────────────
-
-def detect_underlying(symbol: str, row: Optional[dict] = None) -> Optional[str]:
-    """Return the root name for a position row, or None if the
-    symbol isn't a recognised derivative."""
-    parsed = parse_tradingsymbol(symbol)
-    if parsed:
-        return parsed["root"]
-    return None
-
-
 # Index-to-Kite-LTP-key mapping. Indian index spot tickers don't follow the
 # tradingsymbol convention — NIFTY's spot is "NSE:NIFTY 50", not "NSE:NIFTY".
 # Stock underlyings DO match (RELIANCE option underlying = "NSE:RELIANCE"),
@@ -797,41 +786,6 @@ async def lookup_mcx_future_for_expiry(underlying: str,
     # All listed futures expire before target_expiry — return the last one
     # (farthest available contract is the best we can do)
     return candidates[-1].s
-
-
-async def front_month_underlying_quote_key(underlying: str) -> str | None:
-    """Kite quote key for the "current liquid spot" of an underlying
-    NAME, resolved differently per instrument class:
-
-      • Index (NIFTY, BANKNIFTY, …)   → NSE:NIFTY 50 (etc.)
-      • Stock (RELIANCE, INFY, …)     → NSE:RELIANCE
-      • MCX commodity (CRUDEOIL, …)   → MCX:<front-month-future>
-                                         (skips today's-expiry month)
-
-    Counterpart of `option_underlying_quote_key(symbol)`:
-      - This one takes the bare NAME and returns the front-month
-        future for MCX (operators read this as "today's crude price").
-      - The other takes a full TRADINGSYMBOL and returns that
-        option's MATCHING-month future for MCX (the spot under
-        THIS contract for σ-calibration).
-
-    Both designs are correct in their context; choose by whether you
-    have a name or a symbol on hand. Async because MCX path hits the
-    instruments cache (deferred imports inside).
-
-    Returns None when underlying is empty or no MCX contract resolves
-    (cache cold / commodity has no listed front-month). For non-MCX
-    callers, never returns None — falls back to `NSE:<name>` which is
-    Kite's default for an equity ticker.
-    """
-    if not underlying:
-        return None
-    if is_mcx_underlying(underlying):
-        sym = await lookup_mcx_front_month_future(underlying)
-        if not sym:
-            return None
-        return f"MCX:{sym}"
-    return underlying_ltp_key(underlying)
 
 
 def option_quote_key(symbol: str) -> str | None:

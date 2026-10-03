@@ -152,8 +152,17 @@ def test_enrich_position_greeks_uses_default_risk_free():
 # ---------------------------------------------------------------------------
 
 def test_compute_theta_uses_default_risk_free():
-    """Mock greeks + days_to_expiry, call _compute_theta, assert
-    the `r` argument received equals DEFAULT_RISK_FREE exactly."""
+    """Mock greeks_76 + days_to_expiry, call _compute_theta for an MCX
+    position, assert the `r` argument received equals DEFAULT_RISK_FREE
+    exactly.
+
+    MCX commodity positions now dispatch through `greeks_76()` (Black-76
+    — `underlying_ltp` is the matching futures contract price, not cash
+    spot), not plain `greeks()` — see the fix in `expiry.py:_compute_theta`
+    that branches on `pos.exchange == "MCX"`. This test was written
+    against the pre-fix always-BS path; updated to mock `greeks_76`
+    instead, preserving the original SSOT intent (DEFAULT_RISK_FREE is
+    the `r` passed through, regardless of which pricing model fires)."""
     from backend.api.algo.expiry import ExpiryEngine, OptionPosition
 
     # OptionPosition is a dataclass; supply all required fields.
@@ -172,7 +181,7 @@ def test_compute_theta_uses_default_risk_free():
 
     captured_r: list[float] = []
 
-    def fake_greeks(S, K, T, r, sigma, opt_type):
+    def fake_greeks_76(S, K, T, r, sigma, opt_type):
         captured_r.append(r)
         return {"theta": -5.0}
 
@@ -180,6 +189,59 @@ def test_compute_theta_uses_default_risk_free():
         return 7.0
 
     # ExpiryEngine has heavy __init__ (async callbacks etc.); bypass it.
+    engine = ExpiryEngine.__new__(ExpiryEngine)
+
+    with (
+        patch("backend.api.algo.derivatives.greeks_76",
+              side_effect=fake_greeks_76),
+        patch("backend.api.algo.derivatives.days_to_expiry",
+              side_effect=fake_days_to_expiry),
+    ):
+        theta = engine._compute_theta(pos)
+
+    assert len(captured_r) >= 1, (
+        "_compute_theta never called greeks_76 for an MCX position — "
+        "test fixture broken, or the MCX dispatch branch regressed"
+    )
+    for r_val in captured_r:
+        assert r_val == pytest.approx(DEFAULT_RISK_FREE), (
+            f"_compute_theta passed r={r_val!r} to greeks_76; "
+            f"expected DEFAULT_RISK_FREE={DEFAULT_RISK_FREE!r}"
+        )
+
+    assert theta == pytest.approx(-5.0), (
+        f"_compute_theta returned {theta!r}; expected -5.0 from mocked greeks_76"
+    )
+
+
+def test_compute_theta_nfo_uses_default_risk_free():
+    """Sibling of the MCX test above: an NFO (equity/index) position must
+    dispatch through plain `greeks()` (not `greeks_76`), still receiving
+    DEFAULT_RISK_FREE as `r`. Guards the `is_mcx` branch both ways."""
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+
+    pos = OptionPosition(
+        account="ACC1",
+        tradingsymbol="NIFTY26AUG25000CE",
+        exchange="NFO",
+        instrument_type="CE",
+        underlying="NIFTY",
+        strike=25000.0,
+        expiry=date(2026, 8, 19),
+        quantity=50,
+        product="NRML",
+        underlying_ltp=25000.0,
+    )
+
+    captured_r: list[float] = []
+
+    def fake_greeks(S, K, T, r, sigma, opt_type):
+        captured_r.append(r)
+        return {"theta": -5.0}
+
+    def fake_days_to_expiry(expiry, close_time=None):
+        return 7.0
+
     engine = ExpiryEngine.__new__(ExpiryEngine)
 
     with (
@@ -191,14 +253,8 @@ def test_compute_theta_uses_default_risk_free():
         theta = engine._compute_theta(pos)
 
     assert len(captured_r) >= 1, (
-        "_compute_theta never called greeks — test fixture broken"
+        "_compute_theta never called greeks for an NFO position"
     )
     for r_val in captured_r:
-        assert r_val == pytest.approx(DEFAULT_RISK_FREE), (
-            f"_compute_theta passed r={r_val!r} to greeks; "
-            f"expected DEFAULT_RISK_FREE={DEFAULT_RISK_FREE!r}"
-        )
-
-    assert theta == pytest.approx(-5.0), (
-        f"_compute_theta returned {theta!r}; expected -5.0 from mocked greeks"
-    )
+        assert r_val == pytest.approx(DEFAULT_RISK_FREE)
+    assert theta == pytest.approx(-5.0)
