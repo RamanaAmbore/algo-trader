@@ -470,20 +470,57 @@ async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
 
 
 async def _al_modify_write_reject(order_id: str, e: Exception) -> None:
-    """Mark an AlgoOrder row REJECTED after a modify_order broker failure."""
+    """Record a modify_order broker failure on the matching AlgoOrder row(s).
+
+    2026-10 audit fix: this used to blindly write status="REJECTED" on
+    every modify_order exception, with no check of the row's CURRENT
+    status first. REJECTED is a FINAL status (see
+    models.ALGO_ORDER_FINAL_STATUSES), and a modify failure (timeout,
+    rate limit, broker-side validation error) does NOT mean the
+    underlying broker order is gone — it may still be resting live and
+    fill later. Writing REJECTED here would permanently block that
+    order's real FILLED postback from ever applying (orders_postback.py's
+    own final-status guard refuses to move a row OUT of a final status),
+    stranding a live fill with no take-profit arm and no FIFO ledger
+    write — a worse outcome than the original bug. So this function now
+    only annotates `detail` for operator visibility and never mutates
+    `status`, and skips rows already in a final status entirely so a
+    genuinely-terminal row's own terminal record is never clobbered.
+
+    Looks up by `broker_order_id` with `.scalars().all()` (the column is
+    indexed but not DB-unique) and locks matching rows via
+    `.with_for_update()` before mutating, consistent with the
+    postback/chase final-status-guard pattern elsewhere in this codebase.
+    """
     try:
-        from sqlalchemy import update as sql_update
+        from sqlalchemy import select as sql_select
         from backend.api.database import async_session
-        from backend.api.models import AlgoOrder
+        from backend.api.models import AlgoOrder, ALGO_ORDER_FINAL_STATUSES
         async with async_session() as s:
-            await s.execute(
-                sql_update(AlgoOrder)
+            rows = (await s.execute(
+                sql_select(AlgoOrder)
                 .where(AlgoOrder.broker_order_id == order_id)
-                .values(status="REJECTED", detail=str(e)[:240])
-            )
-            await s.commit()
-    except Exception:
-        pass
+                .with_for_update()
+            )).scalars().all()
+            changed = False
+            for row in rows:
+                if row.status in ALGO_ORDER_FINAL_STATUSES:
+                    logger.warning(
+                        "modify_order failed for broker_order_id=%s but AlgoOrder "
+                        "#%s is already in final status %s — leaving status "
+                        "unchanged, not recording as REJECTED",
+                        order_id, getattr(row, "id", "?"), row.status,
+                    )
+                    continue
+                row.detail = f"modify failed: {e}"[:240]
+                changed = True
+            if changed:
+                await s.commit()
+    except Exception as db_exc:
+        logger.warning(
+            "modify_order failure bookkeeping failed for broker_order_id=%s: %s",
+            order_id, db_exc,
+        )
 
 
 async def _action_live_modify_order(agent, context: dict, params: dict):
