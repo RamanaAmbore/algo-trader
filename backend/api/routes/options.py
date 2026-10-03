@@ -2559,6 +2559,7 @@ def _analytics_compute_metrics(
         r=DEFAULT_RISK_FREE, sigma=sigma,
         opt_type=parsed["opt_type"], qty=qty_resolved,
         entry_price=entry, span_pct=span_pct_resolved, points=pts,
+        is_mcx=is_mcx,
     )
     slices = intermediate_curves(
         S=S, K=parsed["strike"], T_years=T_yrs,
@@ -2566,6 +2567,7 @@ def _analytics_compute_metrics(
         opt_type=parsed["opt_type"], qty=qty_resolved,
         entry_price=entry, span_pct=span_pct_resolved, points=pts,
         time_slices=max(0, min(time_slices, 5)),
+        is_mcx=is_mcx,
     )
     ev = expected_value(curve, S=S, T_years=T_yrs, sigma=sigma)
     cost_basis = abs(entry * qty_resolved)

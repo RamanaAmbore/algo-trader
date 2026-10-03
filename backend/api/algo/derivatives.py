@@ -263,6 +263,40 @@ def _black_scholes_vec(S_arr: np.ndarray, K: float, T_years: float,
     return np.where(valid, prices, 0.0)
 
 
+def _black_76_vec(F_arr: np.ndarray, K: float, T_years: float,
+                  r: float, sigma: float, opt_type: str) -> np.ndarray:
+    """Vectorized Black-76 (options on futures, cost-of-carry b=0) over
+    an array of futures/forward prices. Parallel to `_black_scholes_vec()`
+    — see the module comment above `_gbs_price()` for the b=0 (futures)
+    vs b=r (cash spot) story. Used for MCX commodity payoff curves, whose
+    "spot" is resolved as the matching futures contract price. Matches
+    the scalar `black_76()` output to ~1e-7 (A&S erf bound)."""
+    F_arr = np.asarray(F_arr, dtype=np.float64)
+    if K <= 0:
+        return np.zeros_like(F_arr)
+    # Degenerate: at/past expiry or zero vol → intrinsic. Model-
+    # independent — same reasoning as `_black_scholes_vec()`.
+    if T_years <= 0 or sigma <= 0:
+        if opt_type == "CE":
+            return np.maximum(0.0, F_arr - K)
+        return np.maximum(0.0, K - F_arr)
+    sqrt_T = math.sqrt(T_years)
+    valid = F_arr > 0
+    safe_F = np.where(valid, F_arr, 1.0)
+    # b=0 drops the (r + sigma²/2)·T drift to just sigma²/2·T; both
+    # terms share the SAME discount factor (disc), unlike plain BS where
+    # only the strike term is discounted (the spot term's own growth
+    # factor cancels against the discount at b=r).
+    d1 = (np.log(safe_F / K) + (sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
+    d2 = d1 - sigma * sqrt_T
+    disc = math.exp(-r * T_years)
+    if opt_type == "CE":
+        prices = disc * (safe_F * _norm_cdf_vec(d1) - K * _norm_cdf_vec(d2))
+    else:
+        prices = disc * (K * _norm_cdf_vec(-d2) - safe_F * _norm_cdf_vec(-d1))
+    return np.where(valid, prices, 0.0)
+
+
 # ── Generalized Black-Scholes-Merton core (cost-of-carry `b`) ──────────
 #
 # Plain Black-Scholes (cash spot) and Black-76 (options on futures) are
@@ -1108,7 +1142,7 @@ def risk_metrics(*, S: float, K: float, T_years: float, r: float,
 def payoff_curve(*, S: float, K: float, T_years: float, r: float,
                  sigma: float, opt_type: str, qty: int,
                  entry_price: float, span_pct: float = 0.10,
-                 points: int = 51) -> list[dict]:
+                 points: int = 51, is_mcx: bool = False) -> list[dict]:
     """
     Build a list of {spot, today_value, expiry_value} entries spanning
     ±span_pct around the current spot. `today_value` uses Black-Scholes
@@ -1116,6 +1150,11 @@ def payoff_curve(*, S: float, K: float, T_years: float, r: float,
     P&L for the WHOLE position (already multiplied by qty), net of
     `entry_price * qty`, so they read as "money you'd make/lose" rather
     than "what the option's worth".
+
+    `is_mcx` (MCX commodity underlying — `S` is a futures contract
+    price, not cash spot) selects `_black_76_vec()` instead of
+    `_black_scholes_vec()` for `today_value`. Defaults to False so
+    non-MCX callers are byte-identical to before this parameter existed.
 
     Used by the /admin/options payoff chart — the operator sees today's
     curve (with time value) sitting above the expiry curve (intrinsic),
@@ -1125,7 +1164,8 @@ def payoff_curve(*, S: float, K: float, T_years: float, r: float,
         return []
     S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
     cost   = entry_price * qty   # signed
-    today_vals  = _black_scholes_vec(S_grid, K, T_years, r, sigma, opt_type) * qty - cost
+    vec_fn = _black_76_vec if is_mcx else _black_scholes_vec
+    today_vals  = vec_fn(S_grid, K, T_years, r, sigma, opt_type) * qty - cost
     if opt_type == "CE":
         intrinsic = np.maximum(0.0, S_grid - K)
     else:
@@ -1160,6 +1200,12 @@ def _leg_today_expiry_arrays(
     *S_grid* is the spot axis for the chart. *r* is the risk-free rate.
     *eval_T* is the near-leg expiry horizon for calendar/diagonal spreads
     (None → intrinsic at T=0 for all legs).
+
+    A leg carrying `is_mcx: True` (set by `_strategy_build_option_leg()`
+    via `is_mcx_underlying()`) is priced with `_black_76_vec()` instead
+    of `_black_scholes_vec()` — the leg's resolved spot is a futures
+    contract price, not cash spot. Absent/False `is_mcx` keeps the
+    exact BS path.
     """
     kind  = leg.get("kind") or "opt"
     qty   = int(leg["qty"])
@@ -1171,16 +1217,17 @@ def _leg_today_expiry_arrays(
         expiry_arr = s_leg * qty
         return today_arr, expiry_arr
 
-    K     = float(leg["strike"])
-    opt   = leg["opt_type"]
-    T_yrs = float(leg.get("T_years") or 0)
-    sig   = float(leg.get("sigma") or DEFAULT_IV)
+    K       = float(leg["strike"])
+    opt     = leg["opt_type"]
+    T_yrs   = float(leg.get("T_years") or 0)
+    sig     = float(leg.get("sigma") or DEFAULT_IV)
+    vec_fn  = _black_76_vec if leg.get("is_mcx") else _black_scholes_vec
 
-    today_arr = _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+    today_arr = vec_fn(s_leg, K, T_yrs, r, sig, opt) * qty
 
     if eval_T is not None and T_yrs > eval_T:
         T_remaining = T_yrs - eval_T
-        expiry_arr = _black_scholes_vec(s_leg, K, T_remaining, r, sig, opt) * qty
+        expiry_arr = vec_fn(s_leg, K, T_remaining, r, sig, opt) * qty
     else:
         if opt == "CE":
             intrinsic = np.maximum(0.0, s_leg - K)
@@ -1270,23 +1317,30 @@ def _slice_label(days_left: float) -> str:
 def intermediate_curves(*, S: float, K: float, T_years: float, r: float,
                         sigma: float, opt_type: str, qty: int,
                         entry_price: float, span_pct: float = 0.10,
-                        points: int = 51, time_slices: int = 0) -> list[dict]:
+                        points: int = 51, time_slices: int = 0,
+                        is_mcx: bool = False) -> list[dict]:
     """
     Single-leg companion to `payoff_curve`. Produces N intermediate-DTE
     Black-Scholes curves between Today (full T_years) and Expiry (T=0).
     Empty list when `time_slices <= 0` or `T_years <= 0` (no decay to
     visualise on a same-day position).
+
+    `is_mcx` selects `_black_76_vec()` instead of `_black_scholes_vec()`
+    — see `payoff_curve()`'s docstring for the same convention. Defaults
+    to False so non-MCX callers are byte-identical to before this
+    parameter existed.
     """
     fractions = _slice_fractions(time_slices)
     if S <= 0 or qty == 0 or points < 2 or not fractions or T_years <= 0:
         return []
     S_grid = np.linspace(S * (1.0 - span_pct), S * (1.0 + span_pct), points)
     cost = entry_price * qty
+    vec_fn = _black_76_vec if is_mcx else _black_scholes_vec
     out: list[dict] = []
     for p in fractions:
         T_p = T_years * (1.0 - p)
         days_left = max(0.0, T_p * 365.0)
-        bs_arr = _black_scholes_vec(S_grid, K, T_p, r, sigma, opt_type)
+        bs_arr = vec_fn(S_grid, K, T_p, r, sigma, opt_type)
         values = [round(float(bs_arr[i]) * qty - cost, 2) for i in range(points)]
         out.append({
             "label":       _slice_label(days_left),
@@ -1302,6 +1356,10 @@ def _accumulate_leg_slice(legs: list[dict], S_grid, elapsed: float, r: float) ->
 
     Each option leg's T_years is scaled by (1 - elapsed). Futures contribute
     spot-linear payoff (theta-flat). Returns a numpy array of length len(S_grid).
+
+    A leg carrying `is_mcx: True` is priced with `_black_76_vec()`
+    instead of `_black_scholes_vec()` — see `_leg_today_expiry_arrays()`'s
+    docstring for the same convention used by the Today/Expiry curves.
     """
     import numpy as np
     slice_arr = np.zeros(len(S_grid), dtype=np.float64)
@@ -1313,11 +1371,12 @@ def _accumulate_leg_slice(legs: list[dict], S_grid, elapsed: float, r: float) ->
         if kind == "fut":
             slice_arr += s_leg * qty
             continue
-        K     = float(l["strike"])
-        opt   = l["opt_type"]
-        T_yrs = float(l.get("T_years") or 0) * (1.0 - elapsed)
-        sig   = float(l.get("sigma") or DEFAULT_IV)
-        slice_arr += _black_scholes_vec(s_leg, K, T_yrs, r, sig, opt) * qty
+        K      = float(l["strike"])
+        opt    = l["opt_type"]
+        T_yrs  = float(l.get("T_years") or 0) * (1.0 - elapsed)
+        sig    = float(l.get("sigma") or DEFAULT_IV)
+        vec_fn = _black_76_vec if l.get("is_mcx") else _black_scholes_vec
+        slice_arr += vec_fn(s_leg, K, T_yrs, r, sig, opt) * qty
     return slice_arr
 
 

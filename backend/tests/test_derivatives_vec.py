@@ -30,6 +30,7 @@ from backend.api.algo.derivatives import (
     greeks,
     greeks_76,
     implied_vol,
+    intermediate_curves,
     multileg_greeks,
     multileg_intermediate_curves,
     multileg_payoff_curve,
@@ -804,3 +805,146 @@ def test_multileg_futures_multileg_payoff_entry_cost():
     # today_value < expiry_value when short premium is involved (we collect premium today)
     assert at_entry["today_value"] is not None and at_entry["expiry_value"] is not None, \
         "Both today and expiry values should be computed"
+
+
+# ── MCX Black-76 payoff/intermediate curves ────────────────────────────
+#
+# Context: the payoff curve pricer (`_accumulate_leg_slice`, used by
+# `multileg_intermediate_curves`; `_leg_today_expiry_arrays`, used by the
+# main `multileg_payoff_curve`; and the single-leg `payoff_curve`/
+# `intermediate_curves`) priced every leg via plain Black-Scholes
+# (`_black_scholes_vec`) even when the leg's resolved spot is an MCX
+# futures contract price. Fixed via a new `_black_76_vec()` vectorized
+# pricer, dispatched per-leg on `leg.get("is_mcx")` (multi-leg) or an
+# explicit `is_mcx` kwarg (single-leg) — mirroring the scalar
+# `black_76()`/`greeks_76()` dispatch already shipped for
+# `_strategy_build_option_leg()`.
+
+_MCX_F = 5500.0
+_MCX_K = 5500.0
+_MCX_T = 0.1
+
+
+def test_black_76_vec_matches_scalar_black_76():
+    """`_black_76_vec()` must reproduce the scalar `black_76()` to well
+    within the vectorized pricer's accepted erf-approximation tolerance
+    (same bound `_black_scholes_vec` already carries)."""
+    import numpy as np
+    from backend.api.algo.derivatives import _black_76_vec
+
+    for F, K, T, r, sigma, opt in [
+        (5500.0, 5500.0, 30 / 365.0, 0.07, 0.20, "CE"),
+        (5500.0, 5600.0, 30 / 365.0, 0.07, 0.20, "PE"),
+        (65000.0, 64000.0, 14 / 365.0, 0.07, 0.16, "CE"),
+    ]:
+        vec_price = float(_black_76_vec(np.array([F]), K, T, r, sigma, opt)[0])
+        scalar_price = black_76(F, K, T, r, sigma, opt)
+        assert vec_price == pytest.approx(scalar_price, abs=1e-2)
+
+
+def test_black_76_vec_differs_from_black_scholes_vec():
+    """At the same inputs, the Black-76 and plain-BS vectorized pricers
+    must diverge materially — proves the two paths are NOT aliases of
+    each other (a copy-paste bug could make `_black_76_vec` silently
+    call `_black_scholes_vec` internally)."""
+    import numpy as np
+    from backend.api.algo.derivatives import _black_76_vec
+
+    v76 = float(_black_76_vec(np.array([_MCX_F]), _MCX_K, _MCX_T, 0.07, 0.20, "CE")[0])
+    vbs = float(_black_scholes_vec(np.array([_MCX_F]), _MCX_K, _MCX_T, 0.07, 0.20, "CE")[0])
+    assert abs(v76 - vbs) > 1e-3
+
+
+def test_accumulate_leg_slice_mcx_leg_uses_black_76(monkeypatch=None):
+    """`multileg_intermediate_curves()` (real production caller of
+    `_accumulate_leg_slice`) must price an `is_mcx: True` leg through
+    `_black_76_vec`, not `_black_scholes_vec` — verified by comparing
+    the real output against a hand-computed Black-76 reference and
+    confirming it differs materially from the plain-BS value at the
+    same inputs."""
+    import numpy as np
+    from backend.api.algo.derivatives import _black_76_vec
+
+    leg = {
+        "kind": "opt", "qty": 1, "strike": _MCX_K, "opt_type": "CE",
+        "T_years": _MCX_T, "sigma": 0.20, "entry_price": 0.0,
+        "is_mcx": True,
+    }
+    slices = multileg_intermediate_curves(
+        [leg], S=_MCX_F, span_pct=0.0, points=2, time_slices=1,
+    )
+    assert len(slices) == 1
+    elapsed = slices[0]["elapsed_pct"]
+    expected = float(_black_76_vec(
+        np.array([_MCX_F]), _MCX_K, _MCX_T * (1.0 - elapsed), DEFAULT_RISK_FREE, 0.20, "CE",
+    )[0])
+    assert slices[0]["values"][0] == pytest.approx(expected, abs=0.02)
+
+    # Sibling leg without is_mcx must stay on plain BS and differ materially.
+    leg_bs = dict(leg, is_mcx=False)
+    slices_bs = multileg_intermediate_curves(
+        [leg_bs], S=_MCX_F, span_pct=0.0, points=2, time_slices=1,
+    )
+    assert abs(slices_bs[0]["values"][0] - slices[0]["values"][0]) > 1e-2
+
+
+def test_multileg_payoff_curve_mcx_leg_uses_black_76():
+    """`multileg_payoff_curve()` (the MAIN multi-leg chart, via
+    `_leg_today_expiry_arrays`) must also dispatch an `is_mcx: True` leg
+    through Black-76 — must stay consistent with
+    `test_accumulate_leg_slice_mcx_leg_uses_black_76` above (same model
+    for the Today curve and its time-slices), closing the exact
+    inconsistency class flagged for the Greeks-vs-curve mismatch."""
+    leg_mcx = {
+        "kind": "opt", "qty": 1, "strike": _MCX_K, "opt_type": "CE",
+        "T_years": _MCX_T, "sigma": 0.20, "entry_price": 0.0,
+        "is_mcx": True,
+    }
+    leg_bs = dict(leg_mcx, is_mcx=False)
+
+    curve_mcx = multileg_payoff_curve([leg_mcx], S=_MCX_F, span_pct=0.0, points=2)
+    curve_bs = multileg_payoff_curve([leg_bs], S=_MCX_F, span_pct=0.0, points=2)
+
+    assert curve_mcx[0]["today_value"] != curve_bs[0]["today_value"]
+    g76_at_T = black_76(_MCX_F, _MCX_K, _MCX_T, DEFAULT_RISK_FREE, 0.20, "CE")
+    assert curve_mcx[0]["today_value"] == pytest.approx(g76_at_T, abs=0.02)
+
+
+def test_payoff_curve_single_leg_is_mcx_dispatches_black_76():
+    """Single-leg `payoff_curve()` (used by `/api/options/analytics` via
+    `_analytics_compute_metrics`) must dispatch `is_mcx=True` through
+    Black-76 for `today_value`, differing materially from the
+    `is_mcx=False` default at the same inputs."""
+    curve_mcx = payoff_curve(
+        S=_MCX_F, K=_MCX_K, T_years=_MCX_T, r=DEFAULT_RISK_FREE,
+        sigma=0.20, opt_type="CE", qty=1, entry_price=0.0,
+        span_pct=0.0, points=2, is_mcx=True,
+    )
+    curve_bs = payoff_curve(
+        S=_MCX_F, K=_MCX_K, T_years=_MCX_T, r=DEFAULT_RISK_FREE,
+        sigma=0.20, opt_type="CE", qty=1, entry_price=0.0,
+        span_pct=0.0, points=2,
+    )  # is_mcx defaults False
+    assert curve_mcx[0]["today_value"] != curve_bs[0]["today_value"]
+    g76_at_T = black_76(_MCX_F, _MCX_K, _MCX_T, DEFAULT_RISK_FREE, 0.20, "CE")
+    assert curve_mcx[0]["today_value"] == pytest.approx(g76_at_T, abs=0.02)
+
+
+def test_intermediate_curves_single_leg_is_mcx_dispatches_black_76():
+    """Single-leg `intermediate_curves()` must dispatch `is_mcx=True`
+    through Black-76 — sibling of the multileg time-slice test above,
+    for the single-leg `/api/options/analytics` path."""
+    slices_mcx = intermediate_curves(
+        S=_MCX_F, K=_MCX_K, T_years=_MCX_T, r=DEFAULT_RISK_FREE,
+        sigma=0.20, opt_type="CE", qty=1, entry_price=0.0,
+        span_pct=0.0, points=2, time_slices=1, is_mcx=True,
+    )
+    slices_bs = intermediate_curves(
+        S=_MCX_F, K=_MCX_K, T_years=_MCX_T, r=DEFAULT_RISK_FREE,
+        sigma=0.20, opt_type="CE", qty=1, entry_price=0.0,
+        span_pct=0.0, points=2, time_slices=1,
+    )  # is_mcx defaults False
+    assert len(slices_mcx) == 1 and len(slices_bs) == 1
+    assert abs(slices_mcx[0]["values"][0] - slices_bs[0]["values"][0]) > 1e-2
+
+
