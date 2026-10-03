@@ -19,6 +19,7 @@
   import { page } from '$app/state';
   import { marketAwareInterval } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
+  import InfoHint from '$lib/InfoHint.svelte';
   import {
     fetchStrategy, fetchStrategyLots, fetchStrategySnapshots,
     fetchStrategyMetrics, updateStrategy,
@@ -274,47 +275,63 @@
     {:else}
       <div class="strat-metrics-grid">
         <div class="metric">
-          <div class="metric-lbl" title="Annualised Sharpe ratio. (mean daily P&L / stdev daily P&L) × √252. Bloomberg + Sensibull convention. Risk-free rate assumed 0.">Sharpe</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Sharpe</span>
+            <InfoHint popup text="Annualised Sharpe ratio. (mean daily P&amp;L / stdev daily P&amp;L) × √252. Bloomberg + Sensibull convention. Risk-free rate assumed 0." />
+          </div>
           <div class="metric-val {(metrics.sharpe ?? 0) > 1 ? 'pnl-pos' : (metrics.sharpe ?? 0) < 0 ? 'pnl-neg' : ''}">
             {metrics.sharpe == null ? '—' : Number(metrics.sharpe).toFixed(2)}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Sortino ratio — Sharpe variant using only DOWNSIDE volatility (stdev of negative daily deltas). Penalises losing days only.">Sortino</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Sortino</span>
+            <InfoHint popup text="Sortino ratio — Sharpe variant using only DOWNSIDE volatility (stdev of negative daily deltas). Penalises losing days only." />
+          </div>
           <div class="metric-val {(metrics.sortino ?? 0) > 1 ? 'pnl-pos' : (metrics.sortino ?? 0) < 0 ? 'pnl-neg' : ''}">
             {metrics.sortino == null ? '—' : Number(metrics.sortino).toFixed(2)}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Max drawdown — largest peak-to-trough drop on cumulative P&L over the window. Lower (closer to 0) is better.">Max DD</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Max DD</span>
+            <InfoHint popup text="Max drawdown — largest peak-to-trough drop on cumulative P&amp;L over the window. Lower (closer to 0) is better." />
+          </div>
           <div class="metric-val pnl-neg">
             {metrics.max_drawdown == null ? '—' : _fmtInr(-Math.abs(metrics.max_drawdown))}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Max drawdown as % of the running peak at that moment. NULL when peak was 0/negative.">Max DD %</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Max DD %</span>
+            <InfoHint popup text="Max drawdown as % of the running peak at that moment. NULL when peak was 0/negative." />
+          </div>
           <div class="metric-val pnl-neg">
             {metrics.max_drawdown_pct == null ? '—' : `${(Number(metrics.max_drawdown_pct) * 100).toFixed(1)}%`}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Fraction of days with positive P&L change.">Win rate</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Win rate</span>
+            <InfoHint popup text="Fraction of days with positive P&amp;L change." />
+          </div>
           <div class="metric-val">
             {metrics.win_rate == null ? '—' : `${(Number(metrics.win_rate) * 100).toFixed(0)}%`}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Mean P&L change per day, ₹.">Daily avg</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Daily avg</span>
+            <InfoHint popup text="Mean P&amp;L change per day, ₹." />
+          </div>
           <div class="metric-val {(metrics.mean_daily_pnl ?? 0) > 0 ? 'pnl-pos' : (metrics.mean_daily_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">
             {_fmtInr(metrics.mean_daily_pnl)}
           </div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Standard deviation of daily P&L change, ₹. The 'risk' denominator in Sharpe.">Daily vol</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Daily vol</span>
+            <InfoHint popup text="Standard deviation of daily P&amp;L change, ₹. The 'risk' denominator in Sharpe." />
+          </div>
           <div class="metric-val">{_fmtInr(metrics.daily_vol)}</div>
         </div>
         <div class="metric">
-          <div class="metric-lbl" title="Cumulative P&L (realised + unrealised) as of the most recent snapshot.">Cumulative</div>
+          <div class="metric-lbl"><span class="metric-lbl-txt">Cumulative</span>
+            <InfoHint popup text="Cumulative P&amp;L (realised + unrealised) as of the most recent snapshot." />
+          </div>
           <div class="metric-val {(metrics.cumulative_pnl ?? 0) > 0 ? 'pnl-pos' : (metrics.cumulative_pnl ?? 0) < 0 ? 'pnl-neg' : ''}">
             {_fmtInr(metrics.cumulative_pnl)}
           </div>
@@ -594,13 +611,17 @@
     border-radius: 4px;
   }
   .metric-lbl {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .metric-lbl-txt {
     font-size: var(--fs-2xs);
     letter-spacing: 0.06em;
     text-transform: uppercase;
     color: var(--c-muted);
     font-family: var(--font-numeric);
     font-weight: 700;
-    cursor: help;
   }
   .metric-val {
     margin-top: 0.2rem;
