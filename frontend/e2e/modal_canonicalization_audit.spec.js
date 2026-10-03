@@ -9,6 +9,8 @@
  *
  *   1. /admin/metrics drill-down modal → ModalShell (was hand-rolled,
  *      z-index:100, element-level Escape listener).
+ *   2. OrderPairModal's native <select> elements → the canonical
+ *      Select component.
  *
  * Five quality dimensions (matches this repo's e2e convention):
  *   1. SSOT   — z-index/dim read from app.css custom properties at
@@ -155,5 +157,55 @@ test.describe('Functional — /admin/metrics drill-down modal (real browser, moc
 
     await page.locator('.metrics-modal-close').click();
     await expect(overlay).toHaveCount(0, { timeout: 3_000 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Item 2 — OrderPairModal native <select> → Select component
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Static source checks — OrderPairModal uses the canonical Select component', () => {
+  const opm = readFile('src/lib/order/OrderPairModal.svelte');
+
+  test('imports Select.svelte', () => {
+    expect(opm).toMatch(/import Select from '\$lib\/Select\.svelte';/);
+  });
+
+  test('renders two <Select> instances (parent + child) bound to parentId/childId', () => {
+    expect(opm).toMatch(/<Select id="opm-parent-sel"[\s\S]*?bind:value=\{parentId\}/);
+    expect(opm).toMatch(/<Select id="opm-child-sel"[\s\S]*?bind:value=\{childId\}/);
+  });
+
+  test('old native <select class="opm-select"> markup + CSS rule are gone', () => {
+    expect(opm).not.toMatch(/<select class="opm-select"/);
+    expect(opm).not.toMatch(/\.opm-select\s*\{/);
+  });
+});
+
+test.describe('Functional — OrderPairModal (real browser)', () => {
+  test.beforeEach(async ({ page }) => {
+    await loginAsAdmin(page);
+  });
+
+  test('Pair button opens the modal with Select-component triggers, not native <select>', async ({ page }) => {
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' });
+
+    const pairBtn = page.locator('button.mp-pair-btn').first();
+    await expect(pairBtn, 'Pair button must be visible on /pulse').toBeVisible({ timeout: 15_000 });
+    await pairBtn.click();
+
+    const parentSelect = page.locator('#opm-parent-sel');
+    const childSelect = page.locator('#opm-child-sel');
+    await expect(parentSelect, 'parent picker must render').toBeVisible({ timeout: 5_000 });
+    await expect(childSelect, 'child picker must render').toBeVisible();
+
+    // Both must be the canonical custom dropdown (rbq-select-trigger
+    // button), never a bare native <select> element.
+    expect(await parentSelect.evaluate((el) => el.tagName)).toBe('BUTTON');
+    expect(await childSelect.evaluate((el) => el.tagName)).toBe('BUTTON');
+    await expect(parentSelect).toHaveClass(/rbq-select-trigger/);
+    await expect(childSelect).toHaveClass(/rbq-select-trigger/);
+
+    await expect(page.locator('.opm-card select')).toHaveCount(0);
   });
 });

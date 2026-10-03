@@ -2,6 +2,7 @@
   import { computePairPreview } from '$lib/order/pairModalUtils.js';
   import { portal } from '$lib/portal';
   import { pushLayer, popLayer } from '$lib/utils/layerStack.js';
+  import Select from '$lib/Select.svelte';
 
   let {
     open = $bindable(false),
@@ -63,6 +64,18 @@
       return true;
     });
   });
+
+  // Select component option lists — label() is defined further below but
+  // hoisted at call time, same as the native <select> `{#each}` blocks
+  // these replace. Child list additionally excludes whichever order is
+  // currently picked as the parent (same filter the old `{#if}` inside
+  // the each block applied).
+  const parentOptions = $derived(filteredParentOrders.map(o => ({ value: String(o.id), label: label(o) })));
+  const childOptions = $derived(
+    filteredChildOrders
+      .filter(o => String(o.id) !== parentId)
+      .map(o => ({ value: String(o.id), label: label(o) }))
+  );
 
   /** Preview quantities derived from pairedCandidates */
   const preview = $derived(computePairPreview(pairedCandidates));
@@ -134,24 +147,22 @@
         </div>
       {/if}
 
-      <label class="opm-label">Parent order
-        <select class="opm-select" bind:value={parentId}>
-          <option value="">Select parent order</option>
-          {#each filteredParentOrders as o (o.id)}
-            <option value={String(o.id)}>{label(o)}</option>
-          {/each}
-        </select>
-      </label>
-      <label class="opm-label">Child order (unlinked only)
-        <select class="opm-select" bind:value={childId}>
-          <option value="">Select child order</option>
-          {#each filteredChildOrders as o (o.id)}
-            {#if String(o.id) !== parentId}
-              <option value={String(o.id)}>{label(o)}</option>
-            {/if}
-          {/each}
-        </select>
-      </label>
+      <div class="opm-field">
+        <label class="opm-label" for="opm-parent-sel">Parent order</label>
+        <Select id="opm-parent-sel"
+                bind:value={parentId}
+                ariaLabel="Parent order"
+                placeholder="Select parent order"
+                options={parentOptions} />
+      </div>
+      <div class="opm-field">
+        <label class="opm-label" for="opm-child-sel">Child order (unlinked only)</label>
+        <Select id="opm-child-sel"
+                bind:value={childId}
+                ariaLabel="Child order"
+                placeholder="Select child order"
+                options={childOptions} />
+      </div>
       <div class="opm-actions">
         <button class="opm-cancel" onclick={() => open = false}>Cancel</button>
         <button class="opm-submit" onclick={submit}
@@ -190,11 +201,13 @@
     line-height: 1; cursor: pointer; flex-shrink: 0; transition: background 0.1s;
   }
   .opm-close:hover { background: var(--close-btn-danger-bg-hover); }
-  .opm-label { display: flex; flex-direction: column; gap: 0.25rem; font-size: 0.72rem; color: rgba(160,185,220,0.7); }
-  .opm-select {
-    background: rgba(160,185,220,0.07); border: 1px solid rgba(160,185,220,0.2);
-    color: rgba(210,225,255,0.85); border-radius: 4px; padding: 0.3rem 0.4rem; font-size: 0.75rem;
-  }
+  /* Wraps a label + its Select (canonical dropdown — Select.svelte)
+     as one flex item, same shrink-to-content shape OrderKnobsRow's
+     `.ot-knob` uses, so the two fields keep their tight 0.25rem
+     label-to-control gap while the card's own 0.75rem gap still
+     separates the two field groups from each other. */
+  .opm-field { display: flex; flex-direction: column; gap: 0.25rem; }
+  .opm-label { font-size: 0.72rem; color: rgba(160,185,220,0.7); }
   .opm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
   .opm-cancel {
     font-size: 0.75rem; padding: 0.25rem 0.75rem; border-radius: 4px;
