@@ -29,8 +29,15 @@
 import { describe, it, expect } from 'vitest';
 import SRC from '../InfoHint.svelte?raw';
 
-const scriptBlock = SRC.slice(SRC.indexOf('<script>'), SRC.indexOf('</script>'));
-const markupBlock = SRC.slice(SRC.indexOf('</script>'), SRC.indexOf('<style>'));
+// InfoHint.svelte now opens with a `<script module>` block (the app-wide
+// single-tooltip-at-a-time singleton) BEFORE the main `<script>` block —
+// `SRC.indexOf('</script>')` alone would find the MODULE block's closing
+// tag (which appears first in the file), not the main block's, producing
+// an empty/inverted slice. Anchor both searches to start from the main
+// `<script>` tag's own position so the module block is skipped entirely.
+const scriptStart = SRC.indexOf('<script>');
+const scriptBlock = SRC.slice(scriptStart, SRC.indexOf('</script>', scriptStart));
+const markupBlock = SRC.slice(SRC.indexOf('</script>', scriptStart), SRC.indexOf('<style>'));
 
 describe('InfoHint.svelte — hideButton / bindable open / anchor source audit', () => {
   it('hideButton prop defaults to false (backward-compatible for every existing caller)', () => {
