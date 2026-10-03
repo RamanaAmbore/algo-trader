@@ -771,7 +771,7 @@
                 <div>
                   <span class="field-label">
                     Long name
-                    <InfoHint popup text="Operator-readable 3-part label: <b>when:&lt;condition&gt;</b> &mdash; <b>alert:&lt;notify&gt;</b> &mdash; <b>do:&lt;action&gt;</b>. Surfaces under the short name on the agents row so an operator scanning the list sees what each agent actually does without expanding." />
+                    <InfoHint popup panel title="Long name" text="Operator-readable 3-part label: <b>when:&lt;condition&gt;</b> &mdash; <b>alert:&lt;notify&gt;</b> &mdash; <b>do:&lt;action&gt;</b>. Surfaces under the short name on the agents row so an operator scanning the list sees what each agent actually does without expanding." />
                   </span>
                   <input bind:value={editForm.long_name}
                          placeholder="when:positions.total.pnl<=-50k   alert:critical/tg+email   do:notify-only"
@@ -804,7 +804,7 @@
                 <div>
                   <span class="field-label">
                     Debounce (minutes)
-                    <InfoHint popup text="Fire only when the condition holds for N consecutive evaluations spanning at least N minutes. <b>0</b> = fire immediately on first true tick. Use to suppress single-tick spikes (e.g. a Kite glitch dropping pnl_pct to -2.1% for one cycle). Industry analogue: Datadog/Grafana <b>For:</b>, CloudWatch <b>EvaluationPeriods</b>." />
+                    <InfoHint popup panel title="Debounce (minutes)" text="Fire only when the condition holds for N consecutive evaluations spanning at least N minutes. <b>0</b> = fire immediately on first true tick. Use to suppress single-tick spikes (e.g. a Kite glitch dropping pnl_pct to -2.1% for one cycle). Industry analogue: Datadog/Grafana <b>For:</b>, CloudWatch <b>EvaluationPeriods</b>." />
                   </span>
                   <input type="number" min="0"
                          bind:value={editForm.debounce_minutes}
@@ -813,7 +813,7 @@
                 <div>
                   <span class="field-label">
                     Trade mode
-                    <InfoHint popup text="Per-agent execution mode. <b>paper</b> = simulated fills against real bid/ask (default). <b>live</b> = real broker orders. Resolved against the engine's master <code>execution.paper_trading_mode</code> setting + the branch gate — dev always forces paper regardless." />
+                    <InfoHint popup panel title="Trade mode" text="Per-agent execution mode. <b>paper</b> = simulated fills against real bid/ask (default). <b>live</b> = real broker orders. Resolved against the engine's master <code>execution.paper_trading_mode</code> setting + the branch gate — dev always forces paper regardless." />
                   </span>
                   <Select ariaLabel="Trade mode" bind:value={editForm.trade_mode}
                     options={[
@@ -824,7 +824,7 @@
                 <div>
                   <span class="field-label">
                     Fire at (IST)
-                    <InfoHint popup text="Optional <b>HH:MM IST</b> time-of-day gate. When set, agent only evaluates inside a small window around this wall-clock time (covers one background poll cycle ~ 6 min). Empty = no gate, evaluates every tick. Use for daily summaries, EOD scans, expiry-day close orders." />
+                    <InfoHint popup panel title="Fire at (IST)" text="Optional <b>HH:MM IST</b> time-of-day gate. When set, agent only evaluates inside a small window around this wall-clock time (covers one background poll cycle ~ 6 min). Empty = no gate, evaluates every tick. Use for daily summaries, EOD scans, expiry-day close orders." />
                   </span>
                   <input type="time"
                     bind:value={editForm.fire_at_time}
@@ -889,7 +889,7 @@
                 <div class="tier-strip-left">
                   <span class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
                     Priority
-                    <InfoHint popup text="Severity bucket (a.k.a. <b>tier</b>) — <b>critical &gt; high &gt; medium &gt; low</b>. Drives topic-scoped suppression: when multiple agents in the same topic fire on one tick, only the highest priority dispatches; the others are logged as suppressed. Industry analogue: PagerDuty <b>Urgency</b>, Opsgenie <b>Priority P1-P5</b>, Datadog <b>monitor priority</b>." />
+                    <InfoHint popup panel title="Priority" text="Severity bucket (a.k.a. <b>tier</b>) — <b>critical &gt; high &gt; medium &gt; low</b>. Drives topic-scoped suppression: when multiple agents in the same topic fire on one tick, only the highest priority dispatches; the others are logged as suppressed. Industry analogue: PagerDuty <b>Urgency</b>, Opsgenie <b>Priority P1-P5</b>, Datadog <b>monitor priority</b>." />
                   </span>
                   <div class="tier-pill-row">
                     {#each TIER_PILLS as t}
@@ -936,7 +936,7 @@
                 <div>
                   <span class="field-label">
                     Tags
-                    <InfoHint popup text="Free-form labels for filtering. Comma-separated. Examples: <b>iron-condor, nifty, review-q3</b>. Surfaces on the agents list as chips. Industry analogue: Datadog tags, Grafana labels." />
+                    <InfoHint popup panel title="Tags" text="Free-form labels for filtering. Comma-separated. Examples: <b>iron-condor, nifty, review-q3</b>. Surfaces on the agents list as chips. Industry analogue: Datadog tags, Grafana labels." />
                   </span>
                   <input bind:value={editForm.tags}
                          placeholder="iron-condor, nifty, review-q3"
@@ -945,7 +945,7 @@
                 <div>
                   <span class="field-label">
                     Blackout windows (JSON)
-                    <InfoHint popup text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
+                    <InfoHint popup panel title="Blackout windows (JSON)" text="List of <b>&#123;start: 'HH:MM', end: 'HH:MM'&#125;</b> entries in IST. Agent is skipped while wall-clock IST is inside any window. Crossing-midnight windows like <code>&#123;start:'23:00',end:'01:00'&#125;</code> are supported. Industry analogue: PagerDuty maintenance windows, Grafana silences, Datadog <b>mute_until</b>." />
                   </span>
                   <textarea bind:value={editForm.blackout_windows}
                             class="field-input font-mono text-[length:var(--fs-sm)]" rows="3"
@@ -983,7 +983,7 @@
                   <div class="flex items-center justify-between flex-wrap gap-1">
                     <span class="field-label">
                       Actions (JSON)
-                      <InfoHint popup text="Each <code>place_order</code> action can attach an <b>Order Template</b> (TP/SL/Wing exit rules) via <code>template_slug</code> on its params. Use <b>+ place_order (templated)</b> for entries with auto-exit attach; use <b>+ place_order</b> for entry-only. The template runs on fill — sim path goes through SimGttBook; live path through broker GTT (when fill-postback wiring lands). Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
+                      <InfoHint popup panel title="Actions (JSON)" text="Each <code>place_order</code> action can attach an <b>Order Template</b> (TP/SL/Wing exit rules) via <code>template_slug</code> on its params. Use <b>+ place_order (templated)</b> for entries with auto-exit attach; use <b>+ place_order</b> for entry-only. The template runs on fill — sim path goes through SimGttBook; live path through broker GTT (when fill-postback wiring lands). Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
                     </span>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the

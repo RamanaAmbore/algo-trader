@@ -1129,12 +1129,12 @@
     <span class="sim-collapsible-hint">{_iterCardOpen ? 'click to hide' : 'click for multi-iteration sweep'}</span>
   </summary>
   <div class="iter-header">
-    <InfoHint popup text="Runs N iterations sequentially, round-robining through the picked regimes. Each iteration writes a SimIteration row that you can replay later with the same seed. Defaults pre-filled from /admin/settings." />
+    <InfoHint popup panel title="Iteration mode" text="Runs N iterations sequentially, round-robining through the picked regimes. Each iteration writes a SimIteration row that you can replay later with the same seed. Defaults pre-filled from /admin/settings." />
     {#if _correlationSummary.length > 0}
       <span class="iter-corr-chip" title={'Cross-underlying correlation propagation: when a scenario moves NIFTY, BANKNIFTY drags at β=1.30, FINNIFTY at β=1.10, etc. Single-hop only.'}>
         <span class="iter-corr-label">Correlation:</span>
         <span class="iter-corr-pairs">{_correlationSummary.join(' · ')}</span>
-        <InfoHint popup label="?" text={`<strong>Cross-underlying correlation table</strong><br/><br/>${_correlationSummary.map(l => l + '<br/>').join('')}<br/>When an <code>underlying_pct</code> scenario fires on a source, peers move at <code>β × primary_delta</code>. Propagation is capped at one hop so the chain doesn't recurse.`} />
+        <InfoHint popup panel title="Correlation" label="?" text={`<strong>Cross-underlying correlation table</strong><br/><br/>${_correlationSummary.map(l => l + '<br/>').join('')}<br/>When an <code>underlying_pct</code> scenario fires on a source, peers move at <code>β × primary_delta</code>. Propagation is capped at one hop so the chain doesn't recurse.`} />
       </span>
     {/if}
     <a class="iter-history-link" href="/admin/simulator/iterations">Past iterations →</a>

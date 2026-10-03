@@ -302,7 +302,7 @@
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Templates</h1>
-    <InfoHint popup align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
+    <InfoHint popup panel title="Templates" align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
   </span>
   <AlgoTimestamp />
   <span class="ml-auto"></span>
@@ -330,7 +330,7 @@
 <section class="bucket-card p-3">
   <div class="tpl-matrix-head">
     <span class="mp-section-label">Side-default coverage</span>
-    <InfoHint popup={true} align="right"
+    <InfoHint popup={true} panel title="Side-default coverage" align="right"
       text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default template. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
   </div>
   <!-- #27 — info chip when a 'both' template covers all scopes -->
@@ -523,7 +523,7 @@
                 </label>
                 <label class="tpl-field tpl-field-wide">
                   <span>TP scale-out (JSON)
-                    <InfoHint popup={true} align="right" label="?"
+                    <InfoHint popup={true} panel title="TP scale-out (JSON)" align="right" label="?"
                       text={'Scale-out ladder. JSON list of at_pct + close_pct entries. Example: [{"at_pct": 30, "close_pct": 50}, {"at_pct": 60, "close_pct": 50}] — close 50 % of the position at +30 %, the rest at +60 %. Sum of close_pct must be ≤ 100. When set, supersedes the single TP %.'} />
                   </span>
                   <textarea bind:value={formTpScalesJson}
@@ -536,7 +536,7 @@
                 </label>
                 <label class="tpl-field">
                   <span>Trailing stop % (blank = none)
-                    <InfoHint popup={true} align="right" label="?"
+                    <InfoHint popup={true} panel title="Trailing stop %" align="right" label="?"
                       text="When set, the background _task_trail_stop poller ratchets the attached SL GTT's trigger toward the favorable side of LTP every templates.trail_poll_interval_seconds. New trigger = peak × (1 − trail/100) for longs, trough × (1 + trail/100) for shorts. Trigger only moves favorably — locks in profits as the position runs. Industry standard trailing stop (NinjaTrader Trail, IBKR Trailing Stop). Kite-only today; Dhan + Groww silently skipped." />
                   </span>
                   <input type="number" step="0.5" bind:value={formSlTrailPct}

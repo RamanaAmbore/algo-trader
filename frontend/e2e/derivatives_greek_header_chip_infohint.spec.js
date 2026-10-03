@@ -178,7 +178,7 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     }
   });
 
-  test('UX + Perf: clicking the Delta value opens a role=tooltip popover quickly with matching wording, and clicking again closes it', async ({ page }) => {
+  test('UX + Perf: clicking the Delta value opens a role=tooltip popover quickly with matching wording, and clicking again closes it', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -204,6 +204,53 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     expect(text).toContain('net directional exposure');
     expect(text).toContain('equity-holding legs');
 
+    // Viewport clipping check: popover must stay within viewport bounds
+    if (viewport) {
+      const popoverRect = await popover.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+          width: rect.width,
+          height: rect.height,
+        };
+      });
+      const viewportWidth = viewport.width;
+      const viewportHeight = viewport.height;
+      expect(popoverRect.left, 'Popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `Popover right edge must be <= ${viewportWidth}`).toBeLessThanOrEqual(viewportWidth);
+      expect(popoverRect.top, 'Popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.bottom, `Popover bottom edge must be <= ${viewportHeight}`).toBeLessThanOrEqual(viewportHeight);
+    }
+
+    // Occlusion check: adjacent Greek chip (Gamma, the second chip) should
+    // not be fully covered by the popover — at least the trigger button's
+    // center should be clickable.
+    const gammaChip = chips.nth(1);
+    const gammaTrigger = gammaChip.locator('button.greek-val-trigger');
+    const gammaRect = await gammaTrigger.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+      };
+    });
+    const elemAtGammaCenter = await page.evaluate(
+      ({ x, y }) => {
+        const elem = document.elementFromPoint(x, y);
+        return elem ? elem.className : null;
+      },
+      { x: gammaRect.centerX, y: gammaRect.centerY }
+    );
+    // The element at Gamma's center should not be the popover (i.e. not have
+    // "info-popout" class). It should be the button or a nearby element.
+    expect(
+      (elemAtGammaCenter || '').includes('info-popout'),
+      'Popover should not fully occlude the adjacent Gamma trigger'
+    ).toBe(false);
+
     // Clicking the SAME value again must close it — guards the
     // anchor-exemption fix in InfoHint.svelte's click-outside listener;
     // without it, the mousedown-driven close races the trigger's own
@@ -213,7 +260,7 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Isolation: opening Gamma after Delta closes Delta and shows only Gamma text', async ({ page }) => {
+  test('Isolation: opening Gamma after Delta closes Delta and shows only Gamma text (viewport bounds check)', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -229,9 +276,24 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(tooltips).toHaveCount(1);
     await expect(tooltips.first()).toContainText('rate-of-change of delta');
     await expect(tooltips.first()).not.toContainText('net directional exposure');
+
+    // Viewport clipping check after switching popovers
+    if (viewport) {
+      const popoverRect = await tooltips.first().evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          width: rect.width,
+        };
+      });
+      const viewportWidth = viewport.width;
+      expect(popoverRect.left, 'Popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `Popover right edge must be <= ${viewportWidth}`).toBeLessThanOrEqual(viewportWidth);
+    }
   });
 
-  test('UX: all 5 header chips open distinct, correctly-worded popovers via their value trigger', async ({ page }) => {
+  test('UX: all 5 header chips open distinct, correctly-worded popovers via their value trigger (viewport bounds check)', async ({ page, viewport }) => {
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -251,6 +313,26 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
       await expect(popover).toBeVisible({ timeout: 2000 });
       const text = (await popover.textContent()) || '';
       expect(text, `Chip ${i} popover missing expected wording`).toContain(anchors[i]);
+
+      // Viewport clipping check
+      if (viewport) {
+        const popoverRect = await popover.evaluate((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+          };
+        });
+        const vw = viewport.width;
+        const vh = viewport.height;
+        expect(popoverRect.left, `Chip ${i} popover left edge must be >= 0`).toBeGreaterThanOrEqual(0);
+        expect(popoverRect.right, `Chip ${i} popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+        expect(popoverRect.top, `Chip ${i} popover top edge must be >= 0`).toBeGreaterThanOrEqual(0);
+        expect(popoverRect.bottom, `Chip ${i} popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+      }
+
       // Close via the same trigger before moving to the next chip.
       await trigger.click();
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);

@@ -3059,7 +3059,7 @@
       <div class="ot-err">
         {submitErr}
         {#if submitErrFull}
-          <InfoHint text={submitErrFull} popup={true} align="right" />
+          <InfoHint text={submitErrFull} popup={true} panel title="Order error" align="right" />
         {/if}
       </div>
     {/if}

@@ -258,7 +258,7 @@
           <span class="metrics-tile-label">
             {tile.label}
             {#if METRIC_META[tile.key]}
-              <InfoHint content={METRIC_META[tile.key]} popup={true} maxWidth="26rem" />
+              <InfoHint content={METRIC_META[tile.key]} popup={true} panel title={tile.label} maxWidth="26rem" />
             {/if}
           </span>
           <span class="metrics-tile-latest">
@@ -293,16 +293,16 @@
         <tr>
           <th>Release</th>
           <th>Captured</th>
-          <th class="algo-table-num"><span class="metric-label">BE LOC<InfoHint content={METRIC_META.backend_loc} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">BE cx avg<InfoHint content={METRIC_META.backend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">BE cx max<InfoHint content={METRIC_META.backend_complexity_max} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">BE stale<InfoHint content={METRIC_META.backend_stale_count} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">BE cov %<InfoHint content={METRIC_META.backend_coverage_pct} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">FE LOC<InfoHint content={METRIC_META.frontend_loc} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">FE cx avg<InfoHint content={METRIC_META.frontend_complexity_avg} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">FE dup<InfoHint content={METRIC_META.frontend_duplicated_lines} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">FE stale<InfoHint content={METRIC_META.frontend_stale_count} popup={true} maxWidth="26rem" /></span></th>
-          <th class="algo-table-num"><span class="metric-label">Bugs<InfoHint content={METRIC_META.bug_count_since_last_release} popup={true} maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE LOC<InfoHint content={METRIC_META.backend_loc} popup={true} panel title="BE LOC" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cx avg<InfoHint content={METRIC_META.backend_complexity_avg} popup={true} panel title="BE cx avg" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cx max<InfoHint content={METRIC_META.backend_complexity_max} popup={true} panel title="BE cx max" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE stale<InfoHint content={METRIC_META.backend_stale_count} popup={true} panel title="BE stale" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">BE cov %<InfoHint content={METRIC_META.backend_coverage_pct} popup={true} panel title="BE cov %" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE LOC<InfoHint content={METRIC_META.frontend_loc} popup={true} panel title="FE LOC" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE cx avg<InfoHint content={METRIC_META.frontend_complexity_avg} popup={true} panel title="FE cx avg" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE dup<InfoHint content={METRIC_META.frontend_duplicated_lines} popup={true} panel title="FE dup" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">FE stale<InfoHint content={METRIC_META.frontend_stale_count} popup={true} panel title="FE stale" maxWidth="26rem" /></span></th>
+          <th class="algo-table-num"><span class="metric-label">Bugs<InfoHint content={METRIC_META.bug_count_since_last_release} popup={true} panel title="Bugs" maxWidth="26rem" /></span></th>
           <th></th>
         </tr>
       </thead>

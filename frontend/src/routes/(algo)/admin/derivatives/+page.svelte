@@ -5506,6 +5506,7 @@
                 >{fmtUnbounded(_mergedEv, false)}{_mergedEvPct != null ? ` (${pctFmt(_mergedEvPct)})` : ''}</button>
             <InfoHint popup hideButton id="greek-hint-ev" anchor={_evHintAnchor}
               bind:open={_evHintOpen}
+              panel title="EV"
               text="Expected value — probability-weighted average payoff at expiry. ev_pct = EV / |entry cost|." />
           </span>
           <!-- Greeks chips — full Δ Γ Θ 𝒱 ρ surfaced inline in the payoff
@@ -5534,6 +5535,7 @@
                 >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</button>
             <InfoHint popup hideButton id="greek-hint-delta" anchor={_greekHintAnchor.delta}
               bind:open={_greekHintOpen.delta}
+              panel title="Delta (Δ)"
               text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek">
@@ -5545,6 +5547,7 @@
                 >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</button>
             <InfoHint popup hideButton id="greek-hint-gamma" anchor={_greekHintAnchor.gamma}
               bind:open={_greekHintOpen.gamma}
+              panel title="Gamma (Γ)"
               text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta ?? 0) < 0 ? 'tag-greek-neg' : ''}">
@@ -5556,6 +5559,7 @@
                 >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</button>
             <InfoHint popup hideButton id="greek-hint-theta" anchor={_greekHintAnchor.theta}
               bind:open={_greekHintOpen.theta}
+              panel title="Theta (Θ)"
               text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega ?? 0) < 0 ? 'tag-greek-neg' : ''}">
@@ -5567,6 +5571,7 @@
                 >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</button>
             <InfoHint popup hideButton id="greek-hint-vega" anchor={_greekHintAnchor.vega}
               bind:open={_greekHintOpen.vega}
+              panel title="Vega (𝒱)"
               text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." />
           </span>
           <span class="opt-section-tag tf-cell tag-greek {((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho ?? 0) < 0 ? 'tag-greek-neg' : ''}">
@@ -5578,6 +5583,7 @@
                 >{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</button>
             <InfoHint popup hideButton id="greek-hint-rho" anchor={_greekHintAnchor.rho}
               bind:open={_greekHintOpen.rho}
+              panel title="Rho (ρ)"
               text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." />
           </span>
         </div>
@@ -6155,27 +6161,27 @@
         <div class="opt-block">
           <div class="opt-block-h">
             Greeks (position)
-            <InfoHint popup text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
+            <InfoHint popup panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
           </div>
           <div class="opt-kv opt-kv-greeks">
             <div class="kv-pair">
-              <span class="kv-k kv-k-greek">Δ <InfoHint popup text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
+              <span class="kv-k kv-k-greek">Δ <InfoHint popup panel title="Delta (Δ)" text="Delta — net directional exposure. +50 ≈ ₹50 gained per ₹1 spot rise. Includes +qty for enabled equity-holding legs." /></span>
               <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.delta)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k kv-k-greek">Γ <InfoHint popup text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
+              <span class="kv-k kv-k-greek">Γ <InfoHint popup panel title="Gamma (Γ)" text="Gamma — rate-of-change of delta as spot moves. High Γ = position is becoming more/less directional quickly." /></span>
               <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.gamma)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k kv-k-greek">Θ <InfoHint popup text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
+              <span class="kv-k kv-k-greek">Θ <InfoHint popup panel title="Theta (Θ)" text="Theta — daily decay in rupees. Positive when net short premium. A Θ of −5 = position loses ₹5/day from time decay alone." /></span>
               <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.theta < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.theta)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k kv-k-greek">𝒱 <InfoHint popup text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
+              <span class="kv-k kv-k-greek">𝒱 <InfoHint popup panel title="Vega (𝒱)" text="Vega — P&L change per 1% IV move. Positive = long volatility (benefits from IV expansion)." /></span>
               <span class="kv-v tf-cell {(_mergedGreeks ?? strategy?.aggregate_greeks)?.vega < 0 ? 'kv-neg' : 'kv-pos'}">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.vega)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k kv-k-greek">ρ <InfoHint popup text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
+              <span class="kv-k kv-k-greek">ρ <InfoHint popup panel title="Rho (ρ)" text="Rho — sensitivity to a 1% rate change. Mostly cosmetic for short-dated index options." /></span>
               <span class="kv-v tf-cell">{pctFmt((_mergedGreeks ?? strategy?.aggregate_greeks)?.rho)}</span>
             </div>
           </div>
@@ -6184,11 +6190,11 @@
         <div class="opt-block">
           <div class="opt-block-h">
             Risk &amp; expected value
-            <InfoHint popup text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
+            <InfoHint popup panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
           </div>
           <div class="opt-kv opt-kv-risk">
             <div class="kv-pair">
-              <span class="kv-k">R:R <InfoHint popup text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
+              <span class="kv-k">R:R <InfoHint popup panel title="R:R" text={'<b>Risk-to-reward</b> = max_profit / |max_loss|. "1 : 0.5" = risk ₹100 to make ₹50. "1 : 3" = risk ₹100 to make ₹300. <b>—</b> when one side is unbounded.'} /></span>
               <span class="kv-v">{_rrRatio == null ? '—' : `1 : ${pctFmt(_rrRatio)}`}</span>
             </div>
             <!-- Risk-of-ruin: |max_loss| / |net_cost|. How many times the
@@ -6201,11 +6207,11 @@
                  unbounded. Wrapped in {#if} so the {@const} satisfies
                  Svelte's "immediate-child" rule. -->
             <div class="kv-pair">
-              <span class="kv-k">Risk-of-ruin <InfoHint popup text={'<b>Risk-of-ruin</b> = |max_loss| / |net_cost|. How many times the strategy\'s premium budget is consumed by a single max-loss event. <b>1.0×</b> means a single retest of max loss wipes the trade\'s cost basis exactly. <b>&gt;1×</b> means one max loss costs more than the premium paid — strategy is sized too aggressively. <b>—</b> when net cost is ~0 (free) or max loss is unbounded.'} /></span>
+              <span class="kv-k">Risk-of-ruin <InfoHint popup panel title="Risk-of-ruin" text={'<b>Risk-of-ruin</b> = |max_loss| / |net_cost|. How many times the strategy\'s premium budget is consumed by a single max-loss event. <b>1.0×</b> means a single retest of max loss wipes the trade\'s cost basis exactly. <b>&gt;1×</b> means one max loss costs more than the premium paid — strategy is sized too aggressively. <b>—</b> when net cost is ~0 (free) or max loss is unbounded.'} /></span>
               <span class="kv-v">{_ror == null ? '—' : `${_ror.toFixed(2)}×`}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k">Breakevens <InfoHint popup text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
+              <span class="kv-k">Breakevens <InfoHint popup panel title="Breakevens" text={'<b>Breakevens</b> — spot prices at expiry where the strategy\'s P&L crosses zero. Iron condors and butterflies have 2; verticals have 1; fully ITM/OTM 0.'} /></span>
               <span class="kv-v">
                 {#if ((_mergedRisk?.breakevens ?? strategy?.risk?.breakevens) ?? []).length}
                   {((_mergedRisk?.breakevens ?? strategy?.risk?.breakevens) ?? []).map(/** @param {number} b */ (b) => priceFmt(b)).join(' / ')}
@@ -6213,16 +6219,16 @@
               </span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k">POP <InfoHint popup text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
+              <span class="kv-k">POP <InfoHint popup panel title="POP" text={'<b>Probability of profit</b> at expiry — sum of lognormal mass over every contiguous profitable region of the payoff curve. For range strategies (iron condors), this measures "P(spot ends inside the wings)".'} /></span>
               <span class="kv-v tf-cell {(_mergedPop ?? strategy?.risk?.pop) > 0.6 ? 'kv-pos' : (_mergedPop ?? strategy?.risk?.pop) < 0.4 ? 'kv-neg' : ''}">{fmtPct(_mergedPop ?? strategy?.risk?.pop)}</span>
             </div>
             <div class="kv-pair">
-              <span class="kv-k">EV <InfoHint popup text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
+              <span class="kv-k">EV <InfoHint popup panel title="EV" text={'<b>Expected value</b> — POP × win-magnitude − (1−POP) × loss-magnitude, integrated against the lognormal pdf of the underlying. Positive EV = edge in expectation; negative EV = no edge, even if POP is high.'} /></span>
               <span class="kv-v tf-cell {(_mergedEv ?? strategy?.risk?.ev) > 0 ? 'kv-pos' : (_mergedEv ?? strategy?.risk?.ev) < 0 ? 'kv-neg' : ''}">{fmtMoney(_mergedEv ?? strategy?.risk?.ev)}</span>
             </div>
             {#if strategy?.risk?.ev_pct != null}
               <div class="kv-pair">
-                <span class="kv-k">EV / cost <InfoHint popup text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
+                <span class="kv-k">EV / cost <InfoHint popup panel title="EV / cost" text={'<b>EV / cost</b> — EV as a percentage of |net cost|. Return-on-capital expectation. +5 % = "on average, my outlay returns 5 % of itself per cycle".'} /></span>
                 <span class="kv-v tf-cell {(_mergedEvPct ?? strategy?.risk?.ev_pct) > 0 ? 'kv-pos' : (_mergedEvPct ?? strategy?.risk?.ev_pct) < 0 ? 'kv-neg' : ''}">
                   {pctFmt(_mergedEvPct ?? strategy?.risk?.ev_pct)}%
                 </span>

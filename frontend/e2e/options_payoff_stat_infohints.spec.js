@@ -41,7 +41,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 const DERIV_URL = '/admin/derivatives';
 
 test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title= attributes', () => {
-  test('LTP/CHG%/DAY P&L rows carry a clickable InfoHint chip with no leftover title= on the row', async ({ page }) => {
+  test('LTP/CHG%/DAY P&L rows carry a clickable InfoHint chip with no leftover title= on the row', async ({ page, viewport }) => {
     await loginAsAdmin(page);
 
     const pageErrors = [];
@@ -81,6 +81,47 @@ test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title=
     // Dynamic text prop — either the MCX anchor-contract wording or
     // the plain-spot wording, both of which this regex covers.
     await expect(popover).toContainText(/Spot anchor:|Current spot price for the underlying/);
+
+    // Viewport clipping check for LTP popover
+    if (viewport) {
+      const popoverRect = await popover.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      const vw = viewport.width;
+      const vh = viewport.height;
+      expect(popoverRect.left, 'LTP popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `LTP popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+      expect(popoverRect.top, 'LTP popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.bottom, `LTP popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+    }
+
+    // Occlusion check: stat row values should not be fully covered
+    const ltpValueSpan = ltpRow.locator('.ps-v').first();
+    const valueRect = await ltpValueSpan.evaluate((el) => {
+      const rect = el.getBoundingClientRect();
+      return {
+        centerX: rect.left + rect.width / 2,
+        centerY: rect.top + rect.height / 2,
+      };
+    });
+    const elemAtValueCenter = await page.evaluate(
+      ({ x, y }) => {
+        const elem = document.elementFromPoint(x, y);
+        return elem ? elem.className : null;
+      },
+      { x: valueRect.centerX, y: valueRect.centerY }
+    );
+    expect(
+      (elemAtValueCenter || '').includes('info-popout'),
+      'Popover should not fully occlude the LTP value'
+    ).toBe(false);
+
     await ltpInfoBtn.click(); // close
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
@@ -89,7 +130,28 @@ test.describe('OptionsPayoff stat overlay — InfoHint chips replace bare title=
     if (await dayPnlRow.count() > 0) {
       const dayPnlBtn = dayPnlRow.locator('.ps-k button.info-btn');
       await dayPnlBtn.click();
-      await expect(page.locator('[role="tooltip"]').first()).toContainText('mark-to-market change');
+      const dayPopover = page.locator('[role="tooltip"]').first();
+      await expect(dayPopover).toContainText('mark-to-market change');
+
+      // Viewport clipping check for DAY P&L popover
+      if (viewport) {
+        const dayPopoverRect = await dayPopover.evaluate((el) => {
+          const rect = el.getBoundingClientRect();
+          return {
+            left: rect.left,
+            right: rect.right,
+            top: rect.top,
+            bottom: rect.bottom,
+          };
+        });
+        const vw = viewport.width;
+        const vh = viewport.height;
+        expect(dayPopoverRect.left, 'DAY P&L popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+        expect(dayPopoverRect.right, `DAY P&L popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+        expect(dayPopoverRect.top, 'DAY P&L popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+        expect(dayPopoverRect.bottom, `DAY P&L popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+      }
+
       await dayPnlBtn.click();
     }
 

@@ -903,7 +903,7 @@
       {#if spot != null}
         <div class="ps-row">
           <span class="ps-k">LTP
-            <InfoHint popup text={spotAnchor?.source === 'futures'
+            <InfoHint popup panel title="LTP" text={spotAnchor?.source === 'futures'
               ? `Spot anchor: ${spotAnchor.contract} (the strategy's actual anchor contract — matches the expiry of its legs, not necessarily the front month). True MCX spot isn't published. Cost-of-carry may differ from a front-month proxy by ₹50-200.`
               : 'Current spot price for the underlying — anchor for every other stat in this overlay'} />
           </span>
@@ -912,7 +912,7 @@
         {#if spotPct != null}
           <div class="ps-row">
             <span class="ps-k">CHG%
-              <InfoHint popup text="Spot % change from previous session close" />
+              <InfoHint popup panel title="CHG%" text="Spot % change from previous session close" />
             </span>
             <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('spot') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
@@ -927,7 +927,7 @@
              head. Bloomberg / TWS / Kite all show this. -->
         <div class="ps-row">
           <span class="ps-k">CLOSE
-            <InfoHint popup text="Previous-session close for the underlying — anchor for today's spot drift" />
+            <InfoHint popup panel title="CLOSE" text="Previous-session close for the underlying — anchor for today's spot drift" />
           </span>
           <span class="ps-v ps-flat">{fmtSpot(prevClose)}</span>
         </div>
@@ -940,7 +940,7 @@
              intraday move) at a glance. -->
         <div class="ps-row">
           <span class="ps-k">DAY P&amp;L
-            <InfoHint popup text="Today's mark-to-market change on enabled basket positions (baseline-diff Day P&amp;L, live-tick-adjusted). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position." />
+            <InfoHint popup panel title="DAY P&amp;L" text="Today's mark-to-market change on enabled basket positions (baseline-diff Day P&amp;L, live-tick-adjusted). Compare to the PositionStrip's P∆ chip — they match exactly when the basket covers every open position." />
           </span>
           <span class={'ps-v ' + (dayPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
             {fmtMoney(dayPnl)}
@@ -951,7 +951,7 @@
         {#if curveAtSpot.today_value != null}
         <div class="ps-row">
           <span class="ps-k">P&amp;L
-            <InfoHint popup text={realizedPnl !== 0
+            <InfoHint popup panel title="P&amp;L" text={realizedPnl !== 0
               ? `Position lifetime P&amp;L at the current spot (open + closed legs combined). Adjusted to match the dashboard's per-underlying ₹ exactly. ADJ row shows the offset folded in.`
               : "Position lifetime P&amp;L at the current spot — Black-Scholes value of all open legs minus entry cost. NOT today's intraday move — use the DAY P&amp;L row above for that."} />
           </span>
@@ -969,7 +969,7 @@
                    contracts) -->
           <div class="ps-row">
             <span class="ps-k">ADJ
-              <InfoHint popup text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
+              <InfoHint popup panel title="ADJ" text="Adjustment folded into TODAY so chart matches dashboard exactly. Includes realised P&amp;L from today's closed positions + theoretical-vs-LTP gap on open legs." />
             </span>
             <span class={'ps-v ' + (realizedPnl >= 0 ? 'ps-pos' : 'ps-neg')}>
               {fmtMoney(realizedPnl)}
@@ -982,7 +982,7 @@
           : curveAtSpot.expiry_value}
         <div class="ps-row">
           <span class="ps-k">Exp P&amp;L
-            <InfoHint popup text={legsExpPnlAtSpot != null
+            <InfoHint popup panel title="Exp P&amp;L" text={legsExpPnlAtSpot != null
               ? 'Strategy P&amp;L if every open leg expired RIGHT NOW at the current spot — intrinsic value minus cost basis, summed across the enabled legs. SSOT shared with the legs grid TOTAL and snapshot Exp P&amp;L column.'
               : 'Strategy P&amp;L at expiry (intrinsic only) for the current spot — same vertical offset as TODAY.'} />
           </span>
@@ -994,7 +994,7 @@
       {#if dte != null}
         <div class="ps-row">
           <span class="ps-k">DTE
-            <InfoHint popup text="Days to expiry (calendar days remaining)" />
+            <InfoHint popup panel title="DTE" text="Days to expiry (calendar days remaining)" />
           </span>
           <span class="ps-v">{Math.round(dte)}</span>
         </div>
@@ -1005,7 +1005,7 @@
              the today curve and the σ-tick spacing on the x-axis. -->
         <div class="ps-row">
           <span class="ps-k">σ <span class="ps-k-hint">IV</span>
-            <InfoHint popup text="Implied volatility (annualised %) — qty-weighted IV across the option legs" />
+            <InfoHint popup panel title="IV" text="Implied volatility (annualised %) — qty-weighted IV across the option legs" />
           </span>
           <span class="ps-v">{(ivProxy * 100).toFixed(1)}%</span>
         </div>

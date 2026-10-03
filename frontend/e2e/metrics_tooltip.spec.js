@@ -121,8 +121,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
   });
 
-  // 2. Perf — popover opens within 350 ms
-  test('Perf: tooltip click-to-visible < 350 ms', async ({ page }) => {
+  // 2. Perf — popover opens within 350 ms (and stays within viewport)
+  test('Perf: tooltip click-to-visible < 350 ms and within viewport bounds', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — cannot open table-header tooltip');
@@ -140,6 +140,26 @@ test.describe('/admin/metrics — metric tooltips', () => {
     const elapsed = Date.now() - t0;
 
     expect(elapsed).toBeLessThan(350);
+
+    // Viewport clipping check
+    if (viewport) {
+      const popoverRect = await popover.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      const vw = viewport.width;
+      const vh = viewport.height;
+      expect(popoverRect.left, 'Popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `Popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+      expect(popoverRect.top, 'Popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.bottom, `Popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+    }
+
     await closePopover(page);
   });
 
@@ -181,8 +201,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
   });
 
-  // 5. UX — popover has aria-describedby + role=tooltip + all 4 rows
-  test('UX: popover is a11y-correct and shows WHAT/IDEAL/IMPACT/FIX', async ({ page }) => {
+  // 5. UX — popover has aria-describedby + role=tooltip + all 4 rows (and stays within viewport)
+  test('UX: popover is a11y-correct and shows WHAT/IDEAL/IMPACT/FIX, within viewport bounds', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows');
@@ -208,11 +228,31 @@ test.describe('/admin/metrics — metric tooltips', () => {
 
     // Four structured rows
     await assertFourRows(popover);
+
+    // Viewport clipping check
+    if (viewport) {
+      const popoverRect = await popover.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      const vw = viewport.width;
+      const vh = viewport.height;
+      expect(popoverRect.left, 'Popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `Popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+      expect(popoverRect.top, 'Popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.bottom, `Popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+    }
+
     await closePopover(page);
   });
 
   // Trend tiles also carry tooltips
-  test('UX: trend tile labels carry InfoHint tooltips', async ({ page }) => {
+  test('UX: trend tile labels carry InfoHint tooltips (viewport bounds check)', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — trend tiles may not render');
@@ -234,11 +274,31 @@ test.describe('/admin/metrics — metric tooltips', () => {
     // Open it and verify structure
     const popover = await openPopoverFor(page, firstTileLabel);
     await assertFourRows(popover);
+
+    // Viewport clipping check
+    if (viewport) {
+      const popoverRect = await popover.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          left: rect.left,
+          right: rect.right,
+          top: rect.top,
+          bottom: rect.bottom,
+        };
+      });
+      const vw = viewport.width;
+      const vh = viewport.height;
+      expect(popoverRect.left, 'Trend tile popover left edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.right, `Trend tile popover right edge must be <= ${vw}`).toBeLessThanOrEqual(vw);
+      expect(popoverRect.top, 'Trend tile popover top edge must be >= 0').toBeGreaterThanOrEqual(0);
+      expect(popoverRect.bottom, `Trend tile popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
+    }
+
     await closePopover(page);
   });
 
-  // Mobile portrait — popovers must fit viewport
-  test('UX: popover stays within viewport on mobile', async ({ page, viewport }) => {
+  // Mobile portrait — popovers must fit viewport and not occlude sibling headers
+  test('UX: popover stays within viewport on mobile and does not occlude adjacent headers', async ({ page, viewport }) => {
     if (!viewport || viewport.width > 600) {
       test.skip(true, 'Mobile-only check');
       return;
@@ -262,6 +322,31 @@ test.describe('/admin/metrics — metric tooltips', () => {
       expect(box.x).toBeGreaterThanOrEqual(0);
       expect(box.x + box.width).toBeLessThanOrEqual(viewport.width + 2); // 2px tolerance
     }
+
+    // Check that adjacent table header (if it exists) is not fully occluded
+    const secondMetricTh = page.locator('.metrics-table th.num').nth(1);
+    const secondCount = await secondMetricTh.count();
+    if (secondCount > 0) {
+      const secondRect = await secondMetricTh.evaluate((el) => {
+        const rect = el.getBoundingClientRect();
+        return {
+          centerX: rect.left + rect.width / 2,
+          centerY: rect.top + rect.height / 2,
+        };
+      });
+      const elemAtSecondCenter = await page.evaluate(
+        ({ x, y }) => {
+          const elem = document.elementFromPoint(x, y);
+          return elem ? elem.className : null;
+        },
+        { x: secondRect.centerX, y: secondRect.centerY }
+      );
+      expect(
+        (elemAtSecondCenter || '').includes('info-popout'),
+        'Popover should not fully occlude the adjacent header on mobile'
+      ).toBe(false);
+    }
+
     await closePopover(page);
   });
 });

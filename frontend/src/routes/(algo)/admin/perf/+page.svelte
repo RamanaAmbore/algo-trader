@@ -367,20 +367,20 @@
             <!-- Headline stats row -->
             <div class="perf-stats">
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} panel title="LOC" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-info)">{fmtNum(card.loc)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} panel title="cc max" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_max)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} panel title="cc avg" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_avg)}</span>
               </span>
               {#if card.lcp_ms !== null && card.lcp_ms !== undefined}
                 <span class="perf-stat">
-                  <span class="perf-stat-label"><span class="metric-label">LCP<InfoHint content={METRIC_META.lcp_ms} popup={true} maxWidth="26rem" /></span></span>
+                  <span class="perf-stat-label"><span class="metric-label">LCP<InfoHint content={METRIC_META.lcp_ms} popup={true} panel title="LCP" maxWidth="26rem" /></span></span>
                   <span class="perf-stat-val" style="color:{latencyColor(card.lcp_ms, true)}">{fmtNum(card.lcp_ms)}ms</span>
                 </span>
               {/if}
@@ -471,20 +471,20 @@
 
             <div class="perf-stats">
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">LOC<InfoHint content={METRIC_META.loc} popup={true} panel title="LOC" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-info)">{fmtNum(card.loc)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">cc max<InfoHint content={METRIC_META.cc_max} popup={true} panel title="cc max" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_max)}</span>
               </span>
               <span class="perf-stat">
-                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} maxWidth="26rem" /></span></span>
+                <span class="perf-stat-label"><span class="metric-label">cc avg<InfoHint content={METRIC_META.cc_avg} popup={true} panel title="cc avg" maxWidth="26rem" /></span></span>
                 <span class="perf-stat-val" style="color:var(--c-action)">{fmtNum(card.cc_avg)}</span>
               </span>
               {#if card.route_p95_ms !== null && card.route_p95_ms !== undefined}
                 <span class="perf-stat">
-                  <span class="perf-stat-label"><span class="metric-label">p95<InfoHint content={METRIC_META.route_p95_ms} popup={true} maxWidth="26rem" /></span></span>
+                  <span class="perf-stat-label"><span class="metric-label">p95<InfoHint content={METRIC_META.route_p95_ms} popup={true} panel title="p95" maxWidth="26rem" /></span></span>
                   <span class="perf-stat-val" style="color:{latencyColor(card.route_p95_ms, false)}">{fmtNum(card.route_p95_ms)}ms</span>
                 </span>
               {/if}
@@ -558,7 +558,7 @@
           <tr>
             <th>Function</th>
             <th>Page / route</th>
-            <th class="algo-table-num"><span class="metric-label">cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} maxWidth="26rem" /></span></th>
+            <th class="algo-table-num"><span class="metric-label">cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} panel title="cc" maxWidth="26rem" /></span></th>
             <th class="algo-table-num">line</th>
           </tr>
         </thead>

@@ -1,139 +1,105 @@
-# Plan: Order-entry UI alignment pass + Templ cold-open bug fix
+# Plan: InfoHint tooltip consistency — full NavStrip panel style everywhere
 
-## Task
+## Context
 
-Operator flagged a series of layout/alignment issues in the order-entry
-modal (Ticket + Chain tabs) via screenshots and direct instructions, plus
-a real functional bug where the "Templ" toggle appeared disabled/invisible
-on every fresh order until a side was explicitly picked. This plan covers
-implementing all of them together, since they're all small, already-
-diagnosed, already-implemented changes to the same UI surface — this is a
-retrospective record of work done live during the conversation, written
-now per operator request to formalize it before the standard
-test/commit/ship pipeline.
+Operator flagged that InfoHint tooltips render inconsistently across the app: NavStrip's
+P/H/M/C pills use a richer "panel" presentation (gradient background, `accentColor`-tinted
+left border, uppercase titled header — `InfoHint.svelte:320-346`) while ~75 other tooltip
+call sites across 13 files use a plain flat-slate popup with no title. Operator confirmed
+via screenshot (NavStrip "H" panel: amber section headers, bold white body, rounded
+gradient card) that this exact look, triggered on both hover and click/press, is the
+desired universal format — not a lighter title-only compromise.
 
-**Incident note**: two of these fixes (LOTS/PRICE row, expiry
-label/dropdown width) and one (LTP/CHASE alignment) were implemented once,
-then discovered to have been silently wiped from the working tree —
-almost certainly by a background Playwright investigation agent running
-some working-tree-wide cleanup/checkout action instead of scoping it to
-its own new test file. No git stash/reflog entry recovered them; they
-were re-implemented from scratch (identical content, verified against the
-original edits). Going forward: commit each fix promptly instead of
-leaving multiple edits uncommitted across several agent dispatches.
+A 5-agent council (architect/ux/risk/devil/perf) reviewed the approach before this was
+finalized. Architect/perf/risk approved the mechanism: `panel`/`accentColor`/`title` props
+already exist and already power `PositionStrip.svelte`'s pills — this is a call-site
+styling migration, not new component code, with zero measurable perf cost (popout is
+`{#if visible}`-gated, outside any hot tick-render path) and no data/P&L path touched.
+UX and devil's-advocate flagged that `InfoHint.svelte`'s own code comment (lines 278-283)
+documents the panel look was previously reverted from being app-wide for "shouting louder
+than the helper text it was framing," and reintroducing it into dense multi-chip rows
+(Greeks, payoff stat strip) risks the same regression at higher density. Operator saw this
+trade-off and reaffirmed intent with the screenshot, so proceeding with the full migration —
+care is taken on viewport/overlap behavior in the two densest rows during verification
+(see Tests section).
 
-## Issues covered
+## Approach
 
-1. **LOTS/PRICE row not left-aligned** (`OrderTicket.svelte`) — was a
-   65%/35% flex-basis split with `gap: 0`, stretching the PRICE input to
-   the far right edge with a big empty gap after LOTS's actual content.
-   This *reverses* an earlier explicit operator request ("lots and limit
-   price should not have gap between them... expand both elements to fill
-   the gap") — confirmed via direct operator confirmation before
-   implementing.
-2. **"Xd to expiry" → "Xd"** (`OptionChainTab.svelte`) — shortened the
-   days-to-expiry chip text in the Chain tab's Expiry row.
-3. **Expiry dropdown width narrowed 20%** (`OptionChainTab.svelte`,
-   `.oct-expiry-pick`) — `min-width`/`max-width` 11rem/16rem →
-   8.8rem/12.8rem.
-4. **LTP + CHASE not left-aligned** (`SymbolPanel.svelte`, `.oes-tabs`
-   row) — both used `margin-left: auto` to anchor themselves (and
-   everything after) to the right edge. This *reverses* an earlier
-   explicit operator request documented in a 2026-09-29 code comment
-   ("keep chase right aligned for chain like order ticket") — confirmed
-   via direct operator confirmation before implementing.
-5. **Templ toggle disabled/invisible on every fresh order** (real bug,
-   `SymbolPanel.svelte`) — `_sideAwareDefault`'s scope resolution used
-   `_focusedLeg?.side || _modalSide`, and `_modalSide` is deliberately
-   `null` on a cold order entry (preserves the SideToggle's neutral state
-   + margin-preflight short-circuit — NOT touched by this fix). With no
-   side known, `appliesToFor(null, sym)` falls through to scope `'both'`,
-   which has no matching `is_default=true` template (only
-   `buy_any`/`sell_any`/`buy_option`/`sell_option` have defaults
-   configured) — so Templ rendered disabled with "No default template
-   configured for this side/type" on every fresh order, for every symbol,
-   until the operator explicitly picked BUY/SELL. At 40% opacity
-   (disabled-state CSS) against the dark navy background, this read as
-   "the button isn't there at all" rather than "disabled" — matching two
-   days of operator reports across multiple symbols.
+Add `panel` + `title={<site's own existing visible stat/field label, not new copy>}` to
+every non-NavStrip `<InfoHint>` call site. Omit `accentColor` everywhere except NavStrip's
+4 pills — it falls back to the component's shared default (`var(--algo-amber)`), avoiding
+an arbitrary per-metric color scheme that only makes sense for 4 adjacent, differentiated
+pills. `popup` mode is already hover-or-click reactive
+(`InfoHint.svelte:103`: `visible = popup ? (open || hovered) : open`), so no new trigger
+logic is needed anywhere that's already `popup` mode.
 
-   Root-caused via a live Playwright investigation against dev.ramboq.com
-   (confirmed the button DOES render, but disabled, with the exact "No
-   default template configured" title) — not guessed.
+Call sites to migrate (same one-line edit pattern repeats ~75 times across 13 files):
+- `frontend/src/lib/PnlPanel.svelte:113`
+- `frontend/src/lib/ChartWorkspace.svelte:2377-2405` (6 Greek tooltips)
+- `frontend/src/lib/OptionsPayoff.svelte:906-1008` (8 stat-row tooltips: LTP/Chg%/P.Close/
+  Day/Adj/DTE/IV)
+- `frontend/src/lib/order/OrderTicket.svelte:3062`
+- `frontend/src/lib/execution/SimulatorPanel.svelte:1132,1137`
+- `frontend/src/routes/(algo)/strategies/[id]/+page.svelte:279-333` (8 metric tooltips)
+- `frontend/src/routes/(algo)/admin/research/+page.svelte:480`
+- `frontend/src/routes/(algo)/admin/derivatives/+page.svelte:5507-5579` (`hideButton`+
+  `anchor` Greek+EV header chips, 6 — keep the anchor/click-outside wiring untouched, add
+  `panel`+`title` only) and `:6158-6225` (Strategy Summary kv rows — Δ/Γ/Θ/𝒱/ρ, R:R,
+  Risk-of-ruin, Breakevens, POP, EV, EV/cost, aggregate-greeks note — 14)
+- `frontend/src/routes/(algo)/automation/+page.svelte:774-986` (7 form-field hints)
+- `frontend/src/routes/(algo)/automation/templates/+page.svelte:305-539` (4)
+- `frontend/src/routes/(algo)/admin/metrics/+page.svelte` and `admin/perf/+page.svelte`
+  (17 `content={METRIC_META...}` sites) — add `panel`+`title={<metric label>}`, leave the
+  structured What/Ideal/Impact/Fix `<dl>` body unchanged; `panel` is chrome-only CSS on the
+  wrapping `.info-popout`, independent of body content shape
+- `frontend/src/routes/(algo)/admin/settings/+page.svelte:448` — the one site NOT already
+  in `popup` mode (today it's an inline-expand-below-chip). Convert to `popup panel` so it
+  gains the same floating hover/press popup mechanism as every other site, per the
+  operator's explicit "all other tooltips hovering or pressing should show similar popup."
 
-   Fix: both places that compute this scope (`_sideAwareDefault` itself,
-   and the side-flip auto-swap `$effect`) now fall back to `'BUY'` *only*
-   for the scope guess — `sideForScope = _focusedLeg?.side || _modalSide
-   || 'BUY'`. `_modalSide` itself is never mutated, so the SideToggle and
-   margin-preflight behavior are unaffected. Once a real side is known
-   (SideToggle click, or `+`/`−` on a Chain strike setting
-   `_focusedLeg.side`), it takes priority and the correct template
-   re-resolves automatically (already-reactive `$derived`).
+## Known gotcha (risk council finding)
 
-   Explicitly NOT changed: the side/type matching logic itself (operator
-   confirmed this should stay — "when on, while placing the order it
-   should take action on the other order" / "template on or off should
-   decide what needs to happen when order is placed, it should not worry
-   what is the current status" — both consistent with keeping the
-   reactive per-side resolution and only fixing the missing default).
+`frontend/src/lib/__tests__/optionsPayoffStatInfoHint.test.js:65-69` regex-asserts no
+unescaped `P&L` inside any `<InfoHint ...>` tag. Any new `title=` text containing "P&L"
+must be written as `P&amp;L` to avoid a false-positive test failure (safe at runtime
+either way — `title` is plain-text interpolated, not `{@html}`).
 
-## Files changed
+## Agents
 
-- `frontend/src/lib/order/OrderTicket.svelte` — `.ot-lots-price-row`,
-  `.ot-lots-cell`, `.ot-price-cell` CSS (issue 1).
-- `frontend/src/lib/order/OptionChainTab.svelte` — the DTE chip's text
-  template (issue 2), `.oct-expiry-pick` CSS (issue 3).
-- `frontend/src/lib/SymbolPanel.svelte` — `.oes-tab-ltp` and
-  `.oes-common-chase-label` CSS (issue 4); `_sideAwareDefault`'s
-  `sideForScope` computation and the side-flip auto-swap effect's
-  matching computation (issue 5).
-- `frontend/e2e/chain_ticket_severance_and_mobile_fixes.spec.js` — new
-  source-pattern regression test for the `'BUY'` fallback in both scope-
-  computation call sites (issue 5).
-
-**Live-DOM test — attempted, dropped, not a scope gap being silently
-skipped.** A mocked-localhost Playwright test (`templ_button_cold_open.spec.js`)
-was attempted to close the "tests only check source patterns, never
-actually render" gap an earlier investigation flagged. After several
-rounds (selector mismatches, a route-mock/response-shape mismatch that
-kept `_templates` empty client-side, and — separately — a background
-agent still iterating on the same file while it was being edited
-directly, causing repeated overwrites) it was dropped rather than
-continuing to sink time into test-infrastructure flakiness. This is NOT
-uncovered: the actual product fix was independently verified via a real
-live-browser investigation against dev.ramboq.com with real account/template
-data (confirmed the exact pre-fix bug — button disabled, title "No
-default template configured for this side/type" — matching the root-cause
-diagnosis precisely), on top of the passing source-pattern regression
-test above. A live-DOM test remains a legitimate future improvement if
-someone wants to invest the time in getting the API mocks exactly right.
+- frontend: Migrate all ~75 non-NavStrip InfoHint call sites listed above to add `panel` +
+  `title` (reuse each site's existing visible label text as the title; escape any literal
+  "P&L" as "P&amp;L" per the gotcha above). Convert `admin/settings/+page.svelte`'s single
+  inline-mode InfoHint to `popup panel`. Do not change `content=` grid bodies, `text=` HTML
+  bodies, or any `hideButton`/`anchor` wiring — this is a styling-prop addition only, no
+  logic changes.
+- backend: skip
+- broker: skip
+- doc: skip
+- backend-test: skip
+- playwright: After the frontend change, verify/extend
+  `derivatives_greek_header_chip_infohint.spec.js`, `options_payoff_stat_infohints.spec.js`,
+  and `metrics_tooltip.spec.js` to confirm the panel popout doesn't clip/overflow the
+  viewport or occlude sibling stats in the two densest rows (derivatives Strategy Summary,
+  OptionsPayoff stat strip) at both desktop and mobile widths — this directly checks the
+  risk the UX/devil council flagged.
 
 ## Tests
 
-- pytest: no (no backend files touched)
+- pytest: no
 - svelte-check: yes
-- playwright: yes (`chain_ticket_severance_and_mobile_fixes.spec.js`,
-  `templ_button_cold_open.spec.js`)
+- playwright: yes — `derivatives_greek_header_chip_infohint.spec.js`,
+  `options_payoff_stat_infohints.spec.js`, `metrics_tooltip.spec.js`
+- vitest: `optionsPayoffStatInfoHint.test.js`, `InfoHint.sourceAudit.test.js`,
+  `strategyDetailMetricsInfoHint.test.js`
 
-## Verification
+## Commit message
 
-1. `cd frontend && npx svelte-check --output machine 2>&1` — 0 errors.
-2. `cd frontend && npx vitest run` — full suite green (no unit-testable
-   logic changed, but confirms no collateral damage).
-3. `cd frontend && npx playwright test e2e/chain_ticket_severance_and_mobile_fixes.spec.js e2e/templ_button_cold_open.spec.js` —
-   all green, including the new tests.
-4. Self-audit: grep for any other consumer of `.oct-expiry-pick`,
-   `.ot-lots-price-row`, `.oes-tab-ltp`/`.oes-common-chase-label` to
-   confirm these CSS changes don't leak into an unrelated surface (all
-   four are component-scoped Svelte `<style>` blocks, not global — low
-   risk, verify anyway per standing self-audit practice).
-
-## Commit message (draft)
-
-`fix(ui): left-align order-entry controls (LOTS/PRICE, LTP/CHASE), shorten DTE chip, narrow expiry dropdown, fix Templ defaulting disabled on every fresh order`
+fix(ui): standardize InfoHint tooltips on NavStrip's panel presentation
 
 ## Done when
 
-- All 5 issues implemented, tests green, self-audit clean.
-- Committed to `workshop`, then `/ddev` + `/dprod` per standing practice
-  this session (ship promptly, verify live on dev then prod).
+Every InfoHint tooltip in the app (except the 4 NavStrip pills, already canonical) opens on
+hover or click as a titled gradient panel matching NavStrip's P/H/M/C look; no panel
+overflows/clips the viewport or occludes adjacent stats in the two densest rows; the named
+vitest specs pass with the P&L-escaping gotcha handled; svelte-check and the named
+Playwright specs pass.

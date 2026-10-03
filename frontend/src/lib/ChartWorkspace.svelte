@@ -2374,27 +2374,27 @@
         <div class="cw-greek-item">
           <span class="cw-gk-label">Δ</span>
           <span class="cw-gk-val">{_gv(g.delta ?? g.greeks?.delta)}</span>
-          <InfoHint popup text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
+          <InfoHint popup panel title="Delta (Δ)" text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
         </div>
         <div class="cw-greek-item">
           <span class="cw-gk-label">Γ</span>
           <span class="cw-gk-val">{_gv(g.gamma ?? g.greeks?.gamma)}</span>
-          <InfoHint popup text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
+          <InfoHint popup panel title="Gamma (Γ)" text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
         </div>
         <div class="cw-greek-item">
           <span class="cw-gk-label">Θ</span>
           <span class="cw-gk-val">{_gv(g.theta ?? g.greeks?.theta)}</span>
-          <InfoHint popup text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
+          <InfoHint popup panel title="Theta (Θ)" text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
         </div>
         <div class="cw-greek-item">
           <span class="cw-gk-label">V</span>
           <span class="cw-gk-val">{_gv(g.vega ?? g.greeks?.vega)}</span>
-          <InfoHint popup text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
+          <InfoHint popup panel title="Vega (V)" text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
         </div>
         <div class="cw-greek-item">
           <span class="cw-gk-label">ρ</span>
           <span class="cw-gk-val">{_gv(g.rho ?? g.greeks?.rho)}</span>
-          <InfoHint popup text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
+          <InfoHint popup panel title="Rho (ρ)" text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
         </div>
         {#if (g.iv ?? g.greeks?.iv) != null}
           <div class="cw-greek-item">
@@ -2402,7 +2402,7 @@
             <span class="cw-gk-val cw-gk-amber">
               {((g.iv ?? g.greeks?.iv) * 100).toFixed(1)}%
             </span>
-            <InfoHint popup text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
+            <InfoHint popup panel title="IV" text="Implied Volatility — the market's consensus forecast of how much the underlying will move. Higher IV = more expensive options." />
           </div>
         {/if}
         {#if (g.ltp ?? g.pricing?.ltp) != null}

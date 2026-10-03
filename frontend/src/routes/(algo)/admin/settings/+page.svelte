@@ -445,7 +445,7 @@
         {#each rows as s}
           <div class="settings-row">
             <div class="grid grid-cols-[auto_minmax(0,1fr)_110px_auto_auto] gap-2 items-center text-[length:var(--fs-md)] py-1">
-              <InfoHint text={[
+              <InfoHint popup panel title={s.key} text={[
                 s.description,
                 `<span class="font-mono text-[length:var(--fs-xs)]" style="color: var(--algo-muted)">default: ${s.default_value}</span>`,
                 s.schema?.min !== undefined || s.schema?.max !== undefined ? `range: ${s.schema.min ?? '−∞'} … ${s.schema.max ?? '+∞'}` : '',

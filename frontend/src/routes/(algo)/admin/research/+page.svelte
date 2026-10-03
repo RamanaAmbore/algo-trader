@@ -477,7 +477,7 @@
     <aside class="lab-rail">
       <div class="lab-rail-head">
         <span class="rail-head-label">THREADS</span>
-        <InfoHint popup text="Click any row to view its full transcript + thesis. Threads are created by the <code>save_research_thread</code> MCP tool — chat with Claude Code, ask it to save the thesis, and the row appears here." />
+        <InfoHint popup panel title="Threads" text="Click any row to view its full transcript + thesis. Threads are created by the <code>save_research_thread</code> MCP tool — chat with Claude Code, ask it to save the thesis, and the row appears here." />
       </div>
       {#if loading && threads.length === 0}
         <div class="rail-empty"><LoadingSkeleton variant="grid-row" rows={5} height="0.75rem" /></div>

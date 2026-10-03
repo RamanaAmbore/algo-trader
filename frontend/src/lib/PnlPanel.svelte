@@ -110,7 +110,7 @@
 </script>
 
 <div class="pnl-header">
-  <InfoHint popup text="Rough P&L attribution — sum of <b>(fill_price − initial_price) × qty × side</b> across all FILLED orders. Chase-slippage proxy, not realised P&L from position pairing. <br><br><b>v1 limitation:</b> rows are grouped by execution engine (<code>sim</code> / <code>paper</code> / <code>live</code> / <code>expiry</code>) — true per-agent grouping requires an <code>agent_id</code> column on <code>algo_orders</code> which doesn't exist yet." />
+  <InfoHint popup panel title="By agent — P&amp;L attribution" text="Rough P&L attribution — sum of <b>(fill_price − initial_price) × qty × side</b> across all FILLED orders. Chase-slippage proxy, not realised P&L from position pairing. <br><br><b>v1 limitation:</b> rows are grouped by execution engine (<code>sim</code> / <code>paper</code> / <code>live</code> / <code>expiry</code>) — true per-agent grouping requires an <code>agent_id</code> column on <code>algo_orders</code> which doesn't exist yet." />
   {#if refreshedAt}
     <span class="algo-ts">{refreshedAt}</span>
   {/if}
