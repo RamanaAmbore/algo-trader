@@ -1,27 +1,11 @@
-import functools
 import inspect
-import logging
-import threading
 import time
 from functools import wraps
-from inspect import iscoroutinefunction
 
 from backend.shared.helpers.auth_error import is_auth_error_str
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
-
-
-def singleton_init_guard(init_func):
-    @wraps(init_func)
-    def wrapper(self, *args, **kwargs):
-        if getattr(self, '_singleton_initialized', False):
-            logger.debug(f"Instance for {self.__class__.__name__} already initialized.")
-            return
-        init_func(self, *args, **kwargs)
-        self._singleton_initialized = True
-
-    return wrapper
 
 
 def retry_kite_conn(max_attempts):
@@ -71,73 +55,6 @@ def retry_kite_conn(max_attempts):
         return wrapper
 
     return decorator
-
-
-def track_it():
-    def decorator(func):
-        if iscoroutinefunction(func):
-            @wraps(func)
-            async def async_wrapper(*args, **kwargs):
-                start_time = time.perf_counter()
-                try:
-                    result = await func(*args, **kwargs)
-                    return result
-                except Exception as e:
-                    raise e
-                finally:
-                    elapsed = time.perf_counter() - start_time
-                    logger.info(f"Async function {func.__name__} executed in {elapsed:.4f} seconds")
-
-            return async_wrapper
-
-        else:
-            @wraps(func)
-            def sync_wrapper(*args, **kwargs):
-                start_time = time.perf_counter()
-                try:
-                    result = func(*args, **kwargs)
-                    return result
-                except Exception as e:
-                    raise e
-                finally:
-                    elapsed = time.perf_counter() - start_time
-                    logger.info(f"Function {func.__name__} executed in {elapsed:.4f} seconds")
-
-            return sync_wrapper
-
-    return decorator
-
-
-def lock_it_for_update(method):
-    def wrapper(self, *args, **kwargs):
-        with self.lock:
-            return method(self, *args, **kwargs)
-
-    return wrapper
-
-
-def update_lock(method):
-    """
-    Decorator that ensures method execution is thread-safe using global and per-element locks.
-    The element key is assumed to be the first positional argument.
-    """
-
-    @wraps(method)
-    def wrapper(self, *args, **kwargs):
-        key = args[0] if args else None  # get key if passed
-
-        with self.lock:
-            if key:
-                if key not in self.element_locks:
-                    self.element_locks[key] = threading.Lock()
-                lock = self.element_locks[key]
-            else:
-                lock = self.lock
-
-        with lock:
-            return method(self, *args, **kwargs)
-
-    return wrapper
 
 
 def for_all_accounts(func):
@@ -305,46 +222,5 @@ def for_all_accounts(func):
             # later pd.concat()s the results.
             results = list(pool.map(_per_account, accs))
         return results
-
-    return wrapper
-
-
-def with_guard(fn):
-    """Decorator: skip/drop concurrent invocations of an async function.
-
-    If *fn* is already executing, the second call returns ``None`` immediately
-    without queuing.  Correct for background tasks where a stale concurrent
-    run wastes resources.  For API routes prefer ``@ssot_fetch(mode='coalesce')``
-    so callers share the in-flight result instead of being silently dropped.
-
-    Thread-safety note: the ``_running`` flag is a plain Python bool protected
-    only by the GIL.  This is sufficient for asyncio tasks on a single-threaded
-    event loop (the only consumer), but do NOT use this decorator on functions
-    called from ``ThreadPoolExecutor`` workers.
-    """
-    _running = False
-
-    @functools.wraps(fn)
-    async def _guarded(*args, **kwargs):
-        nonlocal _running
-        if _running:
-            logger.debug("%s: skipped — already in-flight", fn.__qualname__)
-            return None
-        _running = True
-        try:
-            return await fn(*args, **kwargs)
-        finally:
-            _running = False
-
-    return _guarded
-
-
-def debug_wrapper(function):
-    @functools.wraps(function)
-    def wrapper(*args, **kwargs):
-        logging.debug(f'{function.__name__} started')  # Log function start
-        result = function(*args, **kwargs)
-        logging.debug(f'{function.__name__} ended')  # Log function end
-        return result
 
     return wrapper
