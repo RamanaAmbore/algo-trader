@@ -809,7 +809,7 @@ market segments to close:
 data, source = await closed_hours_or_broker(
     exchange='NSE',
     snapshot_fn=_holdings_snapshot,
-    broker_fn=_fetch_holdings_live,
+    broker_fn=_fetch,
     segment_exchanges=["NSE"],  # NEW: restrict to NSE only
     route_key='holdings',
 )
@@ -860,7 +860,7 @@ read) now apply `_override_stale_close_for_holdings()` to patch stale or missing
 `daily_book.ltp` (captured at settlement, `captured_at < today_08:00 IST`).
 
 **Broker path flow**:
-1. `_fetch_holdings_live()` calls `fetch_holdings()`
+1. `_fetch()` calls `fetch_holdings()`
 2. `_override_stale_close_for_holdings()` patches `close_price` from DB snapshot
 3. Day P&L recomputed using patched `close_price`
 
@@ -897,8 +897,8 @@ broker response.
 2. **NEW (Aug 2026)**: Calls `latest_snapshot_ltp_map("holdings")` to fetch the DB-backed
    LTP map for all holdings symbols (captures snapshots across all exchanges from the
    most recent `daily_book` row per account/symbol)
-3. **NEW (Aug 2026)**: Applies `_overlay_closed_exchange_ltp(df, snap_map)` to each
-   holdings DataFrame before summing `cur_val`
+3. **NEW (Aug 2026)**: Applies `_overlay_snapshot_for_closed_exchanges(rows)` to each
+   holdings list before summing `cur_val`
 
 ### Overlay logic — `latest_snapshot_ltp_map` return type
 
@@ -1880,7 +1880,7 @@ Returns `gtt_trigger_errors` in `TicketPreviewResponse` (422 on submit if presen
 
 ## 8.3.1 GTT Pre-flight Lot-Size Validation (Aug 2026)
 
-**File**: `backend/api/routes/template_attach.py` — `apply_plan_live()`
+**File**: `backend/api/algo/template_attach.py` — `apply_plan_live()`
 
 **G1 lot-size check in `apply_plan_live`**: A synchronous G1 guard now fires at the TOP of 
 `apply_plan_live` (before `broker.translate_qty`, plan resolution, or any broker call) to 
@@ -2706,58 +2706,58 @@ final settlement capture (NSE BHAV at 16:15; MCX final at 00:15).
 | NSE | {NSE,BSE} | 2026-11-01 | muhurat | true | 17:45 | 18:45 | 18:46 | 08:00 | Diwali Muhurat |
 
 Only NSE and BSE are in the `exchanges` array, so NFO/BFO/CDS do not match this
-row → `resolve_sessions_for("NFO", 2026-11-01)` returns [] → NFO is correctly
+row → on 2026-11-01, `is_exchange_open("NFO")` returns false → NFO is correctly
 closed for the day without needing separate closed-override rows.
 
 ### Runtime lookup algorithm (Aug 2026 — date-override-first)
 
-**Per-exchange session resolution** (`resolve_sessions_for(exchange, on_date)`):
-1. Look for date-specific override rows where `exchange = ANY(row.exchanges)` and
-   `row.date = on_date` — **these suppress the default row entirely** if found
-2. If any override row has `is_open=false` (or `open_time=NULL`), return [] (closed)
-3. If any override row has `open_time=HH:MM`, return it (custom session hours)
-4. If no date-override rows, fall back to defaults where `exchange = ANY(row.exchanges)`,
-   `row.date IS NULL`, and `on_date.isoweekday() IN row.weekdays`
-5. If no defaults or weekday not in list, return [] (closed)
+**Exchange-specific session resolution** — Checked at every `is_exchange_open()` call:
+1. Look for date-specific override rows where `exchange ∈ row.exchanges` and
+   `row.date = today` — **these suppress the default row entirely** if found
+2. If any override row exists, use it (may have `is_open=false` for full closure,
+   or custom `open_time`/`close_time`)
+3. If no date-override, fall back to defaults where `exchange ∈ row.exchanges`,
+   `row.date IS NULL`, and `today.weekday ∈ row.weekdays`
+4. Return true if within session bounds; false otherwise
 
-**Exchange membership per row** — `is_exchange_open(exchange)` now checks 
-per-row `exchanges` list membership. Example: Muhurat override with 
-`exchanges=["NSE","BSE"]` correctly leaves NFO/BFO closed for that day without 
-needing separate closed-override rows.
+**Exchange membership per row** — `is_exchange_open(exchange)` checks per-row 
+`exchanges` list membership. Example: Muhurat override with `exchanges=["NSE","BSE"]` 
+correctly leaves NFO/BFO closed for that day without needing separate closed-override rows.
 
-**Gate-level session resolution** (`resolve_sessions_for_gate(gate, on_date)`):
-1. Look for date-specific override rows where `row.gate = gate` and `row.date = on_date`
+**Gate-level session resolution** (internal `_effective_gate_rows(gate)` helper) — 
+used by background.py snapshot triggers:
+1. Look for date-specific override rows where `row.gate = gate` and `row.date = today`
    — **override rows suppress defaults** if found
-2. If found, return all matching rows (open AND settlement rows)
-3. Otherwise, fall back to defaults where `row.gate = gate`, `row.date IS NULL`,
-   and weekday check
-4. Used by `background.py` only (snapshot/settlement triggers fire per gate)
+2. If found, return those override rows (open AND settlement rows)
+3. Otherwise, return defaults where `row.gate = gate`, `row.date IS NULL`,
+   and weekday check passes
+4. Used exclusively by snapshot/settlement trigger timing in `background.py`
 
-**Settlement cutoff per gate** — `settlement_cutoff_for(gate)` reads the default 
-(non-override) row's `open_time` field (typically 08:00 IST) as the reset boundary 
-for prior-close lookups, instead of the hardcoded `snapshot_reset_time`.
+**Settlement cutoff per gate** — `settlement_cutoff_for(gate)` reads the matched 
+default row's `open_time` field (typically 08:00 IST) as the reset boundary 
+for prior-close lookups, using 08:00 IST as final fallback.
 
-**Exchange-to-gate mapping** (internal constant):
+**Exchange-to-gate mapping** (via `_exchange_to_gate(exchange)` lookup):
 ```
-NSE, BSE, NFO, BFO, CDS  →  "NSE"
+NSE, BSE, NFO, BFO, CDS  →  "NON-MCX"
 MCX                       →  "MCX"
 ```
 
 ### Public API: `backend/api/helpers/exchange_clock.py`
 
-Module-level async-loaded cache (1-hour TTL). Sync methods safe after warm.
+Module-level async-loaded cache (60-second TTL). Sync methods safe after warm.
 
 | Function | Returns | Purpose |
 |---|---|---|
-| `is_exchange_open(exchange, *, at=None)` | bool | True if `exchange` is inside an active session at `at` (default: now IST). Uses per-exchange lookup. |
-| `is_exchange_closed(exchange, *, at=None)` | bool | `not is_exchange_open(...)` |
-| `snapshot_time_for(exchange, *, on=None)` | time\|None | IST close-snapshot time for exchange on date (open sessions only) |
-| `snapshot_reset_time_for(exchange, *, on=None)` | time | IST prev_close reset time; defaults to 08:00 if NULL in DB |
-| `sessions_with_snapshot_time_now(*, at=None)` | list[ExchangeSchedule] | All sessions (open OR settlement, any gate) whose snapshot_time matches current IST minute (minute-precision). Used by `background.py` triggers. |
-| `async settlement_cutoff_for(exchange)` | datetime | Prior-session settlement boundary. Formula: `today_ist + reset_time` if `now_ist >= reset_time`, else `yesterday_ist + reset_time`. |
-| `async settlement_ref_close_map(exchange, kind, pairs)` | dict[(account,symbol), float] | `daily_book.ltp` WHERE `captured_at < settlement_cutoff_for(exchange)` for given (account, symbol) pairs. |
-| `async refresh_cache()` | None | Reload `exchange_schedule` from DB (called hourly + on any admin write) |
-| `async seed_and_warm(session)` | None | Insert 5 default rows + market_holidays + market_special_sessions; call `refresh_cache()` |
+| `is_exchange_open(exchange)` | bool | True when `exchange` is currently within an open session. Returns False if cache empty (fail-closed). Returns True if exchange unknown (fail-open). |
+| `is_exchange_closed(exchange)` | bool | `not is_exchange_open(exchange)` — True when exchange is NOT within any open session. |
+| `is_any_segment_open(exchanges=None)` | bool | True when at least one configured segment is open. Optional list restricts check to subset. |
+| `get_today_gate_sessions(gate)` | list[ExchangeSchedule] | All rows for *gate* in effect today with open_time set. |
+| `get_nse_open_time()` | time\|None | Today's NSE session open time (None on holidays). Cached at startup and refreshed at 04:00 IST. |
+| `sessions_with_snapshot_time_now(tolerance_minutes=1)` | list[ExchangeSchedule] | All sessions whose snapshot_time matches now ± *tolerance_minutes*. Used by `background.py` snapshot triggers. |
+| `async settlement_cutoff_for(gate)` | datetime | Last 08:00 IST boundary that has passed for *gate*. Returns `today_ist + 08:00` if `now >= 08:00`, else `yesterday_ist + 08:00`. Canonical cutoff for `daily_book.ltp` prior-session queries. |
+| `async refresh()` | None | Reload `exchange_schedule` cache from DB. Skips DB call if cache younger than 60s TTL. Thread-safe via asyncio.Lock. |
+| `async seed_and_warm()` | None | Idempotent seed of 2 default rows (NON-MCX, MCX) + migration cleanup; warm cache. Called on startup. |
 
 ### Background integration
 
@@ -2865,29 +2865,6 @@ Open=09:15, Close=15:30, Snapshot=15:31, Reset=08:00
 → Save
 → GIFT has its own independent schedule
 ```
-
-### Decorator: `@apply_settlement_overlay(kind)`
-
-Applied to async route handlers returning `list[Row]` (positions, holdings).
-Patches day P&L and close_price for closed-exchange rows after market close:
-
-```python
-for row in rows:
-    if is_exchange_closed(row.exchange):
-        # Fetch prior-session settlement snapshot
-        ref_close = await exchange_clock.settlement_ref_close_map(
-            row.exchange, kind, [(row.account, row.symbol)]
-        )[(row.account, row.symbol)]
-        
-        if snap_ltp is not None and ref_close > 0:
-            # Patch using prior-session LTP
-            row.day_change_val = (snap_ltp - ref_close) * row.qty
-            row.day_change_percentage = (row.day_change_val / (ref_close * row.qty)) * 100
-            row.close_price = ref_close
-```
-
-Ensures frozen snapshot P&L is consistent with broker settlement settlement
-prices even after both NSE and MCX have closed.
 
 ---
 
