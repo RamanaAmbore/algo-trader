@@ -326,35 +326,17 @@ def _account_margin_base(df_margins: "pd.DataFrame", account) -> float | None:
     numerator; worked example: -25k realised + one small open leg
     computed to -500% against notional).
 
-    Why used+available, not used margin alone: `util debits` shrinks
-    the instant a position closes and grows the instant one opens, so
-    it reproduces the SAME "opening/closing swings the ratio with zero
-    P&L change" symptom the audit flagged for notional. used+available
-    approximates the account's total deployable capital, which stays
-    roughly constant intraday regardless of how many positions happen
-    to be open right now — the denominator the "-2% of margin" agent
-    descriptions actually mean.
-
-    Returns None when margins data is unavailable for this account (no
-    row, or both fields missing/NaN) — callers must NOT fall back to
-    notional; a missing margin figure should skip the leaf (fix #3's
-    missing-vs-zero convention), not silently revert to the denominator
-    fix #10 exists to replace.
+    2026-10 audit fix (pnl_pct denominator): the actual formula now
+    lives in `backend.api.algo.pnl_math.account_margin_base` so
+    `grammar.py`'s `_metric_pnl_pct` resolver can share the SAME
+    denominator without creating a circular import (background.py
+    imports the agent engine → grammar.py; grammar.py must not import
+    background.py back). This function is kept as a thin alias so
+    every existing caller in this module (`_apply_positions_margin_pct`
+    etc.) keeps working unchanged.
     """
-    if df_margins is None or df_margins.empty or 'account' not in df_margins.columns:
-        return None
-    match = df_margins[df_margins['account'].astype(str) == str(account)]
-    if match.empty:
-        return None
-    row = match.iloc[0]
-    used = pd.to_numeric(row.get('util debits'), errors='coerce')
-    avail = pd.to_numeric(row.get('net'), errors='coerce')
-    used_v = None if pd.isna(used) else float(used)
-    avail_v = None if pd.isna(avail) else float(avail)
-    if used_v is None and avail_v is None:
-        return None
-    total = (used_v or 0.0) + (avail_v or 0.0)
-    return total if total > 0 else None
+    from backend.api.algo.pnl_math import account_margin_base
+    return account_margin_base(df_margins, account)
 
 
 def _apply_positions_margin_pct(

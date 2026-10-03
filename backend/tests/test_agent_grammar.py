@@ -1,8 +1,22 @@
 """
 Tests for api/algo/grammar.py — metric resolvers.
-SSOT: _metric_pnl_pct uses Context.used_margin_for() with fallback logic.
+
+2026-10 audit fix: `_metric_pnl_pct` no longer uses
+`Context.used_margin_for()` (an OR-fallback: util_debits if > 0, else
+net). It now shares `pnl_math.account_margin_base()` — the SAME
+used+available SUM denominator `day_pct` already uses (fix #10) — so
+pnl_pct and day_pct agree on what "% of margin" means. The two
+denominators coincide numerically whenever util_debits is 0 (SUM
+degenerates to net, same as the old fallback), which is why several
+single-field test cases below are numerically unchanged; cases with
+BOTH util_debits and net nonzero are the ones that actually changed.
+
+`Context.used_margin_for()` itself is untested-for-removal here — its
+own behaviour (OR-fallback) is unchanged and still exercised by
+`TestUsedMarginForFallback` below; it is simply no longer the
+denominator `_metric_pnl_pct` reads.
+
 Perf: all resolvers are sync (no DB calls).
-Stale: used_margin_for now falls back to 'net' when 'util debits' is 0.
 Reuse: Context dataclass shared with evaluator.
 UX: resolvers return None when margin data is unavailable or zero.
 """
@@ -108,10 +122,14 @@ class TestUsedMarginForFallback:
 
 
 class TestMetricPnlPct:
-    """Test _metric_pnl_pct resolver using used_margin_for fallback."""
+    """Test _metric_pnl_pct resolver using the corrected used+available
+    margin-base denominator (`pnl_math.account_margin_base`), shared with
+    `day_pct`'s own fix #10 denominator."""
 
-    def test_pnl_pct_uses_util_debits_when_nonzero(self):
-        """_metric_pnl_pct should use util_debits when it's > 0."""
+    def test_pnl_pct_sums_util_debits_and_net_when_both_nonzero(self):
+        """2026-10 fix: when BOTH util_debits and net are > 0, the
+        denominator is their SUM (130000), not just util_debits (50000) —
+        the old OR-fallback behaviour this replaces."""
         df_margins = pd.DataFrame([{
             'account': 'ZG0790',
             'util debits': 50000,
@@ -120,13 +138,23 @@ class TestMetricPnlPct:
         ctx = Context(df_margins=df_margins)
         row = {'account': 'ZG0790', 'pnl': -1000}
         result = _metric_pnl_pct(ctx, row)
-        expected = (-1000 / 50000) * 100.0  # -2.0
+        expected = (-1000 / 130000) * 100.0
         assert result == pytest.approx(expected), (
-            f"expected pnl_pct to use util_debits: {expected}, got {result}"
+            f"expected pnl_pct to divide by used+available sum (130000): "
+            f"{expected}, got {result}"
+        )
+        # Lock in the regression this fix closes: the OLD (OR-fallback)
+        # denominator must NOT be what's used any more.
+        old_denominator_result = (-1000 / 50000) * 100.0
+        assert result != pytest.approx(old_denominator_result), (
+            "pnl_pct must no longer match the old used_margin_for() "
+            "OR-fallback denominator"
         )
 
-    def test_pnl_pct_falls_back_to_net_when_util_debits_zero(self):
-        """_metric_pnl_pct should fall back to net when util_debits=0."""
+    def test_pnl_pct_matches_net_when_util_debits_zero(self):
+        """When util_debits is a genuine 0, used+available SUM degenerates
+        to `net` alone — numerically identical to the old OR-fallback for
+        this specific (single-field-populated) case."""
         df_margins = pd.DataFrame([{
             'account': 'ZG0790',
             'util debits': 0,
@@ -243,12 +271,12 @@ class TestMetricPnlPct:
             f"expected -2.0 for ZG0790, got {result1}"
         )
 
-        # Second account: uses util_debits
+        # Second account: both fields nonzero → used+available sum (130000)
         row2 = {'account': 'ANOTHER', 'pnl': -1000}
         result2 = _metric_pnl_pct(ctx, row2)
-        expected2 = (-1000 / 50000) * 100.0  # -2.0
+        expected2 = (-1000 / 130000) * 100.0
         assert result2 == pytest.approx(expected2), (
-            f"expected -2.0 for ANOTHER, got {result2}"
+            f"expected {expected2} for ANOTHER, got {result2}"
         )
 
     def test_pnl_pct_with_large_values(self):
@@ -280,3 +308,40 @@ class TestMetricPnlPct:
         assert result == pytest.approx(expected), (
             f"expected -20.0%, got {result}%"
         )
+
+    def test_pnl_pct_does_not_call_used_margin_for(self):
+        """Regression lock for the 2026-10 fix: _metric_pnl_pct must not
+        consult Context.used_margin_for() at all any more — it should go
+        straight to pnl_math.account_margin_base() instead. Patching
+        used_margin_for to raise proves the resolver never calls it."""
+        df_margins = pd.DataFrame([{
+            'account': 'ZG0790',
+            'util debits': 50000,
+            'net': 80000,
+        }])
+        ctx = Context(df_margins=df_margins)
+
+        def _boom(account):
+            raise AssertionError("used_margin_for must not be called by _metric_pnl_pct")
+
+        ctx.used_margin_for = _boom
+        row = {'account': 'ZG0790', 'pnl': -1000}
+        result = _metric_pnl_pct(ctx, row)
+        assert result == pytest.approx((-1000 / 130000) * 100.0)
+
+    def test_pnl_pct_shares_denominator_with_day_pct(self):
+        """pnl_pct and day_pct must agree on the margin-base denominator —
+        both now route through pnl_math.account_margin_base()."""
+        from backend.api.algo.pnl_math import account_margin_base
+        df_margins = pd.DataFrame([{
+            'account': 'ZG0790',
+            'util debits': 50000,
+            'net': 80000,
+        }])
+        ctx = Context(df_margins=df_margins)
+        row = {'account': 'ZG0790', 'pnl': -1000}
+
+        pnl_pct_result = _metric_pnl_pct(ctx, row)
+        base = account_margin_base(df_margins, 'ZG0790')
+        day_pct_equivalent = (-1000 / base) * 100.0
+        assert pnl_pct_result == pytest.approx(day_pct_equivalent)

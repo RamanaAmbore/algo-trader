@@ -423,3 +423,47 @@ def apply_day_change_backstop(raw: pd.DataFrame) -> pd.DataFrame:
         if _case2.any():
             raw.loc[_case2, 'day_change_val'] = _case2_val[_case2]
     return raw
+
+
+def account_margin_base(df_margins: "pd.DataFrame", account) -> "float | None":
+    """Total margin base for one account = used margin + available net
+    margin ('util debits' + 'net'). SSOT denominator for agent-alert
+    percentage metrics computed against margin (fix #10, day_pct; 2026-10
+    audit fix, pnl_pct — both now share this ONE function instead of
+    drifting formulas).
+
+    Moved here (from `background.py`, which still re-exports the name as
+    a thin alias for its own existing callers) so `grammar.py` /
+    `agent_evaluator.py` can import it without creating a circular
+    import — `background.py` imports the agent engine, which imports
+    `grammar.py`, so `grammar.py` must not import `background.py`.
+    `pnl_math.py` has no dependency on either, so it's a safe neutral
+    home for the shared formula.
+
+    Why used+available, not used margin alone: `util debits` shrinks the
+    instant a position closes and grows the instant one opens, so a
+    used-margin-only denominator swings with position churn even when
+    P&L hasn't moved. used+available approximates the account's total
+    deployable capital, which stays roughly constant intraday regardless
+    of how many positions happen to be open right now.
+
+    Returns None when margins data is unavailable for this account (no
+    row, or both fields missing/NaN) — callers must NOT fall back to
+    notional or to a single-field OR-fallback; a missing margin figure
+    should skip the leaf (missing-vs-zero convention), not silently
+    revert to a different (and wrong) denominator.
+    """
+    if df_margins is None or df_margins.empty or 'account' not in df_margins.columns:
+        return None
+    match = df_margins[df_margins['account'].astype(str) == str(account)]
+    if match.empty:
+        return None
+    row = match.iloc[0]
+    used = pd.to_numeric(row.get('util debits'), errors='coerce')
+    avail = pd.to_numeric(row.get('net'), errors='coerce')
+    used_v = None if pd.isna(used) else float(used)
+    avail_v = None if pd.isna(avail) else float(avail)
+    if used_v is None and avail_v is None:
+        return None
+    total = (used_v or 0.0) + (avail_v or 0.0)
+    return total if total > 0 else None
