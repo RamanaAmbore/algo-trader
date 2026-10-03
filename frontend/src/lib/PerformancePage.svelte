@@ -24,8 +24,7 @@
   import { pollOrderFillWatch } from '$lib/data/orderFillPoller.js';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
-  import GridDownloadButton from '$lib/GridDownloadButton.svelte';
-  import GridSearchButton from '$lib/GridSearchButton.svelte';
+  import CardHeader from '$lib/CardHeader.svelte';
   import { formatSymbol, decomposeSymbol } from '$lib/data/decomposeSymbol';
   import { instrumentsCacheVersion } from '$lib/data/instruments';
   import { rootOfLabel } from '$lib/data/rootOf.js';
@@ -262,10 +261,11 @@
   // `selectedAccount` string which only let the operator look at
   // one account at a time (or all).
   let selectedAccounts = $state(/** @type {string[]} */ ([]));
-  // Symbol dropdown retired — the GridSearchButton on each detail
-  // grid (Positions / Holdings) handles the same filter via free-text
-  // search. Operator: "you can remove symbol dropdown for performance,
-  // as search button can be used for the same functionality."
+  // Symbol dropdown retired — CardHeader's Search control on each
+  // grid card (Positions / Holdings) handles the same filter via
+  // free-text search. Operator: "you can remove symbol dropdown for
+  // performance, as search button can be used for the same
+  // functionality."
   let accounts        = $state([]);
   let rawHoldings     = $state([]);
   let rawPositions    = $state([]);
@@ -331,8 +331,8 @@
   // Funds flips to the existing per-account margin/cash grid.
   let fundsNavTab = $state(/** @type {'nav' | 'funds'} */ ('nav'));
 
-  // Header symbol filters — bound by <GridSearchButton> next to the
-  // Positions / Holdings section headings. Empty = no filter.
+  // Breakdown (detail grid) header filters — bound by each card's own
+  // CardHeader Search control. Empty = no filter.
   let _filterPositions = $state('');
   let _filterHoldings  = $state('');
   $effect(() => {
@@ -344,12 +344,41 @@
     try { holdingsAllGrid?.setGridOption('quickFilterText', v); } catch (_) {}
   });
 
+  // Summary grid header filters — same CardHeader pattern as the
+  // Breakdown filters above, scoped separately so filtering the
+  // Summary card never affects the Breakdown card's own search text.
+  let _filterPositionsSummary = $state('');
+  let _filterHoldingsSummary  = $state('');
+  $effect(() => {
+    const v = _filterPositionsSummary;
+    try { positionsSummaryGrid?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+  $effect(() => {
+    const v = _filterHoldingsSummary;
+    try { holdingsSummaryGrid?.setGridOption('quickFilterText', v); } catch (_) {}
+  });
+
+  // Collapse / fullscreen state for the four grid cards (Positions /
+  // Holdings × Summary / Breakdown) — each card now wires the
+  // canonical CardHeader/CardControls cluster (Search · Collapse ·
+  // Fullscreen · Download) instead of the hand-rolled headrow that
+  // only ever exposed Download (Summary) or Search+Download
+  // (Breakdown).
+  let _colPositionsSummary = $state(false);
+  let _fsPositionsSummary  = $state(false);
+  let _colHoldingsSummary  = $state(false);
+  let _fsHoldingsSummary   = $state(false);
+  let _colPositionsDetail  = $state(false);
+  let _fsPositionsDetail   = $state(false);
+  let _colHoldingsDetail   = $state(false);
+  let _fsHoldingsDetail    = $state(false);
+
   // Strip from the first digit onward — Zerodha F&O tradingsymbols are
   // "<UNDERLYING><expiry><strike><opt-type>" (NIFTY25APR22000CE,
   // underlyingOf() retired alongside the symbol dropdown — was only
   // used to collapse F&O contracts to their underlying (NIFTY25MAYFUT
-  // → NIFTY) for the picker. GridSearchButton matches on the full
-  // tradingsymbol so no derivation is needed.
+  // → NIFTY) for the picker. CardHeader's Search control matches on
+  // the full tradingsymbol so no derivation is needed.
 
   // AG Grid valueFormatter wrappers — receive { value } objects.
   // aggFmtGrid / pctFmtGrid imported from $lib/format (shared SSOT).
@@ -1096,8 +1125,8 @@
     if (!holdingsAllGrid) return;
     // ACCOUNT filter scopes every grid (detail + summary + funds). With a
     // specific account picked we drop other accounts AND the TOTAL row.
-    // Symbol filter retired — GridSearchButton on each detail grid
-    // handles the equivalent.
+    // Symbol filter retired — CardHeader's Search control on each
+    // detail grid card handles the equivalent.
     const hRows = rawHoldings.filter(_keepAcct).slice().sort(_closedLast);
     const pRows = rawPositions.filter(_keepAcct).slice().sort(_closedLast);
     // Recompute total cur_val so the Weight % column always reflects
@@ -1176,8 +1205,8 @@
     ])];
     accounts = sortAccountsBy(allAccts, _perfOrderMap);
     // Symbol-list derivation + reconcileSymbols() retired alongside
-    // the dropdown — GridSearchButton handles filtering with no
-    // pre-computed picker scope.
+    // the dropdown — CardHeader's Search control handles filtering
+    // with no pre-computed picker scope.
     lastRefresh = h?.refreshed_at ?? p?.refreshed_at ?? f?.refreshed_at ?? lastRefresh ?? '';
     applyAccountFilter();
   }
@@ -1590,29 +1619,45 @@
      above the Fund Balances strip and the Detail block below it, so
      the shared Fund Balances renders once between them. -->
 
-<!-- Summary (active tab) -->
-<section class:hidden={activeTab !== 'positions'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Summary</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    {#if showGridControls}
-      <GridDownloadButton onClick={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })} label="Positions Summary" />
-    {/if}
-  </div>
+<!-- Summary (active tab) — canonical CardHeader/CardControls cluster
+     (Search · Collapse · Fullscreen · Download) replaces the old
+     hand-rolled headrow, which only ever exposed Download. showGridControls
+     maps to CardHeader's showControls so the public /performance page
+     (showGridControls=false) still hides the whole cluster. -->
+<section class="perf-grid-card"
+         class:hidden={activeTab !== 'positions'}
+         class:is-collapsed={_colPositionsSummary}
+         class:fs-card-on={_fsPositionsSummary}>
+  <CardHeader
+    title="Summary"
+    bind:isCollapsed={_colPositionsSummary}
+    bind:isFullscreen={_fsPositionsSummary}
+    bind:filter={_filterPositionsSummary}
+    cardId="perf-positions-summary"
+    label="Positions Summary"
+    showControls={showGridControls}
+    onDownload={() => positionsSummaryGrid?.exportDataAsCsv({ fileName: 'positions-summary.csv' })}
+  />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
   <div bind:this={positionsSummaryEl} class="ag-theme-quartz {theme} mb-2 w-full"></div>
 </section>
 
-<section class:hidden={activeTab !== 'holdings'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Summary</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    {#if showGridControls}
-      <GridDownloadButton onClick={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })} label="Holdings Summary" />
-    {/if}
-  </div>
+<section class="perf-grid-card"
+         class:hidden={activeTab !== 'holdings'}
+         class:is-collapsed={_colHoldingsSummary}
+         class:fs-card-on={_fsHoldingsSummary}>
+  <CardHeader
+    title="Summary"
+    bind:isCollapsed={_colHoldingsSummary}
+    bind:isFullscreen={_fsHoldingsSummary}
+    bind:filter={_filterHoldingsSummary}
+    cardId="perf-holdings-summary"
+    label="Holdings Summary"
+    showControls={showGridControls}
+    onDownload={() => holdingsSummaryGrid?.exportDataAsCsv({ fileName: 'holdings-summary.csv' })}
+  />
   {#if !_agGridReady}
     <div class="perf-grid-loading" role="status" aria-live="polite">Loading grid…</div>
   {/if}
@@ -1622,28 +1667,40 @@
 <!-- Fund Balances section retired here — moved into the Funds & NAV
      tabbed card above the Pos/Hold tabs. -->
 
-<!-- Detail (active tab) — the per-symbol drill-down -->
-<section class:hidden={activeTab !== 'positions'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Breakdown</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    {#if showGridControls}
-      <GridSearchButton bind:filter={_filterPositions} label="Positions" />
-      <GridDownloadButton onClick={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })} label="Positions" />
-    {/if}
-  </div>
+<!-- Detail (active tab) — the per-symbol drill-down. Same CardHeader
+     cluster; these cards already had Search+Download, now also get
+     Collapse+Fullscreen. -->
+<section class="perf-grid-card"
+         class:hidden={activeTab !== 'positions'}
+         class:is-collapsed={_colPositionsDetail}
+         class:fs-card-on={_fsPositionsDetail}>
+  <CardHeader
+    title="Breakdown"
+    bind:isCollapsed={_colPositionsDetail}
+    bind:isFullscreen={_fsPositionsDetail}
+    bind:filter={_filterPositions}
+    cardId="perf-positions-detail"
+    label="Positions"
+    showControls={showGridControls}
+    onDownload={() => positionsAllGrid?.exportDataAsCsv({ fileName: 'positions.csv' })}
+  />
   <div bind:this={positionsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
-<section class:hidden={activeTab !== 'holdings'}>
-  <div class="perf-grid-headrow">
-    <h2 class="section-heading">Breakdown</h2>
-    <span class="perf-grid-headrow-spacer"></span>
-    {#if showGridControls}
-      <GridSearchButton bind:filter={_filterHoldings} label="Holdings" />
-      <GridDownloadButton onClick={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })} label="Holdings" />
-    {/if}
-  </div>
+<section class="perf-grid-card"
+         class:hidden={activeTab !== 'holdings'}
+         class:is-collapsed={_colHoldingsDetail}
+         class:fs-card-on={_fsHoldingsDetail}>
+  <CardHeader
+    title="Breakdown"
+    bind:isCollapsed={_colHoldingsDetail}
+    bind:isFullscreen={_fsHoldingsDetail}
+    bind:filter={_filterHoldings}
+    cardId="perf-holdings-detail"
+    label="Holdings"
+    showControls={showGridControls}
+    onDownload={() => holdingsAllGrid?.exportDataAsCsv({ fileName: 'holdings.csv' })}
+  />
   <div bind:this={holdingsAllEl} class="ag-theme-quartz {theme} w-full"></div>
 </section>
 
@@ -1829,17 +1886,22 @@
 
   .hidden { display: none; }
 
-  /* Section headrow — compact flex row used for Summary / Breakdown
-     section headings in place of CardHeader.  Title left, controls
-     right, spacer between them.  Mirrors the card-button-group pattern
-     without the full CardHeader chrome (border, padding, overflow). */
-  .perf-grid-headrow {
-    display: flex;
-    align-items: center;
-    margin-bottom: 0.25rem;
+  /* Summary / Breakdown grid cards — each wraps a CardHeader (title +
+     canonical Search/Collapse/Fullscreen/Download cluster) + one
+     ag-Grid. `.is-collapsed` collapse behavior is global (app.css:
+     `.is-collapsed .ag-root-wrapper { height: 0 }`) — no local rule
+     needed. Fullscreen promotes the ag-Grid to fill the viewport,
+     mirroring MarketPulse's `.mp-bucket-wrap.fs-card-on .bucket-grid`
+     and admin/derivatives' equivalent rules. */
+  .perf-grid-card.fs-card-on .ag-theme-quartz {
+    height: calc(100vh - 8rem) !important;
+    min-height: 320px !important;
   }
-  .perf-grid-headrow .section-heading { margin-bottom: 0; }
-  .perf-grid-headrow-spacer { flex: 1; }
+  @media (max-width: 600px) {
+    .perf-grid-card.fs-card-on .ag-theme-quartz {
+      height: calc(100vh - 6rem) !important;
+    }
+  }
 
   /* ── Page banners ────────────────────────────────────────────────
      Two flavours, both palette-aware:

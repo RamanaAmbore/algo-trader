@@ -4,8 +4,19 @@
   Composes the five card buttons every page-section card uses, in
   canonical order: Refresh (fullscreen only) · Search · Collapse ·
   DefaultSize · Fullscreen. Replaces the 5-line hand-rolled cluster
-  that was duplicated across MarketPulse, /dashboard, /orders,
-  /admin/derivatives, /admin/research, /automation/*.
+  that was duplicated across cards.
+
+  Adoption (verified 2026-10, do not restate without re-checking):
+    Direct import — MarketPulse, /dashboard, /admin/derivatives,
+      PerformancePage (Positions/Holdings Summary + Breakdown cards).
+    Indirect, via LogPanel.svelte's own CardControls import — /orders
+      (renders LogPanel directly) and /automation + /automation/activity
+      (render ActivityLogSurface, which wraps LogPanel). These three
+      never import CardControls themselves.
+    NOT adopted anywhere — /admin/research and /automation/templates
+      and /automation/agent-templates render neither LogPanel nor
+      CardControls; any hand-rolled chrome there is unrelated to this
+      component.
 
   Operator: "have search, expand/contract, full screen card as a
   reusable code".
