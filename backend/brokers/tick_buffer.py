@@ -283,22 +283,37 @@ class TickBufferReader:
         """Yield (token, last_price, prev_close, avg_price, last_ts_ns)
         for every occupied slot. Used by SSE fan-out + diagnostics.
 
-        Early-exit on slot_count — header records exactly how many
-        slots are occupied. Without this, every call scans all 4096
-        slots even when ~300 are populated (93% wasted struct.unpacks).
-        SSE poll path is version-gated so cost is bounded by tick rate,
-        but at 10-20 ticks/sec we still spared 41k-82k pointless reads."""
+        Perf (2026-10) — occupied slots are placed at `token % max_slots`
+        (see TickBufferWriter._slot_index), so they're scattered roughly
+        uniformly across the table rather than packed at low indices.
+        The old per-slot loop's `seen >= slot_count` early-exit therefore
+        almost never fires before the last occupied slot happens to sit
+        near the END of the table — in practice this meant a near-full
+        `struct.unpack_from` call PER SLOT (up to max_slots=4096 calls,
+        each with its own offset computation + function-call overhead)
+        on every single invocation, called at 20Hz by both
+        kite_ticker._on_ticks's SSE fan-out and mmap_ticker._poll_loop.
+
+        Fix: slice the whole slot-table region out of the mmap ONCE
+        (`self._mm[slot_base:slot_base + max_slots * _SLOT_SIZE]` — a
+        single bytes copy, not a view onto the mmap, so a suspended/
+        abandoned generator can never hold an exported buffer that
+        would make a later `close()` raise `BufferError`) and decode it
+        in one pass with `struct.iter_unpack`, which runs its own
+        C-level loop instead of max_slots individual Python-level
+        `unpack_from` calls. The `seen >= slot_count` early-exit is kept
+        — still a net win on the common case where some occupied slots
+        happen to land early — but the real fix is eliminating the
+        per-slot Python call overhead for the slots that must be
+        scanned regardless."""
         # Header layout: version(8) + slot_count(4) at offset 8.
         slot_count = struct.unpack_from("<I", self._mm, 8)[0]
         if slot_count == 0:
             return
         slot_base = _HEADER_SIZE
+        region = bytes(self._mm[slot_base:slot_base + self.max_slots * _SLOT_SIZE])
         seen = 0
-        for i in range(self.max_slots):
-            off = slot_base + i * _SLOT_SIZE
-            cur_token, _pad, lp, pc, av, ts = struct.unpack_from(
-                _SLOT_FMT, self._mm, off,
-            )
+        for cur_token, _pad, lp, pc, av, ts in struct.iter_unpack(_SLOT_FMT, region):
             if cur_token != 0:
                 yield cur_token, lp, pc, av, ts
                 seen += 1

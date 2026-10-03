@@ -339,6 +339,70 @@ class TestTickBufferReader:
         finally:
             reader.close()
 
+    def test_iter_active_decodes_in_one_pass_not_per_slot(self, tmp_buffer_path, monkeypatch):
+        """Perf fix (2026-10) — iter_active() must decode the slot table
+        in ONE pass (struct.iter_unpack over a single sliced-out region)
+        instead of calling struct.unpack_from once PER SLOT.
+
+        Slots are placed at `token % max_slots` (scattered, not packed
+        at low indices), so with occupied tokens chosen to land at BOTH
+        ends of the table (1, max_slots-1, and a wrapping token that
+        probes to slot 0 after colliding with max_slots-1), the old
+        per-slot loop's `seen >= slot_count` early-exit cannot fire
+        before scanning nearly the entire table — i.e. it would call
+        struct.unpack_from ~max_slots times. This test counts real
+        struct.unpack_from invocations during a single iter_active()
+        drain and asserts the count stays small (header reads only),
+        which FAILS against the old per-slot-unpack_from loop and
+        PASSES once decoding goes through struct.iter_unpack instead
+        (iter_unpack is a distinct C-level iterator, not implemented
+        via repeated unpack_from calls)."""
+        max_slots = DEFAULT_MAX_SLOTS  # 4096
+        writer = TickBufferWriter(path=tmp_buffer_path, max_slots=max_slots)
+        try:
+            # token=1 -> slot 1; token=max_slots-1 -> slot max_slots-1
+            # (last slot in the table); token=2*max_slots-1 -> probes
+            # max_slots-1 (collision), lands at slot 0 via wraparound.
+            writer.upsert(1, 111.0)
+            writer.upsert(max_slots - 1, 222.0)
+            writer.upsert(2 * max_slots - 1, 333.0)
+        finally:
+            writer.close()
+
+        reader = TickBufferReader(path=tmp_buffer_path, max_slots=max_slots)
+        try:
+            real_unpack_from = struct.unpack_from
+            call_count = {"n": 0}
+
+            def _counting_unpack_from(fmt, buf, offset=0):
+                call_count["n"] += 1
+                return real_unpack_from(fmt, buf, offset)
+
+            monkeypatch.setattr(struct, "unpack_from", _counting_unpack_from)
+
+            entries = list(reader.iter_active())
+
+            # Correctness unaffected by the decode-path change.
+            assert len(entries) == 3
+            tokens = sorted(e[0] for e in entries)
+            assert tokens == sorted([1, max_slots - 1, 2 * max_slots - 1])
+
+            # The only unpack_from calls left anywhere in iter_active()
+            # are the two header reads (slot_count via "<I" at the top
+            # of the method — called once here). The per-slot decode
+            # loop must use struct.iter_unpack, which does NOT call
+            # struct.unpack_from internally, so the count stays tiny
+            # regardless of max_slots. The old implementation called
+            # unpack_from once per scanned slot (up to max_slots times)
+            # to reach the slot at index max_slots-1.
+            assert call_count["n"] < 10, (
+                f"expected <10 struct.unpack_from calls (one-pass decode "
+                f"via iter_unpack), got {call_count['n']} — iter_active() "
+                f"is still calling unpack_from per-slot"
+            )
+        finally:
+            reader.close()
+
     def test_file_not_found_raises(self, tmp_buffer_path):
         """Reader raises FileNotFoundError when buffer file missing."""
         with pytest.raises(FileNotFoundError):
