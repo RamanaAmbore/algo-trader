@@ -593,6 +593,29 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
 # Funds table helpers
 # ---------------------------------------------------------------------------
 
+def _fmt_inr_or_missing(v) -> str:
+    """₹-format `v` via `_fmt_inr`, or a clear "—" placeholder when `v`
+    is genuinely missing (None or NaN) — 2026-10 audit fix.
+
+    `float(x or 0)` at the call site used to collapse a missing field
+    straight into a confirmed-looking "₹0" (or "nan" when the NaN
+    survived the `or 0` coercion un-caught, since `float('nan') or 0`
+    evaluates to `float('nan')`, truthy). Matches this codebase's
+    missing-vs-zero convention (CLAUDE.md) — a broker-confirmed real
+    zero still renders as "₹0", only a genuinely absent value renders
+    as "—".
+    """
+    if v is None:
+        return "—"
+    try:
+        fv = float(v)
+    except (TypeError, ValueError):
+        return "—"
+    if fv != fv:  # NaN check without importing pandas/math here
+        return "—"
+    return _fmt_inr(fv)
+
+
 def _build_funds_rows(df_margins):
     """Build (Account, Cash, Avail Margin, Used Margin, Collateral) rows from df_margins."""
     rows = []
@@ -600,12 +623,12 @@ def _build_funds_rows(df_margins):
         return rows
     for _, row in df_margins.iterrows():
         account   = str(row.get('account', ''))
-        cash      = float(row.get('avail opening_balance', 0) or 0)
-        avail_net = float(row.get('net', 0) or 0)
-        used      = float(row.get('util debits', 0) or 0)
-        collat    = float(row.get('avail collateral', 0) or 0)
-        rows.append((account, _fmt_inr(cash), _fmt_inr(avail_net),
-                     _fmt_inr(used), _fmt_inr(collat)))
+        cash      = row.get('avail opening_balance')
+        avail_net = row.get('net')
+        used      = row.get('util debits')
+        collat    = row.get('avail collateral')
+        rows.append((account, _fmt_inr_or_missing(cash), _fmt_inr_or_missing(avail_net),
+                     _fmt_inr_or_missing(used), _fmt_inr_or_missing(collat)))
     return rows
 
 
