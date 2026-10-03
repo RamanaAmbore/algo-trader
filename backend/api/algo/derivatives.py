@@ -1071,18 +1071,29 @@ def greeks_76(F: float, K: float, T_years: float, r: float,
 
 # ── Probability of profit (POP) ───────────────────────────────────────
 
-def prob_above(S: float, K: float, T_years: float, r: float, sigma: float) -> float:
+def prob_above(S: float, K: float, T_years: float, r: float, sigma: float,
+               *, drift: "float | None" = None) -> float:
     """
-    P(S_T ≥ K) under the Black-Scholes log-normal assumption (risk-
-    neutral). Uses the standard d2 form. Floors / ceilings at 0/1
-    when σ ≤ 0 or T ≤ 0 — those collapse to deterministic outcomes.
+    P(S_T ≥ K) under the risk-neutral log-normal assumption. Uses the
+    standard d2 form. Floors / ceilings at 0/1 when σ ≤ 0 or T ≤ 0 —
+    those collapse to deterministic outcomes.
+
+    `drift` is the risk-neutral drift of the underlying's log-price —
+    `r` for a cash spot (plain BS; the default, `drift=None` → `drift=r`,
+    keeps every existing caller byte-identical), `0` for a futures/
+    forward price (MCX commodities — a futures price is already a
+    risk-neutral martingale, no additional drift). Kept as an explicit
+    generic parameter here (not an `is_mcx` flag) so this math-core
+    function stays agnostic of any particular caller's instrument class
+    — mirrors how `_gbs_price()` takes a generic cost-of-carry `b`.
     """
     if S <= 0 or K <= 0:
         return 0.0
     if T_years <= 0 or sigma <= 0:
         return 1.0 if S > K else 0.0
+    mu = r if drift is None else drift
     sqrt_T = math.sqrt(T_years)
-    d2 = (math.log(S / K) + (r - sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
+    d2 = (math.log(S / K) + (mu - sigma * sigma / 2.0) * T_years) / (sigma * sqrt_T)
     return _norm_cdf(d2)
 
 
@@ -1090,13 +1101,17 @@ def prob_above(S: float, K: float, T_years: float, r: float, sigma: float) -> fl
 
 def risk_metrics(*, S: float, K: float, T_years: float, r: float,
                  sigma: float, opt_type: str, qty: int,
-                 entry_price: float) -> dict:
+                 entry_price: float, drift: "float | None" = None) -> dict:
     """
     Position-level max-profit / max-loss / breakeven / POP for a single-
     leg option position. `qty` is signed (positive = long, negative =
     short). `entry_price` is the per-share premium paid (long) or
     received (short) — typically `average_price` on the broker row, or
     the LTP for a hypothetical "what if I bought this now" view.
+
+    `drift` is passed straight through to `prob_above()` — `None`
+    (default) uses `r` (cash spot); pass `0.0` for a futures-underlying
+    POP (MCX commodities — see `prob_above()`'s docstring).
 
     Returned fields are in absolute rupees for the whole position
     (i.e. already multiplied by |qty|). `max_profit` / `max_loss` may be
@@ -1114,21 +1129,21 @@ def risk_metrics(*, S: float, K: float, T_years: float, r: float,
         if long:
             max_profit = float("inf")           # call going to +∞
             max_loss   = entry_price * n        # premium burns
-            pop = prob_above(S, breakeven, T_years, r, sigma)
+            pop = prob_above(S, breakeven, T_years, r, sigma, drift=drift)
         else:
             max_profit = entry_price * n        # premium kept if expires worthless
             max_loss   = float("inf")
-            pop = 1.0 - prob_above(S, breakeven, T_years, r, sigma)
+            pop = 1.0 - prob_above(S, breakeven, T_years, r, sigma, drift=drift)
     else:                                       # PE
         breakeven = K - entry_price
         if long:
             max_profit = max(0.0, K - entry_price) * n   # spot → 0 floor
             max_loss   = entry_price * n
-            pop = 1.0 - prob_above(S, breakeven, T_years, r, sigma)
+            pop = 1.0 - prob_above(S, breakeven, T_years, r, sigma, drift=drift)
         else:
             max_profit = entry_price * n
             max_loss   = max(0.0, K - entry_price) * n
-            pop = prob_above(S, breakeven, T_years, r, sigma)
+            pop = prob_above(S, breakeven, T_years, r, sigma, drift=drift)
 
     return {
         "max_profit": max_profit,
@@ -1488,13 +1503,18 @@ def find_breakevens(curve: list[dict], *, key: str = "expiry_value"
 
 def multileg_pop(curve: list[dict], *, S: float, T_years: float,
                  sigma: float, r: float = DEFAULT_RISK_FREE,
-                 key: str = "expiry_value") -> float:
+                 key: str = "expiry_value",
+                 drift: "float | None" = None) -> float:
     """
     Probability that the strategy ends profitable AT EXPIRY under the
-    Black-Scholes log-normal assumption. Walks the expiry curve, finds
+    risk-neutral log-normal assumption. Walks the expiry curve, finds
     every contiguous segment where value > 0, and sums
     `prob_above(low) - prob_above(high)` for each. Open-ended segments
     (extending to ∞ or 0) use the analytical limits.
+
+    `drift` is passed straight through to `prob_above()` — see that
+    function's docstring (`None` → `r`; pass `0.0` for a futures-
+    underlying strategy, e.g. MCX commodities).
     """
     if not curve or T_years <= 0 or sigma <= 0:
         return 0.0
@@ -1523,8 +1543,8 @@ def multileg_pop(curve: list[dict], *, S: float, T_years: float,
         # operator's payoff curve doesn't artificially clip POP.
         lo_open = (abs(lo_s - first_spot) < 1e-6)
         hi_open = (abs(hi_s - last_spot)  < 1e-6)
-        p_low  = prob_above(S, max(0.01, lo_s), T_years, r, sigma) if not lo_open else 1.0
-        p_high = prob_above(S, max(0.01, hi_s), T_years, r, sigma) if not hi_open else 0.0
+        p_low  = prob_above(S, max(0.01, lo_s), T_years, r, sigma, drift=drift) if not lo_open else 1.0
+        p_high = prob_above(S, max(0.01, hi_s), T_years, r, sigma, drift=drift) if not hi_open else 0.0
         pop += max(0.0, p_low - p_high)
     return min(1.0, max(0.0, pop))
 
@@ -1547,13 +1567,21 @@ def multileg_extremes(curve: list[dict], *, key: str = "expiry_value"
 
 def expected_value(curve: list[dict], *, S: float, T_years: float,
                    sigma: float, r: float = DEFAULT_RISK_FREE,
-                   key: str = "expiry_value") -> float:
+                   key: str = "expiry_value",
+                   drift: "float | None" = None) -> float:
     """
     E[payoff at expiry] computed by integrating `curve[*][key]` against
     the risk-neutral lognormal pdf of the underlying spot at expiry:
 
         f(S_T) = (1 / (S_T σ √(2πT))) ·
-                 exp(-(ln(S_T/S) − (r − σ²/2)T)² / (2σ²T))
+                 exp(-(ln(S_T/S) − (drift − σ²/2)T)² / (2σ²T))
+
+    `drift` is the risk-neutral drift of the underlying's log-price —
+    `None` (default) uses `r` (cash spot, plain BS; byte-identical to
+    every existing caller); pass `0.0` for a futures/forward underlying
+    (MCX commodities — a futures price is already a risk-neutral
+    martingale, no additional drift term). Generic parameter, not an
+    `is_mcx` flag — mirrors `prob_above()`'s own convention.
 
     Trapezoidal rule across the curve's spot grid. The curve typically
     spans ±2.5σ which captures ~99 % of the lognormal mass, so
@@ -1563,12 +1591,13 @@ def expected_value(curve: list[dict], *, S: float, T_years: float,
     """
     if not curve or len(curve) < 2 or T_years <= 0 or sigma <= 0 or S <= 0:
         return 0.0
+    mu_drift = r if drift is None else drift
     spots  = np.fromiter((p["spot"] for p in curve), dtype=np.float64, count=len(curve))
     values = np.fromiter((p[key]    for p in curve), dtype=np.float64, count=len(curve))
     # Risk-neutral lognormal PDF vectorized over the spot grid:
-    #   f(S_T) = (1 / (S_T σ √(2πT))) · exp(-(ln(S_T/S) − (r − σ²/2)T)² / (2σ²T))
+    #   f(S_T) = (1 / (S_T σ √(2πT))) · exp(-(ln(S_T/S) − (drift − σ²/2)T)² / (2σ²T))
     sqrt_T = math.sqrt(T_years)
-    mu     = math.log(S) + (r - sigma * sigma / 2.0) * T_years
+    mu     = math.log(S) + (mu_drift - sigma * sigma / 2.0) * T_years
     inv_2v = 1.0 / (2.0 * sigma * sigma * T_years)
     norm_k = 1.0 / (sigma * sqrt_T * math.sqrt(2.0 * math.pi))
     safe   = spots > 0

@@ -32,6 +32,7 @@ from backend.api.algo.derivatives import (
     implied_vol,
     intermediate_curves,
     multileg_greeks,
+    multileg_pop,
     multileg_intermediate_curves,
     multileg_payoff_curve,
     payoff_curve,
@@ -948,3 +949,134 @@ def test_intermediate_curves_single_leg_is_mcx_dispatches_black_76():
     assert abs(slices_mcx[0]["values"][0] - slices_bs[0]["values"][0]) > 1e-2
 
 
+# ── POP/EV risk-neutral drift (futures vs cash spot) ───────────────────
+#
+# Context: `prob_above()`/`expected_value()` (and their mid-level callers
+# `risk_metrics()`/`multileg_pop()`) used the risk-free rate `r` as the
+# risk-neutral drift unconditionally — correct for a cash spot (plain
+# BS), but a futures/forward price is ALREADY a risk-neutral martingale
+# (drift=0), not `r`. Fixed via an explicit `drift: float | None = None`
+# parameter (None -> r, preserving every existing caller byte-for-byte)
+# threaded generically through the math core — no `is_mcx` flag baked
+# into derivatives.py itself; the route layer (options.py) decides
+# `drift=0.0 if is_mcx_underlying(...) else None`.
+
+def test_prob_above_drift_zero_differs_from_default():
+    """`drift=0.0` must produce a materially different POP than the
+    default (drift=None -> r) at the same inputs — proves the parameter
+    is live, not a no-op."""
+    from backend.api.algo.derivatives import prob_above
+
+    p_default = prob_above(5500.0, 5600.0, 0.25, 0.07, 0.20)
+    p_zero_drift = prob_above(5500.0, 5600.0, 0.25, 0.07, 0.20, drift=0.0)
+    assert p_default != pytest.approx(p_zero_drift, abs=1e-6)
+
+    # drift=None must be exactly equivalent to omitting the kwarg (both
+    # resolve to r) — regression guard against a future default-value change.
+    p_explicit_r = prob_above(5500.0, 5600.0, 0.25, 0.07, 0.20, drift=0.07)
+    assert p_default == pytest.approx(p_explicit_r)
+
+
+def test_expected_value_drift_zero_differs_from_default():
+    """`drift=0.0` must produce a materially different EV than the
+    default at the same inputs."""
+    from backend.api.algo.derivatives import expected_value
+
+    curve = payoff_curve(
+        S=5500.0, K=5500.0, T_years=0.25, r=0.07, sigma=0.20,
+        opt_type="CE", qty=1, entry_price=100.0, span_pct=0.30, points=61,
+    )
+    ev_default = expected_value(curve, S=5500.0, T_years=0.25, sigma=0.20, r=0.07)
+    ev_zero_drift = expected_value(curve, S=5500.0, T_years=0.25, sigma=0.20, r=0.07, drift=0.0)
+    assert ev_default != pytest.approx(ev_zero_drift, abs=1e-2)
+
+
+def test_risk_metrics_drift_threads_to_prob_above():
+    """`risk_metrics()`'s `drift` kwarg must reach its internal
+    `prob_above()` calls — the real production mid-level caller used by
+    `_analytics_compute_metrics` (options.py)."""
+    from backend.api.algo.derivatives import risk_metrics
+
+    kwargs = dict(S=5500.0, K=5600.0, T_years=0.25, r=0.07, sigma=0.20,
+                  opt_type="CE", qty=1, entry_price=50.0)
+    pop_default = risk_metrics(**kwargs)["pop"]
+    pop_zero_drift = risk_metrics(**kwargs, drift=0.0)["pop"]
+    assert pop_default != pytest.approx(pop_zero_drift, abs=1e-6)
+
+
+def test_multileg_pop_drift_threads_to_prob_above():
+    """`multileg_pop()`'s `drift` kwarg must reach its internal
+    `prob_above()` calls — the real production mid-level caller used by
+    `_strategy_aggregate` (options.py)."""
+    leg = {"kind": "opt", "qty": 1, "strike": 5600.0, "opt_type": "CE",
+          "T_years": 0.25, "sigma": 0.20, "entry_price": 50.0}
+    curve = multileg_payoff_curve([leg], S=5500.0, span_pct=0.30, points=61)
+
+    pop_default = multileg_pop(curve, S=5500.0, T_years=0.25, sigma=0.20, r=0.07)
+    pop_zero_drift = multileg_pop(curve, S=5500.0, T_years=0.25, sigma=0.20, r=0.07, drift=0.0)
+    assert pop_default != pytest.approx(pop_zero_drift, abs=1e-6)
+
+
+def test_analytics_compute_metrics_mcx_passes_zero_drift_to_pop_ev():
+    """Real production wiring: `_analytics_compute_metrics(is_mcx=True)`
+    must pass `drift=0.0` down into `risk_metrics()`'s POP and
+    `expected_value()`'s EV, not the default (r). Spies on the module-
+    level `risk_metrics`/`expected_value` names `options.py` imports, so
+    a regression that drops the `drift=` kwarg at either call site fails
+    this test."""
+    from unittest.mock import patch
+    from backend.api.routes.options import _analytics_compute_metrics
+    from backend.api.algo.derivatives import risk_metrics as real_risk_metrics
+    from backend.api.algo.derivatives import expected_value as real_expected_value
+
+    parsed = {"strike": 5500.0, "opt_type": "CE"}
+    captured = {}
+
+    def wrapped_risk_metrics(**kwargs):
+        captured["risk_drift"] = kwargs.get("drift")
+        return real_risk_metrics(**kwargs)
+
+    def wrapped_expected_value(*args, **kwargs):
+        captured["ev_drift"] = kwargs.get("drift")
+        return real_expected_value(*args, **kwargs)
+
+    with patch("backend.api.routes.options.risk_metrics", side_effect=wrapped_risk_metrics), \
+         patch("backend.api.routes.options.expected_value", side_effect=wrapped_expected_value):
+        _analytics_compute_metrics(
+            5500.0, parsed, 0.25, 0.20, 250.0, 1, 0.0,
+            None, 3.0, 51, 0, is_mcx=True,
+        )
+
+    assert captured["risk_drift"] == 0.0
+    assert captured["ev_drift"] == 0.0
+
+
+def test_analytics_compute_metrics_default_passes_none_drift():
+    """Non-MCX default (`is_mcx=False`) must pass `drift=None` through
+    to `risk_metrics`/`expected_value`, preserving the pre-existing
+    r-as-drift behavior byte-for-byte."""
+    from unittest.mock import patch
+    from backend.api.routes.options import _analytics_compute_metrics
+    from backend.api.algo.derivatives import risk_metrics as real_risk_metrics
+    from backend.api.algo.derivatives import expected_value as real_expected_value
+
+    parsed = {"strike": 2800.0, "opt_type": "CE"}
+    captured = {}
+
+    def wrapped_risk_metrics(**kwargs):
+        captured["risk_drift"] = kwargs.get("drift")
+        return real_risk_metrics(**kwargs)
+
+    def wrapped_expected_value(*args, **kwargs):
+        captured["ev_drift"] = kwargs.get("drift")
+        return real_expected_value(*args, **kwargs)
+
+    with patch("backend.api.routes.options.risk_metrics", side_effect=wrapped_risk_metrics), \
+         patch("backend.api.routes.options.expected_value", side_effect=wrapped_expected_value):
+        _analytics_compute_metrics(
+            2800.0, parsed, 0.25, 0.20, 50.0, 1, 0.0,
+            None, 3.0, 51, 0,
+        )
+
+    assert captured["risk_drift"] is None
+    assert captured["ev_drift"] is None

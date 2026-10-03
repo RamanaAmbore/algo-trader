@@ -2120,6 +2120,11 @@ def _strategy_aggregate(
     sigma_proxy = sigma_weight_num / sigma_weight_den if sigma_weight_den else DEFAULT_IV
     pts = max(11, min(int(data.points or 51), 121))
     _n_slices = max(0, min(int(data.time_slices or 0), 5))
+    # A strategy is always one underlying (mixed roots rejected upstream),
+    # so one drift value covers every leg. MCX commodities quote spot as
+    # a futures price — already a risk-neutral martingale, drift=0 — vs.
+    # drift=None (-> r) for a cash-spot NSE underlying.
+    _pop_ev_drift = 0.0 if is_mcx_underlying(underlying) else None
 
     curve, slices, max_p, max_l, agg_rr = _strategy_compute_curves(
         resolved_legs, S, span_pct_resolved, pts, _n_slices,
@@ -2127,9 +2132,11 @@ def _strategy_aggregate(
     )
     agg_greeks = multileg_greeks(resolved_legs, S=S)
     bes        = find_breakevens(curve)
-    pop        = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
+    pop        = multileg_pop(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy,
+                              drift=_pop_ev_drift)
     net_cost   = sum(l["entry_price"] * l["qty"] for l in resolved_legs)
-    agg_ev     = expected_value(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy)
+    agg_ev     = expected_value(curve, S=S, T_years=T_yrs_shared, sigma=sigma_proxy,
+                                drift=_pop_ev_drift)
     agg_ev_pct = (round(agg_ev / abs(net_cost) * 100.0, 2)
                   if abs(net_cost) > 0 else None)
 
@@ -2533,6 +2540,10 @@ def _analytics_compute_metrics(
        span_pct_resolved, curve, slices, ev, ev_pct, rr)
     """
     price_fn, greeks_fn = (black_76, greeks_76) if is_mcx else (black_scholes, greeks)
+    # Futures (MCX) have zero risk-neutral drift — spot IS the martingale
+    # — vs. drift=None (-> r) for a cash-spot underlying. Same flag drives
+    # both the pricer/Greeks choice above and the POP/EV drift below.
+    _pop_ev_drift = 0.0 if is_mcx else None
     theo = price_fn(S, parsed["strike"], T_yrs,
                     DEFAULT_RISK_FREE, sigma, parsed["opt_type"])
     disc = ltp_val - theo
@@ -2547,7 +2558,7 @@ def _analytics_compute_metrics(
         S=S, K=parsed["strike"], T_years=T_yrs,
         r=DEFAULT_RISK_FREE, sigma=sigma,
         opt_type=parsed["opt_type"], qty=qty_resolved,
-        entry_price=entry,
+        entry_price=entry, drift=_pop_ev_drift,
     )
     span_pct_resolved = _resolve_span_pct(
         sigma=sigma, T_years=T_yrs,
@@ -2569,7 +2580,7 @@ def _analytics_compute_metrics(
         time_slices=max(0, min(time_slices, 5)),
         is_mcx=is_mcx,
     )
-    ev = expected_value(curve, S=S, T_years=T_yrs, sigma=sigma)
+    ev = expected_value(curve, S=S, T_years=T_yrs, sigma=sigma, drift=_pop_ev_drift)
     cost_basis = abs(entry * qty_resolved)
     ev_pct = round(ev / cost_basis * 100.0, 2) if cost_basis > 0 else None
     rr = risk_reward_ratio(_finite_or_null(risk["max_profit"]),
