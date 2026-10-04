@@ -1115,7 +1115,7 @@ Both PAPER and SIM can show at the same time on dev if you've started a sim AND 
 
 ## Chat-driven research + agent building
 
-The `/admin/research` page lets you ask **Claude Code** (your
+The `/admin/lab` page lets you ask **Claude Code** (your
 terminal) to research a stock end-to-end, build draft agents from
 the thesis, and — with explicit per-call operator approval — place
 real broker orders. The chat is in your terminal; the page is the
