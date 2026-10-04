@@ -24,6 +24,14 @@
  *      listener and the popup position `fit()` — without this, a
  *      `hideButton` instance's popover could never be closed by
  *      re-clicking its own external trigger (mousedown-vs-click race).
+ *
+ * Hover-removal guard (2026-10, operator instruction: tooltips open on
+ * click only, never on hover, app-wide): `visible` must depend solely on
+ * `open`, and every piece of now-dead hover machinery (`hovered` state,
+ * the anchor mouseenter/mouseleave wiring effect, the default chip's own
+ * onmouseenter/onmouseleave, `showOnHover`, `hoverPreview`) must be gone
+ * from the source entirely — not left inert, which would mislead a future
+ * reader into thinking hover still does something.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -67,28 +75,38 @@ describe('InfoHint.svelte — hideButton / bindable open / anchor source audit',
     expect(markupBlock).toMatch(/\{#if !hideButton\}/);
     expect(markupBlock).toMatch(/class="info-btn"/);
   });
+});
 
-  // Guards for the two Bug 1 / Bug 2 fixes (2026-10):
-  //   Bug 1 — a hideButton+anchor site's `open` prop is owned by the
-  //   parent page; the parent has no way to clear InfoHint's own internal
-  //   `hovered` state, so a second click while the mouse still rests on
-  //   the trigger used to leave the popup stuck open (`visible = open ||
-  //   hovered` never both false). Fixed by an `$effect` that clears
-  //   `hovered` whenever `open` transitions to false.
-  //   Bug 2 — additive `hoverPreview` prop (default true, backward-
-  //   compatible for every existing caller) lets a specific hideButton+
-  //   anchor site opt out of hover-triggering entirely (click-only),
-  //   for sites whose popup would otherwise flicker open on the way to
-  //   a denser row of child InfoHint anchors just below it.
-  it('hoverPreview prop defaults to true (backward-compatible for every existing hideButton+anchor caller)', () => {
-    expect(scriptBlock).toMatch(/hoverPreview\s*=\s*true/);
+describe('InfoHint.svelte — hover removal (2026-10, click-only app-wide)', () => {
+  it('visible is derived solely from open, not from any hover state', () => {
+    expect(scriptBlock).toMatch(/const\s+visible\s*=\s*\$derived\(open\);/);
   });
 
-  it('the hideButton hover-wiring effect is gated on hoverPreview', () => {
-    expect(scriptBlock).toMatch(/!hideButton\s*\|\|\s*!anchor\s*\|\|\s*!hoverPreview/);
+  it('no `hovered` state remains anywhere in the component', () => {
+    expect(scriptBlock).not.toMatch(/\bhovered\b/);
   });
 
-  it('an $effect clears `hovered` whenever `open` becomes false (Bug 1 fix)', () => {
-    expect(scriptBlock).toMatch(/if\s*\(!open\)\s*hovered\s*=\s*false;/);
+  it('the anchor mouseenter/mouseleave wiring effect is gone', () => {
+    expect(scriptBlock).not.toMatch(/addEventListener\('mouseenter'/);
+    expect(scriptBlock).not.toMatch(/addEventListener\('mouseleave'/);
+  });
+
+  it('the default chip button has no onmouseenter/onmouseleave/onfocus/onblur hover handlers', () => {
+    expect(markupBlock).not.toMatch(/onmouseenter=/);
+    expect(markupBlock).not.toMatch(/onmouseleave=/);
+    expect(markupBlock).not.toMatch(/onfocus=/);
+    expect(markupBlock).not.toMatch(/onblur=/);
+  });
+
+  it('the button click handler is a plain toggle, not gated on showOnHover', () => {
+    expect(markupBlock).toMatch(/onclick=\{\(\)\s*=>\s*\{\s*open\s*=\s*!open;\s*\}\}/);
+  });
+
+  it('the dead `showOnHover` prop has been removed entirely', () => {
+    expect(scriptBlock).not.toMatch(/showOnHover/);
+  });
+
+  it('the dead `hoverPreview` prop has been removed entirely', () => {
+    expect(scriptBlock).not.toMatch(/hoverPreview/);
   });
 });

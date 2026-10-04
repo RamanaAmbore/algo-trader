@@ -44,6 +44,14 @@
  *                `title=` attribute, matching wording, independent from
  *                the 5 Greek chips (opening/closing one doesn't affect EV).
  *
+ * 2026-10 update: an earlier revision of this spec also verified that
+ * hideButton+anchor sites open on HOVER (a "Step A" fix). That hover
+ * affordance has since been removed app-wide by explicit operator
+ * instruction — InfoHint now opens only on click, everywhere. The
+ * hover-asserting tests below were rewritten to assert the opposite
+ * (hover is a no-op) plus a click positive control, rather than deleted,
+ * so regressions of either direction get caught.
+ *
  * Run locally (auto-starts local vite dev server, proxies /api to
  * dev.ramboq.com per vite.config.js):
  *   npx playwright test e2e/derivatives_greek_header_chip_infohint.spec.js \
@@ -260,24 +268,32 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Regression: header chips now also open via HOVER (InfoHint anchor fix)', async ({ page, viewport }) => {
-    // This guards the Step A component fix: hideButton mode now listens
-    // to mouseenter/mouseleave on the anchor element.
+  test('Regression: header chips no longer open via HOVER (hover removed app-wide, 2026-10); click still works', async ({ page, viewport }) => {
+    // Supersedes the old "Step A anchor hover fix" regression test — that
+    // fix has since been reverted by explicit operator instruction: a
+    // tooltip should only ever open on click, never on hover, app-wide.
+    // hideButton mode no longer wires any mouseenter/mouseleave listener
+    // onto the anchor at all.
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
     const deltaChip = chips.nth(0);
     const trigger = deltaChip.locator('button.greek-val-trigger');
 
-    // HOVER to open
+    // HOVER must NOT open anything. A real `.hover()` proves the cursor
+    // actually landed on the trigger (Playwright's actionability check).
     await trigger.hover();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control: click still opens/closes it.
+    await trigger.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     await expect(popover).toContainText('net directional exposure');
 
-    // Move mouse away to close via hover-out
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    await trigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
   test('Isolation: opening Gamma after Delta closes Delta and shows only Gamma text (viewport bounds check)', async ({ page, viewport }) => {
@@ -313,7 +329,7 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     }
   });
 
-  test('Singleton (app-wide, bound-prop case): click-pinning Delta then HOVERING Gamma closes Delta — not just the click-outside listener', async ({ page }) => {
+  test('Singleton (app-wide, bound-prop case): click-pinning Delta then KEYBOARD-activating Gamma closes Delta — not just the click-outside listener', async ({ page }) => {
     // The existing "Isolation" test above opens Gamma via a CLICK, which
     // already triggers InfoHint's pre-existing click-outside-closes
     // `mousedown` listener (Gamma's trigger is outside Delta's `wrap` and
@@ -321,9 +337,12 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     // close Delta even WITHOUT the app-wide singleton). That test can pass
     // on old code and proves nothing about the new singleton.
     //
-    // This test closes that gap: open Gamma via HOVER instead — hover
-    // never fires a `mousedown` event, so the old click-outside listener
-    // cannot be what closes Delta. Only the new module-level
+    // This test closes that gap: open Gamma via KEYBOARD activation
+    // instead of a mouse click — hover is no longer a thing InfoHint
+    // responds to at all (removed 2026-10, app-wide), but a keyboard-
+    // triggered `click` on a native `<button>` ALSO fires with no
+    // preceding `mousedown`, so the old click-outside listener still
+    // cannot be what closes Delta here. Only the new module-level
     // `_activeInfoHintId` singleton effect can.
     //
     // It also proves the bound-prop case specifically: `aria-expanded` on
@@ -338,14 +357,15 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     const deltaTrigger = chips.nth(0).locator('button.greek-val-trigger');
     const gammaTrigger = chips.nth(1).locator('button.greek-val-trigger');
 
-    // Pin Delta open via CLICK (open=true, not just hovered).
+    // Pin Delta open via CLICK (open=true).
     await deltaTrigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
     await expect(page.locator('[role="tooltip"]').first()).toContainText('net directional exposure');
     await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'true');
 
-    // Open Gamma via HOVER only — no mousedown anywhere.
-    await gammaTrigger.hover();
+    // Open Gamma via KEYBOARD activation — no mousedown anywhere.
+    await gammaTrigger.focus();
+    await page.keyboard.press('Enter');
     const tooltips = page.locator('[role="tooltip"]');
     await expect(tooltips).toHaveCount(1, { timeout: 2000 });
     await expect(tooltips.first()).toContainText('rate-of-change of delta');
@@ -355,12 +375,13 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     // false, reflected on the trigger's aria-expanded (reads parent state).
     await expect(deltaTrigger).toHaveAttribute('aria-expanded', 'false');
 
-    // Close Gamma via hover-out, then Delta must re-open on a SINGLE click.
-    // If the bound-prop propagation had silently failed (parent still held
-    // `true` while the popover was merely hidden some other way), this
-    // click would toggle it to `false` and Delta would need a second click.
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    // Close Gamma via a second keyboard activation, then Delta must
+    // re-open on a SINGLE click. If the bound-prop propagation had
+    // silently failed (parent still held `true` while the popover was
+    // merely hidden some other way), this click would toggle it to
+    // `false` and Delta would need a second click.
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
     await deltaTrigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
@@ -476,14 +497,16 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(tooltips.first()).not.toContainText('probability-weighted average payoff');
   });
 
-  test('Regression: Header chips accept both CLICK and HOVER (Step A fix verified)', async ({ page }) => {
-    // Verify that the 6 header chips (5 Greeks + EV) that were already using
-    // hideButton+anchor pattern now also respond to hover, not just click.
-    // This is the main payoff of the Step A component fix.
+  test('Regression: Header chips are CLICK-ONLY (hover removed app-wide, 2026-10)', async ({ page }) => {
+    // Supersedes the old "Step A fix" test (header chips respond to both
+    // click and hover) — that hover affordance has since been removed by
+    // explicit operator instruction: a tooltip should only ever open on
+    // click, never on hover, app-wide. This verifies the 6 header chips
+    // (5 Greeks + EV) still open/close correctly via click, and that hover
+    // genuinely does nothing any more (not just "untested").
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
-    // Test one header chip with both click and hover
     const deltaChip = chips.nth(0);
     const trigger = deltaChip.locator('button.greek-val-trigger');
     await expect(trigger).toBeVisible();
@@ -498,34 +521,24 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await trigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Move the mouse away first — the Bug 1 fix (InfoHint.svelte clears
-    // `hovered` whenever `open` transitions to false) means the popover is
-    // now genuinely closed after the click above, with `hovered` also
-    // reset to false even though the cursor is still resting on the
-    // trigger. On baseline (pre-Bug-1-fix) this exact click→click→hover
-    // sequence passed without an explicit move-away, because `hovered`
-    // never got cleared on close — the popover stayed open the whole time
-    // and the "HOVER test" below was incidentally a no-op that still saw
-    // a visible popover. Re-arming the hover preview now requires a real
-    // leave-then-return mouse transition (a plain `.hover()` while already
-    // positioned there doesn't cross the element boundary, so no fresh
-    // `mouseenter` fires), hence the explicit move-away before the next
-    // `.hover()` call — this is the correct, intended behavior post-fix.
-    await page.mouse.move(0, 0);
+    // HOVER must NOT open anything, even while the cursor is already
+    // resting on the trigger from the click above. A real `.hover()`
+    // still proves the cursor landed on the element.
+    await trigger.hover();
+    await page.waitForTimeout(300);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // HOVER test
-    await trigger.hover();
+    // Positive control: click still works after the hover no-op.
+    await trigger.click();
     popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     text = (await popover.textContent()) || '';
     expect(text).toContain('net directional exposure');
-    // Close via mouse move
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    await trigger.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Strategy Summary: converted Greeks kv-pairs now use field-as-trigger (hideButton mode)', async ({ page, viewport }) => {
+  test('Strategy Summary: converted Greeks kv-pairs use field-as-trigger (hideButton mode), click-only', async ({ page, viewport }) => {
     // The Strategy Summary section below the header contains its own set of Greeks,
     // R:R, EV, POP, etc. These have been converted from chip-mode to hideButton+anchor,
     // same as the header chips. The `.kv-k` label span is now the anchor.
@@ -554,42 +567,31 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await deltaLabel.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Move the mouse away first — the Bug 1 fix (InfoHint.svelte clears
-    // `hovered` whenever `open` transitions to false) means the popover is
-    // now genuinely closed after the click above, with `hovered` also
-    // reset to false even though the cursor is still resting on deltaLabel.
-    // Re-arming the hover preview requires a real leave-then-return mouse
-    // transition (a plain `.hover()` while already positioned there is a
-    // no-op — the cursor never crosses the element boundary, so no fresh
-    // `mouseenter` fires), hence the explicit move-away before the next
-    // `.hover()` call.
-    await page.mouse.move(0, 0);
+    // HOVER must NOT reopen it (hover removed app-wide, 2026-10) — the
+    // cursor is still resting on deltaLabel from the click above.
+    await deltaLabel.hover();
+    await page.waitForTimeout(300);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // HOVER to open
-    await deltaLabel.hover();
-    const popoverH = page.locator('[role="tooltip"]').first();
-    await expect(popoverH).toBeVisible({ timeout: 2000 });
-    text = (await popoverH.textContent()) || '';
+    // Positive control: click still works.
+    await deltaLabel.click();
+    const popover2 = page.locator('[role="tooltip"]').first();
+    await expect(popover2).toBeVisible({ timeout: 2000 });
+    text = (await popover2.textContent()) || '';
     expect(text).toContain('net directional exposure');
-
-    // Close via hover-out
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    await deltaLabel.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Strategy Summary card headings (Greeks / Risk) are click-only — hover never opens their popover; child Greek/Risk chips are unaffected', async ({ page }) => {
-    // Bug 2 fix: `greeksNote` and `riskNote` sit directly above a dense
-    // row of their own child InfoHint anchors (Δ Γ Θ 𝒱 ρ / R:R, Risk-of-
-    // ruin, Breakevens, POP...). Their popups land only ~6px below the
-    // heading but are 60-90 px tall, so a hover preview on the way to a
-    // row below used to cause an unwanted open/close/reopen flicker.
-    // Fixed via `hoverPreview={false}` on just these two InfoHint
-    // instances, which skips wiring the anchor's mouseenter/mouseleave
-    // listeners entirely — `hovered` is simply never set at this site, so
-    // there's nothing for Bug 1's fix to clear here. Click still
-    // opens/closes them via `open` alone, same as any other hideButton
-    // site.
+  test('Strategy Summary card headings (Greeks / Risk) and their child chips are all click-only — hover never opens any of them (hover removed app-wide, 2026-10)', async ({ page }) => {
+    // Originally guarded a narrower "Bug 2" fix where `greeksNote`/
+    // `riskNote` opted OUT of hover via `hoverPreview={false}` while
+    // sibling chips (Δ, R:R) below them still opened on hover — that
+    // distinction is now moot since hover has been removed from InfoHint
+    // entirely, app-wide, by explicit operator instruction (the
+    // `hoverPreview` prop itself no longer exists). This test now verifies
+    // the headings AND their child Greek/Risk chips are uniformly
+    // click-only, with no site anywhere behaving differently.
     const greeksCard = page.locator('.opt-block').nth(0);
     const riskCard = page.locator('.opt-block').nth(1);
     await expect(greeksCard).toBeVisible({ timeout: 20_000 });
@@ -605,12 +607,7 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await page.waitForTimeout(250);
     await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
 
-    // Move away, then CLICK — must open, and close again on a second click
-    // (this exercises the Bug 1 open/hovered-clear fix at a hoverPreview=false
-    // site too, since clicking after a hover attempt still left `hovered`
-    // untouched here — hoverPreview=false means the anchor never wired
-    // `hovered` listeners at all).
-    await page.mouse.move(0, 0);
+    // CLICK — must open, and close again on a second click.
     await greeksHeading.click();
     const greeksPopover = page.locator('#sum-hint-greeks-note');
     await expect(greeksPopover).toBeVisible({ timeout: 2000 });
@@ -618,13 +615,16 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await greeksHeading.click();
     await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
 
-    // Positive control: the Δ chip BELOW the heading still opens via hover
-    // (proves hover isn't broken app-wide, only disabled at this one site).
-    await page.mouse.move(0, 0);
+    // The Δ chip BELOW the heading is now ALSO click-only, not a hover
+    // "positive control" any more — confirms hover removal is uniform,
+    // not just disabled at the heading site.
     const deltaLabel = greeksCard.locator('.kv-k:has-text("Δ")').first();
     await deltaLabel.hover();
+    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-delta')).toHaveCount(0);
+    await deltaLabel.click();
     await expect(page.locator('#sum-hint-delta')).toBeVisible({ timeout: 2000 });
-    await page.mouse.move(0, 0);
+    await deltaLabel.click();
     await expect(page.locator('#sum-hint-delta')).toHaveCount(0);
 
     // Risk & expected value heading — identical click-only behavior.
@@ -633,7 +633,6 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await page.waitForTimeout(250);
     await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
 
-    await page.mouse.move(0, 0);
     await riskHeading.click();
     const riskPopover = page.locator('#sum-hint-risk-note');
     await expect(riskPopover).toBeVisible({ timeout: 2000 });
@@ -641,12 +640,14 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await riskHeading.click();
     await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
 
-    // Positive control: the R:R chip below the Risk heading still opens via hover.
-    await page.mouse.move(0, 0);
+    // The R:R chip below the Risk heading is also now click-only.
     const rrLabel = riskCard.locator('.kv-k:has-text("R:R")').first();
     await rrLabel.hover();
+    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-rr')).toHaveCount(0);
+    await rrLabel.click();
     await expect(page.locator('#sum-hint-rr')).toBeVisible({ timeout: 2000 });
-    await page.mouse.move(0, 0);
+    await rrLabel.click();
     await expect(page.locator('#sum-hint-rr')).toHaveCount(0);
   });
 });

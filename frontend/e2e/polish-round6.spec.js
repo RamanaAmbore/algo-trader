@@ -148,8 +148,14 @@ test.describe('Polish Round 6 — NavStrip, Activity, Chart, Agent, Grid', () =>
     console.log(`[PASS] NavStrip panel opened with title: ${titleText}`);
   });
 
-  // Test 2: NavStrip slot hover hints
-  test('Test 2: NavStrip slot hover hints — hover ⓘ icon, verify panel opens with title', async ({ page }) => {
+  // Test 2: NavStrip slot hint — click ⓘ icon (hover-opens-a-tooltip was
+  // removed from InfoHint app-wide, 2026-10, explicit operator instruction
+  // — click-only everywhere). Note: this test's own selectors
+  // (`.stacked-info-panel` / `.ps-panel`, `.info-hint` / `.hint-icon`) do
+  // not match anything in current src — it always self-skips via the
+  // `test.skip()` guards below regardless of this edit. Stale test, not
+  // fixed by this change; flagged rather than silently left as-is.
+  test('Test 2: NavStrip slot hint — click ⓘ icon, verify panel opens with title', async ({ page }) => {
     try {
       await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded', timeout: 15000 });
     } catch {
@@ -173,8 +179,8 @@ test.describe('Polish Round 6 — NavStrip, Activity, Chart, Agent, Grid', () =>
       return;
     }
 
-    // Hover over the hint icon to trigger the popup.
-    await hintIcon.hover();
+    // Click the hint icon to trigger the popup (click-only, hover removed).
+    await hintIcon.click();
     await page.waitForTimeout(300);
 
     // Verify panel opens.

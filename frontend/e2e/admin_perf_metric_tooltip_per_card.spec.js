@@ -152,7 +152,11 @@ test.describe('Admin Perf page — per-card metric tooltip independence', () => 
     expect(text).toContain('cc') || expect(text).toContain('complexity');
   });
 
-  test('Per-card tooltips support both CLICK and HOVER (per-card state isolated)', async ({ page }) => {
+  test('Per-card tooltips are CLICK-ONLY (hover is a no-op, per-card state isolated)', async ({ page }) => {
+    // Hover-opens-a-tooltip was removed from InfoHint app-wide (2026-10,
+    // explicit operator instruction). This used to be a hover+click test;
+    // rewritten to assert hover is a genuine no-op, with click as the
+    // positive control.
     const feSection = page.locator('text=Frontend').first();
     await expect(feSection).toBeVisible({ timeout: 15_000 });
 
@@ -167,20 +171,17 @@ test.describe('Admin Perf page — per-card metric tooltip independence', () => 
     const locLabel = firstCard.locator('.metric-label:has-text("LOC")').first();
     await expect(locLabel).toBeVisible();
 
-    // HOVER to open
+    // HOVER must NOT open the popover. A real `.hover()` proves the cursor
+    // actually landed on the label.
     await locLabel.hover();
-    const popover = page.locator('[role="tooltip"]').first();
-    await expect(popover).toBeVisible({ timeout: 2000 });
-    await expect(popover).toHaveAttribute('role', 'tooltip');
+    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Hover out to close
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
-
-    // CLICK to open again
+    // CLICK to open
     await locLabel.click();
     const popoverClick = page.locator('[role="tooltip"]').first();
     await expect(popoverClick).toBeVisible({ timeout: 2000 });
+    await expect(popoverClick).toHaveAttribute('role', 'tooltip');
 
     // Click to close
     await locLabel.click();

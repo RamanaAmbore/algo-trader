@@ -6178,7 +6178,7 @@
                onclick={() => { _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote; }}
                onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote)}>
             Greeks (position)
-            <InfoHint popup hideButton hoverPreview={false} id="sum-hint-greeks-note" anchor={_sumHintAnchor.greeksNote} bind:open={_sumHintOpen.greeksNote}
+            <InfoHint popup hideButton id="sum-hint-greeks-note" anchor={_sumHintAnchor.greeksNote} bind:open={_sumHintOpen.greeksNote}
               panel title="Greeks (position)" text={'Sum of every leg\'s signed-qty Greeks, including +qty per enabled equity-holding leg (long stock = +1 Δ/share). Θ / 𝒱 / Γ / ρ stay option-only since vanilla stock has zero convexity, decay, IV and rate sensitivity.'} />
           </div>
           <div class="opt-kv opt-kv-greeks">
@@ -6236,7 +6236,7 @@
                onclick={() => { _sumHintOpen.riskNote = !_sumHintOpen.riskNote; }}
                onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.riskNote = !_sumHintOpen.riskNote)}>
             Risk &amp; expected value
-            <InfoHint popup hideButton hoverPreview={false} id="sum-hint-risk-note" anchor={_sumHintAnchor.riskNote} bind:open={_sumHintOpen.riskNote}
+            <InfoHint popup hideButton id="sum-hint-risk-note" anchor={_sumHintAnchor.riskNote} bind:open={_sumHintOpen.riskNote}
               panel title="Risk &amp; expected value" text={'Aggregate risk + expected value across all legs. Probability-weighted outcomes integrated against the lognormal pdf of the underlying using a qty-weighted IV proxy. POP × magnitudes captures the asymmetry that POP alone misses.'} />
           </div>
           <div class="opt-kv opt-kv-risk">

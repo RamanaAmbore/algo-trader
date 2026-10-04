@@ -30,6 +30,11 @@
  *               not a static string) — both branches render without
  *               raising a console error.
  *
+ * 2026-10 update: hover-opens-a-tooltip was removed from InfoHint
+ * app-wide (explicit operator instruction — click-only everywhere). The
+ * "hover opens" assertions below were rewritten to assert hover is a
+ * no-op, with click re-verified as the positive control.
+ *
  * Run:
  *   npx playwright test e2e/options_payoff_stat_infohints.spec.js \
  *   --project=chromium-desktop --workers=1
@@ -41,7 +46,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 const DERIV_URL = '/admin/derivatives';
 
 test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideButton mode)', () => {
-  test('LTP/CHG%/DAY P&L rows open popover via click and hover on the label span (no separate chip)', async ({ page, viewport }) => {
+  test('LTP/CHG%/DAY P&L rows open popover via CLICK only on the label span (no separate chip); hover is a no-op', async ({ page, viewport }) => {
     await loginAsAdmin(page);
 
     const pageErrors = [];
@@ -104,20 +109,23 @@ test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideBut
       expect(popoverRect.bottom, `LTP popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    // Close via re-click + mouse move (to clear hover state)
+    // Close via re-click
     await ltpLabel.click();
-    await page.mouse.move(0, 0); // Move away to clear hovered state
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-    // HOVER opens the popover (new in this fix)
+    // HOVER must NOT open the popover (hover removed app-wide, 2026-10).
+    // A real `.hover()` proves the cursor actually landed on the label.
     await ltpLabel.hover();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control: click still works after the hover no-op.
+    await ltpLabel.click();
     popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     await expect(popover).toContainText(/Spot anchor:|Current spot price for the underlying/);
-
-    // Move mouse away to close via hover
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    await ltpLabel.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
     // DAY P&L row, if present — same mechanism, different wording.
     const dayPnlRow = payoffOverlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'DAY P&L' }) }).first();
@@ -131,18 +139,20 @@ test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideBut
       await expect(dayPopover).toContainText('mark-to-market change');
 
       await dayPnlLabel.click(); // close via re-click
-      await page.mouse.move(0, 0); // Move away to clear hover state
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-      // Hover test
+      // Hover must NOT reopen it.
       await dayPnlLabel.hover();
-      const dayPopoverH = page.locator('[role="tooltip"]').first();
-      await expect(dayPopoverH).toBeVisible({ timeout: 2000 });
-      await expect(dayPopoverH).toContainText('mark-to-market change');
+      await page.waitForTimeout(300);
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-      // Move away to close
-      await page.mouse.move(0, 0);
-      await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+      // Positive control: click still works.
+      await dayPnlLabel.click();
+      const dayPopoverC = page.locator('[role="tooltip"]').first();
+      await expect(dayPopoverC).toBeVisible({ timeout: 2000 });
+      await expect(dayPopoverC).toContainText('mark-to-market change');
+      await dayPnlLabel.click();
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
     }
 
     const realErrors = pageErrors.filter((e) => !e.includes('401') && !e.includes('405'));

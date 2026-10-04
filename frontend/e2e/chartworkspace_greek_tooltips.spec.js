@@ -13,11 +13,13 @@
  *
  * Five quality dimensions:
  *  1. SSOT    — n/a (display-only values, no computed SSOT).
- *  2. Perf    — hover/click-to-popover opens within budget.
+ *  2. Perf    — click-to-popover opens within budget.
  *  3. Stale   — no `.cw-greek-item` carries a separate visible chip button.
- *  4. Reuse   — exercises the shared InfoHint component's hideButton+anchor+hover
+ *  4. Reuse   — exercises the shared InfoHint component's hideButton+anchor
  *               contract, same as OptionsPayoff and derivatives Strategy Summary.
- *  5. UX      — both click and hover open the popover; hover-out closes it.
+ *  5. UX      — click opens/closes the popover; hover is a genuine no-op
+ *               (hover-opens-a-tooltip was removed from InfoHint app-wide,
+ *               2026-10, explicit operator instruction — click-only everywhere).
  *
  * Run:
  *   npx playwright test e2e/chartworkspace_greek_tooltips.spec.js \
@@ -109,7 +111,7 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('HOVER opens and closes Greek tooltip; hover-out auto-closes', async ({ page, viewport }) => {
+  test('HOVER does NOT open the Greek tooltip (hover removed app-wide, 2026-10); click still works', async ({ page, viewport }) => {
     const greeksStrip = page.locator('.cw-greeks-strip');
     const stripVisible = await greeksStrip.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false);
     if (!stripVisible) {
@@ -123,20 +125,25 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
     const gammaItem = greekItems.nth(1); // Gamma is second
     await expect(gammaItem).toContainText('Γ');
 
-    // HOVER to open
+    // HOVER must NOT open anything. A real `.hover()` proves the cursor
+    // actually landed on the item (Playwright's actionability check).
     await gammaItem.hover();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control: click still opens/closes it.
+    await gammaItem.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
-    let text = (await popover.textContent()) || '';
+    const text = (await popover.textContent()) || '';
     expect(text).toContain('Gamma');
     expect(text).toContain('rate of change');
 
-    // Move mouse away to close via hover-out
-    await page.mouse.move(0, 0);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    await gammaItem.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('All 5 Greeks + IV open distinct, correctly-worded tooltips (both click and hover)', async ({ page, viewport }) => {
+  test('All 5 Greeks + IV open distinct, correctly-worded tooltips via click; hover never opens any of them', async ({ page, viewport }) => {
     const greeksStrip = page.locator('.cw-greeks-strip');
     const stripVisible = await greeksStrip.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false);
     if (!stripVisible) {
@@ -170,24 +177,11 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
       await item.click(); // close
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-      // Move the mouse away first — InfoHint.svelte's Bug 1 fix clears
-      // `hovered` whenever `open` transitions to false, so the popover is
-      // now genuinely closed after the click above even though the cursor
-      // is still resting on the item. Re-arming the hover preview requires
-      // a real leave-then-return mouse transition (a plain `.hover()`
-      // while already positioned there doesn't cross the element
-      // boundary, so no fresh `mouseenter` fires).
-      await page.mouse.move(0, 0);
-      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
-
-      // HOVER test
+      // HOVER must NOT reopen it (hover removed app-wide, 2026-10), even
+      // while the cursor is still resting on the item from the click above.
       await item.hover();
-      const popoverH = page.locator('[role="tooltip"]').first();
-      await expect(popoverH).toBeVisible({ timeout: 2000 });
-      text = (await popoverH.textContent()) || '';
-      expect(text).toMatch(greekPatterns[i].text);
-      await page.mouse.move(0, 0); // close via hover-out
-      await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+      await page.waitForTimeout(300);
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
     }
   });
 

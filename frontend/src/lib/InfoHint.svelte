@@ -9,7 +9,8 @@
 </script>
 
 <script>
-  // Compact (i) chip with a click-toggle / hover-preview popover.
+  // Compact (i) chip with a click-toggle popover (click opens, click
+  // again closes — never on hover, app-wide per operator instruction).
   // Used across the algo admin pages to gloss page sections, stats,
   // and form fields without taking up screen real estate.
   //
@@ -42,11 +43,9 @@
    *   panel?: boolean,
    *   accentColor?: string,
    *   title?: string,
-   *   showOnHover?: boolean,
    *   hideButton?: boolean,
    *   open?: boolean,
    *   anchor?: HTMLElement,
-   *   hoverPreview?: boolean,
    * }} */
   let {
     children,
@@ -61,20 +60,11 @@
     panel = false,
     accentColor = 'var(--algo-amber)',
     title = '',
-    showOnHover = false,
     // Additive, opt-in: when true, InfoHint renders no button of its own —
     // an external element (passed via `anchor`, bound to `open`) becomes
     // the click trigger instead. Every existing caller omits both props
     // and gets byte-identical behavior to before this was added.
     hideButton = false,
-    // Additive, opt-in: hideButton+anchor sites get hover-to-preview for
-    // free (see the mouseenter/mouseleave wiring effect below) — true for
-    // every existing caller by default, so nothing changes for them. Set
-    // to false to make a hideButton+anchor site click-only: its anchor sits
-    // directly above a denser row of its own child InfoHint anchors, so a
-    // hover preview on the way to a child below causes an unwanted
-    // open/close/reopen flicker. Ignored outside hideButton+anchor mode.
-    hoverPreview = true,
     // Bindable so an external trigger (e.g. a clickable value span) can
     // open/close this InfoHint's popout directly. Defaults from the same
     // one-time `defaultOpen` seed as before for callers that don't bind it.
@@ -93,7 +83,6 @@
   });
   const _popoutId = $derived(_uid || 'infohint-pending');
 
-  let hovered = $state(false);
   /** @type {HTMLSpanElement | undefined} */
   let wrap;
   /** @type {HTMLSpanElement | undefined} */
@@ -118,47 +107,14 @@
     return () => document.removeEventListener('mousedown', onDocClick);
   });
 
-  // In hideButton mode the internal chip (and its own onmouseenter/
-  // onmouseleave) is never rendered, so nothing drove `hovered` for
-  // that mode — hover silently did nothing on every anchor-trigger
-  // site. Wire the same `hovered` state directly to the external
-  // anchor element so hover and click both work identically to the
-  // default chip.
-  $effect(() => {
-    if (!hideButton || !anchor || !hoverPreview) return;
-    function onEnter() { hovered = true; }
-    function onLeave() { hovered = false; }
-    anchor.addEventListener('mouseenter', onEnter);
-    anchor.addEventListener('mouseleave', onLeave);
-    return () => {
-      anchor.removeEventListener('mouseenter', onEnter);
-      anchor.removeEventListener('mouseleave', onLeave);
-    };
-  });
-
-  // In hideButton+anchor mode the PARENT page owns the click handler and
-  // only ever toggles the bound `open` prop — it has no way to reach into
-  // InfoHint and clear its internal `hovered` state. If the mouse is still
-  // resting on the trigger when the operator clicks a second time, `open`
-  // flips to false but `hovered` stays true (set by the hover-wiring effect
-  // above), so `visible` below never actually goes false and the popup
-  // appears stuck open. Clearing `hovered` whenever `open` transitions to
-  // false fixes this for both hideButton+anchor (external click owner) and
-  // the default chip's own button (which already does this inline on
-  // click, making this a harmless no-op there). Only `open` is read here,
-  // so a pure hover-preview interaction — where `open` never changes and
-  // only `hovered` toggles — never re-triggers this effect and is
-  // unaffected.
-  $effect(() => {
-    if (!open) hovered = false;
-  });
-
-  // Whether to render the popout right now.
-  const visible = $derived(popup ? (open || hovered) : open);
+  // Whether to render the popout right now. Click-toggle only — never
+  // opens on hover, app-wide per operator instruction (2026-10). `open` is
+  // the sole input regardless of popup/hideButton mode.
+  const visible = $derived(open);
 
   // Claim the app-wide singleton the moment this instance's own popout
-  // becomes visible — covers both the click-driven `open` path and the
-  // hover-driven `hovered` path (default chip AND hideButton+anchor sites).
+  // becomes visible (click-driven `open`, default chip AND hideButton+anchor
+  // sites alike).
   $effect(() => {
     if (visible && _uid) _activeInfoHintId = _uid;
   });
@@ -170,7 +126,6 @@
   $effect(() => {
     if (_activeInfoHintId && _uid && _activeInfoHintId !== _uid) {
       if (open) open = false;
-      if (hovered) hovered = false;
     }
   });
 
@@ -251,11 +206,7 @@
           aria-describedby={visible ? _popoutId : undefined}
           aria-label={open ? 'Hide details' : 'Show details'}
           title={open ? 'Hide details' : 'Show details'}
-          onclick={() => { if (!showOnHover) { open = !open; if (!open) hovered = false; } }}
-          onmouseenter={() => hovered = true}
-          onmouseleave={() => hovered = false}
-          onfocus={() => { if (showOnHover) hovered = true; }}
-          onblur={() => { if (showOnHover) hovered = false; }}>{label}</button>
+          onclick={() => { open = !open; }}>{label}</button>
   {/if}
   {#if visible}
     <span class="info-popout"

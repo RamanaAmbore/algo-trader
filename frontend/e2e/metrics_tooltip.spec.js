@@ -123,8 +123,8 @@ test.describe('/admin/metrics — metric tooltips', () => {
     }
   });
 
-  // 2. Perf — popover opens within 350 ms and via both click + hover (and stays within viewport)
-  test('Perf: click-to-visible < 350 ms and within viewport bounds; hover also works', async ({ page, viewport }) => {
+  // 2. Perf — popover opens within 350 ms via click only (and stays within viewport); hover is a no-op
+  test('Perf: click-to-visible < 350 ms and within viewport bounds; hover does not open it', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — cannot open table-header tooltip');
@@ -163,13 +163,18 @@ test.describe('/admin/metrics — metric tooltips', () => {
       expect(popoverRect.bottom, `Popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    await closePopover(page);
+    // Close via re-click — `closePopover()` presses Escape, but InfoHint has
+    // no Escape handler, so it would not actually prove the popover closed
+    // here (the subsequent hover-negative check needs a genuinely-closed
+    // starting state).
+    await label.click();
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
 
-    // HOVER test
+    // HOVER must NOT open it (hover removed app-wide, 2026-10). A real
+    // `.hover()` proves the cursor actually landed on the label.
     await label.hover();
-    const popoverH = page.locator('[data-testid="metric-popover"]').first();
-    await expect(popoverH).toBeVisible({ timeout: 2000 });
-    await closePopover(page);
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
   });
 
   // 3. Stale — popover content uses structured grid, not raw HTML blob
@@ -265,7 +270,7 @@ test.describe('/admin/metrics — metric tooltips', () => {
   });
 
   // Trend tiles also carry tooltips
-  test('UX: trend tile labels carry InfoHint tooltips (hover + click; viewport bounds check)', async ({ page, viewport }) => {
+  test('UX: trend tile labels carry InfoHint tooltips (click only; hover is a no-op; viewport bounds check)', async ({ page, viewport }) => {
     const hasEmpty = await page.locator('h2:has-text("No snapshots yet")').count() > 0;
     if (hasEmpty) {
       test.skip(true, 'No snapshot rows — trend tiles may not render');
@@ -308,17 +313,19 @@ test.describe('/admin/metrics — metric tooltips', () => {
       expect(popoverRect.bottom, `Trend tile popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    await closePopover(page);
+    // Close via re-click (closePopover()'s Escape press has no handler in
+    // InfoHint and would not prove the popover actually closed).
+    await label.click();
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
 
-    // HOVER: verify hover also works
+    // HOVER must NOT open it (hover removed app-wide, 2026-10).
     await label.hover();
-    const popoverH = page.locator('[data-testid="metric-popover"]').first();
-    await expect(popoverH).toBeVisible({ timeout: 2000 });
-    await closePopover(page);
+    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
   });
 
-  // Mobile portrait — popovers must fit viewport and not occlude sibling headers; hover may be unavailable
-  test('UX: popover stays within viewport on mobile; hover may be skipped if no touch support', async ({ page, viewport }) => {
+  // Mobile portrait — popovers must fit viewport and not occlude sibling headers (click-only, same as desktop)
+  test('UX: popover stays within viewport on mobile (click-only)', async ({ page, viewport }) => {
     if (!viewport || viewport.width > 600) {
       test.skip(true, 'Mobile-only check');
       return;

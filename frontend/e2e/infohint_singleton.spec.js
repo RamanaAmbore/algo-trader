@@ -1,8 +1,8 @@
 /**
  * infohint_singleton.spec.js
  *
- * Only one InfoHint tooltip is ever visible at a time, app-wide. Before this
- * fix, every InfoHint instance managed its own `open`/`hovered` $state
+ * Only one InfoHint tooltip is ever visible at a time, app-wide. Before the
+ * singleton fix, every InfoHint instance managed its own `open` $state
  * entirely independently (frontend/src/lib/InfoHint.svelte), so opening a
  * second tooltip anywhere else on the page never closed one already open
  * elsewhere — two (or more) popovers could be visible simultaneously.
@@ -10,20 +10,31 @@
  * Fix: a module-level `$state` singleton (`_activeInfoHintId`, declared in
  * InfoHint.svelte's `<script module>` block) is shared across every
  * component instance. Whichever instance's own popout becomes visible
- * (click OR hover) claims the singleton; every other instance watches it
- * and closes itself the moment some other instance claims it.
+ * (via `open`) claims the singleton; every other instance watches it and
+ * closes itself the moment some other instance claims it.
  *
- * This spec is deliberately cross-component (two SEPARATE InfoHint
- * instances on the same page, each independently owning its own `open`/
- * `hovered` state before this fix) and deliberately avoids the
- * `mousedown`-driven click-outside-closes listener InfoHint already had
- * before this fix (see InfoHint.svelte's `onDocClick` effect) — that
- * listener already closed a click-pinned popover whenever a later CLICK
- * landed outside it, which would make a click-then-click test pass on old
- * code and prove nothing about the new singleton. Every test here pins
- * tooltip A open via CLICK, then opens tooltip B via HOVER ONLY (hover
- * never fires `mousedown`), so only the new singleton effect can be
- * responsible for closing A.
+ * Hover-removal (2026-10, operator instruction): InfoHint no longer opens
+ * on hover anywhere, app-wide — `visible` is now `$derived(open)` only.
+ * This spec originally proved the singleton with a CLICK-then-HOVER
+ * sequence specifically to rule out the pre-existing `mousedown`-driven
+ * click-outside-closes listener (hover never fires `mousedown`, so only
+ * the singleton effect could close A). With hover now removed entirely,
+ * that specific isolation trick is unavailable — a plain second click
+ * would also pass on just the click-outside listener and prove nothing
+ * about the singleton specifically.
+ *
+ * Fix for this revision: pin tooltip A open via a real mouse CLICK, then
+ * open tooltip B via KEYBOARD activation (Tab to focus the real `<button>`,
+ * then Enter/Space) instead of a mouse click. Keyboard activation of a
+ * native `<button>` fires a `click` event with NO preceding `mousedown`
+ * (browsers only synthesize `mousedown`+`mouseup`+`click` for an actual
+ * pointer press), so the click-outside listener's `mousedown` handler never
+ * fires for B's keyboard activation — only the new singleton effect can be
+ * responsible for closing A. This also sidesteps the occlusion problem
+ * `.hover()` used to hit (A's own click-pinned popout can render directly
+ * over B's screen coordinates on this page, blocking a real pointer hover
+ * via Playwright's actionability check) since keyboard activation needs no
+ * cursor travel at all.
  *
  * Covers both InfoHint display modes per the operator's ask:
  *   - default chip mode (visible `.info-btn`, popup=true, no hideButton) —
@@ -48,7 +59,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await page.goto('/automation/templates', { waitUntil: 'domcontentloaded', timeout: 30_000 });
   });
 
-  test('click-pinning the "Templates" title hint then HOVERING the unrelated "Side-default coverage" hint closes the first and shows only the second', async ({ page }) => {
+  test('click-pinning the "Templates" title hint then KEYBOARD-activating the unrelated "Side-default coverage" hint closes the first and shows only the second', async ({ page }) => {
     // Two independent default-chip-mode InfoHint instances, both always
     // rendered (neither gated behind template data), so this test never
     // skips. Scoped by distinct ancestor containers so each resolves to
@@ -61,22 +72,25 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(titleBtn).toBeVisible();
     await expect(coverageBtn).toBeVisible();
 
-    // Pin A open via CLICK (open=true, not merely hovered).
+    // Pin A open via CLICK (open=true).
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
     await expect(page.locator('[role="tooltip"]').first()).toContainText('Order templates');
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
 
-    // Open B via HOVER ONLY — no mousedown anywhere on the page. A's own
+    // Open B via KEYBOARD activation, not a mouse click. A's own
     // click-pinned popout is `position: fixed` and, on this page, renders
     // directly over the coverage button's screen coordinates (both sit
-    // near the top of a short page), so a real `.hover()` mouse move gets
-    // blocked by Playwright's actionability check ("intercepts pointer
-    // events") before it ever reaches B. `dispatchEvent('mouseenter')`
-    // fires the exact same native event InfoHint's `onmouseenter` listens
-    // for, directly on B, without needing real cursor travel through the
-    // occluded screen region — still exercises the real hover code path.
-    await coverageBtn.dispatchEvent('mouseenter');
+    // near the top of a short page), so a real pointer click/hover on B
+    // gets blocked by Playwright's actionability check ("intercepts
+    // pointer events"). Keyboard activation needs no cursor travel through
+    // the occluded region AND — the real point of this test — a native
+    // `<button>`'s keyboard-triggered `click` event fires with no
+    // preceding `mousedown`, so InfoHint's `mousedown`-driven
+    // click-outside-closes listener cannot be what closes A here. Only the
+    // app-wide singleton effect can.
+    await coverageBtn.focus();
+    await page.keyboard.press('Enter');
     const tooltips = page.locator('[role="tooltip"]');
     await expect(tooltips).toHaveCount(1, { timeout: 2000 });
     await expect(tooltips.first()).toContainText('is_default template');
@@ -87,11 +101,12 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     // reflects its own `open` via aria-expanded.
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'false');
 
-    // Close B via hover-out, then A must re-open on a single click — if A's
-    // `open` had silently stayed true while hidden, this click would
-    // toggle it to false and A would need a second click to reopen.
-    await coverageBtn.dispatchEvent('mouseleave');
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 500 });
+    // Close B via a second keyboard activation, then A must re-open on a
+    // single click — if A's `open` had silently stayed true while hidden,
+    // this click would toggle it to false and A would need a second click
+    // to reopen.
+    await page.keyboard.press('Enter');
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
@@ -99,7 +114,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
-  test('the reverse order also holds: pinning "Side-default coverage" then hovering "Templates" closes the first', async ({ page }) => {
+  test('the reverse order also holds: pinning "Side-default coverage" then keyboard-activating "Templates" closes the first', async ({ page }) => {
     // Guards against an id-ordering / first-claimed-wins bug — the
     // singleton must work symmetrically regardless of which instance
     // claimed it first.
@@ -110,14 +125,40 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
     await expect(page.locator('[role="tooltip"]').first()).toContainText('is_default template');
 
-    // Same occlusion reasoning as the first test — B's own click-pinned
-    // popout can cover A's screen position, so hover is dispatched
-    // directly rather than via real cursor movement.
-    await titleBtn.dispatchEvent('mouseenter');
+    // Same occlusion + mousedown-isolation reasoning as the first test —
+    // B's own click-pinned popout can cover A's screen position, and a
+    // keyboard-triggered click fires no `mousedown` to trip the
+    // click-outside listener.
+    await titleBtn.focus();
+    await page.keyboard.press('Enter');
     const tooltips = page.locator('[role="tooltip"]');
     await expect(tooltips).toHaveCount(1, { timeout: 2000 });
     await expect(tooltips.first()).toContainText('Order templates');
     await expect(coverageBtn).toHaveAttribute('aria-expanded', 'false');
+  });
+
+  test('HOVER never opens the default-chip InfoHint (hover-removal regression guard)', async ({ page }) => {
+    // Direct negative test for the removed hover-to-open code path on the
+    // default chip mode (InfoHint's own onmouseenter/onmouseleave,
+    // deleted 2026-10). A real `.hover()` proves the cursor actually
+    // landed on the chip (Playwright's actionability check), then we
+    // assert no tooltip appeared — a hover-negative assertion, not a
+    // vacuous "never checked" one.
+    const titleBtn = page.locator('.algo-title-group .info-wrap button.info-btn');
+    await expect(titleBtn).toBeVisible();
+
+    await titleBtn.hover();
+    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'false');
+
+    // Positive control on the same element — click still opens it.
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
+
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
   test('clicking the same field twice opens then closes it (singleton claim does not break same-instance toggle)', async ({ page }) => {
