@@ -153,7 +153,11 @@ class MintTokenRequest(msgspec.Struct):
     The purpose hash includes `kind` + the relevant fields per kind,
     so a token minted to CANCEL #1234 cannot be redeemed to PLACE a
     new order, MODIFY #1234, CANCEL #5678, ACTIVATE a different
-    agent, or DEACTIVATE the same agent (different kind)."""
+    agent, or DEACTIVATE the same agent (different kind).
+
+    `template_slug` (place only) is bound into the place hash, so a
+    token minted for one exit template cannot be redeemed with a
+    different template or with none."""
     account:           str = ""
     kind:              str = "place"     # place / cancel / modify / activate / deactivate / update
     tradingsymbol:     str = ""
@@ -163,6 +167,7 @@ class MintTokenRequest(msgspec.Struct):
     order_type:        str = "LIMIT"
     price:             float | None = None
     trigger_price:     float | None = None
+    template_slug:     str | None = None  # place only — bound into the hash when set
     order_id:          str = ""           # cancel / modify only
     agent_slug:        str = ""           # activate / deactivate / update only
     # update kind only — JSON blob of the fields the LLM plans to push.
@@ -201,10 +206,9 @@ class PlaceOrderRequest(msgspec.Struct):
     # alternative to template_id, which this request shape has never
     # exposed. Resolved server-side to a template_id via
     # load_template_for_slug_or_id before the ticket is built; an unknown
-    # slug is a 422, not a silent no-template fallback. NOT included in
-    # _purpose_hash_place's fingerprint today — see _res_resolve_template_slug's
-    # caller for the known gap this leaves (template choice isn't bound to
-    # the confirm token the operator approved).
+    # slug is a 422, not a silent no-template fallback. BOUND into
+    # _purpose_hash_place's fingerprint: the confirm token only redeems
+    # for the exact slug the operator minted with (None/omitted = no template).
     template_slug:        str | None = None
 
 
@@ -403,9 +407,18 @@ _confirm_tokens: dict[str, dict[str, Any]] = {}
 
 
 def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
-                  order_type: str, mode: str, price: Any, trigger_price: Any) -> str:
+                  order_type: str, mode: str, price: Any, trigger_price: Any,
+                  template_slug: str | None = None) -> str:
     """Identity fingerprint for a PLACE order. Includes every field the
-    LLM passes so it can't swap the symbol / side / qty / price."""
+    LLM passes so it can't swap the symbol / side / qty / price / exit
+    template.
+
+    `template_slug` uses an omit-when-absent sentinel: when it is None or
+    "" the parts list is exactly the pre-template 9-part list, so every
+    token minted for a template-less order keeps its original hash
+    bit-for-bit. A non-empty slug appends one extra `template:<slug>`
+    part, which cannot collide with a template-less fingerprint (the
+    template-less join has no trailing part to match)."""
     parts = [
         "place",
         (account or "").upper().strip(),
@@ -417,6 +430,8 @@ def _purpose_hash_place(account: str, symbol: str, side: str, qty: int,
         f"{float(price or 0):.4f}",
         f"{float(trigger_price or 0):.4f}",
     ]
+    if template_slug:
+        parts.append(f"template:{template_slug}")
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
 
 
@@ -582,12 +597,13 @@ def _mint_place_hash_and_purpose(data: "MintTokenRequest", acct: str,
         raise HTTPException(status_code=400,
             detail="tradingsymbol and quantity > 0 are required for place")
     ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
-                             data.price, data.trigger_price)
+                             data.price, data.trigger_price, data.template_slug)
     price_chunk = (
         f" @₹{data.price:g}" if data.price else
         (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
     )
-    purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk} · acct={acct}"
+    tpl_chunk = f" · template={data.template_slug}" if data.template_slug else ""
+    purpose = f"PLACE [{mode.upper()}] · {side} {qty} {sym}{price_chunk}{tpl_chunk} · acct={acct}"
     return ph, purpose
 
 
@@ -1531,7 +1547,7 @@ class ResearchController(Controller):
         # validator checks this against the token's stored hash.
         acct, sym, side, qty, order_type, mode = _res_normalize_place_inputs(data)
         ph = _purpose_hash_place(acct, sym, side, qty, order_type, mode,
-                                 data.price, data.trigger_price)
+                                 data.price, data.trigger_price, data.template_slug)
 
         # Redact + persist the call before doing anything risky.
         request_id = _secrets.token_hex(6)
@@ -1551,9 +1567,8 @@ class ResearchController(Controller):
 
         # Resolve template_slug → template_id before the token gate, so a
         # typo'd slug fails fast (422) without burning the operator's
-        # single-use confirm token. NOTE: template_slug is NOT part of
-        # _purpose_hash_place's fingerprint — the confirm token does not
-        # bind the template choice. See this request field's docstring.
+        # single-use confirm token. template_slug is bound into ph above,
+        # so a slug that differs from the minted one fails the token gate.
         resolved_template_id, _tpl_err = await _res_resolve_template_slug(
             None, data.template_slug,
         )
