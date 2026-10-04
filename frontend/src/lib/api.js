@@ -1341,6 +1341,17 @@ export const fetchResearchDrafts = (limit = 200) =>
 export const mintConfirmToken = (payload) =>
   _post('/lab/confirm-token', payload, { auth: true });
 
+/** POST /api/lab/chat — one-shot Claude reply to a Lab request box message.
+ *  Body `{message}`; response `{reply, duration_ms}`. Caller-supplied signal
+ *  with a 120 s client ceiling: the helper's default 15 s timeout would
+ *  swallow the call as null, and a Claude round-trip routinely exceeds it. */
+export const postLabChat = (message) => {
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 120_000);
+  return _post('/lab/chat', { message }, { auth: true, signal: ac.signal })
+    .finally(() => clearTimeout(timer));
+};
+
 /** GET /api/lab/audit — forensic trail of MCP-initiated mutations. */
 export const fetchResearchAudit = (filters = {}) => {
   const p = new URLSearchParams();

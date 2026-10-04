@@ -24,7 +24,7 @@
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
-    mintConfirmToken, fetchResearchAudit,
+    mintConfirmToken, fetchResearchAudit, postLabChat,
   } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -203,6 +203,36 @@
     } catch (_) { /* SSR / window unavailable */ }
   });
   onDestroy(() => teardown?.());
+
+  // ── Chat panel — one-shot request box (POST /api/lab/chat) ─────────
+  // No history in v1: the last reply stays visible until the next one
+  // arrives. Errors keep the previous reply on screen.
+  let chatText    = $state('');
+  let chatReply   = $state('');
+  let chatError   = $state('');
+  let chatInfo    = $state(false);   // 503 = Claude not configured → neutral style
+  let chatPending = $state(false);
+
+  async function sendChat() {
+    const msg = chatText.trim();
+    if (!msg || chatPending) return;
+    chatPending = true;
+    chatError = '';
+    chatInfo = false;
+    try {
+      const res = await postLabChat(msg);
+      chatReply = res?.reply ?? '';
+    } catch (/** @type {any} */ e) {
+      if (e?.name === 'AbortError') {
+        chatError = 'Timed out waiting for Claude.';
+      } else {
+        chatError = e?.detail || e?.message || 'Request failed.';
+      }
+      chatInfo = e?.status === 503;
+    } finally {
+      chatPending = false;
+    }
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────
   function _confColor(/** @type {string} */ c) {
@@ -462,6 +492,29 @@
 {:else}
 
 <AutomationTabs />
+
+<section class="lab-card lab-chat" aria-label="Lab chat">
+  <textarea class="lab-chat-input"
+            bind:value={chatText}
+            maxlength="4000"
+            rows="3"
+            placeholder="Ask about positions, orders, or research. Read-only: order actions need a confirm token minted below."
+            disabled={chatPending}></textarea>
+  <div class="lab-chat-actions">
+    <button class="copy-btn lab-chat-send" type="button"
+            onclick={sendChat}
+            disabled={chatPending || chatText.trim() === ''}>Send</button>
+    {#if chatPending}
+      <span class="lab-chat-thinking">Thinking…</span>
+    {/if}
+  </div>
+  {#if chatError}
+    <div class="lab-chat-msg" class:lab-chat-info={chatInfo} class:lab-chat-error={!chatInfo} role="alert">{chatError}</div>
+  {/if}
+  {#if chatReply}
+    <pre class="lab-chat-reply">{chatReply}</pre>
+  {/if}
+</section>
 
 <div class="lab-tabs-wrap">
   <AlgoTabs
@@ -861,6 +914,65 @@
 <style>
   /* .empty-state rules removed — access-denied panel migrated to
      EmptyState component (slice AE). */
+
+  /* ── Chat panel ───────────────────────────────────────────────── */
+  .lab-chat { margin-top: 0.6rem; display: flex; flex-direction: column; gap: 0.5rem; }
+  .lab-chat-input {
+    background: rgba(0, 0, 0, 0.3);
+    border: 1px solid rgba(126, 151, 184, 0.25);
+    border-radius: 0.25rem;
+    padding: 0.4rem 0.5rem;
+    color: var(--algo-slate);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    line-height: 1.45;
+    width: 100%;
+    resize: vertical;
+    min-height: 3.5rem;
+    box-sizing: border-box;
+  }
+  .lab-chat-input:focus { outline: none; border-color: rgba(251, 191, 36, 0.6); }
+  .lab-chat-input:disabled { opacity: 0.6; }
+  .lab-chat-actions { display: flex; align-items: center; gap: 0.7rem; }
+  .lab-chat-send { margin-top: 0; }
+  .lab-chat-send:disabled { opacity: 0.45; cursor: not-allowed; }
+  .lab-chat-thinking {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-sm);
+    font-weight: 700;
+    color: var(--algo-amber);
+  }
+  .lab-chat-msg {
+    padding: 0.4rem 0.6rem;
+    border-radius: 0.35rem;
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+  }
+  .lab-chat-error {
+    background: var(--algo-red-bg);
+    border: 1px solid rgba(248, 113, 113, 0.32);
+    color: var(--c-short);
+  }
+  .lab-chat-info {
+    background: var(--algo-sky-bg);
+    border: 1px solid var(--algo-sky-border-soft);
+    color: var(--algo-sky-text);
+  }
+  .lab-chat-reply {
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    background: rgba(0, 0, 0, 0.35);
+    border: 1px solid rgba(126, 151, 184, 0.18);
+    border-radius: 0.35rem;
+    color: var(--algo-slate);
+    font-family: var(--font-numeric);
+    font-size: var(--fs-md);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+    max-height: 40vh;
+    overflow-y: auto;
+  }
 
   /* ── Tab strip ────────────────────────────────────────────────── */
   /* Tab buttons rendered by AlgoTabs via global .algo-tab in app.css. */
