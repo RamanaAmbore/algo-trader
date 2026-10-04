@@ -730,9 +730,7 @@
 <div class={'ps-strip' + (_heartbeatOn ? ' ps-heartbeat' : '') + (_pollPulseOn ? ' ps-poll-pulse' : '') + (_isStale ? ' ps-stale' : '')}
      title={_isStale ? `Showing last-known-good — STALE@${_staleSinceStr}` : undefined}>
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-p" role="button" tabindex="0"
-      onclick={(e) => _openBreakdown(e, 'P')}
-      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'P')}><InfoHint popup panel label="P" accentColor="#fbbf24"
+    <span class="ps-agg-k ps-k-p"><InfoHint popup panel label="P" accentColor="#fbbf24"
       title="P — Positions P&L"
       text="<b>Day P&L:</b> (realised + unrealised) − prior settlement snapshot, all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since position opened. Includes realised + unrealised.<br><br><b>Expiry P&L:</b> Projected F&O value at expiry — intrinsic value (option payoff at spot, or spot itself for futures) minus cost basis, plus any realised P&L on the position." /></span>
     <span class={'ps-agg-v ' + (dispPositionsToday > 0 ? 'ps-pos' : dispPositionsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Pd')}
@@ -760,9 +758,7 @@
   <!-- Margin pill: available / total (used + avail). Operator wants the
        "room I have / full capacity" framing rather than util %. -->
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-m" role="button" tabindex="0"
-      onclick={(e) => _openBreakdown(e, 'M')}
-      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'M')}><InfoHint popup panel label="M" accentColor="#a78bfa"
+    <span class="ps-agg-k ps-k-m"><InfoHint popup panel label="M" accentColor="#a78bfa"
       title="M — Margin"
       text="<b>Available:</b> Cash deployable for new orders = Total − used margin. Updated after every fill.<br><br><b>Total:</b> Full collateral across all accounts = Available + margin blocked for open positions." /></span>
     <span class={'ps-agg-v ' + (marginAvail > 0 ? 'ps-margin' : marginAvail < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('M')}
@@ -788,9 +784,7 @@
        is documented in the audit memo; if the sum diverges from broker
        apps, the Dhan/Groww adapter math is the first place to look. -->
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-c" role="button" tabindex="0"
-      onclick={(e) => _openBreakdown(e, 'C')}
-      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'C')}><InfoHint popup panel label="C" accentColor="#38bdf8"
+    <span class="ps-agg-k ps-k-c"><InfoHint popup panel label="C" accentColor="#38bdf8"
       title="C — Cash"
       text="<b>Cash Available (CA):</b> Live deployable cash. Nets realised P&L + long option premiums paid.<br><br><b>Total Cash:</b> CA + premium tied up in long options (recoverable if closed)." /></span>
     <span class={'ps-agg-v ' + (liveCashTotal > 0 ? 'ps-cash' : liveCashTotal < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('Cash')}
@@ -807,9 +801,7 @@
     >
   </span>
   <span class="ps-agg">
-    <span class="ps-agg-k ps-k-h" role="button" tabindex="0"
-      onclick={(e) => _openBreakdown(e, 'H')}
-      onkeydown={(e) => e.key === 'Enter' && _openBreakdown(e, 'H')}><InfoHint popup panel label="H" accentColor="#22d3ee"
+    <span class="ps-agg-k ps-k-h"><InfoHint popup panel label="H" accentColor="#22d3ee"
       title="H — Holdings"
       text="<b>Today MTM:</b> Live LTP − prev close × qty for long-term holdings. Intraday only.<br><br><b>Value:</b> Broker-reported current market value across all accounts.<br><br><b>Lifetime P&L:</b> Cumulative since purchase = (current − avg cost) × qty." /></span>
     <span class={'ps-agg-v ' + (dispHoldingsToday > 0 ? 'ps-pos' : dispHoldingsToday < 0 ? 'ps-neg' : 'ps-flat') + ' ' + flash.classOf('HDd')}

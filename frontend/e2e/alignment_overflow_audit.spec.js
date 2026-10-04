@@ -537,13 +537,19 @@ test.describe('Live — PositionStrip breakdown panel never overflows narrow vie
         return;
       }
 
-      const pKey = page.locator('.ps-strip .ps-k-p').first();
-      const pKeyVisible = await pKey.isVisible({ timeout: 3000 }).catch(() => false);
-      if (!pKeyVisible) {
-        test.info().annotations.push({ type: 'skip', description: 'No P-slot key visible' });
+      // Click the P-slot VALUE span, not the label — since the label-press
+      // double-open fix (2026-10), the .ps-k-p label only toggles the
+      // InfoHint popover; the value span remains the sole NavBreakdown
+      // trigger (see navstrip_label_infohint_split.spec.js).
+      const pValue = page.locator('.ps-strip .ps-k-p')
+        .locator('xpath=following-sibling::span[1][contains(@class, "ps-agg-v")]')
+        .first();
+      const pValueVisible = await pValue.isVisible({ timeout: 3000 }).catch(() => false);
+      if (!pValueVisible) {
+        test.info().annotations.push({ type: 'skip', description: 'No P-slot value visible' });
         return;
       }
-      await pKey.click();
+      await pValue.click();
       await page.waitForTimeout(300);
 
       const popup = page.locator('.ps-breakdown-panel');
