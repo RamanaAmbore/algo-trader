@@ -690,8 +690,21 @@ class GrowwBroker(Broker):
         for seg in self._GROWW_ORDER_LIST_SEGMENTS:
             for page in range(self._GROWW_ORDER_LIST_MAX_PAGES):
                 _GROWW_RATE_LIMITER.throttle("data")
-                resp = self.groww.get_order_list(page=page, segment=seg)
-                page_rows = _iter_rows(_unwrap(resp), "order_list", "orders")
+                try:
+                    resp = self.groww.get_order_list(page=page, segment=seg)
+                    page_rows = _iter_rows(_unwrap(resp), "order_list", "orders")
+                except Exception as _e:
+                    # A single segment being unavailable for this account
+                    # (e.g. CURRENCY/CDS not enabled) must not take down
+                    # the whole order-list fetch — degrade by skipping
+                    # just this segment and moving on, same principle as
+                    # _resolve_order_row's "failure degrades, never
+                    # raises" convention below.
+                    logger.warning(
+                        f"GrowwBroker.orders() for {self.account!r} "
+                        f"segment={seg!r} page={page}: {_e}"
+                    )
+                    break
                 if not page_rows:
                     break
                 rows.extend(page_rows)

@@ -192,6 +192,47 @@ class TestOrdersPagination:
         # Exactly one page probed per segment, not the full 50-page cap.
         assert broker.groww.get_order_list.call_count == 4
 
+    def test_one_segment_failure_does_not_lose_other_segments(self, broker):
+        """Regression for the live incident: an account without the
+        CURRENCY/CDS segment enabled gets 'Invalid segment CURRENCY for
+        order.' from the SDK on that one segment. Pre-fix this propagated
+        uncaught out of orders(), losing CASH/FNO/COMMODITY rows too.
+
+        Note: `backend.brokers.adapters.groww`'s module logger sets
+        `propagate = False` (see ramboq_logger.get_logger docstring), so
+        pytest's `caplog` fixture (which hooks the root logger) never
+        sees its records — patch `logger.warning` directly instead.
+        """
+        from backend.brokers.adapters import groww as groww_mod
+
+        def fake_get_order_list(page=0, segment=None, **_kw):
+            _bound_get_order_list(page=page, segment=segment)
+            if segment == "CURRENCY":
+                raise Exception("Invalid segment CURRENCY for order.")
+            if page == 0:
+                return {"order_list": [
+                    {"groww_order_id": f"{segment}-0", "exchange": "NSE",
+                     "order_status": "OPEN", "quantity": "1"}
+                ]}
+            return {"order_list": []}
+
+        broker.groww.get_order_list = MagicMock(side_effect=fake_get_order_list)
+
+        warning_mock = MagicMock()
+        orig_warning = groww_mod.logger.warning
+        groww_mod.logger.warning = warning_mock
+        try:
+            rows = broker.orders()
+        finally:
+            groww_mod.logger.warning = orig_warning
+
+        order_ids = {r["order_id"] for r in rows}
+        assert order_ids == {"CASH-0", "FNO-0", "COMMODITY-0"}
+        assert warning_mock.call_count == 1
+        logged_message = warning_mock.call_args[0][0]
+        assert "CURRENCY" in logged_message
+        assert "Invalid segment" in logged_message
+
 
 # ── Item 5: modify_order() price-only qty/order_type preservation ───────
 
