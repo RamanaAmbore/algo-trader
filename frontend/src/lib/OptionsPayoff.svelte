@@ -1823,7 +1823,7 @@
   }
   .ps-row {
     display: contents;
-    cursor: help;
+    cursor: pointer;
   }
   .ps-k {
     /* Amber label tier — bumped to 0.6rem (was 9px literal) so the

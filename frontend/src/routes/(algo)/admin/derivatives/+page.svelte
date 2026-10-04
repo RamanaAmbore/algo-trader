@@ -6173,7 +6173,7 @@
   <aside class="opt-side opt-side-row">
 
         <div class="opt-block">
-          <div class="opt-block-h" style="cursor:help" bind:this={_sumHintAnchor.greeksNote}
+          <div class="opt-block-h" style="cursor:pointer" bind:this={_sumHintAnchor.greeksNote}
                role="button" tabindex="0" aria-expanded={_sumHintOpen.greeksNote}
                onclick={() => { _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote; }}
                onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.greeksNote = !_sumHintOpen.greeksNote)}>
@@ -6231,7 +6231,7 @@
         </div>
 
         <div class="opt-block">
-          <div class="opt-block-h" style="cursor:help" bind:this={_sumHintAnchor.riskNote}
+          <div class="opt-block-h" style="cursor:pointer" bind:this={_sumHintAnchor.riskNote}
                role="button" tabindex="0" aria-expanded={_sumHintOpen.riskNote}
                onclick={() => { _sumHintOpen.riskNote = !_sumHintOpen.riskNote; }}
                onkeydown={(e) => _sumHintKeydown(e, () => _sumHintOpen.riskNote = !_sumHintOpen.riskNote)}>
@@ -6819,7 +6819,7 @@
     font-size: var(--fs-sm);
     flex: 0 0 auto;
     flex-wrap: nowrap;
-    cursor: help;
+    cursor: pointer;
   }
   /* Non-Greek labels: dashed underline signals "tap for explanation" */
   .kv-k:not(.kv-k-greek) {

@@ -389,7 +389,7 @@
             <div class="perf-stats">
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'loc')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'loc')]}
@@ -405,7 +405,7 @@
               </span>
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'cc_max')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'cc_max')]}
@@ -421,7 +421,7 @@
               </span>
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'cc_avg')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'cc_avg')]}
@@ -438,7 +438,7 @@
               {#if card.lcp_ms !== null && card.lcp_ms !== undefined}
                 <span class="perf-stat">
                   <span class="perf-stat-label">
-                    <span class="metric-label" style="cursor:help"
+                    <span class="metric-label" style="cursor:pointer"
                           bind:this={_perfHintAnchor[_perfHintKey('fe', card, 'lcp_ms')]}
                           role="button" tabindex="0"
                           aria-expanded={_perfHintOpen[_perfHintKey('fe', card, 'lcp_ms')]}
@@ -541,7 +541,7 @@
             <div class="perf-stats">
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('be', card, 'loc')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'loc')]}
@@ -557,7 +557,7 @@
               </span>
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('be', card, 'cc_max')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'cc_max')]}
@@ -573,7 +573,7 @@
               </span>
               <span class="perf-stat">
                 <span class="perf-stat-label">
-                  <span class="metric-label" style="cursor:help"
+                  <span class="metric-label" style="cursor:pointer"
                         bind:this={_perfHintAnchor[_perfHintKey('be', card, 'cc_avg')]}
                         role="button" tabindex="0"
                         aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'cc_avg')]}
@@ -590,7 +590,7 @@
               {#if card.route_p95_ms !== null && card.route_p95_ms !== undefined}
                 <span class="perf-stat">
                   <span class="perf-stat-label">
-                    <span class="metric-label" style="cursor:help"
+                    <span class="metric-label" style="cursor:pointer"
                           bind:this={_perfHintAnchor[_perfHintKey('be', card, 'p95')]}
                           role="button" tabindex="0"
                           aria-expanded={_perfHintOpen[_perfHintKey('be', card, 'p95')]}
@@ -675,7 +675,7 @@
           <tr>
             <th>Function</th>
             <th>Page / route</th>
-            <th class="algo-table-num"><span class="metric-label" style="cursor:help" bind:this={_hotspotCcHintAnchor} role="button" tabindex="0" aria-expanded={_hotspotCcHintOpen} onclick={() => { _hotspotCcHintOpen = !_hotspotCcHintOpen; }} onkeydown={(e) => _perfHintKeydown(e, () => { _hotspotCcHintOpen = !_hotspotCcHintOpen; })}>cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} hideButton id="perf-hint-hotspot-cc" anchor={_hotspotCcHintAnchor} bind:open={_hotspotCcHintOpen} panel title="cc" maxWidth="26rem" /></span></th>
+            <th class="algo-table-num"><span class="metric-label" style="cursor:pointer" bind:this={_hotspotCcHintAnchor} role="button" tabindex="0" aria-expanded={_hotspotCcHintOpen} onclick={() => { _hotspotCcHintOpen = !_hotspotCcHintOpen; }} onkeydown={(e) => _perfHintKeydown(e, () => { _hotspotCcHintOpen = !_hotspotCcHintOpen; })}>cc<InfoHint content={METRIC_META.hotspot_cc} popup={true} hideButton id="perf-hint-hotspot-cc" anchor={_hotspotCcHintAnchor} bind:open={_hotspotCcHintOpen} panel title="cc" maxWidth="26rem" /></span></th>
             <th class="algo-table-num">line</th>
           </tr>
         </thead>

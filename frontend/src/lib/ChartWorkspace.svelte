@@ -2383,7 +2383,7 @@
         <span class="cw-err-text cw-greeks-err">{_greeksError}</span>
       {:else if _greeks}
         {@const g = _greeks}
-        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.delta}
+        <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.delta}
              role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.delta}
              onclick={() => { _cwGreekHintOpen.delta = !_cwGreekHintOpen.delta; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.delta = !_cwGreekHintOpen.delta)}>
@@ -2393,7 +2393,7 @@
             bind:open={_cwGreekHintOpen.delta}
             panel title="Delta (Δ)" text="Delta — how much the option price moves per ₹1 move in the underlying. Call Δ is positive; put Δ is negative." />
         </div>
-        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.gamma}
+        <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.gamma}
              role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.gamma}
              onclick={() => { _cwGreekHintOpen.gamma = !_cwGreekHintOpen.gamma; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.gamma = !_cwGreekHintOpen.gamma)}>
@@ -2403,7 +2403,7 @@
             bind:open={_cwGreekHintOpen.gamma}
             panel title="Gamma (Γ)" text="Gamma — rate of change of Delta per ₹1 move. High Gamma = Delta changes fast near expiry." />
         </div>
-        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.theta}
+        <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.theta}
              role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.theta}
              onclick={() => { _cwGreekHintOpen.theta = !_cwGreekHintOpen.theta; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.theta = !_cwGreekHintOpen.theta)}>
@@ -2413,7 +2413,7 @@
             bind:open={_cwGreekHintOpen.theta}
             panel title="Theta (Θ)" text="Theta — daily time decay in ₹ (trader units). Long options lose Θ per day; short options gain it." />
         </div>
-        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.vega}
+        <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.vega}
              role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.vega}
              onclick={() => { _cwGreekHintOpen.vega = !_cwGreekHintOpen.vega; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.vega = !_cwGreekHintOpen.vega)}>
@@ -2423,7 +2423,7 @@
             bind:open={_cwGreekHintOpen.vega}
             panel title="Vega (V)" text="Vega — P&amp;L change per 1% move in implied volatility. Long options have positive Vega." />
         </div>
-        <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.rho}
+        <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.rho}
              role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.rho}
              onclick={() => { _cwGreekHintOpen.rho = !_cwGreekHintOpen.rho; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.rho = !_cwGreekHintOpen.rho)}>
@@ -2434,7 +2434,7 @@
             panel title="Rho (ρ)" text="Rho — P&amp;L change per 1% move in interest rate. Usually small compared to other Greeks." />
         </div>
         {#if (g.iv ?? g.greeks?.iv) != null}
-          <div class="cw-greek-item" style="cursor:help" bind:this={_cwGreekHintAnchor.iv}
+          <div class="cw-greek-item" style="cursor:pointer" bind:this={_cwGreekHintAnchor.iv}
                role="button" tabindex="0" aria-expanded={_cwGreekHintOpen.iv}
                onclick={() => { _cwGreekHintOpen.iv = !_cwGreekHintOpen.iv; }}
              onkeydown={(e) => _cwHintKeydown(e, () => _cwGreekHintOpen.iv = !_cwGreekHintOpen.iv)}>
