@@ -1563,6 +1563,7 @@ async def _ticket_record_preflight_block(
                 agent_id=_live_manual_aid,
                 strategy_id=data.strategy_id,
                 source=(data.source or "ticket"),
+                mcp_request_id=getattr(data, "mcp_request_id", None),
                 detail=f"preflight blocked: "
                        f"{', '.join(b.get('code','?') for b in pf['blocked'])}",
             )
@@ -1700,6 +1701,7 @@ async def _ticket_persist_live_algo_order(
                 # itself, not just agent_events. Lets chain/command tabs
                 # distinguish themselves once they start sending `source`.
                 source=(data.source or "ticket"),
+                mcp_request_id=getattr(data, "mcp_request_id", None),
                 detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
                        f"{' @₹' + str(data.price) if data.price else ''}",
             )
@@ -2138,6 +2140,7 @@ async def _opp_paper_persist_row(
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
                 source=(data.source or "ticket"),
+                mcp_request_id=getattr(data, "mcp_request_id", None),
                 detail=detail,
             )
             s.add(row)

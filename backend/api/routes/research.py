@@ -197,6 +197,15 @@ class PlaceOrderRequest(msgspec.Struct):
     variety:              str = "regular"
     chase:                bool = True
     chase_aggressiveness: str = "low"
+    # Optional OrderTemplate attachment by slug (e.g. "default-bull") —
+    # alternative to template_id, which this request shape has never
+    # exposed. Resolved server-side to a template_id via
+    # load_template_for_slug_or_id before the ticket is built; an unknown
+    # slug is a 422, not a silent no-template fallback. NOT included in
+    # _purpose_hash_place's fingerprint today — see _res_resolve_template_slug's
+    # caller for the known gap this leaves (template choice isn't bound to
+    # the confirm token the operator approved).
+    template_slug:        str | None = None
 
 
 class PlaceOrderResponse(msgspec.Struct):
@@ -992,12 +1001,37 @@ async def _res_cancel_paper(
     return SimpleOrderResponse(order_id=oid, detail="cancelled (paper)")
 
 
+async def _res_resolve_template_slug(
+    template_id: int | None, template_slug: str | None,
+) -> tuple[int | None, str | None]:
+    """Resolve an optional place_order `template_slug` to a template_id.
+
+    Returns (resolved_template_id, error_detail). `error_detail` is None
+    on success — including the common case where neither id nor slug was
+    supplied (template-less order). A non-None `template_id` always wins
+    (slug is ignored) since the two are mutually-exclusive per the MCP
+    tool's own docstring. Extracted from place_order to keep CC there low.
+    """
+    if template_id is not None or not template_slug:
+        return template_id, None
+    from backend.api.algo.template_attach import load_template_for_slug_or_id
+    tpl = await load_template_for_slug_or_id(template_id=None, template_slug=template_slug)
+    if tpl is None:
+        return None, f"Unknown template_slug: {template_slug!r}"
+    return int(tpl["id"]), None
+
+
 def _res_make_place_ticket(
     mode: str, side: str, sym: str, qty: int, data: Any, acct: str, order_type: str,
+    request_id: str, template_id: int | None = None,
 ) -> Any:
     """Build a TicketOrderRequest from place_order inputs.
 
-    Extracted from place_order to reduce CC there."""
+    Extracted from place_order to reduce CC there. `template_id` is the
+    SERVER-RESOLVED id (see _res_resolve_template_slug) — never data's own
+    raw template_slug field, since TicketOrderRequest has no such field.
+    `request_id` carries this call's mcp_audit request_id onto the created
+    AlgoOrder row (AlgoOrder.mcp_request_id) for audit-to-order linkage."""
     from backend.api.schemas import TicketOrderRequest
     return TicketOrderRequest(
         mode=mode, side=side, tradingsymbol=sym, quantity=qty,
@@ -1007,6 +1041,8 @@ def _res_make_place_ticket(
         account=acct, chase=data.chase,
         chase_aggressiveness=data.chase_aggressiveness,
         source="mcp",
+        template_id=template_id,
+        mcp_request_id=request_id,
     )
 
 
@@ -1506,11 +1542,24 @@ class ResearchController(Controller):
             "quantity": qty, "mode": mode, "order_type": order_type,
             "price": data.price, "trigger_price": data.trigger_price,
             "had_token": bool(data.confirm_token),
+            "template_slug": data.template_slug,
         }
 
         async def _audit(status_: str, summary: str) -> None:
             await _res_mcp_audit("place_order", user_id, _place_args,
                                  status_, summary, request_id)
+
+        # Resolve template_slug → template_id before the token gate, so a
+        # typo'd slug fails fast (422) without burning the operator's
+        # single-use confirm token. NOTE: template_slug is NOT part of
+        # _purpose_hash_place's fingerprint — the confirm token does not
+        # bind the template choice. See this request field's docstring.
+        resolved_template_id, _tpl_err = await _res_resolve_template_slug(
+            None, data.template_slug,
+        )
+        if _tpl_err:
+            await _audit("error", _tpl_err)
+            raise HTTPException(status_code=422, detail=_tpl_err)
 
         # Token gate.
         err = _consume_token(data.confirm_token or "", user_id, ph)
@@ -1523,7 +1572,10 @@ class ResearchController(Controller):
         # registration / Kite call all in one place.
         from backend.api.routes.orders import OrdersController
 
-        ticket = _res_make_place_ticket(mode, side, sym, qty, data, acct, order_type)
+        ticket = _res_make_place_ticket(
+            mode, side, sym, qty, data, acct, order_type,
+            request_id, resolved_template_id,
+        )
         try:
             ctrl = OrdersController(owner=None)
             # `.fn(ctrl, ...)` — bypass the @post route-handler wrapper.

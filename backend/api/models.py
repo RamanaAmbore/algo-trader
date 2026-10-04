@@ -915,6 +915,16 @@ class AlgoOrder(Base):
     # gated on `source` tagging being wired up first.
     algo_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
+    # MCP audit linkage — the request_id (12-hex-char token_hex(6)) minted
+    # by backend.api.routes.research.place_order for its mcp_audit row.
+    # Distinct from `request_id` above, which holds the AuditMiddleware
+    # HTTP-request UUID and drives the M13 idempotency check — the two
+    # are independent identifiers from independent code paths. Lets
+    # /admin/research's Audit tab join an mcp_audit row directly to the
+    # AlgoOrder it created. Nullable: only set on MCP-sourced tickets
+    # (source="mcp"); every other order path leaves this NULL.
+    mcp_request_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
+
     # Sprint E (audit #7) — composite (mode, status) index. The trail-
     # stop poller, OCO pair-watcher, and paper recovery all hit
     # `WHERE mode = ? AND status = ?` on every cycle. With only the

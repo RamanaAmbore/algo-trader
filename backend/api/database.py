@@ -919,6 +919,23 @@ async def _migrate_algo_orders_sprint1a_columns(conn) -> None:
     """))
 
 
+async def _migrate_algo_orders_mcp_request_id(conn) -> None:
+    """Additive migration — `algo_orders.mcp_request_id` (MCP audit-to-order
+    linkage). Mirrors `_migrate_algo_orders_sprint1a_columns`'s exact
+    pattern: runs inside init_db's normal `engine.begin()` transaction,
+    `SET LOCAL lock_timeout` bounds how long this can wait behind any
+    in-flight row lock, plain `ADD COLUMN IF NOT EXISTS` (nullable, no
+    default, no backfill) so it's a no-op on an already-migrated DB and
+    safe on a fresh one. No index — this column is looked up from the
+    mcp_audit side (by request_id), not queried by algo_orders scans."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS "
+        "mcp_request_id VARCHAR(32)"
+    ))
+
+
 # Sprint 1a — CREATE INDEX CONCURRENTLY statements for the three new
 # algo_orders columns. Index names deliberately match the names
 # SQLAlchemy's default `index=True` naming convention produces
@@ -1006,6 +1023,7 @@ async def init_db() -> None:
         await _migrate_app_messages_table(conn)
         await _migrate_order_templates_wing_max_spread_pct(conn)
         await _migrate_algo_orders_sprint1a_columns(conn)
+        await _migrate_algo_orders_mcp_request_id(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the

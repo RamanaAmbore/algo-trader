@@ -540,6 +540,7 @@ async def place_order(
     variety: str = "regular",
     chase: bool = True,
     chase_aggressiveness: str = "low",
+    template_slug: str | None = None,
 ) -> dict:
     """Place an order via the operator's broker pipeline. REQUIRES a
     valid confirm_token minted by the operator from the Lab page
@@ -588,6 +589,14 @@ async def place_order(
         chase:                True (default) → engine re-quotes the limit
                               each tick until filled or unfilled.
         chase_aggressiveness: low (default) / med / high.
+        template_slug:        Optional OrderTemplate slug (e.g.
+                              "default-bull") to attach TP/SL/wing exit
+                              protection once this order fills. Resolved
+                              server-side; an unknown slug returns a 422
+                              before the order is placed. NOT bound into
+                              the confirm token's purpose hash — the
+                              operator's token confirms account/symbol/
+                              side/qty/price/mode but not template choice.
 
     Returns:
         {order_id, mode, status, detail} from the underlying ticket
@@ -608,6 +617,7 @@ async def place_order(
         "variety":              variety,
         "chase":                chase,
         "chase_aggressiveness": chase_aggressiveness,
+        "template_slug":        template_slug,
     }
     return await _post("/api/research/place-order", body)
 
@@ -744,6 +754,31 @@ async def get_audit_recent(
     if status: params["status"] = status
     rows = await _get("/api/research/audit", params)
     return {"rows": rows or [], "count": len(rows or [])}
+
+
+@app.tool()
+async def get_order_events(order_id: int) -> dict:
+    """Per-order event timeline for one AlgoOrder, oldest-first.
+
+    Wraps the same `GET /api/orders/{order_id}/events` endpoint the
+    OrderBook/LogPanel UI uses — read-only, no confirm_token needed.
+    Useful to inspect what happened to an order you (or the operator)
+    placed: fills, template-attach attempts, preflight blocks, chase
+    cancel/replace cycles, etc.
+
+    Args:
+        order_id: The AlgoOrder.id (integer) — e.g. the `order_id`
+            returned by place_order when mode='paper', or the row id
+            shown in /orders.
+
+    Returns:
+        dict with `events` list (oldest-first) — each row carries
+        id, order_id, ts (ISO-8601 UTC), kind, message, payload_json.
+        Account codes inside payload_json are masked for non-admin
+        callers, same as the REST endpoint.
+    """
+    rows = await _get(f"/api/orders/{int(order_id)}/events")
+    return {"events": rows or [], "count": len(rows or [])}
 
 
 @app.tool()
