@@ -558,12 +558,15 @@ File changed: `frontend/src/lib/BrokerHealthBadge.svelte`
 ### Per-slot info hints
 
 Each slot value (except the clickable Day P&L) has an **ⓘ** icon immediately to its
-right. The icon is rendered via `<InfoHint popup panel label="ⓘ">` and uses
-the parent pill's accent color. Behavior:
+right, using the parent pill's accent color. The icon is low-opacity (0.5) at rest,
+full-opacity on hover OR while pinned open. Behavior:
 
-- Icon is low-opacity (0.5) at rest, full-opacity (`var(--c-info)`) on hover (visual only; hover does NOT open the panel)
-- Click the icon to toggle the panel open/closed; clicking again or clicking elsewhere closes it (singleton behavior)
-- The popup panel describes what the slot measures and how the value is computed
+- Hovering the icon shows a transient preview of the panel — moving the mouse away hides it again, nothing persists.
+- Clicking the icon pins the panel open — it now survives the mouse moving away.
+- Clicking the icon again, clicking elsewhere, or pressing Escape dismisses the pinned panel.
+- Hovering a DIFFERENT slot's icon while one panel is pinned open does not close the pinned one (previews are independent of the pinned state).
+- Touch devices: tapping pins directly, with no preview phase first (there's no hover concept on touch).
+- The popup panel describes what the slot measures and how the value is computed.
 
 Slot hint content by position:
 
@@ -764,7 +767,7 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
   grid even during high-frequency tick bursts
 - **NavBreakdown header**: Click P/M/C/H label → panel opens with canonical-modal-header bar showing correct title ("Positions P&L" / "Margin" / "Cash" / "Holdings"); close button inside header; no floating close button
 - **Panel popups (Round 6)**: Click P/M/C/H label → panel opens with accent-colored title, left-border stripe, and gradient background; accent color matches pill identity
-- **Per-slot info hints (Round 6)**: Hover any slot value → ⓘ icon becomes visible (opacity change only); click the icon → panel opens with correct title and description; click again or click elsewhere → panel closes
+- **Per-slot info hints (Round 6)**: Hover any slot's ⓘ icon → preview panel appears (transient, not pinned); move mouse away → preview disappears; click the icon → panel pins open with correct title and description; click again, click elsewhere, or press Escape → panel closes; hovering a different slot's icon while one is pinned does not close it.
 - **BrokerHealthBadge ag-Grid**: Click broker connection chip (5/5 or degraded count) → modal opens with ag-Grid showing account rows; grid columns render: status dot | Account (with 3px colored left stripe via --acct-stripe) | Broker | Status badge | Reason | Last Good; verify stripe color matches PerformancePage palette for same account; row click opens activity modal
 - **Account stripe styling**: NavBreakdown and BrokerHealthBadge grids both apply `--acct-stripe` via `cellStyle` (DJB2 hash, same palette as PerformancePage); verify 3px left-border stripe renders for each account row with consistent color across all grids
 
@@ -804,3 +807,4 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 | 2026-09-22 | v2.0 NavBreakdown column widths + styling (commit 516937c5): (1) **NavBreakdown column widths reduced ~20%** (commit 516937c5): Account column width 76→60, minWidth 60→48, maxWidth 92→74. Flex columns minWidth 80→64. utilPct column minWidth 64→52. Tighter grid optimizes space on smaller viewports while maintaining readability. Updated §1.1 subsection in table layout details. File: `frontend/src/lib/NavBreakdown.svelte`. |
 | 2026-09-29 | v2.1 M/C funds aggregation include-not-exclude fix (commit bc7526f9): Real-money defect where any single stale account froze entire cross-account margin/cash totals to a remembered scalar (or 0 on page-load, hiding real capital). Fix: `fundsAggregate.js` helpers (`sumMarginAvail`, `sumMarginTotal`, `sumLiveCashTotal`) now sum every non-TOTAL row actually present, including stale accounts with backend-substituted last-known-good values. Only returns `null` (displays `—` via `fmtMoney`) when `fundRows` is null/empty (genuinely unknown, no poll yet). Backend `FundsRow` fields now `float\|None` to preserve missing-vs-zero distinction (see CLAUDE.md "Alert evaluation and latching"). Updated §7 "Auth outage or broker connection loss" to document new aggregation semantics and distinguish strip-level `ps-stale` poll-failure indicator from per-account `account_stale` row flag. Files: `frontend/src/lib/data/fundsAggregate.js`, `frontend/src/lib/PositionStrip.svelte`, `backend/api/routes/funds.py`, `backend/api/schemas.py`. |
 | 2026-10-04 | InfoHint hover-to-open behavior removed app-wide (commit e4094945) — all info hints are now click-only; NavStrip per-slot hints section updated to match; `showOnHover` prop no longer exists. |
+| 2026-10-04 | InfoHint hover-preview + click-to-pin redesign — hover now shows a transient preview (mirrors OptionsPayoff chart tooltip), click pins the panel open; replaces the pure click-only model from the previous entry; NavBreakdown (value-click) unaffected. |
