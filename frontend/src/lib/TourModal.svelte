@@ -53,7 +53,7 @@
       tag:   'AI workflow',
       title: 'MCP server + Lab page',
       body:  'Claude Code talks to live broker state through a 26-tool MCP server. Confirm-token gate on every mutating call. Every tool invocation logs to a tamper-evident audit table — same one a SEBI auditor would query.',
-      link:  { label: 'See the Lab', href: '/admin/research' },
+      link:  { label: 'See the Lab', href: '/admin/lab' },
     },
   ];
 

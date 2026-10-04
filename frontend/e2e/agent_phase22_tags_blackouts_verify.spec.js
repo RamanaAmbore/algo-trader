@@ -26,12 +26,12 @@ test(`Phase 22 — tags + blackout_windows round-trip [${BASE}]`, async ({ page 
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const t = await page.request.post(`${BASE}/api/research/threads`, {
+  const t = await page.request.post(`${BASE}/api/lab/threads`, {
     data: { symbol: 'PWPH22', title: 'phase 22 tags+windows', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 22 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -54,7 +54,7 @@ test(`Phase 22 — tags + blackout_windows round-trip [${BASE}]`, async ({ page 
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
 });
 
 test(`AgentInfo on existing built-ins shows new fields [${BASE}]`, async ({ page }) => {

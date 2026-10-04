@@ -44,12 +44,12 @@ test(`Phase 6 — mcp.audit_retention_days setting seeded [${BASE}]`, async ({ p
   expect(Number(row.default_value)).toBe(90);
 });
 
-test(`Phase 7 — /api/research/audit returns shape matching get_audit_recent [${BASE}]`, async ({ page }) => {
+test(`Phase 7 — /api/lab/audit returns shape matching get_audit_recent [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Plain list
-  const all = await page.request.get(`${BASE}/api/research/audit?limit=20`, { headers });
+  const all = await page.request.get(`${BASE}/api/lab/audit?limit=20`, { headers });
   expect(all.ok()).toBe(true);
   const rows = await all.json();
   expect(Array.isArray(rows)).toBe(true);
@@ -57,7 +57,7 @@ test(`Phase 7 — /api/research/audit returns shape matching get_audit_recent [$
 
   // tool-filtered — restricted to place_order (and later cancel/modify)
   const filtered = await page.request.get(
-    `${BASE}/api/research/audit?tool=place_order&limit=5`, { headers });
+    `${BASE}/api/lab/audit?tool=place_order&limit=5`, { headers });
   expect(filtered.ok()).toBe(true);
   const placeRows = await filtered.json();
   for (const r of placeRows) {
@@ -67,7 +67,7 @@ test(`Phase 7 — /api/research/audit returns shape matching get_audit_recent [$
 
   // status filter
   const denied = await page.request.get(
-    `${BASE}/api/research/audit?status=denied&limit=5`, { headers });
+    `${BASE}/api/lab/audit?status=denied&limit=5`, { headers });
   expect(denied.ok()).toBe(true);
   const deniedRows = await denied.json();
   for (const r of deniedRows) {
@@ -79,7 +79,7 @@ test(`Phase 7 — /api/research/audit returns shape matching get_audit_recent [$
 test(`Settings tab — 17 tools including get_audit_recent [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();
   await page.waitForTimeout(400);

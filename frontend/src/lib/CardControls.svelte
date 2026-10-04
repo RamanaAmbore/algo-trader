@@ -13,7 +13,7 @@
       (renders LogPanel directly) and /automation + /automation/activity
       (render ActivityLogSurface, which wraps LogPanel). These three
       never import CardControls themselves.
-    NOT adopted anywhere — /admin/research and /automation/templates
+    NOT adopted anywhere — /admin/lab and /automation/templates
       and /automation/agent-templates render neither LogPanel nor
       CardControls; any hand-rolled chrome there is unrelated to this
       component.

@@ -1665,7 +1665,7 @@ test.describe.serial('algo consistency — close-button rest-state fill (live)',
  *     diverging from the canonical `.algo-table thead th` SSOT in
  *     app.css (var(--fs-sm)/0.6rem) — removed so it matches
  *     admin/settings, the only other `.algo-table` consumer.
- *   - admin/research: `.thr-sym` hardcoded 1rem (no matching token)
+ *   - admin/lab: `.thr-sym` hardcoded 1rem (no matching token)
  *     -> var(--fs-xl), the "title cluster" tier.
  * Every other page in the sweep (Automation, Sandbox, Strategies,
  * Activity, Console, Tokens body, Brokers, Settings, Users,
@@ -1682,7 +1682,7 @@ const FONT_AUDIT_PAGES = [
   'src/routes/(algo)/strategies/+page.svelte',
   'src/routes/(algo)/activity/+page.svelte',
   'src/routes/(algo)/console/+page.svelte',
-  'src/routes/(algo)/admin/research/+page.svelte',
+  'src/routes/(algo)/admin/lab/+page.svelte',
   'src/routes/(algo)/admin/tokens/+page.svelte',
   'src/routes/(algo)/admin/brokers/+page.svelte',
   'src/routes/(algo)/admin/settings/+page.svelte',
@@ -1739,8 +1739,8 @@ test.describe('algo consistency — Build/Config font-size audit (source)', () =
     expect(src, 'the bespoke 0.68rem thead-th override must be removed').not.toContain('0.68rem');
   });
 
-  test('admin/research .thr-sym uses var(--fs-xl), not the old 1rem literal', () => {
-    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/research/+page.svelte'), 'utf-8');
+  test('admin/lab .thr-sym uses var(--fs-xl), not the old 1rem literal', () => {
+    const src = fs.readFileSync(path.join(process.cwd(), 'src/routes/(algo)/admin/lab/+page.svelte'), 'utf-8');
     const m = src.match(/\.thr-sym\s*\{([^}]*)\}/);
     expect(m, '.thr-sym rule not found').not.toBeNull();
     expect(m[1], '.thr-sym must use var(--fs-xl)').toMatch(/font-size:\s*var\(--fs-xl\)/);

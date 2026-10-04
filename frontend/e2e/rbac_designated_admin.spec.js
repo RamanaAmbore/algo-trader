@@ -59,7 +59,7 @@ const DESIGNATED_PASS = process.env.PLAYWRIGHT_DESIGNATED_PASS || '';
 const HAS_DESIGNATED  = !!DESIGNATED_PASS;
 
 // Pages gated by caps that admin (rambo) holds: manage_brokers + view_audit.
-// /admin/alerts uses view_audit which admin holds; /admin/research uses
+// /admin/alerts uses view_audit which admin holds; /admin/lab uses
 // view_lab which admin does NOT hold per backend/api/rbac.py CAPS.
 const ADMIN_ACCESSIBLE_PAGES = [
   { path: '/admin/brokers',  title: 'Brokers',  cap: 'manage_brokers' },
@@ -165,7 +165,7 @@ async function injectToken(page, tok) {
 //   The earlier RBAC fix (commit 71ec944e) passed 11/11 but regressed silently
 //   because the existing assertions all ran AFTER auth resolved. The bug only
 //   reproduces on FIRST PAINT before /whoami returns. Two later refactors
-//   removed the bridge / guard from /admin/research + /admin/alerts and the
+//   removed the bridge / guard from /admin/lab + /admin/alerts and the
 //   spec never caught it because it never simulated the slow-whoami window.
 //
 // What it tests:
@@ -363,7 +363,7 @@ test(`[STALE] no bare role==='admin' in config page guards`, async () => {
 // ── Regression-class: discover every "Access denied" page automatically ─────
 //
 // The original spec (commit 71ec944e) hand-listed 6 pages, which let the
-// regression on /admin/alerts + /admin/research slip through unnoticed
+// regression on /admin/alerts + /admin/lab slip through unnoticed
 // since they were never in the loop. This auto-discovery walks the entire
 // admin route tree, finds every +page.svelte that renders an "Access denied"
 // EmptyState lock, and asserts the bridge pattern is present on each. Any

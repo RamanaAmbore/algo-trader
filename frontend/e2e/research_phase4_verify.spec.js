@@ -24,11 +24,11 @@ async function login(page) {
   return _cachedToken;
 }
 
-test(`GET /api/research/audit endpoint contract [${BASE}]`, async ({ page, browser }) => {
+test(`GET /api/lab/audit endpoint contract [${BASE}]`, async ({ page, browser }) => {
   // Unauth probe needs a fresh context — page.request inherits
   // setExtraHTTPHeaders if we call login() in the same test.
   const cleanCtx = await browser.newContext();
-  const noAuth = await cleanCtx.request.get(`${BASE}/api/research/audit`);
+  const noAuth = await cleanCtx.request.get(`${BASE}/api/lab/audit`);
   expect(noAuth.status()).toBe(401);
   await cleanCtx.close();
 
@@ -36,7 +36,7 @@ test(`GET /api/research/audit endpoint contract [${BASE}]`, async ({ page, brows
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Auth → 200 + array
-  const r = await page.request.get(`${BASE}/api/research/audit?limit=50`, { headers });
+  const r = await page.request.get(`${BASE}/api/lab/audit?limit=50`, { headers });
   expect(r.ok()).toBe(true);
   const rows = await r.json();
   expect(Array.isArray(rows)).toBe(true);
@@ -56,7 +56,7 @@ test(`cross-kind token rejection [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint a PLACE token, try to use it for CANCEL → must be 403.
-  const mint = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: {
       kind: 'place',
       account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT',
@@ -68,7 +68,7 @@ test(`cross-kind token rejection [${BASE}]`, async ({ page }) => {
   const { token } = await mint.json();
 
   // Use the place token for a cancel → 403, purpose mismatch.
-  const cancel = await page.request.post(`${BASE}/api/research/cancel-order`, {
+  const cancel = await page.request.post(`${BASE}/api/lab/cancel-order`, {
     data: {
       confirm_token: token,
       account: 'ZG0790',
@@ -84,7 +84,7 @@ test(`cancel + modify mint paths work [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // CANCEL mint
-  const mintC = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mintC = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: '251115000123456' },
     headers,
   });
@@ -95,7 +95,7 @@ test(`cancel + modify mint paths work [${BASE}]`, async ({ page }) => {
   console.log(`cancel mint: ${c.purpose}`);
 
   // MODIFY mint
-  const mintM = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mintM = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: {
       kind: 'modify', account: 'ZG0790', order_id: '251115000123456',
       quantity: 25, order_type: 'LIMIT', price: 22150,
@@ -108,7 +108,7 @@ test(`cancel + modify mint paths work [${BASE}]`, async ({ page }) => {
   console.log(`modify mint: ${m.purpose}`);
 
   // Cancel mint requires order_id — empty → 400
-  const bad = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const bad = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: '' },
     headers,
   });
@@ -118,7 +118,7 @@ test(`cancel + modify mint paths work [${BASE}]`, async ({ page }) => {
 test(`Lab page — Audit tab + Kind selector render [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // 4 tabs now: Research, Drafts, Audit, Settings

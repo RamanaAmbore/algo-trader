@@ -31,7 +31,7 @@ test(`paper cancel + modify mints work [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Paper cancel
-  const mintC = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mintC = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: '42', mode: 'paper' },
     headers,
   });
@@ -42,7 +42,7 @@ test(`paper cancel + modify mints work [${BASE}]`, async ({ page }) => {
   console.log(`paper cancel mint: ${c.purpose}`);
 
   // Paper modify
-  const mintM = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mintM = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: {
       kind: 'modify', account: 'ZG0790', order_id: '42', mode: 'paper',
       quantity: 50, order_type: 'LIMIT', price: 22100,
@@ -59,7 +59,7 @@ test(`cross-mode token redemption blocked [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint a LIVE cancel token
-  const mint = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: '251115000123456', mode: 'live' },
     headers,
   });
@@ -67,7 +67,7 @@ test(`cross-mode token redemption blocked [${BASE}]`, async ({ page }) => {
   const { token } = await mint.json();
 
   // Try to use it for a PAPER cancel → 403
-  const bad = await page.request.post(`${BASE}/api/research/cancel-order`, {
+  const bad = await page.request.post(`${BASE}/api/lab/cancel-order`, {
     data: {
       confirm_token: token,
       account: 'ZG0790', order_id: '251115000123456', mode: 'paper',
@@ -82,14 +82,14 @@ test(`paper cancel rejects non-integer order_id [${BASE}]`, async ({ page }) => 
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint matching paper-cancel token
-  const mint = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: 'not-an-int', mode: 'paper' },
     headers,
   });
   expect(mint.ok()).toBe(true);
   const { token } = await mint.json();
 
-  const bad = await page.request.post(`${BASE}/api/research/cancel-order`, {
+  const bad = await page.request.post(`${BASE}/api/lab/cancel-order`, {
     data: {
       confirm_token: token,
       account: 'ZG0790', order_id: 'not-an-int', mode: 'paper',
@@ -103,13 +103,13 @@ test(`paper cancel of non-existent order_id returns 404 [${BASE}]`, async ({ pag
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const mint = await page.request.post(`${BASE}/api/research/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
     data: { kind: 'cancel', account: 'ZG0790', order_id: '99999999', mode: 'paper' },
     headers,
   });
   const { token } = await mint.json();
 
-  const r = await page.request.post(`${BASE}/api/research/cancel-order`, {
+  const r = await page.request.post(`${BASE}/api/lab/cancel-order`, {
     data: {
       confirm_token: token,
       account: 'ZG0790', order_id: '99999999', mode: 'paper',
@@ -122,7 +122,7 @@ test(`paper cancel of non-existent order_id returns 404 [${BASE}]`, async ({ pag
 test(`Lab mint widget — Mode dropdown for cancel/modify [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();

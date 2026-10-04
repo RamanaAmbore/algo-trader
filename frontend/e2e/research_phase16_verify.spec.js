@@ -29,7 +29,7 @@ async function login(page) {
 test(`Lab Settings — JWT shortcut renders the session token [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();
   await page.waitForTimeout(400);
@@ -77,7 +77,7 @@ test(`Lab Settings — JWT shortcut hides when sessionStorage is empty [${BASE}]
   const tok = await login(page);
   await page.context().addInitScript(() => { sessionStorage.removeItem('ramboq_token'); });
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // The header / token store may bounce us to /signin since the layout

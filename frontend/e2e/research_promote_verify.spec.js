@@ -1,6 +1,6 @@
 // Verify the Phase 2a promote pipeline:
-//   POST /api/research/threads/{id}/promote → creates inactive Agent
-//   GET  /api/research/drafts → joined-view shows the new draft
+//   POST /api/lab/threads/{id}/promote → creates inactive Agent
+//   GET  /api/lab/drafts → joined-view shows the new draft
 //   Safety: trade_mode is paper, status is inactive (hardcoded)
 //   Frontend: Drafts tab renders the joined row + "Source" button
 //             jumps back to Research tab w/ thread selected
@@ -32,7 +32,7 @@ test(`promote pipeline API roundtrip [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // 1. Create a research thread to promote.
-  const t = await page.request.post(`${BASE}/api/research/threads`, {
+  const t = await page.request.post(`${BASE}/api/lab/threads`, {
     data: {
       symbol: 'PWPROM',
       title: 'Promote pipeline probe',
@@ -53,7 +53,7 @@ test(`promote pipeline API roundtrip [${BASE}]`, async ({ page }) => {
       { metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 },
     ],
   };
-  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: {
       name: 'Probe loss agent',
       conditions: cond,
@@ -75,14 +75,14 @@ test(`promote pipeline API roundtrip [${BASE}]`, async ({ page }) => {
   expect(draft.agent_id).toBeGreaterThan(0);
 
   // 3. Second promote of same thread → 409.
-  const p2 = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const p2 = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: { name: 'second try', conditions: cond },
     headers,
   });
   expect(p2.status(), 'duplicate promote → 409').toBe(409);
 
-  // 4. GET /api/research/drafts shows the new draft.
-  const list = await page.request.get(`${BASE}/api/research/drafts`, { headers });
+  // 4. GET /api/lab/drafts shows the new draft.
+  const list = await page.request.get(`${BASE}/api/lab/drafts`, { headers });
   expect(list.ok()).toBe(true);
   const drafts = await list.json();
   const found = drafts.find(d => d.agent_id === draft.agent_id);
@@ -94,7 +94,7 @@ test(`promote pipeline API roundtrip [${BASE}]`, async ({ page }) => {
   // 5. Cleanup — delete the agent + thread.
   const delAgent = await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
   console.log(`delete agent: ${delAgent.status()}`);
-  const delThread = await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  const delThread = await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
   console.log(`delete thread: ${delThread.status()}`);
 });
 
@@ -103,7 +103,7 @@ test(`promote refuses bad condition tree [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Thread to attach.
-  const t = await page.request.post(`${BASE}/api/research/threads`, {
+  const t = await page.request.post(`${BASE}/api/lab/threads`, {
     data: { symbol: 'PWBAD', title: 'bad-cond probe', confidence: 'unsure' },
     headers,
   });
@@ -111,7 +111,7 @@ test(`promote refuses bad condition tree [${BASE}]`, async ({ page }) => {
   const thread = await t.json();
 
   // Reference an unknown metric — validator should reject.
-  const bad = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const bad = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: {
       name: 'should fail',
       conditions: { all: [{ metric: 'no_such_metric', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -124,14 +124,14 @@ test(`promote refuses bad condition tree [${BASE}]`, async ({ page }) => {
   expect([200, 400]).toContain(bad.status());
 
   // Empty conditions → always 400.
-  const empty = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const empty = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: { name: 'empty', conditions: {} },
     headers,
   });
   expect(empty.status(), 'empty conditions → 400').toBe(400);
 
   // Cleanup
-  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
 });
 
 test(`Drafts tab renders joined view [${BASE}]`, async ({ page }) => {
@@ -139,12 +139,12 @@ test(`Drafts tab renders joined view [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Seed one draft so the tab has something to render.
-  const t = await page.request.post(`${BASE}/api/research/threads`, {
+  const t = await page.request.post(`${BASE}/api/lab/threads`, {
     data: { symbol: 'PWUI', title: 'UI probe', confidence: 'bear' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
     data: {
       name: 'UI probe agent',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -10 }] },
@@ -154,7 +154,7 @@ test(`Drafts tab renders joined view [${BASE}]`, async ({ page }) => {
   const draft = await p.json();
 
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // Click Drafts tab
@@ -173,5 +173,5 @@ test(`Drafts tab renders joined view [${BASE}]`, async ({ page }) => {
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
 });

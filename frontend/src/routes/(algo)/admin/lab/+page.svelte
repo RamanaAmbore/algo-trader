@@ -3,7 +3,7 @@
   //
   // The actual chat happens IN Claude Code (your terminal), not in this
   // page. The MCP server (backend/mcp/kite_server.py) writes its session
-  // back to /api/research/threads as the operator works; the page is the
+  // back to /api/lab/threads as the operator works; the page is the
   // read/review layer + the operator's bootstrap surface (Settings tab
   // generates the .mcp.json snippet and a fresh JWT to paste into env).
   //
@@ -49,7 +49,7 @@
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let confirmRef  = $state(null);
 
-  /** Joined-view rows from GET /api/research/drafts — one per
+  /** Joined-view rows from GET /api/lab/drafts — one per
    *  research thread with a linked inactive Agent. Activating the
    *  agent on /automation naturally graduates it out of this list. */
   /** @type {any[]} */
@@ -187,7 +187,7 @@
 
   onMount(() => {
     // Phase 18 — Telegram deep-link handler. When the page is loaded
-    // via /admin/research?audit_request=<id> (the link in every
+    // via /admin/lab?audit_request=<id> (the link in every
     // request_id Telegram ping), jump straight to the Audit tab
     // pre-filtered to that exact row. The operator on their phone
     // gets a one-tap forensic drill-down. Runs regardless of

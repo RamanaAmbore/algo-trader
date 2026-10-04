@@ -1,8 +1,8 @@
-// Verify the new /admin/research Lab page lands, all three tabs work,
+// Verify the new /admin/lab Lab page lands, all three tabs work,
 // and the MCP-bootstrap snippet on the Settings tab carries the
 // expected shape. Also probes the API contract:
-//   GET  /api/research/threads (admin) → 200
-//   POST /api/research/threads with a synthetic transcript → row visible
+//   GET  /api/lab/threads (admin) → 200
+//   POST /api/lab/threads with a synthetic transcript → row visible
 //
 // Run:
 //   BASE_URL=https://dev.ramboq.com npx playwright test research_page_verify.spec.js --workers=1 --project=chromium-desktop
@@ -26,10 +26,10 @@ async function login(page) {
   return tok;
 }
 
-test(`/admin/research page loads + 3 tabs visible [${BASE}]`, async ({ page }) => {
+test(`/admin/lab page loads + 3 tabs visible [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   const slug = BASE.includes('dev') ? 'dev' : 'prod';
@@ -53,9 +53,9 @@ test(`/admin/research page loads + 3 tabs visible [${BASE}]`, async ({ page }) =
   await page.screenshot({ path: `test-results/research-default-${slug}.png` });
 });
 
-test(`/admin/research Settings tab → mcp.json + copy [${BASE}]`, async ({ page }) => {
+test(`/admin/lab Settings tab → mcp.json + copy [${BASE}]`, async ({ page }) => {
   await login(page);
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(2500);
 
   // Click Settings tab
@@ -86,7 +86,7 @@ test(`/admin/research Settings tab → mcp.json + copy [${BASE}]`, async ({ page
   await page.screenshot({ path: `test-results/research-settings-${BASE.includes('dev') ? 'dev' : 'prod'}.png` });
 });
 
-test(`POST /api/research/threads + GET roundtrip [${BASE}]`, async ({ page }) => {
+test(`POST /api/lab/threads + GET roundtrip [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
@@ -101,7 +101,7 @@ test(`POST /api/research/threads + GET roundtrip [${BASE}]`, async ({ page }) =>
       { role: 'assistant', content: 'Synthetic thesis for verification only.' },
     ],
   };
-  const create = await page.request.post(`${BASE}/api/research/threads`, {
+  const create = await page.request.post(`${BASE}/api/lab/threads`, {
     data: payload, headers,
   });
   expect(create.ok(), `create failed: ${create.status()}`).toBe(true);
@@ -111,14 +111,14 @@ test(`POST /api/research/threads + GET roundtrip [${BASE}]`, async ({ page }) =>
   expect(thread.confidence).toBe('neutral');
 
   // List should include it
-  const list = await page.request.get(`${BASE}/api/research/threads?symbol=PWTEST`, { headers });
+  const list = await page.request.get(`${BASE}/api/lab/threads?symbol=PWTEST`, { headers });
   expect(list.ok()).toBe(true);
   const rows = await list.json();
   expect(Array.isArray(rows)).toBe(true);
   expect(rows.some(r => r.id === thread.id)).toBe(true);
 
   // Cleanup
-  const del = await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  const del = await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
   expect(del.ok() || del.status() === 204).toBe(true);
   console.log(`created+deleted thread ${thread.id}`);
 });

@@ -1,5 +1,5 @@
 // Verify Phase 15 — Audit since-window filter.
-//   1. /api/research/audit?since=ISO returns only rows >= since
+//   1. /api/lab/audit?since=ISO returns only rows >= since
 //   2. Bad `since` value is silently ignored (returns full set, not 500)
 //   3. UI: 3 filter dropdowns visible (Since + Tool + Status), Since
 //      defaults to "All time"
@@ -26,12 +26,12 @@ async function login(page) {
   return _cachedToken;
 }
 
-test(`/api/research/audit honors since [${BASE}]`, async ({ page }) => {
+test(`/api/lab/audit honors since [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Baseline — all rows.
-  const all = await page.request.get(`${BASE}/api/research/audit?limit=200`, { headers });
+  const all = await page.request.get(`${BASE}/api/lab/audit?limit=200`, { headers });
   expect(all.ok()).toBe(true);
   const allRows = await all.json();
   console.log(`baseline rows: ${allRows.length}`);
@@ -39,7 +39,7 @@ test(`/api/research/audit honors since [${BASE}]`, async ({ page }) => {
   // since = 1 hour ago — should be ≤ baseline.
   const oneHourAgo = new Date(Date.now() - 3600 * 1000).toISOString();
   const recent = await page.request.get(
-    `${BASE}/api/research/audit?since=${encodeURIComponent(oneHourAgo)}&limit=200`, { headers });
+    `${BASE}/api/lab/audit?since=${encodeURIComponent(oneHourAgo)}&limit=200`, { headers });
   expect(recent.ok()).toBe(true);
   const recentRows = await recent.json();
   console.log(`last-hour rows: ${recentRows.length}`);
@@ -52,13 +52,13 @@ test(`/api/research/audit honors since [${BASE}]`, async ({ page }) => {
   // since = year 2999 — should return zero rows but NOT 500.
   const future = '2999-01-01T00:00:00+00:00';
   const empty = await page.request.get(
-    `${BASE}/api/research/audit?since=${encodeURIComponent(future)}&limit=200`, { headers });
+    `${BASE}/api/lab/audit?since=${encodeURIComponent(future)}&limit=200`, { headers });
   expect(empty.ok()).toBe(true);
   expect((await empty.json()).length).toBe(0);
 
   // since = malformed — should NOT 500. Returns full set (filter ignored).
   const bad = await page.request.get(
-    `${BASE}/api/research/audit?since=NOTADATE&limit=200`, { headers });
+    `${BASE}/api/lab/audit?since=NOTADATE&limit=200`, { headers });
   expect(bad.ok(), `malformed since: ${bad.status()}`).toBe(true);
   console.log(`malformed since rows: ${(await bad.json()).length} (unchanged from baseline)`);
 });
@@ -66,7 +66,7 @@ test(`/api/research/audit honors since [${BASE}]`, async ({ page }) => {
 test(`Audit tab — 3 filter selects incl Since [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Audit' }).click();
   await page.waitForTimeout(400);

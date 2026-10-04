@@ -29,7 +29,7 @@ const TAB_ROUTES = [
   { href: '/agents',          label: 'Agents'   },
   { href: '/agents/activity', label: 'Activity' },
   { href: '/admin/tokens',    label: 'Tokens'   },
-  { href: '/admin/research',  label: 'Lab'      },
+  { href: '/admin/lab',  label: 'Lab'      },
 ];
 
 test.describe('agent workspace tabs', () => {

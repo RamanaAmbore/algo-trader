@@ -1,5 +1,5 @@
 // Verify the Phase 2b GenAI helpers:
-//   - Auto-title: POST /api/research/threads with title='' produces
+//   - Auto-title: POST /api/lab/threads with title='' produces
 //     a non-empty title that's NOT the bare stub "{SYM} research".
 //   - Sentiment: GET /api/news/?sentiment=true responds with each item
 //     carrying a {bull, bear, neutral} tag. Base path (no query) has
@@ -33,7 +33,7 @@ test(`auto-title fills title when blank [${BASE}]`, async ({ page }) => {
 
   // Title intentionally blank — server should auto-fill via Gemini Flash
   // (when enabled) or the deterministic stub.
-  const r = await page.request.post(`${BASE}/api/research/threads`, {
+  const r = await page.request.post(`${BASE}/api/lab/threads`, {
     data: { symbol: 'PWGENAI', title: '', thesis_text: thesis, confidence: 'bull' },
     headers,
   });
@@ -52,14 +52,14 @@ test(`auto-title fills title when blank [${BASE}]`, async ({ page }) => {
   expect(thread.title.toLowerCase()).not.toBe('pwgenai research');
 
   // Cleanup
-  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
 });
 
 test(`auto-title returns symbol-only when thesis is blank [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const r = await page.request.post(`${BASE}/api/research/threads`, {
+  const r = await page.request.post(`${BASE}/api/lab/threads`, {
     data: { symbol: 'PWEMPTY', title: '', confidence: 'unsure' },
     headers,
   });
@@ -70,7 +70,7 @@ test(`auto-title returns symbol-only when thesis is blank [${BASE}]`, async ({ p
   // With no thesis, both LLM + stub paths produce something — just verify
   // it's not the literal empty string.
   expect(thread.title.trim().length).toBeGreaterThan(0);
-  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
 });
 
 test(`news sentiment endpoint contract [${BASE}]`, async ({ page }) => {

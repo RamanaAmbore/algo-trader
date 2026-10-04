@@ -4,7 +4,7 @@
  * Verifies that:
  * 1. The "Exit template" input is visible when mint kind='place'
  * 2. The input is hidden for other kinds (cancel, modify, activate, deactivate, update)
- * 3. The POST body to /api/research/confirm-token includes template_slug:
+ * 3. The POST body to /api/lab/confirm-token includes template_slug:
  *    - With the entered value when filled
  *    - As null when left empty
  * 4. The Safety card mentions the exit template is bound and re-minting is required
@@ -28,7 +28,7 @@ const BASE = process.env.BASE_URL || 'https://dev.ramboq.com';
 test.describe('Lab mint form template_slug binding', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto(`${BASE}/admin/research`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
 
     // Check if access is denied (role doesn't have view_lab capability)
     // view_lab is only for designated, trader, risk, demo roles (not admin)
@@ -85,7 +85,7 @@ test.describe('Lab mint form template_slug binding', () => {
   test(`mint request includes template_slug when filled`, async ({ page }) => {
     // Set up route interception to capture the mint request
     let capturedRequest = null;
-    await page.route('**/api/research/confirm-token', (route) => {
+    await page.route('**/api/lab/confirm-token', (route) => {
       capturedRequest = route.request();
       // Don't actually continue the request — just capture and abort
       // to speed up the test
@@ -122,7 +122,7 @@ test.describe('Lab mint form template_slug binding', () => {
   test(`mint request includes template_slug as null when empty`, async ({ page }) => {
     // Set up route interception
     let capturedRequest = null;
-    await page.route('**/api/research/confirm-token', (route) => {
+    await page.route('**/api/lab/confirm-token', (route) => {
       capturedRequest = route.request();
       route.abort('blockedbyclient');
     });

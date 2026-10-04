@@ -390,7 +390,7 @@
     // the whole platform or just one tool.
     { href: '/activity',         label: 'Activity',  group: 'build' },
     { href: '/console',          label: 'Console',   group: 'build' },
-    { href: '/admin/research',   label: 'Research',  adminOnly: true, group: 'build' },
+    { href: '/admin/lab',   label: 'Research',  adminOnly: true, group: 'build' },
     { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).
