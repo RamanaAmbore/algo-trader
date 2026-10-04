@@ -81,12 +81,22 @@ const _memToasted = new Set();
  * attach: a LIVE-mode order selected a template, reached FILLED, and
  * no GTT specs ever landed. Always `false` for non-live modes — see
  * constraint 1 in the module header.
- * @param {{ id?: any, order_id?: any, template_id?: any, status?: string, attached_gtts_json?: any, mode?: string }|null|undefined} order
+ *
+ * Also always `false` for a GTT/wing CHILD row (`parent_order_id` set).
+ * A child leg attached to a parent order can inherit `template_id` from
+ * that parent but never gets its own `attached_gtts_json` populated —
+ * only the parent row gets that written by `_fire_template_attach_on_fill`
+ * (backend). Without this guard, a normal child leg with nothing to
+ * attach itself would false-fire as a stalled/failed attach. Only a row
+ * with no `parent_order_id` (an actual parent order) can be tracked for
+ * attach-completion.
+ * @param {{ id?: any, order_id?: any, template_id?: any, status?: string, attached_gtts_json?: any, mode?: string, parent_order_id?: any }|null|undefined} order
  * @returns {boolean}
  */
 export function isAttachFailedState(order) {
   if (!order) return false;
   if (String(order.mode || '').toLowerCase() !== 'live') return false;
+  if (order.parent_order_id != null) return false;
   return order.template_id != null
     && String(order.status || '').toUpperCase() === 'FILLED'
     && !order.attached_gtts_json;
@@ -105,7 +115,7 @@ export function isAttachFailedState(order) {
  * failure on the same order_id is timed fresh — but an order_id that
  * already toasted never toasts again this session.
  *
- * @param {{ id?: any, order_id?: any, template_id?: any, status?: string, attached_gtts_json?: any, mode?: string }|null|undefined} order
+ * @param {{ id?: any, order_id?: any, template_id?: any, status?: string, attached_gtts_json?: any, mode?: string, parent_order_id?: any }|null|undefined} order
  * @param {{ now?: number }} [opts] `now` is injectable for tests.
  * @returns {boolean}
  */

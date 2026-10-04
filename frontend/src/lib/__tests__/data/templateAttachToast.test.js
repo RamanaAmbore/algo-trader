@@ -85,6 +85,14 @@ describe('isAttachFailedState', () => {
     expect(isAttachFailedState(null)).toBe(false);
     expect(isAttachFailedState(undefined)).toBe(false);
   });
+
+  it('false for a GTT/wing CHILD row (parent_order_id set) — it inherits template_id but never gets its own attached_gtts_json', () => {
+    expect(isAttachFailedState(filledLiveNoAttach(1, { parent_order_id: 999 }))).toBe(false);
+  });
+
+  it('still true for an otherwise-identical row with no parent_order_id (a real parent order)', () => {
+    expect(isAttachFailedState(filledLiveNoAttach(1, { parent_order_id: null }))).toBe(true);
+  });
 });
 
 describe('noteAttachObservation — time-based debounce + dedupe', () => {
