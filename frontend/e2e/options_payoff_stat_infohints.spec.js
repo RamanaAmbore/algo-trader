@@ -30,10 +30,13 @@
  *               not a static string) — both branches render without
  *               raising a console error.
  *
- * 2026-10 update: hover-opens-a-tooltip was removed from InfoHint
- * app-wide (explicit operator instruction — click-only everywhere). The
- * "hover opens" assertions below were rewritten to assert hover is a
- * no-op, with click re-verified as the positive control.
+ * 2026-10 update (hover-preview + click-to-pin reintroduction): hovering
+ * a `.ps-k` label now shows a transient preview again, modeled on
+ * OptionsPayoff.svelte's own hover/pin tooltip for the chart's main
+ * curve — but the preview never pins (`open` stays false) and never
+ * claims the app-wide singleton. The assertions below verify the
+ * preview appears/disappears with the cursor, and click remains the
+ * only way to pin the popover open.
  *
  * Run:
  *   npx playwright test e2e/options_payoff_stat_infohints.spec.js \
@@ -46,7 +49,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 const DERIV_URL = '/admin/derivatives';
 
 test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideButton mode)', () => {
-  test('LTP/CHG%/DAY P&L rows open popover via CLICK only on the label span (no separate chip); hover is a no-op', async ({ page, viewport }) => {
+  test('LTP/CHG%/DAY P&L rows pin via CLICK on the label span (no separate chip); hover shows a preview only', async ({ page, viewport }) => {
     await loginAsAdmin(page);
 
     const pageErrors = [];
@@ -113,13 +116,16 @@ test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideBut
     await ltpLabel.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-    // HOVER must NOT open the popover (hover removed app-wide, 2026-10).
-    // A real `.hover()` proves the cursor actually landed on the label.
+    // HOVER shows a transient preview — wait out the 350ms post-dismiss
+    // suppression window from the click-close above first. A real
+    // `.hover()` proves the cursor actually landed on the label.
+    await page.waitForTimeout(400);
     await ltpLabel.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Positive control: click still works after the hover no-op.
+    // Positive control: click still pins it.
     await ltpLabel.click();
     popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
@@ -141,12 +147,18 @@ test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideBut
       await dayPnlLabel.click(); // close via re-click
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
 
-      // Hover must NOT reopen it.
-      await dayPnlLabel.hover();
-      await page.waitForTimeout(300);
+      // Hover shows a preview only, after the suppression window.
+      // Dispatched directly (rather than a real `.hover()`) — this row
+      // sits in the tightly-packed stat overlay where real cursor
+      // travel between rows is unreliable; InfoHint's own pointerenter
+      // handler is what's under test here, not cursor movement.
+      await page.waitForTimeout(400);
+      await dayPnlLabel.dispatchEvent('pointerenter', { pointerType: 'mouse' });
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+      await dayPnlLabel.dispatchEvent('pointerleave', { pointerType: 'mouse' });
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-      // Positive control: click still works.
+      // Positive control: click still pins it.
       await dayPnlLabel.click();
       const dayPopoverC = page.locator('[role="tooltip"]').first();
       await expect(dayPopoverC).toBeVisible({ timeout: 2000 });

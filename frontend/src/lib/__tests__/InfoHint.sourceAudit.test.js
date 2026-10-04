@@ -25,13 +25,24 @@
  *      `hideButton` instance's popover could never be closed by
  *      re-clicking its own external trigger (mousedown-vs-click race).
  *
- * Hover-removal guard (2026-10, operator instruction: tooltips open on
- * click only, never on hover, app-wide): `visible` must depend solely on
- * `open`, and every piece of now-dead hover machinery (`hovered` state,
- * the anchor mouseenter/mouseleave wiring effect, the default chip's own
- * onmouseenter/onmouseleave, `showOnHover`, `hoverPreview`) must be gone
- * from the source entirely — not left inert, which would mislead a future
- * reader into thinking hover still does something.
+ * Hover-preview + click-to-pin (2026-10 reintroduction, amends the prior
+ * "hover removal" guard below). Operator feedback after the strict
+ * click-only pass: hovering a trigger should show a transient PREVIEW
+ * (not pin it), modeled on OptionsPayoff.svelte's own hover/pin tooltip.
+ * The invariants that matter here, since this is the only test the
+ * repo's final gate actually runs for this component:
+ *   - the singleton claim gates on `open` (pinned), never on `visible`
+ *     or hover state — hovering one instance must never evict another
+ *     instance's pinned popover
+ *   - `_hoverPreview` is cleared on every close transition (open:
+ *     true→false) and on pointerleave, so a dismissed pin never leaves
+ *     a ghost preview behind
+ *   - the 350ms re-hover suppression constant matches
+ *     OptionsPayoff.svelte's own `_dismissHover()` window
+ *   - touch (`pointerType === 'touch'`) skips the preview phase
+ *     entirely
+ *   - Escape dismisses a pinned popup (new — InfoHint previously had no
+ *     Esc handling at all)
  */
 
 import { describe, it, expect } from 'vitest';
@@ -77,36 +88,62 @@ describe('InfoHint.svelte — hideButton / bindable open / anchor source audit',
   });
 });
 
-describe('InfoHint.svelte — hover removal (2026-10, click-only app-wide)', () => {
-  it('visible is derived solely from open, not from any hover state', () => {
-    expect(scriptBlock).toMatch(/const\s+visible\s*=\s*\$derived\(open\);/);
+describe('InfoHint.svelte — hover-preview + click-to-pin (2026-10)', () => {
+  it('visible is derived from open OR the local hover-preview flag', () => {
+    expect(scriptBlock).toMatch(/const\s+visible\s*=\s*\$derived\(open\s*\|\|\s*_hoverPreview\);/);
   });
 
-  it('no `hovered` state remains anywhere in the component', () => {
-    expect(scriptBlock).not.toMatch(/\bhovered\b/);
+  it('_hoverPreview is local $state, not part of the module-level singleton', () => {
+    expect(scriptBlock).toMatch(/let\s+_hoverPreview\s*=\s*\$state\(false\);/);
+    // The module block (the actual singleton) must not declare it.
+    const moduleBlock = SRC.slice(0, scriptStart);
+    expect(moduleBlock).not.toMatch(/_hoverPreview/);
   });
 
-  it('the anchor mouseenter/mouseleave wiring effect is gone', () => {
-    expect(scriptBlock).not.toMatch(/addEventListener\('mouseenter'/);
-    expect(scriptBlock).not.toMatch(/addEventListener\('mouseleave'/);
+  it('the singleton claim effect gates on `open` (pinned), not `visible`', () => {
+    expect(scriptBlock).toMatch(/if\s*\(open\s*&&\s*_uid\)\s*_activeInfoHintId\s*=\s*_uid;/);
+    // Guard against regressing back to the old `visible`-gated claim,
+    // which would let a mere hover preview evict another instance's
+    // pinned popover.
+    expect(scriptBlock).not.toMatch(/if\s*\(visible\s*&&\s*_uid\)/);
   });
 
-  it('the default chip button has no onmouseenter/onmouseleave/onfocus/onblur hover handlers', () => {
-    expect(markupBlock).not.toMatch(/onmouseenter=/);
-    expect(markupBlock).not.toMatch(/onmouseleave=/);
-    expect(markupBlock).not.toMatch(/onfocus=/);
-    expect(markupBlock).not.toMatch(/onblur=/);
+  it('pointerenter sets the preview only for non-touch pointers', () => {
+    expect(scriptBlock).toMatch(/function _onHoverEnter\(/);
+    expect(scriptBlock).toMatch(/e\.pointerType\s*===\s*'touch'/);
+    expect(scriptBlock).toMatch(/_hoverPreview\s*=\s*true;/);
   });
 
-  it('the button click handler is a plain toggle, not gated on showOnHover', () => {
+  it('pointerleave unconditionally clears the preview', () => {
+    expect(scriptBlock).toMatch(/function _onHoverLeave\(\)\s*\{[\s\S]*?_hoverPreview\s*=\s*false;/);
+  });
+
+  it('a close transition (open true→false) clears the preview and arms the 350ms re-hover suppression, matching OptionsPayoff.svelte\'s own constant', () => {
+    expect(scriptBlock).toMatch(/_prevOpen\s*&&\s*!isOpen/);
+    expect(scriptBlock).toMatch(/_hoverSuppressUntil\s*=\s*Date\.now\(\)\s*\+\s*350;/);
+  });
+
+  it('the hover-preview entry guard checks the suppression window', () => {
+    expect(scriptBlock).toMatch(/Date\.now\(\)\s*<\s*_hoverSuppressUntil/);
+  });
+
+  it('the default chip button is wired with onpointerenter/onpointerleave alongside its click toggle', () => {
+    expect(markupBlock).toMatch(/onpointerenter=\{_onHoverEnter\}/);
+    expect(markupBlock).toMatch(/onpointerleave=\{_onHoverLeave\}/);
     expect(markupBlock).toMatch(/onclick=\{\(\)\s*=>\s*\{\s*open\s*=\s*!open;\s*\}\}/);
   });
 
-  it('the dead `showOnHover` prop has been removed entirely', () => {
-    expect(scriptBlock).not.toMatch(/showOnHover/);
+  it('hideButton mode wires the same hover listeners onto the external `anchor` via an $effect', () => {
+    expect(scriptBlock).toMatch(/if\s*\(!hideButton\s*\|\|\s*!anchor\)\s*return;/);
+    expect(scriptBlock).toMatch(/anchor\.addEventListener\('pointerenter',\s*_onHoverEnter\)/);
+    expect(scriptBlock).toMatch(/anchor\.addEventListener\('pointerleave',\s*_onHoverLeave\)/);
   });
 
-  it('the dead `hoverPreview` prop has been removed entirely', () => {
-    expect(scriptBlock).not.toMatch(/hoverPreview/);
+  it('Escape dismisses a pinned popup (new — previously no Esc handling existed at all)', () => {
+    expect(scriptBlock).toMatch(/if\s*\(!open\)\s*return;[\s\S]*?e\.key\s*===\s*'Escape'[\s\S]*?open\s*=\s*false;/);
+  });
+
+  it('the hover-preview entry is gated on popup mode (no layout-shifting hover in default inline mode)', () => {
+    expect(scriptBlock).toMatch(/function _onHoverEnter[\s\S]*?if\s*\(!popup\)\s*return;/);
   });
 });

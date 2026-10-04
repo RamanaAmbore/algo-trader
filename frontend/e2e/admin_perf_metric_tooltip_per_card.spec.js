@@ -152,11 +152,11 @@ test.describe('Admin Perf page — per-card metric tooltip independence', () => 
     expect(text).toContain('cc') || expect(text).toContain('complexity');
   });
 
-  test('Per-card tooltips are CLICK-ONLY (hover is a no-op, per-card state isolated)', async ({ page }) => {
-    // Hover-opens-a-tooltip was removed from InfoHint app-wide (2026-10,
-    // explicit operator instruction). This used to be a hover+click test;
-    // rewritten to assert hover is a genuine no-op, with click as the
-    // positive control.
+  test('Per-card tooltips show a hover PREVIEW (not a pin) and pin only on click (per-card state isolated)', async ({ page }) => {
+    // 2026-10 hover-preview + click-to-pin reintroduction, modeled on
+    // OptionsPayoff.svelte's own hover/pin tooltip: hovering a label
+    // shows a transient preview that never pins and never claims the
+    // app-wide singleton; only a click pins it.
     const feSection = page.locator('text=Frontend').first();
     await expect(feSection).toBeVisible({ timeout: 15_000 });
 
@@ -171,19 +171,24 @@ test.describe('Admin Perf page — per-card metric tooltip independence', () => 
     const locLabel = firstCard.locator('.metric-label:has-text("LOC")').first();
     await expect(locLabel).toBeVisible();
 
-    // HOVER must NOT open the popover. A real `.hover()` proves the cursor
+    // HOVER shows a preview. A real `.hover()` proves the cursor
     // actually landed on the label.
     await locLabel.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(locLabel).toHaveAttribute('aria-expanded', 'false'); // preview only — not pinned
+
+    // Moving away drops the preview — it never pinned.
+    await page.mouse.move(5, 5);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // CLICK to open
+    // CLICK to pin open
     await locLabel.click();
     const popoverClick = page.locator('[role="tooltip"]').first();
     await expect(popoverClick).toBeVisible({ timeout: 2000 });
     await expect(popoverClick).toHaveAttribute('role', 'tooltip');
+    await expect(locLabel).toHaveAttribute('aria-expanded', 'true');
 
-    // Click to close
+    // Click to unpin
     await locLabel.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });

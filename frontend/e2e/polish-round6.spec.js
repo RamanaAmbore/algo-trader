@@ -148,9 +148,9 @@ test.describe('Polish Round 6 — NavStrip, Activity, Chart, Agent, Grid', () =>
     console.log(`[PASS] NavStrip panel opened with title: ${titleText}`);
   });
 
-  // Test 2: NavStrip slot hint — click ⓘ icon (hover-opens-a-tooltip was
-  // removed from InfoHint app-wide, 2026-10, explicit operator instruction
-  // — click-only everywhere). Note: this test's own selectors
+  // Test 2: NavStrip slot hint — click ⓘ icon (InfoHint's own hover-preview
+  // + click-to-pin model, 2026-10 — click still pins the popover open
+  // regardless of hover behavior). Note: this test's own selectors
   // (`.stacked-info-panel` / `.ps-panel`, `.info-hint` / `.hint-icon`) do
   // not match anything in current src — it always self-skips via the
   // `test.skip()` guards below regardless of this edit. Stale test, not
@@ -179,7 +179,7 @@ test.describe('Polish Round 6 — NavStrip, Activity, Chart, Agent, Grid', () =>
       return;
     }
 
-    // Click the hint icon to trigger the popup (click-only, hover removed).
+    // Click the hint icon to pin the popup open.
     await hintIcon.click();
     await page.waitForTimeout(300);
 

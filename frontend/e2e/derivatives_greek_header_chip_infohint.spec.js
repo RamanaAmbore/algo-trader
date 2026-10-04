@@ -44,13 +44,13 @@
  *                `title=` attribute, matching wording, independent from
  *                the 5 Greek chips (opening/closing one doesn't affect EV).
  *
- * 2026-10 update: an earlier revision of this spec also verified that
- * hideButton+anchor sites open on HOVER (a "Step A" fix). That hover
- * affordance has since been removed app-wide by explicit operator
- * instruction — InfoHint now opens only on click, everywhere. The
- * hover-asserting tests below were rewritten to assert the opposite
- * (hover is a no-op) plus a click positive control, rather than deleted,
- * so regressions of either direction get caught.
+ * 2026-10 update (hover-preview + click-to-pin reintroduction, amends a
+ * brief click-only-everywhere pass): hideButton+anchor sites now show a
+ * transient hover PREVIEW again, modeled on OptionsPayoff.svelte's own
+ * hover/pin tooltip — but hovering never PINS the popover (`open` stays
+ * false) and never claims the app-wide singleton. Only a click pins it.
+ * The tests below assert: hover shows a preview that disappears on
+ * mouse-leave without pinning, and click still pins/unpins as before.
  *
  * Run locally (auto-starts local vite dev server, proxies /api to
  * dev.ramboq.com per vite.config.js):
@@ -268,29 +268,33 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Regression: header chips no longer open via HOVER (hover removed app-wide, 2026-10); click still works', async ({ page, viewport }) => {
-    // Supersedes the old "Step A anchor hover fix" regression test — that
-    // fix has since been reverted by explicit operator instruction: a
-    // tooltip should only ever open on click, never on hover, app-wide.
-    // hideButton mode no longer wires any mouseenter/mouseleave listener
-    // onto the anchor at all.
+  test('Regression: header chips show a hover PREVIEW (not a pin) via HOVER (2026-10); click pins', async ({ page, viewport }) => {
+    // hideButton mode wires pointerenter/pointerleave onto the anchor
+    // (the trigger button itself) via InfoHint's own $effect — hovering
+    // shows a transient preview, but `open` stays false, so it never
+    // pins and never claims the app-wide singleton.
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
     const deltaChip = chips.nth(0);
     const trigger = deltaChip.locator('button.greek-val-trigger');
 
-    // HOVER must NOT open anything. A real `.hover()` proves the cursor
+    // HOVER shows a preview. A real `.hover()` proves the cursor
     // actually landed on the trigger (Playwright's actionability check).
     await trigger.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(trigger).toHaveAttribute('aria-expanded', 'false'); // preview only — not pinned
+
+    // Moving away drops the preview — it never pinned.
+    await page.mouse.move(5, 5);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Positive control: click still opens/closes it.
+    // Click pins it open/closed as before.
     await trigger.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
     await expect(popover).toContainText('net directional exposure');
+    await expect(trigger).toHaveAttribute('aria-expanded', 'true');
 
     await trigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
@@ -497,13 +501,13 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(tooltips.first()).not.toContainText('probability-weighted average payoff');
   });
 
-  test('Regression: Header chips are CLICK-ONLY (hover removed app-wide, 2026-10)', async ({ page }) => {
-    // Supersedes the old "Step A fix" test (header chips respond to both
-    // click and hover) — that hover affordance has since been removed by
-    // explicit operator instruction: a tooltip should only ever open on
-    // click, never on hover, app-wide. This verifies the 6 header chips
-    // (5 Greeks + EV) still open/close correctly via click, and that hover
-    // genuinely does nothing any more (not just "untested").
+  test('Regression: Header chips PIN only on click; a hover right after dismiss respects the 350ms suppression window (2026-10)', async ({ page }) => {
+    // Verifies the 6 header chips (5 Greeks + EV) still pin open/closed
+    // correctly via click, and that hovering immediately after a
+    // click-dismiss (cursor still resting on the trigger) doesn't
+    // instantly re-open a preview — the same dismiss-then-instant-rehover
+    // glitch OptionsPayoff.svelte's own 350ms suppression window guards
+    // against.
     const chips = page.locator('.opt-section-tag.tag-greek');
     await expect(chips).toHaveCount(5, { timeout: 20_000 });
 
@@ -521,14 +525,23 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await trigger.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // HOVER must NOT open anything, even while the cursor is already
-    // resting on the trigger from the click above. A real `.hover()`
-    // still proves the cursor landed on the element.
+    // Hovering immediately after the dismiss-click, cursor still resting
+    // on the trigger, must NOT re-open a preview within the 350ms
+    // suppression window.
     await trigger.hover();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(150);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Positive control: click still works after the hover no-op.
+    // After the suppression window elapses, a fresh hover DOES show a
+    // preview again.
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(300);
+    await trigger.hover();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await page.mouse.move(5, 5);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control: click still pins it open/closed.
     await trigger.click();
     popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
@@ -567,13 +580,23 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await deltaLabel.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // HOVER must NOT reopen it (hover removed app-wide, 2026-10) — the
-    // cursor is still resting on deltaLabel from the click above.
+    // Hovering right after the dismiss-click, cursor still resting on
+    // deltaLabel, must NOT reopen within the 350ms suppression window.
     await deltaLabel.hover();
-    await page.waitForTimeout(300);
+    await page.waitForTimeout(150);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Positive control: click still works.
+    // After the window elapses, a fresh hover shows a preview (not
+    // pinned), which disappears on mouse-leave without pinning.
+    await page.mouse.move(5, 5);
+    await page.waitForTimeout(300);
+    await deltaLabel.hover();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(deltaLabel).toHaveAttribute('aria-expanded', 'false');
+    await page.mouse.move(5, 5);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control: click still pins it.
     await deltaLabel.click();
     const popover2 = page.locator('[role="tooltip"]').first();
     await expect(popover2).toBeVisible({ timeout: 2000 });
@@ -583,15 +606,13 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('Strategy Summary card headings (Greeks / Risk) and their child chips are all click-only — hover never opens any of them (hover removed app-wide, 2026-10)', async ({ page }) => {
+  test('Strategy Summary card headings (Greeks / Risk) and their child chips all show a hover PREVIEW and pin only on click (2026-10)', async ({ page }) => {
     // Originally guarded a narrower "Bug 2" fix where `greeksNote`/
-    // `riskNote` opted OUT of hover via `hoverPreview={false}` while
-    // sibling chips (Δ, R:R) below them still opened on hover — that
-    // distinction is now moot since hover has been removed from InfoHint
-    // entirely, app-wide, by explicit operator instruction (the
-    // `hoverPreview` prop itself no longer exists). This test now verifies
-    // the headings AND their child Greek/Risk chips are uniformly
-    // click-only, with no site anywhere behaving differently.
+    // `riskNote` opted OUT of hover via a now-removed `hoverPreview={false}`
+    // prop while sibling chips (Δ, R:R) below them still opened on hover.
+    // That prop is long gone; this test now verifies the headings AND
+    // their child Greek/Risk chips uniformly show a hover preview that
+    // never pins, with click as the only way to pin, at every site.
     const greeksCard = page.locator('.opt-block').nth(0);
     const riskCard = page.locator('.opt-block').nth(1);
     await expect(greeksCard).toBeVisible({ timeout: 20_000 });
@@ -602,12 +623,13 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
       return;
     }
 
-    // HOVER on the Greeks heading must NOT open its popover.
+    // HOVER on the Greeks heading shows a preview, not a pin.
     await greeksHeading.hover();
-    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
 
-    // CLICK — must open, and close again on a second click.
+    // CLICK — must pin open, and close again on a second click.
     await greeksHeading.click();
     const greeksPopover = page.locator('#sum-hint-greeks-note');
     await expect(greeksPopover).toBeVisible({ timeout: 2000 });
@@ -615,22 +637,26 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await greeksHeading.click();
     await expect(page.locator('#sum-hint-greeks-note')).toHaveCount(0);
 
-    // The Δ chip BELOW the heading is now ALSO click-only, not a hover
-    // "positive control" any more — confirms hover removal is uniform,
-    // not just disabled at the heading site.
+    // The Δ chip BELOW the heading behaves identically — confirms the
+    // hover-preview + click-to-pin contract is uniform, not just at the
+    // heading site.
+    await page.waitForTimeout(400); // clear any 350ms post-dismiss suppression
     const deltaLabel = greeksCard.locator('.kv-k:has-text("Δ")').first();
     await deltaLabel.hover();
-    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-delta')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('#sum-hint-delta')).toHaveCount(0);
     await deltaLabel.click();
     await expect(page.locator('#sum-hint-delta')).toBeVisible({ timeout: 2000 });
     await deltaLabel.click();
     await expect(page.locator('#sum-hint-delta')).toHaveCount(0);
 
-    // Risk & expected value heading — identical click-only behavior.
+    // Risk & expected value heading — identical hover-preview/click-pin behavior.
+    await page.waitForTimeout(400);
     const riskHeading = riskCard.locator('.opt-block-h', { hasText: 'Risk & expected value' }).first();
     await riskHeading.hover();
-    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-risk-note')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
 
     await riskHeading.click();
@@ -640,10 +666,12 @@ test.describe('/admin/derivatives — Greek header chips open via value click, n
     await riskHeading.click();
     await expect(page.locator('#sum-hint-risk-note')).toHaveCount(0);
 
-    // The R:R chip below the Risk heading is also now click-only.
+    // The R:R chip below the Risk heading — same contract.
+    await page.waitForTimeout(400);
     const rrLabel = riskCard.locator('.kv-k:has-text("R:R")').first();
     await rrLabel.hover();
-    await page.waitForTimeout(250);
+    await expect(page.locator('#sum-hint-rr')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('#sum-hint-rr')).toHaveCount(0);
     await rrLabel.click();
     await expect(page.locator('#sum-hint-rr')).toBeVisible({ timeout: 2000 });

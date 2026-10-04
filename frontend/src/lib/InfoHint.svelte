@@ -9,8 +9,17 @@
 </script>
 
 <script>
-  // Compact (i) chip with a click-toggle popover (click opens, click
-  // again closes — never on hover, app-wide per operator instruction).
+  // Compact (i) chip with a hover-preview + click-to-pin popover,
+  // modeled on OptionsPayoff.svelte's own hover/pin tooltip state
+  // machine (2026-10). Hovering a trigger (desktop, non-touch) shows a
+  // transient PREVIEW — it never pins, never claims the app-wide
+  // singleton, and disappears the moment the cursor leaves. Clicking a
+  // trigger PINS the popover open (`open` becomes true): it survives
+  // the mouse leaving, claims the singleton (so opening a different
+  // InfoHint closes this one), and is dismissed only by clicking again,
+  // clicking outside, or Escape. A touch tap skips the preview phase
+  // entirely and pins directly, since touch has no hover.
+  //
   // Used across the algo admin pages to gloss page sections, stats,
   // and form fields without taking up screen real estate.
   //
@@ -88,6 +97,89 @@
   /** @type {HTMLSpanElement | undefined} */
   let popoutEl = $state();
 
+  // Hover-preview phase (2026-10) — per-instance local state, deliberately
+  // NOT part of the module-level `_activeInfoHintId` singleton above, so
+  // hovering one InfoHint instance can never evict another instance's
+  // PINNED (click-opened, `open === true`) popover. Mirrors
+  // OptionsPayoff.svelte's `hover` (transient) vs `pinned` split.
+  let _hoverPreview = $state(false);
+
+  // After a pin is dismissed — click-to-close, click-outside, or Escape —
+  // suppress the hover-preview phase for 350ms, exactly mirroring
+  // OptionsPayoff.svelte's `_dismissHover()` constant. Without this, the
+  // cursor sitting on the trigger right after the click that dismissed it
+  // would immediately re-open a preview — "click sometimes works,
+  // sometimes not", actually a dismiss-then-instant-rehover glitch.
+  let _hoverSuppressUntil = 0;
+
+  function _onHoverEnter(/** @type {PointerEvent} */ e) {
+    // Only popup-mode popovers get a hover preview — default (inline-
+    // expansion) mode would otherwise shift layout on every hover. No
+    // existing caller uses default mode today, but this keeps a future
+    // one safe by construction.
+    if (!popup) return;
+    // Touch has no hover concept of its own; skip straight through to
+    // the existing click handler, which pins directly.
+    if (e.pointerType === 'touch') return;
+    if (open) return;
+    if (Date.now() < _hoverSuppressUntil) return;
+    _hoverPreview = true;
+  }
+  function _onHoverLeave() {
+    // Unconditional — pinned visibility is carried by `open`, not
+    // `_hoverPreview` (`visible = open || _hoverPreview` below), so
+    // clearing this on every leave (even while pinned) is safe and
+    // prevents a stale-true preview flag from surviving into a LATER
+    // unpin, which would otherwise show a ghost popup detached from
+    // wherever the cursor happens to be by then.
+    _hoverPreview = false;
+  }
+
+  // Centralized close-transition handler — covers every way `open` can
+  // flip true→false in one place instead of duplicating the suppression
+  // side effect at each dismissal site: the button's own click-to-close,
+  // the click-outside effect below, Escape (added below), AND an
+  // external hideButton caller flipping its own `bind:open` state (this
+  // component only ever observes that as a prop change, there is no
+  // local handler to hook for it). `_prevOpen` is a plain (non-reactive)
+  // variable, not `$state` — same pattern as `_lastZoomSig` in
+  // OptionsPayoff.svelte — so reading/writing it here doesn't trigger
+  // `state_referenced_locally`.
+  let _prevOpen = false;
+  $effect(() => {
+    const isOpen = open;
+    if (_prevOpen && !isOpen) {
+      _hoverPreview = false;
+      _hoverSuppressUntil = Date.now() + 350;
+    }
+    _prevOpen = isOpen;
+  });
+
+  // hideButton mode: InfoHint renders no button of its own, so the
+  // hover-preview listeners attach to the external `anchor` element
+  // instead — mirrors the existing popup-position `$effect` below that
+  // also reads `anchor.getBoundingClientRect()`.
+  $effect(() => {
+    if (!hideButton || !anchor) return;
+    anchor.addEventListener('pointerenter', _onHoverEnter);
+    anchor.addEventListener('pointerleave', _onHoverLeave);
+    return () => {
+      anchor.removeEventListener('pointerenter', _onHoverEnter);
+      anchor.removeEventListener('pointerleave', _onHoverLeave);
+    };
+  });
+
+  // Escape dismisses a pinned popup — desktop keyboard equivalent of
+  // clicking the trigger again. Listener mounts only while pinned open.
+  $effect(() => {
+    if (!open) return;
+    function onKey(/** @type {KeyboardEvent} */ e) {
+      if (e.key === 'Escape') open = false;
+    }
+    document.addEventListener('keydown', onKey);
+    return () => document.removeEventListener('keydown', onKey);
+  });
+
   // Close on click-outside when in popup mode so the tooltip doesn't
   // get stranded mid-page after the operator's attention has moved on.
   $effect(() => {
@@ -107,16 +199,17 @@
     return () => document.removeEventListener('mousedown', onDocClick);
   });
 
-  // Whether to render the popout right now. Click-toggle only — never
-  // opens on hover, app-wide per operator instruction (2026-10). `open` is
-  // the sole input regardless of popup/hideButton mode.
-  const visible = $derived(open);
+  // Whether to render the popout right now — pinned (`open`) OR a
+  // transient hover preview (`_hoverPreview`). Both popup and
+  // hideButton+anchor sites share this.
+  const visible = $derived(open || _hoverPreview);
 
-  // Claim the app-wide singleton the moment this instance's own popout
-  // becomes visible (click-driven `open`, default chip AND hideButton+anchor
-  // sites alike).
+  // Claim the app-wide singleton only when PINNED (`open`), never on a
+  // mere hover preview — gating this on `visible` (as before the 2026-10
+  // hover-preview reintroduction) would let hovering one instance evict
+  // another instance's pinned popover out from under the operator.
   $effect(() => {
-    if (visible && _uid) _activeInfoHintId = _uid;
+    if (open && _uid) _activeInfoHintId = _uid;
   });
   // If some OTHER instance just claimed the singleton, close this instance's
   // own popout so only one InfoHint tooltip is ever visible on the page.
@@ -206,6 +299,8 @@
           aria-describedby={visible ? _popoutId : undefined}
           aria-label={open ? 'Hide details' : 'Show details'}
           title={open ? 'Hide details' : 'Show details'}
+          onpointerenter={_onHoverEnter}
+          onpointerleave={_onHoverLeave}
           onclick={() => { open = !open; }}>{label}</button>
   {/if}
   {#if visible}

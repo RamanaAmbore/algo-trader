@@ -68,7 +68,9 @@ async function assertFourRows(popover) {
 }
 
 /**
- * Close any open popover by pressing Escape or clicking outside.
+ * Close any open (pinned) popover by pressing Escape. InfoHint gained
+ * real Escape handling in the 2026-10 hover-preview + click-to-pin
+ * reintroduction (it had none before that).
  */
 async function closePopover(page) {
   await page.keyboard.press('Escape');
@@ -163,17 +165,19 @@ test.describe('/admin/metrics — metric tooltips', () => {
       expect(popoverRect.bottom, `Popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    // Close via re-click — `closePopover()` presses Escape, but InfoHint has
-    // no Escape handler, so it would not actually prove the popover closed
-    // here (the subsequent hover-negative check needs a genuinely-closed
-    // starting state).
+    // Close via re-click.
     await label.click();
     await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
 
-    // HOVER must NOT open it (hover removed app-wide, 2026-10). A real
-    // `.hover()` proves the cursor actually landed on the label.
+    // HOVER now shows a transient PREVIEW again (2026-10 reintroduction,
+    // modeled on OptionsPayoff.svelte's hover/pin tooltip) — it must
+    // appear on hover and disappear once the cursor leaves, never
+    // pinning itself open. Wait out the 350ms post-dismiss suppression
+    // window from the click-close above before hovering.
+    await page.waitForTimeout(400);
     await label.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
   });
 
@@ -313,14 +317,17 @@ test.describe('/admin/metrics — metric tooltips', () => {
       expect(popoverRect.bottom, `Trend tile popover bottom edge must be <= ${vh}`).toBeLessThanOrEqual(vh);
     }
 
-    // Close via re-click (closePopover()'s Escape press has no handler in
-    // InfoHint and would not prove the popover actually closed).
+    // Close via re-click.
     await label.click();
     await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
 
-    // HOVER must NOT open it (hover removed app-wide, 2026-10).
+    // HOVER now shows a transient PREVIEW (2026-10 reintroduction) — not
+    // a no-op any more. Wait out the 350ms post-dismiss suppression
+    // window before hovering.
+    await page.waitForTimeout(400);
     await label.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(1);
+    await page.mouse.move(5, 5);
     await expect(page.locator('[data-testid="metric-popover"]')).toHaveCount(0);
   });
 

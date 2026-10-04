@@ -13,15 +13,23 @@
  * (via `open`) claims the singleton; every other instance watches it and
  * closes itself the moment some other instance claims it.
  *
- * Hover-removal (2026-10, operator instruction): InfoHint no longer opens
- * on hover anywhere, app-wide — `visible` is now `$derived(open)` only.
+ * Hover-preview + click-to-pin (2026-10 reintroduction, amends the prior
+ * hover-removal pass): hovering a trigger (desktop, non-touch) now shows
+ * a transient PREVIEW again, modeled on OptionsPayoff.svelte's own
+ * hover/pin tooltip. Critically, a hover preview NEVER claims the
+ * app-wide singleton — only a CLICK (which pins `open = true`) does.
+ * This file's single most important regression test is therefore:
+ * hovering trigger B while trigger A is click-pinned-open must leave A
+ * open (see "HOVER-PREVIEW never evicts a click-PINNED popup" below).
+ *
  * This spec originally proved the singleton with a CLICK-then-HOVER
  * sequence specifically to rule out the pre-existing `mousedown`-driven
  * click-outside-closes listener (hover never fires `mousedown`, so only
- * the singleton effect could close A). With hover now removed entirely,
- * that specific isolation trick is unavailable — a plain second click
- * would also pass on just the click-outside listener and prove nothing
- * about the singleton specifically.
+ * the singleton effect could close A). That isolation trick is no
+ * longer needed for the keyboard-activation tests below, but the same
+ * underlying fact (keyboard-triggered `click` fires no `mousedown`) is
+ * still exploited to isolate the singleton-claim effect from the
+ * click-outside listener.
  *
  * Fix for this revision: pin tooltip A open via a real mouse CLICK, then
  * open tooltip B via KEYBOARD activation (Tab to focus the real `<button>`,
@@ -137,28 +145,61 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(coverageBtn).toHaveAttribute('aria-expanded', 'false');
   });
 
-  test('HOVER never opens the default-chip InfoHint (hover-removal regression guard)', async ({ page }) => {
-    // Direct negative test for the removed hover-to-open code path on the
-    // default chip mode (InfoHint's own onmouseenter/onmouseleave,
-    // deleted 2026-10). A real `.hover()` proves the cursor actually
-    // landed on the chip (Playwright's actionability check), then we
-    // assert no tooltip appeared — a hover-negative assertion, not a
-    // vacuous "never checked" one.
+  test('HOVER shows a preview but never pins — moving away hides it, and it never claims the singleton', async ({ page }) => {
     const titleBtn = page.locator('.algo-title-group .info-wrap button.info-btn');
     await expect(titleBtn).toBeVisible();
 
+    // Hover shows a preview (`visible = open || _hoverPreview`), even
+    // though `open` (pinned) stays false the whole time.
     await titleBtn.hover();
-    await page.waitForTimeout(300);
-    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'false');
 
-    // Positive control on the same element — click still opens it.
+    // Moving the mouse away hides the preview again — it never pinned.
+    await page.mouse.move(5, 5);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+    // Positive control on the same element — click still pins it open.
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
 
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+  });
+
+  test('HOVER-PREVIEW never evicts a click-PINNED popup — the single most important regression in this file', async ({ page }) => {
+    const titleBtn = page.locator('.algo-title-group .info-wrap button.info-btn');
+    const coverageBtn = page.locator('.tpl-matrix-head .info-wrap button.info-btn');
+
+    // Pin A open via a real click.
+    await titleBtn.click();
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('Order templates');
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
+
+    // Hover B via a dispatched pointerenter rather than a real
+    // `.hover()` — A's own click-pinned popout is `position: fixed` and
+    // renders directly over B's screen coordinates on this page (same
+    // occlusion noted elsewhere in this file for clicks), which fails
+    // Playwright's actionability check for a genuine pointer move.
+    // Dispatching the event directly targets B regardless of what's
+    // visually on top, which is exactly what's needed here — this test
+    // is about InfoHint's own pointerenter handler, not real cursor
+    // travel. If hover wrongly claimed the singleton (gating on
+    // `visible` instead of `open`), A would close here — that's exactly
+    // the regression this fix prevents.
+    await coverageBtn.dispatchEvent('pointerenter', { pointerType: 'mouse' });
+    await page.waitForTimeout(150);
+    await expect(titleBtn, 'A must stay pinned — a hover preview on B must never evict it').toHaveAttribute('aria-expanded', 'true');
+    await expect(page.locator('[role="tooltip"]'), 'both A (pinned) and B (preview) may render at once').toHaveCount(2);
+    const tooltipTexts = await page.locator('[role="tooltip"]').allTextContents();
+    expect(tooltipTexts.some((t) => t.includes('Order templates'))).toBe(true);
+
+    // Leaving B drops its preview; A is still pinned, untouched.
+    await coverageBtn.dispatchEvent('pointerleave', { pointerType: 'mouse' });
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
   test('clicking the same field twice opens then closes it (singleton claim does not break same-instance toggle)', async ({ page }) => {

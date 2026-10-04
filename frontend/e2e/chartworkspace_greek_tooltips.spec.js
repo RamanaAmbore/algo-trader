@@ -17,9 +17,11 @@
  *  3. Stale   — no `.cw-greek-item` carries a separate visible chip button.
  *  4. Reuse   — exercises the shared InfoHint component's hideButton+anchor
  *               contract, same as OptionsPayoff and derivatives Strategy Summary.
- *  5. UX      — click opens/closes the popover; hover is a genuine no-op
- *               (hover-opens-a-tooltip was removed from InfoHint app-wide,
- *               2026-10, explicit operator instruction — click-only everywhere).
+ *  5. UX      — click pins/unpins the popover; hovering shows a transient
+ *               preview that never pins and never claims the app-wide
+ *               singleton (2026-10 hover-preview + click-to-pin
+ *               reintroduction, modeled on OptionsPayoff.svelte's own
+ *               hover/pin tooltip).
  *
  * Run:
  *   npx playwright test e2e/chartworkspace_greek_tooltips.spec.js \
@@ -111,7 +113,7 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('HOVER does NOT open the Greek tooltip (hover removed app-wide, 2026-10); click still works', async ({ page, viewport }) => {
+  test('HOVER shows a preview (not a pin) on the Greek tooltip (2026-10); click pins', async ({ page, viewport }) => {
     const greeksStrip = page.locator('.cw-greeks-strip');
     const stripVisible = await greeksStrip.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false);
     if (!stripVisible) {
@@ -125,13 +127,18 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
     const gammaItem = greekItems.nth(1); // Gamma is second
     await expect(gammaItem).toContainText('Γ');
 
-    // HOVER must NOT open anything. A real `.hover()` proves the cursor
-    // actually landed on the item (Playwright's actionability check).
+    // HOVER shows a transient preview — never pins. A real `.hover()`
+    // proves the cursor actually landed on the item (Playwright's
+    // actionability check).
     await gammaItem.hover();
-    await page.waitForTimeout(300);
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+    await expect(gammaItem).toHaveAttribute('aria-expanded', 'false'); // preview only — not pinned
+
+    // Moving away drops the preview — it never pinned.
+    await page.mouse.move(5, 5);
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-    // Positive control: click still opens/closes it.
+    // Positive control: click still pins/unpins it.
     await gammaItem.click();
     const popover = page.locator('[role="tooltip"]').first();
     await expect(popover).toBeVisible({ timeout: 2000 });
@@ -143,7 +150,7 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
     await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
   });
 
-  test('All 5 Greeks + IV open distinct, correctly-worded tooltips via click; hover never opens any of them', async ({ page, viewport }) => {
+  test('All 5 Greeks + IV open distinct, correctly-worded tooltips via click; hover shows a preview only, with suppression respected after dismiss', async ({ page, viewport }) => {
     const greeksStrip = page.locator('.cw-greeks-strip');
     const stripVisible = await greeksStrip.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false);
     if (!stripVisible) {
@@ -177,10 +184,19 @@ test.describe('ChartWorkspace Greeks strip — field-as-trigger tooltips (hideBu
       await item.click(); // close
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
 
-      // HOVER must NOT reopen it (hover removed app-wide, 2026-10), even
-      // while the cursor is still resting on the item from the click above.
+      // Hovering right after the dismiss-click, cursor still resting on
+      // the item, must NOT reopen within the 350ms suppression window.
       await item.hover();
+      await page.waitForTimeout(150);
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
+
+      // After the window elapses, a fresh hover shows a preview that
+      // disappears on mouse-leave without pinning.
+      await page.mouse.move(5, 5);
       await page.waitForTimeout(300);
+      await item.hover();
+      await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
+      await page.mouse.move(5, 5);
       await expect(page.locator('[role="tooltip"]')).toHaveCount(0);
     }
   });
