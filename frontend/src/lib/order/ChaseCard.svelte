@@ -247,6 +247,9 @@
     if (k === 'live')   return 'cc-mode cc-mode-live';
     if (k === 'paper')  return 'cc-mode cc-mode-paper';
     if (k === 'shadow') return 'cc-mode cc-mode-shadow';
+    // Reuses the existing .cc-mode-draft rule (amber) already used by the
+    // hardcoded draft-rows section below — same visual meaning, same class.
+    if (k === 'draft')  return 'cc-mode cc-mode-draft';
     return 'cc-mode';
   }
 

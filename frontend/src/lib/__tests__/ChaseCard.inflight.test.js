@@ -210,3 +210,46 @@ describe('ChaseCard Age column (_age)', () => {
     expect(_age('not-a-date', 1000)).toBe('—');
   });
 });
+
+// ── Mode class — explicit draft styling ──────────────────────────────────
+//
+// _modeCls already fell back safely for an unrecognized mode (bare
+// 'cc-mode', accurate uppercased text in the DOM — never mislabeled as
+// live). This is a polish/consistency pass: draft now gets its own
+// explicit branch reusing the existing .cc-mode-draft rule (amber),
+// already used elsewhere in this component for the hardcoded draft-rows
+// section, instead of falling into the generic bare class.
+//
+// Mirrors the fixed ChaseCard.svelte `_modeCls` function.
+/** @param {string} m */
+function _modeCls(m) {
+  const k = String(m || '').toLowerCase();
+  if (k === 'live')   return 'cc-mode cc-mode-live';
+  if (k === 'paper')  return 'cc-mode cc-mode-paper';
+  if (k === 'shadow') return 'cc-mode cc-mode-shadow';
+  if (k === 'draft')  return 'cc-mode cc-mode-draft';
+  return 'cc-mode';
+}
+
+describe('ChaseCard mode class (_modeCls)', () => {
+  it('known modes map to their own class', () => {
+    expect(_modeCls('live')).toBe('cc-mode cc-mode-live');
+    expect(_modeCls('paper')).toBe('cc-mode cc-mode-paper');
+    expect(_modeCls('shadow')).toBe('cc-mode cc-mode-shadow');
+  });
+
+  it('draft gets its own explicit class, reusing the existing .cc-mode-draft rule', () => {
+    expect(_modeCls('draft')).toBe('cc-mode cc-mode-draft');
+  });
+
+  it('is case-insensitive', () => {
+    expect(_modeCls('DRAFT')).toBe('cc-mode cc-mode-draft');
+    expect(_modeCls('Live')).toBe('cc-mode cc-mode-live');
+  });
+
+  it('an unrecognized mode falls back to the bare class, never a specific color class', () => {
+    expect(_modeCls('bogus')).toBe('cc-mode');
+    expect(_modeCls(undefined)).toBe('cc-mode');
+    expect(_modeCls(null)).toBe('cc-mode');
+  });
+});

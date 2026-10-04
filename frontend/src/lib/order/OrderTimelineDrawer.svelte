@@ -55,6 +55,7 @@
     if (mode === 'sim')   return 'otd-mode-sim';
     if (mode === 'paper') return 'otd-mode-paper';
     if (mode === 'live')  return 'otd-mode-live';
+    if (mode === 'draft') return 'otd-mode-draft';
     return 'otd-mode-unknown';
   }
 
@@ -350,5 +351,8 @@
   .otd-mode-sim     { color: var(--c-action); background: rgba(251,191,36,0.15);  border-color: var(--c-action); }
   .otd-mode-paper   { color: #38bdf8; background: rgba(56,189,248,0.15);  border-color: #38bdf8; }
   .otd-mode-live    { color: var(--c-long); background: rgba(74,222,128,0.15);  border-color: var(--c-long); }
+  /* DRAFT — never placed, no broker round-trip. Dashed + muted, distinct
+     from otd-mode-unknown's solid slate so the two don't read the same. */
+  .otd-mode-draft   { color: var(--algo-muted); background: rgba(126,151,184,0.10); border-color: rgba(126,151,184,0.45); border-style: dashed; }
   .otd-mode-unknown { color: #94a3b8; background: rgba(148,163,184,0.15); border-color: #94a3b8; }
 </style>
