@@ -1247,6 +1247,11 @@ export const fetchOrderEvents = (limit = 50, status = null) => {
   return _get(`/orders/events/recent?${p}`, { auth: true });
 };
 
+/** GET /api/orders/{order_id}/events — full oldest-first event timeline
+ *  for ONE order (not the aggregate open-chase feed above). Powers
+ *  OrderBook's per-order timeline drawer. */
+export const fetchOrderEventsById = (orderId) => _get(`/orders/${orderId}/events`, { auth: true });
+
 
 // ── Unified log feed ──────────────────────────────────────────────────
 /**

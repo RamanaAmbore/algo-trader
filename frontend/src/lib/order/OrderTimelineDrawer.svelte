@@ -15,6 +15,17 @@
    *                                carry no symbol/side/qty/mode of their
    *                                own — see orderTimelineLogic.js.
    *   onClose       {Function}  — called when the drawer should be dismissed
+   *   linkedOrders  {Object|null} — optional, additive (OrderBook.svelte's
+   *                                per-order timeline view only — the
+   *                                navbar chase-chip caller never passes
+   *                                this). Shape: { parent_order_id?,
+   *                                child_order_ids?: number[], basket_tag? }.
+   *                                Renders a chip strip above the event
+   *                                list when any field is set.
+   *   onSelectLinked {Function}  — optional, called with an order id when
+   *                                a parent/child chip is clicked, so the
+   *                                caller can re-fetch and re-render this
+   *                                same drawer instance for that order.
    */
   import { onMount, onDestroy } from 'svelte';
   import { priceFmt } from '$lib/format';
@@ -22,7 +33,10 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { groupOrderEvents, isTerminalSection } from '$lib/order/orderTimelineLogic.js';
 
-  const { open = false, orders = [], orderContext = {}, onClose } = $props();
+  const {
+    open = false, orders = [], orderContext = {}, onClose,
+    linkedOrders = null, onSelectLinked = undefined,
+  } = $props();
 
   // ── Kind → color mapping ──────────────────────────────────────────────
   const KIND_COLOR = {
@@ -97,6 +111,14 @@
       window.removeEventListener('keydown', onKeyDown);
     }
   });
+
+  // Additive chip strip — null/empty linkedOrders (the existing
+  // navbar chase-chip caller never passes it) renders nothing at all.
+  const _hasLinked = $derived(!!(linkedOrders && (
+    linkedOrders.parent_order_id != null
+    || (linkedOrders.child_order_ids ?? []).length > 0
+    || linkedOrders.basket_tag
+  )));
 </script>
 
 {#if open}
@@ -119,6 +141,35 @@
         </svg>
       </button>
     </div>
+
+    <!-- Linked-orders chip strip — parent/child/basket, additive only
+         (OrderBook.svelte's per-order view; navbar chase-chip drawer
+         never passes linkedOrders so this never renders there). -->
+    {#if _hasLinked}
+      <div class="otd-linked" role="group" aria-label="Linked orders">
+        {#if linkedOrders.parent_order_id != null}
+          <button type="button" class="otd-chip otd-chip-link"
+            onclick={() => onSelectLinked?.(linkedOrders.parent_order_id)}>
+            Parent: #{linkedOrders.parent_order_id}
+          </button>
+        {/if}
+        {#each (linkedOrders.child_order_ids ?? []) as cid}
+          <button type="button" class="otd-chip otd-chip-link"
+            onclick={() => onSelectLinked?.(cid)}>
+            Child: #{cid}
+          </button>
+        {/each}
+        {#if linkedOrders.basket_tag}
+          <!-- Informational only — a basket_tag isn't a single order id,
+               and no existing tag→member-ids lookup exists anywhere in
+               the codebase to wire a click handler to (checked
+               orders_basket.py / api.js — basket dispatch is fire-and-
+               forget per-account, no reverse lookup route). -->
+          <span class="otd-chip otd-chip-basket" title={linkedOrders.basket_tag}
+          >{linkedOrders.basket_tag}</span>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Order sections -->
     <div class="otd-body">
@@ -231,6 +282,41 @@
     outline: none;
   }
   .otd-close:hover { color: var(--c-short); background: var(--close-btn-neutral-bg-hover); }
+
+  /* Linked-orders chip strip — same pill shape as .otd-mode-pill,
+     clickable chips get the sky "info" treatment (CLAUDE.md palette),
+     basket tag (non-clickable) gets the violet "postback" treatment
+     already used for the postback event kind above. */
+  .otd-linked {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    padding: 0.45rem 0.6rem;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+    flex-shrink: 0;
+  }
+  .otd-chip {
+    font-family: var(--font-numeric);
+    font-size: var(--fs-xs);
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.15rem 0.5rem;
+    border-radius: 9999px;
+    border: 1px solid;
+  }
+  .otd-chip-link {
+    color: #7dd3fc;
+    background: rgba(125, 211, 252, 0.12);
+    border-color: rgba(125, 211, 252, 0.4);
+    cursor: pointer;
+  }
+  .otd-chip-link:hover { background: rgba(125, 211, 252, 0.22); }
+  .otd-chip-basket {
+    color: #a78bfa;
+    background: rgba(167, 139, 250, 0.12);
+    border-color: rgba(167, 139, 250, 0.4);
+    cursor: default;
+  }
 
   /* Scrollable body */
   .otd-body {

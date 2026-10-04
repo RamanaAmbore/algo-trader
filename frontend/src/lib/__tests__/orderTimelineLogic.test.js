@@ -33,6 +33,9 @@ import {
   isTerminalSection,
   latestEventTs,
   groupOrderEvents,
+  resolveOrderId,
+  buildOrderContextEntry,
+  buildLinkedOrders,
 } from '../order/orderTimelineLogic.js';
 
 describe('parseEventPayload', () => {
@@ -228,5 +231,79 @@ describe('groupOrderEvents', () => {
     const order2 = grouped.find((s) => s.order_id === 2);
     const fillEvent = order2.events.find((e) => e.kind === 'fill');
     expect(fillEvent.price).toBe(102.5);
+  });
+});
+
+// ── Per-order timeline view (OrderBook.svelte's click-to-open drawer) ──
+
+describe('resolveOrderId', () => {
+  it('prefers order_id (broker OrderRow shape)', () => {
+    expect(resolveOrderId({ order_id: 'ORD1', id: 99 })).toBe('ORD1');
+  });
+
+  it('falls back to id (AlgoOrderInfo shape)', () => {
+    expect(resolveOrderId({ id: 42 })).toBe(42);
+  });
+
+  it('returns null when neither is present', () => {
+    expect(resolveOrderId({})).toBeNull();
+    expect(resolveOrderId(null)).toBeNull();
+  });
+});
+
+describe('buildOrderContextEntry', () => {
+  it('builds a single-entry map keyed by the resolved order id', () => {
+    const order = { order_id: 'ORD1', tradingsymbol: 'NIFTY26JUN25000CE', transaction_type: 'BUY', quantity: 50, mode: 'live' };
+    expect(buildOrderContextEntry(order)).toEqual({
+      ORD1: { symbol: 'NIFTY26JUN25000CE', side: 'BUY', qty: 50, mode: 'live' },
+    });
+  });
+
+  it('falls back to symbol/id fields for AlgoOrderInfo shape', () => {
+    const order = { id: 7, symbol: 'RBQ-LIVE1', transaction_type: 'SELL', quantity: 10, mode: 'paper' };
+    expect(buildOrderContextEntry(order)).toEqual({
+      7: { symbol: 'RBQ-LIVE1', side: 'SELL', qty: 10, mode: 'paper' },
+    });
+  });
+
+  it('honors an explicit idOverride (linked-chip navigation where only the id is known)', () => {
+    expect(buildOrderContextEntry({ symbol: 'X', transaction_type: 'BUY', quantity: 1 }, 123))
+      .toEqual({ 123: { symbol: 'X', side: 'BUY', qty: 1, mode: '' } });
+  });
+
+  it('returns {} when no id can be resolved at all', () => {
+    expect(buildOrderContextEntry({})).toEqual({});
+  });
+});
+
+describe('buildLinkedOrders', () => {
+  it('returns null when none of parent_order_id/child_order_ids/basket_tag are set', () => {
+    expect(buildLinkedOrders({ id: 1, symbol: 'X' })).toBeNull();
+    expect(buildLinkedOrders({ child_order_ids: [] })).toBeNull();
+    expect(buildLinkedOrders(null)).toBeNull();
+  });
+
+  it('returns a populated shape when parent_order_id is set', () => {
+    expect(buildLinkedOrders({ parent_order_id: 1001 })).toEqual({
+      parent_order_id: 1001, child_order_ids: [], basket_tag: null,
+    });
+  });
+
+  it('returns a populated shape when child_order_ids is non-empty', () => {
+    expect(buildLinkedOrders({ child_order_ids: [2002, 2003] })).toEqual({
+      parent_order_id: null, child_order_ids: [2002, 2003], basket_tag: null,
+    });
+  });
+
+  it('filters out null/undefined entries inside child_order_ids', () => {
+    expect(buildLinkedOrders({ child_order_ids: [2002, null, undefined] })).toEqual({
+      parent_order_id: null, child_order_ids: [2002], basket_tag: null,
+    });
+  });
+
+  it('returns a populated shape when basket_tag is set', () => {
+    expect(buildLinkedOrders({ basket_tag: 'ramboq-basket-abc123' })).toEqual({
+      parent_order_id: null, child_order_ids: [], basket_tag: 'ramboq-basket-abc123',
+    });
   });
 });

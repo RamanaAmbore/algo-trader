@@ -100,6 +100,55 @@ export function latestEventTs(events) {
  * which was itself part of the original bug (a live order silently
  * rendering a PAPER pill).
  */
+/**
+ * Resolves the canonical order id from either row shape OrderBook.svelte
+ * merges — broker `OrderRow` carries `order_id`, `AlgoOrderInfo` carries
+ * `id` — matching the `o.order_id ?? o.id` pattern already used inline
+ * for the `{#each}` key in OrderBook.svelte. Returns null when neither
+ * is present (defensive — should not happen for a real row).
+ */
+export function resolveOrderId(order) {
+  return order?.order_id ?? order?.id ?? null;
+}
+
+/**
+ * Builds a single-entry `orderContext` map (`{[id]: {symbol, side, qty,
+ * mode}}`) for OrderTimelineDrawer, from an already-in-memory OrderBook
+ * row — no extra fetch needed since the row itself carries
+ * symbol/side/qty/mode (unlike the bare event rows). `idOverride` lets a
+ * caller supply the id explicitly (e.g. a linked-order chip click, where
+ * only the id is known up front and the matching row is looked up
+ * separately). Returns `{}` when no id can be resolved at all.
+ */
+export function buildOrderContextEntry(order, idOverride = null) {
+  const id = idOverride ?? resolveOrderId(order);
+  if (id == null) return {};
+  return {
+    [id]: {
+      symbol: order?.tradingsymbol || order?.symbol || '',
+      side:   order?.transaction_type ?? '',
+      qty:    order?.quantity ?? null,
+      mode:   order?.mode ?? '',
+    },
+  };
+}
+
+/**
+ * Builds the `linkedOrders` shape for OrderTimelineDrawer's chip strip
+ * from a raw order row. Returns `null` when none of `parent_order_id` /
+ * `child_order_ids` / `basket_tag` are set, so the drawer can gate
+ * rendering on a single falsy check rather than three per-field ones.
+ */
+export function buildLinkedOrders(order) {
+  const parent = order?.parent_order_id ?? null;
+  const children = Array.isArray(order?.child_order_ids)
+    ? order.child_order_ids.filter((id) => id != null)
+    : [];
+  const basketTag = order?.basket_tag || null;
+  if (parent == null && children.length === 0 && !basketTag) return null;
+  return { parent_order_id: parent, child_order_ids: children, basket_tag: basketTag };
+}
+
 export function groupOrderEvents(events, orderContextById = {}) {
   const map = new Map();
   for (const ev of events ?? []) {

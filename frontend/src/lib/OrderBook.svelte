@@ -35,10 +35,12 @@
   import { onMount, onDestroy, untrack } from 'svelte';
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
-  import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt } from '$lib/api';
+  import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt, fetchOrderEventsById } from '$lib/api';
   import { priceFmt } from '$lib/format';
   import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
+  import OrderTimelineDrawer from '$lib/order/OrderTimelineDrawer.svelte';
+  import { resolveOrderId, buildOrderContextEntry, buildLinkedOrders } from '$lib/order/orderTimelineLogic.js';
   import ChartModal from '$lib/ChartModal.svelte';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
   import SymbolContextMenu from '$lib/SymbolContextMenu.svelte';
@@ -236,6 +238,43 @@
       const rows = Array.isArray(resp?.gtts) ? resp.gtts : [];
       _gttRows = rows;
     } catch (_) { /* keep last-good — same staleness-freeze convention as _loadOrders */ }
+  }
+
+  // ── Per-order timeline drawer ───────────────────────────────────────
+  // A LOCAL instance of OrderTimelineDrawer scoped to one order at a
+  // time — distinct from (algo)/+layout.svelte's navbar chase-chip
+  // drawer, which shows an aggregate feed across every actively-chasing
+  // order via a different endpoint (/events/recent?status=open). Opened
+  // by clicking an OrderCard's body (not its action buttons — those
+  // stopPropagation already).
+  let _timelineOpen    = $state(false);
+  let _timelineOrders  = $state(/** @type {any[]} */ ([]));
+  let _timelineContext = $state(/** @type {Record<string, {symbol:string, side:string, qty:number|null, mode:string}>} */ ({}));
+  let _timelineLinked  = $state(/** @type {{parent_order_id?: number|null, child_order_ids?: number[], basket_tag?: string|null} | null} */ (null));
+
+  /** Opens the drawer for `orderOrId` — either a full row (card click)
+   *  or a bare id (linked-chip navigation, see onSelectLinked below).
+   *  Looks the id up against the already-loaded `orderRows` first so a
+   *  linked parent/child chip shows that order's own real symbol/side/
+   *  qty/mode/links, not an empty "unknown" context — `orderRows` is the
+   *  full merged broker+algo list (not status-filtered), so a linked
+   *  order is present there even when it's hidden by the current status
+   *  chip. Falls back to the bare id when it isn't found (e.g. a linked
+   *  order outside today's session window). */
+  async function _openOrderTimeline(/** @type {any} */ orderOrId) {
+    const id = (orderOrId && typeof orderOrId === 'object')
+      ? resolveOrderId(orderOrId)
+      : orderOrId;
+    if (id == null) return;
+    const full = orderRows.find(o => String(resolveOrderId(o)) === String(id)) || orderOrId;
+    _timelineContext = buildOrderContextEntry(full, id);
+    _timelineLinked  = buildLinkedOrders(full);
+    _timelineOpen    = true;
+    try {
+      _timelineOrders = await fetchOrderEventsById(id);
+    } catch (_) {
+      _timelineOrders = [];
+    }
   }
 
   function _downloadCsv() {
@@ -670,7 +709,8 @@
             _symPanelSym = ord.tradingsymbol || ord.symbol || '';
             _symPanelExch = ord.exchange || '';
           }}
-          onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: /** @type {MouseEvent} */ (e).clientX, y: /** @type {MouseEvent} */ (e).clientY }; }}>
+          onSymbolContext={(ord, e) => { _ctxMenu = { symbol: ord.tradingsymbol || ord.symbol || '', exchange: ord.exchange || '', x: /** @type {MouseEvent} */ (e).clientX, y: /** @type {MouseEvent} */ (e).clientY }; }}
+          onCardClick={_openOrderTimeline}>
           {#snippet actions(ord)}
             <div class="lp-oc-actions" role="group" aria-label="Order actions">
               {#if _isOpenBroker(ord)}
@@ -772,6 +812,15 @@
     onClose={() => { _ctxAction = null; }}
   />
 {/if}
+
+<OrderTimelineDrawer
+  open={_timelineOpen}
+  orders={_timelineOrders}
+  orderContext={_timelineContext}
+  linkedOrders={_timelineLinked}
+  onClose={() => { _timelineOpen = false; }}
+  onSelectLinked={(linkedId) => _openOrderTimeline(linkedId)}
+/>
 
 </div>
 
