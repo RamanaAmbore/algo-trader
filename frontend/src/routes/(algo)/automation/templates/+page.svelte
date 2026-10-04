@@ -204,7 +204,7 @@
       const payload = _payloadFromForm();
       await patchOrderTemplate(t.id, payload);
       templates = await reloadOrderTemplates();
-      toast.success(`Template saved: ${formName}`);
+      toast.success(`o.template saved: ${formName}`);
       resetForm();
     } catch (e) {
       formError = e.message || 'save failed';
@@ -223,7 +223,7 @@
       // tp_pct + sl_pct + wing_* default to null when blank — that's fine
       await createOrderTemplate(payload);
       templates = await reloadOrderTemplates();
-      toast.success(`Template created: ${formName}`);
+      toast.success(`o.template created: ${formName}`);
       resetForm();
     } catch (e) {
       formError = e.message || 'create failed';
@@ -237,7 +237,7 @@
     if (!_confirmRef) return;
     const ok = await _confirmRef.ask({
       title: `Delete ${t.name}?`,
-      message: 'The template will be removed permanently. Existing orders that used it are not affected.',
+      message: 'The o.template will be removed permanently. Existing orders that used it are not affected.',
       confirmLabel: 'Delete',
       cancelLabel: 'Cancel',
       destructive: true,
@@ -246,7 +246,7 @@
     try {
       await deleteOrderTemplate(t.id);
       templates = await reloadOrderTemplates();
-      toast.success(`Template deleted: ${t.name}`);
+      toast.success(`o.template deleted: ${t.name}`);
     } catch (e) {
       toast.error(`Delete failed: ${e.message || 'unknown error'}`);
     }
@@ -297,12 +297,12 @@
   );
 </script>
 
-<svelte:head><title>Order Templates | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>o.templates | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Templates</h1>
-    <InfoHint popup panel title="Templates" align="right" text="<b>Order templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
+    <h1 class="page-title-chip">o.templates</h1>
+    <InfoHint popup panel title="o.templates" align="right" text="<b>o.templates</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected o.template translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit an o.template here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
   </span>
   <AlgoTimestamp />
   <span class="ml-auto"></span>
@@ -594,7 +594,7 @@
 <!-- Create-new form (separate from edit so they don't fight over state) -->
 {#if creatingNew}
   <section id="tpl-create-form" class="bucket-card p-3 mt-3">
-    <h2 class="mp-section-label mb-2">Create custom template</h2>
+    <h2 class="mp-section-label mb-2">Create custom o.template</h2>
     <div class="tpl-form">
       <label class="tpl-field">
         <span>Name</span>

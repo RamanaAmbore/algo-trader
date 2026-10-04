@@ -297,11 +297,11 @@
       <span class="log-chip log-chip-template"
             class:log-chip-template-partial={_missingId}
             title={_atJson
-              ? `Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
+              ? `o.template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
               : (order.status === 'FILLED'
-                  ? 'Template was selected but attach did not run — click Re-attach to retry.'
-                  : 'Template selected — will attach on fill')}>
-        <span class="log-chip-key">tmpl:</span>#{order.template_id}{_chipBadge}
+                  ? 'o.template was selected but attach did not run — click Re-attach to retry.'
+                  : 'o.template selected — will attach on fill')}>
+        <span class="log-chip-key">o.template:</span>#{order.template_id}{_chipBadge}
       </span>
       <!-- #23 — trailing stop chip (amber) -->
       {#if _trailEntry}
