@@ -2,13 +2,21 @@
 RamboQuant MCP server — read-only research tools over stdio.
 
 Launched by Claude Code from `.mcp.json`. Talks to a running RamboQuant
-API (default: https://dev.ramboq.com) via HTTPS using the operator's
-JWT supplied through `RAMBOQ_TOKEN`. No genai is invoked from this
-process — Claude Code is the LLM, this is the data pipe.
+API (default: https://dev.ramboq.com) via HTTPS. No genai is invoked from
+this process — Claude Code is the LLM, this is the data pipe.
+
+Authentication (see `_TokenProvider`):
+    1. `RAMBOQ_TOKEN` set → used as-is, no login.
+    2. Otherwise log in to `/api/auth/login` with `RAMBOQ_USER` / `RAMBOQ_PASS`,
+       falling back per-field to `admin_username` / `admin_password` in
+       `secrets.yaml`. The JWT is cached in memory, refreshed 5 minutes before
+       `exp`, and a 401 triggers one re-login and one retry.
 
 Environment:
     RAMBOQ_BASE   — API base URL (default: https://dev.ramboq.com)
-    RAMBOQ_TOKEN  — JWT from POST /api/auth/login (required for any tool)
+    RAMBOQ_TOKEN  — optional static JWT; skips auto-login when set
+    RAMBOQ_USER   — optional login username (default: secrets admin_username)
+    RAMBOQ_PASS   — optional login password (default: secrets admin_password)
 
 Tools (Phase 1, read-only):
     get_positions, get_holdings, get_quote, get_ohlcv,
@@ -21,37 +29,138 @@ Run:
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import os
+import time
+from datetime import datetime, timezone
 from typing import Any
 
 import httpx
+import jwt
 from mcp.server.fastmcp import FastMCP
 
 
+_log = logging.getLogger(__name__)  # stdlib: stdout is the MCP stdio channel, logs go to stderr
+
 _BASE  = (os.environ.get("RAMBOQ_BASE") or "https://dev.ramboq.com").rstrip("/")
-_TOKEN = os.environ.get("RAMBOQ_TOKEN") or ""
 _TIMEOUT = httpx.Timeout(30.0, connect=10.0)
+_REFRESH_MARGIN_S = 300.0  # re-login when the cached JWT has < 5 minutes left
 
 
-def _headers() -> dict[str, str]:
+def _now() -> float:
+    """Epoch seconds. Module-level so tests can pin the clock."""
+    return time.time()
+
+
+def _env_token() -> str:
+    return os.environ.get("RAMBOQ_TOKEN") or ""
+
+
+def _credentials() -> tuple[str, str]:
+    """Resolve login credentials: RAMBOQ_USER / RAMBOQ_PASS first, then the
+    server's secrets.yaml (admin_username / admin_password), per field."""
+    user = os.environ.get("RAMBOQ_USER") or ""
+    pwd = os.environ.get("RAMBOQ_PASS") or ""
+    if not user or not pwd:
+        try:
+            from backend.shared.helpers.utils import secrets
+        except (ImportError, OSError):
+            secrets = {}
+        user = user or str(secrets.get("admin_username") or "")
+        pwd = pwd or str(secrets.get("admin_password") or "")
+    if not user or not pwd:
+        raise RuntimeError(
+            "MCP auth: no RamboQuant credentials. Set RAMBOQ_TOKEN, or set "
+            "RAMBOQ_USER and RAMBOQ_PASS, or define admin_username and "
+            "admin_password in secrets.yaml."
+        )
+    return user, pwd
+
+
+class _TokenProvider:
+    """In-memory JWT cache with serialised login, pre-expiry refresh and
+    forced re-login after a 401. The token and password are never logged."""
+
+    def __init__(self) -> None:
+        self._token = ""
+        self._exp = 0.0
+        self._lock = asyncio.Lock()
+
+    @property
+    def cached(self) -> str:
+        return self._token
+
+    async def get(self, client: httpx.AsyncClient, *, rejected: str = "") -> str:
+        """Return a usable token. `rejected` is the token a server just 401'd;
+        if another caller already replaced it, reuse that instead of logging in again."""
+        async with self._lock:
+            fresh = (
+                bool(self._token)
+                and self._token != rejected
+                and self._exp - _now() >= _REFRESH_MARGIN_S
+            )
+            if not fresh:
+                await self._login(client)
+            return self._token
+
+    async def _login(self, client: httpx.AsyncClient) -> None:
+        user, pwd = _credentials()
+        r = await client.post(
+            f"{_BASE}/api/auth/login",
+            json={"username": user, "password": pwd},
+            headers={"Accept": "application/json"},
+        )
+        if r.is_error:
+            raise RuntimeError(f"RamboQuant login failed for {user} (HTTP {r.status_code})")
+        token = str((r.json() or {}).get("access_token") or "")
+        if not token:
+            raise RuntimeError(f"RamboQuant login for {user} returned no access_token")
+        try:
+            claims = jwt.decode(token, options={"verify_signature": False})
+        except jwt.PyJWTError:
+            raise RuntimeError(f"RamboQuant login for {user} returned a malformed token") from None
+        exp = float(claims.get("exp") or 0)
+        self._token, self._exp = token, exp
+        expires = (
+            datetime.fromtimestamp(exp, tz=timezone.utc).isoformat() if exp else "unknown"
+        )
+        _log.info("MCP logged in as %s; token expires %s", user, expires)
+
+
+_provider = _TokenProvider()
+
+
+def _headers(token: str = "") -> dict[str, str]:
     h = {"Accept": "application/json"}
-    if _TOKEN:
-        h["Authorization"] = f"Bearer {_TOKEN}"
+    if token:
+        h["Authorization"] = f"Bearer {token}"
     return h
 
 
-async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+async def _request(method: str, path: str, **kwargs: Any) -> Any:
+    """Send one API request. With a static RAMBOQ_TOKEN there is no login and
+    no retry. Otherwise a 401 triggers exactly one re-login and one retry."""
+    static = _env_token()
     async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.get(f"{_BASE}{path}", headers=_headers(), params=params or {})
+        if static:
+            r = await c.request(method, f"{_BASE}{path}", headers=_headers(static), **kwargs)
+        else:
+            token = await _provider.get(c)
+            r = await c.request(method, f"{_BASE}{path}", headers=_headers(token), **kwargs)
+            if r.status_code == 401:
+                token = await _provider.get(c, rejected=token)
+                r = await c.request(method, f"{_BASE}{path}", headers=_headers(token), **kwargs)
         r.raise_for_status()
         return r.json()
+
+
+async def _get(path: str, params: dict[str, Any] | None = None) -> Any:
+    return await _request("GET", path, params=params or {})
 
 
 async def _post(path: str, body: dict[str, Any]) -> Any:
-    async with httpx.AsyncClient(timeout=_TIMEOUT) as c:
-        r = await c.post(f"{_BASE}{path}", headers=_headers(), json=body)
-        r.raise_for_status()
-        return r.json()
+    return await _request("POST", path, json=body)
 
 
 app = FastMCP("ramboq-research")
@@ -942,11 +1051,13 @@ async def list_research_threads(symbol: str | None = None, limit: int = 50) -> d
 async def get_server_info() -> dict:
     """Diagnostic — returns the RamboQuant base URL this MCP server is
     talking to + whether a JWT is configured. Use this if other tools
-    are failing with 401 / connection errors to confirm setup."""
+    are failing with 401 / connection errors to confirm setup. Does not
+    trigger a login."""
+    token = _env_token() or _provider.cached
     return {
         "base_url":     _BASE,
-        "has_token":    bool(_TOKEN),
-        "token_prefix": (_TOKEN[:12] + "…") if _TOKEN else "",
+        "has_token":    bool(token),
+        "token_prefix": (token[:12] + "…") if token else "",
     }
 
 
