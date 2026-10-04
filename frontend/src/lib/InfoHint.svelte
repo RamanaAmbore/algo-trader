@@ -348,8 +348,11 @@
     /* High z-index so the popout sits above absolutely-positioned
        cards (Options payoff chart, fullscreen panels, ag-Grid popups).
        Was 50 — got clipped behind the payoff chart on /admin/options
-       because the chart card's stacking context outranked it. 9999
-       matches the FullscreenButton backdrop level. */
+       because the chart card's stacking context outranked it. Later
+       9999 (matching the FullscreenButton backdrop level) still sat
+       below --z-dropdown/--z-drawer, so the popout could render
+       behind an open nav dropdown or drawer (2026-10 fix) — now 20002,
+       just above both. See app.css z-index tier ladder comment. */
     z-index: var(--z-tooltip);
     flex: none;
     width: max-content;

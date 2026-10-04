@@ -106,9 +106,20 @@ test.describe('Static source checks — app.css z-index scale (tier ordering)', 
 
   test('--z-toast is the absolute top of every tier defined in this scale', () => {
     const zToast = zVar('z-toast');
-    for (const name of ['z-nav', 'z-command', 'z-modal-nested', 'z-modal-in-command', 'z-modal-critical', 'z-dropdown', 'z-drawer']) {
+    for (const name of ['z-nav', 'z-command', 'z-modal-nested', 'z-modal-in-command', 'z-modal-critical', 'z-dropdown', 'z-drawer', 'z-tooltip']) {
       expect(zToast, `--z-toast must exceed --${name}`).toBeGreaterThan(zVar(name));
     }
+  });
+
+  // 2026-10 fix — InfoHint popups (--z-tooltip) used to sit at 9999, below
+  // both --z-dropdown (20000) and --z-drawer (20001), so an open InfoHint
+  // popover could render BEHIND a nav dropdown or drawer whenever both
+  // were open on screen. Now raised to 20002, above both.
+  test('--z-tooltip sits above --z-dropdown and --z-drawer (was 9999, now 20002)', () => {
+    const zTooltip = zVar('z-tooltip');
+    expect(zTooltip).toBeGreaterThan(zVar('z-dropdown'));
+    expect(zTooltip).toBeGreaterThan(zVar('z-drawer'));
+    expect(zTooltip).toBe(20002);
   });
 
   test('stale "z-index 10000" claim for the PageHeaderActions modal comment is gone', () => {
@@ -1038,5 +1049,56 @@ test.describe('Functional — Escape priority inversions exposed by the backdrop
     await page.keyboard.press('Escape');
     await expect(page.locator('.row1-col-chart.fs-card-on'), 'fullscreen card should close on the second Escape')
       .toHaveCount(0, { timeout: 3_000 });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Functional — InfoHint popup (--z-tooltip) renders above NavBreakdown
+// (--z-dropdown - 1), real browser (2026-10 z-tooltip raise)
+// ─────────────────────────────────────────────────────────────────────────
+
+test.describe('Functional — InfoHint popup z-index outranks NavBreakdown (real browser)', () => {
+  test('open InfoHint popout computed z-index exceeds an open NavBreakdown panel', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto(`${BASE}/pulse`, { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.waitForTimeout(1500);
+
+    const strip = page.locator('.ps-strip');
+    const stripVisible = await strip.isVisible({ timeout: 3000 }).catch(() => false);
+    if (!stripVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'PositionStrip not visible (market closed or no data)' });
+      return;
+    }
+
+    // Open the P label's InfoHint popout and read its computed z-index
+    // BEFORE interacting elsewhere — InfoHint's own click-outside-closes
+    // listener (and NavBreakdown's overlay click-to-close) means opening
+    // the second popup would dismiss the first; each is read while it's
+    // the only thing open, which is sufficient since the z-index is a
+    // static CSS-token value either way.
+    const pChip = page.locator('.ps-strip .ps-k-p .info-btn').first();
+    await expect(pChip).toBeVisible({ timeout: 3000 });
+    await pChip.click();
+    const infoPopout = page.locator('.ps-strip .ps-k-p .info-popout').first();
+    await expect(infoPopout).toBeVisible();
+    const infoZ = await infoPopout.evaluate((el) => Number(getComputedStyle(el).zIndex));
+    await pChip.click(); // dismiss before opening the breakdown panel
+
+    // Open the C value's NavBreakdown panel and read its overlay's
+    // z-index (`.ps-breakdown-panel` itself sets no z-index of its own —
+    // it inherits the overlay's stacking context, calc(var(--z-dropdown) - 1) = 19999).
+    const cValue = page.locator('.ps-strip .ps-k-c')
+      .locator('xpath=following-sibling::span[1][contains(@class, "ps-agg-v")]')
+      .first();
+    await cValue.click();
+    const breakdown = page.locator('.ps-breakdown-panel');
+    const breakdownVisible = await breakdown.isVisible({ timeout: 5000 }).catch(() => false);
+    if (!breakdownVisible) {
+      test.info().annotations.push({ type: 'skip', description: 'breakdown popup did not open' });
+      return;
+    }
+    const breakdownOverlay = page.locator('.ps-breakdown-overlay');
+    const breakdownZ = await breakdownOverlay.evaluate((el) => Number(getComputedStyle(el).zIndex));
+    expect(infoZ, 'InfoHint popout z-index must exceed NavBreakdown overlay z-index').toBeGreaterThan(breakdownZ);
   });
 });

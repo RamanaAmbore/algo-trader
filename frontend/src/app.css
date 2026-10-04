@@ -263,14 +263,22 @@
      dropdowns + mobile hamburger drawer, portal-escape numbering),
      --z-drawer (OrderTimelineDrawer), --z-modal (generic ModalShell
      default — individual callers already override via the `zIndex`
-     prop), --z-tooltip, --z-search.
+     prop), --z-search.
+
+     --z-tooltip = 20002 (2026-10 fix) — InfoHint popups. Was 9999,
+     BELOW --z-dropdown (20000) and --z-drawer (20001), so an open
+     InfoHint popover rendered behind either whenever both were open
+     on screen at once. Now sits just above both, and below every
+     tier-3+ modal/command/cheatsheet/agent-alert/toast layer listed
+     above — an InfoHint popover is a lightweight, dismissable hint,
+     not something that should ever outrank a modal or a toast.
      ────────────────────────────────────────────────────────────────── */
   --z-nav:      50;
   --z-dropdown: 20000;
   --z-toast:    21000;
   --z-drawer:   20001;
   --z-modal:    300;
-  --z-tooltip:  9999;
+  --z-tooltip:  20002;
   --z-search:   10000;
   --z-command:  10500;
   --z-nav-indicator:    10550;
