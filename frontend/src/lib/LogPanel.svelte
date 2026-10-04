@@ -613,17 +613,33 @@
         const algoRows = (algoResp.status === 'fulfilled' && Array.isArray(algoResp.value))
           ? algoResp.value
           : [];
-        // Dedup: keep every broker row by order_id; only include algo
-        // rows whose order_id isn't already in the broker set.
+        // Dedup key fix (Sprint 2a, docs/proposals/SPRINT2_LAYER_INTEGRATION.md
+        // §1 finding 2 / §2) — `AlgoOrderInfo` never carried an `order_id`
+        // field (broker-only shape); comparing against `o.order_id || o.id`
+        // silently fell through to the algo row's own internal DB `id`,
+        // which can never equal a broker `order_id` — the dedup never
+        // matched and a live, algo-tracked order rendered twice. Mirrors
+        // OrderBook.svelte's identical fix — see that file's comment for
+        // the full rationale. `broker_order_id` is now a real surfaced
+        // field and the actual shared identity key; an algo row with no
+        // `broker_order_id` has no broker counterpart yet and stays in
+        // algoOnly.
         const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
         const algoOnly  = algoRows.filter(o => {
-          const oid = String(o?.order_id || o?.id || '');
-          return !brokerIds.has(oid);
+          const bid = String(o?.broker_order_id || '');
+          return !bid || !brokerIds.has(bid);
         });
         // Newest first — broker orders carry order_timestamp; algo rows
         // carry created_at. Date.parse falls back to 0 on bad strings so
         // empty/null timestamps land at the bottom.
-        const merged = [...brokerRows, ...algoOnly];
+        //
+        // `_rowOrigin` stamped here is the explicit origin flag
+        // `_isOpenBroker` below reads instead of the old `!o?.mode`
+        // heuristic — mirrors OrderBook.svelte's identical fix.
+        const merged = [
+          ...brokerRows.map(o => ({ ...o, _rowOrigin: 'broker' })),
+          ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
+        ];
         merged.sort((a, b) => {
           const ta = Date.parse(a.order_timestamp || a.created_at || '') || 0;
           const tb = Date.parse(b.order_timestamp || b.created_at || '') || 0;
@@ -719,10 +735,17 @@
   /** @type {string} */
   let _cancelErr  = $state('');
 
-  /** Returns true when the order is an OPEN broker order that can be acted on. */
+  /**
+   * Returns true when the order is an OPEN broker order that can be acted
+   * on (Modify/Cancel). Sprint 2a fix — mirrors OrderBook.svelte's
+   * identical fix: replaces the `!o?.mode` proxy (which happened to work
+   * only because broker rows had no `mode` field, not because it was an
+   * explicit origin check) with the `_rowOrigin` flag stamped in
+   * `_loadOrders` at the point each row's real source is known.
+   */
   function _isOpenBroker(/** @type {any} */ o) {
     const st = (o?.status || '').toUpperCase();
-    return (st === 'OPEN' || st === 'TRIGGER PENDING') && !o?.mode;
+    return (st === 'OPEN' || st === 'TRIGGER PENDING') && o?._rowOrigin === 'broker';
   }
 
   /** Returns true when the order is in-flight and reconciling is meaningful. */

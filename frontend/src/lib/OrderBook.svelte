@@ -156,9 +156,21 @@
         ? algoResp.value
         : [];
       const brokerIds = new Set(brokerRows.map(o => String(o?.order_id || '')));
+      // Dedup key fix (Sprint 2a, docs/proposals/SPRINT2_LAYER_INTEGRATION.md
+      // §1 finding 2 / §2) — `AlgoOrderInfo` never carried an `order_id`
+      // field (that's a broker-only shape); comparing against
+      // `o.order_id || o.id` silently fell through to the algo row's own
+      // internal DB `id`, which can never equal a broker `order_id` — the
+      // dedup never matched and a live, algo-tracked order rendered TWICE
+      // (once as a bare broker row, once as an algo row). `broker_order_id`
+      // is now a real surfaced field on `AlgoOrderInfo` and is the actual
+      // shared identity key between the two row shapes. An algo row with
+      // no `broker_order_id` has no broker counterpart yet (paper/sim/
+      // shadow, or a live order whose placement hasn't reached the broker
+      // book on this particular poll) and must stay in algoOnly.
       const algoOnly  = algoRows.filter(o => {
-        const oid = String(o?.order_id || o?.id || '');
-        return !brokerIds.has(oid);
+        const bid = String(o?.broker_order_id || '');
+        return !bid || !brokerIds.has(bid);
       });
       // Session-boundary filter applied HERE (before assigning orderRows,
       // not down in the filteredOrderRows derived chain) — a still-OPEN
@@ -170,7 +182,15 @@
       // POSITION snapshot when data is otherwise unavailable, a different
       // situation from a live, always-available order feed) — flagged for
       // reversal if the operator wants stale-OPEN rows to stay visible.
-      const merged = [...brokerRows, ...algoOnly].filter(_isCurrentSessionRow);
+      //
+      // `_rowOrigin` stamped here (not inferred later from shape) is the
+      // explicit origin flag `_isOpenBroker` below reads instead of the
+      // old `!o?.mode` heuristic — see that function's comment for why
+      // the heuristic needed replacing now rather than later.
+      const merged = [
+        ...brokerRows.map(o => ({ ...o, _rowOrigin: 'broker' })),
+        ...algoOnly.map(o => ({ ...o, _rowOrigin: 'algo' })),
+      ].filter(_isCurrentSessionRow);
       merged.sort((a, b) => {
         const ta = _rowTsMs(a) || 0;
         const tb = _rowTsMs(b) || 0;
@@ -392,10 +412,24 @@
   /** @type {string} */
   let _cancelErr   = $state('');
 
-  /** Returns true when the order is an OPEN broker order that can be acted on. */
+  /**
+   * Returns true when the order is an OPEN broker order that can be acted
+   * on (Modify/Cancel). Sprint 2a fix — this used to test `!o?.mode` as a
+   * proxy for "is this a bare broker row" (broker rows carried no `mode`
+   * field, algo rows always did), which happened to work only because
+   * nothing else about a broker row's shape had changed yet. Now that
+   * `AlgoOrderInfo` rows carry more surfaced fields (`broker_order_id`,
+   * `source`, `agent_id`) — and any future broker-row enrichment could
+   * just as easily add a `mode`-shaped field of its own — an implicit
+   * "absence of a field" test is the wrong long-term signal for origin.
+   * `_rowOrigin` is stamped explicitly in `_loadOrders` at the one point
+   * each row's real source (fetchOrders() vs fetchAlgoOrdersRecent()) is
+   * known, so this check never depends on which fields happen to be
+   * present or absent on either shape.
+   */
   function _isOpenBroker(/** @type {any} */ o) {
     const st = (o?.status || '').toUpperCase();
-    return (st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING') && !o?.mode;
+    return (st === 'OPEN' || st === 'TRIGGER PENDING' || st === 'TRIGGER_PENDING') && o?._rowOrigin === 'broker';
   }
 
   /** Returns true when the order is in-flight and reconciling is meaningful. */
