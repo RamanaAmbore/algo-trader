@@ -1,18 +1,19 @@
 /**
  * Lab chat panel — request box above the Lab tabs, calling POST /api/lab/chat.
  *
+ * The panel is gated by the `use_lab_chat` capability (designated only).
  * The endpoint is mocked with page.route, so these tests exercise the UI only.
  *
- * Asserts:
- * 1. Textarea and Send are visible for a login with view_lab
- * 2. Send posts the trimmed message as {message}
- * 3. A mocked 200 reply renders in the reply area as plain text
- * 4. A mocked 503 shows its detail text in the inline info banner
- * 5. Send is disabled and "Thinking…" shows while a request is pending
+ * Login selection:
+ * - Default login (PLAYWRIGHT_USER, admin in local/dev setups): must NOT see
+ *   the panel. Skips with a reason if the login cannot reach the Lab page.
+ * - Designated login (PLAYWRIGHT_DESIGNATED_USER + PLAYWRIGHT_DESIGNATED_PASS):
+ *   must see the panel. Every functional test below runs as this login and
+ *   skips with a reason when those env vars are not set.
  *
  * Run:
- *   cd frontend && npx playwright test e2e/lab_chat_panel.spec.js --project=chromium-desktop
- *   PLAYWRIGHT_USER=trader npx playwright test e2e/lab_chat_panel.spec.js
+ *   cd frontend && PLAYWRIGHT_DESIGNATED_USER=<user> PLAYWRIGHT_DESIGNATED_PASS=<pass> \
+ *     npx playwright test e2e/lab_chat_panel.spec.js --project=chromium-desktop
  */
 
 import { test, expect } from '@playwright/test';
@@ -21,28 +22,59 @@ import { loginAsAdmin } from './fixtures/auth.js';
 const BASE = process.env.BASE_URL || 'https://dev.ramboq.com';
 
 const PLACEHOLDER_PREFIX = 'Ask about positions, orders, or research.';
+const CHAT_TEXTAREA = `textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`;
 
-test.describe('Lab chat panel', () => {
-  test.beforeEach(async ({ page }) => {
+const DESIGNATED_USER = process.env.PLAYWRIGHT_DESIGNATED_USER || '';
+const DESIGNATED_PASS = process.env.PLAYWRIGHT_DESIGNATED_PASS || '';
+const HAS_DESIGNATED = Boolean(DESIGNATED_USER && DESIGNATED_PASS);
+const NO_DESIGNATED_REASON =
+  'No designated login available. Set PLAYWRIGHT_DESIGNATED_USER and ' +
+  'PLAYWRIGHT_DESIGNATED_PASS to run the chat panel tests.';
+
+/**
+ * Open /admin/lab and wait for either the chat box or the access-denied panel.
+ * Returns true when the Lab page content is reachable for this login.
+ */
+async function openLab(page) {
+  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  const chat = page.locator(CHAT_TEXTAREA);
+  const denied = page.locator('text=Access denied').first();
+  await chat.or(denied).first().waitFor({ timeout: 10000 }).catch(() => {});
+  return !(await denied.isVisible().catch(() => false));
+}
+
+test.describe('Lab chat panel — visibility by capability', () => {
+  test('panel is absent for a non-designated login', async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
-
-    // view_lab gates the whole page. Wait for either the chat box or the
-    // access-denied panel, then skip with a reason if the login lacks the cap.
-    const textarea = page.locator(`textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`);
-    const denied = page.locator('text=Access denied').first();
-    await textarea.or(denied).first().waitFor({ timeout: 10000 });
-    if (await denied.isVisible().catch(() => false)) {
-      test.skip(
-        'Lab page requires view_lab capability (designated, trader, risk, or demo role). ' +
-        'Run with PLAYWRIGHT_USER=<trader-or-designated-user> to test the chat panel.'
-      );
+    const reachable = await openLab(page);
+    if (!reachable) {
+      // Access denied: the panel cannot be present. Still assert absence.
+      await expect(page.locator(CHAT_TEXTAREA)).toHaveCount(0);
+      return;
     }
+    await expect(page.locator(CHAT_TEXTAREA)).toHaveCount(0);
+    await expect(page.locator('section[aria-label="Lab chat"]')).toHaveCount(0);
+  });
+
+  test('panel is present for a designated login', async ({ page }) => {
+    test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
+    await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
+    const reachable = await openLab(page);
+    test.skip(!reachable, 'Designated login cannot reach /admin/lab (view_lab missing).');
+    await expect(page.locator(CHAT_TEXTAREA)).toBeVisible();
+  });
+});
+
+test.describe('Lab chat panel — behaviour (designated login)', () => {
+  test.beforeEach(async ({ page }) => {
+    test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
+    await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
+    const reachable = await openLab(page);
+    test.skip(!reachable, 'Designated login cannot reach /admin/lab (view_lab missing).');
   });
 
   test('textarea and Send are visible', async ({ page }) => {
-    const textarea = page.locator(`textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`);
-    await expect(textarea).toBeVisible();
+    await expect(page.locator(CHAT_TEXTAREA)).toBeVisible();
     await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
   });
 
@@ -60,7 +92,7 @@ test.describe('Lab chat panel', () => {
       });
     });
 
-    await page.locator(`textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`).fill('  what is my P&L?  ');
+    await page.locator(CHAT_TEXTAREA).fill('  what is my P&L?  ');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
 
     const reply = page.locator('.lab-chat-reply');
@@ -83,7 +115,7 @@ test.describe('Lab chat panel', () => {
       })
     );
 
-    await page.locator(`textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`).fill('hello');
+    await page.locator(CHAT_TEXTAREA).fill('hello');
     await page.getByRole('button', { name: 'Send', exact: true }).click();
 
     await expect(page.locator('.lab-chat-info')).toContainText(detail);
@@ -103,7 +135,7 @@ test.describe('Lab chat panel', () => {
     });
 
     const send = page.getByRole('button', { name: 'Send', exact: true });
-    await page.locator(`textarea[placeholder^="${PLACEHOLDER_PREFIX}"]`).fill('slow question');
+    await page.locator(CHAT_TEXTAREA).fill('slow question');
     await send.click();
 
     await expect(page.locator('.lab-chat-thinking')).toHaveText('Thinking…');

@@ -55,6 +55,7 @@ const FALLBACK_CAPS = /** @type {Record<string, ReadonlyArray<string>>} */ ({
   view_users:               ['designated'],
   view_brokers:             ['designated', 'admin', 'risk', 'demo'],
   view_lab:                 ['designated', 'trader', 'risk', 'demo'],
+  use_lab_chat:             ['designated'],
   view_pulse:               ['designated', 'trader', 'risk', 'admin', 'demo'],
   view_charts:              ['designated', 'trader', 'risk', 'admin', 'demo'],
   view_market_summary:      ['designated', 'trader', 'risk', 'admin', 'partner', 'demo'],

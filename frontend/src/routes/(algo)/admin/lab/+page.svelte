@@ -175,6 +175,7 @@
   $effect(() => { _caps = $userCaps; });
   $effect(() => { _role = $userRole; });
   const _canView = $derived(hasCap('view_lab', _caps, _role));
+  const _canChat = $derived(hasCap('use_lab_chat', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -493,6 +494,7 @@
 
 <AutomationTabs />
 
+{#if _canChat}
 <section class="lab-card lab-chat" aria-label="Lab chat">
   <textarea class="lab-chat-input"
             bind:value={chatText}
@@ -515,6 +517,7 @@
     <pre class="lab-chat-reply">{chatReply}</pre>
   {/if}
 </section>
+{/if}
 
 <div class="lab-tabs-wrap">
   <AlgoTabs
