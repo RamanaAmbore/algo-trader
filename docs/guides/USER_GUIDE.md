@@ -342,6 +342,28 @@ Edit them from `/automation` — change a threshold, pick notification channels 
 
 ---
 
+## Order drafts — build hypothetical positions on the payoff chart
+
+The order ticket now has a **DRAFT** checkbox (F&O only). When you turn
+it ON and submit, the order doesn't reach your broker — instead, it
+adds a hypothetical leg to the payoff chart so you can see what the
+strategy would look like. Use this when modelling a trade you don't own
+yet: "what if I add a 24500 PE here?"
+
+Drafts persist server-side and survive page refresh. A draft is removed
+only when you confirm the real order (turn DRAFT OFF and submit). The
+DRAFT checkbox is independent of the CHASE toggle — both can be ON
+together, but when DRAFT is the active mode, no broker call happens
+even if chase is toggled.
+
+**Where drafts show up:**
+- `/admin/derivatives` — the Candidates grid includes draft rows marked
+  with a "draft" source badge
+- Your payoff curve updates instantly when you add a draft leg
+- The Greeks recalculate across all checked draft + live legs
+
+---
+
 ## Order templates — per-position exit rules
 
 Think of a template as "my standard exit playbook for selling options: auto-place a TP exit at +0.50% and an SL at −1%." When you place an option-chain basket order on the **Chain tab**, a compact toggle controls whether a template attaches. Once the order fills, the platform automatically places the exit orders on the broker.
@@ -352,7 +374,12 @@ Every exit rule (TP / SL / scaled close / trailing stop / hedge wing) is indepen
 
 **Templates are available only when placing option-chain basket orders (Chain tab).** The Ticket tab (single-order placement) does not use templates — orders placed there go out with no template/exit-rule attachment.
 
-**Use the default (most common)** — A toggle labeled "Templ" sits at the end of the Expiry-dropdown row. Flip it ON. This attaches your side-aware default template automatically (the platform picks which saved template applies based on your current BUY/SELL side and whether it's an option). You don't need to change anything — the default is ready to use.
+**Use the default (most common)** — A toggle labeled "o.template" sits
+at the end of the Expiry-dropdown row. Flip it ON. This attaches your
+side-aware default template automatically (the platform picks which
+saved template applies based on your current BUY/SELL side and whether
+it's an option). You don't need to change anything — the default is
+ready to use.
 
 **Pick a specific named template** — With the toggle ON, click the small chevron button next to it to expand the template params panel. Inside the expanded view, you'll see a "Specific tmpl" dropdown (alongside the TP% / SL% / Wing override inputs). Pick any template by name from the dropdown. This overrides the automatic default for this trade without changing your default setting.
 
@@ -985,6 +1012,21 @@ When you click Refresh during closed hours, a small toast appears: "Showing clos
 
 ---
 
+## Per-order event timeline — trace what happened to one order
+
+On the `/orders` page, click any order card's body (not the action buttons).
+A drawer opens showing that order's complete event timeline —
+oldest-first — with every milestone: when it was placed, each chase
+re-quote, fills, any preflight blocks, template-attach attempts, etc.
+The drawer also shows linked parent/child order chips at the top (if
+this order is part of a basket or has take-profit / stop-loss legs).
+Click a parent/child chip to navigate to that order without closing the
+drawer. Useful when: you've placed an order and want to know what went
+down in the seconds after: "did the chase fire? did the template attach
+to the fill?"
+
+---
+
 ## Audit log — what's recorded
 
 Every action that changes state in RamboQuant — placing an order, a broker filling that order, an agent firing, you tweaking a setting, a monthly statement going out to an LP, the daily NAV cron writing a snapshot — lands as one row in an audit log. The log is the platform's memory of "who did what, when, and with what outcome." A SEBI Cat-III audit visit doesn't need a fancy UI; it needs the trail. RamboQuant gives them both.
@@ -1085,7 +1127,7 @@ Highlights:
 - **₹0 incremental cost** — your Claude Code subscription is the
   only LLM. Server-side helpers (auto-title, news sentiment) use
   the free tier of Gemini 2.5 Flash.
-- **24 MCP tools** — 16 read, 2 persist, 6 gated write
+- **26 MCP tools** — 18 read, 2 persist, 6 gated write
   (place_order, cancel_order, modify_order, activate_agent,
   deactivate_agent, update_agent).
 - **Per-call confirm-token gate** — every write requires a
@@ -1106,7 +1148,7 @@ once (~3 minutes of one-time setup) then come back to the
 
 - **[AGENTS_GUIDE.md](AGENTS_GUIDE.md)** — extensive walkthrough for authoring + testing agents. The four-stage validation ladder (validate → dry-run → simulator → activate), every metric / scope / op, fragments, lifespan, and copy-paste patterns.
 - **[SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md)** — hands-on Lab workflow. Scenarios, Run-in-Simulator, custom positions, iteration mode, market-state presets, troubleshooting.
-- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 24 MCP tools.
+- **[LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md)** — chat-driven research, agent drafting, and the per-call confirm-token gate. Covers GenAI usage, Claude Code setup, and the 26 MCP tools.
 - **[ADMIN_GUIDE.md](ADMIN_GUIDE.md)** — exact button labels, JSON conditions, API endpoints. The operations reference.
 - **[CLAUDE.md](CLAUDE.md)** — architectural notes for engineers + AI assistants. Covers the code structure, data flow, and design decisions.
 - **`/admin/tokens`** — explore the agent grammar (every metric / scope / operator the platform knows about).

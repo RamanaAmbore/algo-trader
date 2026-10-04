@@ -73,6 +73,13 @@ RamboQuant does not use an "ADE" (Add/Delete/Execute) vocabulary. The equivalent
 
 ## 4. Placement Modes
 
+### DRAFT mode
+Drafts are client-side only — the backend rejects any ticket request
+with `mode='draft'` at the validation gate (400 error). Draft orders
+persist on the frontend as hypothetical positions on the derivatives
+payoff chart. A draft is removed only when the operator confirms the
+real order (submits with `mode='paper'` or `mode='live'`).
+
 ### PAPER mode (`orders_place.py:1885`)
 1. Persist `AlgoOrder(status=OPEN, engine=paper, mode=paper)`.
 2. Check idempotency via `request_id` within 60s.

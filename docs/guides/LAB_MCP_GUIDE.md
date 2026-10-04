@@ -24,7 +24,7 @@ Flash. Nothing else gets billed.
 2. [GenAI in this platform](#2-genai-in-this-platform)
 3. [One-time setup (~3 minutes)](#3-one-time-setup-3-minutes)
 4. [The daily workflow — 7 steps](#4-the-daily-workflow--7-steps)
-5. [The 24 MCP tools](#5-the-24-mcp-tools)
+5. [The 26 MCP tools](#5-the-26-mcp-tools)
 6. [The confirm-token gate](#6-the-confirm-token-gate)
 7. [Agents — built-in and custom](#7-agents--built-in-and-custom)
 8. [Configuration knobs](#8-configuration-knobs)
@@ -44,7 +44,7 @@ Three actors:
 | **RamboQuant API** | The book of record. Live broker access, agent engine, simulator, audit trail, paper engine. | `dev.ramboq.com` / `ramboq.com`. |
 | **MCP server** | A thin bridge — stdio subprocess Claude Code spawns. Forwards tool calls from the LLM to the API. | `backend/mcp/kite_server.py`, lives in your repo, runs locally during your Claude session. |
 
-The MCP server has **25 tools** (17 read, 2 persist, 6 gated write).
+The MCP server has **26 tools** (18 read, 2 persist, 6 gated write).
 Every write needs an operator-minted, single-use, 60-second,
 purpose-bound confirm token. No LLM-initiated trade or activation
 moves a rupee without that token.
@@ -306,18 +306,29 @@ Same gate, same audit, same Telegram ping.
 
 ---
 
-## 5. The 25 MCP tools
+## 5. The 26 MCP tools
 
-25 tools split three ways: 17 read (no token), 2 persist (drafts always inactive), 6 gated write (require per-call confirm token).
+26 tools split three ways: 18 read (no token), 2 persist (drafts always inactive), 6 gated write (require per-call confirm token).
 
-### Read (17)
-Market: `get_quote`, `get_ohlcv`, `get_recent_news` (with sentiment). Analytics: `get_option_analytics`, `get_options_chain_snapshot`. Book: `get_positions`, `get_holdings`, `get_funds_summary`, `get_watchlist`. Macro: `get_economic_snapshot`. Agents: `list_agents`, `dry_run_agent`. Research: `list_research_threads`, `get_research_thread`. Audit: `get_audit_recent` (LLM self-check). Diagnostic: `get_server_info`. P&L: `get_pnl_attribution`.
+### Read (18)
+Market: `get_quote`, `get_ohlcv`, `get_recent_news` (with sentiment). Analytics: `get_option_analytics`, `get_options_chain_snapshot`. Book: `get_positions`, `get_holdings`, `get_funds_summary`, `get_watchlist`. Macro: `get_economic_snapshot`. Agents: `list_agents`, `dry_run_agent`. Research: `list_research_threads`, `get_research_thread`. Orders: `get_order_events` (per-order event timeline). Audit: `get_audit_recent` (LLM self-check). Diagnostic: `get_server_info`. P&L: `get_pnl_attribution`.
 
 ### Persist (2)
 `save_research_thread(symbol, thesis, confidence, transcript, title?)` — auto-titles via Gemini Flash or stub. `save_agent_draft(thread_id, ...)` — lands inactive + paper-mode only.
 
 ### Gated write (6)
 `place_order(...)`, `cancel_order(...)`, `modify_order(...)` — all dual-mode (paper or live). `activate_agent(...)`, `deactivate_agent(...)`, `update_agent(...)` — agent state flips. Each requires a per-call operator-minted confirm token.
+
+### get_order_events (order timeline)
+
+The new `get_order_events` read tool returns a per-order event
+timeline — the complete history of what happened to a single order
+(fills, chases, preflight blocks, template-attach attempts, etc.).
+Takes `order_id` (integer) as the sole parameter. Returns the same
+event list the Order Activity log uses on `/orders`. No confirm token
+needed; read-only for audit. Useful when you've placed an order and
+want to trace what went down in the seconds after: "did the chase fire?
+did the template attach?"
 
 ---
 
@@ -339,7 +350,7 @@ Purpose-hash binding per kind:
 
 | Kind | Hash includes |
 |---|---|
-| `place` | account · symbol · side · qty · order_type · mode · price · trigger |
+| `place` | account · symbol · side · qty · order_type · mode · price · trigger · template_slug (only when set) |
 | `cancel` | account · order_id · mode |
 | `modify` | account · order_id · mode · new qty · new order_type · new price · new trigger |
 | `activate` | action verb · agent_slug |
@@ -349,6 +360,22 @@ Purpose-hash binding per kind:
 Any mismatch returns `403 — "Order details do not match the minted
 token's purpose"`. Replay returns `403 — "Token already used"`.
 Expiration returns `403 — "Token expired (60s window)"`.
+
+### template_slug binding for place orders
+
+The `place` token now optionally binds an OrderTemplate slug so the LLM
+cannot swap templates after the operator approves one. When you mint a
+place token, you can optionally fill the "Exit template" field with a
+template slug (e.g. `default-bull`). If set, the token hashes it; the
+LLM must pass the exact same slug to `place_order`, or the request
+fails with `403`. A token minted without a template still validates
+exactly as before — the omit-when-absent rule means every token minted
+for a template-less order keeps its original hash bit-for-bit.
+
+To change the template, the operator must re-mint a new token with the
+different slug. An unknown slug returns `422 — "Unknown template_slug"`,
+which fails early (before the token is consumed) so the operator can
+re-mint immediately.
 
 ### Why the action verb is part of the activate/deactivate hash
 
@@ -716,7 +743,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 
 ## 11. Phase history (shipped)
 
-18 phases, 25 tools, 46 tests. Zero incremental cost.
+19 phases, 26 tools, 47 tests. Zero incremental cost.
 
 | Phase | Headline |
 |---|---|
@@ -729,4 +756,5 @@ Edit `loss-positions-total-default` once → every consumer updates.
 | 8 | Bulk option-chain snapshot |
 | 9-11 | Watchlist / P&L / funds tools |
 | 12-14 | Activate/deactivate + update_agent |
-| 15-18 | Polish + Telegram deep-link
+| 15-18 | Polish + Telegram deep-link |
+| 19 | template_slug binding + get_order_events timeline
