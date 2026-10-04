@@ -1647,6 +1647,16 @@
   fill: none;
 }
 
+/* Y-axis tick label — shared by EquityCurve, PriceChart, PnlAnalysis and
+   NavTab so every dashboard/algo SVG chart reads the same. Applied via
+   class= on SVG <text>; the class wins over presentation attributes, so
+   do not repeat fill/font-size/font-weight on the element itself. */
+.chart-axis-label {
+  fill: #ffffff;
+  font-size: 11px;
+  font-weight: 600;
+}
+
 /* ── Per-account identity stripe (ag-col-acct) ────────────────────────────
    Default: no stripe. Real accounts get one via the .ag-theme-algo rule
    below; this bare rule is the base reset every non-wired cell falls back

@@ -244,3 +244,64 @@ test('crosshair consistency: dashboard Intraday chart renders the canonical cros
   // Dashboard keeps its dot (line-colored fill via dotColor).
   await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(1);
 });
+
+/**
+ * Dashboard NAV tab (NavTab) and Performance tab (PnlAnalysis) — both
+ * must render the shared vertical crosshair on hover. NavTab keeps its
+ * last-point circle as the data marker (showDot={false} on the crosshair),
+ * PnlAnalysis has no dot. Each test skips with a reason when the
+ * chart has no data locally.
+ */
+test('crosshair consistency: dashboard NavTab renders the vertical crosshair on hover', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const svg = page.locator('svg.nav-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'NavTab not rendered — no firm NAV snapshots in local data');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — NavTab has fewer than 2 NAV points');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // The last-point circle is the data marker; the crosshair adds no second dot.
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(0);
+});
+
+test('crosshair consistency: dashboard PnlAnalysis renders the vertical crosshair on hover', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const perfBtn = page.getByRole('tab', { name: 'Performance', exact: true }).first();
+  // Tabs mount after the dashboard data lands — wait, don't just count().
+  await perfBtn.waitFor({ state: 'visible', timeout: TIMEOUT }).catch(() => {});
+  if (!(await perfBtn.count())) {
+    test.skip(true, 'Dashboard Performance tab not present for this account');
+    return;
+  }
+  await perfBtn.click();
+  await page.waitForTimeout(300);
+
+  const svg = page.locator('svg.perf-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'PnlAnalysis benchmark SVG not rendered — no benchmark data locally');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — PnlAnalysis has no benchmark dates to hover');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // PnlAnalysis passes showDot={false} — its hover readout is the hov-tip.
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(0);
+});

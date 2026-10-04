@@ -23,6 +23,12 @@
   import { marketAwareInterval } from '$lib/stores';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { fmtPctFraction } from '$lib/format';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+
+  // SVG viewBox geometry — shared by the template and the hover handler.
+  const NAV_W = 760;
+  const NAV_H = 260;
+  const NAV_PAD = { l: 60, r: 12, t: 12, b: 24 };
 
   /**
    * @typedef {Object} Props
@@ -48,6 +54,21 @@
   let loading = $state(false);
   /** @type {string|null} */
   let _error = $state(null);
+  /** Index into `history` under the pointer, null when not hovering. */
+  /** @type {number|null} */
+  let hovIdx = $state(null);
+
+  /** @param {PointerEvent} e */
+  function _onPointerMove(e) {
+    if (history.length < 2) return;
+    const rect = /** @type {SVGElement} */ (e.currentTarget).getBoundingClientRect();
+    // preserveAspectRatio="none": viewBox x maps linearly across the full width.
+    const vbX = ((e.clientX - rect.left) / rect.width) * NAV_W;
+    const innerW = NAV_W - NAV_PAD.l - NAV_PAD.r;
+    const frac = Math.max(0, Math.min(1, (vbX - NAV_PAD.l) / innerW));
+    hovIdx = Math.round(frac * (history.length - 1));
+  }
+  function _onPointerLeave() { hovIdx = null; }
 
   const _pulse = createChartRefreshPulse();
 
@@ -173,9 +194,9 @@
   {/if}
 
   {#if history.length >= 2}
-    {@const _pad = { l: 60, r: 12, t: 12, b: 24 }}
-    {@const W = 760}
-    {@const H = 260}
+    {@const _pad = NAV_PAD}
+    {@const W = NAV_W}
+    {@const H = NAV_H}
     {@const innerW = W - _pad.l - _pad.r}
     {@const innerH = H - _pad.t - _pad.b}
     {@const _navs = history.map(p => p.nav)}
@@ -185,24 +206,39 @@
     {@const yOf = (v) => _pad.t + innerH - ((v - _min) / _range) * innerH}
     {@const xOf = (i) => _pad.l + (history.length === 1 ? innerW / 2 : (i * innerW) / (history.length - 1))}
     {@const path = history.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.nav)}`).join(' ')}
+    {@const _hovX = hovIdx != null && hovIdx < history.length ? xOf(hovIdx) : null}
     <div class="nav-tab-meta">
       {history.length} days
       <span class="nav-tab-eod-badge"
             title="One point per trading day, written at end-of-day settlement — not a live-updating curve.">EOD</span>
     </div>
-    <svg class="nav-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
-         aria-label="Firm NAV history (end-of-day, one point per trading day)">
+    <!-- svelte-ignore a11y_no_static_element_interactions -->
+    <!-- Pointer handlers only drive the hover crosshair; the aria-label
+         already names the chart, and there is no keyboard action to expose. -->
+    <svg class="nav-svg" viewBox="0 0 {NAV_W} {NAV_H}" preserveAspectRatio="none"
+         aria-label="Firm NAV history (end-of-day, one point per trading day)"
+         onpointermove={_onPointerMove}
+         onpointerleave={_onPointerLeave}>
       {#each [0.0, 0.25, 0.5, 0.75, 1.0] as t}
         {@const y = _pad.t + innerH * t}
         {@const v = _max - _range * t}
         <line class="chart-grid-line" x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y} />
-        <text class="nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
-              fill="var(--algo-muted)" font-size="10"
+        <text class="chart-axis-label nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
               style="font-family: var(--font-numeric)">{_fmtChipInr(v)}</text>
       {/each}
       <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" class="data-path"/>
       <circle cx={xOf(history.length - 1)} cy={yOf(_navs[_navs.length - 1])}
               r="3" fill="#fbbf24" stroke="#0a1020" stroke-width="1" />
+      {#if _hovX != null}
+        <!-- showDot={false}: the last-point circle above is the data marker;
+             the hovered point is read off the vertical line alone. -->
+        <ChartCrosshair
+          x={_hovX}
+          bounds={{ top: _pad.t, bottom: H - _pad.b, left: _pad.l, right: W - _pad.r }}
+          mode="vertical"
+          showDot={false}
+        />
+      {/if}
       <text x={xOf(0)} y={H - 6} text-anchor="start"
             fill="var(--algo-muted)" font-size="10"
             style="font-family: var(--font-numeric)">{history[0].as_of_date}</text>

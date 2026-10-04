@@ -5,6 +5,7 @@
   import { fetchPnlBenchmarks } from '$lib/api.js';
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import PnlPanel   from '$lib/PnlPanel.svelte';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
   import Select     from '$lib/Select.svelte';
   import AlgoTabs   from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
@@ -620,8 +621,8 @@
               fill="var(--chart-bg-tint)" rx="0"/>
         {#each yGridLines as { pct, y }}
           <line class="chart-grid-line" x1={PAD_L} y1={y.toFixed(1)} x2={W - PAD_R} y2={y.toFixed(1)} />
-          <text x={PAD_L - 4} y={(y + 3.5).toFixed(1)}
-                font-size="11" fill="#ffffff" font-weight="600" text-anchor="end"
+          <text class="chart-axis-label" x={PAD_L - 4} y={(y + 3.5).toFixed(1)}
+                text-anchor="end"
                 style="font-family: var(--font-numeric)">{fmtPct(pct)}</text>
         {/each}
         {#if chartData.yMin < 0 && chartData.yMax > 0}
@@ -650,14 +651,14 @@
                 stroke-linecap="round" />
         {/if}
         {#if hovLineX != null && hovDate}
-          <!-- A3 (2026-09 audit) — stale rgba(200,216,240,α) in an SVG
-               stroke= presentation attribute. Verified var()/color-mix()
-               DO resolve here once stylesheets are loaded (confirmed via
-               live computed-style check — SVG presentation attributes
-               parse as CSS values in this engine); alpha preserved. -->
-          <line x1={hovLineX.toFixed(1)} y1={PAD_T}
-                x2={hovLineX.toFixed(1)} y2={H - PAD_B}
-                stroke="color-mix(in srgb, var(--algo-slate) 35%, transparent)" stroke-width="1" />
+          <!-- showDot={false}: this chart's hover marks the date with the
+               vertical line + the hov-tip readout only; no per-series dot. -->
+          <ChartCrosshair
+            x={hovLineX}
+            bounds={{ top: PAD_T, bottom: H - PAD_B, left: PAD_L, right: W - PAD_R }}
+            mode="vertical"
+            showDot={false}
+          />
         {/if}
       </svg>
 

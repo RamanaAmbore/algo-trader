@@ -33,6 +33,10 @@ import EQUITY_SRC from '../EquityCurve.svelte?raw';
 import MPC_SRC from '../MultiPriceChart.svelte?raw';
 import DASHBOARD_SRC from '../../routes/(algo)/dashboard/+page.svelte?raw';
 import SIM_PANEL_SRC from '../execution/SimulatorPanel.svelte?raw';
+import PNL_SRC from '../PnlAnalysis.svelte?raw';
+import NAVTAB_SRC from '../NavTab.svelte?raw';
+// @ts-ignore -- node:fs types are not installed for svelte-check; vitest resolves it at runtime.
+import { readFileSync } from 'node:fs';
 
 describe('ChartCrosshair.svelte — canonical line styling', () => {
   it('hardcodes the canonical amber dashed stroke (ChartWorkspace\'s own pre-migration look)', () => {
@@ -191,5 +195,62 @@ describe('SimulatorPanel.svelte — no own crosshair (Wave 2)', () => {
     // hand-rolled crosshair reappearing here.
     expect(SIM_PANEL_SRC).not.toMatch(/<svg[\s>]/);
     expect(SIM_PANEL_SRC).not.toMatch(/<line[^>]*rgba\(251,191,36,0\.[56]\)/);
+  });
+});
+
+// ── Dashboard charts — PnlAnalysis + NavTab brought onto the shared look ────
+// Scoped to the stroke= attribute: a CSS color: rule elsewhere in the file may legitimately use the same token.
+const OLD_GRID_STROKE = /stroke="color-mix\(in srgb, var\(--algo-slate\) 35%, transparent\)"/;
+
+describe('PnlAnalysis.svelte — hover crosshair via ChartCrosshair', () => {
+  it('imports ChartCrosshair and renders mode="vertical" with showDot={false}', () => {
+    expect(PNL_SRC).toMatch(IMPORT_RE);
+    const idx = PNL_SRC.indexOf('<ChartCrosshair');
+    expect(idx).toBeGreaterThan(-1);
+    const callSite = PNL_SRC.slice(idx, PNL_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/showDot=\{false\}/);
+  });
+
+  it('no longer carries the inline color-mix 35% hover line', () => {
+    expect(PNL_SRC).not.toMatch(OLD_GRID_STROKE);
+  });
+
+  it('grid lines use the shared .chart-grid-line class and y-labels the shared .chart-axis-label class', () => {
+    expect(PNL_SRC).toMatch(/class="chart-grid-line"/);
+    expect(PNL_SRC).toMatch(/class="chart-axis-label"/);
+    expect(PNL_SRC).not.toMatch(/fill="#ffffff" font-weight="600"/);
+  });
+});
+
+describe('NavTab.svelte — hover crosshair via ChartCrosshair', () => {
+  it('imports ChartCrosshair and tracks hover on the svg with onpointermove', () => {
+    expect(NAVTAB_SRC).toMatch(IMPORT_RE);
+    expect(NAVTAB_SRC).toContain('onpointermove={_onPointerMove}');
+    expect(NAVTAB_SRC).toContain('onpointerleave={_onPointerLeave}');
+  });
+
+  it('renders ChartCrosshair mode="vertical" with showDot={false} (last-point circle is the data marker)', () => {
+    const idx = NAVTAB_SRC.indexOf('<ChartCrosshair');
+    expect(idx).toBeGreaterThan(-1);
+    const callSite = NAVTAB_SRC.slice(idx, NAVTAB_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/showDot=\{false\}/);
+  });
+
+  it('grid lines use .chart-grid-line and y-labels use .chart-axis-label (no muted/size-10 inline attrs)', () => {
+    expect(NAVTAB_SRC).toMatch(/class="chart-grid-line"/);
+    expect(NAVTAB_SRC).toMatch(/class="chart-axis-label nav-yaxis-label"/);
+    expect(NAVTAB_SRC).not.toMatch(/fill="var\(--algo-muted\)" font-size="10"\s*\n\s*style="font-family: var\(--font-numeric\)">\{_fmtChipInr/);
+  });
+});
+
+describe('app.css — shared axis-label class', () => {
+  // ?raw returns '' for CSS under vitest, so read the file directly.
+  const APP_CSS_SRC = readFileSync(new URL('../../app.css', import.meta.url), 'utf8');
+  it('defines .chart-axis-label with the white 11px / 600 style used by EquityCurve and PriceChart', () => {
+    expect(APP_CSS_SRC).toMatch(/\.chart-axis-label\s*\{[^}]*fill:\s*#ffffff/);
+    expect(APP_CSS_SRC).toMatch(/\.chart-axis-label\s*\{[^}]*font-size:\s*11px/);
+    expect(APP_CSS_SRC).toMatch(/\.chart-axis-label\s*\{[^}]*font-weight:\s*600/);
   });
 });
