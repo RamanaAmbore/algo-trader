@@ -1165,18 +1165,32 @@
   // Shared SIM / LIVE pills — amber for simulated (matches the page-top
   // "SIMULATOR ACTIVE" banner), emerald for live. Replaces the pink
   // badge that was making the Order log look like an error list.
-  const SIM_PILL    = '<span class="mode-pill mode-pill-sim">SIM</span>';
-  const LIVE_PILL   = '<span class="mode-pill mode-pill-live">LIVE</span>';
-  const PAPER_PILL  = '<span class="mode-pill mode-pill-paper">PAPER</span>';
-  const REPLAY_PILL = '<span class="mode-pill mode-pill-replay">REPLAY</span>';
-  const SHADOW_PILL = '<span class="mode-pill mode-pill-shadow">SHADOW</span>';
+  const SIM_PILL     = '<span class="mode-pill mode-pill-sim">SIM</span>';
+  const LIVE_PILL    = '<span class="mode-pill mode-pill-live">LIVE</span>';
+  const PAPER_PILL   = '<span class="mode-pill mode-pill-paper">PAPER</span>';
+  const REPLAY_PILL  = '<span class="mode-pill mode-pill-replay">REPLAY</span>';
+  const SHADOW_PILL  = '<span class="mode-pill mode-pill-shadow">SHADOW</span>';
+  // DRAFT is a real AlgoOrder.mode value today (never placed, no broker
+  // round-trip) — dashed/muted so it reads as distinctly "not live" at a
+  // glance. ARMED has no rows yet (reserved for a future sprint) but gets
+  // its own pill now so a later mode addition doesn't silently fall
+  // through to LIVE again.
+  const DRAFT_PILL   = '<span class="mode-pill mode-pill-draft">DRAFT</span>';
+  const ARMED_PILL   = '<span class="mode-pill mode-pill-armed">ARMED</span>';
+  // Any mode this function doesn't recognize — renders neutral, never
+  // LIVE. Text is a static literal (never interpolates the raw `mode`
+  // value) since this string flows into {@html}.
+  const UNKNOWN_PILL = '<span class="mode-pill mode-pill-unknown">UNKNOWN</span>';
 
   function _modePill(mode) {
     if (mode === 'sim')    return SIM_PILL;
     if (mode === 'paper')  return PAPER_PILL;
     if (mode === 'replay') return REPLAY_PILL;
     if (mode === 'shadow') return SHADOW_PILL;
-    return LIVE_PILL;
+    if (mode === 'live')   return LIVE_PILL;
+    if (mode === 'draft')  return DRAFT_PILL;
+    if (mode === 'armed')  return ARMED_PILL;
+    return UNKNOWN_PILL;
   }
 
   // ── Simulator-tab rendering ──────────────────────────────────────────
@@ -1407,7 +1421,12 @@
   function _orderRowHtml(o) {
     // Live orders carry `order_timestamp`; algo/paper/sim carry `created_at`.
     const t      = _dualTsHtml(o.created_at || o.order_timestamp);
-    const tag    = _modePill(o.mode);
+    // Broker-only rows (direct Kite book, no AlgoOrder counterpart) carry
+    // no `mode` field at all — same `|| 'live'` convention used elsewhere
+    // in this file (_applyModeFilter, _gatingMode filters). Without this,
+    // `_modePill`'s now-explicit-only branches would render a real live
+    // broker order as UNKNOWN instead of LIVE.
+    const tag    = _modePill(o.mode || 'live');
     const status = (o.status || '').toUpperCase();
     const rowCls = _orderStatusClass(status, o.transaction_type);
     // Prefer fill_price once the chase landed; otherwise the initial limit price.
@@ -2277,6 +2296,28 @@
     background: rgba(251,146,60,0.14);
     color: #fb923c;
     border-color: rgba(251,146,60,0.45);
+  }
+  /* DRAFT — never placed, no broker round-trip. Dashed + muted so it
+     reads as distinctly "not live" even at a quick glance. */
+  :global(.mode-pill-draft) {
+    background: rgba(126,151,184,0.10);
+    color: var(--algo-muted);
+    border-color: rgba(126,151,184,0.45);
+    border-style: dashed;
+  }
+  /* ARMED — reserved for a future sprint (no rows carry this mode yet).
+     Violet, distinct from every mode above so it's ready when introduced. */
+  :global(.mode-pill-armed) {
+    background: rgba(167,139,250,0.14);
+    color: #a78bfa;
+    border-color: rgba(167,139,250,0.45);
+  }
+  /* UNKNOWN — any mode value this function doesn't recognize. Neutral
+     slate, matching OrderTimelineDrawer's otd-mode-unknown palette. */
+  :global(.mode-pill-unknown) {
+    background: rgba(148,163,184,0.15);
+    color: #94a3b8;
+    border-color: rgba(148,163,184,0.45);
   }
 
   /* Order-status row classes — supplement the existing log-agent-* set.
