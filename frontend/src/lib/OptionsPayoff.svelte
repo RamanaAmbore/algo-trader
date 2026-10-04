@@ -540,6 +540,7 @@
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { createTickFlash } from '$lib/data/tickFlash.svelte.js';
   import { _tcFlashClass } from '$lib/data/pulseColumns.js';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
 
   const _pulse = createChartRefreshPulse();
   // B1 fix — fire the full-chart cyan pulse ONLY when the leg
@@ -1398,10 +1399,24 @@
       <!-- Hover crosshair — vertical line only; SPOT/TDAY/EXP values
            are rendered in the HTML .chart-tooltip overlay below,
            matching ChartWorkspace's popup approach so both chart
-           surfaces share the same canonical styling. -->
+           surfaces share the same canonical styling. Canonical shared
+           component (ChartCrosshair.svelte) — this used to be its own
+           white/solid line (rgba(255,255,255,0.20), no dash, no dot);
+           now adopts the same amber/dashed look as every other chart.
+           showDot is explicitly false here: this bg <svg> uses
+           preserveAspectRatio="none" (a circle would render as a
+           squashed ellipse, not a dot), the payoff curve is
+           multi-line so no single curve-y value corresponds to the
+           pointer position, and the existing payoff-stats hover
+           overlay already marks SPOT/TDAY/EXP values at this x — a
+           second dot here would be redundant, not additive. -->
       {#if hover}
-        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(255,255,255,0.20)" stroke-width="1"/>
+        <ChartCrosshair
+          x={hover?.x} y={null}
+          bounds={{ top: PAD_T, bottom: height - PAD_B, left: PAD_L, right: W - PAD_R }}
+          mode="vertical"
+          showDot={false}
+        />
       {/if}
     </svg>
     <!-- Foreground SVG — just the curves + the live spot dot,

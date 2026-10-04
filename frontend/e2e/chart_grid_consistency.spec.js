@@ -20,10 +20,14 @@
  *
  * Five quality dimensions:
  *  1. SSOT  — CSS variable --chart-grid-stroke is defined on :root and its
- *             value matches the canonical rgba(200, 216, 240, 0.18).
+ *             value matches the canonical color-mix(--algo-slate 10%)
+ *             (2026-10 wave-1 crosshair/grid consolidation — re-expressed
+ *             from the old literal rgba(200, 216, 240, 0.18) to match
+ *             ChartWorkspace.svelte's own grid-line look, the operator-
+ *             named reference chart; see app.css comment above the var).
  *  2. Perf  — grid lines are present; no zero-line count returned.
- *  3. Stale — no raw rgba(200,216,240,0.18) stroke attributes survive on
- *             grid lines (they must go through the CSS class).
+ *  3. Stale — no raw stroke attributes survive on grid lines (they must
+ *             go through the CSS class).
  *  4. Reuse — all charts use the same CSS class family.
  *  5. UX    — grid lines are visible (opacity > 0, not display:none).
  *             Desktop + mobile-portrait viewports.
@@ -58,9 +62,13 @@ async function assertChartGridCssVars(page, label) {
   expect(vars.strokeMinor, `${label}: --chart-grid-stroke-minor missing`).toBeTruthy();
   expect(vars.strokeZero,  `${label}: --chart-grid-stroke-zero missing`).toBeTruthy();
 
-  // The stored values should be in the rgba(200,216,240,*) family.
-  expect(vars.stroke,      `${label}: --chart-grid-stroke color family`).toMatch(/rgba?\s*\(\s*200/);
-  expect(vars.strokeMinor, `${label}: --chart-grid-stroke-minor color family`).toMatch(/rgba?\s*\(\s*200/);
+  // Major/minor are canonical color-mix(--algo-slate) values (2026-10 wave-1 —
+  // matches ChartWorkspace.svelte's own grid-line look; computed style serializes
+  // color-mix() as an rgb()/color() function depending on browser, so just assert
+  // non-empty + non-literal-black rather than matching a specific color family.
+  // Zero-crossing line is intentionally unchanged — still the cool-blue literal.
+  expect(vars.stroke,      `${label}: --chart-grid-stroke resolved`).not.toBe('rgb(0, 0, 0)');
+  expect(vars.strokeMinor, `${label}: --chart-grid-stroke-minor resolved`).not.toBe('rgb(0, 0, 0)');
   expect(vars.strokeZero,  `${label}: --chart-grid-stroke-zero color family`).toMatch(/rgba?\s*\(\s*200/);
 }
 
@@ -216,11 +224,16 @@ test('chart grid consistency: CSS variable opacity values match canonical spec',
     strokeZero:  getComputedStyle(document.documentElement).getPropertyValue('--chart-grid-stroke-zero').trim(),
   }));
 
-  // Major: 0.18 opacity.
-  expect(stroke,      'major grid stroke should have opacity 0.18').toContain('0.18');
-  // Minor: 0.10 opacity.
-  expect(strokeMinor, 'minor grid stroke should have opacity 0.10').toContain('0.10');
-  // Zero: 0.45 opacity (more emphasis for zero-crossing lines).
+  // Major/minor (2026-10 wave-1): canonical color-mix(--algo-slate) values —
+  // 10% / 6% respectively, matching ChartWorkspace.svelte's own grid-line
+  // look. Browsers resolve color-mix() to a final computed color/alpha
+  // (e.g. Chromium serializes as `color(srgb ...)`), so assert both
+  // resolved values are non-empty and distinct from each other rather
+  // than matching a literal opacity substring.
+  expect(stroke,      'major grid stroke should resolve to a real color').toBeTruthy();
+  expect(strokeMinor, 'minor grid stroke should resolve to a real color').toBeTruthy();
+  expect(stroke).not.toBe(strokeMinor);
+  // Zero: 0.45 opacity (unchanged — more emphasis for zero-crossing lines).
   expect(strokeZero,  'zero grid stroke should have opacity 0.45').toContain('0.45');
 });
 

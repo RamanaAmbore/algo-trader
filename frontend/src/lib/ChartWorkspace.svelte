@@ -74,6 +74,7 @@
   import SymbolSearchInput from '$lib/SymbolSearchInput.svelte';
   import OhlcvTooltip from '$lib/chart/OhlcvTooltip.svelte';
   import TickTooltip from '$lib/chart/TickTooltip.svelte';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
 
   // The Pinned dropdown is driven entirely by the operator's actual
   // pinned watchlists (rows on /pulse with `is_pinned=true`). No
@@ -2009,8 +2010,7 @@
         <!-- X-axis grid + labels — clamped to price area bottom -->
         {#each _xLabels as xl, i}
           {#if i > 0}
-            <line x1={xl.x} x2={xl.x} y1={CPAD_T} y2={CPAD_T + _innerH}
-                  stroke="color-mix(in srgb, var(--algo-slate) 10%, transparent)" stroke-width="1" stroke-dasharray="2 3"/>
+            <line class="chart-grid-line" x1={xl.x} x2={xl.x} y1={CPAD_T} y2={CPAD_T + _innerH}/>
           {/if}
           <text x={xl.x} y={CPAD_T + _innerH + 14}
                 text-anchor={i === 0 ? 'start' : (i === 4 ? 'end' : 'middle')}
@@ -2235,12 +2235,16 @@
           </g>
         {/each}
 
-        <!-- Hover crosshair — vertical line + dot only; OHLCV text is in the HTML popup -->
+        <!-- Hover crosshair — vertical line + dot only; OHLCV text is in the HTML popup.
+             Canonical shared component (frontend/src/lib/ChartCrosshair.svelte) —
+             this chart is the operator-named reference look; do not restyle here. -->
         {#if _chartHover && !pan}
-          <line x1={_chartHover.x} x2={_chartHover.x} y1={CPAD_T} y2={CPAD_T + _innerH}
-                stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2"/>
-          <circle cx={_chartHover.x} cy={_chartHover.y} r="3"
-                  fill="#fbbf24" stroke="#fff" stroke-width="1"/>
+          <ChartCrosshair
+            x={_chartHover.x} y={_chartHover.y}
+            bounds={{ top: CPAD_T, bottom: CPAD_T + _innerH, left: CPAD_L, right: _chartW - CPAD_R }}
+            mode="vertical"
+            showDot={true}
+          />
         {/if}
       </svg>
       <!-- Loading overlay removed — the modal's title-glyph rotation

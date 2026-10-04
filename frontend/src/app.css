@@ -156,13 +156,26 @@
      but never fighting grid lines, axis labels, or data curves. */
   --chart-bg-tint: rgba(34, 211, 238, 0.04);
 
-  /* Chart grid line strokes — canonical cool-blue family shared by ALL
-     algo SVG charts (PriceChart, EquityCurve, NavTab, dashboard Intraday,
-     OptionsPayoff, PnlAnalysis). Apply via class="chart-grid-line" (major /
-     horizontal) or class="chart-grid-line-minor" (vertical / faint).
-     Zero-crossing reference lines use --chart-grid-zero for extra emphasis. */
-  --chart-grid-stroke:       rgba(200, 216, 240, 0.18);
-  --chart-grid-stroke-minor: rgba(200, 216, 240, 0.10);
+  /* Chart grid line strokes — shared by ALL algo SVG charts (PriceChart,
+     EquityCurve, NavTab, dashboard Intraday, OptionsPayoff, PnlAnalysis,
+     ChartWorkspace). Apply via class="chart-grid-line" (major) or
+     class="chart-grid-line-minor" (minor/vertical, fainter). Zero-crossing
+     reference lines use --chart-grid-zero for extra emphasis.
+
+     2026-10 wave-1 crosshair/grid consolidation: re-expressed via
+     color-mix(--algo-slate) to match ChartWorkspace.svelte's own grid-line
+     values (the operator-named reference chart, line ~2013: 10% dashed
+     "2 3") instead of the old literal rgba(200, 216, 240, α) — a stale
+     cool-blue literal from before --algo-slate was whitened (2026-09,
+     #c8d8f0 → #ffffff). ChartWorkspace's inline strokes were already
+     migrated to color-mix(--algo-slate) in that sweep; this var family
+     had been missed, so it still rendered the old blue while
+     ChartWorkspace rendered white. Canonical now wins per the wave-1
+     brief: ChartWorkspace's look is correct, this var catches up to it.
+     Minor keeps the same dash family at a lower alpha (10% × ~0.6 ≈ 6%,
+     matching OptionsPayoff.svelte's own existing whole/half-σ-tick pair). */
+  --chart-grid-stroke:       color-mix(in srgb, var(--algo-slate) 10%, transparent);
+  --chart-grid-stroke-minor: color-mix(in srgb, var(--algo-slate) 6%, transparent);
   --chart-grid-stroke-zero:  rgba(200, 216, 240, 0.45);
 
   /* Platform-wide toolbar control height — SSOT for every interactive
@@ -1599,14 +1612,16 @@
 .algo-table-num { text-align: right; font-variant-numeric: tabular-nums; }
 .algo-table-wrap { overflow-x: auto; }
 
-/* ── SVG chart grid lines — canonical cool-blue palette ───────────────────
+/* ── SVG chart grid lines — canonical look, keyed off --algo-slate ───────
    Applied via class= on SVG <line> elements across ALL algo SVG charts
    (PriceChart, EquityCurve, NavTab, OptionsPayoff, PnlAnalysis, dashboard
-   Intraday SVG). Single SSOT so any palette tweak lands in one place.
+   Intraday SVG, ChartWorkspace). Single SSOT so any palette tweak lands
+   in one place. Canonical values match ChartWorkspace.svelte's own
+   grid-line stroke (see --chart-grid-stroke* comment above).
 
    Usage in SVG markup:
-     Horizontal major grid:   <line ... class="chart-grid-line" />
-     Vertical minor grid:     <line ... class="chart-grid-line-minor" />
+     Major grid:              <line ... class="chart-grid-line" />
+     Minor/vertical grid:     <line ... class="chart-grid-line-minor" />
      Zero-crossing baseline:  <line ... class="chart-grid-zero" />
 
    Note: SVG elements don't inherit CSS `stroke` from class rules in
@@ -1615,13 +1630,13 @@
    win over the SVG default (black) but lose to explicit stroke= attrs.
    Prefer class= INSTEAD of stroke= on the <line> for grid lines. */
 .chart-grid-line {
-  stroke: var(--chart-grid-stroke, rgba(200, 216, 240, 0.18));
+  stroke: var(--chart-grid-stroke, color-mix(in srgb, var(--algo-slate) 10%, transparent));
   stroke-width: 1;
   stroke-dasharray: 2 3;
   fill: none;
 }
 .chart-grid-line-minor {
-  stroke: var(--chart-grid-stroke-minor, rgba(200, 216, 240, 0.10));
+  stroke: var(--chart-grid-stroke-minor, color-mix(in srgb, var(--algo-slate) 6%, transparent));
   stroke-width: 1;
   stroke-dasharray: 2 3;
   fill: none;
