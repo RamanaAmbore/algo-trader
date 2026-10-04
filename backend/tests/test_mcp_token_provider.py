@@ -148,14 +148,14 @@ async def test_post_helper_uses_provider_too(monkeypatch, api):
 
 @pytest.mark.asyncio
 async def test_secrets_yaml_fallback_when_env_unset(monkeypatch, api):
-    monkeypatch.setattr(utils_mod, "secrets", {"admin_username": "adm", "admin_password": "apw-secret"})
+    monkeypatch.setattr(utils_mod, "secrets", {"mcp_username": "adm", "mcp_password": "apw-secret"})
     await kite_server._get("/api/positions/")
     assert api["login_bodies"] == [{"username": "adm", "password": "apw-secret"}]
 
 
 @pytest.mark.asyncio
 async def test_env_overrides_secrets_per_field(monkeypatch, api):
-    monkeypatch.setattr(utils_mod, "secrets", {"admin_username": "adm", "admin_password": "apw-secret"})
+    monkeypatch.setattr(utils_mod, "secrets", {"mcp_username": "adm", "mcp_password": "apw-secret"})
     monkeypatch.setenv("RAMBOQ_USER", "env-user")
     await kite_server._get("/api/positions/")
     assert api["login_bodies"] == [{"username": "env-user", "password": "apw-secret"}]

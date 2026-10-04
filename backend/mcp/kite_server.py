@@ -8,15 +8,15 @@ this process — Claude Code is the LLM, this is the data pipe.
 Authentication (see `_TokenProvider`):
     1. `RAMBOQ_TOKEN` set → used as-is, no login.
     2. Otherwise log in to `/api/auth/login` with `RAMBOQ_USER` / `RAMBOQ_PASS`,
-       falling back per-field to `admin_username` / `admin_password` in
+       falling back per-field to `mcp_username` / `mcp_password` in
        `secrets.yaml`. The JWT is cached in memory, refreshed 5 minutes before
        `exp`, and a 401 triggers one re-login and one retry.
 
 Environment:
     RAMBOQ_BASE   — API base URL (default: https://dev.ramboq.com)
     RAMBOQ_TOKEN  — optional static JWT; skips auto-login when set
-    RAMBOQ_USER   — optional login username (default: secrets admin_username)
-    RAMBOQ_PASS   — optional login password (default: secrets admin_password)
+    RAMBOQ_USER   — optional login username (default: secrets mcp_username)
+    RAMBOQ_PASS   — optional login password (default: secrets mcp_password)
 
 Tools (Phase 1, read-only):
     get_positions, get_holdings, get_quote, get_ohlcv,
@@ -59,7 +59,7 @@ def _env_token() -> str:
 
 def _credentials() -> tuple[str, str]:
     """Resolve login credentials: RAMBOQ_USER / RAMBOQ_PASS first, then the
-    server's secrets.yaml (admin_username / admin_password), per field."""
+    server's secrets.yaml (mcp_username / mcp_password), per field."""
     user = os.environ.get("RAMBOQ_USER") or ""
     pwd = os.environ.get("RAMBOQ_PASS") or ""
     if not user or not pwd:
@@ -67,13 +67,13 @@ def _credentials() -> tuple[str, str]:
             from backend.shared.helpers.utils import secrets
         except (ImportError, OSError):
             secrets = {}
-        user = user or str(secrets.get("admin_username") or "")
-        pwd = pwd or str(secrets.get("admin_password") or "")
+        user = user or str(secrets.get("mcp_username") or "")
+        pwd = pwd or str(secrets.get("mcp_password") or "")
     if not user or not pwd:
         raise RuntimeError(
             "MCP auth: no RamboQuant credentials. Set RAMBOQ_TOKEN, or set "
-            "RAMBOQ_USER and RAMBOQ_PASS, or define admin_username and "
-            "admin_password in secrets.yaml."
+            "RAMBOQ_USER and RAMBOQ_PASS, or define mcp_username and "
+            "mcp_password in secrets.yaml."
         )
     return user, pwd
 
