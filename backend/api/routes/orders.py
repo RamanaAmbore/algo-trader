@@ -1464,7 +1464,7 @@ class OrdersController(Controller):
         from backend.api.models import AlgoOrder
         async with async_session() as s:
             q = sql_select(AlgoOrder).order_by(desc(AlgoOrder.id)).limit(max(1, min(n, 500)))
-            if mode in ("live", "sim", "paper", "replay", "shadow"):
+            if mode in ("live", "sim", "paper", "replay", "shadow", "draft"):
                 q = q.where(AlgoOrder.mode == mode)
             rows = (await s.execute(q)).scalars().all()
             child_map = await _fetch_child_order_ids(s, [r.id for r in rows])
