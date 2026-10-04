@@ -170,4 +170,118 @@ test.describe('OptionsPayoff stat overlay — InfoHint field-as-trigger (hideBut
     const realErrors = pageErrors.filter((e) => !e.includes('401') && !e.includes('405'));
     expect(realErrors, 'No unexpected JS errors from the InfoHint anchors').toHaveLength(0);
   });
+
+  // 2026-10: the popout is now portalled to document.body (see
+  // `$lib/portal`) so it escapes `.payoff-stats`'s own stacking context
+  // (position:absolute + z-index:3), which previously trapped the
+  // popover underneath the chart's foreground SVG curve (a sibling of
+  // `.payoff-stats`, explicitly z-index:4 so it redraws on top of the
+  // stats overlay — see the file's own comment near `.payoff-svg-fg`).
+  test('LTP popout escapes .payoff-stats via portal: not a DOM descendant, paints above the chart curve, matches hover-preview position, and own-content clicks do not close it', async ({ page }) => {
+    await loginAsAdmin(page);
+    await page.goto(DERIV_URL, { waitUntil: 'domcontentloaded', timeout: 30_000 });
+
+    const payoffOverlay = page.locator('.payoff-stats');
+    const overlayVisible = await payoffOverlay.waitFor({ state: 'visible', timeout: 15_000 }).then(() => true).catch(() => false);
+    if (!overlayVisible) {
+      test.skip(true, 'No open F&O position to render the payoff chart — nothing to check live');
+      return;
+    }
+
+    const ltpRow = payoffOverlay.locator('.ps-row', { has: page.locator('.ps-k', { hasText: 'LTP' }) }).first();
+    const ltpLabel = ltpRow.locator('.ps-k').first();
+
+    // --- Pin via click, then verify the portal actually happened ---
+    await ltpLabel.click();
+    const popover = page.locator('[role="tooltip"]').first();
+    await expect(popover).toBeVisible({ timeout: 2000 });
+
+    const isDescendantOfStats = await popover.evaluate((el) => !!el.closest('.payoff-stats'));
+    expect(isDescendantOfStats, 'popout must escape .payoff-stats — it should no longer be a DOM descendant').toBe(false);
+
+    const parentIsBody = await popover.evaluate((el) => el.parentElement === document.body);
+    expect(parentIsBody, 'popout should be portalled directly onto document.body').toBe(true);
+
+    // --- Paints above the chart's foreground curve SVG ---
+    // The fg SVG (z-index 4, `.payoff-svg-fg`) normally sets
+    // pointer-events:none so it never blocks chart hover/zoom — which
+    // would make a plain document.elementFromPoint() probe pass
+    // regardless of whether the portal fix is present (the SVG never
+    // participates in hit-testing either way). To make this a genuine
+    // regression check, inject a deterministic, fully-opaque-to-hit-
+    // testing probe rect (fill="transparent" + pointer-events:auto,
+    // not fill="none" — a "none" fill is NOT hit-testable) covering the
+    // whole fg SVG, matching its real z-index tier. If the popout were
+    // still trapped inside `.payoff-stats`'s local stacking context
+    // (the bug), this probe — painted above that local context — would
+    // win the hit test at the popout's own on-screen center. Once
+    // portalled, the popout sits at --z-tooltip (20002) in the ROOT
+    // stacking context, above everything, and wins instead.
+    await page.evaluate(() => {
+      const svg = document.querySelector('.payoff-svg-fg');
+      if (!svg) return;
+      const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+      rect.setAttribute('x', '0');
+      rect.setAttribute('y', '0');
+      rect.setAttribute('width', '100%');
+      rect.setAttribute('height', '100%');
+      rect.setAttribute('fill', 'transparent');
+      rect.setAttribute('data-test-probe', 'fg-hit-probe');
+      rect.style.pointerEvents = 'auto';
+      svg.appendChild(rect);
+    });
+    const popupWins = await popover.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      const hit = document.elementFromPoint(x, y);
+      return hit === el || el.contains(hit);
+    });
+    await page.evaluate(() => {
+      document.querySelector('[data-test-probe="fg-hit-probe"]')?.remove();
+    });
+    expect(popupWins, 'popup must win the hit-test above the chart fg SVG curve, not be painted over by it').toBe(true);
+
+    // --- Clicking inside the popout's own content does not close it ---
+    await popover.click({ position: { x: 4, y: 4 } });
+    await expect(popover).toBeVisible();
+
+    await ltpLabel.click(); // close via re-click
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
+
+    // --- Hover-preview and click-pin render at the SAME position ---
+    // Measured across two independent `fit()` runs (preview, then a
+    // fresh pin after fully dismissing the preview) so the comparison
+    // actually exercises the positioning logic twice, rather than
+    // reading the same unchanged DOM rect back on an unrerun effect.
+    // Dispatched directly (rather than a real `.hover()`) — the mouse
+    // is already resting on `ltpLabel` from the close-click immediately
+    // above, and a real `.hover()` on an element the cursor is already
+    // over is not guaranteed to refire `pointerenter` (browsers only
+    // fire enter events on a genuine state transition). Same rationale
+    // and pattern already used for the DAY P&L row below.
+    await page.waitForTimeout(400); // clear the 350ms post-dismiss hover suppression
+    await ltpLabel.dispatchEvent('pointerenter', { pointerType: 'mouse' });
+    const hoverPopover = page.locator('[role="tooltip"]').first();
+    await expect(hoverPopover).toBeVisible({ timeout: 2000 });
+    const hoverRect = await hoverPopover.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top };
+    });
+    await ltpLabel.dispatchEvent('pointerleave', { pointerType: 'mouse' }); // dismiss the preview
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
+
+    await ltpLabel.click(); // fresh click-pin — re-runs fit() from scratch
+    const pinnedPopover = page.locator('[role="tooltip"]').first();
+    await expect(pinnedPopover).toBeVisible({ timeout: 2000 });
+    const pinnedRect = await pinnedPopover.evaluate((el) => {
+      const r = el.getBoundingClientRect();
+      return { left: r.left, top: r.top };
+    });
+    expect(Math.abs(hoverRect.left - pinnedRect.left), 'hover-preview and click-pinned popup must land at the same left').toBeLessThanOrEqual(3);
+    expect(Math.abs(hoverRect.top - pinnedRect.top), 'hover-preview and click-pinned popup must land at the same top').toBeLessThanOrEqual(3);
+
+    await ltpLabel.click(); // close via re-click
+    await expect(page.locator('[role="tooltip"]')).toHaveCount(0, { timeout: 1000 });
+  });
 });

@@ -38,6 +38,7 @@
   // their content during the SSR → CSR handoff in this codebase.
 
   import { onMount } from 'svelte';
+  import { portal } from '$lib/portal';
 
   /** @type {{
    *   children?: any,
@@ -193,6 +194,13 @@
       // anchor would immediately get flipped back open by that handler,
       // making the popover unclosable by its own trigger.
       if (anchor && anchor.contains(t)) return;
+      // The popout is portalled to document.body (see `use:portal` on the
+      // `.info-popout` element below) when in popup mode, so it is no
+      // longer a DOM descendant of `wrap` — without this exemption a
+      // click landing on the popout's own content (e.g. selecting text,
+      // clicking a link inside the tooltip body) would register as
+      // "outside" and immediately close it.
+      if (popoutEl && popoutEl.contains(t)) return;
       if (wrap && !wrap.contains(t)) open = false;
     }
     document.addEventListener('mousedown', onDocClick);
@@ -311,6 +319,7 @@
           style={panel ? `--accent-color: ${accentColor}` : `max-width: ${maxWidth}`}
           id={_popoutId}
           role="tooltip"
+          use:portal={popup}
           bind:this={popoutEl}>
       {#if panel && title}
         <div class="ih-panel-title">{title}</div>

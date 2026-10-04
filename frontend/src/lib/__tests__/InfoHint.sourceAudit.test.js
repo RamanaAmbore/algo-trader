@@ -147,3 +147,23 @@ describe('InfoHint.svelte — hover-preview + click-to-pin (2026-10)', () => {
     expect(scriptBlock).toMatch(/function _onHoverEnter[\s\S]*?if\s*\(!popup\)\s*return;/);
   });
 });
+
+describe('InfoHint.svelte — popout portalled to document.body (2026-10, escapes ancestor stacking contexts)', () => {
+  it('imports the shared portal action', () => {
+    expect(scriptBlock).toMatch(/import\s*\{\s*portal\s*\}\s*from\s*'\$lib\/portal';/);
+  });
+
+  it('the popout span uses the portal action, gated to popup mode only', () => {
+    // Default (inline-expansion) mode never leaves layout flow, so it has
+    // no ancestor-stacking-context exposure and must not be portalled —
+    // only `popup` mode (position:fixed) needs to escape to document.body.
+    expect(markupBlock).toMatch(/<span class="info-popout"[\s\S]*?use:portal=\{popup\}[\s\S]*?bind:this=\{popoutEl\}/);
+  });
+
+  it('the click-outside listener exempts clicks inside the portalled popout itself', () => {
+    // Once portalled, the popout is no longer a DOM descendant of `wrap`,
+    // so without this exemption a click on the popout's own content would
+    // incorrectly register as "outside" and close it immediately.
+    expect(scriptBlock).toMatch(/popoutEl\s*&&\s*popoutEl\.contains\(t\)\s*\)\s*return;/);
+  });
+});

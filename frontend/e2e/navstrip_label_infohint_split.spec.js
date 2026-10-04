@@ -55,7 +55,11 @@ test.describe('NavStrip label press — InfoHint only, never NavBreakdown', () =
       await chip.click();
       await page.waitForTimeout(300);
 
-      const infoPopout = label.locator('.info-popout');
+      // `.info-popout` is portalled to document.body (2026-10, escapes
+      // ancestor stacking contexts) so it is no longer a DOM descendant
+      // of `label` — assert globally instead. The singleton model (only
+      // one pinned InfoHint at a time) keeps this unambiguous.
+      const infoPopout = page.locator('.info-popout');
       await expect(infoPopout).toBeVisible();
 
       const breakdown = page.locator('.ps-breakdown-panel');
@@ -100,8 +104,12 @@ test.describe('NavStrip label press — InfoHint only, never NavBreakdown', () =
       await expect(breakdown).toBeVisible();
 
       // InfoHint popover for this pill must NOT have opened as a side
-      // effect of the value click.
-      const infoPopout = page.locator(`.ps-strip .ps-k-${slot} .info-popout`);
+      // effect of the value click. `.info-popout` is portalled to
+      // document.body (2026-10) so this must be a page-global check,
+      // not scoped under the pill's label — a scoped locator would
+      // trivially report 0 regardless of whether InfoHint actually
+      // opened elsewhere on the page.
+      const infoPopout = page.locator('.info-popout');
       await expect(infoPopout).toHaveCount(0);
     });
   }

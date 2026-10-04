@@ -1079,7 +1079,11 @@ test.describe('Functional — InfoHint popup z-index outranks NavBreakdown (real
     const pChip = page.locator('.ps-strip .ps-k-p .info-btn').first();
     await expect(pChip).toBeVisible({ timeout: 3000 });
     await pChip.click();
-    const infoPopout = page.locator('.ps-strip .ps-k-p .info-popout').first();
+    // `.info-popout` is portalled to document.body (2026-10, escapes
+    // ancestor stacking contexts) so it is no longer a DOM descendant
+    // of `.ps-strip .ps-k-p` — assert globally instead. The singleton
+    // model (only one pinned InfoHint at a time) keeps this unambiguous.
+    const infoPopout = page.locator('.info-popout').first();
     await expect(infoPopout).toBeVisible();
     const infoZ = await infoPopout.evaluate((el) => Number(getComputedStyle(el).zIndex));
     await pChip.click(); // dismiss before opening the breakdown panel
