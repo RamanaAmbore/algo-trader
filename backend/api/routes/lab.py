@@ -1544,7 +1544,7 @@ class LabController(Controller):
             purpose_hash=ph,
         )
 
-    @post("/chat", status_code=200, guards=[cap_guard("use_mcp_tools")])
+    @post("/chat", status_code=200, guards=[cap_guard("use_lab_chat")])
     async def lab_chat(self, data: ChatRequest, request: Request) -> ChatResponse:
         """Answer a Lab-page request with Claude Code (`claude -p`).
 

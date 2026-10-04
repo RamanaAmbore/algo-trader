@@ -340,14 +340,27 @@ async def test_partner_role_gets_403(async_client, chat_env):
 
 
 @pytest.mark.asyncio
-async def test_trader_role_gets_200_with_reply(async_client, chat_env):
+async def test_trader_role_gets_403_even_with_mcp_tools_cap(async_client, chat_env):
+    # use_mcp_tools is held by trader, but chat is designated-only (use_lab_chat).
+    with _auth_as("trader"):
+        res = await async_client.post("/api/lab/chat", json={"message": "hi"})
+    assert res.status_code == 403
+
+
+@pytest.mark.asyncio
+async def test_designated_role_gets_200_with_reply(async_client, chat_env):
     _, patcher = _spawn_returning(_FakeProc(stdout=b'{"result":"hello there"}'))
-    with _auth_as("trader"), patcher:
+    with _auth_as("designated"), patcher:
         res = await async_client.post("/api/lab/chat", json={"message": "hi"})
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["reply"] == "hello there"
     assert isinstance(body["duration_ms"], int)
+
+
+def test_use_lab_chat_cap_is_designated_only():
+    from backend.api.rbac import CAPS
+    assert CAPS["use_lab_chat"] == frozenset({"designated"})
 
 
 @pytest.mark.asyncio

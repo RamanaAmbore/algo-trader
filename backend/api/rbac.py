@@ -151,6 +151,8 @@ CAPS: dict[str, frozenset[str]] = {
 
     # ── Lab / MCP ────────────────────────────────────────────────────
     "use_mcp_tools":            frozenset({"designated", "trader"}),
+    # Lab chat (claude -p with read-only MCP tools) — designated partners only.
+    "use_lab_chat":             frozenset({"designated"}),
 }
 
 
