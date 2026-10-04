@@ -168,6 +168,130 @@ async def test_action_place_order_ltp_fetched_via_helper():
 
 
 # ---------------------------------------------------------------------------
+# chase_aggressiveness threading (_live_chase_config wiring)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_place_order_chase_aggressiveness_high_threads_through():
+    """
+    params.chase_aggressiveness='high' builds a ChaseConfig matching
+    _live_chase_config('high', ...)'s tier (interval_seconds=10,
+    aggression_step=0.25, max_attempts=10) — not the bare ChaseConfig()
+    dataclass defaults. Also asserts cfg.exchange is preserved for a
+    non-NFO exchange (MCX): _live_chase_config() never sets `exchange`
+    itself (only interval/step/attempts/intent/product/variety/validity),
+    so _action_place_order must set cfg.exchange explicitly after the
+    call — exactly like the existing manual-chase caller in
+    orders_helpers.py (`cfg.exchange = exchange or "NFO"`).
+    """
+    from backend.api.algo.actions import _action_place_order
+    from backend.api.routes.orders_helpers import _live_chase_config
+
+    broker = _make_broker_stub(ltp_value=5800.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "CRUDEOIL25OCTFUT",
+        "exchange": "MCX",
+        "transaction_type": "SELL",
+        "quantity": 100,
+        "product":  "NRML",
+        "price":    5800.0,  # explicit price — skips the LTP-fetch branch
+        "chase_aggressiveness": "high",
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    expected = _live_chase_config("high", product="NRML")
+    assert cfg.interval_seconds == expected.interval_seconds == 10
+    assert cfg.aggression_step == expected.aggression_step == 0.25
+    assert cfg.max_attempts == expected.max_attempts == 10
+    assert cfg.exchange == "MCX", (
+        "cfg.exchange must be the order's real exchange, not the "
+        "ChaseConfig dataclass default ('NFO') that _live_chase_config "
+        "leaves untouched"
+    )
+    assert cfg.product == "NRML"
+
+
+@pytest.mark.asyncio
+async def test_action_place_order_no_aggressiveness_key_matches_prior_bare_chaseconfig():
+    """
+    Regression guard: an agent action with NO chase_aggressiveness key
+    must produce a ChaseConfig byte-identical (field-for-field via
+    dataclasses.asdict) to the bare ChaseConfig(exchange=exchange,
+    product=product) construction this change replaces.
+
+    Note this means the new code's absent-key default resolves to the
+    'med' tier, not 'low' — ChaseConfig's own dataclass defaults
+    (interval_seconds=20, aggression_step=0.10, max_attempts=20) are
+    exactly the 'med' preset in _live_chase_config, not the 'low' one
+    (30 / 0.05 / 30). Defaulting the absent-key case to 'low' would
+    silently slow every existing live agent's chase cadence by 50%
+    with no operator action — see actions_live.py docstring.
+    """
+    import dataclasses
+    from backend.api.algo.actions import _action_place_order
+    from backend.api.algo.chase import ChaseConfig
+
+    broker = _make_broker_stub(ltp_value=23500.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "NIFTY25JULFUT",
+        "exchange": "NFO",
+        "transaction_type": "SELL",
+        "quantity": 50,
+        # no 'chase_aggressiveness' key — existing agents never set this
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    prior_bare = ChaseConfig(exchange="NFO", product="NRML")
+    assert dataclasses.asdict(cfg) == dataclasses.asdict(prior_bare)
+
+
+# ---------------------------------------------------------------------------
 # Integration smoke — _action_live_close_position
 # ---------------------------------------------------------------------------
 

@@ -297,9 +297,22 @@ async def _action_place_order(agent, context: dict, params: dict):
          so the order row exists even if the service dies mid-chase.
       3. Call chase_order(); on failure run basket_margin diagnosis and re-raise
          so execute() writes an action_failed event.
+
+    `params.chase_aggressiveness` ('low'|'med'|'high') threads through to the
+    same `_live_chase_config()` mapping every manual-ticket chase already
+    uses (backend/api/routes/orders_helpers.py), instead of building a bare
+    `ChaseConfig(exchange=exchange, product=product)` with no aggressiveness
+    knob at all. Defaults to 'med' when absent — `ChaseConfig`'s own
+    dataclass defaults (interval_seconds=20, aggression_step=0.10,
+    max_attempts=20) are byte-identical to the 'med' tier, so an existing
+    agent with no `chase_aggressiveness` key keeps its exact prior chase
+    cadence. ('low' is NOT byte-identical here — it's the slower/patient
+    tier, interval=30/step=0.05/attempts=30 — so it is intentionally not
+    used as the silent default.)
     """
     import asyncio
-    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.api.algo.chase import chase_order
+    from backend.api.routes.orders_helpers import _live_chase_config
     from backend.brokers import get_broker
 
     _shim, account, symbol, exchange, side, qty, price, product, template_id = (
@@ -335,7 +348,9 @@ async def _action_place_order(agent, context: dict, params: dict):
         product=product, template_id=template_id,
     )
 
-    cfg = ChaseConfig(exchange=exchange, product=product)
+    aggressiveness = str(params.get("chase_aggressiveness") or "med")
+    cfg = _live_chase_config(aggressiveness, product=product)
+    cfg.exchange = exchange or "NFO"
     try:
         await chase_order(
             account=account, symbol=symbol,

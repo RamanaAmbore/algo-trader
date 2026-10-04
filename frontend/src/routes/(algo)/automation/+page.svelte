@@ -17,6 +17,8 @@
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
+  import ChaseAggPicker from '$lib/order/ChaseAggPicker.svelte';
+  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
 
   let agents      = $state([]);
   let loading     = $state(true);
@@ -293,6 +295,49 @@
     catch (e) { return { ok: false, error: e.message }; }
   });
 
+  // ── Structured place_order controls ───────────────────────────────────
+  // Convenience mini-form over the raw Actions JSON textarea: shown only
+  // when the textarea currently parses to exactly ONE place_order action.
+  // Two-way synced with the textarea (the textarea stays the single
+  // source of truth) — reading `parsedActions` here means a manual
+  // textarea edit re-parses and the mini-form reflects it immediately;
+  // a control edit re-serializes the whole action back into
+  // editForm.actions via _updatePlaceOrderParam below.
+  const _singlePlaceOrderAction = $derived.by(() => {
+    if (!parsedActions.ok) return null;
+    const arr = parsedActions.value;
+    if (!Array.isArray(arr) || arr.length !== 1) return null;
+    const a = arr[0];
+    if (!a || a.type !== 'place_order') return null;
+    return a;
+  });
+
+  /** Set (or delete, when value===undefined) one params.<key> on the
+   *  single place_order action, then re-serialize into editForm.actions.
+   *  Re-parses fresh from the textarea (not the `_singlePlaceOrderAction`
+   *  snapshot) so this never clobbers a manual edit made a moment ago. */
+  function _updatePlaceOrderParam(/** @type {string} */ key, /** @type {any} */ value) {
+    let arr;
+    try { arr = JSON.parse(editForm.actions || '[]'); }
+    catch (_) { return; }
+    if (!Array.isArray(arr) || arr.length !== 1 || arr[0]?.type !== 'place_order') return;
+    const params = { ...(arr[0].params || {}) };
+    if (value === undefined) delete params[key];
+    else params[key] = value;
+    arr[0] = { ...arr[0], params };
+    editForm.actions = JSON.stringify(arr, null, 2);
+  }
+
+  // Template catalog for the structured dropdown — same module-level
+  // cache + store every other surface (TemplateBar, OrderTicket,
+  // /automation/templates) reads; loadOrderTemplates() below is a
+  // cheap no-op if already warm.
+  let _templateRows = $state(/** @type {any[]} */ ([]));
+  $effect(() => {
+    const rows = $orderTemplatesStore;
+    if (rows) _templateRows = rows.filter((t) => t.is_active);
+  });
+
   /** Detect AI provenance in agent.description and split into chips.
    *  Backend's _compose_ai_description writes the lines:
    *    [AI prompt] <prompt>
@@ -566,6 +611,9 @@
     pollSimStatus();
     refreshTeardown   = visibleInterval(loadAll, 30000);
     simStatusTeardown = visibleInterval(pollSimStatus, 4000);
+    // Warm the template catalog for the place_order structured controls'
+    // Template dropdown — idempotent, module-level cached.
+    loadOrderTemplates().catch(() => { /* silent — store stays empty */ });
   });
 
   onDestroy(() => {
@@ -983,7 +1031,7 @@
                   <div class="flex items-center justify-between flex-wrap gap-1">
                     <span class="field-label">
                       Actions (JSON)
-                      <InfoHint popup panel title="Actions (JSON)" text="Each <code>place_order</code> action can attach an <b>Order Template</b> (TP/SL/Wing exit rules) via <code>template_slug</code> on its params. Use <b>+ place_order (templated)</b> for entries with auto-exit attach; use <b>+ place_order</b> for entry-only. The template runs on fill — sim path goes through SimGttBook; live path through broker GTT (when fill-postback wiring lands). Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
+                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>o.template</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The o.template runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
                     </span>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the
@@ -1002,7 +1050,37 @@
                         class="action-add-pill action-add-log">+ log</button>
                     </div>
                   </div>
-                  <textarea bind:value={editForm.actions} class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
+                  <textarea bind:value={editForm.actions} data-testid="actions-json-textarea" class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
+                  {#if _singlePlaceOrderAction}
+                    <div class="place-order-struct" data-testid="place-order-struct">
+                      <div class="pos-field">
+                        <span class="pos-label">Product</span>
+                        <Select ariaLabel="Product"
+                          value={_singlePlaceOrderAction.params?.product || 'NRML'}
+                          options={[
+                            { value: 'NRML', label: 'NRML' },
+                            { value: 'MIS',  label: 'MIS' },
+                          ]}
+                          onValueChange={(v) => _updatePlaceOrderParam('product', v)} />
+                      </div>
+                      <div class="pos-field">
+                        <span class="pos-label">Chase</span>
+                        <ChaseAggPicker
+                          value={_singlePlaceOrderAction.params?.chase_aggressiveness || 'med'}
+                          onChange={(v) => _updatePlaceOrderParam('chase_aggressiveness', v)} />
+                      </div>
+                      <div class="pos-field">
+                        <span class="pos-label">o.template</span>
+                        <Select ariaLabel="o.template"
+                          value={_singlePlaceOrderAction.params?.template_slug ?? 'none'}
+                          options={[
+                            { value: 'none', label: 'None' },
+                            ..._templateRows.map((t) => ({ value: t.slug, label: t.name || t.slug })),
+                          ]}
+                          onValueChange={(v) => _updatePlaceOrderParam('template_slug', v === 'none' ? undefined : v)} />
+                      </div>
+                    </div>
+                  {/if}
                 </div>
               </div>
 
@@ -1697,6 +1775,36 @@
   .action-add-cancel:hover { background: rgba(148,163,184,0.25); border-color: #94a3b8; }
   .action-add-log    { background: rgba(125,211,252,0.12); color: #7dd3fc; border-color: rgba(125,211,252,0.4); }
   .action-add-log:hover    { background: rgba(125,211,252,0.25); border-color: #7dd3fc; }
+
+  /* Structured place_order controls — convenience mini-form shown below
+     the Actions textarea when it parses to exactly one place_order
+     action. Mobile-first: wraps to a single column under 600px. */
+  .place-order-struct {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    margin-top: 0.4rem;
+    padding: 0.4rem 0.5rem;
+    border: 1px solid rgba(148,163,184,0.18);
+    border-radius: 4px;
+    background: rgba(255,255,255,0.02);
+  }
+  .pos-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    min-width: 6rem;
+  }
+  .pos-label {
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    font-weight: 600;
+    letter-spacing: 0.02em;
+  }
+  @media (max-width: 600px) {
+    .place-order-struct { flex-direction: column; }
+    .pos-field { min-width: 0; }
+  }
 
 </style>
 
