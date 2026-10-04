@@ -34,25 +34,40 @@ const DERIVATIVES_URL = `${BASE}/admin/derivatives`;
 // ── Stale-code checks (Dim 3 + Dim 4) ────────────────────────────────────────
 
 test('Dim 3+4: ChartWorkspace uses .chart-tooltip class, not legacy .cw-hover-popup', () => {
-  const src = fs.readFileSync(
+  const cw = fs.readFileSync(
     path.resolve(process.cwd(), 'src/lib/ChartWorkspace.svelte'),
     'utf8',
   );
-  // Legacy class must be gone from markup
-  expect(src).not.toContain('class="cw-hover-popup"');
-  expect(src).not.toContain('class:cw-hover-popup-pinned');
-  expect(src).not.toContain('class="cw-hp-close"');
-  expect(src).not.toContain('class="cw-hp-ts"');
-  expect(src).not.toContain('class="cw-hp-row"');
-  expect(src).not.toContain('class="cw-hp-label"');
-  expect(src).not.toContain('class="cw-hp-val"');
-  // Canonical class must be present
-  expect(src).toContain('class="chart-tooltip"');
-  expect(src).toContain('chart-tooltip-pinned');
-  expect(src).toContain('chart-tooltip-ts');
-  expect(src).toContain('chart-tooltip-row');
-  expect(src).toContain('chart-tooltip-label');
-  expect(src).toContain('chart-tooltip-value');
+  const ohlcv = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/lib/chart/OhlcvTooltip.svelte'),
+    'utf8',
+  );
+  const tick = fs.readFileSync(
+    path.resolve(process.cwd(), 'src/lib/chart/TickTooltip.svelte'),
+    'utf8',
+  );
+
+  // ChartWorkspace must import and render OhlcvTooltip (delegated tooltip).
+  expect(cw).toContain("import OhlcvTooltip from '$lib/chart/OhlcvTooltip.svelte'");
+  expect(cw).toContain('<OhlcvTooltip');
+
+  // Legacy class must be gone from both files.
+  const combined = cw + ohlcv + tick;
+  expect(combined).not.toContain('class="cw-hover-popup"');
+  expect(combined).not.toContain('class:cw-hover-popup-pinned');
+  expect(combined).not.toContain('class="cw-hp-close"');
+  expect(combined).not.toContain('class="cw-hp-ts"');
+  expect(combined).not.toContain('class="cw-hp-row"');
+  expect(combined).not.toContain('class="cw-hp-label"');
+  expect(combined).not.toContain('class="cw-hp-val"');
+
+  // Canonical class must be present in OhlcvTooltip (the delegated child).
+  expect(ohlcv).toContain('class="chart-tooltip"');
+  expect(ohlcv).toContain('chart-tooltip-pinned');
+  expect(ohlcv).toContain('chart-tooltip-ts');
+  expect(ohlcv).toContain('chart-tooltip-row');
+  expect(ohlcv).toContain('chart-tooltip-label');
+  expect(ohlcv).toContain('chart-tooltip-value');
 });
 
 test('Dim 3+4: OptionsPayoff uses HTML .chart-tooltip overlay, not SVG rect+text tooltip', () => {

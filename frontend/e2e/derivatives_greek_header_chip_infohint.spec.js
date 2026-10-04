@@ -147,10 +147,17 @@ test.describe('Source audit — header-chip Greek InfoHint text + hideButton wir
     expect(chipsBlock).toContain(EV_TEXT);
   });
 
-  test('the Greeks-card InfoHint instances do NOT pass hideButton (unaffected sibling consumer)', () => {
+  test('the Greeks-card InfoHint instances use hideButton with non-colliding IDs (independent sibling)', () => {
+    // Greeks card now also uses hideButton mode (field-as-trigger pattern).
+    // The 5 kv-pair InfoHint instances within opt-kv-greeks must all have hideButton.
     const cardInfoHintCount = (cardBlock.match(/<InfoHint\s/g) || []).length;
-    expect(cardInfoHintCount).toBeGreaterThanOrEqual(5);
-    expect(cardBlock).not.toMatch(/hideButton/);
+    expect(cardInfoHintCount).toBeGreaterThanOrEqual(5); // 5 Greek kv-pairs
+    const cardHideButtonCount = (cardBlock.match(/hideButton/g) || []).length;
+    expect(cardHideButtonCount).toBe(cardInfoHintCount);
+
+    // Card uses sum-hint-* ids; header chips use greek-hint-* ids.
+    // No collision — the two InfoHint groups remain independent.
+    expect(cardBlock).not.toMatch(/id="greek-hint-/);
   });
 
   test('each of the 6 header chips (5 Greeks + EV) has a plain-text `.greek-val-trigger` click target carrying the value', () => {
