@@ -320,6 +320,16 @@ describe('buildPlacePayload', () => {
     const p = buildPlacePayload({ ...base, exchange: '', resolvedExchange: '' });
     assert.strictEqual(p.exchange, 'NFO');
   });
+
+  // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — OrderTicket.svelte
+  // never sent a `source` on placement despite the field already
+  // existing on TicketOrderRequest. buildPlacePayload is this
+  // component's one and only placement call site, so it always tags
+  // 'ticket' regardless of which tab opened the ticket.
+  test('always tags source="ticket"', () => {
+    const p = buildPlacePayload(base);
+    assert.strictEqual(p.source, 'ticket');
+  });
 });
 
 // ── formatPlacementOk ─────────────────────────────────────────────────────────

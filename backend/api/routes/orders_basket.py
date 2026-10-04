@@ -554,6 +554,11 @@ async def basket_order_handler(
                                 template_id=leg.template_id,
                                 template_overrides_json=_build_overrides_json(leg),
                                 product=(leg.product or "NRML"),
+                                # Sprint 2b — basket legs have no per-leg
+                                # client-supplied source field (BasketLeg
+                                # schema doesn't carry one); the route
+                                # itself is the origin.
+                                source="basket",
                             )
                             _s_pre.add(_r_pre)
                             await _s_pre.commit()
@@ -642,6 +647,7 @@ async def basket_order_handler(
                                 template_id=leg.template_id,
                                 template_overrides_json=_build_overrides_json(leg),
                                 product=(leg.product or "NRML"),
+                                source="basket",
                             )
                             _s.add(_r)
                             await _s.commit()
@@ -706,6 +712,7 @@ async def basket_order_handler(
                         template_id=leg.template_id,
                         template_overrides_json=_build_overrides_json(leg),
                         product=(leg.product or "NRML"),
+                        source="basket",
                         detail=f"[SHADOW-BASKET] leg {i} tag={basket_id}",
                     )
                     _s.add(_r)
@@ -747,6 +754,7 @@ async def basket_order_handler(
                         template_id=leg.template_id,
                         template_overrides_json=_build_overrides_json(leg),
                         product=(leg.product or "NRML"),
+                        source="basket",
                         detail=_detail,
                     )
                     _s.add(_r)

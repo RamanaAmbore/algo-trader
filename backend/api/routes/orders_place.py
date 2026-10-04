@@ -991,6 +991,10 @@ async def _opp_arm_tp_persist_row(
             target_abs=target_abs,
             parent_order_id=parent_row_id,
             detail=tp_detail,
+            # Sprint 2b — legacy v1 TP children created by this shim get a
+            # fixed origin tag (never client-supplied; this helper has no
+            # caller-side source to thread through).
+            source="take_profit",
         )
         _s.add(tp_row)
         await _s.commit()
@@ -1558,6 +1562,7 @@ async def _ticket_record_preflight_block(
                 status="REJECTED", engine="live", mode="live",
                 agent_id=_live_manual_aid,
                 strategy_id=data.strategy_id,
+                source=(data.source or "ticket"),
                 detail=f"preflight blocked: "
                        f"{', '.join(b.get('code','?') for b in pf['blocked'])}",
             )
@@ -1690,6 +1695,11 @@ async def _ticket_persist_live_algo_order(
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
                 intent=getattr(data, "intent", None),
+                # Sprint 2b — persist the client-supplied origin tag (defaults
+                # to "ticket" on TicketOrderRequest) onto the AlgoOrder row
+                # itself, not just agent_events. Lets chain/command tabs
+                # distinguish themselves once they start sending `source`.
+                source=(data.source or "ticket"),
                 detail=f"[LIVE-TICKET] manual {side} {qty} {sym}"
                        f"{' @₹' + str(data.price) if data.price else ''}",
             )
@@ -2127,6 +2137,7 @@ async def _opp_paper_persist_row(
                 template_id=data.template_id,
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
+                source=(data.source or "ticket"),
                 detail=detail,
             )
             s.add(row)

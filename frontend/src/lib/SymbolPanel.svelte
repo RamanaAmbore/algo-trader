@@ -1935,6 +1935,12 @@
         // silently contaminates T2's params with T1's overrides. Per-
         // leg legs MUST opt-in to each override field independently.
         template_id:      leg.template_id ?? _sharedTemplateId,
+        // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — per-leg
+        // origin tag for the /orders/basket path. Backend's BasketLeg
+        // schema needs a matching `source` field to persist this onto
+        // the AlgoOrder row (tracked separately); harmless no-op if
+        // the field isn't yet recognized server-side.
+        source:           'basket',
       })).map(_applySharedOverrides),
     }));
 

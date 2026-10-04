@@ -21,7 +21,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { nextTriggerState, formatSubmitLabel } from '$lib/order/orderTicketSubmit.js';
+import { nextTriggerState, formatSubmitLabel, buildPlacePayload } from '$lib/order/orderTicketSubmit.js';
 
 describe('nextTriggerState (D4 — atomic submit-trigger guard)', () => {
   it('never fires on the initial render (prevSeen=-1)', () => {
@@ -111,5 +111,48 @@ describe('formatSubmitLabel (R7 — Submit button reflects the real pending acti
   it('label is always descriptive — no bare-Submit carve-out for any resolved-side state', () => {
     const label = formatSubmitLabel({ side: 'SELL', currentQty: 75, qty: 75, basketCount: 0 });
     expect(label).not.toBe('Submit');
+  });
+});
+
+// Sprint 2b (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — source
+// vocabulary plumbing. OrderTicket.svelte's only placement call site is
+// buildPlacePayload(); the request body must carry an explicit 'ticket'
+// source so the backend's AlgoOrder.source column (and the OrderCard
+// "Origin" chip it feeds, see OrderCard.svelte) is populated instead of
+// silently falling through to the backend default.
+describe('buildPlacePayload — source tagging (Sprint 2b)', () => {
+  const ctx = /** @type {any} */ ({
+    mode: 'paper',
+    side: 'BUY',
+    resolvedSymbol: 'RELIANCE',
+    symbol: 'RELIANCE',
+    exchange: 'NSE',
+    resolvedExchange: 'NSE',
+    qty: 1,
+    lots: 1,
+    lotSize: 1,
+    currentQty: 0,
+    product: 'CNC',
+    type: 'LIMIT',
+    variety: 'regular',
+    validity: 'DAY',
+    showLimit: true,
+    showTrigger: false,
+    roundToTick: (v) => Number(v),
+    price: '2500',
+    trigger: '',
+    account: 'ZG0790',
+    chase: false,
+    chaseAgg: 'low',
+    templateId: null,
+    tpOverride: '',
+    slOverride: '',
+    wingPremPctOverride: '',
+    wingStrikeOffsetOverride: '',
+    strategyId: null,
+  });
+
+  it('always tags source="ticket" on the outgoing request', () => {
+    expect(buildPlacePayload(ctx).source).toBe('ticket');
   });
 });

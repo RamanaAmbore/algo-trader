@@ -193,6 +193,12 @@ export function buildPlacePayload(ctx) {
     quantity:         requestQty,
     lot_size_hint:    ctx.lotSize > 0 ? Number(ctx.lotSize) : null,
     intent:           classifyIntent(ctx.currentQty, ctx.side),
+    // Sprint 2b (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §3/§4.4) —
+    // this is OrderTicket.svelte's one and only placement call site
+    // (Chain/CommandLine submit through their own request literals, not
+    // this helper), so 'ticket' is always correct here regardless of
+    // which tab opened the ticket.
+    source:           'ticket',
     product:          ctx.product,
     order_type:       ctx.type,
     variety:          ctx.variety,

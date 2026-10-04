@@ -235,6 +235,15 @@
     {#if order.variety}<span class="log-chip"><span class="log-chip-key">variety:</span>{order.variety}</span>{/if}
     {#if order.mode}<span class="log-chip"><span class="log-chip-key">mode:</span>{order.mode}</span>{/if}
     {#if order.engine}<span class="log-chip"><span class="log-chip-key">engine:</span>{order.engine}</span>{/if}
+    <!-- Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3) — AlgoOrder.source,
+         labeled "Origin" in the UI (not "source") to avoid colliding
+         with UnifiedLogRow.source, an unrelated field meaning "which
+         table did this merged log row come from" in the sibling
+         UnifiedLog.svelte surface. null on legacy rows placed before
+         this field existed and on raw broker OrderRow shapes (no
+         `source` field on that schema at all) — renders nothing, not
+         an empty/placeholder chip. -->
+    {#if order.source}<span class="log-chip"><span class="log-chip-key">origin:</span>{order.source}</span>{/if}
     {#if _ts}<span class="log-chip"><span class="log-chip-key">time:</span>{formatDualTz(new Date(_ts))}</span>{/if}
     {#if order.tag}<span class="log-chip {_tagClass(order.tag)}"><span class="log-chip-key">tag:</span>{order.tag}</span>{/if}
     {#if order.target_pct != null}<span class="log-chip log-chip-tp"><span class="log-chip-key">tp:</span>+{(Number(order.target_pct) * 100).toFixed(1)}%</span>{/if}

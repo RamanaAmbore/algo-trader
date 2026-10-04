@@ -311,6 +311,9 @@
         price:            payload.price > 0 ? payload.price : null,
         trigger_price:    payload.trigger_price > 0 ? payload.trigger_price : null,
         account:          String(payload.account || ''),
+        // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — command-line
+        // grammar submit, distinct from the Ticket/Chain/basket paths.
+        source:           'command',
       });
       const oid = resp?.order_id || resp?.id || '';
       addResult(

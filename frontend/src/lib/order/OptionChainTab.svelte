@@ -798,6 +798,10 @@
         // apply_template_to_order on fill — TP / SL / Wing GTTs
         // for each leg get queued individually.
         template_id: templateId,
+        // Sprint 2b (SPRINT2_LAYER_INTEGRATION.md §3/§4.4) — Chain tab's
+        // own per-leg ticket submit, distinct from SymbolPanel's
+        // /orders/basket path (tagged 'basket').
+        source: 'chain',
       });
       return null;
     } catch (e) {
