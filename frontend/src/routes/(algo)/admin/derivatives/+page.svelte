@@ -180,14 +180,18 @@
 
   // Merged draft list: local text-input drafts + OrderTicket "Add to Payoff" entries.
   // buildCandidatePositions accepts the same shape for both sources.
-  // payoffDrafts entries carry string ids; we normalise them to a numeric-compatible
-  // shape (the function only uses `.id` as an opaque key for draftId).
+  // payoffDrafts entries now carry the REAL backend AlgoOrder id (a plain
+  // number, 2026-10) — prefixed with 'pd_' here so it can never collide
+  // with the local `drafts[]` array's own numeric `_draftSeq` ids inside
+  // the single merged list the {#each} keyed block below iterates (a
+  // collision would throw Svelte's each_key_duplicate). removeDraft()
+  // strips the prefix before calling payoffDrafts.remove().
   const _allDrafts = $derived.by(() => {
     const pd = [...payoffDrafts.value.values()];
     return [
       ...drafts,
       ...pd.map(e => ({
-        id:       e.id,
+        id:       `pd_${e.id}`,
         symbol:   e.symbol,
         qty:      e.qty,
         avg_cost: e.avg_cost ?? '',
@@ -292,9 +296,11 @@
   function removeDraft(/** @type {number|string} */ id) {
     // Local text-input drafts use numeric ids.
     drafts = drafts.filter(d => d.id !== id);
-    // payoffDrafts entries use string ids prefixed with 'pd_'.
+    // payoffDrafts entries are prefixed 'pd_<real backend id>' in
+    // _allDrafts above — strip the prefix and remove by the real
+    // (numeric) backend id.
     if (typeof id === 'string' && id.startsWith('pd_')) {
-      payoffDrafts.remove(id);
+      payoffDrafts.remove(Number(id.slice(3)));
     }
   }
 
@@ -336,6 +342,9 @@
   // sync $effect below which goto({replaceState: true}) the new URL —
   // doesn't push a history entry on every picker click.
   onMount(() => {
+    // Hydrate OrderTicket-originated payoff drafts from the backend
+    // (2026-10) so they survive a page refresh — see payoffDrafts.svelte.js.
+    payoffDrafts.load();
     try {
       const sp = new URLSearchParams(window.location.search);
       const u = (sp.get('u') || '').toUpperCase().trim();

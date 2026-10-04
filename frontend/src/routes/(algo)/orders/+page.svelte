@@ -268,12 +268,18 @@
       price:          draft.avg_cost != null ? Number(draft.avg_cost) : undefined,
       accounts:       _entryAccounts,
       account:        _entryAccount,
-      initialDraftId: String(draft.id),
+      // Real backend AlgoOrder id (number) — must match the Map key
+      // type exactly (payoffDrafts.value.get/has use strict key
+      // equality; a String()-coerced id would silently never match).
+      initialDraftId: draft.id,
     };
   }
 
   onMount(() => {
     loadOrders();
+    // Hydrate OrderTicket-originated payoff drafts from the backend
+    // (2026-10) so they survive a page refresh — see payoffDrafts.svelte.js.
+    payoffDrafts.load();
     loadAccounts()
       .then((/** @type {any[]} */ list) => {
         _entryAccounts = (list || [])

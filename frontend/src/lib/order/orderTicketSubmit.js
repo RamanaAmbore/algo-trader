@@ -174,6 +174,7 @@ export function buildOnSubmitPayload(ctx) {
  *   wingPremPctOverride:        number|string,
  *   wingStrikeOffsetOverride:   number|string,
  *   strategyId:                 number|null,
+ *   draftId:                    number|null,
  * }} ctx
  * @returns {object}
  */
@@ -214,6 +215,11 @@ export function buildPlacePayload(ctx) {
     wing_premium_pct_override:    numericOverride(ctx.wingPremPctOverride),
     wing_strike_offset_override:  numericOverride(ctx.wingStrikeOffsetOverride),
     strategy_id:                  ctx.strategyId,
+    // Draft cleanup (2026-10) — set only when this ticket originated from
+    // a server-persisted draft row (see payoffDrafts.svelte.js). On
+    // CONFIRMED success the backend deletes the draft itself; on any
+    // failure it's left untouched (backend/api/schemas.py:TicketOrderRequest.draft_id).
+    draft_id:                     ctx.draftId ?? null,
   };
 }
 

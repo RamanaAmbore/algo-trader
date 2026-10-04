@@ -149,7 +149,7 @@
    *   showCommonActions?: boolean,
    *   showRefresh?: boolean,
    *   pickerSuffix?:   import('svelte').Snippet,
-   *   initialDraftId?: string | null,
+   *   initialDraftId?: number | null,
    * }} */
   let {
     defaultTab     = /** @type {'chain'|'ticket'} */ ('ticket'),
@@ -266,10 +266,14 @@
     /** @type {import('svelte').Snippet | undefined} */
     pickerSuffix = undefined,
     // When set, OrderTicket opens pre-filled from this payoffDrafts id
-    // with _draftMode=true. Submit → "Update Draft". Cancel → removes draft.
-    // Passed through from _openDraftTicket on the /orders page and from
-    // executeDraft on the derivatives page.
-    initialDraftId = /** @type {string|null} */ (null),
+    // (the real backend AlgoOrder id of a mode='draft' row) with
+    // _draftMode=true. Submit → "Update Draft" (PATCHes the row in
+    // place). Closing without submitting leaves the draft untouched
+    // (2026-10 fix). Passed through from _openDraftTicket on the
+    // /orders page. The derivatives page's own draft-row click handler
+    // (executeDraft) is a separate, local-only mechanism that does not
+    // use this prop — see payoffDrafts.svelte.js's module docstring.
+    initialDraftId = /** @type {number|null} */ (null),
   } = $props();
 
   // Local mutable copy of the symbol prop — operator can edit it from

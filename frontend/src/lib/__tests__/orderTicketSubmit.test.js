@@ -156,3 +156,33 @@ describe('buildPlacePayload — source tagging (Sprint 2b)', () => {
     expect(buildPlacePayload(ctx).source).toBe('ticket');
   });
 });
+
+// Draft cleanup (2026-10) — draft_id lets the backend delete the
+// originating payoffDrafts row ONLY on confirmed success (see
+// TicketOrderRequest.draft_id, backend/api/schemas.py). Regression
+// guard for the "delete-before-confirmation" bug: the frontend must
+// forward whatever draftId OrderTicket.svelte threads in verbatim —
+// null/undefined collapse to null (never omitted, never 0-coerced).
+describe('buildPlacePayload — draft_id threading (2026-10 Bug A fix)', () => {
+  const baseCtx = /** @type {any} */ ({
+    mode: 'paper', side: 'BUY', resolvedSymbol: 'RELIANCE', symbol: 'RELIANCE',
+    exchange: 'NSE', resolvedExchange: 'NSE', qty: 1, lots: 1, lotSize: 1,
+    currentQty: 0, product: 'CNC', type: 'LIMIT', variety: 'regular', validity: 'DAY',
+    showLimit: true, showTrigger: false, roundToTick: (v) => Number(v),
+    price: '2500', trigger: '', account: 'ZG0790', chase: false, chaseAgg: 'low',
+    templateId: null, tpOverride: '', slOverride: '', wingPremPctOverride: '',
+    wingStrikeOffsetOverride: '', strategyId: null,
+  });
+
+  it('carries a real draftId through as draft_id', () => {
+    expect(buildPlacePayload({ ...baseCtx, draftId: 42 }).draft_id).toBe(42);
+  });
+
+  it('collapses an omitted draftId to null (no field dropped)', () => {
+    expect(buildPlacePayload(baseCtx).draft_id).toBeNull();
+  });
+
+  it('collapses an explicit null draftId to null', () => {
+    expect(buildPlacePayload({ ...baseCtx, draftId: null }).draft_id).toBeNull();
+  });
+});

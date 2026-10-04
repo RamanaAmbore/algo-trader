@@ -38,7 +38,7 @@
     // Passed from the orders page which reads payoffDrafts.value.
     draftOrders = /** @type {any[]} */ ([]),
     // Called when the operator clicks × on a draft row.
-    onDraftRemove = /** @type {((id: string) => void) | null} */ (null),
+    onDraftRemove = /** @type {((id: number) => void) | null} */ (null),
     // Called when the operator clicks a draft row body (opens ticket).
     onDraftClick  = /** @type {((entry: any) => void) | null} */ (null),
     // OPEN / TRIGGER_PENDING broker orders that are not active chases.
@@ -444,9 +444,14 @@
              title="Click to edit this draft in the order ticket"
              onclick={() => onDraftClick?.(draft)}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onDraftClick?.(draft); } }}>
-          <!-- Account col: empty for draft rows (no account assigned yet) -->
-          <span class="cc-col cc-col-acct cc-draft-acct" title="Draft — no account assigned">
+          <!-- Account col: shows the draft's account when one was
+               assigned in OrderTicket; "no account assigned" otherwise
+               (backend already masks the account for non-admins, same
+               as the real chase rows above — no client-side masking). -->
+          <span class="cc-col cc-col-acct cc-draft-acct"
+                title={draft.account ? `Draft — ${draft.account}` : 'Draft — no account assigned'}>
             <span class="cc-draft-chip" aria-label="Draft order">D</span>
+            {#if draft.account}<span class="cc-draft-acct-text">{draft.account}</span>{/if}
           </span>
           <span class="cc-col cc-col-side cc-side-{(draft.transaction_type || '').toLowerCase()}">
             {draft.transaction_type || '—'}
@@ -726,6 +731,16 @@
     display: flex;
     align-items: center;
     gap: 0.3rem;
+  }
+  /* Account text next to the "D" chip when a draft has one assigned —
+     same muted tone as the real-row account column, kept compact. */
+  .cc-draft-acct-text {
+    font-size: 0.68rem;
+    color: var(--c-muted, #94a3b8);
+    font-variant-numeric: tabular-nums;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   /* DRAFT mode label in the mode column */
   .cc-mode-draft {

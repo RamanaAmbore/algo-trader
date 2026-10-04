@@ -2,8 +2,8 @@
  * draft-positions.spec.ts
  *
  * Verifies the "Draft Position" feature for RamboQuant's derivatives page
- * and OrderTicket. Draft positions are session-only hypothetical legs added
- * from the OrderTicket "Add to Payoff" button.
+ * and OrderTicket. Draft positions are hypothetical legs added from the
+ * OrderTicket "Add to Payoff" button.
  *
  * Covered behaviours:
  *
@@ -19,8 +19,12 @@
  *   4. Draft toggle in Legs card — the "Incl. draft/prov in payoff" bar
  *      appears whenever at least one draft row is in candidatePositions.
  *
- *   5. Session isolation — payoffDrafts store is module-level $state; page
- *      refresh clears it (no localStorage persistence).
+ *   5. Persistence (UPDATED 2026-10, commit pending) — payoffDrafts is no
+ *      longer pure in-memory $state. It's backed by /api/orders/drafts
+ *      (server-side AlgoOrder rows, mode='draft'); load() fetches on page
+ *      mount so a draft now SURVIVES a page refresh instead of being wiped.
+ *      See payoffDrafts.svelte.js + frontend/e2e/draft_persistence.spec.js
+ *      for the reload-persistence coverage.
  *
  * Quality dimensions (per feedback_test_dimensions.md):
  *

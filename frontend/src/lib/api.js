@@ -706,6 +706,23 @@ export const retryTemplateAttach = (algoOrderId) =>
  *  {broker_order_id, broker_status, algo_status, updated, note}. */
 export const reconcileSingleOrder = (brokerOrderId, account) =>
   _post(`/orders/${brokerOrderId}/reconcile`, { account }, { auth: true });
+
+// ── Order drafts (2026-10) — server-persisted "Add to Payoff" rows ───────
+// Backs payoffDrafts.svelte.js. mode='draft' AlgoOrder rows; never reach
+// a broker. See backend DraftOrderRequest/DraftOrderPatchRequest docstrings
+// (backend/api/schemas.py) for the exact field shapes.
+/** GET /api/orders/drafts — every draft row, newest first. */
+export const fetchDrafts = () => _get('/orders/drafts', { auth: true });
+/** POST /api/orders/drafts — create a draft. Returns { id }. */
+export const createDraft = (payload) => _post('/orders/drafts', payload, { auth: true });
+/** PATCH /api/orders/drafts/{id} — update fields on an existing draft;
+ *  omitted fields are left unchanged. Returns the updated AlgoOrderInfo. */
+export const updateDraft = (id, payload) => _patch(`/orders/drafts/${id}`, payload, { auth: true });
+/** DELETE /api/orders/drafts/{id} — remove a draft. 404 means it's
+ *  already gone (e.g. the backend's own post-ticket-success cleanup
+ *  raced this call) — callers should treat that as success. */
+export const deleteDraft = (id) => _del(`/orders/drafts/${id}`, { auth: true });
+
 // Synthesize-and-start — scenario generated live from the agent's condition
 // tree. Preferred over manually picking a scenario when the goal is "test
 // this specific agent."

@@ -124,7 +124,7 @@
    *   standalone?: boolean,
    *   defaultChase?: boolean,
    *   defaultChaseAgg?: 'low' | 'med' | 'high',
-   *   initialDraftId?: string | null,
+   *   initialDraftId?: number | null,
    * }} */
   let {
     symbol,
@@ -287,12 +287,13 @@
     // operator's chase preference instead of snapping back to true/'low'.
     defaultChase              = true,
     defaultChaseAgg           = /** @type {'low'|'med'|'high'} */ ('low'),
-    // When set to a payoffDrafts id, the ticket opens pre-filled from
-    // that draft entry with _draftMode=true. Submit → "Update Draft"
-    // (removes old entry, adds new). Cancel when id is set → removes
-    // the draft from the store then closes. When null (default) the
-    // "Add to Payoff" path creates a new entry (no id to replace).
-    initialDraftId            = /** @type {string|null} */ (null),
+    // When set to a payoffDrafts id (the real backend AlgoOrder id of a
+    // mode='draft' row), the ticket opens pre-filled from that draft
+    // entry with _draftMode=true. Submit → "Update Draft" (PATCHes the
+    // same row in place). Closing without submitting leaves the draft
+    // untouched (2026-10 fix — closing used to discard it). When null
+    // (default) the "Add to Payoff" path creates a new entry.
+    initialDraftId            = /** @type {number|null} */ (null),
   } = $props();
 
   // E1: focus ping — when PageHeaderActions increments the store while
@@ -313,15 +314,14 @@
   // submitting will place a live order rather than updating the draft.
   let _draftMissing = $state(false);
 
-  // Close handler that respects draft lifecycle:
-  //   - _draftMode=true && initialDraftId set → remove the draft then close
-  //     (operator cancelled editing an existing draft — discard it)
-  //   - _draftMode=true && initialDraftId null → just close (new unsaved draft, no store mutation)
-  //   - _draftMode=false → normal close (no draft mutation)
+  // Close handler — closing the ticket NEVER mutates the draft store.
+  // (2026-10 fix: closing while editing an existing draft used to call
+  // payoffDrafts.remove(initialDraftId), silently discarding it even
+  // though nothing in this edit session had been written back yet —
+  // submit() is the only place that ever calls add()/update(). An
+  // operator who opened a draft just to look at it, then closed
+  // without submitting, lost the draft entirely.)
   function _handleClose() {
-    if (_draftMode && initialDraftId) {
-      payoffDrafts.remove(initialDraftId);
-    }
     onClose();
   }
   $effect(() => {
@@ -338,7 +338,12 @@
   // existing draft but that entry has since been removed from the store
   // (e.g. another surface cleared it), warn the operator. _draftMode is
   // kept false so the submit does NOT silently create a duplicate draft.
+  // Gated on payoffDrafts.loaded (2026-10) — the store's initial load()
+  // is async (GET /api/orders/drafts); without this gate, a ticket that
+  // mounts before that fetch resolves would see an empty Map and flag
+  // every real draft as "missing" on the very first render.
   $effect(() => {
+    if (!payoffDrafts.loaded) return;
     if (initialDraftId && !payoffDrafts.value.has(initialDraftId)) {
       _draftMissing = true;
       _draftMode = false;
@@ -2051,44 +2056,55 @@
     _submitTried = true;
 
     // ── "Add to Payoff" / "Update Draft" path ───────────────────
-    // When _draftMode is ON, skip ALL broker / backend interaction
-    // and write the leg directly into the session-only payoffDrafts
-    // store. The derivatives page reads that store and merges the
-    // entry into its candidatePositions so the payoff curve updates.
+    // When _draftMode is ON, skip ALL broker interaction and persist
+    // the leg via the server-backed payoffDrafts store. The derivatives
+    // page reads that store and merges the entry into its
+    // candidatePositions so the payoff curve updates.
     //
     // If initialDraftId is set (opened from an existing draft row),
-    // remove the old entry then add a new one — effectively replacing
-    // it. If no initialDraftId, just add (new draft).
+    // PATCH that row in place (update) — NOT remove-then-add, which
+    // would churn the id and break any UI state that remembered it
+    // across a re-render. If no initialDraftId, create a new draft.
     if (_draftMode && !isEquity) {
       const sym = String(_resolvedSymbol || symbol || '').toUpperCase();
       if (!sym) { submitErr = 'Symbol required'; return; }
       const signedQty = _side === 'BUY'
         ? Math.abs(_qty || _lots * Math.max(_lotSize, 1))
         : -Math.abs(_qty || _lots * Math.max(_lotSize, 1));
-      // Replace existing draft if we were opened from one.
-      if (initialDraftId) {
-        payoffDrafts.remove(initialDraftId);
+      submitting = true; submitErr = ''; submitErrFull = '';
+      try {
+        const draftEntry = {
+          symbol:     sym,
+          exchange:   _resolvedExchange || exchange || 'NFO',
+          qty:        signedQty,
+          avg_cost:   _price != null ? Number(_price) : null,
+          underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
+          account:    _account || null,
+        };
+        if (initialDraftId) {
+          await payoffDrafts.update(initialDraftId, draftEntry);
+        } else {
+          await payoffDrafts.add(draftEntry);
+        }
+        const verb = initialDraftId ? 'Updated draft' : 'Added';
+        _draftOk = `${verb} ${sym} in payoff`;
+        setTimeout(() => { _draftOk = ''; }, 2500);
+      } catch (e) {
+        submitErr = /** @type {any} */ (e)?.message || String(e);
+      } finally {
+        submitting = false;
       }
-      payoffDrafts.add({
-        symbol:     sym,
-        exchange:   _resolvedExchange || exchange || 'NFO',
-        qty:        signedQty,
-        avg_cost:   _price != null ? Number(_price) : null,
-        underlying: rootOf(sym, _resolvedExchange || exchange || 'NFO'),
-      });
-      const verb = initialDraftId ? 'Updated draft' : 'Added';
-      _draftOk = `${verb} ${sym} in payoff`;
-      setTimeout(() => { _draftOk = ''; }, 2500);
       return;
     }
 
-    // When _draftMode was toggled OFF mid-session while an existing draft
-    // is loaded, the submit fires the real broker path (handled below).
-    // Clean up the stale draft entry so the payoff chart doesn't show both
-    // the old draft and the newly placed real position simultaneously.
-    if (!_draftMode && initialDraftId) {
-      payoffDrafts.remove(initialDraftId);
-    }
+    // NOTE (2026-10 fix): previously this is where a stale draft entry
+    // was removed when _draftMode had been toggled OFF mid-session
+    // (submit proceeding to the real broker path below). That removal
+    // fired BEFORE the broker/paper call even ran, so a failed
+    // placement still lost the draft. Cleanup now happens only AFTER a
+    // CONFIRMED successful placement — see `draftId` threaded into
+    // `placeCtx` below and the backend's own post-success delete
+    // (TicketOrderRequest.draft_id, backend/api/routes/orders_place.py).
 
     // Demo session — short-circuit before any validation or broker
     // call. Open the friendly "Demo mode" modal instead of silently
@@ -2208,6 +2224,14 @@
           wingPremPctOverride,
           wingStrikeOffsetOverride,
           strategyId: _strategyId,
+          // Draft cleanup (2026-10 fix) — only when this submit is the
+          // real-placement path for a ticket that was opened from an
+          // existing draft (_draftMode now off; see the draft-mode
+          // branch above for the companion "still editing" path).
+          // Threaded into the /ticket payload as draft_id so the
+          // BACKEND deletes the draft only on confirmed success — never
+          // here, before the placement result is known.
+          draftId: (!_draftMode && initialDraftId) ? initialDraftId : null,
         };
         brokerResp = await placeTicketOrder(buildPlacePayload(placeCtx));
         // Show inline confirmation so the operator sees the order
@@ -2223,6 +2247,14 @@
           roundedPrice: _roundToTick(_price),
           orderId:      brokerResp?.order_id || '?',
         });
+        // Reached only on CONFIRMED success (placeTicketOrder throws on
+        // any failure — see the catch block below). The backend already
+        // deleted the draft row server-side on this same condition; drop
+        // it from the LOCAL cache too (forget — no DELETE request, that
+        // would just 404 against a row that's already gone).
+        if (placeCtx.draftId) {
+          payoffDrafts.forget(placeCtx.draftId);
+        }
       }
       // Record the symbol + account as the operator's most recent
       // pick so the next /orders or /charts page open lands on
@@ -2328,9 +2360,9 @@
     }
     // Draft pre-fill — when opened from a payoffDrafts row (initialDraftId
     // is set), seed the form fields from the draft entry and activate draft
-    // mode. The caller (orders page or derivatives page) already sets
-    // symbol/qty/price as props; we just need to enable _draftMode so the
-    // submit button reads "Update Draft" and cancel removes the entry.
+    // mode. The caller (orders page) already sets symbol/qty/price as
+    // props; we just need to enable _draftMode so the submit button reads
+    // "Update Draft". Closing without submitting leaves the draft as-is.
     if (initialDraftId) {
       const existing = payoffDrafts.value.get(initialDraftId);
       if (existing) {
