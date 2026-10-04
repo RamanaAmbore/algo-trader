@@ -687,27 +687,63 @@ class GrowwBroker(Broker):
         `orders()` seeing the whole book (order_status's cold path,
         admin reconcile, etc.)."""
         rows: list[dict] = []
+        completed = 0
+        last_exc: Exception | None = None
         for seg in self._GROWW_ORDER_LIST_SEGMENTS:
+            seg_ok = False
             for page in range(self._GROWW_ORDER_LIST_MAX_PAGES):
                 _GROWW_RATE_LIMITER.throttle("data")
                 try:
                     resp = self.groww.get_order_list(page=page, segment=seg)
                     page_rows = _iter_rows(_unwrap(resp), "order_list", "orders")
+                # Auth / rate-limit / timeout are NOT per-segment problems:
+                # re-raise so @_retry_groww_auth can re-mint the token or back
+                # off. Swallowing them made a dead session look like an empty
+                # book, and the open-order watchdog then marked live rows UNFILLED.
+                except _GROWW_AUTHN_EXC:  # type: ignore[misc]
+                    raise
+                except _GROWW_RATE_EXC:  # type: ignore[misc]
+                    raise
+                except _GROWW_TIMEOUT_EXC:  # type: ignore[misc]
+                    raise
+                # Entitlement denied on this segment (403): skip the segment and
+                # record it, mirroring _ltp_fetch_segment.
+                except _GROWW_AUTHZ_EXC as _e:  # type: ignore[misc]
+                    logger.info(
+                        f"[GROWW-ENTITLEMENT] GrowwBroker.orders() for "
+                        f"{self.account!r}: Access forbidden on segment={seg!r}: {_e}"
+                    )
+                    record_entitlement_denied(self.account, seg)
+                    last_exc = _e
+                    break
                 except Exception as _e:
-                    # A single segment being unavailable for this account
-                    # (e.g. CURRENCY/CDS not enabled) must not take down
-                    # the whole order-list fetch — degrade by skipping
-                    # just this segment and moving on, same principle as
-                    # _resolve_order_row's "failure degrades, never
-                    # raises" convention below.
+                    # Segment not enabled for this account (e.g. CURRENCY/CDS):
+                    # the SDK rejects it with "Invalid segment ...". Skip just this
+                    # segment so the others still load; record it as entitlement-denied.
                     logger.warning(
                         f"GrowwBroker.orders() for {self.account!r} "
                         f"segment={seg!r} page={page}: {_e}"
                     )
+                    if "invalid segment" in str(_e).lower():
+                        record_entitlement_denied(self.account, seg)
+                    last_exc = _e
                     break
                 if not page_rows:
+                    seg_ok = True
                     break
                 rows.extend(page_rows)
+            else:
+                # Page cap reached — rows gathered so far are a complete read.
+                seg_ok = True
+            if seg_ok:
+                completed += 1
+        if completed == 0:
+            # Every segment failed: this is not an empty book, so do not
+            # pretend it is. Raise so callers see the failure.
+            raise RuntimeError(
+                f"GrowwBroker.orders() for {self.account!r}: no segment "
+                f"succeeded; last error: {last_exc}"
+            ) from last_exc
         return _normalise_orders(rows)
 
     def _resolve_order_row(self, order_id: str) -> dict:

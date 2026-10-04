@@ -355,3 +355,87 @@ class TestModifyCancelOrderSurfaceRejection:
         broker.groww.cancel_order = MagicMock(return_value={"status": "SUCCESS"})
         result = broker.cancel_order("ORD123", exchange="NSE")
         assert result == "ORD123"
+
+
+# ── orders() error classification (regression for 315a2117) ─────────────
+
+
+from growwapi.groww.exceptions import (  # noqa: E402
+    GrowwAPIAuthenticationException,
+    GrowwAPIAuthorisationException,
+    GrowwAPIRateLimitException,
+    GrowwAPITimeoutException,
+)
+
+
+class TestOrdersErrorClassification:
+    """315a2117 swallowed every per-segment exception, so a token expiry,
+    429 or timeout looked like an empty book. Only entitlement / invalid-
+    segment errors may be skipped per segment; auth, rate-limit and timeout
+    must propagate to @_retry_groww_auth, and orders() must raise when no
+    segment succeeded."""
+
+    @pytest.fixture
+    def groww_mod(self, monkeypatch):
+        from backend.brokers.adapters import groww as groww_mod
+        # Keep the decorator's retry/backoff sleeps out of the test run.
+        monkeypatch.setattr(groww_mod._time, "sleep", lambda _s: None)
+        return groww_mod
+
+    def test_auth_error_propagates_not_swallowed(self, broker, groww_mod):
+        broker.groww.get_order_list = MagicMock(
+            side_effect=GrowwAPIAuthenticationException()
+        )
+        with pytest.raises(GrowwAPIAuthenticationException):
+            broker.orders()
+
+    def test_rate_limit_error_propagates_not_swallowed(self, broker, groww_mod):
+        broker.groww.get_order_list = MagicMock(
+            side_effect=GrowwAPIRateLimitException()
+        )
+        with pytest.raises(GrowwAPIRateLimitException):
+            broker.orders()
+        # Decorator retried with backoff before giving up — proves the error
+        # reached @_retry_groww_auth instead of being caught in orders().
+        assert broker.groww.get_order_list.call_count > 4
+
+    def test_timeout_error_propagates_not_swallowed(self, broker, groww_mod):
+        broker.groww.get_order_list = MagicMock(
+            side_effect=GrowwAPITimeoutException()
+        )
+        with pytest.raises(GrowwAPITimeoutException):
+            broker.orders()
+
+    @pytest.mark.parametrize("make_exc", [
+        lambda: Exception("Invalid segment CURRENCY for order."),
+        lambda: GrowwAPIAuthorisationException(),
+    ], ids=["invalid-segment", "authz"])
+    def test_every_segment_rejected_raises_not_empty_list(
+        self, broker, groww_mod, make_exc
+    ):
+        def always_rejected(page=0, segment=None, **_kw):
+            raise make_exc()
+
+        broker.groww.get_order_list = MagicMock(side_effect=always_rejected)
+        with pytest.raises(RuntimeError, match="no segment succeeded"):
+            broker.orders()
+
+    def test_authz_segment_skipped_and_recorded(self, broker, groww_mod, monkeypatch):
+        def fake_get_order_list(page=0, segment=None, **_kw):
+            _bound_get_order_list(page=page, segment=segment)
+            if segment == "CURRENCY":
+                raise GrowwAPIAuthorisationException()
+            if page == 0:
+                return {"order_list": [
+                    {"groww_order_id": f"{segment}-0", "exchange": "NSE",
+                     "order_status": "OPEN", "quantity": "1"}
+                ]}
+            return {"order_list": []}
+
+        broker.groww.get_order_list = MagicMock(side_effect=fake_get_order_list)
+        recorded = MagicMock()
+        monkeypatch.setattr(groww_mod, "record_entitlement_denied", recorded)
+        monkeypatch.setattr(groww_mod.logger, "info", MagicMock())
+        rows = broker.orders()
+        assert {r["order_id"] for r in rows} == {"CASH-0", "FNO-0", "COMMODITY-0"}
+        recorded.assert_called_once_with("GRW123", "CURRENCY")
