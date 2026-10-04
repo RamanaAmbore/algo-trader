@@ -340,7 +340,7 @@ def test_order_event_queue_singleton_defined():
 
 def test_mcp_audit_queue_singleton_defined():
     """research.py must expose an `mcp_audit_queue` EventQueue instance."""
-    from backend.api.routes import research
+    from backend.api.routes import lab as research
     from backend.api.persistence.event_queue import EventQueue
     assert hasattr(research, "mcp_audit_queue")
     assert isinstance(research.mcp_audit_queue, EventQueue)

@@ -3,7 +3,7 @@ linkage, and the new get_order_events MCP tool.
 
 Covers three narrow gaps closed in one sprint:
   1. MCP place_order gained `template_slug` — resolved server-side (in
-     backend.api.routes.research) to a template_id before the ticket is
+     backend.api.routes.lab) to a template_id before the ticket is
      built, since TicketOrderRequest itself has no slug field.
   2. AlgoOrder.mcp_request_id links an mcp_audit row to the order it
      created — additive migration + threading through both ticket-persist
@@ -29,7 +29,7 @@ import backend.api.database as dbmod
 @pytest.mark.asyncio
 async def test_resolve_template_slug_passthrough_when_id_given():
     """An explicit template_id always wins — slug is ignored, no DB hit."""
-    from backend.api.routes.research import _res_resolve_template_slug
+    from backend.api.routes.lab import _res_resolve_template_slug
 
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
@@ -44,7 +44,7 @@ async def test_resolve_template_slug_passthrough_when_id_given():
 @pytest.mark.asyncio
 async def test_resolve_template_slug_none_when_neither_given():
     """No id, no slug → template-less order, not an error."""
-    from backend.api.routes.research import _res_resolve_template_slug
+    from backend.api.routes.lab import _res_resolve_template_slug
 
     resolved, err = await _res_resolve_template_slug(None, None)
 
@@ -55,7 +55,7 @@ async def test_resolve_template_slug_none_when_neither_given():
 @pytest.mark.asyncio
 async def test_resolve_template_slug_resolves_via_loader():
     """A real slug resolves to the loader's returned row id."""
-    from backend.api.routes.research import _res_resolve_template_slug
+    from backend.api.routes.lab import _res_resolve_template_slug
 
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
@@ -72,7 +72,7 @@ async def test_resolve_template_slug_resolves_via_loader():
 async def test_resolve_template_slug_unknown_returns_error():
     """An unresolvable slug returns (None, error) — never raises itself;
     the caller (place_order) decides how to surface it."""
-    from backend.api.routes.research import _res_resolve_template_slug
+    from backend.api.routes.lab import _res_resolve_template_slug
 
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
@@ -85,11 +85,11 @@ async def test_resolve_template_slug_unknown_returns_error():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1b. End-to-end through ResearchController.place_order
+# 1b. End-to-end through LabController.place_order
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _mk_place_request():
-    from backend.api.routes.research import PlaceOrderRequest
+    from backend.api.routes.lab import PlaceOrderRequest
     return PlaceOrderRequest(
         confirm_token="tok123",
         account="ZG0790",
@@ -107,9 +107,9 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
     the slug to a template_id via the loader, (b) build a TicketOrderRequest
     carrying that resolved template_id AND a non-empty mcp_request_id, and
     (c) forward it unmodified to OrdersController.ticket_order."""
-    from backend.api.routes.research import ResearchController
+    from backend.api.routes.lab import LabController
 
-    ctrl = ResearchController(owner=None)
+    ctrl = LabController(owner=None)
     data = _mk_place_request()
     fake_request = MagicMock()
 
@@ -125,7 +125,7 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
         captured["ticket"] = data
         return _FakeTicketResponse()
 
-    # ResearchController.place_order calls OrdersController.ticket_order.fn,
+    # LabController.place_order calls OrdersController.ticket_order.fn,
     # which itself locally imports and delegates to
     # orders_place.ticket_order_handler — patch THAT (the real delegate),
     # not the `.fn` property (a read-only Litestar descriptor, can't be
@@ -134,18 +134,18 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
     ), patch(
-        "backend.api.routes.research._consume_token", return_value=None,
+        "backend.api.routes.lab._consume_token", return_value=None,
     ), patch(
-        "backend.api.routes.research._user_id", return_value=1,
+        "backend.api.routes.lab._user_id", return_value=1,
     ), patch(
-        "backend.api.routes.research._res_mcp_audit", new=AsyncMock(),
+        "backend.api.routes.lab._res_mcp_audit", new=AsyncMock(),
     ), patch(
-        "backend.api.routes.research._res_place_telegram_ping",
+        "backend.api.routes.lab._res_place_telegram_ping",
     ), patch(
         "backend.api.routes.orders_place.ticket_order_handler",
         new=_fake_ticket_order_handler,
     ):
-        resp = await ResearchController.place_order.fn(
+        resp = await LabController.place_order.fn(
             ctrl, data=data, request=fake_request,
         )
 
@@ -161,10 +161,10 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
 async def test_place_order_unknown_template_slug_422_and_no_token_burned():
     """An unresolvable template_slug must 422 BEFORE _consume_token runs —
     a typo must never burn the operator's single-use confirm token."""
-    from backend.api.routes.research import ResearchController
+    from backend.api.routes.lab import LabController
     from litestar.exceptions import HTTPException
 
-    ctrl = ResearchController(owner=None)
+    ctrl = LabController(owner=None)
     data = _mk_place_request()
     fake_request = MagicMock()
 
@@ -174,14 +174,14 @@ async def test_place_order_unknown_template_slug_422_and_no_token_burned():
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value=None),
     ), patch(
-        "backend.api.routes.research._consume_token", mock_consume,
+        "backend.api.routes.lab._consume_token", mock_consume,
     ), patch(
-        "backend.api.routes.research._user_id", return_value=1,
+        "backend.api.routes.lab._user_id", return_value=1,
     ), patch(
-        "backend.api.routes.research._res_mcp_audit", new=AsyncMock(),
+        "backend.api.routes.lab._res_mcp_audit", new=AsyncMock(),
     ):
         with pytest.raises(HTTPException) as ei:
-            await ResearchController.place_order.fn(
+            await LabController.place_order.fn(
                 ctrl, data=data, request=fake_request,
             )
 

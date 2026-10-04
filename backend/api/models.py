@@ -916,7 +916,7 @@ class AlgoOrder(Base):
     algo_id: Mapped[Optional[str]] = mapped_column(String(32), nullable=True)
 
     # MCP audit linkage — the request_id (12-hex-char token_hex(6)) minted
-    # by backend.api.routes.research.place_order for its mcp_audit row.
+    # by backend.api.routes.lab.place_order for its mcp_audit row.
     # Distinct from `request_id` above, which holds the AuditMiddleware
     # HTTP-request UUID and drives the M13 idempotency check — the two
     # are independent identifiers from independent code paths. Lets

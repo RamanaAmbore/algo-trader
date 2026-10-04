@@ -720,7 +720,7 @@ class TicketOrderRequest(msgspec.Struct):
     # sourced from a draft.
     draft_id: Optional[int] = None
     # MCP audit linkage (Sprint — MCP template/audit gaps). Set only by
-    # backend.api.routes.research._res_make_place_ticket, carrying the
+    # backend.api.routes.lab._res_make_place_ticket, carrying the
     # mcp_audit.request_id minted for this call so the created AlgoOrder
     # row can be joined back to the MCP audit trail that created it.
     # None/omitted for every non-MCP caller (ticket/basket/chain/command).

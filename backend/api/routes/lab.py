@@ -1,5 +1,5 @@
 """
-`/api/research/*` — research-thread CRUD for the /admin/research page.
+`/api/lab/*` — research-thread CRUD for the /admin/lab page.
 
 A research thread captures one MCP-driven session ("Research RELIANCE")
 with its transcript, the synthesized thesis, and (after promotion) the
@@ -1248,8 +1248,8 @@ async def _mcp_modify_live(
 
 # ── Controller ────────────────────────────────────────────────────────
 
-class ResearchController(Controller):
-    path = "/api/research"
+class LabController(Controller):
+    path = "/api/lab"
     # Per-route caps. Reads (threads + drafts) use `view_lab` which
     # includes demo so the showcase tour's Lab step can populate a
     # real page (threads + drafts list, which carry operator research
@@ -1865,3 +1865,8 @@ class ResearchController(Controller):
             agent_slug=slug, status=current_status,
             detail=f"agent {slug!r} updated: {changed_list}",
         )
+
+
+# Legacy alias for /api/research; remove once nothing calls it.
+class LegacyResearchController(LabController):
+    path = "/api/research"

@@ -258,7 +258,7 @@ async def test_safe_update_cancel_default_source_is_operator():
 
 def test_mcp_cancel_route_passes_source_mcp_explicitly():
     import inspect
-    from backend.api.routes import research as research_mod
+    from backend.api.routes import lab as research_mod
 
     source = inspect.getsource(research_mod._res_cancel_paper)
     assert 'cancel_paper_order(algo_order_id, source="mcp")' in source, (

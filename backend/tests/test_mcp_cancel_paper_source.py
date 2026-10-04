@@ -1,5 +1,5 @@
 """Sprint 2a fix — the real MCP cancel_order route
-(`backend/api/routes/research.py:_res_cancel_paper`) must explicitly pass
+(`backend/api/routes/lab.py:_res_cancel_paper`) must explicitly pass
 `source="mcp"` to `cancel_paper_order`, executing the actual fixed line
 (not just a source-text inspection)."""
 from __future__ import annotations
@@ -8,7 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from backend.api.routes.research import _res_cancel_paper
+from backend.api.routes.lab import _res_cancel_paper
 
 
 @pytest.mark.asyncio

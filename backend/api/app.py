@@ -59,7 +59,7 @@ from backend.api.routes.brokers import BrokersController
 from backend.api.routes.hedge_proxies import HedgeProxiesController, seed_hedge_proxies
 from backend.api.routes.exchange_schedule import ExchangeScheduleController
 from backend.api.helpers.exchange_clock import seed_and_warm as exchange_clock_seed_and_warm
-from backend.api.routes.research import ResearchController
+from backend.api.routes.lab import LabController, LegacyResearchController
 from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
 from backend.api.routes.options import OptionsController
@@ -232,7 +232,8 @@ _route_handlers = [
     BrokersController,
     HedgeProxiesController,
     ExchangeScheduleController,
-    ResearchController,
+    LabController,
+    LegacyResearchController,
     EconomicController,
     WatchlistController,
     SymbolsController,
@@ -673,7 +674,7 @@ async def _start_event_queues(app) -> None:  # noqa: ARG001
     from backend.api.routes.algo import algo_event_queue
     from backend.api.algo.events import agent_event_queue
     from backend.api.algo.order_events import order_event_queue
-    from backend.api.routes.research import mcp_audit_queue
+    from backend.api.routes.lab import mcp_audit_queue
     await algo_event_queue.start()
     await agent_event_queue.start()
     await order_event_queue.start()
@@ -686,7 +687,7 @@ async def _stop_event_queues(app) -> None:  # noqa: ARG001
     from backend.api.routes.algo import algo_event_queue
     from backend.api.algo.events import agent_event_queue
     from backend.api.algo.order_events import order_event_queue
-    from backend.api.routes.research import mcp_audit_queue
+    from backend.api.routes.lab import mcp_audit_queue
     await algo_event_queue.stop()
     await agent_event_queue.stop()
     await order_event_queue.stop()
