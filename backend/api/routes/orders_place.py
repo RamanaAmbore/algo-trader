@@ -2353,7 +2353,28 @@ async def ticket_order_handler(data, request) -> object:  # type: ignore[return]
     )
 
     if data.mode == "live":
-        return await _ticket_place_live(data, request, account, sym, side, qty, lot_size)
+        resp = await _ticket_place_live(data, request, account, sym, side, qty, lot_size)
+    else:
+        # ── PAPER / default branch ────────────────────────────────────────
+        resp = await _ticket_place_paper(data, request, account, sym, side, qty)
 
-    # ── PAPER / default branch ────────────────────────────────────────────
-    return await _ticket_place_paper(data, request, account, sym, side, qty)
+    # Draft cleanup (2026-10) — ONLY reached on a CONFIRMED successful
+    # placement: both _ticket_place_live and _ticket_place_paper either
+    # return a TicketOrderResponse here or raise HTTPException on any
+    # failure (_ticket_handle_live_place_error always raises, never
+    # returns), so an exception propagates straight past this block and
+    # the draft is left untouched. Best-effort on top of
+    # _draft_delete_by_id's own internal try/except: a delete failure here
+    # must NEVER surface as a /ticket failure — the real order already
+    # succeeded, and surfacing an error would make the client retry and
+    # place a SECOND real order.
+    if getattr(data, "draft_id", None):
+        try:
+            from backend.api.routes.orders import _draft_delete_by_id
+            await _draft_delete_by_id(int(data.draft_id))
+        except Exception as _e:
+            logger.warning(
+                f"[DRAFT] post-success cleanup failed for draft_id={data.draft_id}: {_e}"
+            )
+
+    return resp

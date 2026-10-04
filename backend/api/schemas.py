@@ -708,6 +708,58 @@ class TicketOrderRequest(msgspec.Struct):
     # both guards apply. Frontend passes "close" when the ticket is
     # opened from a close-position context.
     intent: Optional[str] = None
+    # Draft cleanup (2026-10) — when this ticket originated from a
+    # server-persisted draft (see DraftOrderRequest / mode='draft' AlgoOrder
+    # rows, backend.api.routes.orders), the originating draft row's id.
+    # On CONFIRMED success of this /ticket submission (paper or live — see
+    # ticket_order_handler), the draft row is deleted server-side. On any
+    # failure the draft is left untouched — the backend is the single
+    # source of truth for "did this draft actually get placed", fixing the
+    # earlier client-side bug where the draft was removed before the
+    # placement result was known. None/omitted when the ticket wasn't
+    # sourced from a draft.
+    draft_id: Optional[int] = None
+
+
+class DraftOrderRequest(msgspec.Struct):
+    """POST /api/orders/drafts — create a client-visible draft as a real
+    AlgoOrder row (mode='draft', status='OPEN'). No broker call is ever
+    made for a draft; it exists purely so the OrderTicket "Add to Payoff"
+    flow survives a page refresh / is visible across devices.
+
+    `quantity` convention — DIFFERENT from TicketOrderRequest.quantity:
+    this is the CONTRACTS-equivalent figure (same unit AlgoOrder.quantity
+    stores everywhere downstream, and the same unit
+    frontend/src/lib/data/payoffDrafts.svelte.js's internal `qty` already
+    uses — already resolved from lots × lot_size client-side before
+    reaching here). NOT lots. Sending a raw lots figure here would
+    silently under/over-represent the draft's real size.
+    """
+    symbol: str
+    transaction_type: str           # "BUY" | "SELL"
+    quantity: int                   # contracts-equivalent, > 0
+    exchange: str = "NFO"
+    price: Optional[float] = None
+    # None/omitted → stored as "" (AlgoOrder.account is NOT NULL in the DB).
+    # "" means "no account assigned yet" in every response too.
+    account: Optional[str] = None
+
+
+class DraftOrderPatchRequest(msgspec.Struct):
+    """PATCH /api/orders/drafts/{id}. Every field is optional; an omitted
+    (None) field is left UNCHANGED — same convention as ModifyOrderRequest.
+    There is no way to explicitly clear a field back to null via this
+    endpoint (matches ModifyOrderRequest's existing limitation)."""
+    symbol: Optional[str] = None
+    exchange: Optional[str] = None
+    transaction_type: Optional[str] = None
+    quantity: Optional[int] = None
+    price: Optional[float] = None
+    account: Optional[str] = None
+
+
+class DraftOrderCreateResponse(msgspec.Struct):
+    id: int
 
 
 class TicketOrderResponse(msgspec.Struct):

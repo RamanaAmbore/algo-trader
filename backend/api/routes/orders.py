@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import msgspec
-from litestar import Controller, Request, delete, get, post, put
+from litestar import Controller, Request, delete, get, patch, post, put
 from litestar.exceptions import HTTPException
 from litestar.params import Parameter
 from litestar.status_codes import HTTP_200_OK
@@ -39,6 +39,9 @@ from backend.api.schemas import (
     BasketOrderRequest,
     BasketOrderResponse,
     CancelOrderResponse,
+    DraftOrderCreateResponse,
+    DraftOrderPatchRequest,
+    DraftOrderRequest,
     ModifyOrderRequest,
     ModifyOrderResponse,
     OrderRow,
@@ -447,6 +450,63 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         source=getattr(r, "source", None),
         agent_id=getattr(r, "agent_id", None),
     )
+
+
+# ── Draft orders (2026-10) ────────────────────────────────────────────────────
+# Server-side persistence for the OrderTicket "Add to Payoff" draft flow.
+# Drafts are real AlgoOrder rows (mode='draft', status='OPEN') but NEVER
+# reach a broker — no place_order / translate_qty / preflight call exists
+# anywhere in this section. See DraftOrderRequest's docstring for the
+# quantity-unit convention (contracts-equivalent, NOT lots).
+
+def _draft_validate_input(data) -> None:
+    """Raise HTTPException(400) on an obviously-invalid draft payload.
+    Deliberately lightweight — unlike _ticket_validate_input there is no
+    lot_size resolution or broker-facing check, since a draft never reaches
+    a broker."""
+    sym = (data.symbol or "").strip()
+    if not sym:
+        raise HTTPException(status_code=400, detail="symbol is required")
+    side = (data.transaction_type or "").upper()
+    if side not in _TXN_TYPES:
+        raise HTTPException(status_code=400, detail="transaction_type must be BUY or SELL")
+    if int(data.quantity or 0) <= 0:
+        raise HTTPException(status_code=400, detail="quantity must be > 0")
+    exch = (data.exchange or "NFO").upper()
+    if exch not in _EXCHANGES:
+        raise HTTPException(status_code=400, detail=f"exchange must be one of {sorted(_EXCHANGES)}")
+
+
+async def _draft_delete_by_id(draft_id: int) -> bool:
+    """Delete an AlgoOrder row by id, ONLY when mode=='draft'. Returns True
+    when a row was actually deleted; False (no-op) when the id doesn't
+    exist or exists but isn't a draft — NEVER raises. This is the guard
+    that keeps this a drafts-only deletion path, not an accidental
+    delete-any-order endpoint: a `mode='live'`/`'paper'`/etc. row passed
+    here is left completely untouched.
+
+    Also called (best-effort, swallowed) from
+    orders_place.py:ticket_order_handler after a CONFIRMED successful
+    /ticket submission that carried a `draft_id` — see that function's
+    docstring for why a delete failure there must never raise.
+    """
+    from sqlalchemy import select as _sel
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+
+    try:
+        async with async_session() as s:
+            row = (await s.execute(
+                _sel(AlgoOrder).where(AlgoOrder.id == draft_id)
+            )).scalar_one_or_none()
+            if row is None or (row.mode or "").lower() != "draft":
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+    except Exception as e:
+        logger.warning(f"[DRAFT] delete failed for id={draft_id}: {e}")
+        return False
 
 
 def _rco_invalidate_terminal_caches(status: str) -> None:
@@ -1527,9 +1587,19 @@ class OrdersController(Controller):
             # write-refuse guard the postback/chase paths have — reconcile
             # is the repair path that corrects stuck rows from broker
             # truth, so it must be able to write any status.
+            # 2026-10 fix — exclude mode='draft'. _rco_reconcile_active_rows
+            # below only special-cases mode in ("paper", "live"); every
+            # other mode (draft included) falls through to
+            # kept.append(r) unconditionally, so a draft row (status='OPEN'
+            # by construction, never cleaned up by a chase/postback since
+            # it never reaches a broker) would otherwise sit in this
+            # "in-flight chase" panel forever.
             rows = (await s.execute(
                 sql_select(AlgoOrder)
-                .where(AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]))
+                .where(
+                    AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]),
+                    AlgoOrder.mode != "draft",
+                )
                 .order_by(desc(AlgoOrder.id))
                 .limit(500)
                 .with_for_update()
@@ -2059,6 +2129,107 @@ class OrdersController(Controller):
         """Ticket order placement. Delegates full logic to orders_place.ticket_order_handler."""
         from backend.api.routes.orders_place import ticket_order_handler
         return await ticket_order_handler(data, request)
+
+    # ── Draft orders (2026-10) ────────────────────────────────────────────
+    # Server-side CRUD for the OrderTicket "Add to Payoff" draft flow.
+    # mode='draft' AlgoOrder rows — no broker call anywhere in this block.
+
+    @post("/drafts")
+    async def create_draft(self, data: DraftOrderRequest, request: Request) -> DraftOrderCreateResponse:
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+
+        _draft_validate_input(data)
+        sym = data.symbol.upper().strip()
+        side = data.transaction_type.upper()
+        exch = (data.exchange or "NFO").upper()
+        acct = (data.account or "").strip()
+
+        async with async_session() as s:
+            row = AlgoOrder(
+                account=acct, symbol=sym, exchange=exch,
+                transaction_type=side, quantity=int(data.quantity),
+                initial_price=(float(data.price) if data.price is not None else None),
+                status="OPEN", engine="manual", mode="draft",
+                detail=f"[DRAFT] {side} {int(data.quantity)} {sym}",
+            )
+            s.add(row)
+            await s.commit()
+            return DraftOrderCreateResponse(id=row.id)
+
+    @get("/drafts")
+    async def list_drafts(self, request: Request) -> list[AlgoOrderInfo]:
+        """All draft rows (mode='draft'), newest first. Account-masked for
+        non-admin callers — same convention as /algo/recent and
+        /chases/active. NOTE: AlgoOrder has no owner/user column, so this
+        returns every draft, not just "the calling operator's own"."""
+        from sqlalchemy import desc, select as sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+
+        async with async_session() as s:
+            rows = (await s.execute(
+                sql_select(AlgoOrder)
+                .where(AlgoOrder.mode == "draft")
+                .order_by(desc(AlgoOrder.id))
+            )).scalars().all()
+
+        do_mask = not is_admin_request(request)
+        masked_acct = mask_account if do_mask else (lambda a: a)
+        return [_chase_row_to_info(r, masked_acct, {}) for r in rows]
+
+    @delete("/drafts/{draft_id:int}", status_code=HTTP_200_OK)
+    async def delete_draft(self, draft_id: int, request: Request) -> dict:
+        """Deletes a draft row. Refuses (404) when the id doesn't exist or
+        exists but isn't mode='draft' — same uniform message either way,
+        so this can never become an accidental delete-any-order endpoint."""
+        deleted = await _draft_delete_by_id(draft_id)
+        if not deleted:
+            raise HTTPException(status_code=404, detail="Draft not found")
+        return {"id": draft_id, "deleted": True}
+
+    @patch("/drafts/{draft_id:int}")
+    async def update_draft(
+        self, draft_id: int, data: DraftOrderPatchRequest, request: Request,
+    ) -> AlgoOrderInfo:
+        """Updates only the fields supplied (non-None); omitted fields are
+        left unchanged — same convention as PUT /{order_id}'s
+        ModifyOrderRequest. Same mode='draft' guard as DELETE."""
+        from sqlalchemy import select as sql_select
+        from backend.api.database import async_session
+        from backend.api.models import AlgoOrder
+
+        async with async_session() as s:
+            row = (await s.execute(
+                sql_select(AlgoOrder).where(AlgoOrder.id == draft_id)
+            )).scalar_one_or_none()
+            if row is None or (row.mode or "").lower() != "draft":
+                raise HTTPException(status_code=404, detail="Draft not found")
+
+            if data.symbol is not None:
+                row.symbol = data.symbol.upper().strip()
+            if data.exchange is not None:
+                exch = data.exchange.upper()
+                if exch not in _EXCHANGES:
+                    raise HTTPException(status_code=400, detail=f"exchange must be one of {sorted(_EXCHANGES)}")
+                row.exchange = exch
+            if data.transaction_type is not None:
+                side = data.transaction_type.upper()
+                if side not in _TXN_TYPES:
+                    raise HTTPException(status_code=400, detail="transaction_type must be BUY or SELL")
+                row.transaction_type = side
+            if data.quantity is not None:
+                if int(data.quantity) <= 0:
+                    raise HTTPException(status_code=400, detail="quantity must be > 0")
+                row.quantity = int(data.quantity)
+            if data.price is not None:
+                row.initial_price = float(data.price)
+            if data.account is not None:
+                row.account = data.account.strip()
+
+            await s.commit()
+            masked_acct = mask_account if not is_admin_request(request) else (lambda a: a)
+            return _chase_row_to_info(row, masked_acct, {})
 
     @put("/{order_id:str}")
     async def modify_order(self, order_id: str, data: ModifyOrderRequest, request: Request) -> ModifyOrderResponse:
