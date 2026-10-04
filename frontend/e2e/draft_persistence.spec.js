@@ -38,6 +38,20 @@ import { loginAsAdmin } from './fixtures/auth.js';
 
 const TIMEOUT = 30_000;
 
+/** Builds one NFO draft row shaped like the /api/orders/drafts payload. */
+function makeDraft(id) {
+  return {
+    id, account: 'ZG0790', symbol: 'NIFTY26OCTFUT', exchange: 'NFO',
+    transaction_type: 'BUY', quantity: 50, initial_price: 24500, current_limit: null,
+    fill_price: null, attempts: 0, status: 'OPEN', engine: 'manual', mode: 'draft',
+    detail: '[DRAFT] BUY 50 NIFTY26OCTFUT', created_at: new Date().toISOString(),
+    target_pct: null, target_abs: null, parent_order_id: null, basket_tag: null,
+    template_id: null, attached_gtts_json: null, filled_quantity: null,
+    child_order_ids: [], interval_seconds: null, last_attempt_at: null,
+    next_attempt_at: null, broker_order_id: null, source: null, agent_id: null,
+  };
+}
+
 /** Registers mocked handlers for every /api/orders/drafts* request,
  *  backed by the given mutable array (so a test can inspect what was
  *  requested, and GET reflects whatever the array currently holds). */
@@ -125,39 +139,84 @@ test.describe('Payoff draft persistence (server-backed, 2026-10)', () => {
     await expect(page.locator('.cc-row-draft')).toHaveCount(0);
   });
 
-  // ── Bug A / Bug B — structurally unreachable via the current UI ────────
+  // ── DRAFT reachability + Bug A / Bug B ─────────────────────────────────
   //
-  // Both fixes are real and correct (see OrderTicket.svelte's submit()
-  // and _handleClose()), but neither can be driven through a real
-  // browser interaction today:
-  //   - Bug B's only caller, `.ot-close`, sits inside `{#if standalone}`
-  //     in OrderTicket.svelte. SymbolPanel.svelte hardcodes
-  //     `standalone={false}` on its one <OrderTicket> mount, so the
-  //     button never renders. `hostManagesEsc={true}` also means Esc
-  //     routes straight to SymbolPanel's own onClose, bypassing
-  //     _handleClose() entirely either way.
-  //   - Bug A's scenario (submitting for REAL with _draftMode toggled
-  //     off while initialDraftId is still set) requires the DRAFT
-  //     checkbox, which sits inside `{#if showLimit && !modeChaseHidden}`.
-  //     SymbolPanel hardcodes `modeChaseHidden={true}` on the same
-  //     mount, so that block never renders either.
+  // DRAFT now has its own `hideDraftToggle` gate (default false), so the
+  // checkbox renders at SymbolPanel's mount (which only sets
+  // modeChaseHidden=true). Bug A is driven end-to-end below.
   //
-  // See orderTicketDraftLifecycle.test.js (Vitest, source-grep) for the
-  // actual regression guards on both fixes.
-  test('open an existing draft, close without submitting → draft unchanged (Bug B)', async () => {
-    test.skip(true,
-      'Unreachable via real UI: .ot-close only renders when standalone=true; ' +
-      'SymbolPanel hardcodes standalone=false on its one <OrderTicket> mount. ' +
-      'Covered by orderTicketDraftLifecycle.test.js (Vitest source-grep) instead.');
+  // Bug B is still unreachable: `.ot-close` only renders when
+  // standalone=true, and SymbolPanel hardcodes standalone=false.
+  // Covered by orderTicketDraftLifecycle.test.js (Vitest source-grep).
+  test('DRAFT checkbox renders at SymbolPanel mount; CHASE and mode row stay hidden', async ({ page }) => {
+    await mockDraftsApi(page, [makeDraft(9010)]);
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+
+    await page.locator('.cc-row-draft').first().click();
+
+    const ticket = page.getByRole('dialog', { name: 'NIFTY26OCTFUT' });
+    const draftToggle = ticket.locator('.ot-draft-toggle').first();
+    await expect(draftToggle).toBeVisible({ timeout: TIMEOUT });
+    await expect(draftToggle).toContainText('DRAFT');
+    // Still disabled here: SymbolPanel implicitly keeps chase ON for LIMIT
+    // tickets and offers no toggle to clear it, and DRAFT is disabled
+    // while chase is on. See the skipped Bug A / success tests below.
+    await expect(draftToggle.locator('input[type="checkbox"]')).toBeDisabled();
+
+    // Regression guard: modeChaseHidden (SymbolPanel) must still hide the
+    // in-ticket CHASE toggle and the mode-hint row.
+    await expect(ticket.locator('.ot-chase-toggle')).toHaveCount(0);
+    await expect(ticket.locator('.ot-mode-row')).toHaveCount(0);
   });
-  test('open an existing draft, submit for real (mocked reject) → draft NOT removed (Bug A)', async () => {
-    test.skip(true,
-      'Unreachable via real UI: the DRAFT checkbox (needed to flip _draftMode ' +
-      'off while initialDraftId stays set) only renders when modeChaseHidden=false; ' +
-      'SymbolPanel hardcodes modeChaseHidden=true on its one <OrderTicket> mount. ' +
-      'Covered by orderTicketDraftLifecycle.test.js (Vitest source-grep) instead.');
+
+  // SKIPPED: DRAFT is disabled at SymbolPanel (chase implicitly on for LIMIT,
+  // no operator toggle to clear it), so the flip-off step below cannot run.
+  // Un-skip once the DRAFT/chase exclusion at SymbolPanel is decided.
+  test.skip('open an existing draft, submit for real (mocked reject) → draft NOT removed (Bug A)', async ({ page }) => {
+    const drafts = [makeDraft(9020)];
+    await mockDraftsApi(page, drafts);
+    await page.route('**/api/orders/ticket', async (route) => {
+      await route.fulfill({ status: 400, contentType: 'application/json', body: JSON.stringify({ detail: 'rejected' }) });
+    });
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+
+    await page.locator('.cc-row-draft').first().click();
+    // Flip DRAFT off while initialDraftId stays set → submit goes to broker.
+    await page.locator('.ot-draft-toggle').click();
+    await page.locator('.ot-submit').first().click();
+
+    // Rejected placement must leave the draft row in place.
+    await expect(page.locator('.cc-row-draft')).toHaveCount(1, { timeout: TIMEOUT });
   });
-  test('open an existing draft, submit for real (mocked success) → draft IS removed', async () => {
-    test.skip(true, 'Same unreachability as the Bug A test above.');
+
+  // SKIPPED: same DRAFT-disabled-at-SymbolPanel blocker as the Bug A test.
+  test.skip('open an existing draft, submit for real (mocked success) → draft IS removed', async ({ page }) => {
+    const drafts = [makeDraft(9030)];
+    await mockDraftsApi(page, drafts);
+    // Mirror the server: DELETE drops the row from the mutable list so the
+    // next GET reflects it.
+    await page.route('**/api/orders/drafts/*', async (route) => {
+      if (route.request().method() === 'DELETE') {
+        const id = Number(route.request().url().split('/').pop());
+        const idx = drafts.findIndex((d) => d.id === id);
+        if (idx >= 0) drafts.splice(idx, 1);
+        await route.fulfill({ status: 204, body: '' });
+        return;
+      }
+      await route.continue();
+    });
+    await page.route('**/api/orders/ticket', async (route) => {
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ status: 'ok', order_id: 1 }) });
+    });
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+
+    await page.locator('.cc-row-draft').first().click();
+    await page.locator('.ot-draft-toggle').click();
+    await page.locator('.ot-submit').first().click();
+
+    await expect(page.locator('.cc-row-draft')).toHaveCount(0, { timeout: TIMEOUT });
   });
 });

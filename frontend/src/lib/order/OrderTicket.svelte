@@ -112,6 +112,7 @@
    *   chase?:      boolean | undefined,
    *   chaseAgg?:   'low' | 'med' | 'high' | undefined,
    *   modeChaseHidden?: boolean,
+   *   hideDraftToggle?: boolean,
    *   suspended?: boolean,
    *   templateId?: number | null,
    *   tpOverride?: number | '',
@@ -252,6 +253,16 @@
     chase     = $bindable(/** @type {boolean|undefined} */ (undefined)),
     chaseAgg  = $bindable(/** @type {'low'|'med'|'high'|undefined} */ (undefined)),
     modeChaseHidden = false,
+    // When true, suppresses ONLY the DRAFT checkbox (independent of
+    // modeChaseHidden, which governs the CHASE toggle + mode-hint row).
+    // Defaults to false so every mount site — including any future
+    // standalone one — shows DRAFT unless it explicitly opts out.
+    // 2026-10 fix: the DRAFT checkbox used to be nested inside the same
+    // `{#if ... !modeChaseHidden}` block as CHASE, making it unreachable
+    // at SymbolPanel's mount (the only one in the app), which hardcodes
+    // modeChaseHidden=true. DRAFT now has its own gate; SymbolPanel does
+    // not pass this prop, so DRAFT renders there.
+    hideDraftToggle = false,
     // Instrument-type intent from the picker row (Equity / Future /
     // Option / ALL). When the operator has chosen FUT or OPT but the
     // symbol prop is just a bare underlying (NIFTY rather than
@@ -1600,6 +1611,8 @@
 
   // Field visibility derived from order type + variety.
   const showLimit   = $derived(_type === 'LIMIT' || _type === 'SL');
+  // DRAFT visibility — independent of modeChaseHidden (see CHASE/DRAFT row).
+  const showDraftToggle = $derived(!isEquity && action !== 'modify' && !hideDraftToggle);
   const showTrigger = $derived(_type === 'SL' || _type === 'SL-M');
 
   // Validation — applied client-side; backend validates again before
@@ -2905,26 +2918,33 @@
          so the operator can toggle chase while watching the depth
          rather than hunting for it in the card header middle slot.
          Only shown when limit price is relevant + not hidden by host. -->
-    {#if showLimit && !modeChaseHidden}
+    <!-- CHASE + DRAFT share one row. Each has its own gate: CHASE is
+         hidden by `modeChaseHidden` (host renders its own toolbar), DRAFT
+         by `hideDraftToggle` (2026-10 fix — it used to be nested under
+         the CHASE gate, so SymbolPanel's modeChaseHidden={true} made it
+         unreachable). The row renders when either control is visible.
+         DRAFT is F&O only, mutually exclusive with Chase.
+         When ON, the submit button adds the leg to the session payoff
+         draft store (payoffDrafts) instead of routing to the broker.
+         The derivatives page merges these into candidatePositions so
+         the payoff curve updates immediately. -->
+    {#if showLimit && (!modeChaseHidden || showDraftToggle)}
       <div class="ot-chase-row">
-        <label class="ot-chase-toggle"
-               title={_chase
-                 ? 'Chase ON — re-quote the limit each tick until filled'
-                 : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
-          <input type="checkbox" checked={_chase}
-                 disabled={_draftMode}
-                 onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
-          <span class="ot-chase-label" class:on={_chase}>CHASE</span>
-        </label>
-        {#if _chase}
-          <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
+        {#if !modeChaseHidden}
+          <label class="ot-chase-toggle"
+                 title={_chase
+                   ? 'Chase ON — re-quote the limit each tick until filled'
+                   : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
+            <input type="checkbox" checked={_chase}
+                   disabled={_draftMode}
+                   onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
+            <span class="ot-chase-label" class:on={_chase}>CHASE</span>
+          </label>
+          {#if _chase}
+            <ChaseAggPicker value={_chaseAgg} onChange={_setChaseAgg} />
+          {/if}
         {/if}
-        <!-- Draft mode toggle — F&O only, mutually exclusive with Chase.
-             When ON, the submit button adds the leg to the session payoff
-             draft store (payoffDrafts) instead of routing to the broker.
-             The derivatives page merges these into candidatePositions so
-             the payoff curve updates immediately. -->
-        {#if !isEquity && action !== 'modify'}
+        {#if showDraftToggle}
           <label class="ot-draft-toggle"
                  title={_draftMode
                    ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
