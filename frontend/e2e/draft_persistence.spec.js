@@ -159,10 +159,9 @@ test.describe('Payoff draft persistence (server-backed, 2026-10)', () => {
     const draftToggle = ticket.locator('.ot-draft-toggle').first();
     await expect(draftToggle).toBeVisible({ timeout: TIMEOUT });
     await expect(draftToggle).toContainText('DRAFT');
-    // Still disabled here: SymbolPanel implicitly keeps chase ON for LIMIT
-    // tickets and offers no toggle to clear it, and DRAFT is disabled
-    // while chase is on. See the skipped Bug A / success tests below.
-    await expect(draftToggle.locator('input[type="checkbox"]')).toBeDisabled();
+    // DRAFT is clickable here even though chase is forced ON for LIMIT
+    // tickets: draft and chase coexist (a draft never reaches the broker).
+    await expect(draftToggle.locator('input[type="checkbox"]')).toBeEnabled();
 
     // Regression guard: modeChaseHidden (SymbolPanel) must still hide the
     // in-ticket CHASE toggle and the mode-hint row.
@@ -170,10 +169,31 @@ test.describe('Payoff draft persistence (server-backed, 2026-10)', () => {
     await expect(ticket.locator('.ot-mode-row')).toHaveCount(0);
   });
 
-  // SKIPPED: DRAFT is disabled at SymbolPanel (chase implicitly on for LIMIT,
-  // no operator toggle to clear it), so the flip-off step below cannot run.
-  // Un-skip once the DRAFT/chase exclusion at SymbolPanel is decided.
-  test.skip('open an existing draft, submit for real (mocked reject) → draft NOT removed (Bug A)', async ({ page }) => {
+  test('checking DRAFT with CHASE forced on leaves CHASE on (allow both)', async ({ page }) => {
+    await mockDraftsApi(page, [makeDraft(9015)]);
+    await loginAsAdmin(page);
+    await page.goto('/orders', { waitUntil: 'domcontentloaded' });
+
+    await page.locator('.cc-row-draft').first().click();
+
+    const ticket = page.getByRole('dialog', { name: 'NIFTY26OCTFUT' });
+    const draftToggle = ticket.locator('.ot-draft-toggle').first();
+    const draftBox = draftToggle.locator('input[type="checkbox"]');
+    // SymbolPanel's shell-level CHASE label (forced on for LIMIT).
+    const chaseLabel = ticket.locator('.oes-common-chase-label');
+    await expect(draftToggle).toBeVisible({ timeout: TIMEOUT });
+    await expect(chaseLabel).toHaveClass(/\bon\b/);
+
+    // Uncheck then re-check DRAFT — the re-check is the case that used to
+    // force chase off via the mutual-exclusion handler.
+    await draftToggle.click();
+    await expect(draftBox).not.toBeChecked();
+    await draftToggle.click();
+    await expect(draftBox).toBeChecked();
+    await expect(chaseLabel).toHaveClass(/\bon\b/);
+  });
+
+  test('open an existing draft, submit for real (mocked reject) → draft NOT removed (Bug A)', async ({ page }) => {
     const drafts = [makeDraft(9020)];
     await mockDraftsApi(page, drafts);
     await page.route('**/api/orders/ticket', async (route) => {
@@ -185,14 +205,13 @@ test.describe('Payoff draft persistence (server-backed, 2026-10)', () => {
     await page.locator('.cc-row-draft').first().click();
     // Flip DRAFT off while initialDraftId stays set → submit goes to broker.
     await page.locator('.ot-draft-toggle').click();
-    await page.locator('.ot-submit').first().click();
+    await page.getByRole('dialog', { name: 'NIFTY26OCTFUT' }).locator('.oes-common-submit').first().click();
 
     // Rejected placement must leave the draft row in place.
     await expect(page.locator('.cc-row-draft')).toHaveCount(1, { timeout: TIMEOUT });
   });
 
-  // SKIPPED: same DRAFT-disabled-at-SymbolPanel blocker as the Bug A test.
-  test.skip('open an existing draft, submit for real (mocked success) → draft IS removed', async ({ page }) => {
+  test('open an existing draft, submit for real (mocked success) → draft IS removed', async ({ page }) => {
     const drafts = [makeDraft(9030)];
     await mockDraftsApi(page, drafts);
     // Mirror the server: DELETE drops the row from the mutable list so the
@@ -215,7 +234,7 @@ test.describe('Payoff draft persistence (server-backed, 2026-10)', () => {
 
     await page.locator('.cc-row-draft').first().click();
     await page.locator('.ot-draft-toggle').click();
-    await page.locator('.ot-submit').first().click();
+    await page.getByRole('dialog', { name: 'NIFTY26OCTFUT' }).locator('.oes-common-submit').first().click();
 
     await expect(page.locator('.cc-row-draft')).toHaveCount(0, { timeout: TIMEOUT });
   });

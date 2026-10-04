@@ -1173,8 +1173,6 @@
   function _setChase(/** @type {boolean} */ v) {
     _chaseInternal = v;
     if (chase !== undefined) chase = v;
-    // Mutual exclusion: turning Chase ON disables Draft mode.
-    if (v) _draftMode = false;
   }
   function _setChaseAgg(/** @type {'low'|'med'|'high'} */ v) {
     _chaseAggInternal = v;
@@ -2936,7 +2934,6 @@
                    ? 'Chase ON — re-quote the limit each tick until filled'
                    : 'Chase OFF — order rests at the initial limit; fills only if the market crosses'}>
             <input type="checkbox" checked={_chase}
-                   disabled={_draftMode}
                    onchange={(e) => _setChase(/** @type {HTMLInputElement} */ (e.currentTarget).checked)} />
             <span class="ot-chase-label" class:on={_chase}>CHASE</span>
           </label>
@@ -2950,11 +2947,8 @@
                    ? 'Draft ON — submit adds this leg to the payoff chart without placing an order'
                    : 'Draft OFF — submit routes to broker normally'}>
             <input type="checkbox" checked={_draftMode}
-                   disabled={_chase}
                    onchange={(e) => {
                      _draftMode = /** @type {HTMLInputElement} */ (e.currentTarget).checked;
-                     // Mutual exclusion: Draft ON → Chase OFF.
-                     if (_draftMode) _setChase(false);
                    }} />
             <span class="ot-draft-label" class:on={_draftMode}>DRAFT</span>
           </label>
