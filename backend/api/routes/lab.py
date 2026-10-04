@@ -27,6 +27,7 @@ from litestar.exceptions import HTTPException
 from sqlalchemy import select, delete as sa_delete
 
 from backend.api.rbac import cap_guard
+from backend.api.algo.lab_chat import run_lab_chat
 from backend.api.database import async_session
 from backend.api.models import Agent, McpAudit, ResearchThread
 from backend.shared.helpers.ramboq_logger import get_logger
@@ -181,6 +182,15 @@ class MintTokenResponse(msgspec.Struct):
     expires_in:     int               # seconds from now (UI convenience)
     purpose:        str               # human-readable echo of what was minted
     purpose_hash:   str               # for client-side display + debugging
+
+
+class ChatRequest(msgspec.Struct):
+    message: str
+
+
+class ChatResponse(msgspec.Struct):
+    reply: str
+    duration_ms: int
 
 
 class PlaceOrderRequest(msgspec.Struct):
@@ -1533,6 +1543,18 @@ class LabController(Controller):
             purpose=purpose,
             purpose_hash=ph,
         )
+
+    @post("/chat", status_code=200, guards=[cap_guard("use_mcp_tools")])
+    async def lab_chat(self, data: ChatRequest, request: Request) -> ChatResponse:
+        """Answer a Lab-page request with Claude Code (`claude -p`).
+
+        Read-only RamboQuant MCP tools only; subscription auth via
+        CLAUDE_CODE_OAUTH_TOKEN. One request at a time, 120 s timeout.
+        Validation, 503/502/504 mapping live in `run_lab_chat`."""
+        payload = getattr(request.state, "token_payload", None) or {}
+        username = str(payload.get("sub") or "unknown")
+        result = await run_lab_chat(data.message, username=username)
+        return ChatResponse(reply=result.reply, duration_ms=result.duration_ms)
 
     @post("/place-order", guards=[cap_guard("use_mcp_tools")])
     async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
