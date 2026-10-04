@@ -743,7 +743,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 
 ## 11. Phase history (shipped)
 
-19 phases, 26 tools, 47 tests. Zero incremental cost.
+19 phases, 26 tools. Zero incremental cost.
 
 | Phase | Headline |
 |---|---|
