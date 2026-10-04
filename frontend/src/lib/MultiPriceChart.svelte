@@ -22,6 +22,7 @@
   import { untrack } from 'svelte';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
   const { series = [], height = 240, title = '',
           emptyMsg = 'No ticks captured yet for any leg.',
           scrubbedTs = null } = $props();
@@ -296,8 +297,14 @@
 
       <!-- Hover crosshair -->
       {#if hover}
-        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(251,191,36,0.6)" stroke-width="1" stroke-dasharray="3 2" />
+        <!-- showDot={false}: multi-series chart has no single y at the pointer,
+             and the legend already shows each leg's value at this x. -->
+        <ChartCrosshair
+          x={hover?.x} y={null}
+          bounds={{ top: PAD_T, bottom: height - PAD_B, left: PAD_L, right: W - PAD_R }}
+          mode="vertical"
+          showDot={false}
+        />
       {/if}
     </svg>
 

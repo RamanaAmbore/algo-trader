@@ -11,6 +11,7 @@
   import { visibleInterval, withGuard } from '$lib/stores';
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
 
   const _pulse = createChartRefreshPulse();
 
@@ -64,6 +65,9 @@
   let mounted = $state(true);
   /** @type {{x:number,y:number,kind:string,side:string,price:number|null,ts:string,detail:string|null,order_id:number,qty:number|null,slippage:number|null}|null} */
   let hover = $state(null);
+  // Plain-hover crosshair x (viewBox units). Separate from `hover`, which is
+  // the event-marker tooltip; null when the pointer is off the plot area.
+  let _crossX = $state(/** @type {number | null} */ (null));
 
   // True when the parent is feeding pre-fetched data; we skip our own
   // polling in that case so a page with N charts only does one round-trip
@@ -325,6 +329,11 @@
       const dxVal = (dxPx / innerW) * (pan.startMax - pan.startMin);
       zoom = { xMin: pan.startMin - dxVal, xMax: pan.startMax - dxVal };
       hover = null;   // suppress hover while dragging
+      _crossX = null;
+    } else {
+      const rect = /** @type {SVGSVGElement} */ (e.currentTarget).getBoundingClientRect();
+      const xPx = (e.clientX - rect.left) * (W / rect.width);
+      _crossX = (xPx >= PAD_L && xPx <= W - PAD_R) ? xPx : null;
     }
   }
 
@@ -458,6 +467,7 @@
          onpointerdown={onPointerDown}
          onpointerup={onPointerUp}
          onpointermove={onPointerMoveSvg}
+         onpointerleave={() => (_crossX = null)}
          onclick={_onChartClick}>
       <!-- Plot-area background tint — sits behind all other SVG children.
            Colour defined via --chart-bg-tint in app.css so all chart
@@ -548,6 +558,19 @@
           </g>
         {/if}
       {/each}
+
+      <!-- Plain-hover crosshair — vertical only. showDot={false}: this is a
+           single-series price chart whose hover y is not tracked (the event
+           tooltip already reports price at event markers), and a dot would
+           sit on an arbitrary point of the bid/ask band. -->
+      {#if _crossX != null && !pan}
+        <ChartCrosshair
+          x={_crossX} y={null}
+          bounds={{ top: PAD_T, bottom: xAxisY, left: PAD_L, right: W - PAD_R }}
+          mode="vertical"
+          showDot={false}
+        />
+      {/if}
 
       <!-- Replay-scrubber anchor (shared across all Lab charts via
            scrubbedTs prop). Vertical amber dashed line at the

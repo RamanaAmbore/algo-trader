@@ -13,6 +13,7 @@
   import AccountMultiSelect from '$lib/AccountMultiSelect.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
   import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct, formatDualTz } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
@@ -1810,18 +1811,16 @@
              the exact timestamp on demand. Grid lines stay for visual
              rhythm. -->
 
-        <!-- Hover crosshair -->
+        <!-- Hover crosshair — canonical ChartCrosshair look. Dot keeps this
+             card's own line-colored fill (dotColor) and dark outline. -->
         {#if _hoverPt != null}
-          <!-- A3 (2026-09 audit) — stale rgba(200,216,240,α) in an SVG
-               stroke= presentation attribute; verified live that var()/
-               color-mix() resolve here once stylesheets are loaded
-               (same finding as PnlAnalysis.svelte's equivalent site). -->
-          <line
-            x1={_hoverX} y1={PAD_T} x2={_hoverX} y2={PAD_T + INNER_H}
-            stroke="color-mix(in srgb, var(--algo-slate) 55%, transparent)" stroke-width="1"
-            stroke-dasharray="3 2" />
-          <circle cx={_hoverX} cy={_hoverY} r="3"
-            fill={_eqLineColor ?? 'var(--algo-sky)'} stroke="#0a1428" stroke-width="1.5" />
+          <ChartCrosshair
+            x={_hoverX} y={_hoverY}
+            bounds={{ top: PAD_T, bottom: PAD_T + INNER_H, left: PAD_L, right: PAD_L + INNER_W }}
+            mode="vertical"
+            dotColor={_eqLineColor ?? 'var(--algo-sky)'}
+            dotStroke="#0a1428"
+          />
           <!-- Tooltip box -->
           {@const _tipX = _hoverX > INNER_W * 0.65 ? _hoverX - 108 : _hoverX + 8}
           {@const _tipY = Math.max(PAD_T, Math.min(_hoverY - 28, PAD_T + INNER_H - 58))}

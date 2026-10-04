@@ -125,3 +125,122 @@ test('crosshair consistency: OptionsPayoff renders the SAME canonical crosshair 
   const dot = svg.locator('g.chart-crosshair circle');
   await expect(dot).toHaveCount(0);
 });
+
+/**
+ * Wave 2 — the remaining charts (PriceChart, MultiPriceChart, EquityCurve,
+ * dashboard Intraday) must render the SAME canonical crosshair as
+ * ChartWorkspace on hover, with the dot presence matching each call
+ * site's showDot choice. Each test skips with an explicit reason when the
+ * chart needs live/sim data that is not present in the local environment.
+ */
+
+/**
+ * Assert the rendered hover crosshair line has the canonical computed style.
+ * @param {import('@playwright/test').Locator} line
+ */
+async function expectCanonicalCrosshairStyle(line) {
+  const style = await line.evaluate((el) => {
+    const s = getComputedStyle(el);
+    return { stroke: s.stroke, strokeWidth: s.strokeWidth, dasharray: s.strokeDasharray };
+  });
+  expect(style.stroke).toMatch(/rgba?\(\s*251,\s*191,\s*36/);
+  expect(style.strokeWidth).toBe('1px');
+  expect(style.dasharray.replace(/px/g, '').replace(/\s+/g, '')).toBe('3,2');
+}
+
+test('crosshair consistency: PriceChart renders the canonical vertical crosshair (no dot)', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/execution', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const svg = page.locator('svg.chart-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'PriceChart not rendered — needs open sim/paper orders with price history');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — PriceChart has no price history to hover');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // PriceChart passes showDot={false} — see its source comment.
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(0);
+});
+
+test('crosshair consistency: MultiPriceChart renders the canonical vertical crosshair (no dot)', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/execution', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const svg = page.locator('svg.mpc-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'MultiPriceChart not rendered — needs a simulator run with leg series');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — MultiPriceChart has no series data');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // MultiPriceChart passes showDot={false} — multi-series, no single y at pointer.
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(0);
+});
+
+test('crosshair consistency: EquityCurve renders the canonical crosshair with its P&L dot', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/admin/execution', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const svg = page.locator('svg.eq-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'EquityCurve not rendered — needs a simulator run with P&L ticks');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — EquityCurve has no P&L ticks to hover');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // EquityCurve keeps its dot (showDot default), P&L-signed via dotColor.
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(1);
+});
+
+test('crosshair consistency: dashboard Intraday chart renders the canonical crosshair with its line-colored dot', async ({ page }) => {
+  await loginAsAdmin(page);
+  await page.goto('/dashboard', { waitUntil: 'domcontentloaded', timeout: TIMEOUT });
+
+  const chartCard = page.locator('section').filter({ hasText: 'NAV' }).first();
+  const intradayBtn = chartCard.locator('button', { hasText: /intraday/i }).first();
+  if (!(await intradayBtn.count())) {
+    test.skip(true, 'Dashboard Intraday tab not present for this account');
+    return;
+  }
+  await intradayBtn.click();
+  await page.waitForTimeout(300);
+
+  const svg = page.locator('svg.eq-svg').first();
+  const appeared = await svg.waitFor({ state: 'visible', timeout: TIMEOUT }).then(() => true).catch(() => false);
+  if (!appeared) {
+    test.skip(true, 'Dashboard Intraday SVG not rendered — pre-market, no intraday points');
+    return;
+  }
+
+  const line = await sweepHover(page, svg);
+  if (!line) {
+    test.skip(true, 'No hover-crosshair appeared — no intraday points to hover');
+    return;
+  }
+
+  await expectCanonicalCrosshairStyle(line);
+  // Dashboard keeps its dot (line-colored fill via dotColor).
+  await expect(svg.locator('g.chart-crosshair circle')).toHaveCount(1);
+});

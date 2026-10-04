@@ -28,6 +28,11 @@ import { describe, it, expect } from 'vitest';
 import CROSSHAIR_SRC from '../ChartCrosshair.svelte?raw';
 import WORKSPACE_SRC from '../ChartWorkspace.svelte?raw';
 import PAYOFF_SRC from '../OptionsPayoff.svelte?raw';
+import PRICE_SRC from '../PriceChart.svelte?raw';
+import EQUITY_SRC from '../EquityCurve.svelte?raw';
+import MPC_SRC from '../MultiPriceChart.svelte?raw';
+import DASHBOARD_SRC from '../../routes/(algo)/dashboard/+page.svelte?raw';
+import SIM_PANEL_SRC from '../execution/SimulatorPanel.svelte?raw';
 
 describe('ChartCrosshair.svelte — canonical line styling', () => {
   it('hardcodes the canonical amber dashed stroke (ChartWorkspace\'s own pre-migration look)', () => {
@@ -104,5 +109,87 @@ describe('OptionsPayoff.svelte — migrated to shared ChartCrosshair', () => {
     const callSite = PAYOFF_SRC.slice(idx, PAYOFF_SRC.indexOf('/>', idx));
     expect(callSite).toMatch(/showDot=\{false\}/);
     expect(callSite).toMatch(/mode="vertical"/);
+  });
+});
+
+// ── Wave 2 — remaining charts migrated to ChartCrosshair ─────────────────────
+const IMPORT_RE = /import ChartCrosshair from '\$lib\/ChartCrosshair\.svelte';/;
+
+describe('PriceChart.svelte — plain-hover crosshair via ChartCrosshair (Wave 2)', () => {
+  it('imports ChartCrosshair and renders it with mode="vertical", showDot={false}', () => {
+    expect(PRICE_SRC).toMatch(IMPORT_RE);
+    const idx = PRICE_SRC.indexOf('<ChartCrosshair');
+    expect(idx).toBeGreaterThan(-1);
+    const callSite = PRICE_SRC.slice(idx, PRICE_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/showDot=\{false\}/);
+  });
+
+  it('keeps the replay-scrubber line untouched (separate concept, out of scope)', () => {
+    expect(PRICE_SRC).toContain('stroke="rgba(251,191,36,0.7)" stroke-width="1.25"');
+    expect(PRICE_SRC).toContain('stroke-dasharray="4 3"');
+  });
+});
+
+describe('EquityCurve.svelte — hover crosshair via ChartCrosshair (Wave 2)', () => {
+  it('imports ChartCrosshair and drops the bespoke hover line + circle', () => {
+    expect(EQUITY_SRC).toMatch(IMPORT_RE);
+    expect(EQUITY_SRC).toContain('<ChartCrosshair');
+    expect(EQUITY_SRC).not.toMatch(
+      /stroke="rgba\(251,191,36,0\.5\)" stroke-width="1" stroke-dasharray="3 2"/
+    );
+    expect(EQUITY_SRC).not.toMatch(/<circle cx=\{hover\?\.x\}/);
+  });
+
+  it('preserves the P&L-signed dot via dotColor, mode="vertical"', () => {
+    const idx = EQUITY_SRC.indexOf('<ChartCrosshair');
+    const callSite = EQUITY_SRC.slice(idx, EQUITY_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/dotColor=\{\(hover\?\.pnl \?\? 0\) >= 0 \? 'var\(--c-long\)' : 'var\(--c-short\)'\}/);
+    expect(callSite).not.toMatch(/showDot=\{false\}/);
+  });
+});
+
+describe('MultiPriceChart.svelte — hover crosshair via ChartCrosshair (Wave 2)', () => {
+  it('imports ChartCrosshair, renders mode="vertical" with showDot={false}', () => {
+    expect(MPC_SRC).toMatch(IMPORT_RE);
+    const idx = MPC_SRC.indexOf('<ChartCrosshair');
+    expect(idx).toBeGreaterThan(-1);
+    const callSite = MPC_SRC.slice(idx, MPC_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/showDot=\{false\}/);
+  });
+
+  it('no longer carries its own 0.6-alpha hover line', () => {
+    expect(MPC_SRC).not.toMatch(
+      /stroke="rgba\(251,191,36,0\.6\)" stroke-width="1" stroke-dasharray="3 2"/
+    );
+  });
+});
+
+describe('dashboard/+page.svelte — hover crosshair via ChartCrosshair (Wave 2)', () => {
+  it('imports ChartCrosshair and renders mode="vertical" with the line-colored dotColor', () => {
+    expect(DASHBOARD_SRC).toMatch(IMPORT_RE);
+    const idx = DASHBOARD_SRC.indexOf('<ChartCrosshair');
+    expect(idx).toBeGreaterThan(-1);
+    const callSite = DASHBOARD_SRC.slice(idx, DASHBOARD_SRC.indexOf('/>', idx));
+    expect(callSite).toMatch(/mode="vertical"/);
+    expect(callSite).toMatch(/dotColor=\{_eqLineColor \?\? 'var\(--algo-sky\)'\}/);
+  });
+
+  it('no longer carries its own color-mix 55% hover line', () => {
+    expect(DASHBOARD_SRC).not.toMatch(
+      /stroke="color-mix\(in srgb, var\(--algo-slate\) 55%, transparent\)" stroke-width="1"\s*stroke-dasharray="3 2"/
+    );
+  });
+});
+
+describe('SimulatorPanel.svelte — no own crosshair (Wave 2)', () => {
+  it('owns no SVG and imports no ChartCrosshair: per-leg hover lives in MultiPriceChart/EquityCurve', () => {
+    // SimulatorPanel composes PriceChart / MultiPriceChart / EquityCurve and
+    // reads hover state only through those children. Guard against a
+    // hand-rolled crosshair reappearing here.
+    expect(SIM_PANEL_SRC).not.toMatch(/<svg[\s>]/);
+    expect(SIM_PANEL_SRC).not.toMatch(/<line[^>]*rgba\(251,191,36,0\.[56]\)/);
   });
 });

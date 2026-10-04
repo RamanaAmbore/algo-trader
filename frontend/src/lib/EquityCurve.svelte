@@ -13,6 +13,7 @@
   import { untrack } from 'svelte';
   import { priceFmt } from '$lib/format';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
+  import ChartCrosshair from '$lib/ChartCrosshair.svelte';
 
   /** @type {{
    *   ticks?:      Array<{ts: string, pnl: number}>,
@@ -235,11 +236,15 @@
 
       <!-- Hover crosshair + dot + value label -->
       {#if hover}
-        <line x1={hover?.x} x2={hover?.x} y1={PAD_T} y2={height - PAD_B}
-              stroke="rgba(251,191,36,0.5)" stroke-width="1" stroke-dasharray="3 2" />
-        <circle cx={hover?.x} cy={hover?.y} r="3"
-                fill={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
-                stroke="#fff" stroke-width="1" />
+        <!-- showDot stays on (default): the dot is the P&L-signed marker, so
+             its fill is green/red by sign via dotColor, outline white as before. -->
+        <ChartCrosshair
+          x={hover?.x} y={hover?.y}
+          bounds={{ top: PAD_T, bottom: height - PAD_B, left: PAD_L, right: W - PAD_R }}
+          mode="vertical"
+          dotColor={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
+          dotStroke="#fff"
+        />
         {@const _tx = Math.min(W - 110 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 8))}
         {@const _ty = Math.max(PAD_T + 4, (hover?.y ?? 0) - 30)}
         <rect x={_tx} y={_ty} width="110" height="26" rx="3"
