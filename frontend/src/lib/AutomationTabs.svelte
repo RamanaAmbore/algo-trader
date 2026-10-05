@@ -1,10 +1,10 @@
 <!--
-  AutomationTabs — shared tab strip linking the surfaces that
+  AutomationTabs — shared tab strip linking the three surfaces that
   collectively form the Automation workspace. Dropped at the top of:
     /automation                 → Agents rules list (event-driven)
     /automation/templates       → Order Templates (TP/SL/Wing presets)
     /automation/agent-templates → Notify + Condition Templates ($ref-able)
-    /automation/activity        → Recent fires (agent_fire / action events)
+  Agent fire history lives on /activity (Agent tab), not in this strip.
 
   Operator mental model: every reusable saved thing is a "template".
   Order Templates govern order attachments (TP/SL/Wing); Agent
@@ -31,10 +31,9 @@
     { id: '/automation',                 label: 'Agents'          },
     { id: '/automation/templates',       label: 'Order Templates' },
     { id: '/automation/agent-templates', label: 'Agent Templates' },
-    { id: '/automation/activity',        label: 'Activity'        },
   ];
 
-  // Longest-match — /automation/activity must beat /automation.
+  // Longest-match kept so nested paths under a tab still resolve to it.
   const activeHref = $derived.by(() => {
     const path = page.url.pathname;
     let best = '';

@@ -74,8 +74,8 @@ test.describe('Charts consolidation', () => {
     await expect(toolbar).toBeVisible({ timeout: 10_000 });
   });
 
-  // 2. Charts navbar entry exists between Orders and Agents
-  test('Navbar has Charts link between Orders and Agents', async ({ page }) => {
+  // 2. Charts navbar entry exists between Orders and Automation
+  test('Navbar has Charts link between Orders and Automation', async ({ page }) => {
     await login(page);
     await page.goto(`${BASE}/dashboard`, { waitUntil: 'domcontentloaded' });
     await page.waitForSelector('.algo-navbar', { timeout: 15_000 });
@@ -86,20 +86,20 @@ test.describe('Charts consolidation', () => {
     const chartsBtn = page.locator('.algo-navbar button.algo-nav-btn', { hasText: /^Charts$/ });
     await expect(chartsBtn).toBeVisible({ timeout: 10_000 });
 
-    // Verify ordering: Orders before Charts, Charts before Agents
+    // Verify ordering: Orders before Charts, Charts before Automation
     // Collect all inline nav buttons in DOM order.
     const navBtns = page.locator('.algo-navbar nav button.algo-nav-btn');
     const labels = await navBtns.evaluateAll(els => els.map(e => e.textContent?.trim() || ''));
 
     const idxOrders = labels.indexOf('Orders');
     const idxCharts = labels.indexOf('Charts');
-    const idxAgents = labels.indexOf('Agents');
+    const idxAutomation = labels.indexOf('Automation');
 
     expect(idxOrders, `Orders nav button not found in [${labels.join(', ')}]`).toBeGreaterThanOrEqual(0);
     expect(idxCharts, `Charts nav button not found in [${labels.join(', ')}]`).toBeGreaterThanOrEqual(0);
-    expect(idxAgents, `Agents nav button not found in [${labels.join(', ')}]`).toBeGreaterThanOrEqual(0);
+    expect(idxAutomation, `Automation nav button not found in [${labels.join(', ')}]`).toBeGreaterThanOrEqual(0);
     expect(idxOrders).toBeLessThan(idxCharts);
-    expect(idxCharts).toBeLessThan(idxAgents);
+    expect(idxCharts).toBeLessThan(idxAutomation);
   });
 
   // 3. /orders has exactly 3 entry-card tabs (Chart tab removed)

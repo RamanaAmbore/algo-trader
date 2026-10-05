@@ -21,7 +21,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 
 const BASE = process.env.PLAYWRIGHT_BASE_URL || 'http://localhost:5174';
-const PAGE_URL = `${BASE}/admin/perf`;
+const PAGE_URL = `${BASE}/admin/metrics?tab=runtime`;
 
 // ── Fixtures ───────────────────────────────────────────────────────────────
 
@@ -234,7 +234,7 @@ test.describe('/admin/perf — Perf Dashboard', () => {
     const srcPath = path.resolve(
       process.cwd(),
       process.cwd().endsWith('/frontend') ? '.' : 'frontend',
-      'src/routes/(algo)/admin/perf/+page.svelte',
+      'src/routes/(algo)/admin/metrics/PerfRuntimeTab.svelte',
     );
     if (fs.existsSync(srcPath)) {
       const src = fs.readFileSync(srcPath, 'utf8');
@@ -244,17 +244,22 @@ test.describe('/admin/perf — Perf Dashboard', () => {
 
   // ── 9. Reuse: canonical components imported ───────────────────────────────
   test('reuse: EmptyState, LoadingSkeleton, RefreshButton, PageHeaderActions imported', async () => {
-    const srcPath = path.resolve(
+    // Perf content moved to PerfRuntimeTab.svelte; the page chrome
+    // (RefreshButton, PageHeaderActions) lives in metrics/+page.svelte.
+    const base = path.resolve(
       process.cwd(),
       process.cwd().endsWith('/frontend') ? '.' : 'frontend',
-      'src/routes/(algo)/admin/perf/+page.svelte',
+      'src/routes/(algo)/admin/metrics',
     );
-    if (fs.existsSync(srcPath)) {
-      const src = fs.readFileSync(srcPath, 'utf8');
-      expect(src).toContain("import EmptyState from '$lib/EmptyState.svelte'");
-      expect(src).toContain("import LoadingSkeleton from '$lib/LoadingSkeleton.svelte'");
-      expect(src).toContain("import RefreshButton from '$lib/RefreshButton.svelte'");
-      expect(src).toContain("import PageHeaderActions from '$lib/PageHeaderActions.svelte'");
+    const tabPath = path.join(base, 'PerfRuntimeTab.svelte');
+    const pagePath = path.join(base, '+page.svelte');
+    if (fs.existsSync(tabPath) && fs.existsSync(pagePath)) {
+      const tabSrc = fs.readFileSync(tabPath, 'utf8');
+      const pageSrc = fs.readFileSync(pagePath, 'utf8');
+      expect(tabSrc).toContain("import EmptyState from '$lib/EmptyState.svelte'");
+      expect(tabSrc).toContain("import LoadingSkeleton from '$lib/LoadingSkeleton.svelte'");
+      expect(pageSrc).toContain("import RefreshButton from '$lib/RefreshButton.svelte'");
+      expect(pageSrc).toContain("import PageHeaderActions from '$lib/PageHeaderActions.svelte'");
     }
   });
 

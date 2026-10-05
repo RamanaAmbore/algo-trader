@@ -328,18 +328,16 @@
 
   // Grouped by operator activity, ordered by daily-touch frequency:
   //
-  //   Monitor  — Pulse, Dashboard, Agents, Orders, Alerts.
-  //              Top-of-funnel "what's happening" surfaces. Hit every
-  //              session.
-  //   Analyze  — Options. Drill-down workspace.
-  //   Modes    — Lab (sim / replay / paper / shadow / live hub). The
-  //              mode dropdown is a separate UI element; this is the
-  //              workspace router.
-  //   Build    — Terminal, Tokens. For extending the agent grammar
-  //              and dry-running commands.
-  //   Config   — Brokers, Settings, Users, Health. Ordered by
-  //              edit-frequency: Brokers first (credential setup),
-  //              Health last (diagnostic only).
+  //   Monitor  — About (showcase), Pulse, Dashboard, Orders, Derivatives,
+  //              Charts, Automation, Strategies. Top-of-funnel "what's
+  //              happening" surfaces and daily trading entry points.
+  //   Explore  — Sandbox, MCP, Simulator. Research and replay workspaces;
+  //              the paper/live/sim mode toggle lives in the navbar.
+  //   Build    — Activity, Console, Alerts. Log viewers and the terminal.
+  //   Config   — Brokers, Settings, Tokens, Users, Statements, History,
+  //              Audit, Metrics, Health. Ordered by edit-frequency:
+  //              Brokers first (credential setup), Health last
+  //              (diagnostic only).
   //
   // The `branches` field controls visibility:
   //   'dev'  = non-main branch only
@@ -369,10 +367,6 @@
     // performance." Deep links to /nav should redirect via the
     // SvelteKit 404 — adding a +page.server.ts redirect is overkill
     // for a removed-feature link the operator only used themselves.
-    // /admin/alerts is reachable from the 🔔 History link in the
-    // /automation page header. Dropped from the top nav to slim the
-    // monitor cluster — alert history naturally lives inside the
-    // Automation workspace (Agents = rules, Activity = fires).
     // ── Explore ── scenario + replay sandbox. Renamed Jun 2026:
     // group was "modes" (vestigial — the sim/paper/live/shadow/replay
     // mode toggles now live in the navbar dropdown, so this is just
@@ -393,6 +387,9 @@
     // first-time visitor sees 'Terminal' in the nav and wonders if it's
     // the whole platform or just one tool.
     { href: '/activity',         label: 'Activity',  group: 'build' },
+    // Alerts — agent-fire history (view_audit capability; page shows its
+    // own access-denied panel for signed-in users without it).
+    { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'build' },
     { href: '/console',          label: 'Console',   group: 'build' },
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).
@@ -402,8 +399,7 @@
     //   Statements — monthly LP statement audit + manual send.
     //   History — multi-day forensic view of orders, trades, funds.
     //   Audit — paginated audit log viewer.
-    //   Metrics — code-health snapshot history, per release.
-    //   Perf — per-page / per-route perf snapshots, nightly.
+    //   Metrics — code health per release + runtime perf (tabs).
     //   Health — diagnostic surface, glance-only, last.
     { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
     { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
@@ -413,7 +409,6 @@
     { href: '/admin/history',    label: 'History',   adminOnly: true, group: 'config' },
     { href: '/admin/audit',      label: 'Audit',     adminOnly: true, group: 'config' },
     { href: '/admin/metrics',    label: 'Metrics',   adminOnly: true, group: 'config' },
-    { href: '/admin/perf',       label: 'Perf',      adminOnly: true, group: 'config' },
     { href: '/admin/health',     label: 'Health',    adminOnly: true, group: 'config' },
   ];
   // Branch-aware + demo-aware + mode-aware filter.

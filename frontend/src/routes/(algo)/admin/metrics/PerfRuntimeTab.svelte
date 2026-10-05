@@ -1,5 +1,6 @@
 <!--
-  /admin/perf — per-page / per-route perf-snapshot dashboard.
+  Runtime tab for /admin/metrics — per-page / per-route perf-snapshot
+  dashboard (formerly the standalone /admin/perf page).
 
   Data flow:
     - /api/admin/perf/latest  → one row per (side, page_or_route) → card grid
@@ -7,8 +8,9 @@
       lazily when the latest list arrives)
     - /api/admin/perf/regressions?days=7&threshold_pct=10 → top banner
 
+  Mounted only while the Runtime tab is active, so its fetches are lazy.
   No live polling — snapshots update once per night at 04:00 IST.
-  RefreshButton forces a re-fetch.
+  The parent page's Refresh icon calls the exported refresh().
 
   Layout:
     Top:    Regressions banner (empty-state or list)
@@ -25,20 +27,19 @@
 -->
 <script>
   import { onMount, untrack } from 'svelte';
-  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import {
     fetchPerfLatest,
     fetchPerfHistory,
     fetchPerfRegressions,
   } from '$lib/api';
-  import RefreshButton from '$lib/RefreshButton.svelte';
-  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
-  import { userRole } from '$lib/rbac';
   import InfoHint from '$lib/InfoHint.svelte';
   import { METRIC_META } from '$lib/data/metricMetadata.js';
+
+  /** Bound to the parent page header so its Refresh icon can spin. */
+  let { busy = $bindable(false) } = $props();
 
   // ── State ─────────────────────────────────────────────────────────────
   /** @type {Array<any>} */
@@ -151,12 +152,16 @@
     loadingHistory = false;
   }
 
-  async function refresh() {
+  export async function refresh() {
     historyData = {};
     await Promise.all([loadLatest(), loadRegressions()]);
     const all = [...feCards, ...beCards];
     if (all.length) loadHistory(all);
   }
+
+  $effect(() => {
+    busy = loadingLatest || loadingRegressions;
+  });
 
   onMount(async () => {
     await refresh();
@@ -283,26 +288,6 @@
     return val > budget ? 'var(--c-short)' : 'var(--c-long)';
   }
 </script>
-
-<svelte:head>
-  <title>Perf Dashboard · RamboQuant</title>
-</svelte:head>
-
-<div class="page-header">
-  <span class="algo-title-group">
-    <h1 class="page-title-chip">Perf Dashboard</h1>
-  </span>
-  <AlgoTimestamp />
-  <span class="ml-auto"></span>
-  <span class="page-header-actions">
-    <RefreshButton
-      onClick={refresh}
-      loading={loadingLatest || loadingRegressions}
-      label="perf snapshots"
-    />
-    <PageHeaderActions />
-  </span>
-</div>
 
 {#if error}
   <EmptyState title="Could not load perf snapshots" hint={error} icon="warn" />

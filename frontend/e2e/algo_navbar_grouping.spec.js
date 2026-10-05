@@ -2,16 +2,16 @@
 // grouping (Item 3 / Phase post-24 navbar refresh).
 //
 // Desktop expectations (>=1024px viewport):
-//   - Inline buttons: Tour, Pulse, Dashboard, Agents, Orders, Derivatives, Lab
+//   - Inline buttons: Pulse, Dashboard, Automation, Orders, Derivatives, MCP
 //   - Dropdown triggers labelled "Build" and "Config" with caret
-//   - Click "Build" → panel reveals Console / Research / Tokens
+//   - Click "Build" → panel reveals Activity / Console (Alerts for admins)
 //   - Click "Config" → panel reveals Brokers / Settings / Users / Health
 //   - Picking an item navigates + closes the panel
 //   - Active page inside a group keeps that trigger highlighted
 //
 // Mobile expectations (<1024px viewport):
 //   - Hamburger opens drawer
-//   - Drawer contains section captions (MONITOR / ANALYZE / MODES / BUILD / CONFIG)
+//   - Drawer contains section captions (MONITOR / EXPLORE / BUILD / CONFIG)
 //   - Each caption sits above its group's items
 
 import { test, expect } from '@playwright/test';
@@ -48,7 +48,7 @@ test.describe('desktop nav grouping', () => {
     // Inline labels — every one of these is a direct button (NOT inside
     // a .algo-group-wrap), confirming they didn't collapse into a
     // dropdown.
-    for (const lbl of ['Pulse', 'Dashboard', 'Agents', 'Orders', 'Derivatives', 'MCP']) {
+    for (const lbl of ['Pulse', 'Dashboard', 'Automation', 'Orders', 'Derivatives', 'MCP']) {
       const direct = page.locator(`nav > button.algo-nav-btn:has-text("${lbl}")`).first();
       await expect(direct, `inline button "${lbl}" should be a direct nav child`).toBeVisible();
     }
@@ -101,10 +101,9 @@ test.describe('mobile drawer grouping', () => {
     await page.locator('.algo-hamburger').click();
     await expect(page.locator('.algo-mobile-dropdown')).toBeVisible();
 
-    // At least Monitor, Build, Config captions must be visible. Analyze
-    // / Modes captions appear only when their groups have items — which
-    // they always do (Derivatives + Lab), so check those too.
-    for (const label of ['Monitor', 'Analyze', 'Modes', 'Build', 'Config']) {
+    // Captions render only for groups that have items: Monitor, Explore,
+    // Build, Config. (Analyze has no entries since Derivatives moved to Monitor.)
+    for (const label of ['Monitor', 'Explore', 'Build', 'Config']) {
       const cap = page.locator(`.algo-mobile-group-label:text-is("${label}")`);
       await expect(cap, `mobile drawer should carry the ${label} caption`).toBeVisible();
     }

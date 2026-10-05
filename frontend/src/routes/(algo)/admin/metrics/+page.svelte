@@ -1,12 +1,16 @@
 <!--
-  /admin/metrics — code-health snapshot history + per-metric trends.
+  /admin/metrics — code health + runtime perf, two tabs.
 
-  Backed by `GET /api/admin/code-metrics/*` (admin-guarded). Rows are
+    Releases (default): code-health snapshot history + per-metric trends.
+    Runtime (?tab=runtime): nightly per-page/route perf snapshots
+      (formerly /admin/perf). Rendered by PerfRuntimeTab.svelte.
+
+  Releases tab is backed by `GET /api/admin/code-metrics/*` (admin-guarded). Rows are
   produced out-of-band by `scripts/capture_metrics.py` either manually
   by the operator or from the deploy pipeline. This page is READ-ONLY
   — every cell here came from a capture run.
 
-  Layout:
+  Releases layout:
     Top:    snapshot table (release, captured_at, key headline metrics)
     Middle: trend chart row — small SVG line chart per metric
     Bottom: drill-in modal for the raw_payload (forensics)
@@ -20,6 +24,10 @@
     fetchCodeMetricsDetail,
     fetchCodeMetricsTrend,
   } from '$lib/api';
+  import { page } from '$app/state';
+  import { goto } from '$app/navigation';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
+  import PerfRuntimeTab from './PerfRuntimeTab.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
@@ -50,6 +58,22 @@
     { key: 'test_backend_max_s',              label: 'Slowest test — backend (s)',   unit: 's', good: 'lower' },
     { key: 'test_backend_total_wall_time_s',  label: 'Backend test wall time (s)',   unit: 's', good: 'lower' },
   ]);
+
+  const TABS = [
+    { id: 'releases', label: 'Releases' },
+    { id: 'runtime',  label: 'Runtime'  },
+  ];
+  const tab = $derived(page.url.searchParams.get('tab') === 'runtime' ? 'runtime' : 'releases');
+  function setTab(/** @type {string} */ id) {
+    goto(`/admin/metrics?tab=${id}`, { replaceState: true, noScroll: true, keepFocus: true });
+  }
+
+  /** Runtime tab handle + its busy flag (bound so Refresh can spin). */
+  let perfRef = $state(/** @type {any} */ (null));
+  let perfBusy = $state(false);
+  function refreshActive() {
+    return tab === 'runtime' ? perfRef?.refresh() : Promise.all([load(), loadTrends()]);
+  }
 
   /** @type {Array<any>} */
   let rows = $state([]);
@@ -236,12 +260,16 @@
   <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={() => Promise.all([load(), loadTrends()])} loading={loading} label="code metrics" />
+    <RefreshButton onClick={refreshActive} loading={tab === 'runtime' ? perfBusy : loading} label="code metrics" />
     <PageHeaderActions />
   </span>
 </div>
 
-{#if error}
+<AlgoTabs tabs={TABS} value={tab} onChange={setTab} />
+
+{#if tab === 'runtime'}
+  <PerfRuntimeTab bind:this={perfRef} bind:busy={perfBusy} />
+{:else if error}
   <EmptyState title="Could not load code metrics" hint={error} icon="warn" />
 {:else if loading && rows.length === 0}
   <LoadingSkeleton variant="card" rows={3} />

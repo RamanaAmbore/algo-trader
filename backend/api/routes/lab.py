@@ -1,5 +1,5 @@
 """
-`/api/lab/*` — research-thread CRUD for the /admin/lab page.
+`/api/lab/*` — research-thread CRUD for the /admin/mcp page.
 
 A research thread captures one MCP-driven session ("Research RELIANCE")
 with its transcript, the synthesized thesis, and (after promotion) the

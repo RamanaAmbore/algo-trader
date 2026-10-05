@@ -12,7 +12,6 @@
   import { userRole, userCaps, userCapsReady, hasCap } from '$lib/rbac';
   import PageHeaderActions from '$lib/PageHeaderActions.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
-  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import { fetchAgents, fetchAlertsHistory } from '$lib/api';
   import StaleBanner from '$lib/StaleBanner.svelte';
   import Select   from '$lib/Select.svelte';
@@ -174,8 +173,6 @@
     <PageHeaderActions />
   </span>
 </div>
-
-<AutomationTabs />
 
 {#if !$userCapsReady}
   <!-- /whoami still in flight — show skeleton, NOT access-denied.

@@ -93,7 +93,7 @@
     fire_at_time: string,
     lifespan_type: string, lifespan_max_fires: number|string,
     lifespan_expires_at: string,
-    tier: string, topic: string, digest_window_sec: number,
+    tier: string, topic: string,
     trade_mode: string, debounce_minutes: number,
     tags: string, blackout_windows: string,
   }} */ ({
@@ -102,7 +102,7 @@
     cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
     fire_at_time: '',
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
-    tier: 'medium', topic: 'general', digest_window_sec: 30,
+    tier: 'medium', topic: 'general',
     trade_mode: 'paper', debounce_minutes: 0,
     tags: '', blackout_windows: '[]',
   }));
@@ -224,12 +224,9 @@
       lifespan_expires_at:  agent.lifespan_expires_at
         ? String(agent.lifespan_expires_at).slice(0, 16)
         : '',
-      // Priority / topic / digest — tier drives topic-scoped suppression
-      // in run_cycle; digest_window_sec batches dispatches.
+      // Priority / topic — tier drives topic-scoped suppression in run_cycle.
       tier:                 agent.tier  || 'medium',
       topic:                agent.topic || 'general',
-      digest_window_sec:    typeof agent.digest_window_sec === 'number'
-                              ? agent.digest_window_sec : 30,
       // Trade mode + debounce — execution routing + spike suppression.
       trade_mode:           agent.trade_mode || 'paper',
       debounce_minutes:     typeof agent.debounce_minutes === 'number'
@@ -424,7 +421,6 @@
         ? String(editForm.lifespan_expires_at) : null,
       tier:              editForm.tier  || 'medium',
       topic:             editForm.topic || 'general',
-      digest_window_sec: Number(editForm.digest_window_sec) || 30,
       trade_mode:        editForm.trade_mode || 'paper',
       debounce_minutes:  Number(editForm.debounce_minutes) || 0,
       tags:              tagsList,
@@ -642,12 +638,9 @@
     </h1>
   </span>
   <AlgoTimestamp />
-  <!-- History chip + Ask AI toggle are LEFT-aligned per canonical
-       header rule (only Refresh + Order + Chart + Activity + Collapse
-       + Fullscreen + Default-size icons sit RIGHT of ml-auto). -->
-  <a href="/automation/activity" class="history-pill" title="View agent fire history">
-    🔔 History
-  </a>
+  <!-- Ask AI toggle is LEFT-aligned per canonical header rule (only
+       Refresh + Order + Chart + Activity + Collapse + Fullscreen +
+       Default-size icons sit RIGHT of ml-auto). -->
   <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
     {aiOpen ? '× Close AI' : '✦ Ask AI'}
   </button>
@@ -924,15 +917,13 @@
                 {/if}
               </div>
 
-              <!-- ── Alert hierarchy strip (tier + topic + digest) ─────
+              <!-- ── Alert hierarchy strip (tier + topic) ─────
                    Single tight row. Tier as a 4-pill segmented control
                    so all severity options are visible without a dropdown
                    click. Topic as a small text input with datalist
                    autocomplete (writes the existing topics back, so
                    ops can group new agents alongside the loss-* ones
-                   in a single click). Digest stepper to the right —
-                   reserved for future batching, hidden behind a tiny
-                   label so it doesn't dominate. -->
+                   in a single click). -->
               <div class="tier-strip">
                 <div class="tier-strip-left">
                   <span class="field-label" style="margin-right: 0.5rem; display: inline-flex; align-items: center; gap: 0.25rem;">
@@ -965,13 +956,6 @@
                       <option value="funds_warning"></option>
                       <option value="general"></option>
                     </datalist>
-                  </div>
-                  <div>
-                    <span class="field-label" title="Reserved for future digest batching. 0 = fire immediately.">Digest&nbsp;(s)</span>
-                    <input type="number" min="0" max="600"
-                           bind:value={editForm.digest_window_sec}
-                           class="field-input"
-                           style="max-width: 5rem" />
                   </div>
                 </div>
               </div>
@@ -1320,21 +1304,6 @@
     transition: background 0.1s;
   }
   .ai-pill:hover { background: rgba(167,139,250,0.20); }
-  .history-pill {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0.18rem 0.55rem;
-    border-radius: 4px;
-    border: 1px solid rgba(125,211,252,0.45);
-    background: rgba(125,211,252,0.08);
-    color: #7dd3fc;
-    text-decoration: none;
-    transition: background 0.1s;
-  }
-  .history-pill:hover { background: rgba(125,211,252,0.18); }
 
   /* Notify-channel icon strip on each agent row — sits between the
      name and the trade-mode / ON-OFF cluster on the right. Single
@@ -1630,9 +1599,9 @@
     word-break: break-word;
   }
 
-  /* ── Tier + topic + digest strip ───────────────────────────────────────
+  /* ── Tier + topic strip ────────────────────────────────────────────────
      Single row, two halves. Left half hosts the 4-tier pill row; right
-     half hosts the topic input + a compact digest stepper. Built as a
+     half hosts the topic input. Built as a
      flex strip so the left collapses to 4 inline pills (saves vertical
      space vs a dropdown) and the right wraps gracefully on narrow
      viewports. */

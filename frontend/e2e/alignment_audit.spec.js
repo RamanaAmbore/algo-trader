@@ -167,7 +167,7 @@ test.describe('drift fixes — left-aligned content', () => {
       .toBeLessThan(headerBox.x + headerBox.width / 2);
   });
 
-  test('/automation History + Ask AI on LEFT', async ({ page }) => {
+  test('/automation Ask AI on LEFT', async ({ page }) => {
     await page.goto('/automation', { waitUntil: 'domcontentloaded' });
     await page.waitForTimeout(1500);
     const header = page.locator('.page-header').first();
@@ -175,16 +175,7 @@ test.describe('drift fixes — left-aligned content', () => {
     if (!headerBox) return;
     const headerMidX = headerBox.x + headerBox.width / 2;
 
-    const historyChip = header.locator('a.history-pill').first();
     const aiBtn = header.locator('button.ai-pill').first();
-    if (await historyChip.count()) {
-      const hb = await historyChip.boundingBox();
-      if (hb) {
-        expect(hb.x + hb.width / 2,
-          '/automation History pill must sit on LEFT half')
-          .toBeLessThan(headerMidX);
-      }
-    }
     if (await aiBtn.count()) {
       const ab = await aiBtn.boundingBox();
       if (ab) {

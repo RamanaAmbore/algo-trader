@@ -65,7 +65,7 @@ function ruleBody(css, selector) {
 // ── Bug #1 — perf hotspot table numeric-column alignment ────────────────
 
 test.describe('Static source checks — admin/perf/+page.svelte hotspot table', () => {
-  const content = readFile('src/routes/(algo)/admin/perf/+page.svelte');
+  const content = readFile('src/routes/(algo)/admin/metrics/PerfRuntimeTab.svelte');
 
   test('cc/line header cells carry .algo-table-num (right-aligned numeric columns)', () => {
     expect(content).toMatch(/<th class="algo-table-num"><span class="metric-label">cc/);
@@ -94,7 +94,7 @@ test.describe('Static source checks — admin/perf/+page.svelte hotspot table', 
   test('live: Top 10 hotspots table — cc/line header AND data compute text-align right (static+live agreement)', async ({ page }) => {
     test.setTimeout(60000);
     await loginAsAdmin(page);
-    await page.goto('/admin/perf', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.goto('/admin/metrics?tab=runtime', { waitUntil: 'domcontentloaded' }).catch(() => {});
     await page.waitForTimeout(2000);
 
     const table = page.locator('.perf-hotspot-table').first();
@@ -194,7 +194,7 @@ test.describe('Static source checks — SimulatorPanel.svelte (.sim-summary-grid
 // ── Row-height / padding convergence — admin/perf hotspot table only ────
 
 test.describe('Static source checks — row-height convergence (admin/perf hotspot table)', () => {
-  const content = readFile('src/routes/(algo)/admin/perf/+page.svelte');
+  const content = readFile('src/routes/(algo)/admin/metrics/PerfRuntimeTab.svelte');
 
   test('.perf-hotspot-table carries no local height/padding override — inherits .algo-table (24px td / 28px th, 0 4px) exactly', () => {
     const block = content.slice(content.indexOf('Hotspot table'), content.indexOf('Hotspot table') + 900);
@@ -205,7 +205,7 @@ test.describe('Static source checks — row-height convergence (admin/perf hotsp
   test('live: .perf-hotspot-table tbody row height computes to the canonical dense-grid 24px', async ({ page }) => {
     test.setTimeout(60000);
     await loginAsAdmin(page);
-    await page.goto('/admin/perf', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    await page.goto('/admin/metrics?tab=runtime', { waitUntil: 'domcontentloaded' }).catch(() => {});
     await page.waitForTimeout(2000);
 
     const row = page.locator('.perf-hotspot-table tbody tr').first();

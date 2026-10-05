@@ -22,7 +22,7 @@
 import { test, expect } from '@playwright/test';
 import { loginAsAdmin } from './fixtures/auth.js';
 
-const PERF_URL = '/admin/perf';
+const PERF_URL = '/admin/metrics?tab=runtime';
 
 test.describe('Admin Perf page — per-card metric tooltip independence', () => {
   test.beforeEach(async ({ page }) => {

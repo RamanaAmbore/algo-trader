@@ -60,7 +60,7 @@ test.describe('Static source checks — InfoHint trigger sites use cursor:pointe
   });
 
   test('admin/perf +page.svelte — all metric-label InfoHint anchors use cursor:pointer', () => {
-    const src = readFile('src/routes/(algo)/admin/perf/+page.svelte');
+    const src = readFile('src/routes/(algo)/admin/metrics/PerfRuntimeTab.svelte');
     const matches = src.match(/class="metric-label" style="cursor:pointer"/g) || [];
     expect(matches.length).toBeGreaterThanOrEqual(9);
     expect(src).not.toMatch(/style="cursor:help"/);

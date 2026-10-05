@@ -246,9 +246,9 @@
         {:else}
           <tr class:strat-row-inactive={!r.is_active}>
             <td class="td-slug">
-              <!-- Plain text: the /strategies/[id] detail page exists but
-                   the slug is not linked from this table yet. -->
-              <span class="strat-slug">{r.slug}</span>
+              <!-- Detail route is keyed by numeric id (strategies/[id]
+                   coerces params.id with Number()), not by slug. -->
+              <a class="strat-slug" href="/strategies/{r.id}">{r.slug}</a>
             </td>
             <td>{r.name}</td>
             <td>{r.owner_username ?? '—'}</td>
@@ -347,7 +347,8 @@
   .strat-table td.td-slug {
     color: var(--c-action); font-weight: 700; font-family: var(--font-numeric);
   }
-  .strat-slug { color: var(--c-action); font-weight: 600; }
+  .strat-slug { color: var(--c-action); font-weight: 600; text-decoration: none; }
+  .strat-slug:hover { text-decoration: underline; }
   .strat-row-inactive td { opacity: 0.5; }
   .strat-row-editing td { background: rgba(251, 191, 36, 0.06); }
   .strat-empty {

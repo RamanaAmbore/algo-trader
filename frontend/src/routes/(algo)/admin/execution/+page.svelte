@@ -1,5 +1,5 @@
 <script>
-  // Lab workspace (URL: /admin/execution kept for backward-compat).
+  // Sandbox workspace (URL: /admin/execution kept for backward-compat).
   //
   // Two tabs:
   //   [Scenario] [Backtest]

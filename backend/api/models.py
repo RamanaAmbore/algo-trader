@@ -1082,10 +1082,9 @@ class Agent(Base):
     #          one tier wins, others are suppressed. Operator decides
     #          which agents are "about the same thing"; default
     #          'general' means no topic-suppression.
-    # digest_window_sec — buffer outgoing dispatches in N-sec windows
-    #          and send ONE consolidated alert message per window per
-    #          channel. 0 = fire immediately. 30s default keeps a
-    #          market-crash burst to a single push.
+    # digest_window_sec — stored column only (default 30). No dispatch
+    #          buffering is implemented against it; every fire is
+    #          dispatched immediately. The UI field was removed.
     tier: Mapped[str]            = mapped_column(
         String(16), nullable=False, default="medium",
     )

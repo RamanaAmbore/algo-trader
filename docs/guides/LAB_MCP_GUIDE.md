@@ -8,7 +8,7 @@ conversations into draft agents and — with explicit per-call
 approval — real broker orders.
 
 The chat itself runs inside **Claude Code** (your terminal). The
-`/admin/lab` page in your browser is the persistence, audit,
+`/admin/mcp` page in your browser is the persistence, audit,
 and token-mint surface. **Note:** the legacy `/api/research` and
 `/admin/research` paths still work as redirect aliases and will be
 removed in a future release.
@@ -119,12 +119,12 @@ around. See [section 6](#6-the-confirm-token-gate).
 ## 3. One-time setup (~3 minutes)
 
 The Lab page's **Settings** tab walks you through this with
-copy-buttons. Open `/admin/lab` → **Settings** while reading
+copy-buttons. Open `/admin/mcp` → **Settings** while reading
 the notes below.
 
 ### 3.1 Mint a JWT (24h TTL)
 
-**Quick path**: Sign into `/admin/lab` → Settings → Copy the `export RAMBOQ_TOKEN='…'` line → paste into your shell.
+**Quick path**: Sign into `/admin/mcp` → Settings → Copy the `export RAMBOQ_TOKEN='…'` line → paste into your shell.
 
 **For automation** (cron):
 ```bash
@@ -241,7 +241,7 @@ Claude: [calls save_research_thread(symbol="RELIANCE",
 
 If you don't pass a `title`, the server auto-fills via Gemini Flash
 (or the first-sentence stub when genai is off). The thread shows
-up immediately on `/admin/lab` → **Research** tab.
+up immediately on `/admin/mcp` → **Research** tab.
 
 ### 4.3 Draft an agent (optional)
 
@@ -276,7 +276,7 @@ Need to tweak? Either:
 
 ### 4.5 Mint an activate token
 
-On `/admin/lab` → **Settings** → **0. Mint a confirm token**:
+On `/admin/mcp` → **Settings** → **0. Mint a confirm token**:
 
 | Field | Value |
 |---|---|
@@ -416,7 +416,7 @@ resolver.
 
 Every successful gated write fires a Telegram message. The
 `request_id` in the message is now a clickable HTML link (Phase 18)
-that opens `/admin/lab?audit_request=<id>` — your phone gets a
+that opens `/admin/mcp?audit_request=<id>` — your phone gets a
 one-tap drill-down to the exact audit row.
 
 ---
@@ -502,12 +502,12 @@ Two paths into the `agents` table:
    JSON editor, save as inactive, run in simulator, activate.
 2. **`save_agent_draft` MCP tool** — Claude Code builds the
    condition tree from your chat, lands as inactive + paper-mode,
-   appears on `/admin/lab` → Drafts tab + on `/agents`.
+   appears on `/admin/mcp` → Drafts tab + on `/agents`.
 
 Either way, the agent goes through the simulator review step
 before live activation. There is no path to ship an agent active
 without explicit human approval (button click on `/agents` OR
-operator-minted activate token via `/admin/lab`).
+operator-minted activate token via `/admin/mcp`).
 
 ### The condition tree (v2 grammar)
 
@@ -711,7 +711,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 | Symptom | Likely cause | Fix |
 |---|---|---|
 | `MCP server failed to connect` on Claude Code startup | venv missing, `mcp` package not installed, `RAMBOQ_TOKEN` not exported | Re-run setup 3.1 + 3.2. Check `venv/bin/python -c "from mcp.server.fastmcp import FastMCP"` returns no error. |
-| Tool calls return 401 | JWT expired (24h TTL) | Refresh `/admin/lab` → Settings, re-copy the export line, restart shell + Claude Code. |
+| Tool calls return 401 | JWT expired (24h TTL) | Refresh `/admin/mcp` → Settings, re-copy the export line, restart shell + Claude Code. |
 | Tool calls return 502 | Broker offline or rate-limited | Check `/admin/health` — DISCONNECTED account means credentials need refreshing on `/admin/brokers`. |
 | `place_order` returns 403 with "Order details do not match" | Token field doesn't match mint exactly | Re-mint with the corrected field. Same units (price = exact tick, qty = integer). |
 | `place_order` returns 403 with "Token already used" | LLM tried to reuse a token | Mint a fresh one. |
@@ -733,7 +733,7 @@ Edit `loss-positions-total-default` once → every consumer updates.
 | Confirm-token logic | [backend/api/routes/lab.py](backend/api/routes/lab.py) — `_purpose_hash_*` / `_mint_token` / `_consume_token` / `_audit_link_html` |
 | Audit model | [backend/api/models.py](backend/api/models.py) — `McpAudit` |
 | Audit retention task | [backend/api/background.py](backend/api/background.py) — `_task_mcp_audit_cleanup` (03:15 IST daily) |
-| Lab page UI | [frontend/src/routes/(algo)/admin/lab/+page.svelte](frontend/src/routes/(algo)/admin/lab/+page.svelte) |
+| Lab page UI | [frontend/src/routes/(algo)/admin/mcp/+page.svelte](frontend/src/routes/(algo)/admin/mcp/+page.svelte) |
 | Gemini Flash helpers | [backend/shared/helpers/genai_helpers.py](backend/shared/helpers/genai_helpers.py) — `auto_title`, `sentiment_scores`; deterministic stubs when `is_enabled('genai')` is False |
 | Agent engine | [backend/api/algo/agent_engine.py](backend/api/algo/agent_engine.py) — `BUILTIN_AGENTS`, `run_cycle()`, `seed_agents()` |
 | Agent evaluator | [backend/api/algo/agent_evaluator.py](backend/api/algo/agent_evaluator.py) — `evaluate()`, `validate()` |

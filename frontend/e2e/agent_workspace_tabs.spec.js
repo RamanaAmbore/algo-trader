@@ -1,6 +1,10 @@
-// Verify the AgentWorkspaceTabs strip appears on every agent-related
-// surface and that clicking each tab lands on the right URL with the
-// correct tab lit.
+// Verify the AutomationTabs strip on the Automation workspace surfaces.
+// The strip shows exactly three tabs — Agents, Order Templates, Agent
+// Templates — and the one matching the current route carries the active
+// state (AlgoTabs: role=tab + aria-selected="true").
+//
+// Agent fire history is no longer a tab here; /automation/activity
+// redirects to /activity?tab=agent (covered by the last test).
 
 import { test, expect } from '@playwright/test';
 
@@ -25,42 +29,49 @@ async function login(page) {
 
 test.describe.configure({ mode: 'serial' });
 
-const TAB_ROUTES = [
-  { href: '/agents',          label: 'Agents'   },
-  { href: '/agents/activity', label: 'Activity' },
+const TABS = [
+  { href: '/automation',                 label: 'Agents'          },
+  { href: '/automation/templates',       label: 'Order Templates' },
+  { href: '/automation/agent-templates', label: 'Agent Templates' },
 ];
 
-test.describe('agent workspace tabs', () => {
+const STRIP = '.aw-tabs-wrap [role="tab"]';
+
+test.describe('automation workspace tabs', () => {
   test.use({ viewport: { width: 1366, height: 768 } });
 
-  for (const surface of TAB_ROUTES) {
-    test(`strip renders on ${surface.href} with ${surface.label} lit [${BASE}]`, async ({ page }) => {
+  for (const surface of TABS) {
+    test(`strip shows exactly 3 tabs on ${surface.href} with ${surface.label} active [${BASE}]`, async ({ page }) => {
       await login(page);
       await page.goto(`${BASE}${surface.href}`, { waitUntil: 'networkidle' });
-      await page.waitForSelector('.aw-tabs', { state: 'visible', timeout: 15_000 });
+      await page.waitForSelector('.aw-tabs-wrap [role="tablist"]', { state: 'visible', timeout: 15_000 });
 
-      // All four tabs visible
-      for (const t of TAB_ROUTES) {
-        await expect(page.locator(`.aw-tab:text-is("${t.label}")`)).toBeVisible();
-      }
+      const tabs = page.locator(STRIP);
+      await expect(tabs).toHaveCount(3);
+      await expect(tabs).toHaveText(TABS.map((t) => t.label));
 
-      // Only the current surface's tab carries the active class
-      const activeTab = page.locator(`.aw-tab-active:text-is("${surface.label}")`);
-      await expect(activeTab).toBeVisible();
+      const active = page.locator(`${STRIP}[aria-selected="true"]`);
+      await expect(active).toHaveCount(1);
+      await expect(active).toHaveText(surface.label);
     });
   }
 
   test(`click navigates between tabs [${BASE}]`, async ({ page }) => {
     await login(page);
-    await page.goto(`${BASE}/agents`, { waitUntil: 'networkidle' });
-    await page.waitForSelector('.aw-tabs', { state: 'visible', timeout: 15_000 });
+    await page.goto(`${BASE}/automation`, { waitUntil: 'networkidle' });
+    await page.waitForSelector('.aw-tabs-wrap [role="tablist"]', { state: 'visible', timeout: 15_000 });
 
-    // Click each tab and assert URL lands correctly.
-    for (const t of TAB_ROUTES.slice(1)) {
-      await page.locator(`.aw-tab:text-is("${t.label}")`).click();
-      await page.waitForURL(new RegExp(t.href.replace(/\//g, '\\/')));
-      const active = page.locator(`.aw-tab-active:text-is("${t.label}")`);
-      await expect(active).toBeVisible();
+    for (const t of TABS.slice(1)) {
+      await page.locator(STRIP, { hasText: t.label }).click();
+      await page.waitForURL(new RegExp(t.href.replace(/\//g, '\\/') + '$'));
+      await expect(page.locator(`${STRIP}[aria-selected="true"]`)).toHaveText(t.label);
     }
+  });
+
+  test(`/automation/activity redirects to /activity?tab=agent [${BASE}]`, async ({ page }) => {
+    await login(page);
+    await page.goto(`${BASE}/automation/activity`, { waitUntil: 'networkidle' });
+    await page.waitForURL(/\/activity\?.*tab=agent/);
+    expect(new URL(page.url()).pathname).toBe('/activity');
   });
 });
