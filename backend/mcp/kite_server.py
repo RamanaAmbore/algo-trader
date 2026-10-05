@@ -410,6 +410,43 @@ async def _build_watchlist_detail(match: dict) -> dict:
 
 
 @app.tool()
+async def get_order_margin(
+    account: str,
+    symbol: str,
+    exchange: str,
+    side: str,
+    qty: int,
+    product: str = "MIS",
+    order_type: str = "MARKET",
+    price: float = 0.0,
+) -> dict:
+    """Kite's required margin for one order, before placing it. Dry run only.
+
+    Use this to check what an order will block against the account's
+    available margin. Pair with get_funds_summary for the available figure.
+
+    Args:
+        account: Broker account (e.g. ZG0790).
+        symbol: Tradingsymbol (e.g. NIFTY26OCT25000CE).
+        exchange: NSE, NFO, MCX, BSE, BFO, etc.
+        side: BUY or SELL.
+        qty: Quantity in contracts (not lots).
+        product: MIS, NRML, or CNC.
+        order_type: MARKET or LIMIT.
+        price: Limit price; 0 for market orders.
+
+    Returns:
+        dict with required_margin (INR), plus the echoed order fields and
+        source="kite_basket_margin".
+    """
+    return await _get("/api/funds/order-margin", params={
+        "account": account, "symbol": symbol, "exchange": exchange,
+        "side": side, "qty": qty, "product": product,
+        "order_type": order_type, "price": price,
+    })
+
+
+@app.tool()
 async def get_watchlist(name: str) -> dict:
     """Look up one of the operator's curated watchlists by name and
     return its symbol list. Useful for scoping research to a known set —

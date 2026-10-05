@@ -251,8 +251,58 @@ def _funds_mask_accounts(resp: FundsResponse) -> FundsResponse:
     )
 
 
+async def order_margin_for(
+    *, account: str, symbol: str, exchange: str, side: str, qty: int,
+    product: str, order_type: str, price: float,
+) -> dict:
+    """Kite's required margin for one order, from a basket-margin dry run. Places nothing."""
+    from backend.api.algo.actions_preflight import (
+        _preflight_build_basket_orders, _preflight_fetch_basket_margin,
+        _preflight_parse_basket_margin,
+    )
+    from asyncio import get_running_loop
+
+    from backend.brokers import get_broker
+
+    side_u = side.upper()
+    exch = exchange.upper()
+    if side_u not in ("BUY", "SELL") or qty <= 0 or not symbol:
+        raise HTTPException(
+            status_code=400,
+            detail="side must be BUY or SELL, qty must be > 0, symbol is required",
+        )
+    broker = get_broker(account)
+    orders = await _preflight_build_basket_orders(
+        broker, exch, symbol, side_u, qty, order_type, product, "regular", price, None,
+    )
+    bm = await _preflight_fetch_basket_margin(broker, get_running_loop(), orders)
+    if isinstance(bm, Exception):
+        raise HTTPException(status_code=502, detail="Broker margin check unavailable")
+    return {
+        "account": account,
+        "symbol": symbol,
+        "exchange": exch,
+        "side": side_u,
+        "qty": qty,
+        "product": product,
+        "order_type": order_type,
+        "required_margin": _preflight_parse_basket_margin(bm),
+        "source": "kite_basket_margin",
+    }
+
+
 class FundsController(Controller):
     path = "/api/funds"
+
+    @get("/order-margin")
+    async def get_order_margin(
+        self, account: str, symbol: str, exchange: str, side: str, qty: int,
+        product: str = "MIS", order_type: str = "MARKET", price: float = 0.0,
+    ) -> dict:
+        return await order_margin_for(
+            account=account, symbol=symbol, exchange=exchange, side=side, qty=qty,
+            product=product, order_type=order_type, price=price,
+        )
 
     @get("/")
     async def get_funds(

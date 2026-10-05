@@ -552,10 +552,12 @@ async def _pb_ledger_fill_row(_s, _r, record_fn) -> None:
 
 
 async def _pb_write_ledger_fills(_s, filled_rows: list) -> None:
-    """Record FIFO ledger entries for every FILLED row with a strategy."""
+    """Record FIFO ledger entries and fill alerts for every newly FILLED row."""
     from backend.api.algo.lot_ledger import record_fill as _record_ledger_fill
+    from backend.api.algo.fill_notify import notify_fills
     for _r in filled_rows:
         await _pb_ledger_fill_row(_s, _r, _record_ledger_fill)
+    await notify_fills(filled_rows)
 
 
 async def _pb_write_timeline_events(

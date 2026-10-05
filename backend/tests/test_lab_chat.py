@@ -22,7 +22,7 @@ FAKE_TOKEN = "sk-ant-oat01-FAKESECRETVALUE1234567890"
 EXPECTED_READ_TOOLS = {
     "get_positions", "get_holdings", "get_quote", "get_ohlcv",
     "get_recent_news", "get_option_analytics", "get_options_chain_snapshot",
-    "get_economic_snapshot", "get_funds_summary", "get_watchlist",
+    "get_economic_snapshot", "get_funds_summary", "get_order_margin", "get_watchlist",
     "get_pnl_attribution", "get_research_thread", "get_audit_recent",
     "get_order_events", "get_server_info", "list_agents",
     "list_research_threads", "dry_run_agent",
