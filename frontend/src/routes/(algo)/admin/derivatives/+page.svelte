@@ -128,6 +128,11 @@
   let _brokerWorstState = $state(/** @type {'green'|'amber'|'red'} */ ('amber'));
   const _unsubBrokerHealth = brokerHealthStore.subscribe(v => { _brokerWorstState = v?.worstState || 'amber'; });
   let loading       = $state(false);
+  // Count of strategy refetches in flight (the ~5s poll included). The
+  // Payoff header spinner keys off this, so it spins on every refresh
+  // cycle, not only on the first load that sets `loading`. A counter, not
+  // a flag: a superseded fetch's finally must not clear a newer one's state.
+  let _strategyInFlight = $state(0);
   // `loading` is toggled by loadStrategy() and short-circuits on
   // its leg-cache shortcut, so RefreshButton wired to `loading`
   // never animates when the operator clicks Refresh on an unchanged
@@ -4748,6 +4753,7 @@
       // correct as-is — this is purely "stop calling it with the corrupting
       // argument." The Payoff overlay's spot marker is unaffected — it's
       // driven independently by `liveSpot` via props, not by this value.
+      _strategyInFlight += 1;
       const resp    = await fetchStrategyAnalytics(cleanLegs, {});
       if (_thisGen !== _stratGen) return;
       strategy      = resp;
@@ -4778,6 +4784,7 @@
       // a stale-gen catch/success above), so a slow superseded response
       // could clear `loading` while the real in-flight request was still
       // running, prematurely dropping the placeholder.
+      _strategyInFlight -= 1;
       if (_thisGen === _stratGen) {
         loading = false;
       }
@@ -5503,7 +5510,7 @@
          EXP / DTE / σ / LEGS live in the on-chart stat overlay. -->
     <CardHeader
       title="Payoff"
-      loading={loading}
+      loading={loading || _strategyInFlight > 0}
       bind:isCollapsed={_colPayoff}
       bind:isFullscreen={_fsPayoff}
       cardId="optPayoff"

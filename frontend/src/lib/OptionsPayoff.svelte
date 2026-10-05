@@ -576,6 +576,9 @@
 
   const _spotFlash = createTickFlash({ threshold: 0, durationMs: 300 });
   $effect(() => { _spotFlash.update('spot', spot); });
+  // CHG% moves with the previous close as well as with spot, so it gets
+  // its own key. Keying it off 'spot' missed flashes when only the % moved.
+  $effect(() => { _spotFlash.update('chg', spotPct); });
 
   // Compact axis label for the Y axis — e.g. "+50K", "0", "−1.20L".
   // Same Indian-scale units as the rest of the app (aggCompact), so the
@@ -946,7 +949,7 @@
               <InfoHint popup hideButton id="ps-hint-chg" anchor={_psHintAnchor.chg} bind:open={_psHintOpen.chg}
                 panel title="CHG%" text="Spot % change from previous session close" />
             </span>
-            <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('spot') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
+            <span class={'ps-v ' + ltpDayClass(spotPct) + (_spotFlash.classOf('chg') ? ' ' + _tcFlashClass(spotPct >= 0 ? 'up' : 'down', Math.abs(spotPct ?? 0)) : '')}>
               {spotPct >= 0 ? '+' : ''}{spotPct.toFixed(2)}%
             </span>
           </div>
