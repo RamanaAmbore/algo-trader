@@ -583,7 +583,11 @@
   function _axisFmt(/** @type {number} */ v) {
     if (v === 0) return '0';
     const sign = v > 0 ? '+' : '−';
-    return sign + aggCompact(Math.abs(v));
+    const a = Math.abs(v);
+    // Below ₹1K aggCompact would print decimals; show whole rupees.
+    // From ₹1K up, ticks are 1/2/5 × 10^n so K/L/C never rounds away a step.
+    if (a < 1_000) return sign + a.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    return sign + aggCompact(a);
   }
 
   // Profit + loss zones — shade above and below zero on the today curve
@@ -782,7 +786,7 @@
   }
   function resetZoom() { zoom = null; pan = null; }
 
-  // Y-axis ticks — round values (1/2/2.5/5 × 10^n) across the visible
+  // Y-axis ticks — round values (1/2/5 × 10^n) across the visible
   // domain, always including 0 so the breakeven line is labelled.
   // Evenly spaced raw bounds (e.g. -23,517 / 11,200) read as noise.
   const yTicks = $derived.by(() => {
@@ -790,9 +794,9 @@
     const { lo, hi } = yDomain;
     const range = hi - lo;
     if (!(range > 0)) return [];
-    const rough = range / 4;
+    const rough = range / 5;
     const mag = Math.pow(10, Math.floor(Math.log10(rough)));
-    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= rough) ?? 10 * mag;
+    const step = [1, 2, 5, 10].map(m => m * mag).find(s => s >= rough) ?? 10 * mag;
     const first = Math.ceil(lo / step) * step;
     const vals = [];
     for (let v = first; v <= hi + step * 1e-9; v += step) {
