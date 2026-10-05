@@ -1013,8 +1013,8 @@ async def test_apply_template_to_order_none_return_fires_only_started():
 
     assert result is None
     kinds = [c.args[1] for c in mock_we.call_args_list]
-    assert kinds == ["template_attach_started"], (
-        f"expected exactly one started event and no ok/failed event for a "
+    assert kinds == ["template_attach_started", "template_attach_skipped"], (
+        f"expected started then skipped, and no ok/failed event for a "
         f"None return, got {kinds}"
     )
     assert mock_we.call_args_list[0].args[0] == 777

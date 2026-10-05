@@ -433,6 +433,7 @@ def _preflight_handle_positive_margin(
 
     diag["basket_margin_used"] = required
     diag["available_margin"]   = available
+    diag["margin_wallet"]      = ((margins_res or (None, None))[0] or {}).get("_wallet", segment)
     diag["margin_shortfall"]   = None
 
     # ── Available-is-zero gate ────────────────────────────────────
@@ -609,7 +610,12 @@ async def _preflight_fetch_account_margins(broker, loop, segment: str) -> "tuple
             # pass every order regardless of available margin.
             if "net" in m or "available" in m:
                 return m, None
-            return m.get(segment, {}), None
+            seg = m.get(segment, {})
+            equity = m.get("equity") or {}
+            if (segment != "equity" and not seg.get("enabled")
+                    and equity.get("enabled")):
+                return {**equity, "_wallet": "equity"}, None
+            return {**seg, "_wallet": segment}, None
         except TypeError:
             return await loop.run_in_executor(
                 None, broker.margins, segment), None

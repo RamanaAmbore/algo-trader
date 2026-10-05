@@ -6556,7 +6556,7 @@ async def _task_broker_issue_daily() -> None:
                 await session.execute(_text("""
                     INSERT INTO broker_issue_daily
                         (broker_id, account, issue_date, issue_count, breakdown, updated_at)
-                    VALUES (:broker_id, :account, :issue_date, :issue_count, :breakdown::jsonb, now())
+                    VALUES (:broker_id, :account, :issue_date, :issue_count, CAST(:breakdown AS jsonb), now())
                     ON CONFLICT (broker_id, account, issue_date) DO UPDATE
                         SET issue_count = EXCLUDED.issue_count,
                             breakdown   = EXCLUDED.breakdown,

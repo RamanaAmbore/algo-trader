@@ -1715,15 +1715,15 @@ async def seed_agents():
             _ntfy_url = _ntfy_secrets.get("ntfy_url", "https://ntfy.sh")
             if not _ntfy_token:
                 logger.info(
-                    "Agent engine: ntfy configured (topic=%s url=%s) — "
+                    "Agent engine: ntfy configured (url=%s) — "
                     "no auth token (open server assumed).",
-                    _ntfy_topic, _ntfy_url,
+                    _ntfy_url,
                 )
             else:
                 logger.info(
-                    "Agent engine: ntfy configured (topic=%s url=%s) — "
+                    "Agent engine: ntfy configured (url=%s) — "
                     "Bearer token present.",
-                    _ntfy_topic, _ntfy_url,
+                    _ntfy_url,
                 )
     except Exception as _ntfy_cfg_err:
         logger.warning("Agent engine: ntfy config check failed: %s", _ntfy_cfg_err)

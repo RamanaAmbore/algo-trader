@@ -2829,7 +2829,8 @@ async def apply_template_to_order(
         unconditionally before the impl runs, so a crash mid-impl still
         leaves a trace of the attempt.
       - impl returns `None` (no template/overrides supplied, or an
-        applies_to guard mismatch) — no further event.
+        applies_to guard mismatch) — one `template_attach_skipped` event
+        with the reason.
       - impl returns an `AttachResult` with non-empty `.errors` —
         exactly one `template_attach_failed` event.
       - impl returns an `AttachResult` with no errors — exactly one
@@ -2868,6 +2869,13 @@ async def apply_template_to_order(
     )
 
     if result is None:
+        if _fire_events and parent_order_id is not None:
+            await write_event(
+                parent_order_id, "template_attach_skipped",
+                f"No exit template attached for {parent_symbol} "
+                f"(template_id={template_id}, slug={template_slug!r})",
+                {"template_id": template_id, "template_slug": template_slug},
+            )
         return result
 
     if _fire_events and parent_order_id is not None:

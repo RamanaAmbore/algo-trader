@@ -971,7 +971,9 @@ async def _opp_arm_tp_persist_row(
             tp_price = fill_price * (1.0 + pct_delta) + abs_delta
         else:
             tp_price = fill_price * (1.0 - pct_delta) - abs_delta
-        tp_price = max(0.01, round(tp_price, 2))
+        from backend.api.routes.orders_helpers import _align_price_to_tick
+        tp_price = await _align_price_to_tick(parent.exchange, parent.symbol, tp_price)
+        tp_price = max(0.01, tp_price)
 
         tp_detail = (
             f"TP +{pct_delta*100:.0f}% · parent #{parent_row_id} "
