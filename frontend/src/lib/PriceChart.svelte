@@ -160,7 +160,7 @@
 
   // ── Chart geometry ─────────────────────────────────────────────────
   const W = 720;            // viewBox width (scales to container via 100%)
-  const PAD_L = 40, PAD_R = 8, PAD_T = 8, PAD_B = 22;
+  const PAD_L = 48, PAD_R = 8, PAD_T = 8, PAD_B = 22;
 
   const xAxisY = $derived(height - PAD_B);
   const innerW = $derived(W - PAD_L - PAD_R);
@@ -478,6 +478,7 @@
       {#each yTicks as t}
         <line class="chart-grid-line" x1={PAD_L} x2={W - PAD_R} y1={t.y} y2={t.y}/>
         <text x={PAD_L - 4} y={t.y + 3} text-anchor="end"
+              transform="rotate(-45 {PAD_L - 4} {t.y + 3})"
               fill="#ffffff" font-size="11" font-weight="600" font-family="monospace">
           {priceFmt(t.v)}
         </text>

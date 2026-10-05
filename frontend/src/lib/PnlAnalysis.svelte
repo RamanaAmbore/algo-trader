@@ -361,7 +361,7 @@
   });
 
   // ── Benchmark SVG chart ────────────────────────────────────────────────────
-  const W = 560, H = 160, PAD_L = 42, PAD_R = 12, PAD_T = 12, PAD_B = 24;
+  const W = 560, H = 160, PAD_L = 50, PAD_R = 12, PAD_T = 12, PAD_B = 24;
   const CW = W - PAD_L - PAD_R;
   const CH = H - PAD_T - PAD_B;
 
@@ -623,6 +623,7 @@
           <line class="chart-grid-line" x1={PAD_L} y1={y.toFixed(1)} x2={W - PAD_R} y2={y.toFixed(1)} />
           <text class="chart-axis-label" x={PAD_L - 4} y={(y + 3.5).toFixed(1)}
                 text-anchor="end"
+                transform="rotate(-45 {PAD_L - 4} {(y + 3.5).toFixed(1)})"
                 style="font-family: var(--font-numeric)">{fmtPct(pct)}</text>
         {/each}
         {#if chartData.yMin < 0 && chartData.yMax > 0}

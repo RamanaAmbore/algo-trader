@@ -164,10 +164,10 @@
   }
   function _fmtChipInr(/** @type {number|null|undefined} */ v) {
     if (v == null || !isFinite(v)) return '—';
-    if (Math.abs(v) >= 10000000) return `₹${(v/10000000).toFixed(2)}Cr`;
-    if (Math.abs(v) >= 100000)   return `₹${(v/100000).toFixed(2)}L`;
-    if (Math.abs(v) >= 1000)     return `₹${(v/1000).toFixed(1)}k`;
-    return `₹${Math.round(Number(v))}`;
+    if (Math.abs(v) >= 10000000) return `${(v/10000000).toFixed(2)}Cr`;
+    if (Math.abs(v) >= 100000)   return `${(v/100000).toFixed(2)}L`;
+    if (Math.abs(v) >= 1000)     return `${(v/1000).toFixed(1)}k`;
+    return `${Math.round(Number(v))}`;
   }
 </script>
 
@@ -224,6 +224,7 @@
         {@const v = _max - _range * t}
         <line class="chart-grid-line" x1={_pad.l} y1={y} x2={_pad.l + innerW} y2={y} />
         <text class="chart-axis-label nav-yaxis-label" x={_pad.l - 8} y={y + 3} text-anchor="end"
+              transform="rotate(-45 {_pad.l - 8} {y + 3})"
               style="font-family: var(--font-numeric)">{_fmtChipInr(v)}</text>
       {/each}
       <path d={path} fill="none" stroke="#fbbf24" stroke-width="2" class="data-path"/>

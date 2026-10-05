@@ -30,7 +30,7 @@
   });
 
   const W       = 720;
-  const PAD_L   = 56;
+  const PAD_L   = 60;
   const PAD_R   = 16;
   const PAD_T   = 12;
   const PAD_B   = 28;
@@ -195,15 +195,16 @@
         </linearGradient>
       </defs>
 
-      <!-- y-axis grid + labels (₹) -->
+      <!-- y-axis grid + labels -->
       {#each yTicks as v}
         <line x1={PAD_L} x2={W - PAD_R} y1={yOf(v)} y2={yOf(v)}
               class={Math.abs(v) < 0.001 ? 'chart-grid-zero' : 'chart-grid-line'} />
         <text x={PAD_L - 6} y={yOf(v) + 3} text-anchor="end"
+              transform="rotate(-45 {PAD_L - 6} {yOf(v) + 3})"
               fill="#ffffff"
               font-size="11"
               font-weight={Math.abs(v) < 0.001 ? 700 : 600}>
-          {v >= 0 ? '+' : '−'}₹{priceFmt(Math.abs(v))}
+          {v >= 0 ? '+' : '−'}{priceFmt(Math.abs(v))}
         </text>
       {/each}
 

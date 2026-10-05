@@ -293,7 +293,7 @@
   // they sit BELOW the x-axis baseline now (see bePins above).
   // PAD_B bumped 36 → 50 to make room for BE labels under the σ-tick
   // price labels (σ row at +12/+25, BE row at +28 from baseline).
-  const PAD_L = 36, PAD_R = 12, PAD_T = 14, PAD_B = 50;
+  const PAD_L = 52, PAD_R = 12, PAD_T = 14, PAD_B = 50;
   const innerW = $derived(W - PAD_L - PAD_R);
   const innerH = $derived(height - PAD_T - PAD_B);
 
@@ -582,7 +582,7 @@
   function _axisFmt(/** @type {number} */ v) {
     if (v === 0) return '0';
     const sign = v > 0 ? '+' : '';
-    return sign + aggCompact(v);
+    return sign + Math.round(v).toLocaleString('en-IN');
   }
 
   // Profit + loss zones — shade above and below zero on the today curve
@@ -1359,6 +1359,7 @@
         {#if t.y > PAD_T + 8 && t.y < height - PAD_B - 8}
           <text x={PAD_L - 6} y={t.y + 4}
                 text-anchor="end"
+                transform="rotate(-45 {PAD_L - 6} {t.y + 4})"
                 fill="#ffffff"
                 font-size="11" font-weight="600"
                 style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
