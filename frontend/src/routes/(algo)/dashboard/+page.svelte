@@ -1822,33 +1822,27 @@
             dotColor={_eqLineColor ?? 'var(--algo-sky)'}
             dotStroke="#0a1428"
           />
-          <!-- Tooltip box -->
-          {@const _tipX = _hoverX > INNER_W * 0.65 ? _hoverX - 108 : _hoverX + 8}
-          {@const _tipY = Math.max(PAD_T, Math.min(_hoverY - 28, PAD_T + INNER_H - 58))}
-          <rect x={_tipX} y={_tipY} width="100" height="54"
-            rx="3" fill="rgba(10,20,40,0.92)"
-            stroke="rgba(126,151,184,0.35)" stroke-width="1" />
-          {#if _hoverPt}
-            {@const _ist = new Date(new Date(_hoverPt.ts).getTime() + 5.5*3600*1000)}
-            {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
-            {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
-            <text x={_tipX + 6} y={_tipY + 13}
-              font-size="8.5" fill="var(--algo-sky)" style="font-family: var(--font-numeric)">{_th}:{_tm} IST</text>
-            <text x={_tipX + 6} y={_tipY + 26}
-              font-size="8" fill="var(--c-muted)" style="font-family: var(--font-numeric)">Day P&amp;L</text>
-            <text x={_tipX + 6} y={_tipY + 37}
-              font-size="9" font-weight="700" fill={_hoverPt.day_pnl >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
-              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
-              {_hoverPt.day_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.day_pnl)}
-            </text>
-            <text x={_tipX + 6} y={_tipY + 49}
-              font-size="9" font-weight="700" fill={_hoverPt.cum_pnl >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
-              style="font-family: var(--font-numeric); font-variant-numeric: tabular-nums">
-              cum {_hoverPt.cum_pnl >= 0 ? '+' : ''}₹{priceFmt(_hoverPt.cum_pnl)}
-            </text>
-          {/if}
         {/if}
       </svg>
+      {#if _hoverPt != null}
+        {@const _ist = new Date(new Date(_hoverPt.ts).getTime() + 5.5*3600*1000)}
+        {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
+        {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
+        {@const _flip = _hoverX > CHART_W * 0.65}
+        <div class="chart-tooltip eq-hover-tooltip"
+             style="left: {(_hoverX / CHART_W) * 100}%; top: {(_hoverY / CHART_H) * 100}%; transform: translate({_flip ? 'calc(-100% - 10px)' : '10px'}, -50%);">
+          <div class="chart-tooltip-ts">{_th}:{_tm} IST</div>
+          {#each _eqActiveSeries as s (s.id)}
+            {@const _v = Number(_hoverPt[s.field]) || 0}
+            <div class="chart-tooltip-row">
+              <span class="chart-tooltip-label">{s.label}</span>
+              <span class="chart-tooltip-value" class:up={_v >= 0} class:down={_v < 0}>
+                {_v >= 0 ? '+' : ''}₹{priceFmt(_v)}
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
       </div><!-- /eq-chart-frame -->
     {/if}
     </div>
