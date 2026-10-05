@@ -80,14 +80,14 @@ test.describe('Lab Safety card — accuracy fix (rendered DOM)', () => {
   test.setTimeout(60_000);
 
   // Skipped against the local webServer: /admin/mcp is gated by the
-  // `view_lab` capability, which the local `rambo` test account (the only
+  // `view_research` capability, which the local `rambo` test account (the only
   // credential available to this harness's global-setup) does not carry —
   // confirmed via a live run (Access-denied screenshot, capability gate in
   // +page.svelte). The static-source tests above are the primary coverage
   // for this fix and need no login. research_place_order_verify.spec.js
   // already exercises the rendered Settings tab against dev.ramboq.com
   // with a properly-privileged account; re-enable this test there (or once
-  // local `rambo` carries `view_lab`) by removing `.skip`.
+  // local `rambo` carries `view_research`) by removing `.skip`.
   test.skip('the live Settings tab shows the corrected Safety card text to the operator', async ({ page }) => {
     await loginAsAdmin(page);
     await page.goto('/admin/mcp');

@@ -74,7 +74,7 @@ when:
 
 | Helper | When it fires | What happens if it fails |
 |---|---|---|
-| **Thread auto-title** | `POST /api/lab/threads` with `title=""` | Falls back to first-sentence-of-thesis stub. |
+| **Thread auto-title** | `POST /api/research/threads` with `title=""` | Falls back to first-sentence-of-thesis stub. |
 | **News sentiment** | `GET /api/news/?sentiment=true` (the MCP `get_recent_news` tool always passes this) | Falls back to a keyword-regex stub (bull/bear/neutral). |
 | **Market summary** | The existing `/api/market` endpoint (predates the Lab) | Falls back to the static YAML report. |
 

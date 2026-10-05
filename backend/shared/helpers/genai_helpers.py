@@ -2,7 +2,7 @@
 Low-volume Gemini Flash helpers — stays inside the free tier (250 RPD,
 10 RPM, 250k TPM as of 2026). Used by:
 
-  - Research thread auto-title (POST /api/lab/threads when title="")
+  - Research thread auto-title (POST /api/research/threads when title="")
   - News-headline sentiment scoring (GET /api/news/ sentiment query param)
 
 Both helpers are deterministic-fallback safe: when `is_enabled('genai')`

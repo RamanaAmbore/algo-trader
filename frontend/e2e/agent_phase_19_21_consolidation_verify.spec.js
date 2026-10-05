@@ -66,12 +66,12 @@ test(`Phase 19 — promote with lifespan params [${BASE}]`, async ({ page }) => 
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Thread → promote with one_shot lifespan
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PWLIFE', title: 'lifespan e2e', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 19 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -88,7 +88,7 @@ test(`Phase 19 — promote with lifespan params [${BASE}]`, async ({ page }) => 
   console.log(`one_shot agent created: ${draft.agent_slug}`);
 
   // Reject n_fires without max_fires
-  const bad = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const bad = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 19 bad',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -102,7 +102,7 @@ test(`Phase 19 — promote with lifespan params [${BASE}]`, async ({ page }) => 
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });
 
 test(`Phase 21 — debounce_minutes round-trip [${BASE}]`, async ({ page }) => {
@@ -117,12 +117,12 @@ test(`Phase 21 — debounce_minutes round-trip [${BASE}]`, async ({ page }) => {
   expect(typeof sample.debounce_minutes).toBe('number');
 
   // Promote a thread with debounce=3
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PWDEB', title: 'debounce e2e', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 21 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -140,5 +140,5 @@ test(`Phase 21 — debounce_minutes round-trip [${BASE}]`, async ({ page }) => {
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });

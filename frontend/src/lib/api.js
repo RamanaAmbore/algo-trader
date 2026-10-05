@@ -1321,38 +1321,38 @@ export async function fetchAgentPnL(params = {}) {
 }
 
 // ── Research threads (Lab page) ──────────────────────────────────────
-/** GET /api/lab/threads — list summaries. */
+/** GET /api/research/threads — list summaries. */
 export const fetchResearchThreads = (symbol = null, limit = 100) => {
   const p = new URLSearchParams();
   if (symbol) p.set('symbol', String(symbol).toUpperCase());
   if (limit)  p.set('limit', String(limit));
-  return _get(`/lab/threads?${p}`, { auth: true });
+  return _get(`/research/threads?${p}`, { auth: true });
 };
-/** GET /api/lab/threads/{id} — full transcript + thesis. */
+/** GET /api/research/threads/{id} — full transcript + thesis. */
 export const fetchResearchThread = (id) =>
-  _get(`/lab/threads/${id}`, { auth: true });
-/** DELETE /api/lab/threads/{id} — remove. */
+  _get(`/research/threads/${id}`, { auth: true });
+/** DELETE /api/research/threads/{id} — remove. */
 export const deleteResearchThread = (id) =>
-  _del(`/lab/threads/${id}`, { auth: true });
-/** GET /api/lab/drafts — threads with linked inactive agents (joined view). */
+  _del(`/research/threads/${id}`, { auth: true });
+/** GET /api/research/drafts — threads with linked inactive agents (joined view). */
 export const fetchResearchDrafts = (limit = 200) =>
-  _get(`/lab/drafts?limit=${limit}`, { auth: true });
-/** POST /api/lab/confirm-token — mint a 60s single-use token for one specific order. */
+  _get(`/research/drafts?limit=${limit}`, { auth: true });
+/** POST /api/mcp/confirm-token — mint a 60s single-use token for one specific order. */
 export const mintConfirmToken = (payload) =>
-  _post('/lab/confirm-token', payload, { auth: true });
+  _post('/mcp/confirm-token', payload, { auth: true });
 
-/** POST /api/lab/chat — one-shot Claude reply to a Lab request box message.
+/** POST /api/research/chat — one-shot Claude reply to a Lab request box message.
  *  Body `{message}`; response `{reply, duration_ms}`. Caller-supplied signal
  *  with a 120 s client ceiling: the helper's default 15 s timeout would
  *  swallow the call as null, and a Claude round-trip routinely exceeds it. */
-export const postLabChat = (message) => {
+export const postResearchChat = (message) => {
   const ac = new AbortController();
   const timer = setTimeout(() => ac.abort(), 120_000);
-  return _post('/lab/chat', { message }, { auth: true, signal: ac.signal })
+  return _post('/research/chat', { message }, { auth: true, signal: ac.signal })
     .finally(() => clearTimeout(timer));
 };
 
-/** GET /api/lab/audit — forensic trail of MCP-initiated mutations. */
+/** GET /api/mcp/audit — forensic trail of MCP-initiated mutations. */
 export const fetchResearchAudit = (filters = {}) => {
   const p = new URLSearchParams();
   if (filters.tool)       p.set('tool',       String(filters.tool));
@@ -1360,5 +1360,5 @@ export const fetchResearchAudit = (filters = {}) => {
   if (filters.since)      p.set('since',      String(filters.since));
   if (filters.request_id) p.set('request_id', String(filters.request_id));
   if (filters.limit)      p.set('limit',      String(filters.limit));
-  return _get(`/lab/audit?${p}`, { auth: true });
+  return _get(`/mcp/audit?${p}`, { auth: true });
 };

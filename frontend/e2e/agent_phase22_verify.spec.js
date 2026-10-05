@@ -25,12 +25,12 @@ test(`tags + blackout_windows round-trip via promote [${BASE}]`, async ({ page }
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PWP22', title: 'phase 22 e2e', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 22 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -53,7 +53,7 @@ test(`tags + blackout_windows round-trip via promote [${BASE}]`, async ({ page }
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });
 
 test(`dry-run endpoint returns shape [${BASE}]`, async ({ page }) => {
@@ -89,12 +89,12 @@ test(`dry-run respects blackout window block [${BASE}]`, async ({ page }) => {
 
   // Create an agent with a 24/7 blackout — should ALWAYS be blocked
   // regardless of market state.
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PWBO', title: 'blackout e2e', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 22 blackout probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -119,7 +119,7 @@ test(`dry-run respects blackout window block [${BASE}]`, async ({ page }) => {
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });
 
 test(`Settings tab — MCP tool inventory shows 26 [${BASE}]`, async ({ page }) => {

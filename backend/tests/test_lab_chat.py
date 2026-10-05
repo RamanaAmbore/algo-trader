@@ -1,4 +1,4 @@
-"""Lab chat endpoint — POST /api/lab/chat runs `claude -p` with read-only MCP tools.
+"""Lab chat endpoint — POST /api/research/chat runs `claude -p` with read-only MCP tools.
 
 The subprocess is mocked (no real `claude` is run). Covers the allow-list
 contents, the 400/403/502/503/504 contract, the token-masking rules, and the
@@ -335,15 +335,15 @@ async def test_two_concurrent_requests_run_one_at_a_time(chat_env):
 @pytest.mark.asyncio
 async def test_partner_role_gets_403(async_client, chat_env):
     with _auth_as("partner"):
-        res = await async_client.post("/api/lab/chat", json={"message": "hi"})
+        res = await async_client.post("/api/research/chat", json={"message": "hi"})
     assert res.status_code == 403
 
 
 @pytest.mark.asyncio
 async def test_trader_role_gets_403_even_with_mcp_tools_cap(async_client, chat_env):
-    # use_mcp_tools is held by trader, but chat is designated-only (use_lab_chat).
+    # use_mcp_tools is held by trader, but chat is designated-only (use_research_chat).
     with _auth_as("trader"):
-        res = await async_client.post("/api/lab/chat", json={"message": "hi"})
+        res = await async_client.post("/api/research/chat", json={"message": "hi"})
     assert res.status_code == 403
 
 
@@ -351,20 +351,20 @@ async def test_trader_role_gets_403_even_with_mcp_tools_cap(async_client, chat_e
 async def test_designated_role_gets_200_with_reply(async_client, chat_env):
     _, patcher = _spawn_returning(_FakeProc(stdout=b'{"result":"hello there"}'))
     with _auth_as("designated"), patcher:
-        res = await async_client.post("/api/lab/chat", json={"message": "hi"})
+        res = await async_client.post("/api/research/chat", json={"message": "hi"})
     assert res.status_code == 200, res.text
     body = res.json()
     assert body["reply"] == "hello there"
     assert isinstance(body["duration_ms"], int)
 
 
-def test_use_lab_chat_cap_is_designated_only():
+def test_use_research_chat_cap_is_designated_only():
     from backend.api.rbac import CAPS
-    assert CAPS["use_lab_chat"] == frozenset({"designated"})
+    assert CAPS["use_research_chat"] == frozenset({"designated"})
 
 
 @pytest.mark.asyncio
 async def test_route_empty_message_returns_400(async_client, chat_env):
     with _auth_as("designated"):
-        res = await async_client.post("/api/lab/chat", json={"message": ""})
+        res = await async_client.post("/api/research/chat", json={"message": ""})
     assert res.status_code == 400

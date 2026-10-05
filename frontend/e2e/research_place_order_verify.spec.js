@@ -38,21 +38,21 @@ test(`mint endpoint validates inputs [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Missing required fields → 400
-  const bad1 = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const bad1 = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { account: '', tradingsymbol: 'NIFTY25APRFUT', side: 'BUY', quantity: 1 },
     headers,
   });
   expect(bad1.status(), `empty account: ${await bad1.text()}`).toBe(400);
 
   // Invalid side → 400
-  const bad2 = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const bad2 = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT', side: 'FOO', quantity: 1 },
     headers,
   });
   expect(bad2.status()).toBe(400);
 
   // Valid input → 200 + token + expires_in
-  const ok = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const ok = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: {
       account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT',
       side: 'SELL', quantity: 50, mode: 'paper',
@@ -73,7 +73,7 @@ test(`place_order without token → 403 [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const r = await page.request.post(`${BASE}/api/lab/place-order`, {
+  const r = await page.request.post(`${BASE}/api/mcp/place-order`, {
     data: {
       confirm_token: '',
       account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT',
@@ -92,7 +92,7 @@ test(`place_order with mismatched purpose → 403 [${BASE}]`, async ({ page }) =
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint a token for SELL 50 NIFTY @22150
-  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: {
       account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT',
       side: 'SELL', quantity: 50, mode: 'paper',
@@ -103,7 +103,7 @@ test(`place_order with mismatched purpose → 403 [${BASE}]`, async ({ page }) =
   const { token } = await mint.json();
 
   // Try to use it for BUY 50 @22150 — DIFFERENT side
-  const bad = await page.request.post(`${BASE}/api/lab/place-order`, {
+  const bad = await page.request.post(`${BASE}/api/mcp/place-order`, {
     data: {
       confirm_token: token,
       account: 'ZG0790', tradingsymbol: 'NIFTY25APRFUT',
@@ -129,7 +129,7 @@ test(`place_order valid token + matching order forwards [${BASE}]`, async ({ pag
     side: 'SELL', quantity: 50, mode: 'paper',
     order_type: 'LIMIT', price: 99999.95,
   };
-  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: mintBody, headers,
   });
   expect(mint.ok()).toBe(true);
@@ -140,7 +140,7 @@ test(`place_order valid token + matching order forwards [${BASE}]`, async ({ pag
   // will write an AlgoOrder row (paper, OPEN) with our wild limit
   // price — won't fill (price miles above market), engine will let
   // it sit until chase cap then mark UNFILLED. Safe for verification.
-  const res = await page.request.post(`${BASE}/api/lab/place-order`, {
+  const res = await page.request.post(`${BASE}/api/mcp/place-order`, {
     data: { confirm_token: token, ...mintBody },
     headers,
   });
@@ -159,7 +159,7 @@ test(`place_order valid token + matching order forwards [${BASE}]`, async ({ pag
   }
 
   // Replay attack — same token should now return 403 (used)
-  const replay = await page.request.post(`${BASE}/api/lab/place-order`, {
+  const replay = await page.request.post(`${BASE}/api/mcp/place-order`, {
     data: { confirm_token: token, ...mintBody },
     headers,
   });

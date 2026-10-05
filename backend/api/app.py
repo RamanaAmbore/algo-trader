@@ -59,7 +59,12 @@ from backend.api.routes.brokers import BrokersController
 from backend.api.routes.hedge_proxies import HedgeProxiesController, seed_hedge_proxies
 from backend.api.routes.exchange_schedule import ExchangeScheduleController
 from backend.api.helpers.exchange_clock import seed_and_warm as exchange_clock_seed_and_warm
-from backend.api.routes.lab import LabController, LegacyResearchController
+from backend.api.routes.lab import (
+    ResearchController,
+    McpController,
+    LegacyLabResearchController,
+    LegacyLabMcpController,
+)
 from backend.api.routes.economic import EconomicController
 from backend.api.routes.charts import ChartsController
 from backend.api.routes.options import OptionsController
@@ -232,8 +237,10 @@ _route_handlers = [
     BrokersController,
     HedgeProxiesController,
     ExchangeScheduleController,
-    LabController,
-    LegacyResearchController,
+    ResearchController,
+    McpController,
+    LegacyLabResearchController,
+    LegacyLabMcpController,
     EconomicController,
     WatchlistController,
     SymbolsController,

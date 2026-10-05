@@ -1,7 +1,7 @@
 /**
- * Lab chat panel — request box above the Lab tabs, calling POST /api/lab/chat.
+ * Lab chat panel — request box above the Lab tabs, calling POST /api/research/chat.
  *
- * The panel is gated by the `use_lab_chat` capability (designated only).
+ * The panel is gated by the `use_research_chat` capability (designated only).
  * The endpoint is mocked with page.route, so these tests exercise the UI only.
  *
  * Login selection:
@@ -60,7 +60,7 @@ test.describe('Lab chat panel — visibility by capability', () => {
     test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
     await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
     const reachable = await openLab(page);
-    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_lab missing).');
+    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_research missing).');
     await expect(page.locator(CHAT_TEXTAREA)).toBeVisible();
   });
 });
@@ -70,7 +70,7 @@ test.describe('Lab chat panel — behaviour (designated login)', () => {
     test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
     await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
     const reachable = await openLab(page);
-    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_lab missing).');
+    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_research missing).');
   });
 
   test('textarea and Send are visible', async ({ page }) => {
@@ -80,7 +80,7 @@ test.describe('Lab chat panel — behaviour (designated login)', () => {
 
   test('Send posts the message and renders the 200 reply as text', async ({ page }) => {
     let postedBody = null;
-    await page.route('**/api/lab/chat', async (route) => {
+    await page.route('**/api/research/chat', async (route) => {
       postedBody = route.request().postDataJSON();
       await route.fulfill({
         status: 200,
@@ -107,7 +107,7 @@ test.describe('Lab chat panel — behaviour (designated login)', () => {
 
   test('a mocked 503 shows its detail text', async ({ page }) => {
     const detail = 'Claude is not configured on this server.';
-    await page.route('**/api/lab/chat', (route) =>
+    await page.route('**/api/research/chat', (route) =>
       route.fulfill({
         status: 503,
         contentType: 'application/json',
@@ -125,7 +125,7 @@ test.describe('Lab chat panel — behaviour (designated login)', () => {
   test('Send is disabled and Thinking shows while pending', async ({ page }) => {
     let release;
     const gate = new Promise((resolve) => { release = resolve; });
-    await page.route('**/api/lab/chat', async (route) => {
+    await page.route('**/api/research/chat', async (route) => {
       await gate;
       await route.fulfill({
         status: 200,

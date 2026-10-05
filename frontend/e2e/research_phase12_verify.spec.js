@@ -32,7 +32,7 @@ test(`activate/deactivate mint shapes [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
-  const mA = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mA = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'activate', agent_slug: 'pw-test-agent' }, headers,
   });
   expect(mA.ok(), `activate mint: ${mA.status()}`).toBe(true);
@@ -40,7 +40,7 @@ test(`activate/deactivate mint shapes [${BASE}]`, async ({ page }) => {
   expect(a.purpose).toContain('ACTIVATE');
   expect(a.purpose).toContain('agent=pw-test-agent');
 
-  const mD = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mD = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'deactivate', agent_slug: 'pw-test-agent' }, headers,
   });
   expect(mD.ok(), `deactivate mint: ${mD.status()}`).toBe(true);
@@ -49,7 +49,7 @@ test(`activate/deactivate mint shapes [${BASE}]`, async ({ page }) => {
   console.log(`mints: ${a.purpose} | ${d.purpose}`);
 
   // Missing agent_slug → 400
-  const bad = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const bad = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'activate', agent_slug: '' }, headers,
   });
   expect(bad.status()).toBe(400);
@@ -60,12 +60,12 @@ test(`cross-direction token rejection [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint an ACTIVATE token; try to use it for DEACTIVATE → must be 403.
-  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'activate', agent_slug: 'pw-cross-test' }, headers,
   });
   const { token } = await mint.json();
 
-  const bad = await page.request.post(`${BASE}/api/lab/deactivate-agent`, {
+  const bad = await page.request.post(`${BASE}/api/mcp/deactivate-agent`, {
     data: { confirm_token: token, agent_slug: 'pw-cross-test' }, headers,
   });
   expect(bad.status(), 'activate token → deactivate call must be 403').toBe(403);
@@ -77,12 +77,12 @@ test(`cross-agent token rejection [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Mint for agent A; redeem for agent B → 403.
-  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'activate', agent_slug: 'pw-agent-A' }, headers,
   });
   const { token } = await mint.json();
 
-  const bad = await page.request.post(`${BASE}/api/lab/activate-agent`, {
+  const bad = await page.request.post(`${BASE}/api/mcp/activate-agent`, {
     data: { confirm_token: token, agent_slug: 'pw-agent-B' }, headers,
   });
   expect(bad.status(), 'agent-A token → agent-B call must be 403').toBe(403);
@@ -94,13 +94,13 @@ test(`end-to-end activate → deactivate flow [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // 1. Create a research thread + promote to inactive agent.
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PW12', title: 'phase-12 e2e', confidence: 'neutral' },
     headers,
   });
   const thread = await t.json();
 
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 12 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -112,11 +112,11 @@ test(`end-to-end activate → deactivate flow [${BASE}]`, async ({ page }) => {
   console.log(`created agent: ${draft.agent_slug} status=${draft.agent_status}`);
 
   // 2. Mint activate token + activate.
-  const mintA = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mintA = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'activate', agent_slug: draft.agent_slug }, headers,
   });
   const { token: tokA } = await mintA.json();
-  const act = await page.request.post(`${BASE}/api/lab/activate-agent`, {
+  const act = await page.request.post(`${BASE}/api/mcp/activate-agent`, {
     data: { confirm_token: tokA, agent_slug: draft.agent_slug }, headers,
   });
   expect(act.ok(), `activate: ${act.status()}`).toBe(true);
@@ -125,7 +125,7 @@ test(`end-to-end activate → deactivate flow [${BASE}]`, async ({ page }) => {
   console.log(`activated: ${actJ.detail}`);
 
   // 3. Replay → 403 (token consumed).
-  const replay = await page.request.post(`${BASE}/api/lab/activate-agent`, {
+  const replay = await page.request.post(`${BASE}/api/mcp/activate-agent`, {
     data: { confirm_token: tokA, agent_slug: draft.agent_slug }, headers,
   });
   expect(replay.status(), 'replay must be 403').toBe(403);
@@ -134,23 +134,23 @@ test(`end-to-end activate → deactivate flow [${BASE}]`, async ({ page }) => {
   // wrote a 'denied' row for the same slug; filter to the 'ok' row
   // explicitly so we don't pick up the more-recent denial.
   const audit = await page.request.get(
-    `${BASE}/api/lab/audit?tool=activate_agent&status=ok&limit=20`, { headers });
+    `${BASE}/api/mcp/audit?tool=activate_agent&status=ok&limit=20`, { headers });
   const auditRows = await audit.json();
   const myRow = auditRows.find(r => (r.args_redacted || {}).agent_slug === draft.agent_slug);
   expect(myRow, 'ok audit row must be present').toBeTruthy();
   expect(myRow.result_status).toBe('ok');
 
   // 5. Cleanup — mint deactivate token + flip back, then delete.
-  const mintD = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mintD = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: { kind: 'deactivate', agent_slug: draft.agent_slug }, headers,
   });
   const { token: tokD } = await mintD.json();
-  const deact = await page.request.post(`${BASE}/api/lab/deactivate-agent`, {
+  const deact = await page.request.post(`${BASE}/api/mcp/deactivate-agent`, {
     data: { confirm_token: tokD, agent_slug: draft.agent_slug }, headers,
   });
   expect(deact.ok()).toBe(true);
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });
 
 test(`Settings tab — 23 tools + new kinds in selector [${BASE}]`, async ({ page }) => {

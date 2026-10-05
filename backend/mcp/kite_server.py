@@ -520,7 +520,7 @@ async def save_research_thread(
         "confidence":  confidence,
         "transcript":  transcript or [],
     }
-    return await _post("/api/lab/threads", body)
+    return await _post("/api/research/threads", body)
 
 
 @app.tool()
@@ -531,7 +531,7 @@ async def get_research_thread(thread_id: int) -> dict:
     Args:
         thread_id: The thread row id (visible in the Lab page sidebar).
     """
-    return await _get(f"/api/lab/threads/{int(thread_id)}")
+    return await _get(f"/api/research/threads/{int(thread_id)}")
 
 
 @app.tool()
@@ -630,7 +630,7 @@ async def save_agent_draft(
         "tags":                tags or [],
         "blackout_windows":    blackout_windows or [],
     }
-    return await _post(f"/api/lab/threads/{int(thread_id)}/promote", body)
+    return await _post(f"/api/research/threads/{int(thread_id)}/promote", body)
 
 
 @app.tool()
@@ -653,7 +653,7 @@ async def place_order(
 ) -> dict:
     """Place an order via the operator's broker pipeline. REQUIRES a
     valid confirm_token minted by the operator from the Lab page
-    (`POST /api/lab/confirm-token`); you cannot generate one
+    (`POST /api/mcp/confirm-token`); you cannot generate one
     yourself.
 
     The token is single-use, expires in 60 seconds, and is bound to
@@ -728,7 +728,7 @@ async def place_order(
         "chase_aggressiveness": chase_aggressiveness,
         "template_slug":        template_slug,
     }
-    return await _post("/api/lab/place-order", body)
+    return await _post("/api/mcp/place-order", body)
 
 
 @app.tool()
@@ -769,7 +769,7 @@ async def cancel_order(
         "mode":          mode,
         "variety":       variety,
     }
-    return await _post("/api/lab/cancel-order", body)
+    return await _post("/api/mcp/cancel-order", body)
 
 
 @app.tool()
@@ -823,7 +823,7 @@ async def modify_order(
         "variety":       variety,
         "validity":      validity,
     }
-    return await _post("/api/lab/modify-order", body)
+    return await _post("/api/mcp/modify-order", body)
 
 
 @app.tool()
@@ -861,7 +861,7 @@ async def get_audit_recent(
     params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 1000))}
     if tool:   params["tool"]   = tool
     if status: params["status"] = status
-    rows = await _get("/api/lab/audit", params)
+    rows = await _get("/api/mcp/audit", params)
     return {"rows": rows or [], "count": len(rows or [])}
 
 
@@ -947,7 +947,7 @@ async def activate_agent(confirm_token: str, agent_slug: str) -> dict:
     Returns:
         {agent_slug, status='active', detail}.
     """
-    return await _post("/api/lab/activate-agent", {
+    return await _post("/api/mcp/activate-agent", {
         "confirm_token": confirm_token,
         "agent_slug":    agent_slug,
     })
@@ -971,7 +971,7 @@ async def deactivate_agent(confirm_token: str, agent_slug: str) -> dict:
     Returns:
         {agent_slug, status='inactive', detail}.
     """
-    return await _post("/api/lab/deactivate-agent", {
+    return await _post("/api/mcp/deactivate-agent", {
         "confirm_token": confirm_token,
         "agent_slug":    agent_slug,
     })
@@ -1022,7 +1022,7 @@ async def update_agent(
         CURRENT status (unchanged by update — only activate /
         deactivate change it).
     """
-    return await _post("/api/lab/update-agent", {
+    return await _post("/api/mcp/update-agent", {
         "confirm_token":    confirm_token,
         "agent_slug":       agent_slug,
         "proposed_changes": proposed_changes or {},
@@ -1041,7 +1041,7 @@ async def list_research_threads(symbol: str | None = None, limit: int = 50) -> d
     params: dict[str, Any] = {"limit": max(1, min(int(limit or 50), 500))}
     if symbol:
         params["symbol"] = symbol.upper()
-    rows = await _get("/api/lab/threads", params)
+    rows = await _get("/api/research/threads", params)
     return {"threads": rows or [], "count": len(rows or [])}
 
 

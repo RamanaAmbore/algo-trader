@@ -78,9 +78,9 @@ def _mint_request(template_slug):
 
 @pytest.mark.asyncio
 async def test_mint_endpoint_threads_template_slug_into_hash():
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch("backend.api.routes.lab._user_id", return_value=1):
-        resp = await R.LabController.mint_confirm_token.fn(
+        resp = await R.McpController.mint_confirm_token.fn(
             ctrl, data=_mint_request("default-bull"), request=MagicMock(),
         )
     expected = R._purpose_hash_place(
@@ -93,9 +93,9 @@ async def test_mint_endpoint_threads_template_slug_into_hash():
 
 @pytest.mark.asyncio
 async def test_mint_endpoint_without_template_keeps_baseline_hash():
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch("backend.api.routes.lab._user_id", return_value=1):
-        resp_none = await R.LabController.mint_confirm_token.fn(
+        resp_none = await R.McpController.mint_confirm_token.fn(
             ctrl, data=_mint_request(None), request=MagicMock(),
         )
     assert resp_none.purpose_hash == _BASELINE_NO_TPL_A
@@ -142,7 +142,7 @@ def _mint_token_for(template_slug):
 @pytest.mark.asyncio
 async def test_token_minted_with_slug_redeems_with_same_slug():
     tok = _mint_token_for("default-bull")
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
@@ -151,7 +151,7 @@ async def test_token_minted_with_slug_redeems_with_same_slug():
        patch("backend.api.routes.lab._res_place_telegram_ping"), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
-        resp = await R.LabController.place_order.fn(
+        resp = await R.McpController.place_order.fn(
             ctrl, data=_place_request("default-bull", tok), request=MagicMock(),
         )
     assert resp.order_id == "555"
@@ -160,7 +160,7 @@ async def test_token_minted_with_slug_redeems_with_same_slug():
 @pytest.mark.asyncio
 async def test_token_minted_with_slug_rejected_for_different_slug():
     tok = _mint_token_for("default-bull")
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value={"id": 9, "slug": "default-bear"}),
@@ -169,7 +169,7 @@ async def test_token_minted_with_slug_rejected_for_different_slug():
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
         with pytest.raises(HTTPException) as ei:
-            await R.LabController.place_order.fn(
+            await R.McpController.place_order.fn(
                 ctrl, data=_place_request("default-bear", tok), request=MagicMock(),
             )
     assert ei.value.status_code == 403
@@ -178,13 +178,13 @@ async def test_token_minted_with_slug_rejected_for_different_slug():
 @pytest.mark.asyncio
 async def test_token_minted_with_slug_rejected_when_slug_omitted():
     tok = _mint_token_for("default-bull")
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch("backend.api.routes.lab._user_id", return_value=1), \
        patch("backend.api.routes.lab._res_mcp_audit", new=AsyncMock()), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
         with pytest.raises(HTTPException) as ei:
-            await R.LabController.place_order.fn(
+            await R.McpController.place_order.fn(
                 ctrl, data=_place_request(None, tok), request=MagicMock(),
             )
     assert ei.value.status_code == 403
@@ -193,13 +193,13 @@ async def test_token_minted_with_slug_rejected_when_slug_omitted():
 @pytest.mark.asyncio
 async def test_token_minted_without_slug_redeems_without_slug():
     tok = _mint_token_for(None)
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch("backend.api.routes.lab._user_id", return_value=1), \
        patch("backend.api.routes.lab._res_mcp_audit", new=AsyncMock()), \
        patch("backend.api.routes.lab._res_place_telegram_ping"), \
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
-        resp = await R.LabController.place_order.fn(
+        resp = await R.McpController.place_order.fn(
             ctrl, data=_place_request(None, tok), request=MagicMock(),
         )
     assert resp.order_id == "555"
@@ -208,7 +208,7 @@ async def test_token_minted_without_slug_redeems_without_slug():
 @pytest.mark.asyncio
 async def test_token_minted_without_slug_rejected_when_slug_added():
     tok = _mint_token_for(None)
-    ctrl = R.LabController(owner=None)
+    ctrl = R.McpController(owner=None)
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value={"id": 7, "slug": "default-bull"}),
@@ -217,7 +217,7 @@ async def test_token_minted_without_slug_rejected_when_slug_added():
        patch("backend.api.routes.orders_place.ticket_order_handler",
              new=_fake_ticket_order_handler):
         with pytest.raises(HTTPException) as ei:
-            await R.LabController.place_order.fn(
+            await R.McpController.place_order.fn(
                 ctrl, data=_place_request("default-bull", tok), request=MagicMock(),
             )
     assert ei.value.status_code == 403

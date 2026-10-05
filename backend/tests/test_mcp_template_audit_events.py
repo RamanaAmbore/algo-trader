@@ -85,7 +85,7 @@ async def test_resolve_template_slug_unknown_returns_error():
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-# 1b. End-to-end through LabController.place_order
+# 1b. End-to-end through McpController.place_order
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _mk_place_request():
@@ -107,9 +107,9 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
     the slug to a template_id via the loader, (b) build a TicketOrderRequest
     carrying that resolved template_id AND a non-empty mcp_request_id, and
     (c) forward it unmodified to OrdersController.ticket_order."""
-    from backend.api.routes.lab import LabController
+    from backend.api.routes.lab import McpController
 
-    ctrl = LabController(owner=None)
+    ctrl = McpController(owner=None)
     data = _mk_place_request()
     fake_request = MagicMock()
 
@@ -125,7 +125,7 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
         captured["ticket"] = data
         return _FakeTicketResponse()
 
-    # LabController.place_order calls OrdersController.ticket_order.fn,
+    # McpController.place_order calls OrdersController.ticket_order.fn,
     # which itself locally imports and delegates to
     # orders_place.ticket_order_handler — patch THAT (the real delegate),
     # not the `.fn` property (a read-only Litestar descriptor, can't be
@@ -145,7 +145,7 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
         "backend.api.routes.orders_place.ticket_order_handler",
         new=_fake_ticket_order_handler,
     ):
-        resp = await LabController.place_order.fn(
+        resp = await McpController.place_order.fn(
             ctrl, data=data, request=fake_request,
         )
 
@@ -161,10 +161,10 @@ async def test_place_order_resolves_template_slug_and_sets_mcp_request_id():
 async def test_place_order_unknown_template_slug_422_and_no_token_burned():
     """An unresolvable template_slug must 422 BEFORE _consume_token runs —
     a typo must never burn the operator's single-use confirm token."""
-    from backend.api.routes.lab import LabController
+    from backend.api.routes.lab import McpController
     from litestar.exceptions import HTTPException
 
-    ctrl = LabController(owner=None)
+    ctrl = McpController(owner=None)
     data = _mk_place_request()
     fake_request = MagicMock()
 
@@ -181,7 +181,7 @@ async def test_place_order_unknown_template_slug_422_and_no_token_burned():
         "backend.api.routes.lab._res_mcp_audit", new=AsyncMock(),
     ):
         with pytest.raises(HTTPException) as ei:
-            await LabController.place_order.fn(
+            await McpController.place_order.fn(
                 ctrl, data=data, request=fake_request,
             )
 

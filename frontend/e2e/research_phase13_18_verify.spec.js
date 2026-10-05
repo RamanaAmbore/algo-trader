@@ -5,7 +5,7 @@
 //       cross-changes redemption blocked; end-to-end flow flips
 //       cooldown_minutes on an inactive agent.
 //   17: empty-state CTAs present on Drafts + Threads tabs.
-//   18: /api/lab/audit?request_id=… filters to one row; the
+//   18: /api/mcp/audit?request_id=… filters to one row; the
 //       Lab page's deep-link query param flips to Audit tab + pre-fills.
 
 import { test, expect } from '@playwright/test';
@@ -34,11 +34,11 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}`, 'Content-Type': 'application/json' };
 
   // Create a thread + promote → inactive agent
-  const t = await page.request.post(`${BASE}/api/lab/threads`, {
+  const t = await page.request.post(`${BASE}/api/research/threads`, {
     data: { symbol: 'PWUPD', title: 'phase 14 e2e', confidence: 'neutral' }, headers,
   });
   const thread = await t.json();
-  const p = await page.request.post(`${BASE}/api/lab/threads/${thread.id}/promote`, {
+  const p = await page.request.post(`${BASE}/api/research/threads/${thread.id}/promote`, {
     data: {
       name: 'Phase 14 probe',
       conditions: { all: [{ metric: 'pnl', scope: 'positions.total', op: '<=', value: -1 }] },
@@ -50,7 +50,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
 
   // Mint kind=update bound to a specific cooldown change
   const proposed = { cooldown_minutes: 15 };
-  const mint = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: {
       kind: 'update',
       agent_slug: draft.agent_slug,
@@ -64,7 +64,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
   expect(purpose).toContain('fields=cooldown_minutes');
 
   // Successful update — same proposed_changes → 200
-  const upd = await page.request.post(`${BASE}/api/lab/update-agent`, {
+  const upd = await page.request.post(`${BASE}/api/mcp/update-agent`, {
     data: {
       confirm_token: token,
       agent_slug: draft.agent_slug,
@@ -75,13 +75,13 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
   console.log(`update result: ${(await upd.json()).detail}`);
 
   // Replay → 403
-  const replay = await page.request.post(`${BASE}/api/lab/update-agent`, {
+  const replay = await page.request.post(`${BASE}/api/mcp/update-agent`, {
     data: { confirm_token: token, agent_slug: draft.agent_slug, proposed_changes: proposed }, headers,
   });
   expect(replay.status()).toBe(403);
 
   // Mint again, try to use it for a DIFFERENT change → 403
-  const mint2 = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint2 = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: {
       kind: 'update',
       agent_slug: draft.agent_slug,
@@ -89,7 +89,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
     }, headers,
   });
   const { token: tok2 } = await mint2.json();
-  const bad = await page.request.post(`${BASE}/api/lab/update-agent`, {
+  const bad = await page.request.post(`${BASE}/api/mcp/update-agent`, {
     data: {
       confirm_token: tok2,
       agent_slug: draft.agent_slug,
@@ -100,7 +100,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
   console.log(`swap denied: ${(await bad.json()).detail}`);
 
   // Try to sneak status=active through update_agent → silently dropped
-  const mint3 = await page.request.post(`${BASE}/api/lab/confirm-token`, {
+  const mint3 = await page.request.post(`${BASE}/api/mcp/confirm-token`, {
     data: {
       kind: 'update',
       agent_slug: draft.agent_slug,
@@ -111,7 +111,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
   // status shouldn't appear in the purpose (it's filtered out before hashing)
   expect(p3).not.toContain('status');
   console.log(`mint dropped non-whitelisted: ${p3}`);
-  const r3 = await page.request.post(`${BASE}/api/lab/update-agent`, {
+  const r3 = await page.request.post(`${BASE}/api/mcp/update-agent`, {
     data: {
       confirm_token: tok3,
       agent_slug: draft.agent_slug,
@@ -128,7 +128,7 @@ test(`Phase 14 — update_agent end-to-end [${BASE}]`, async ({ page }) => {
 
   // Cleanup
   await page.request.delete(`${BASE}/api/agents/${draft.agent_slug}`, { headers });
-  await page.request.delete(`${BASE}/api/lab/threads/${thread.id}`, { headers });
+  await page.request.delete(`${BASE}/api/research/threads/${thread.id}`, { headers });
 });
 
 test(`Phase 18 — /audit?request_id filter [${BASE}]`, async ({ page }) => {
@@ -136,7 +136,7 @@ test(`Phase 18 — /audit?request_id filter [${BASE}]`, async ({ page }) => {
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Pick any existing audit row
-  const all = await page.request.get(`${BASE}/api/lab/audit?limit=5`, { headers });
+  const all = await page.request.get(`${BASE}/api/mcp/audit?limit=5`, { headers });
   const rows = await all.json();
   if (rows.length === 0) {
     console.log('(soft-skip — no audit rows on dev)');
@@ -146,7 +146,7 @@ test(`Phase 18 — /audit?request_id filter [${BASE}]`, async ({ page }) => {
   console.log(`probing request_id=${target.request_id}`);
 
   const filtered = await page.request.get(
-    `${BASE}/api/lab/audit?request_id=${encodeURIComponent(target.request_id)}`,
+    `${BASE}/api/mcp/audit?request_id=${encodeURIComponent(target.request_id)}`,
     { headers });
   expect(filtered.ok()).toBe(true);
   const fRows = await filtered.json();
@@ -160,7 +160,7 @@ test(`Phase 18 UI — deep-link query param lands on Audit tab [${BASE}]`, async
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Find an existing request_id to deep-link to
-  const all = await page.request.get(`${BASE}/api/lab/audit?limit=5`, { headers });
+  const all = await page.request.get(`${BASE}/api/mcp/audit?limit=5`, { headers });
   const rows = await all.json();
   if (rows.length === 0) {
     console.log('(soft-skip — no audit rows)');

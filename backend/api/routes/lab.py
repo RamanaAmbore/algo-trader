@@ -1,5 +1,7 @@
 """
-`/api/lab/*` — research-thread CRUD for the /admin/mcp page.
+`/api/research/*` (research threads, drafts, chat) and `/api/mcp/*` (MCP
+tools and their audit), served on the /admin/mcp page. The old `/api/lab/*`
+paths are legacy aliases over the same handlers.
 
 A research thread captures one MCP-driven session ("Research RELIANCE")
 with its transcript, the synthesized thesis, and (after promotion) the
@@ -1258,18 +1260,14 @@ async def _mcp_modify_live(
 
 # ── Controller ────────────────────────────────────────────────────────
 
-class LabController(Controller):
-    path = "/api/lab"
-    # Per-route caps. Reads (threads + drafts) use `view_lab` which
-    # includes demo so the showcase tour's Lab step can populate a
-    # real page (threads + drafts list, which carry operator research
-    # notes — not sensitive orders). The audit-tab endpoint
-    # tightens to `view_audit` (designated/risk/admin only; demo excluded).
-    # Mutations use `manage_lab_threads` (designated/trader). MCP write
-    # actions tighten to `use_mcp_tools` (designated/trader) — already
-    # gated by confirm-token besides the cap check.
+class ResearchController(Controller):
+    """Research workspace: threads, drafts, and the request-box chat."""
+    path = "/api/research"
+    # Reads use `view_research` (includes demo for the showcase tour).
+    # Mutations use `manage_research_threads` (designated/trader). Chat is
+    # `use_research_chat` (designated only).
 
-    @get("/threads", guards=[cap_guard("view_lab")])
+    @get("/threads", guards=[cap_guard("view_research")])
     async def list_threads(self, symbol: str | None = None, limit: int = 100) -> list[ThreadSummary]:
         async with async_session() as s:
             q = select(ResearchThread).order_by(ResearchThread.updated_at.desc())
@@ -1279,7 +1277,7 @@ class LabController(Controller):
             rows = (await s.execute(q)).scalars().all()
         return [_to_summary(r) for r in rows]
 
-    @get("/threads/{thread_id:int}", guards=[cap_guard("view_lab")])
+    @get("/threads/{thread_id:int}", guards=[cap_guard("view_research")])
     async def get_thread(self, thread_id: int) -> ThreadInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -1289,7 +1287,7 @@ class LabController(Controller):
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
         return _to_info(row)
 
-    @post("/threads", guards=[cap_guard("manage_lab_threads")])
+    @post("/threads", guards=[cap_guard("manage_research_threads")])
     async def create_thread(self, data: ThreadCreate, request: Request) -> ThreadInfo:
         sym = (data.symbol or "").upper().strip()
         if not sym:
@@ -1324,7 +1322,7 @@ class LabController(Controller):
         logger.info(f"research thread created: id={row.id} sym={sym}")
         return _to_info(row)
 
-    @patch("/threads/{thread_id:int}", guards=[cap_guard("manage_lab_threads")])
+    @patch("/threads/{thread_id:int}", guards=[cap_guard("manage_research_threads")])
     async def update_thread(self, thread_id: int, data: ThreadUpdate) -> ThreadInfo:
         async with async_session() as s:
             row = (await s.execute(
@@ -1350,7 +1348,7 @@ class LabController(Controller):
             await s.refresh(row)
         return _to_info(row)
 
-    @delete("/threads/{thread_id:int}", status_code=204, guards=[cap_guard("manage_lab_threads")])
+    @delete("/threads/{thread_id:int}", status_code=204, guards=[cap_guard("manage_research_threads")])
     async def delete_thread(self, thread_id: int) -> None:
         async with async_session() as s:
             result = await s.execute(
@@ -1360,7 +1358,7 @@ class LabController(Controller):
         if result.rowcount == 0:
             raise HTTPException(status_code=404, detail=f"Thread {thread_id} not found")
 
-    @post("/threads/{thread_id:int}/promote", guards=[cap_guard("manage_lab_threads")])
+    @post("/threads/{thread_id:int}/promote", guards=[cap_guard("manage_research_threads")])
     async def promote_thread(self, thread_id: int, data: PromoteRequest) -> DraftInfo:
         """Promote a research thread into an inactive draft Agent.
 
@@ -1427,7 +1425,7 @@ class LabController(Controller):
             updated_at=thread.updated_at.isoformat() if thread.updated_at else "",
         )
 
-    @get("/drafts", guards=[cap_guard("view_lab")])
+    @get("/drafts", guards=[cap_guard("view_research")])
     async def list_drafts(self, limit: int = 200) -> list[DraftInfo]:
         """Threads with a linked draft Agent that's still inactive.
 
@@ -1457,6 +1455,28 @@ class LabController(Controller):
             )
             for (t, a) in rows
         ]
+
+    @post("/chat", status_code=200, guards=[cap_guard("use_research_chat")])
+    async def lab_chat(self, data: ChatRequest, request: Request) -> ChatResponse:
+        """Answer a Lab-page request with Claude Code (`claude -p`).
+
+        Read-only RamboQuant MCP tools only; subscription auth via
+        CLAUDE_CODE_OAUTH_TOKEN. One request at a time, 120 s timeout.
+        Validation, 503/502/504 mapping live in `run_lab_chat`."""
+        payload = getattr(request.state, "token_payload", None) or {}
+        username = str(payload.get("sub") or "unknown")
+        result = await run_lab_chat(data.message, username=username)
+        return ChatResponse(reply=result.reply, duration_ms=result.duration_ms)
+
+
+class McpController(Controller):
+    """MCP tools and their audit: confirm-token mint, gated order and agent
+    mutations, and the forensic audit trail."""
+    path = "/api/mcp"
+    # Audit reads use `view_audit`. Confirm-token mint uses
+    # `manage_research_threads`. MCP write actions use `use_mcp_tools`
+    # (designated/trader) — already gated by confirm-token besides the cap check.
+
 
     @get("/audit", guards=[cap_guard("view_audit")])
     async def list_audit(
@@ -1500,7 +1520,7 @@ class LabController(Controller):
 
     # ── Phase 3 — confirm-token mint + gated place_order ──────────────
 
-    @post("/confirm-token", guards=[cap_guard("manage_lab_threads")])
+    @post("/confirm-token", guards=[cap_guard("manage_research_threads")])
     async def mint_confirm_token(self, data: MintTokenRequest, request: Request) -> MintTokenResponse:
         """Operator-only — mint a single-use 60s token that authorises
         ONE specific MCP place_order call. The LLM cannot call this
@@ -1543,18 +1563,6 @@ class LabController(Controller):
             purpose=purpose,
             purpose_hash=ph,
         )
-
-    @post("/chat", status_code=200, guards=[cap_guard("use_lab_chat")])
-    async def lab_chat(self, data: ChatRequest, request: Request) -> ChatResponse:
-        """Answer a Lab-page request with Claude Code (`claude -p`).
-
-        Read-only RamboQuant MCP tools only; subscription auth via
-        CLAUDE_CODE_OAUTH_TOKEN. One request at a time, 120 s timeout.
-        Validation, 503/502/504 mapping live in `run_lab_chat`."""
-        payload = getattr(request.state, "token_payload", None) or {}
-        username = str(payload.get("sub") or "unknown")
-        result = await run_lab_chat(data.message, username=username)
-        return ChatResponse(reply=result.reply, duration_ms=result.duration_ms)
 
     @post("/place-order", guards=[cap_guard("use_mcp_tools")])
     async def place_order(self, data: PlaceOrderRequest, request: Request) -> PlaceOrderResponse:
@@ -1889,6 +1897,12 @@ class LabController(Controller):
         )
 
 
-# Legacy alias for /api/research; remove once nothing calls it.
-class LegacyResearchController(LabController):
-    path = "/api/research"
+# Legacy aliases: the old `/api/lab/*` paths serve the same handlers as the
+# new `/api/research/*` and `/api/mcp/*` controllers above. Remove once no
+# client (MCP config, saved links, scripts) calls them.
+class LegacyLabResearchController(ResearchController):
+    path = "/api/lab"
+
+
+class LegacyLabMcpController(McpController):
+    path = "/api/lab"

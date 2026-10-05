@@ -60,7 +60,7 @@ const HAS_DESIGNATED  = !!DESIGNATED_PASS;
 
 // Pages gated by caps that admin (rambo) holds: manage_brokers + view_audit.
 // /admin/alerts uses view_audit which admin holds; /admin/mcp uses
-// view_lab which admin does NOT hold per backend/api/rbac.py CAPS.
+// view_research which admin does NOT hold per backend/api/rbac.py CAPS.
 const ADMIN_ACCESSIBLE_PAGES = [
   { path: '/admin/brokers',  title: 'Brokers',  cap: 'manage_brokers' },
   { path: '/admin/history',  title: 'History',  cap: 'view_audit'     },
@@ -96,7 +96,7 @@ const ACCESS_LOCKED_PAGES_ADMIN_OK = [
 ];
 const ACCESS_LOCKED_PAGES_DESIGNATED_ONLY = [
   'settings',  // manage_settings
-  'research',  // view_lab (admit designated/trader/risk/demo — admin not in set)
+  'research',  // view_research (admit designated/trader/risk/demo — admin not in set)
 ];
 const ACCESS_LOCKED_PAGES = [
   ...ACCESS_LOCKED_PAGES_ADMIN_OK,

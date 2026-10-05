@@ -3,7 +3,7 @@
   //
   // The actual chat happens IN Claude Code (your terminal), not in this
   // page. The MCP server (backend/mcp/kite_server.py) writes its session
-  // back to /api/lab/threads as the operator works; the page is the
+  // back to /api/research/threads as the operator works; the page is the
   // read/review layer + the operator's bootstrap surface (Settings tab
   // generates the .mcp.json snippet and a fresh JWT to paste into env).
   //
@@ -24,7 +24,7 @@
   import {
     fetchResearchThreads, fetchResearchThread,
     deleteResearchThread, fetchResearchDrafts,
-    mintConfirmToken, fetchResearchAudit, postLabChat,
+    mintConfirmToken, fetchResearchAudit, postResearchChat,
   } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import InfoHint from '$lib/InfoHint.svelte';
@@ -48,7 +48,7 @@
   /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
   let confirmRef  = $state(null);
 
-  /** Joined-view rows from GET /api/lab/drafts — one per
+  /** Joined-view rows from GET /api/research/drafts — one per
    *  research thread with a linked inactive Agent. Activating the
    *  agent on /automation naturally graduates it out of this list. */
   /** @type {any[]} */
@@ -163,7 +163,7 @@
     }
   }
 
-  // Canonical $effect-gated auth (slice N4). view_lab admits
+  // Canonical $effect-gated auth (slice N4). view_research admits
   // admin + trader + risk + demo.
   // Bridge legacy stores into Svelte-5 $state so $derived doesn't
   // stale-cache the initial [] / 'partner' boot values — without
@@ -173,8 +173,8 @@
   let _role = $state(/** @type {string} */ ('partner'));
   $effect(() => { _caps = $userCaps; });
   $effect(() => { _role = $userRole; });
-  const _canView = $derived(hasCap('view_lab', _caps, _role));
-  const _canChat = $derived(hasCap('use_lab_chat', _caps, _role));
+  const _canView = $derived(hasCap('view_research', _caps, _role));
+  const _canChat = $derived(hasCap('use_research_chat', _caps, _role));
   let _loadedOnce = false;
   $effect(() => {
     if (_canView && !_loadedOnce) {
@@ -204,7 +204,7 @@
   });
   onDestroy(() => teardown?.());
 
-  // ── Chat panel — one-shot request box (POST /api/lab/chat) ─────────
+  // ── Chat panel — one-shot request box (POST /api/research/chat) ─────────
   // No history in v1: the last reply stays visible until the next one
   // arrives. Errors keep the previous reply on screen.
   let chatText    = $state('');
@@ -220,7 +220,7 @@
     chatError = '';
     chatInfo = false;
     try {
-      const res = await postLabChat(msg);
+      const res = await postResearchChat(msg);
       chatReply = res?.reply ?? '';
     } catch (/** @type {any} */ e) {
       if (e?.name === 'AbortError') {
@@ -484,7 +484,7 @@
 {:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
-      The MCP page requires the <code>view_lab</code> capability
+      The MCP page requires the <code>view_research</code> capability
       (admin, trader, or risk role). Your current role is
       <strong>{$userRole}</strong> — contact an admin to request access.
     {/snippet}

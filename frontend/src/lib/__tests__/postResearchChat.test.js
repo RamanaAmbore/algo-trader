@@ -1,7 +1,7 @@
 /**
- * postLabChat.test.js — Vitest unit tests for `postLabChat` in api.js.
+ * postResearchChat.test.js — Vitest unit tests for `postResearchChat` in api.js.
  *
- * Covers the Lab chat contract: POST /api/lab/chat with {message}, the
+ * Covers the Lab chat contract: POST /api/research/chat with {message}, the
  * 200 reply shape, and a 503 whose `detail` must reach the caller intact
  * (the Lab panel shows it as-is in a neutral info style).
  *
@@ -17,7 +17,7 @@ vi.mock('$lib/stores', () => ({
   },
 }));
 
-import { postLabChat } from '$lib/api';
+import { postResearchChat } from '$lib/api';
 
 function makeFetchResponse(body, status = 200) {
   return {
@@ -36,15 +36,15 @@ beforeEach(() => {
   globalThis.fetch = fetchSpy;
 });
 
-describe('postLabChat', () => {
-  it('POSTs {message} as JSON to /api/lab/chat and returns the reply', async () => {
+describe('postResearchChat', () => {
+  it('POSTs {message} as JSON to /api/research/chat and returns the reply', async () => {
     fetchSpy.mockResolvedValue(makeFetchResponse({ reply: 'pong', duration_ms: 812 }));
 
-    const res = await postLabChat('ping');
+    const res = await postResearchChat('ping');
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     const [url, init] = fetchSpy.mock.calls[0];
-    expect(url).toBe('/api/lab/chat');
+    expect(url).toBe('/api/research/chat');
     expect(init.method).toBe('POST');
     expect(JSON.parse(init.body)).toEqual({ message: 'ping' });
     expect(init.headers['Content-Type']).toBe('application/json');
@@ -58,7 +58,7 @@ describe('postLabChat', () => {
 
     let caught = null;
     try {
-      await postLabChat('hello');
+      await postResearchChat('hello');
     } catch (e) {
       caught = e;
     }
@@ -71,7 +71,7 @@ describe('postLabChat', () => {
   it('surfaces the 502 detail on the thrown error', async () => {
     fetchSpy.mockResolvedValue(makeFetchResponse({ detail: 'Claude upstream failed' }, 502));
 
-    await expect(postLabChat('hello')).rejects.toMatchObject({
+    await expect(postResearchChat('hello')).rejects.toMatchObject({
       status: 502,
       detail: 'Claude upstream failed',
     });

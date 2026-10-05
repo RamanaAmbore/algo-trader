@@ -44,12 +44,12 @@ test(`Phase 6 — mcp.audit_retention_days setting seeded [${BASE}]`, async ({ p
   expect(Number(row.default_value)).toBe(90);
 });
 
-test(`Phase 7 — /api/lab/audit returns shape matching get_audit_recent [${BASE}]`, async ({ page }) => {
+test(`Phase 7 — /api/mcp/audit returns shape matching get_audit_recent [${BASE}]`, async ({ page }) => {
   const tok = await login(page);
   const headers = { Authorization: `Bearer ${tok}` };
 
   // Plain list
-  const all = await page.request.get(`${BASE}/api/lab/audit?limit=20`, { headers });
+  const all = await page.request.get(`${BASE}/api/mcp/audit?limit=20`, { headers });
   expect(all.ok()).toBe(true);
   const rows = await all.json();
   expect(Array.isArray(rows)).toBe(true);
@@ -57,7 +57,7 @@ test(`Phase 7 — /api/lab/audit returns shape matching get_audit_recent [${BASE
 
   // tool-filtered — restricted to place_order (and later cancel/modify)
   const filtered = await page.request.get(
-    `${BASE}/api/lab/audit?tool=place_order&limit=5`, { headers });
+    `${BASE}/api/mcp/audit?tool=place_order&limit=5`, { headers });
   expect(filtered.ok()).toBe(true);
   const placeRows = await filtered.json();
   for (const r of placeRows) {
@@ -67,7 +67,7 @@ test(`Phase 7 — /api/lab/audit returns shape matching get_audit_recent [${BASE
 
   // status filter
   const denied = await page.request.get(
-    `${BASE}/api/lab/audit?status=denied&limit=5`, { headers });
+    `${BASE}/api/mcp/audit?status=denied&limit=5`, { headers });
   expect(denied.ok()).toBe(true);
   const deniedRows = await denied.json();
   for (const r of deniedRows) {
