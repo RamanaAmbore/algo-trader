@@ -168,6 +168,7 @@ function _friendlyError(/** @type {number|null} */ status,
   // problems (e.g. "Broker (Kite) is temporarily unavailable") read
   // accurately instead of the generic "Server busy" line. Falls back
   // to the generic when the server didn't supply a detail.
+  if (status === 504)              return 'Timed out — try a shorter question.';
   if (status && status >= 500)     return detail ? _trimDetail(detail) : 'Server busy — retry.';
   if (status == null || status === 0) return 'No connection.';
   if (detail) return _trimDetail(detail);
