@@ -16,7 +16,6 @@
        <EmptyState
          title="No strategies"
          icon="chart"
-         action={{ label: "New strategy", onClick: () => goto('/strategies/new') }}
        />
 
   Props:

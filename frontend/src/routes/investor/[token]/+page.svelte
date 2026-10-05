@@ -208,7 +208,7 @@
       {@const xOf = (i) => _pad.l + (history.length === 1 ? innerW / 2 : (i * innerW) / (history.length - 1))}
       {@const path = history.map((p, i) => `${i === 0 ? 'M' : 'L'} ${xOf(i)} ${yOf(p.nav_share)}`).join(' ')}
       <section class="ip-chart">
-        <h2 class="ip-section-heading">Your value over time
+        <h2 class="section-heading">Your value over time
           <span class="ip-meta">{history.length} days</span></h2>
         <svg class="ip-svg" viewBox="0 0 760 260" preserveAspectRatio="none"
              aria-label="Investor NAV history">
@@ -238,7 +238,7 @@
          the URL IS the credential; the browser's "save as" picks up
          the Content-Disposition filename. -->
     <section class="ip-statement">
-      <h2 class="ip-section-heading">Monthly statement</h2>
+      <h2 class="section-heading">Monthly statement</h2>
       <div class="ip-statement-row">
         <div class="ip-statement-picker">
           <Select
@@ -485,7 +485,7 @@
     padding: 1.1rem 1.3rem;
     margin-bottom: 1.5rem;
   }
-  .ip-section-heading {
+  .section-heading {
     margin: 0 0 0.5rem;
     font-size: 0.7rem;
     font-weight: 800;

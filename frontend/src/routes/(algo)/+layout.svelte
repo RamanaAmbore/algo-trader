@@ -382,7 +382,11 @@
     // faster to a first-time visitor. URL kept at /admin/execution
     // for backward-compat with deep links + bookmarks.
     { href: '/admin/execution',  label: 'Sandbox',                       group: 'explore' },
-    // ── Build / extend ──
+    // MCP (formerly Lab) — Claude Code + MCP research workspace, admin.
+    // Simulator — past sim iterations; no adminOnly (page gates on sign-in).
+    { href: '/admin/mcp',        label: 'MCP',       adminOnly: true, group: 'explore' },
+    { href: '/admin/simulator/iterations', label: 'Simulator', group: 'explore' },
+    // ── Build / extend ── Activity (log viewer) and Console (terminal).
     // /console keeps the URL but the navbar label aligns with the URL
     // ('Console') now that 'Terminal' is the brand name of the whole
     // umbrella (Rambo Terminal). Avoids the visual collision where a
@@ -390,15 +394,20 @@
     // the whole platform or just one tool.
     { href: '/activity',         label: 'Activity',  group: 'build' },
     { href: '/console',          label: 'Console',   group: 'build' },
-    { href: '/admin/lab',   label: 'Lab',       adminOnly: true, group: 'build' },
-    { href: '/admin/tokens',     label: 'Tokens',    group: 'build' },
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).
     //   Settings — occasional threshold tuning during volatile days.
+    //   Tokens — grammar catalog, read when authoring rules.
     //   Users — invitation-only, rare.
+    //   Statements — monthly LP statement audit + manual send.
+    //   History — multi-day forensic view of orders, trades, funds.
+    //   Audit — paginated audit log viewer.
+    //   Metrics — code-health snapshot history, per release.
+    //   Perf — per-page / per-route perf snapshots, nightly.
     //   Health — diagnostic surface, glance-only, last.
     { href: '/admin/brokers',    label: 'Brokers',   adminOnly: true, group: 'config' },
     { href: '/admin/settings',   label: 'Settings',  adminOnly: true, group: 'config' },
+    { href: '/admin/tokens',     label: 'Tokens',    adminOnly: true, group: 'config' },
     { href: '/admin',            label: 'Users',     adminOnly: true, group: 'config' },
     { href: '/admin/statements', label: 'Statements', adminOnly: true, group: 'config' },
     { href: '/admin/history',    label: 'History',   adminOnly: true, group: 'config' },
@@ -481,7 +490,7 @@
   // ── Group disclosure for the desktop nav ──────────────────────────
   //
   // Groups with ≥2 items collapse behind a labelled dropdown button;
-  // single-item groups (Analyze=Derivatives, Modes=Lab) render inline
+  // single-item groups (Analyze=Derivatives) render inline
   // because a dropdown wrapping a single child is overhead with no
   // benefit. Monitor stays inline always — high-frequency surfaces
   // (Pulse / Dashboard / Agents / Orders) should be one-click.
@@ -2312,12 +2321,6 @@
     }
     :global(.bucket-card) {
       padding: 0.35rem 0.4rem 0.35rem 0.7rem;
-    }
-    /* Bare page-level section headings (.algo-section-title) sit
-       directly in .algo-content (padding-left: 0 on mobile) — give
-       them the same 0.7rem left indent as the cards beside them. */
-    :global(.algo-section-title) {
-      padding-left: 0.7rem;
     }
     /* Tighter page-header on mobile — saves ~0.5rem of vertical
        chrome between the ps-strip and the page's first content

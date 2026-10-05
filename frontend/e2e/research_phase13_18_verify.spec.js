@@ -170,7 +170,7 @@ test(`Phase 18 UI — deep-link query param lands on Audit tab [${BASE}]`, async
 
   await page.setViewportSize({ width: 1440, height: 1000 });
   await page.goto(
-    `${BASE}/admin/lab?audit_request=${target.request_id}`,
+    `${BASE}/admin/mcp?audit_request=${target.request_id}`,
     { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
@@ -193,7 +193,7 @@ test(`Phase 18 UI — deep-link query param lands on Audit tab [${BASE}]`, async
 test(`Phase 17 — empty-state CTAs present [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // Drafts tab — if list is empty, the CTA must be there
@@ -212,7 +212,7 @@ test(`Phase 17 — empty-state CTAs present [${BASE}]`, async ({ page }) => {
 test(`Settings tab — 24 tools incl update_agent [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();
   await page.waitForTimeout(400);

@@ -5,8 +5,6 @@
     /automation/templates       → Order Templates (TP/SL/Wing presets)
     /automation/agent-templates → Notify + Condition Templates ($ref-able)
     /automation/activity        → Recent fires (agent_fire / action events)
-    /admin/tokens               → Grammar tokens catalog (admin)
-    /admin/lab             → Lab (Claude Code + MCP research, admin)
 
   Operator mental model: every reusable saved thing is a "template".
   Order Templates govern order attachments (TP/SL/Wing); Agent
@@ -34,8 +32,6 @@
     { id: '/automation/templates',       label: 'Order Templates' },
     { id: '/automation/agent-templates', label: 'Agent Templates' },
     { id: '/automation/activity',        label: 'Activity'        },
-    { id: '/admin/tokens',               label: 'Tokens'          },
-    { id: '/admin/lab',             label: 'Lab'             },
   ];
 
   // Longest-match — /automation/activity must beat /automation.

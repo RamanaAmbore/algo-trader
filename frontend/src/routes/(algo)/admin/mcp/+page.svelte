@@ -1,5 +1,5 @@
 <script>
-  // Research workspace — chat-driven stock research via Claude Code + MCP.
+  // MCP page — chat-driven stock research via Claude Code + MCP.
   //
   // The actual chat happens IN Claude Code (your terminal), not in this
   // page. The MCP server (backend/mcp/kite_server.py) writes its session
@@ -12,7 +12,7 @@
   //   Drafts   — agents created from a research thesis (status=inactive)
   //   Settings — .mcp.json template + JWT helper + tool inventory
   //
-  // No GenAI is invoked from this page. The Lab is a thin shell over the
+  // No GenAI is invoked from this page. The MCP page is a thin shell over the
   // MCP pipeline — Claude Code (subscription) is the only LLM in the loop.
 
   import { onMount, onDestroy } from 'svelte';
@@ -31,7 +31,6 @@
   import Select from '$lib/Select.svelte';
   import RefreshButton from '$lib/RefreshButton.svelte';
   import AlgoTabs from '$lib/AlgoTabs.svelte';
-  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
@@ -188,7 +187,7 @@
 
   onMount(() => {
     // Phase 18 — Telegram deep-link handler. When the page is loaded
-    // via /admin/lab?audit_request=<id> (the link in every
+    // via /admin/mcp?audit_request=<id> (the link in every
     // request_id Telegram ping), jump straight to the Audit tab
     // pre-filtered to that exact row. The operator on their phone
     // gets a one-tap forensic drill-down. Runs regardless of
@@ -447,7 +446,7 @@
     { name: 'get_watchlist',         summary: 'Symbols in a named watchlist (scope research to a curated set)' },
     { name: 'get_pnl_attribution',   summary: 'P&L grouped by agent — which rules are making money this period' },
     { name: 'list_agents',           summary: 'List existing agents (optionally by status)' },
-    { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the Lab page' },
+    { name: 'save_research_thread',  summary: 'Persist a thesis + transcript to the MCP page' },
     { name: 'save_agent_draft',      summary: 'Promote a thread to an inactive draft Agent (paper-mode)' },
     { name: 'place_order',           summary: 'Gated order placement — requires operator-minted confirm token' },
     { name: 'cancel_order',          summary: 'Gated cancel — requires confirm token bound to (account, order_id)' },
@@ -462,11 +461,11 @@
   ];
 </script>
 
-<svelte:head><title>Lab | RamboQuant Analytics</title></svelte:head>
+<svelte:head><title>MCP | RamboQuant Analytics</title></svelte:head>
 
 <div class="page-header">
   <span class="algo-title-group">
-    <h1 class="page-title-chip">Lab</h1>
+    <h1 class="page-title-chip">MCP</h1>
   </span>
   <AlgoTimestamp />
   <span class="ml-auto"></span>
@@ -485,17 +484,15 @@
 {:else if !_canView}
   <EmptyState title="Access denied" icon="lock">
     {#snippet hintBody()}
-      The research lab requires the <code>view_lab</code> capability
+      The MCP page requires the <code>view_lab</code> capability
       (admin, trader, or risk role). Your current role is
       <strong>{$userRole}</strong> — contact an admin to request access.
     {/snippet}
   </EmptyState>
 {:else}
 
-<AutomationTabs />
-
 {#if _canChat}
-<section class="lab-card lab-chat" aria-label="Lab chat">
+<section class="lab-card lab-chat" aria-label="MCP chat">
   <textarea class="lab-chat-input"
             bind:value={chatText}
             maxlength="4000"
@@ -983,10 +980,7 @@
     display: flex;
     /* Bumped margin-top from 0.8rem → 1.4rem and added a faint top
        border so the page-internal AlgoTabs strip is visually distinct
-       from the AutomationTabs workspace strip above it. Pre-fix the
-       two strips stacked with zero separator and identical visual
-       weight; operator saw two amber underline bars and couldn't tell
-       which was workspace-nav vs page-internal. */
+       from the page header above it. */
     margin: 1.4rem 0 0.4rem;
     padding-top: 0.5rem;
     border-top: 1px solid rgba(126, 151, 184, 0.08);

@@ -202,7 +202,7 @@
   <!-- Lot ledger -->
   <section class="strat-detail-lots">
     <div class="strat-section-head">
-      <h2 class="strat-section-heading">Lot ledger</h2>
+      <h2 class="section-heading">Lot ledger</h2>
       <label class="show-closed">
         <input type="checkbox" bind:checked={showClosed} onchange={load} />
         Show closed
@@ -261,7 +261,7 @@
        hint instead of placeholder numbers. -->
   <section class="strat-detail-metrics">
     <div class="strat-section-head">
-      <h2 class="strat-section-heading">Risk-adjusted metrics</h2>
+      <h2 class="section-heading">Risk-adjusted metrics</h2>
       {#if metrics && metrics.n_samples > 0}
         <span class="strat-metrics-meta">
           {metrics.n_samples} daily delta{metrics.n_samples === 1 ? '' : 's'} · last {metrics.days}d
@@ -347,7 +347,7 @@
          - unrealised — slate, dotted (when meaningful) -->
   <section class="strat-detail-snapshot">
     <div class="strat-section-head">
-      <h2 class="strat-section-heading">P&amp;L curve</h2>
+      <h2 class="section-heading">P&amp;L curve</h2>
       <span class="strat-curve-meta">
         {#if snapshots.length > 0}
           {snapshots.length} day{snapshots.length === 1 ? '' : 's'}
@@ -503,7 +503,7 @@
   /* Canonical .algo-card-title palette + typography — operator: "GREEKS
      is good, make every header uniform". Was: fs-md / 800 / slate-muted
      which drifted from every other card heading on the page. */
-  .strat-section-heading {
+  .section-heading {
     margin: 0;
     font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.04em;
     text-transform: uppercase; color: var(--c-action);

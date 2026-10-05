@@ -4,7 +4,7 @@
  * Covers the Sprint 2a Lab-page Safety-card fix
  * (docs/proposals/SPRINT2_LAYER_INTEGRATION.md §2, §5):
  *
- * The Settings tab's "4. Safety" card (admin/lab/+page.svelte)
+ * The Settings tab's "4. Safety" card (admin/mcp/+page.svelte)
  * previously stated "No order placement from MCP yet. The server cannot
  * move money." and "...Phase 3 will match." — both false. MCP's
  * `place_order` / `cancel_order` / `modify_order` tools
@@ -38,7 +38,7 @@ import { loginAsAdmin } from './fixtures/auth.js';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 
-const PAGE_PATH = 'src/routes/(algo)/admin/lab/+page.svelte';
+const PAGE_PATH = 'src/routes/(algo)/admin/mcp/+page.svelte';
 
 test.describe('Lab Safety card — accuracy fix (static source)', () => {
   test('the stale "no order placement" / "Phase 3 will match" claims are gone', () => {
@@ -79,7 +79,7 @@ test.describe('Lab Safety card — accuracy fix (static source)', () => {
 test.describe('Lab Safety card — accuracy fix (rendered DOM)', () => {
   test.setTimeout(60_000);
 
-  // Skipped against the local webServer: /admin/lab is gated by the
+  // Skipped against the local webServer: /admin/mcp is gated by the
   // `view_lab` capability, which the local `rambo` test account (the only
   // credential available to this harness's global-setup) does not carry —
   // confirmed via a live run (Access-denied screenshot, capability gate in
@@ -90,7 +90,7 @@ test.describe('Lab Safety card — accuracy fix (rendered DOM)', () => {
   // local `rambo` carries `view_lab`) by removing `.skip`.
   test.skip('the live Settings tab shows the corrected Safety card text to the operator', async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto('/admin/lab');
+    await page.goto('/admin/mcp');
     await page.waitForLoadState('domcontentloaded');
 
     await page.locator('.algo-tab', { hasText: 'Settings' }).click();

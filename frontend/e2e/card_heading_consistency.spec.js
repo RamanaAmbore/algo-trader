@@ -74,10 +74,8 @@ let STORAGE_PATH;
 async function getHeadingEls(page) {
   return page.locator(
     '.algo-content .algo-card-title, ' +
-    '.algo-content .algo-section-title, ' +
     '.algo-content .mp-section-label, ' +
     '.algo-content .section-heading, ' +
-    '.algo-content .strat-section-heading, ' +
     '.algo-content .brokers-h, ' +
     '.algo-content .opt-block-h, ' +
     '.algo-content .oes-modal-name, ' +
@@ -99,7 +97,6 @@ test('SSOT stale-code: heading selectors in app.css resolve to canonical amber +
   //   font-size MUST be 0.6rem  (unified 2026-07-01 — section-title was 0.65rem)
   const CANONICAL_SELECTORS = [
     'algo-card-title',
-    'algo-section-title',
     'mp-section-label',
   ];
   for (const sel of CANONICAL_SELECTORS) {
@@ -140,8 +137,8 @@ test('SSOT stale-code: bespoke heading classes in algo routes/lib use canonical 
     // [file, selector]
     ['src/routes/(algo)/admin/brokers/+page.svelte', 'brokers-h'],
     ['src/routes/(algo)/admin/metrics/+page.svelte', 'metrics-h2'],
-    ['src/routes/(algo)/strategies/+page.svelte', 'strat-section-heading'],
-    ['src/routes/(algo)/strategies/[id]/+page.svelte', 'strat-section-heading'],
+    ['src/routes/(algo)/strategies/+page.svelte', 'section-heading'],
+    ['src/routes/(algo)/strategies/[id]/+page.svelte', 'section-heading'],
     ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-block-h'],
     ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-section-h'],
     ['src/routes/(algo)/admin/derivatives/+page.svelte', 'opt-section-title'],
@@ -232,15 +229,16 @@ test.describe.serial('live heading checks', () => {
 
         // Font-size check for canonical SSOT classes only
         const fsHeadings = await page.locator(
-          '.algo-content .algo-card-title, .algo-content .algo-section-title'
+          '.algo-content .algo-card-title'
         ).filter({ visible: true });
         const fsCount = await fsHeadings.count();
         for (let i = 0; i < fsCount; i++) {
           const el   = fsHeadings.nth(i);
           const fsPx = await el.evaluate(n => parseFloat(getComputedStyle(n).fontSize));
           const cls  = await el.evaluate(n => n.className);
-          // 0.6rem × 16 = 9.6px — unified canonical for both .algo-card-title
-          // and .algo-section-title (aligned 2026-07-01, was 0.65rem for section).
+          // 0.6rem × 16 = 9.6px — canonical for .algo-card-title.
+          // Section headings (.section-heading) are not checked here: the
+          // strategies and admin variants intentionally use other sizes.
           const ok = Math.abs(fsPx - 9.6) <= 0.5;
           expect(ok, `[desktop ${route}] "${cls.trim()}" font-size=${fsPx}px — expected 9.6px (0.6rem canonical)`).toBe(true);
         }

@@ -32,11 +32,11 @@ const NO_DESIGNATED_REASON =
   'PLAYWRIGHT_DESIGNATED_PASS to run the chat panel tests.';
 
 /**
- * Open /admin/lab and wait for either the chat box or the access-denied panel.
+ * Open /admin/mcp and wait for either the chat box or the access-denied panel.
  * Returns true when the Lab page content is reachable for this login.
  */
 async function openLab(page) {
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   const chat = page.locator(CHAT_TEXTAREA);
   const denied = page.locator('text=Access denied').first();
   await chat.or(denied).first().waitFor({ timeout: 10000 }).catch(() => {});
@@ -53,14 +53,14 @@ test.describe('Lab chat panel — visibility by capability', () => {
       return;
     }
     await expect(page.locator(CHAT_TEXTAREA)).toHaveCount(0);
-    await expect(page.locator('section[aria-label="Lab chat"]')).toHaveCount(0);
+    await expect(page.locator('section[aria-label="MCP chat"]')).toHaveCount(0);
   });
 
   test('panel is present for a designated login', async ({ page }) => {
     test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
     await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
     const reachable = await openLab(page);
-    test.skip(!reachable, 'Designated login cannot reach /admin/lab (view_lab missing).');
+    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_lab missing).');
     await expect(page.locator(CHAT_TEXTAREA)).toBeVisible();
   });
 });
@@ -70,7 +70,7 @@ test.describe('Lab chat panel — behaviour (designated login)', () => {
     test.skip(!HAS_DESIGNATED, NO_DESIGNATED_REASON);
     await loginAsAdmin(page, { user: DESIGNATED_USER, pass: DESIGNATED_PASS });
     const reachable = await openLab(page);
-    test.skip(!reachable, 'Designated login cannot reach /admin/lab (view_lab missing).');
+    test.skip(!reachable, 'Designated login cannot reach /admin/mcp (view_lab missing).');
   });
 
   test('textarea and Send are visible', async ({ page }) => {

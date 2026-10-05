@@ -179,7 +179,7 @@
 <!-- Create form. Designated / admin / trader only. Hidden for read-only roles. -->
 {#if canEdit}
   <div class="strat-create">
-    <h2 class="strat-section-heading">New strategy</h2>
+    <h2 class="section-heading">New strategy</h2>
     <div class="strat-create-grid">
       <label class="strat-flbl">Slug
         <input bind:value={createForm.slug} class="field-input" placeholder="nifty-mean-reversion" />
@@ -246,10 +246,8 @@
         {:else}
           <tr class:strat-row-inactive={!r.is_active}>
             <td class="td-slug">
-              <!-- /strategies/[id] route doesn't exist yet (per-strategy
-                   detail page lands in slice 7 when the ledger ships).
-                   Render as plain text until then so the link doesn't 404.
-                   Slice AS audit fix. -->
+              <!-- Plain text: the /strategies/[id] detail page exists but
+                   the slug is not linked from this table yet. -->
               <span class="strat-slug">{r.slug}</span>
             </td>
             <td>{r.name}</td>
@@ -292,7 +290,7 @@
   /* Canonical .algo-card-title palette + typography — operator: "GREEKS
      is good, make every header uniform". Was: fs-md / 800 / slate-muted
      which drifted from every other card heading on the page. */
-  .strat-section-heading {
+  .section-heading {
     font-size: var(--fs-md); font-weight: 700; letter-spacing: 0.04em;
     text-transform: uppercase; color: var(--c-action);
     margin: 0 0 0.5rem;

@@ -118,7 +118,7 @@ test(`cancel + modify mint paths work [${BASE}]`, async ({ page }) => {
 test(`Lab page — Audit tab + Kind selector render [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // 4 tabs now: Research, Drafts, Audit, Settings

@@ -122,7 +122,7 @@ test(`paper cancel of non-existent order_id returns 404 [${BASE}]`, async ({ pag
 test(`Lab mint widget — Mode dropdown for cancel/modify [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();

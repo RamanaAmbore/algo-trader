@@ -45,7 +45,7 @@ const PAGES = [
   '/admin/alerts',
   '/admin/statements',
   '/admin/tokens',
-  '/admin/lab',
+  '/admin/mcp',
   '/admin/execution',
   '/admin',
   '/automation/activity',

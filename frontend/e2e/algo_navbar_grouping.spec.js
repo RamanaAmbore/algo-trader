@@ -48,7 +48,7 @@ test.describe('desktop nav grouping', () => {
     // Inline labels — every one of these is a direct button (NOT inside
     // a .algo-group-wrap), confirming they didn't collapse into a
     // dropdown.
-    for (const lbl of ['Pulse', 'Dashboard', 'Agents', 'Orders', 'Derivatives', 'Lab']) {
+    for (const lbl of ['Pulse', 'Dashboard', 'Agents', 'Orders', 'Derivatives', 'MCP']) {
       const direct = page.locator(`nav > button.algo-nav-btn:has-text("${lbl}")`).first();
       await expect(direct, `inline button "${lbl}" should be a direct nav child`).toBeVisible();
     }
@@ -62,10 +62,10 @@ test.describe('desktop nav grouping', () => {
     // Panels start closed
     await expect(page.locator('.algo-group-panel')).toHaveCount(0);
 
-    // Open Build → see Console / Research / Tokens
+    // Open Build → see Activity / Console
     await buildTrigger.click();
     await expect(page.locator('.algo-group-panel')).toBeVisible();
-    for (const lbl of ['Console', 'Tokens']) {
+    for (const lbl of ['Activity', 'Console']) {
       await expect(page.locator(`.algo-group-item:has-text("${lbl}")`)).toBeVisible();
     }
     // Research is adminOnly — present whether or not we hit admin login,

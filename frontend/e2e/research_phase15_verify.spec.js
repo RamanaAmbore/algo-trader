@@ -66,7 +66,7 @@ test(`/api/lab/audit honors since [${BASE}]`, async ({ page }) => {
 test(`Audit tab — 3 filter selects incl Since [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Audit' }).click();
   await page.waitForTimeout(400);

@@ -747,7 +747,7 @@
      down (true CSS-columns behaviour, unlike a 2-col Grid where
      row siblings would equalise heights). Single column on mobile. -->
 {#each groupedAgents() as group}
-  <h2 class="algo-section-title mt-3 mb-1.5 border-b border-white/10 pb-0.5">
+  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>
@@ -1283,6 +1283,11 @@
 {/each}
 
 <style>
+  /* Mobile: the bare section heading sits directly in .algo-content
+     (padding-left: 0 on mobile) — indent it to match the cards beside it. */
+  @media (max-width: 640px) {
+    .section-heading { padding-left: 0.7rem; }
+  }
   /* ── Agent group grid — uses canonical .page-grid for layout ───────
      Overrides auto-fill with a fixed 2-column layout on desktop so each
      agent card takes exactly half the row width. Child overflow fix:

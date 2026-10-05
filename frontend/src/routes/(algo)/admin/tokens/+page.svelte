@@ -18,7 +18,6 @@
     deleteGrammarToken, reloadGrammarRegistry,
   } from '$lib/api';
   import Select   from '$lib/Select.svelte';
-  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
@@ -233,8 +232,6 @@
     <PageHeaderActions />
   </span>
 </div>
-
-<AutomationTabs />
 
 {#if isDemo}
   <!-- Demo read-only banner. The catalog is shown verbatim — operators

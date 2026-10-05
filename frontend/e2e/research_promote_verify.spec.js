@@ -154,7 +154,7 @@ test(`Drafts tab renders joined view [${BASE}]`, async ({ page }) => {
   const draft = await p.json();
 
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   // Click Drafts tab

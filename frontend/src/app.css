@@ -2206,8 +2206,9 @@
      • .pub-hero-title — marketing first-impression pages (/, /about)
      • .pub-page-heading — content/data pages (/performance, /market,
        /faq, /contact, /investor/[token])
-     • .pub-section-heading — sub-sections within a page (e.g. /faq's
-       "Process Flows" between the Q&A list and the diagrams) */
+     • .section-heading (algo) — sub-sections within a page. Pages with
+       a cream/public variant (e.g. /faq "Process Flows") carry their own
+       scoped .section-heading rule. */
 @layer components {
   .pub-hero-title {
     font-size: clamp(1.3rem, 4vw, 1.75rem);
@@ -2236,15 +2237,6 @@
        1.1rem mobile floor already used by .pub-page-heading, so the
        two heading tiers scale down consistently together. */
     .pub-hero-title { font-size: 1.1rem; }
-  }
-  .pub-section-heading {
-    font-size: 1rem;
-    font-weight: 700;
-    color: #0c1830;
-    letter-spacing: -0.005em;
-    margin: 1.5rem 0 0.75rem;
-    display: block;
-    width: 100%;
   }
   /* Legacy alias — any markup that still says class="page-heading"
      keeps working until the migration completes. */
@@ -2730,7 +2722,7 @@
 /* ── Card and section heading SSOT ──────────────────────────────────────────
    Two semantic roles — pick the one that matches the nesting level:
      .algo-card-title    — heading ON a card  (inside .algo-card / .bucket-card)
-     .algo-section-title — heading ABOVE a group of cards (bare page element)
+     .section-heading    — heading ABOVE a group of cards (bare page element)
 
    Operator preference (2026-07-01): amber + monospace + uppercase — matches
    the derivatives "GREEKS" heading's intensity + contrast. Reads bright and
@@ -2744,16 +2736,6 @@
   letter-spacing: 0.04em;
   text-transform: uppercase;
   margin-bottom: 0.35rem;
-}
-.algo-section-title {
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
-  font-size: 0.6rem;
-  font-weight: 700;
-  color: #fbbf24;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  margin-bottom: 0.35rem;
-  display: block;
 }
 
 /* ── Canonical .bucket-card chrome ───────────────────────────────────────── */

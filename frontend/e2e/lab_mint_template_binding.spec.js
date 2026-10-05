@@ -28,7 +28,7 @@ const BASE = process.env.BASE_URL || 'https://dev.ramboq.com';
 test.describe('Lab mint form template_slug binding', () => {
   test.beforeEach(async ({ page }) => {
     await loginAsAdmin(page);
-    await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+    await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
 
     // Check if access is denied (role doesn't have view_lab capability)
     // view_lab is only for designated, trader, risk, demo roles (not admin)

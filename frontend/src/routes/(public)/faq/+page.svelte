@@ -229,7 +229,7 @@
   {/each}
 </div>
 
-<h2 class="pub-section-heading">Process Flows</h2>
+<h2 class="section-heading">Process Flows</h2>
 <div class="space-y-6">
   {#each diagrams as d}
     <div class="flow-card">
@@ -266,6 +266,19 @@
 </ModalShell>
 
 <style>
+  /* Sub-section heading (e.g. "Process Flows"). Moved here from app.css
+     .pub-section-heading. text-transform: none overrides the global
+     .section-heading uppercase — the cream pages use sentence case. */
+  .section-heading {
+    font-size: 1rem;
+    font-weight: 700;
+    color: #0c1830;
+    letter-spacing: -0.005em;
+    text-transform: none;
+    margin: 1.5rem 0 0.75rem;
+    display: block;
+    width: 100%;
+  }
   /* FAQ list */
   /* .faq-list border-top retired — operator: "the card has line
      break in the beginning which needs to be removed." Each

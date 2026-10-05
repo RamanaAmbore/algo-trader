@@ -1,4 +1,4 @@
-// Verify the new /admin/lab Lab page lands, all three tabs work,
+// Verify the new /admin/mcp Lab page lands, all three tabs work,
 // and the MCP-bootstrap snippet on the Settings tab carries the
 // expected shape. Also probes the API contract:
 //   GET  /api/lab/threads (admin) → 200
@@ -26,10 +26,10 @@ async function login(page) {
   return tok;
 }
 
-test(`/admin/lab page loads + 3 tabs visible [${BASE}]`, async ({ page }) => {
+test(`/admin/mcp page loads + 3 tabs visible [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
 
   const slug = BASE.includes('dev') ? 'dev' : 'prod';
@@ -53,9 +53,9 @@ test(`/admin/lab page loads + 3 tabs visible [${BASE}]`, async ({ page }) => {
   await page.screenshot({ path: `test-results/research-default-${slug}.png` });
 });
 
-test(`/admin/lab Settings tab → mcp.json + copy [${BASE}]`, async ({ page }) => {
+test(`/admin/mcp Settings tab → mcp.json + copy [${BASE}]`, async ({ page }) => {
   await login(page);
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(2500);
 
   // Click Settings tab

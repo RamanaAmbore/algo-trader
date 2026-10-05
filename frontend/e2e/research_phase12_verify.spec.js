@@ -156,7 +156,7 @@ test(`end-to-end activate → deactivate flow [${BASE}]`, async ({ page }) => {
 test(`Settings tab — 23 tools + new kinds in selector [${BASE}]`, async ({ page }) => {
   await login(page);
   await page.setViewportSize({ width: 1440, height: 1000 });
-  await page.goto(`${BASE}/admin/lab`, { waitUntil: 'networkidle' });
+  await page.goto(`${BASE}/admin/mcp`, { waitUntil: 'networkidle' });
   await page.waitForTimeout(3500);
   await page.locator('.lab-tab', { hasText: 'Settings' }).click();
   await page.waitForTimeout(400);

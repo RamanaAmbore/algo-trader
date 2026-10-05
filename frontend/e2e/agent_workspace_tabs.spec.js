@@ -28,8 +28,6 @@ test.describe.configure({ mode: 'serial' });
 const TAB_ROUTES = [
   { href: '/agents',          label: 'Agents'   },
   { href: '/agents/activity', label: 'Activity' },
-  { href: '/admin/tokens',    label: 'Tokens'   },
-  { href: '/admin/lab',  label: 'Lab'      },
 ];
 
 test.describe('agent workspace tabs', () => {
