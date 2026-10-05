@@ -577,12 +577,13 @@
   const _spotFlash = createTickFlash({ threshold: 0, durationMs: 300 });
   $effect(() => { _spotFlash.update('spot', spot); });
 
-  // Compact axis label for the Y axis — e.g. "+50K", "0", "-10K".
-  // Keeps left-edge labels short enough to fit in PAD_L budget.
+  // Compact axis label for the Y axis — e.g. "+50K", "0", "−1.20L".
+  // Same Indian-scale units as the rest of the app (aggCompact), so the
+  // axis agrees with the P&L figures in the header and legend.
   function _axisFmt(/** @type {number} */ v) {
     if (v === 0) return '0';
-    const sign = v > 0 ? '+' : '';
-    return sign + Math.round(v).toLocaleString('en-IN');
+    const sign = v > 0 ? '+' : '−';
+    return sign + aggCompact(Math.abs(v));
   }
 
   // Profit + loss zones — shade above and below zero on the today curve
@@ -781,15 +782,23 @@
   }
   function resetZoom() { zoom = null; pan = null; }
 
-  // Y-axis ticks — 5 evenly spaced labels.
+  // Y-axis ticks — round values (1/2/2.5/5 × 10^n) across the visible
+  // domain, always including 0 so the breakeven line is labelled.
+  // Evenly spaced raw bounds (e.g. -23,517 / 11,200) read as noise.
   const yTicks = $derived.by(() => {
     if (!payoff.length) return [];
     const { lo, hi } = yDomain;
-    const n = 5;
-    return Array.from({ length: n }, (_, i) => {
-      const v = lo + ((hi - lo) * i) / (n - 1);
-      return { v, y: yOf(v) };
-    });
+    const range = hi - lo;
+    if (!(range > 0)) return [];
+    const rough = range / 4;
+    const mag = Math.pow(10, Math.floor(Math.log10(rough)));
+    const step = [1, 2, 2.5, 5, 10].map(m => m * mag).find(s => s >= rough) ?? 10 * mag;
+    const first = Math.ceil(lo / step) * step;
+    const vals = [];
+    for (let v = first; v <= hi + step * 1e-9; v += step) {
+      vals.push(Math.abs(v) < step * 1e-9 ? 0 : v);
+    }
+    return vals.map(v => ({ v, y: yOf(v) }));
   });
 
   // Spot x-coordinate — used for the Y-label chips column and the

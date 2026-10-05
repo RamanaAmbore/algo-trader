@@ -302,7 +302,7 @@ class AgentUpdateRequest(msgspec.Struct):
 
 
 class AuditRow(msgspec.Struct):
-    """One audit-log entry for the Audit tab on /admin/research. Args
+    """One audit-log entry for the Audit tab on /admin/mcp. Args
     are pre-redacted — token material is never written, so this struct
     can be shown to any admin without leaking authorisation state."""
     id:             int
@@ -318,7 +318,7 @@ class AuditRow(msgspec.Struct):
 class DraftInfo(msgspec.Struct):
     """Joined view: thread → its linked draft agent (status=inactive).
 
-    Drives the Drafts tab on /admin/research. Excludes threads whose
+    Drives the Drafts tab on /admin/mcp. Excludes threads whose
     draft_agent_id is NULL, and threads whose linked agent has been
     activated (status=active) — those graduate out of the Drafts list
     so it always reflects "still pending review"."""
@@ -376,7 +376,7 @@ _VALID_SCOPE = {"total", "per_account"}
 def _public_base_url() -> str:
     """Best-effort public URL for THIS instance. Used to build the
     audit deep-link in Telegram pings — the link goes from the
-    operator's phone straight to /admin/research?audit_request=<id>
+    operator's phone straight to /admin/mcp?audit_request=<id>
     on the right host.
 
     Derives from deploy_branch since the API doesn't otherwise know
@@ -403,7 +403,7 @@ def _audit_link_html(request_id: str) -> str:
     rid = (request_id or "").strip()
     if not rid:
         return ""
-    href = f"{_public_base_url()}/admin/research?audit_request={rid}"
+    href = f"{_public_base_url()}/admin/mcp?audit_request={rid}"
     return f'<a href="{href}">{rid}</a>'
 
 # ── Phase-3 per-call confirm-token store ──────────────────────────────

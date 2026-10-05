@@ -387,9 +387,9 @@
     // first-time visitor sees 'Terminal' in the nav and wonders if it's
     // the whole platform or just one tool.
     { href: '/activity',         label: 'Activity',  group: 'build' },
-    // Alerts — agent-fire history (view_audit capability; page shows its
-    // own access-denied panel for signed-in users without it).
-    { href: '/admin/alerts',     label: 'Alerts',    adminOnly: true, group: 'build' },
+    // Alerts — agent-fire history. Gated by the view_audit capability
+    // (designated, admin, risk), not by admin role.
+    { href: '/admin/alerts',     label: 'Alerts',    cap: 'view_audit', group: 'build' },
     { href: '/console',          label: 'Console',   group: 'build' },
     // ── Config ── ordered by edit frequency, not alphabetic.
     //   Brokers — most-touched (account creds, IP binding, secrets).
@@ -419,6 +419,7 @@
   const algoLinks = $derived(
     _algoLinksAll.filter(l => {
       if (l.adminOnly && isDemo) return false;
+      if (l.cap && !hasCap(l.cap, $userCaps, $userRole)) return false;
       if (l.branches) {
         const branch = paperStatus?.branch || 'dev';
         const key = branch === 'main' ? 'main' : 'dev';
