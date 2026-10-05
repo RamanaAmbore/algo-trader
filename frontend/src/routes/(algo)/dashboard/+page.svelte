@@ -14,6 +14,7 @@
   import EmptyState from '$lib/EmptyState.svelte';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
   import { clientTimestamp, visibleInterval, lastRefreshAt, connStatus, selectedStrategyId, strategyOpenSymbols, ltpFlashPct, loadLtpFlashPct, formatDualTz } from '$lib/stores';
   import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
   import { bookChanged } from '$lib/data/bookChanged';
@@ -1722,7 +1723,7 @@
       <!-- Chart frame — wraps SVG + stat overlay so .eq-stats anchors
            to the chart area (not the card-body); the legend strip above
            stays clear of any stat-overlay overlap. -->
-      <div class="eq-chart-frame {_eqPulse.classOf('eq')}">
+      <div class="eq-chart-frame cp-frame {_eqPulse.classOf('eq')}">
       <!-- Stat overlay — at-a-glance P&L numerics so the operator
            doesn't need a separate hero strip. Pointer-events: none
            so SVG hover / zoom never blocks. Same pattern OptionsPayoff
@@ -1828,9 +1829,7 @@
         {@const _ist = new Date(new Date(_hoverPt.ts).getTime() + 5.5*3600*1000)}
         {@const _th = String(_ist.getUTCHours()).padStart(2,'0')}
         {@const _tm = String(_ist.getUTCMinutes()).padStart(2,'0')}
-        {@const _flip = _hoverX > CHART_W * 0.65}
-        <div class="chart-tooltip eq-hover-tooltip"
-             style="left: {(_hoverX / CHART_W) * 100}%; top: {(_hoverY / CHART_H) * 100}%; transform: translate({_flip ? 'calc(-100% - 10px)' : '10px'}, -50%);">
+        <ChartPopup x={_hoverX} y={_hoverY} viewW={CHART_W} viewH={CHART_H}>
           <div class="chart-tooltip-ts">{_th}:{_tm} IST</div>
           {#each _eqActiveSeries as s (s.id)}
             {@const _v = Number(_hoverPt[s.field]) || 0}
@@ -1841,7 +1840,7 @@
               </span>
             </div>
           {/each}
-        </div>
+        </ChartPopup>
       {/if}
       </div><!-- /eq-chart-frame -->
     {/if}

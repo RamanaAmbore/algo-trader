@@ -3424,6 +3424,12 @@ button:not(:disabled):active,
   min-width: 9rem;
   max-width: 13rem;
 }
+/* Positioning frame for ChartPopup — wraps an SVG chart so the popup's
+   percentage coordinates match the SVG viewBox. */
+.cp-frame {
+  position: relative;
+  width: 100%;
+}
 /* Pinned variant — brighter cyan border, pointer-events enabled so the
    close button (×) or the div itself is clickable. */
 .chart-tooltip-pinned {

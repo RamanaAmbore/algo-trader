@@ -24,6 +24,8 @@
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import { fmtPctFraction } from '$lib/format';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
+  import { priceFmt } from '$lib/format';
 
   // SVG viewBox geometry — shared by the template and the hover handler.
   const NAV_W = 760;
@@ -215,6 +217,7 @@
     <!-- svelte-ignore a11y_no_static_element_interactions -->
     <!-- Pointer handlers only drive the hover crosshair; the aria-label
          already names the chart, and there is no keyboard action to expose. -->
+    <div class="cp-frame">
     <svg class="nav-svg" viewBox="0 0 {NAV_W} {NAV_H}" preserveAspectRatio="none"
          aria-label="Firm NAV history (end-of-day, one point per trading day)"
          onpointermove={_onPointerMove}
@@ -247,6 +250,16 @@
             fill="var(--algo-muted)" font-size="10"
             style="font-family: var(--font-numeric)">{history[history.length - 1].as_of_date}</text>
     </svg>
+    {#if hovIdx != null && hovIdx < history.length}
+      <ChartPopup x={_hovX} y={yOf(_navs[hovIdx])} viewW={NAV_W} viewH={NAV_H}>
+        <div class="chart-tooltip-ts">{history[hovIdx].as_of_date}</div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">NAV</span>
+          <span class="chart-tooltip-value">₹{priceFmt(_navs[hovIdx])}</span>
+        </div>
+      </ChartPopup>
+    {/if}
+    </div>
   {:else if _error}
     <!-- Error state — surface message + Retry so the operator can act. -->
     <div class="nav-tab-empty nav-tab-error" role="alert" data-testid="nav-tab-error">

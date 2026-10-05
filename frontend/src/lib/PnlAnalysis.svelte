@@ -6,6 +6,7 @@
   import { readChartPref, writeChartPref } from '$lib/data/chartPrefs';
   import PnlPanel   from '$lib/PnlPanel.svelte';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
   import Select     from '$lib/Select.svelte';
   import AlgoTabs   from '$lib/AlgoTabs.svelte';
   import ModalShell from '$lib/ModalShell.svelte';
@@ -605,6 +606,7 @@
     {:else if !chartData}
       <div class="chart-placeholder">No benchmark data — toggle a series above or widen the date range.</div>
     {:else}
+      <div class="cp-frame">
       <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
       <svg
         class="perf-svg"
@@ -653,7 +655,7 @@
         {/if}
         {#if hovLineX != null && hovDate}
           <!-- showDot={false}: this chart's hover marks the date with the
-               vertical line + the hov-tip readout only; no per-series dot. -->
+               vertical line + the ChartPopup readout only; no per-series dot. -->
           <ChartCrosshair
             x={hovLineX}
             bounds={{ top: PAD_T, bottom: H - PAD_B, left: PAD_L, right: W - PAD_R }}
@@ -662,17 +664,18 @@
           />
         {/if}
       </svg>
-
-      {#if hovDate && hovValues.length > 0}
-        <div class="hov-tip">
-          <span class="hov-date">{hovDate}</span>
+      {#if hovLineX != null && hovDate && hovValues.length > 0}
+        <ChartPopup x={hovLineX} y={null} yFallback={PAD_T + 4} viewW={W} viewH={H}>
+          <div class="chart-tooltip-ts">{hovDate}</div>
           {#each hovValues as v}
-            <span class="hov-series" style="color:{v.color}">
-              {v.label}: {v.pct != null ? fmtPct(v.pct) : '—'}
-            </span>
+            <div class="chart-tooltip-row">
+              <span class="chart-tooltip-label" style="color:{v.color}">{v.label}</span>
+              <span class="chart-tooltip-value">{v.pct != null ? fmtPct(v.pct) : '—'}</span>
+            </div>
           {/each}
-        </div>
+        </ChartPopup>
       {/if}
+    </div>
 
       <div class="legend-row">
         {#each legendValues as lv}
@@ -1143,22 +1146,6 @@
     margin-bottom: 0.35rem;
   }
 
-  .hov-tip {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.2rem 0.75rem;
-    align-items: center;
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
-    padding: 0.2rem 0;
-  }
-  .hov-date {
-    color: var(--algo-slate);
-    font-weight: 600;
-  }
-  .hov-series {
-    font-variant-numeric: tabular-nums;
-  }
 
   .legend-row {
     display: flex;

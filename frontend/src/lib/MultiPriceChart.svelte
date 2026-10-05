@@ -23,6 +23,7 @@
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
   const { series = [], height = 240, title = '',
           emptyMsg = 'No ticks captured yet for any leg.',
           scrubbedTs = null } = $props();
@@ -252,6 +253,7 @@
   {#if !normSeries.length}
     <div class="mpc-empty">{emptyMsg}</div>
   {:else}
+    <div class="cp-frame">
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none" class="mpc-svg"
          role="img" aria-label="Multi-leg premium chart"
          onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
@@ -308,6 +310,23 @@
         />
       {/if}
     </svg>
+    {#if hover}
+      <ChartPopup x={hover?.x} y={null} yFallback={PAD_T + 4} viewW={W} viewH={height}>
+        <div class="chart-tooltip-ts">{hover?.ts?.slice(11, 19)}</div>
+        {#each normSeries as s}
+          {@const row = hover?.rows?.find((r) => r.symbol === s.symbol)}
+          {#if row}
+            <div class="chart-tooltip-row">
+              <span class="chart-tooltip-label">{formatSymbol(s.symbol)}</span>
+              <span class="chart-tooltip-value" class:up={row.pct >= 0} class:down={row.pct < 0}>
+                {pctFmt(row.pct)}
+              </span>
+            </div>
+          {/if}
+        {/each}
+      </ChartPopup>
+    {/if}
+    </div>
 
     <!-- Legend -->
     <div class="mpc-legend">

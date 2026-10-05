@@ -1,9 +1,8 @@
 /**
  * dashboard_equity_hover_tooltip.spec.js
  *
- * The dashboard equity chart's hover popup matches the payoff and price
- * charts: an HTML .chart-tooltip showing the time (x) and the value of each
- * enabled series (y). No extra detail rows.
+ * The dashboard equity chart's hover popup is the shared ChartPopup, showing
+ * the time (x) and the value of each enabled series (y). No extra rows.
  *
  * Source-level check: reads the component file directly, so it needs no
  * backend or browser session.
@@ -19,8 +18,8 @@ const SRC = readFileSync(
   'utf8',
 );
 
-test('popup is the shared HTML .chart-tooltip, not an SVG rect', () => {
-  expect(SRC).toMatch(/class="chart-tooltip eq-hover-tooltip"/);
+test('popup uses the shared ChartPopup, not a hand-drawn SVG box', () => {
+  expect(SRC).toMatch(/<ChartPopup x=\{_hoverX\} y=\{_hoverY\} viewW=\{CHART_W\} viewH=\{CHART_H\}>/);
   expect(SRC).not.toMatch(/<rect x=\{_tipX\}/);
 });
 

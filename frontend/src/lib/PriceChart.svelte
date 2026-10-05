@@ -12,6 +12,7 @@
   import LegLabel from '$lib/LegLabel.svelte';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
 
   const _pulse = createChartRefreshPulse();
 
@@ -460,6 +461,7 @@
     <!-- Chart SVG: wheel-zoom + drag-pan + click-pin are pointer-native
          interactions. role="application" communicates this to AT; a
          keyboard-only zoom/pan equivalent is not practical for this chart type. -->
+    <div class="cp-frame">
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="chart-svg" class:chart-panning={pan !== null}
          role="application" aria-label="Price chart — wheel to zoom, drag to pan, click to pin"
@@ -590,39 +592,30 @@
 
       <!-- Hover tooltip — line 1: kind · side · qty; line 2: price ×
            qty = total @ time; line 3: order #N · slippage (if any). -->
-      {#if hover}
-        {@const _qty   = hover?.qty}
-        {@const _px    = hover?.price}
-        {@const _total = (_qty != null && _px != null) ? _qty * _px : null}
-        {@const _slip  = hover?.slippage}
-        {@const _h     = (_slip != null && _slip !== 0) ? 70 : 56}
-        {@const tx = Math.min(W - 200 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 8))}
-        {@const ty = Math.max(PAD_T, (hover?.y ?? 0) - _h - 4)}
-        <g pointer-events="none">
-          <rect x={tx} y={ty} width="200" height={_h} rx="4"
-                fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1"/>
-          <text x={tx + 6} y={ty + 14} fill="#fbbf24"
-                font-size="10" font-weight="700" font-family="monospace">
-            {hover?.kind?.toUpperCase()} · {hover?.side}{#if _qty != null} · {_qty}×{/if}
-          </text>
-          <text x={tx + 6} y={ty + 28} fill="#ffffff"
-                font-size="9" font-family="monospace">
-            {fmtPrice(_px)}{#if _total != null} → {fmtPrice(_total)}{/if} @ {fmtTime(hover?.ts)}
-          </text>
-          <text x={tx + 6} y={ty + 42} fill="#7e97b8"
-                font-size="9" font-family="monospace">
-            order #{hover?.order_id}
-          </text>
-          {#if _slip != null && _slip !== 0}
-            <text x={tx + 6} y={ty + 56}
-                  fill={_slip < 0 ? 'var(--c-long)' : 'var(--c-short)'}
-                  font-size="9" font-family="monospace">
-              slippage {_slip < 0 ? '−' : '+'}{fmtPrice(Math.abs(_slip))}
-            </text>
-          {/if}
-        </g>
-      {/if}
     </svg>
+    {#if hover}
+      {@const _qty   = hover?.qty}
+      {@const _px    = hover?.price}
+      {@const _total = (_qty != null && _px != null) ? _qty * _px : null}
+      {@const _slip  = hover?.slippage}
+      <ChartPopup x={hover?.x} y={hover?.y} viewW={W} viewH={height}>
+        <div class="chart-tooltip-ts">{hover?.kind?.toUpperCase()} · {hover?.side}{#if _qty != null} · {_qty}×{/if}</div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-value">{fmtPrice(_px)}{#if _total != null} → {fmtPrice(_total)}{/if} @ {fmtTime(hover?.ts)}</span>
+        </div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-label">order #{hover?.order_id}</span>
+        </div>
+        {#if _slip != null && _slip !== 0}
+          <div class="chart-tooltip-row">
+            <span class="chart-tooltip-value" class:up={_slip < 0} class:down={_slip > 0}>
+              slippage {_slip < 0 ? '−' : '+'}{fmtPrice(Math.abs(_slip))}
+            </span>
+          </div>
+        {/if}
+      </ChartPopup>
+    {/if}
+    </div>
   {/if}
 </div>
 

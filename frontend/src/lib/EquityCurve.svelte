@@ -14,6 +14,7 @@
   import { priceFmt } from '$lib/format';
   import { createChartRefreshPulse } from '$lib/data/chartRefreshPulse.svelte.js';
   import ChartCrosshair from '$lib/ChartCrosshair.svelte';
+  import ChartPopup from '$lib/ChartPopup.svelte';
 
   /** @type {{
    *   ticks?:      Array<{ts: string, pnl: number}>,
@@ -174,6 +175,7 @@
   {#if !ticks.length}
     <div class="eq-empty">No P&amp;L history yet. Start the sim to populate.</div>
   {:else}
+    <div class="cp-frame">
     <svg viewBox="0 0 {W} {height}" preserveAspectRatio="none"
          class="eq-svg" role="img" aria-label="Equity P&L curve"
          onpointermove={onPointerMove} onpointerleave={onPointerLeave}>
@@ -246,21 +248,19 @@
           dotColor={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
           dotStroke="#fff"
         />
-        {@const _tx = Math.min(W - 110 - PAD_R, Math.max(PAD_L, (hover?.x ?? 0) + 8))}
-        {@const _ty = Math.max(PAD_T + 4, (hover?.y ?? 0) - 30)}
-        <rect x={_tx} y={_ty} width="110" height="26" rx="3"
-              fill="#1d2a44" stroke="rgba(251,191,36,0.4)" stroke-width="1" />
-        <text x={_tx + 6} y={_ty + 12}
-              fill={(hover?.pnl ?? 0) >= 0 ? 'var(--c-long)' : 'var(--c-short)'}
-              font-size="10" font-weight="800" font-family="monospace">
-          {(hover?.pnl ?? 0) >= 0 ? '+' : ''}₹{priceFmt(hover?.pnl)}
-        </text>
-        <text x={_tx + 6} y={_ty + 22} fill="#ffffff"
-              font-size="9" font-family="monospace">
-          {hover?.ts?.slice(11, 19)}
-        </text>
       {/if}
     </svg>
+    {#if hover}
+      <ChartPopup x={hover?.x} y={hover?.y} viewW={W} viewH={height}>
+        <div class="chart-tooltip-ts">{hover?.ts?.slice(11, 19)}</div>
+        <div class="chart-tooltip-row">
+          <span class="chart-tooltip-value" class:up={(hover?.pnl ?? 0) >= 0} class:down={(hover?.pnl ?? 0) < 0}>
+            {(hover?.pnl ?? 0) >= 0 ? '+' : ''}₹{priceFmt(hover?.pnl)}
+          </span>
+        </div>
+      </ChartPopup>
+    {/if}
+    </div>
   {/if}
 </div>
 
