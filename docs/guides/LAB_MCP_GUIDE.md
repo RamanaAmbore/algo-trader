@@ -9,9 +9,9 @@ approval — real broker orders.
 
 The chat itself runs inside **Claude Code** (your terminal). The
 `/admin/mcp` page in your browser is the persistence, audit,
-and token-mint surface. **Note:** the legacy `/api/research` and
-`/admin/research` paths still work as redirect aliases and will be
-removed in a future release.
+and token-mint surface. **Note:** the legacy `/api/lab/*` and
+`/admin/lab`/`/admin/research` paths redirect to `/api/research/*` and
+`/admin/mcp` respectively, with query strings preserved.
 
 **Total incremental cost vs the platform you already pay for: ₹0.**
 Your Claude Code subscription covers the LLM. Server-side helpers
@@ -118,7 +118,7 @@ around. See [section 6](#6-the-confirm-token-gate).
 
 ## 3. One-time setup (~3 minutes)
 
-The Lab page's **Settings** tab walks you through this with
+The MCP page's **Settings** tab walks you through this with
 copy-buttons. Open `/admin/mcp` → **Settings** while reading
 the notes below.
 

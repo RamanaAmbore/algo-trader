@@ -24,13 +24,14 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 | Agents list | `/automation` | Rule editor — create, edit, activate, deactivate, dry-run, run-in-sim |
 | Order Templates | `/automation/templates` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
 | Agent Templates | `/automation/agent-templates` | Reusable saved sub-trees (notify channel sets + condition snippets) |
-| Activity | `/automation/activity` | Recent fires (real, not sim) |
-| Tokens | `/admin/tokens` | Grammar catalog — every metric / scope / op / action |
-| Lab | `/admin/research` | LLM-driven research → draft agents via Claude Code MCP |
-| Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for dry-firing agents |
+| Activity | `/activity?tab=agent` | Recent fires (real, not sim) |
+| Tokens | `/admin/tokens` | Grammar catalog — every metric / scope / op / action (Config group) |
+| MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group; tabs: Research, Drafts, Audit, Settings) |
+| Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for dry-firing agents (Explore group) |
 
 Legacy `/agents`, `/agents/activity`, `/agents/fragments` paths still
 308-redirect for old bookmarks; new docs link the canonical URLs.
+`/automation/activity` redirects to `/activity?tab=agent` (Activity page, Agent tab).
 
 ---
 
@@ -212,7 +213,7 @@ Edit a fragment once → every consumer agent updates. Cycle detection prevents 
 
 **Run in Simulator:** Synthesises a scenario to trip THIS agent's first leaf. Bypasses gates (cooldown / baseline / schedule) so the agent fires immediately on the first tick. Telegram / email pings carry `SIMULATOR` prefix. See [SIMULATOR_GUIDE.md](SIMULATOR_GUIDE.md).
 
-**Activate:** Flip `status: inactive → active`. Engine picks it up next tick. Watch `/automation/activity`, Telegram, or agent row's Events panel.
+**Activate:** Flip `status: inactive → active`. Engine picks it up next tick. Watch `/activity?tab=agent`, Telegram, or agent row's Events panel.
 
 ---
 

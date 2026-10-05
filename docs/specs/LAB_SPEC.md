@@ -1,6 +1,6 @@
 # Lab Page and MCP Server Specification
 
-Single source of truth for the research lab interface (`/admin/research`) and the
+Single source of truth for the research lab interface (`/admin/mcp`) and the
 MCP (Model Context Protocol) server that powers Claude Code-driven market research.
 Operators chat with Claude, leverage 25 read/write/gated tools, and promote research
 threads into draft trading agents.
@@ -9,7 +9,7 @@ threads into draft trading agents.
 **Owner**: Platform  
 **Linked files**: `backend/mcp/kite_server.py` · `backend/api/routes/research.py` · 
 `backend/api/models.py` (ResearchThread, McpAudit) · 
-`frontend/src/routes/(algo)/admin/research/+page.svelte`
+`frontend/src/routes/(algo)/admin/mcp/+page.svelte`
 
 ---
 
@@ -28,7 +28,9 @@ threads into draft trading agents.
 
 ## 1. Lab Page UI
 
-**`/admin/research`** — Research thread management interface.
+**`/admin/mcp`** — MCP (Model Context Protocol) research interface with four tabs.
+
+### Tab: Research
 
 **Left panel: Thread list**
 - Create thread button (New Research)
@@ -136,7 +138,7 @@ requests, MCP server responds with results. No webhook callbacks; request-respon
    - `{"confirm_token": "abc123...", "expires_at": "2026-07-11T10:15:60Z", "purpose": "place_order"}`
 4. Claude Code displays token to operator + waits for consent
 5. Operator clicks "Confirm" button in the Lab page modal
-6. Lab sends confirm token back to backend (POST /api/research/confirm-action)
+6. Lab sends confirm token back to backend (POST /api/mcp/confirm-token)
 7. Backend validates:
    - Token not expired (within 60s)
    - Purpose hash matches (tool_name + user_id)
@@ -231,7 +233,7 @@ Operators can query audit to see what Claude Code did + which tools confirmed vs
 ## 7. Edge Cases
 
 ### Expired confirm token (60s passed, operator still confirming)
-- POST /api/research/confirm-action with expired token → 401 Unauthorized
+- POST /api/mcp/confirm-token with expired token → 401 Unauthorized
 - Backend message: "Token expired. Please run the action again."
 - Operator re-runs tool in Claude Code, gets fresh token
 

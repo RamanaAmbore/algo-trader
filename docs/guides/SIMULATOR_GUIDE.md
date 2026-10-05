@@ -204,7 +204,7 @@ The status snapshot carries `positions[]` (current book) + `open_order_details[]
 | Log lines | `[SIM]` prefix (shorter than the user-facing `SIMULATOR`) |
 | WebSocket `agent_alert` payload | `sim_mode: true` |
 
-The shared dispatcher writes both real + sim events to the same tables. `/automation/activity` auto-scopes (real events when no sim is running, sim events when one is).
+The shared dispatcher writes both real + sim events to the same tables. `/activity?tab=agent` auto-scopes (real events when no sim is running, sim events when one is).
 
 ---
 
@@ -217,7 +217,7 @@ The shared dispatcher writes both real + sim events to the same tables. `/automa
 3. Click **Dry-run** → confirm the conditions evaluate against right-now state (sometimes shows `would_fire: true` which is fine in dry-run, it doesn't actually fire)
 4. Click **Run in Simulator** → synthesised scenario trips the agent within 3-5 ticks
 5. Watch Telegram for `SIMULATOR` alert ✓
-6. Open `/automation/activity` (auto-scoped to sim) → see the row land
+6. Open `/activity?tab=agent` (auto-scoped to sim) → see the row land
 7. Flip `status: active` on `/automation`
 
 ### 2. Stress-test the whole book with a real-data crash
