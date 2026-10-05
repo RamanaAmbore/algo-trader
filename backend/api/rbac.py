@@ -96,7 +96,7 @@ CAPS: dict[str, frozenset[str]] = {
     "view_audit":               frozenset({"designated", "risk", "admin"}),
     "view_users":               frozenset({"designated"}),
     "view_brokers":             frozenset({"designated", "admin", "risk", "demo"}),  # demo with masked secrets
-    "view_research":                 frozenset({"designated", "trader", "risk", "demo"}),
+    "view_research":            frozenset({"designated", "trader", "risk", "demo"}),
     "view_pulse":               frozenset({"designated", "trader", "risk", "admin", "demo"}),
     "view_charts":              frozenset({"designated", "trader", "risk", "admin", "demo"}),
     "view_market_summary":      frozenset({"designated", "trader", "risk", "admin", "partner", "demo"}),
@@ -141,7 +141,7 @@ CAPS: dict[str, frozenset[str]] = {
     # ── Sim / replay / lab ────────────────────────────────────────────
     "run_simulator":            frozenset({"designated", "trader", "risk", "admin", "demo"}),  # demo session-only
     "run_replay":               frozenset({"designated", "trader", "risk", "demo"}),
-    "manage_research_threads":       frozenset({"designated", "trader"}),
+    "manage_research_threads":  frozenset({"designated", "trader"}),
     "mint_mcp_token":           frozenset({"designated"}),
 
     # ── Reports / export ──────────────────────────────────────────────
@@ -152,7 +152,7 @@ CAPS: dict[str, frozenset[str]] = {
     # ── Lab / MCP ────────────────────────────────────────────────────
     "use_mcp_tools":            frozenset({"designated", "trader"}),
     # Lab chat (claude -p with read-only MCP tools) — designated partners only.
-    "use_research_chat":             frozenset({"designated"}),
+    "use_research_chat":        frozenset({"designated"}),
 }
 
 
