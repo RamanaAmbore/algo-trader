@@ -94,3 +94,35 @@ async def _chase_released(row_id, account, symbol, exchange, side, qty, product)
                           quantity=qty, cfg=cfg, algo_order_id=row_id)
     except Exception as e:
         logger.error(f"[RELEASE] chase failed for order {row_id}: {e}")
+
+
+async def release_template_exit(order_id: int, actor: str) -> dict:
+    """Release held template exits: place the exit GTTs for a filled parent."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import select
+    from backend.api.routes.orders_place import _fire_template_attach_on_fill
+
+    async with async_session() as s:
+        row = (await s.execute(select(AlgoOrder).where(AlgoOrder.id == order_id)
+                               .with_for_update())).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "reason": "order not found", "status": ""}
+        rec = parse_hold_record(row.hold_json) or {}
+        if rec.get("category") != "template_exit":
+            return {"ok": False, "reason": "no held template exits on this order", "status": row.status}
+        if row.attached_gtts_json:
+            row.hold_json = None
+            await s.commit()
+            return {"ok": True, "reason": "exits already attached", "status": row.status}
+        row.hold_json = None
+        await s.commit()
+        args = dict(parent_row_id=row.id, parent_account=row.account,
+                    parent_symbol=row.symbol, parent_exchange=row.exchange,
+                    parent_side=row.transaction_type, parent_qty=int(row.quantity),
+                    fill_price=float(row.fill_price or 0), template_id=int(row.template_id or 0),
+                    parent_product=row.product or "NRML", mode=row.mode or "live")
+    from backend.api.algo.order_events import write_event
+    await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})
+    await _fire_template_attach_on_fill(**args)
+    return {"ok": True, "reason": "template exits placed", "status": "FILLED"}

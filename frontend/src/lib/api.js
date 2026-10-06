@@ -1363,3 +1363,10 @@ export const fetchResearchAudit = (filters = {}) => {
   if (filters.limit)      p.set('limit',      String(filters.limit));
   return _get(`/mcp/audit?${p}`, { auth: true });
 };
+
+/** GET /api/orders/held — held automated orders and template exits awaiting release. */
+export const fetchHeldOrders = () => _get('/orders/held/', { auth: true });
+
+/** POST /api/orders/held/{id}/release — release one held order or its template exits. */
+export const releaseHeldOrder = (orderId) =>
+  _post(`/orders/held/${Number(orderId)}/release`, {}, { auth: true });

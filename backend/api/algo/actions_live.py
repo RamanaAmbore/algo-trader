@@ -1037,6 +1037,11 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
         logger.error(f"[LIVE] expiry_auto_close: invalid exchange param {exch!r} for agent {agent.slug}")
         return
 
+    from backend.api.algo.order_hold_gate import before_cutoff
+    if before_cutoff(exch):
+        logger.info(f"[LIVE] expiry_auto_close: {exch} before cut-off; scan deferred (agent={agent.slug})")
+        return
+
     engine = ExpiryEngine()
     try:
         to_close = engine.scan_positions()

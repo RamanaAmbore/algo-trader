@@ -88,11 +88,14 @@ class TestFireTemplateAttachModeGate:
         mock_persist.assert_not_called()
 
     @pytest.mark.asyncio
-    async def test_live_mode_still_reaches_broker(self):
+    async def test_live_mode_still_reaches_broker(self, monkeypatch):
         """Regression guard — the fix must not break the genuine live
         template-attach feature. mode='live' reaches apply_template_to_order
         with apply_path='live', which routes to a real broker.place_gtt."""
         from backend.api.routes.orders_place import _fire_template_attach_on_fill
+        # Template exits are held by default; this test covers the live path, so
+        # release the hold for its duration.
+        monkeypatch.setattr("backend.api.algo.order_hold_gate.template_exit_held", lambda: False)
 
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"

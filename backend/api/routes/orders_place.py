@@ -749,6 +749,10 @@ async def _fire_template_attach_on_fill(
     # and double-place GTTs at the broker. The lock is per-row +
     # in-process (uvicorn --workers 1 on prod) so there's zero
     # contention against unrelated fills.
+    from backend.api.algo.order_hold_gate import template_exit_held, hold_template_exit
+    if template_exit_held():
+        await hold_template_exit(parent_row_id, parent_symbol)
+        return
     _row_lock = await _get_template_attach_lock(parent_row_id)
     async with _row_lock:
         try:

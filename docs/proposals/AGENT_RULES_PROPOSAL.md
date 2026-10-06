@@ -97,6 +97,18 @@ Scope: automated orders only (expiry closes, template exits, agent orders). Manu
 
 **Sprint placement:** timing settings and the price policy field go in H1. The release price check goes in H3. The cut-off scan goes in H4.
 
+## Implementation status (hold and release)
+
+- **H1 policy:** done. Override over global switch over default (held). Cut-off and release price rules.
+- **H2 gate:** done for expiry closes (held by default) and for template exit GTTs (held by default, until the global switch is released).
+- **H3 release:** done. Position and price checks, then send and chase (expiry closes). Template exits are placed on release.
+- **H4 cut-off:** done. The expiry scan waits until the cut-off, which is the close minus the lead time (NFO 15, MCX 30 minutes by default).
+- **H5 template exits:** done. Exit GTTs wait for release; the parent order stays FILLED with its hold recorded.
+- **H6 screens:** partly done. Settings switches and lead times are registered; the held-orders card with release is on the orders page. Not built: the per-order hold flag on the ticket and the held-exit warning on the order card.
+- **H7 rollout:** dev first, then prod, once the held state is confirmed on dev.
+
+Related fixes shipped with this work: no implicit 30% take-profit on a request without a target; the order ticket no longer picks a default template; fill alerts show the full account.
+
 # Phase 2 design (reference)
 
 ## 1. Problem

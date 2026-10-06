@@ -9,6 +9,7 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
   import OrderBook from '$lib/OrderBook.svelte';
+  import HeldOrdersCard from '$lib/HeldOrdersCard.svelte';
   import { fetchOrders } from '$lib/api';
   import { bookChanged } from '$lib/data/bookChanged';
   import SymbolPanel from '$lib/SymbolPanel.svelte';
@@ -506,6 +507,7 @@
   class:is-collapsed={_colActivity}
   class:fs-card-on={_fsActivity}
   use:listenModifyOrder>
+  <HeldOrdersCard />
   <OrderBook
     statusFilter={_statusFilter}
     accountFilter={_actAccountFilter}
