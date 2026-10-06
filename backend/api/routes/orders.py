@@ -70,6 +70,7 @@ logger = get_logger(__name__)
 #      them in the module namespace as before.
 #
 # DO NOT remove these re-exports until all external callers have been updated.
+from backend.brokers.adapters.kite import ensure_lot_index  # noqa: E402
 from backend.api.routes.orders_helpers import (  # noqa: E402
     _VARIETIES,
     _ORDER_TYPES,
@@ -165,6 +166,7 @@ async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
     """
     out: dict[str, dict] = {}
     try:
+        await ensure_lot_index()
         _ord_resp = await asyncio.wait_for(
             get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL),
             timeout=10.0,
@@ -1486,6 +1488,7 @@ class OrdersController(Controller):
     @get("/")
     async def list_orders(self, request: Request) -> OrdersResponse:
         try:
+            await ensure_lot_index()
             resp = await get_or_fetch("orders", _fetch_orders, ttl_seconds=_ORDERS_TTL)
             # Mask account codes for everyone who is NOT admin/designated.
             # Copy-not-mutate so the shared cache doesn't keep the masked

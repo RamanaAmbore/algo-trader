@@ -135,6 +135,28 @@ def _rebuild_lot_index(items) -> None:
                 _LOT_INDEX[key] = ls
 
 
+async def ensure_lot_index() -> bool:
+    """Bring `_LOT_INDEX` up to date with the instruments cache.
+
+    Async, so callers that run in the event loop can warm the index before
+    a synchronous worker (for example the orders list) reads it. Returns
+    False when the instruments cache is unavailable.
+    """
+    global _LOT_INDEX_STAMP
+    try:
+        from backend.api.cache import get_or_fetch
+        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
+        resp = await get_or_fetch("instruments", _fetch_instruments,
+                                  ttl_seconds=_TTL_SECONDS)
+        if resp is not _LOT_INDEX_STAMP or not _LOT_INDEX:
+            _rebuild_lot_index(resp.items if resp else [])
+            _LOT_INDEX_STAMP = resp
+        return True
+    except Exception as e:
+        logger.warning(f"[KITE-QTY] lot index refresh failed: {e}")
+        return False
+
+
 async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     """Look up lot_size from the instruments cache via `_LOT_INDEX`
     (O(1) dict lookup; rebuilt only when the cache version stamp
@@ -166,17 +188,7 @@ async def get_lot_size(exchange: str, tradingsymbol: str) -> int:
     bigger decision (touches the shared instruments cache used by
     other routes) — out of scope here.
     """
-    global _LOT_INDEX_STAMP
-    try:
-        from backend.api.cache import get_or_fetch
-        from backend.api.routes.instruments import _fetch_instruments, _TTL_SECONDS
-        resp = await get_or_fetch("instruments", _fetch_instruments,
-                                  ttl_seconds=_TTL_SECONDS)
-        if resp is not _LOT_INDEX_STAMP or not _LOT_INDEX:
-            _rebuild_lot_index(resp.items if resp else [])
-            _LOT_INDEX_STAMP = resp
-    except Exception as e:
-        logger.warning(f"[KITE-QTY] lot_size lookup failed for {exchange}/{tradingsymbol}: {e}")
+    if not await ensure_lot_index():
         _stale = _LOT_INDEX.get((exchange, tradingsymbol))
         if _stale is not None:
             logger.warning(
