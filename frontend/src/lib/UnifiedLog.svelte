@@ -239,9 +239,9 @@
     }
   }
   .ul-time {
-    color: var(--algo-muted);
+    color: #7dd3fc;
     font-variant-numeric: tabular-nums;
-    font-size: var(--fs-2xs);
+    font-size: var(--fs-sm);
     letter-spacing: 0.02em;
   }
   .ul-line {
@@ -254,7 +254,7 @@
     font-weight: 800;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     flex-shrink: 0;
   }
   .ul-msg { color: var(--algo-slate); }

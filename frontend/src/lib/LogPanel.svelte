@@ -2217,18 +2217,7 @@
     flex-wrap: wrap;
   }
   .lp-order-scroll .log-row:last-child { border-bottom: 0; }
-  .lp-order-scroll .log-row-tag {
-    font-size: 0.6rem;
-    font-weight: 700;
-    letter-spacing: 0.05em;
-    padding: 0 0.3rem;
-    border-radius: 2px;
-    background: rgba(255,255,255,0.08);
-    color: rgba(255,255,255,0.5);
-    flex-shrink: 0;
-  }
   .lp-order-scroll .log-row-msg {
-    color: rgba(255,255,255,0.7);
     flex: 1 1 0;
     min-width: 0;
     word-break: break-word;
