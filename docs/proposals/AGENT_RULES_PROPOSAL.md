@@ -59,6 +59,44 @@ The first release is the smallest version that can safely place risk-management 
 - **M4: proposer and card.** `propose_agent` (read-only), rule text on the card, leaf values, and the setting reference count. Tests: draft validates, no write except the draft, reference count matches stored rules.
 - **Pilot:** run on dev for a set period with paper mode, then promote to prod with live orders only after review.
 
+## Hold, release, and expiry close (addendum)
+
+Scope: automated orders only (expiry closes, template exits, agent orders). Manual tickets are not held.
+
+**Timing settings (global, per exchange)**
+- **Close time:** the exchange's session close from the market calendar (NFO 15:30 IST, MCX 23:30 IST).
+- **Lead time:** minutes before close at which the expiry close is created as held. Default NFO 15, MCX 30.
+- **Cut-off time:** close time minus lead time. At cut-off, the scan creates the held orders.
+- Release is allowed after cut-off. Lead time controls when the held order is created, not when it is sent.
+
+**Hold switches (global)**
+- One switch per category: expiry closes, template exits, agent orders. Default: held.
+- Turning a switch to released applies immediately, with no cool-off.
+- A per-order override (held yes/no) wins over the global switch and survives later switch changes.
+
+**Price policy (no stored limit price while held)**
+- A held order stores a price policy, not a price: MARKET, or CHASE LOW / MED / HIGH.
+- Expiry closes default to CHASE MED.
+- At release, the price is read from the live bid and ask, rounded to the instrument tick, and checked against the exchange price band before sending.
+- If the price fails the band check, the order stays held and the card shows the reason.
+
+**Release checks**
+- The position still exists, the quantity matches, and the order has not filled or been cancelled.
+- On success: send, chase, and record who released it and when.
+- On failure: stay held, show the reason, and log a release-refused event.
+
+**Template exits**
+- Exit GTTs are placed only after the entry fills and only if the exit hold is released.
+- A held exit shows "unprotected until released" on the order card.
+
+**Screens**
+- Settings: the switches, close-time display, lead time, and cut-off display per exchange.
+- Ticket: "Hold: yes/no" after the template toggle, defaulting to the global switch.
+- Order card: HELD badge with reason, Release button, and held-exit warning.
+- Held orders card: top of the orders page and on the Exp-close tab, with per-order and release-all actions.
+
+**Sprint placement:** timing settings and the price policy field go in H1. The release price check goes in H3. The cut-off scan goes in H4.
+
 # Phase 2 design (reference)
 
 ## 1. Problem
