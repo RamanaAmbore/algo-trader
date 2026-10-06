@@ -4,10 +4,11 @@
   import {
     fetchRecentAgentEvents, fetchSimEvents,
     fetchSimTicks, fetchAdminLogs, fetchBrokerConnectionEvents, fetchAlgoOrdersRecent,
-    fetchOrders, cancelOrder, reconcileSingleOrder, fetchOrderEvents,
+    fetchOrders, cancelOrder, reconcileSingleOrder, fetchOrderEvents, fetchGtts,
   } from '$lib/api';
   import NewsList from '$lib/NewsList.svelte';
   import { priceFmt, aggCompact } from '$lib/format';
+  import { matchGtts } from '$lib/data/gttMatch.js';
   import { formatSymbol } from '$lib/data/decomposeSymbol';
   import { getInstrument } from '$lib/data/instruments';
   import UnifiedLog from '$lib/UnifiedLog.svelte';
@@ -282,6 +283,7 @@
   // (already centralised).
   let orderRows   = $state(/** @type {any[]} */ ([]));   // for Terminal tab embedding
   let orderEvents = $state(/** @type {any[]} */ ([]));   // order lifecycle event log
+  let gttRows     = $state(/** @type {any[]} */ ([]));   // broker GTT list for the order log
   let agentLog    = $state(/** @type {any[]} */ ([]));
   let systemLog   = $state(/** @type {string[]} */ ([]));
   let connEvents  = $state(/** @type {any[]} */ ([]));
@@ -464,6 +466,9 @@
       case 'preflight_block': return 'log-row-error';
       case 'preflight_ok':    return 'log-row-ok';
       case 'unfilled':        return 'log-row-warn';
+      case 'gtt':             return 'log-row-info';
+      case 'gtt_missing':     return 'log-row-error';
+      case 'gtt_broker':      return 'log-row-info';
       case 'cancel_failed':   return 'log-row-error';
       case 'template_attach_ok':      return 'log-row-ok';
       case 'template_attach_failed':  return 'log-row-error';
@@ -558,6 +563,29 @@
           message: `${side} ${qty} ${sym} rejected${o.status_message ? ' - ' + o.status_message : ''}`,
         });
       }
+    }
+    const _gm = matchGtts(filteredOrderRows, gttRows);
+    for (const [oid, legs] of _gm.legsByOrder) {
+      const o = filteredOrderRows.find(x => String(x.order_id || x.id || '') === oid);
+      const gts = o?.order_timestamp || o?.created_at || '';
+      for (const l of legs) {
+        events.push({
+          id:      `${oid}-gtt-${l.id || l.label}`,
+          ts:      gts,
+          kind:    l.missing ? 'gtt_missing' : 'gtt',
+          message: l.missing
+            ? `${l.label} GTT ${l.id || '-'} is missing at the broker`
+            : `${l.label} GTT ${l.id} is ${l.status}`,
+        });
+      }
+    }
+    for (const r of _gm.unmatched) {
+      events.push({
+        id:      `gtt-broker-${r.gtt_id}`,
+        ts:      r.created_at || '',
+        kind:    'gtt_broker',
+        message: `${r.tradingsymbol || 'GTT'} ${r.trigger_type || ''} GTT ${r.gtt_id} is ${r.status || 'unknown'} at the broker (no order)`.replace(/  +/g, ' '),
+      });
     }
     // Algo-engine events are more accurate; exclude broker lifecycle events for
     // order_ids that already have algo events.
@@ -689,6 +717,7 @@
     // Fire-and-forget: fetch order lifecycle events in parallel for the
     // order tab event log. Does not block orderRows from rendering.
     fetchOrderEvents(200, 'all').then(evts => { orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []); }).catch(() => {});
+    fetchGtts().then(r => { gttRows = Array.isArray(r?.gtts) ? r.gtts : []; }).catch(() => {});
   }
 
   // Deferred poll flags — system and sim ticks are low-traffic tabs that

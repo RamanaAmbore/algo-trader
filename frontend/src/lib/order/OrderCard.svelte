@@ -62,6 +62,7 @@
 
   let {
     /** @type {any} */                                   order,
+    /** @type {Array<any>} */                          gttLegs       = [],
     /** @type {((o:any) => void) | undefined} */         onCardClick   = undefined,
     /** @type {((o:any, e:Event) => void) | undefined} */onSymbolClick = undefined,
     /** @type {((o:any, e:MouseEvent) => void) | undefined} */
@@ -303,6 +304,15 @@
                   : 'O.Template selected — will attach on fill')}>
         <span class="log-chip-key">O.Template:</span>#{order.template_id}{_chipBadge}
       </span>
+      {#each gttLegs as leg (leg.id || leg.label)}
+        <span class="log-chip gtt-leg-chip"
+              class:gtt-leg-missing={leg.missing}
+              title={leg.missing
+                ? `${leg.label} GTT ${leg.id || ''} is not at the broker. Protection may not be active.`
+                : `${leg.label} GTT ${leg.id}: ${leg.status} at the broker.`}>
+          <span class="log-chip-key">{leg.label}:</span>{leg.missing ? 'missing at broker' : leg.status}
+        </span>
+      {/each}
       <!-- #23 — trailing stop chip (amber) -->
       {#if _trailEntry}
         <span class="log-chip log-chip-trail"
@@ -509,4 +519,5 @@
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.32);
   }
+  .gtt-leg-missing { color: var(--c-short); border-color: rgba(248,113,113,0.45); }
 </style>

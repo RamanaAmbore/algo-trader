@@ -36,6 +36,7 @@
   import { visibleInterval, formatDualTz, withGuard } from '$lib/stores';
   import { isCurrentTradingSession } from '$lib/dateFormat.js';
   import { fetchOrders, fetchAlgoOrdersRecent, cancelOrder, reconcileSingleOrder, fetchGtts, cancelGtt, fetchOrderEventsById } from '$lib/api';
+  import { matchGtts } from '$lib/data/gttMatch.js';
   import { priceFmt } from '$lib/format';
   import { acctColor } from '$lib/account';
   import OrderCard from '$lib/order/OrderCard.svelte';
@@ -442,6 +443,7 @@
   // live-only filter above.
   const _filteredGttRows = $derived.by(() =>
     _applyAccountFilter(_gttRows || [], accountFilter).filter(_isLiveGtt));
+  const _gttMatch = $derived(matchGtts(filteredOrderRows, _filteredGttRows));
 
   // ── Cancel / Modify / Reconcile actions (mirrors LogPanel) ────────────
   /** @type {Set<string>} */
@@ -704,6 +706,7 @@
       {#each filteredOrderRows as o (o.order_id ?? o.id)}
         {@const _oKey = String(o.order_id || o.id || '')}
         <OrderCard order={o}
+          gttLegs={_gttMatch.legsByOrder.get(_oKey) || []}
           onSymbolClick={(ord) => {
             if (onSymbolClick) { onSymbolClick(ord); return; }
             _symPanelSym = ord.tradingsymbol || ord.symbol || '';
