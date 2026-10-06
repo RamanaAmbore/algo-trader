@@ -216,45 +216,63 @@ def _gate_spec(agent) -> bool:
                for a in agent.actions or [])
 
 
+def _gate_passes(agent, rec: dict, gated: bool) -> dict | None:
+    """Apply the agent's repeat gate. Returns the record to render, or None to skip it."""
+    if not gated:
+        return rec
+    from backend.shared.helpers.utils import mask_account_in_text
+    gate_key = f"{rec.get('logger')}|{clean_message(mask_account_in_text(rec.get('message') or '') or '')}"
+    repeats = _gate.decide(gate_key, alert_now=bool((rec.get("extra") or {}).get("alert_now")))
+    return None if repeats is None else {**rec, "repeats": repeats}
+
+
+async def _send_channel(ch: dict, out: tuple, agent) -> bool:
+    spec = CHANNELS.get(ch.get("channel")) if isinstance(ch, dict) else None
+    if spec is None or not ch.get("enabled"):
+        return False
+    capability, send = spec
+    if ch.get("gate", True) and not _channel_enabled(capability):
+        return False
+    title, body = out[0], out[1]
+    tg = out[2] if len(out) > 2 else None
+    kwargs = {"priority": ch["priority"]} if ch.get("priority") else {}
+    if ch.get("channel") == "email":
+        kwargs["email"] = out[3] if len(out) > 3 else None
+    try:
+        await asyncio.to_thread(send, title, body, tg, **kwargs)
+        return True
+    except Exception as e:
+        sys.stderr.write(f"event_agents: {agent.slug} {capability} send failed: {e}\n")
+        return False
+
+
+async def _dispatch_agent(agent, records: list[dict]) -> int:
+    key = _render_key(agent)
+    render = RENDERS.get(key)
+    if render is None:
+        if key and key not in _unknown_renders:
+            _unknown_renders.add(key)
+            sys.stderr.write(f"event_agents: {agent.slug} names unknown renderer '{key}'\n")
+        return 0
+    gated = _gate_spec(agent)
+    sent = 0
+    for rec in records:
+        if not evaluate(agent.conditions, Context(log_records=[rec])):
+            continue
+        to_render = _gate_passes(agent, rec, gated)
+        if to_render is None:
+            continue
+        out = render(to_render)
+        for ch in agent.events or []:
+            if await _send_channel(ch, out, agent):
+                sent += 1
+    return sent
+
+
 async def dispatch(records: list[dict], agents: list) -> int:
     sent = 0
     for agent in agents:
-        key = _render_key(agent)
-        render = RENDERS.get(key)
-        if render is None:
-            if key and key not in _unknown_renders:
-                _unknown_renders.add(key)
-                sys.stderr.write(f"event_agents: {agent.slug} names unknown renderer '{key}'\n")
-            continue
-        gated = _gate_spec(agent)
-        for rec in records:
-            if not evaluate(agent.conditions, Context(log_records=[rec])):
-                continue
-            if gated:
-                from backend.shared.helpers.utils import mask_account_in_text
-                gate_key = f"{rec.get('logger')}|{clean_message(mask_account_in_text(rec.get('message') or '') or '')}"
-                repeats = _gate.decide(gate_key, alert_now=bool((rec.get("extra") or {}).get("alert_now")))
-                if repeats is None:
-                    continue
-                rec = {**rec, "repeats": repeats}
-            out = render(rec)
-            title, body = out[0], out[1]
-            tg = out[2] if len(out) > 2 else None
-            for ch in agent.events or []:
-                spec = CHANNELS.get(ch.get("channel")) if isinstance(ch, dict) else None
-                if spec is None or not ch.get("enabled"):
-                    continue
-                capability, send = spec
-                if ch.get("gate", True) and not _channel_enabled(capability):
-                    continue
-                kwargs = {"priority": ch["priority"]} if ch.get("priority") else {}
-                if ch.get("channel") == "email":
-                    kwargs["email"] = out[3] if len(out) > 3 else None
-                try:
-                    await asyncio.to_thread(send, title, body, tg, **kwargs)
-                    sent += 1
-                except Exception as e:
-                    sys.stderr.write(f"event_agents: {agent.slug} {capability} send failed: {e}\n")
+        sent += await _dispatch_agent(agent, records)
     return sent
 
 
