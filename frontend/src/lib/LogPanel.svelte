@@ -2077,10 +2077,9 @@
     row-gap: 0.05rem;
     padding: 0.28rem 0;
     border-bottom: 1px solid var(--sep-color);
-    /* Operator: "agents, terminal, ticks and system text size
-       should be equal to news tab text size of the data". News
-       row is 0.72rem; matching here. */
-    font-size: 0.72rem;
+    /* Log row text uses the shared log size token, same as the order and
+       activity logs. */
+    font-size: var(--fs-sm);
     color: var(--algo-slate);
     border-left: none;
   }
@@ -2212,7 +2211,7 @@
     align-items: baseline;
     gap: 0.35rem;
     padding: 0.2rem 0.4rem;
-    font-size: var(--fs-xs);
+    font-size: var(--fs-sm);
     border-bottom: 1px solid rgba(255,255,255,0.04);
     flex-wrap: wrap;
   }
@@ -2600,14 +2599,14 @@
     column-gap: 0.4rem;
     row-gap: 0.05rem;
     padding: 0.28rem 0;
-    font-size: 0.72rem;
+    font-size: var(--fs-sm);
     flex-wrap: wrap;
     border-bottom: 1px solid var(--sep-color);
   }
   .lp-conn-row:last-child {
     border-bottom: none;
   }
-  .lp-conn-time   { flex: 0 0 auto; white-space: nowrap; color: var(--c-info); font-size: var(--fs-sm, 0.72rem); }
+  .lp-conn-time   { flex: 0 0 auto; white-space: nowrap; color: var(--c-info); font-size: var(--fs-sm); }
   .lp-conn-acct   { flex-shrink: 0; min-width: 3.5rem; color: var(--algo-slate); }
   .lp-conn-broker { flex-shrink: 0; min-width: 3rem; color: var(--text-muted); }
   .lp-conn-type   { flex-shrink: 0; min-width: 8rem; font-weight: 500; }
