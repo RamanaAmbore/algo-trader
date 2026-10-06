@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from backend.shared.helpers.log_store import HANDLER as log_store_handler
+from backend.shared.helpers.log_store import HANDLER as log_store_handler, OriginFilter
 from backend.shared.helpers.text_clean import to_plain
 
 # Load configuration from YAML file (resolve relative to repo root)
@@ -100,6 +100,9 @@ queue_listener = QueueListener(
 queue_listener.start()
 
 
+_origin_filter = OriginFilter()
+
+
 def get_logger(name="app_logger"):
     """
     Return a logger instance with our queue handler attached.
@@ -130,7 +133,9 @@ def get_logger(name="app_logger"):
     has_queue_handler = any(isinstance(h, QueueHandler) for h in logger.handlers)
     if not has_queue_handler:
         logger.setLevel(logging.DEBUG)  # Capture everything, handlers filter levels
-        logger.addHandler(QueueHandler(log_queue))
+        queue_handler = QueueHandler(log_queue)
+        queue_handler.addFilter(_origin_filter)
+        logger.addHandler(queue_handler)
         # Suppress propagation to ancestor handlers — otherwise records
         # would be emitted twice (once via our queue, once via whichever
         # parent installed an earlier handler).

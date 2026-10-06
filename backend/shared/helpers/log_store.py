@@ -11,6 +11,7 @@ import logging
 import queue
 import sys
 import time
+from contextvars import ContextVar
 from datetime import datetime, timedelta, timezone
 
 from backend.shared.helpers.text_clean import to_plain
@@ -38,6 +39,21 @@ _SKIP_PREFIXES = (
 _STANDARD_ATTRS = frozenset(vars(logging.LogRecord("", 0, "", 0, "", None, None))) | {"message", "asctime", "tags"}
 
 PROCESS = "api"
+
+# Branch of the caller whose request is being served (set by the conn service
+# from the X-Ramboq-Branch header). Records carry it as `origin`, so dev-driven
+# work handled by the shared conn process never alerts from prod.
+ORIGIN_BRANCH: ContextVar[str | None] = ContextVar("ramboq_origin_branch", default=None)
+
+
+class OriginFilter(logging.Filter):
+    """Stamp the calling request's origin onto each record, in the calling thread."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        origin = ORIGIN_BRANCH.get()
+        if origin is not None and not hasattr(record, "origin"):
+            record.origin = origin
+        return True
 
 _loop: asyncio.AbstractEventLoop | None = None
 _wake: asyncio.Event | None = None

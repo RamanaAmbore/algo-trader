@@ -70,6 +70,11 @@ async def _start_conn_event_queue(app: Litestar) -> None:
     logger.info("conn_service: broker_conn_event_queue started")
 
 
+def _origin_hook(request) -> None:
+    from backend.shared.helpers.log_store import ORIGIN_BRANCH
+    ORIGIN_BRANCH.set(request.headers.get("X-Ramboq-Branch") or "main")
+
+
 async def _start_log_store(app: Litestar) -> None:
     from backend.shared.helpers import log_store
     await log_store.start("conn")
@@ -99,6 +104,7 @@ def create_app() -> Litestar:
             InternalBrokerController,
             BrokerDispatchController,
         ],
+        before_request=_origin_hook,
         on_startup=[_start_log_store, _start_conn_event_queue, _init_connections_on_startup, _start_kite_ticker],
         on_shutdown=[_stop_conn_event_queue, _stop_log_store],
         debug=False,

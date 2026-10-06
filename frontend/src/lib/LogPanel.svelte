@@ -2099,10 +2099,6 @@
   :global(.log-panel.log-rows.lp-multicol .log-row) {
     min-width: 0; /* prevent overflow out of grid cell */
   }
-  :global(.log-panel.log-rows) {
-    --fs-xs: var(--log-fs-xs);
-    --fs-sm: var(--log-fs-sm);
-  }
   /* Below 900px the row text gets too narrow for the two-line
      timestamp + message layout to be readable; collapse to single
      column (mirrors NewsList's @media breakpoint). */

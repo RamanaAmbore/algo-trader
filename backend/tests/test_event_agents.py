@@ -126,3 +126,57 @@ async def test_unknown_renderer_sends_nothing_and_reports_once(monkeypatch, send
     agent = _agent(actions=[{"type": "render", "render": "nope"}])
     assert await event_agents.dispatch([_rec(), _rec()], [agent]) == 0
     assert capsys.readouterr().err.count("unknown renderer 'nope'") == 1
+
+
+@pytest.mark.asyncio
+async def test_dev_process_never_dispatches(monkeypatch, senders):
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "dev"})
+    called = []
+
+    async def boom():
+        called.append(True)
+        return []
+
+    monkeypatch.setattr(event_agents, "load_agents", boom)
+    await event_agents.dispatch_rows([_rec()])
+    assert called == []
+    assert senders == {"ntfy": [], "tg": []}
+
+
+@pytest.mark.asyncio
+async def test_main_process_dispatches(monkeypatch):
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    called = []
+
+    async def load():
+        called.append(True)
+        return []
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    await event_agents.dispatch_rows([_rec()])
+    assert called == [True]
+
+
+@pytest.mark.asyncio
+async def test_dev_origin_records_are_not_dispatched_on_prod(monkeypatch, senders):
+    from backend.shared.helpers import utils as u
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    seen = []
+
+    async def load():
+        return [SimpleNamespace(slug="x")]
+
+    async def capture(records, agents):
+        seen.extend(records)
+        return 0
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    monkeypatch.setattr(event_agents, "dispatch", capture)
+    dev = _rec()
+    dev["extra"]["origin"] = "dev"
+    prod = _rec(msg="prod")
+    prod["extra"]["origin"] = "main"
+    await event_agents.dispatch_rows([dev, prod])
+    assert [r["extra"].get("origin") for r in seen] == ["main"]

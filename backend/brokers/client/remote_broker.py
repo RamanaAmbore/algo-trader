@@ -43,6 +43,11 @@ from backend.brokers.errors import (
 logger = logging.getLogger(__name__)
 
 _TIMEOUT = httpx.Timeout(30.0, connect=5.0)
+
+
+def _deploy_branch() -> str:
+    from backend.shared.helpers.utils import config
+    return str(config.get("deploy_branch", "main"))
 _client = httpx.Client(
     base_url="http://conn",
     transport=httpx.HTTPTransport(uds=CONN_SOCK),
@@ -82,6 +87,7 @@ class RemoteBroker(Broker):
             resp = _get_client().post(
                 path,
                 json={"args": list(args), "kwargs": kwargs},
+                headers={"X-Ramboq-Branch": _deploy_branch()},
             )
             if not resp.is_success:
                 # Extract JSON error body before raise_for_status() so callers

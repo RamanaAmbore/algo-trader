@@ -290,7 +290,17 @@ async def load_agents() -> list:
     return _cache["agents"]
 
 
+def _alerts_enabled_here() -> bool:
+    from backend.shared.helpers.utils import config
+    return config.get("deploy_branch", "main") == "main"
+
+
 async def dispatch_rows(rows: list[dict]) -> None:
+    if not _alerts_enabled_here():
+        return
+    rows = [r for r in rows if (r.get("extra") or {}).get("origin") in (None, "main")]
+    if not rows:
+        return
     try:
         agents = await load_agents()
         if agents and rows:

@@ -188,3 +188,22 @@ async def test_emit_wakes_the_writer_on_the_loop():
         assert wake.is_set()
     finally:
         log_store._loop, log_store._wake = monkeypatch_loop, monkeypatch_wake
+
+
+def test_origin_is_stamped_from_the_request_context(monkeypatch):
+    from backend.shared.helpers.log_store import ORIGIN_BRANCH, OriginFilter
+    rec = _rec()
+    token = ORIGIN_BRANCH.set("dev")
+    try:
+        OriginFilter().filter(rec)
+    finally:
+        ORIGIN_BRANCH.reset(token)
+    assert rec.origin == "dev"
+    assert log_store.row_for(rec)["extra"]["origin"] == "dev"
+
+
+def test_no_origin_outside_a_request():
+    from backend.shared.helpers.log_store import OriginFilter
+    rec = _rec()
+    OriginFilter().filter(rec)
+    assert not hasattr(rec, "origin")

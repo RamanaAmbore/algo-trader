@@ -192,8 +192,6 @@
 
 <style>
   .ul-wrap {
-    --fs-xs: var(--log-fs-xs);
-    --fs-sm: var(--log-fs-sm);
     overflow-wrap: anywhere;
     overflow-y: auto;
     font-family: var(--font-numeric);

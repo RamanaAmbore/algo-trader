@@ -659,7 +659,21 @@ async def _market_needs_refresh_today() -> bool:
 
 
 async def _save_market_to_db(resp) -> None:
-    """Upsert id=1 row with the latest market report."""
+    """Upsert id=1 row with the latest market report.
+
+    The async engine is bound to the main event loop. When this runs on
+    another loop, hand the write to the main loop and await it here.
+    """
+    import asyncio
+    from backend.api.persistence import write_queue
+    main = write_queue.get_main_loop()
+    if main is not None and main.is_running() and asyncio.get_running_loop() is not main:
+        await asyncio.wrap_future(asyncio.run_coroutine_threadsafe(_save_market_row(resp), main))
+        return
+    await _save_market_row(resp)
+
+
+async def _save_market_row(resp) -> None:
     from datetime import datetime, timezone
     from backend.api.database import async_session
     from backend.api.models import MarketReport
