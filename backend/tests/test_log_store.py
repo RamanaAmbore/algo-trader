@@ -207,3 +207,28 @@ def test_no_origin_outside_a_request():
     rec = _rec()
     OriginFilter().filter(rec)
     assert not hasattr(rec, "origin")
+
+
+@pytest.mark.asyncio
+async def test_stop_drains_queued_records_through_dispatch(monkeypatch):
+    h = log_store.LogStoreHandler()
+    monkeypatch.setattr(log_store, "HANDLER", h)
+    monkeypatch.setattr(log_store, "_task", None)
+    dispatched = []
+
+    async def dispatch(rows):
+        dispatched.extend(rows)
+
+    monkeypatch.setattr(log_store, "_event_dispatcher", lambda: dispatch)
+    stored = []
+
+    async def insert(rows, session_factory=None):
+        stored.extend(rows)
+
+    monkeypatch.setattr(log_store, "insert_rows", insert)
+    h.emit(_rec(tags=["orders"], msg="a"))
+    h.emit(_rec(tags=["orders"], msg="b"))
+    await log_store.stop()
+    assert [r["message"] for r in dispatched] == ["a", "b"]
+    assert [r["message"] for r in stored] == ["a", "b"]
+    assert h._q.empty()

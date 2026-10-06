@@ -232,8 +232,21 @@ async def start(process: str) -> None:
     _task = asyncio.create_task(run_forever(), name="log_store")
 
 
+_MAX_DRAIN_ROUNDS = 50
+
+
 async def stop() -> None:
+    """Stop the writer, then drain what is still queued so those records are stored and dispatched."""
     global _task
     if _task is not None:
         _task.cancel()
         _task = None
+    for _ in range(_MAX_DRAIN_ROUNDS):
+        if HANDLER._q.empty():
+            break
+        try:
+            if await flush_once(HANDLER, dispatch=_event_dispatcher()) == 0:
+                break
+        except Exception as e:
+            sys.stderr.write(f"log_store: shutdown drain failed: {e}\n")
+            break
