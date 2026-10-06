@@ -192,6 +192,9 @@
 
 <style>
   .ul-wrap {
+    --fs-xs: var(--log-fs-xs);
+    --fs-sm: var(--log-fs-sm);
+    overflow-wrap: anywhere;
     overflow-y: auto;
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
@@ -257,7 +260,11 @@
     font-size: var(--fs-sm);
     flex-shrink: 0;
   }
-  .ul-msg { color: var(--algo-slate); }
+  .ul-msg { color: var(--algo-slate); padding-left: 0; text-indent: 0; font-size: var(--fs-base); }
+  @media (max-width: 640px) {
+    .ul-row { display: block; }
+    .ul-line { padding-left: 0; margin-left: 0; }
+  }
 
   /* ── Order-event kind chips ─────────────────────────────────── */
   .ul-kind-placed          { color: #38bdf8; }
@@ -362,7 +369,7 @@
   }
   .ul-card-msg {
     color: var(--algo-slate);
-    font-size: var(--fs-lg);
+    font-size: var(--fs-base);
     line-height: 1.4;
     padding-left: 0.1rem;
   }

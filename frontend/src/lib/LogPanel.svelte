@@ -2099,6 +2099,10 @@
   :global(.log-panel.log-rows.lp-multicol .log-row) {
     min-width: 0; /* prevent overflow out of grid cell */
   }
+  :global(.log-panel.log-rows) {
+    --fs-xs: var(--log-fs-xs);
+    --fs-sm: var(--log-fs-sm);
+  }
   /* Below 900px the row text gets too narrow for the two-line
      timestamp + message layout to be readable; collapse to single
      column (mirrors NewsList's @media breakpoint). */
@@ -2170,14 +2174,32 @@
     line-height: 1.3;
   }
   :global(.log-panel.log-rows .log-row-msg) {
+    /* Message text uses the page base size, the same as the news titles. */
+    font-size: var(--fs-base);
     /* flex-basis: 100% pushes msg to its own line below time + tag
        on narrow viewports — mobile convention. Desktop override
        below collapses time + msg into one row. */
     flex: 1 1 100%;
     order: 2;
     min-width: 0;
-    word-break: break-word;
+    overflow-wrap: anywhere;
+    text-indent: 0;
     line-height: 1.3;
+  }
+  :global(.log-panel.log-rows .log-row-msg *) {
+    margin: 0;
+    padding-left: 0;
+    text-indent: 0;
+  }
+  @media (max-width: 640px) {
+    :global(.log-panel.log-rows .log-row) {
+      column-gap: 0.3rem;
+      max-width: 100%;
+    }
+    :global(.log-panel.log-rows .log-row-msg) {
+      padding-left: 0;
+      margin-left: 0;
+    }
   }
   /* Desktop ≥1024px — collapse the stacked layout into a single
      row with two columns: [time TAG] | [message]. Matches the

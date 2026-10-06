@@ -395,6 +395,10 @@
   --fs-xs:  0.55rem;
   --fs-sm:  0.6rem;
   --fs-md:  0.65rem;
+  /* Log surfaces (LogPanel, UnifiedLog) read these instead of the
+     general-purpose --fs-xs / --fs-sm, so log text scales as one unit. */
+  --log-fs-xs: 0.7rem;
+  --log-fs-sm: 0.8rem;
   --fs-lg:  0.72rem;
   --fs-xl:  0.85rem;
   --fs-2xl: 1.55rem;

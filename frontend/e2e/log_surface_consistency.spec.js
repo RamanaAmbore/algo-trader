@@ -19,8 +19,8 @@ test('order log tag uses the shared tag style, not a local override', () => {
 });
 
 test('unified log time uses the reference cyan at the small size', () => {
-  const rule = UL.match(/\.ul-time \{([\s\S]*?)\}/);
-  expect(rule, '.ul-time rule present').not.toBeNull();
-  expect(rule[1]).toMatch(/color:\s*#7dd3fc/);
-  expect(rule[1]).toMatch(/font-size:\s*var\(--fs-sm\)/);
+  const rules = [...UL.matchAll(/\.ul-time \{([\s\S]*?)\}/g)].map((m) => m[1]);
+  const base = rules.find((body) => /color:\s*#7dd3fc/.test(body));
+  expect(base, '.ul-time base rule with the reference cyan').toBeDefined();
+  expect(base).toMatch(/font-size:\s*var\(--fs-sm\)/);
 });
