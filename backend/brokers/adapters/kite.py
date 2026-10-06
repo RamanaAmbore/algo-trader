@@ -351,12 +351,18 @@ class KiteBroker(Broker):
     def profile(self) -> dict:
         return self.kite.profile()
 
+    @recoverable("kite.holdings", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def holdings(self) -> list[dict]:
         return self.kite.holdings()
 
+    @recoverable("kite.positions", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def positions(self) -> dict:
         return self.kite.positions()
 
+    @recoverable("kite.margins", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def margins(self, segment: str | None = None) -> dict:
         return self.kite.margins(segment) if segment else self.kite.margins()
 

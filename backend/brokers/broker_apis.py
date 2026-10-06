@@ -1611,7 +1611,9 @@ def _fetch_holdings_local(connections=Connections, account=None, kite=None, brok
             df_holdings["type"] = "H"
         _record_fetch(account, ok=True)
     except Exception as e:
-        logger.error(f"[{account}] Failed to fetch holdings: {e}")
+        from backend.shared.helpers.recovery import already_logged
+        if not already_logged(e):
+            logger.error(f"[{account}] Failed to fetch holdings: {e}")
         df_holdings.attrs['fetch_failed'] = True
         _record_fetch(account, ok=False, error=str(e))
 
@@ -2329,7 +2331,9 @@ def _fetch_positions_local(connections=Connections, account=None, kite=None, bro
             df_positions["account"] = account
             df_positions["type"] = "P"
     except Exception as e:
-        logger.error(f"[{account}] Failed to fetch positions: {e}")
+        from backend.shared.helpers.recovery import already_logged
+        if not already_logged(e):
+            logger.error(f"[{account}] Failed to fetch positions: {e}")
         _record_fetch(account, ok=False, error=str(e))
         # R1 substitution — see rationale in the `net_rows is None` branch
         # above.
@@ -3076,7 +3080,9 @@ def _fetch_margins_local(connections=Connections, account=None, kite=None, broke
             df_margins["type"] = "C"
         _record_fetch(account, ok=True)
     except Exception as e:
-        logger.error(f"[{account}] Failed to fetch margins: {e}")
+        from backend.shared.helpers.recovery import already_logged
+        if not already_logged(e):
+            logger.error(f"[{account}] Failed to fetch margins: {e}")
         _record_fetch(account, ok=False, error=str(e))
         # 2026-09-27 audit fix: this used to fall through to
         # _record_lkg_frame below unconditionally, storing this EMPTY,
