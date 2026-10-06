@@ -1551,6 +1551,8 @@ async def _ch_cancel_previous(
 # "may still be resting" is anything NOT in this set (most commonly
 # OPEN/TRIGGER PENDING, or an empty/unreadable status dict).
 _CH_CONFIRMED_GONE_STATUSES = frozenset({"CANCELLED", "EXPIRED", "COMPLETE", "REJECTED"})
+_CH_CANCEL_CONFIRM_READS = 3
+_CH_CANCEL_CONFIRM_WAIT_S = 1.0
 
 
 async def _ch_capture_late_fill(
@@ -1750,12 +1752,21 @@ async def _ch_cancel_and_capture(
     await _ch_cancel_previous(account, current_order_id, cfg, symbol, attempt, emit)
     if not current_order_id:
         return cumulative_filled, current_order_filled, remaining_qty, None
-    cumulative_filled, current_order_filled, remaining_qty, late_avg_price, cancel_confirmed = (
-        await _ch_capture_late_fill(
-            account, current_order_id, cfg, symbol, quantity,
-            cumulative_filled, current_order_filled, algo_order_id,
+    # A cancel can land at the broker a moment after the cancel call returns,
+    # so a single status read may not show the final state yet. Re-read a few
+    # times before treating the cancel as unconfirmed. Re-reading is safe: the
+    # late-fill capture only adds fills it has not already counted.
+    for _confirm_try in range(_CH_CANCEL_CONFIRM_READS):
+        cumulative_filled, current_order_filled, remaining_qty, late_avg_price, cancel_confirmed = (
+            await _ch_capture_late_fill(
+                account, current_order_id, cfg, symbol, quantity,
+                cumulative_filled, current_order_filled, algo_order_id,
+            )
         )
-    )
+        if cancel_confirmed or remaining_qty <= 0:
+            break
+        if _confirm_try + 1 < _CH_CANCEL_CONFIRM_READS:
+            await asyncio.sleep(_CH_CANCEL_CONFIRM_WAIT_S)
     if remaining_qty > 0 and not cancel_confirmed:
         early = _ch_build_cancel_unconfirmed_abort(
             result, symbol, account, transaction_type, quantity,
