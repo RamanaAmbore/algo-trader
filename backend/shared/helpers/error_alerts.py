@@ -90,3 +90,37 @@ class RepeatGate:
         self._last = {k: t for k, t in self._last.items() if now - t < self._cooldown_s}
         self._repeats = {k: n for k, n in self._repeats.items() if k in self._last}
         self._hits = {k: h for k, h in self._hits.items() if h and now - h[-1] < self._window_s}
+
+
+class SharedRepeatGate:
+    """The same decision as RepeatGate, with state in Redis so every process sees one gate.
+
+    The hit window is fixed rather than sliding, which is close enough for a
+    persistence threshold. Use RepeatGate when Redis is unavailable.
+    """
+
+    def __init__(self, redis_client, threshold: int = REPEAT_THRESHOLD,
+                 window_s: float = WINDOW_S, cooldown_s: float = COOLDOWN_S,
+                 prefix: str = "ramboq:err_gate:"):
+        self._r = redis_client
+        self._threshold = threshold
+        self._window_s = int(window_s)
+        self._cooldown_s = int(cooldown_s)
+        self._prefix = prefix
+
+    def decide(self, key: str, alert_now: bool = False) -> int | None:
+        import hashlib
+        digest = hashlib.sha256(key.encode()).hexdigest()[:32]
+        hits_key = f"{self._prefix}hits:{digest}"
+        cool_key = f"{self._prefix}cool:{digest}"
+        rep_key = f"{self._prefix}rep:{digest}"
+        hits = self._r.incr(hits_key)
+        if hits == 1:
+            self._r.expire(hits_key, self._window_s)
+        if not alert_now and hits <= self._threshold:
+            return None
+        if not self._r.set(cool_key, 1, nx=True, ex=self._cooldown_s):
+            self._r.incr(rep_key)
+            return None
+        return int(self._r.getdel(rep_key) or 0)
+

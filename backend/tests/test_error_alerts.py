@@ -82,3 +82,42 @@ def test_error_agent_is_seeded_for_error_records_only():
     spec = event_agents.ERROR_AGENT
     assert spec["conditions"] == {"log": {"tag": "error", "min_level": "ERROR"}}
     assert spec["actions"] == [{"type": "render", "render": "error", "gate": True}]
+
+
+class _FakeRedis:
+    def __init__(self):
+        self.kv, self.ttl = {}, {}
+
+    def incr(self, k):
+        self.kv[k] = int(self.kv.get(k, 0)) + 1
+        return self.kv[k]
+
+    def expire(self, k, s):
+        self.ttl[k] = s
+
+    def set(self, k, v, nx=False, ex=None):
+        if nx and k in self.kv:
+            return None
+        self.kv[k] = v
+        return True
+
+    def getdel(self, k):
+        return self.kv.pop(k, None)
+
+
+def test_shared_gate_matches_local_gate_across_processes():
+    from backend.shared.helpers.error_alerts import SharedRepeatGate
+    r = _FakeRedis()
+    a, b = SharedRepeatGate(r), SharedRepeatGate(r)
+    assert a.decide("m") is None
+    assert b.decide("m") is None
+    assert b.decide("m") is None
+    assert a.decide("m") == 0
+    assert b.decide("m") is None
+    r.kv = {k: v for k, v in r.kv.items() if "cool" not in k}
+    assert a.decide("m", alert_now=True) == 1
+
+
+def test_shared_gate_alert_now_sends_first_occurrence():
+    from backend.shared.helpers.error_alerts import SharedRepeatGate
+    assert SharedRepeatGate(_FakeRedis()).decide("x", alert_now=True) == 0

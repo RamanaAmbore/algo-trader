@@ -1221,6 +1221,7 @@ LOG_TAG_TOKENS: list[dict] = [
         ('agent', 'Alert agent firings written by the agent engine (owner: agent engine).'),
         ('mcp', 'MCP tool actions: audit pings for cancel, place, modify, and agent status (owner: lab routes).'),
         ('deploy', 'Deploy state: branch sync and webhook health (owner: background tasks).'),
+        ('summary', 'Open and close market summaries (owner: background tasks).'),
     ]
 ]
 SYSTEM_TOKENS.extend(LOG_TAG_TOKENS)

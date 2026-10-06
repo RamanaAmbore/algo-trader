@@ -261,7 +261,7 @@ PYEOF
   # Install Python dependencies (API layer only) — only when a
   # requirements file actually changed in this push.
   if [ "$DEPS_CHANGED" = "true" ]; then
-      pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-api.txt \
+      pip install --no-cache-dir -r backend/requirements.txt -r backend/requirements-api.txt 200>&- \
         && echo "[$TS] Python deps installed" \
         || { echo "[$TS] ERROR: pip install failed"; exit 1; }
   else
@@ -279,8 +279,8 @@ PYEOF
   if command -v npm &>/dev/null && [ -f "$APP_ROOT/frontend/package.json" ]; then
     echo "[$TS] Building SvelteKit frontend (low priority)..."
     cd "$APP_ROOT/frontend"
-    nice -n 19 ionice -c 3 npm install --prefer-offline 2>&1 | tail -3
-    nice -n 19 ionice -c 3 npm run build \
+    nice -n 19 ionice -c 3 npm install --prefer-offline 200>&- 2>&1 | tail -3
+    nice -n 19 ionice -c 3 npm run build 200>&- \
       && echo "[$TS] SvelteKit build complete" \
       || echo "[$TS] WARNING: SvelteKit build failed (non-fatal)"
     cd "$APP_ROOT"

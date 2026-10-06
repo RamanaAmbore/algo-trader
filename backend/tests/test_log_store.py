@@ -232,3 +232,13 @@ async def test_stop_drains_queued_records_through_dispatch(monkeypatch):
     assert [r["message"] for r in dispatched] == ["a", "b"]
     assert [r["message"] for r in stored] == ["a", "b"]
     assert h._q.empty()
+
+
+def test_report_dropped_writes_once_per_new_drop(capsys):
+    h = log_store.LogStoreHandler()
+    h.dropped = 3
+    reported = log_store.report_dropped(h, 0)
+    assert reported == 3
+    assert "3 record(s) dropped" in capsys.readouterr().err
+    assert log_store.report_dropped(h, reported) == 3
+    assert capsys.readouterr().err == ""

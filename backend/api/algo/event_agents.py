@@ -36,7 +36,17 @@ def _render_fill(rec: dict) -> tuple[str, str]:
 
 RENDERS: dict = {}
 _unknown_renders: set[str] = set()
-_gate = RepeatGate()
+_gate = None
+
+
+def _get_gate():
+    global _gate
+    if _gate is None:
+        from backend.shared.helpers.alert_utils import _get_redis
+        from backend.shared.helpers.error_alerts import SharedRepeatGate
+        client = _get_redis()
+        _gate = SharedRepeatGate(client) if client is not None else RepeatGate()
+    return _gate
 
 
 def _render_chase_cancel(rec: dict) -> tuple[str, str]:
@@ -133,6 +143,14 @@ def _render_rich_alert(rec: dict) -> tuple:
     return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
+def _render_summary(rec: dict) -> tuple:
+    from backend.shared.helpers.alert_utils import dispatch_payload, _html_to_plain
+    x = rec.get("extra") or {}
+    p = dispatch_payload(x["msg_type"], x["ist_display"], x["tg_table"], x["email_table_html"],
+                         x["subject_detail"], sim_mode=False, mode_tag="")
+    return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
+
+
 def _render_error(rec: dict) -> tuple[str, str, str]:
     from backend.shared.helpers.utils import mask_account_in_text
     name = rec.get("logger") or ""
@@ -162,6 +180,7 @@ register_renderer("template_attach_fail")(_render_attach_fail)
 register_renderer("mcp_ping")(_render_mcp_ping)
 register_renderer("deploy_sync")(_render_deploy_sync)
 register_renderer("rich_alert")(_render_rich_alert)
+register_renderer("summary")(_render_summary)
 
 
 def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | None = None) -> None:
@@ -204,9 +223,15 @@ def _send_email_channel(title: str, body: str, tg: str | None = None,
             sys.stderr.write(f"event_agents: email to {addr} failed: {e}\n")
 
 
+def _send_telegram_info_html(title: str, body: str, tg: str | None = None) -> None:
+    from backend.shared.helpers import alert_utils
+    alert_utils._send_telegram_info(tg or f"<b>{html.escape(title)}</b>\n{html.escape(body)}")
+
+
 CHANNELS = {
     "ntfy": ("ntfy", _send_ntfy),
     "telegram": ("telegram", _send_telegram_html),
+    "telegram_info": (None, _send_telegram_info_html),
     "email": (None, _send_email_channel),
 }
 
@@ -222,7 +247,7 @@ def _gate_passes(agent, rec: dict, gated: bool) -> dict | None:
         return rec
     from backend.shared.helpers.utils import mask_account_in_text
     gate_key = f"{rec.get('logger')}|{clean_message(mask_account_in_text(rec.get('message') or '') or '')}"
-    repeats = _gate.decide(gate_key, alert_now=bool((rec.get("extra") or {}).get("alert_now")))
+    repeats = _get_gate().decide(gate_key, alert_now=bool((rec.get("extra") or {}).get("alert_now")))
     return None if repeats is None else {**rec, "repeats": repeats}
 
 
@@ -423,6 +448,17 @@ RICH_ALERT_AGENT = {
     "actions": [{"type": "render", "render": "rich_alert"}],
 }
 
+SUMMARY_AGENT = {
+    "slug": "market-summary",
+    "name": "Market summary",
+    "conditions": {"log": {"tag": "summary", "min_level": "INFO", "where": {"event": "summary"}}},
+    "events": [
+        {"channel": "telegram_info", "enabled": True, "gate": False},
+        {"channel": "email", "enabled": True, "gate": False},
+    ],
+    "actions": [{"type": "render", "render": "summary"}],
+}
+
 FILL_AGENT = {
     "slug": "fill-alert",
     "name": "Fill alert",
@@ -440,7 +476,7 @@ async def seed_event_agents() -> None:
         for spec in (FILL_AGENT, ERROR_AGENT, CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT,
                      TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
                      TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
-                     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT):
+                     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT):
             row = (await s.execute(select(Agent).where(Agent.slug == spec["slug"]))).scalar_one_or_none()
             if row is None:
                 s.add(Agent(slug=spec["slug"], name=spec["name"], conditions=spec["conditions"],

@@ -193,11 +193,24 @@ def _event_dispatcher():
     return dispatch_rows
 
 
+def report_dropped(handler: LogStoreHandler, reported: int) -> int:
+    """Write one stderr line when records were dropped since the last report. Returns the new count."""
+    if handler.dropped > reported:
+        sys.stderr.write(
+            f"log_store: {handler.dropped - reported} record(s) dropped "
+            f"(total {handler.dropped}); their alerts were not sent\n"
+        )
+        return handler.dropped
+    return reported
+
+
 async def run_forever(handler: LogStoreHandler = HANDLER) -> None:
     last_prune = 0.0
     last_level = 0.0
+    reported = 0
     while True:
         now = time.monotonic()
+        reported = report_dropped(handler, reported)
         try:
             if now - last_level >= _LEVEL_REFRESH_S:
                 handler.setLevel(_min_level())

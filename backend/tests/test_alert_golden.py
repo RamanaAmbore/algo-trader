@@ -367,3 +367,39 @@ async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, 
     subj, body = sent["mail"][0][2], sent["mail"][0][3]
     assert subj == expected_subject
     assert hashlib.sha256(body.encode()).hexdigest() == expected_sha
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("msg_type, title, subject, sha", [
+    ("open", "Open Summary — 10:15:30 IST", "RamboQuant Open Summary: Summary — 10:15:30 IST",
+     "025ab93a9c4cdcc0b31c5aaae84c2ea48415de06d15e685863b669d947a6d925"),
+    ("close", "Close Summary — 10:15:30 IST", "RamboQuant Close Summary: Summary — 10:15:30 IST",
+     "16114ca79451a6c3576cb73206083948184fdc9574ee9aa2caf2777aa03b9770"),
+])
+async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type, title, subject, sha):
+    import hashlib
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    import backend.shared.helpers.mail_utils as mu
+    sent = {"info": [], "mail": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram_info",
+                        ("telegram_info", lambda t, b, tg=None, **k: sent["info"].append(tg)))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["info", "summary"],
+           "extra": {"tags": ["summary"], "event": "summary", "msg_type": msg_type,
+                     "ist_display": "10:15:30 IST", "tg_table": "Holdings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300",
+                     "email_table_html": "<table><tr><td>Holdings</td><td>120000</td></tr></table>",
+                     "subject_detail": "Summary — 10:15:30 IST"}}
+    spec = event_agents.SUMMARY_AGENT
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["info"] == [f"<b>{title}</b>\n\n<code>Holdings  ZG####  ₹1,20,000\nPositions  ZG####  -₹300</code>"]
+    _, addr, subj, body = sent["mail"][0]
+    assert subj == subject
+    assert hashlib.sha256(body.encode()).hexdigest() == sha

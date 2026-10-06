@@ -791,8 +791,14 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
             f"{warning_lines[0]}</p>" + email_html
         )
 
-    _dispatch(msg_type, ist_display, tg_table, email_html, subject_detail)
-    logger.info(f"Background: {msg_type} summary sent")
+    logger.info(
+        f"Background: {msg_type} summary recorded",
+        extra={
+            "tags": ["summary"], "event": "summary", "msg_type": msg_type,
+            "ist_display": ist_display, "tg_table": tg_table,
+            "email_table_html": email_html, "subject_detail": subject_detail,
+        },
+    )
 
 
 # ---------------------------------------------------------------------------

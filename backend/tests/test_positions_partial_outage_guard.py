@@ -74,6 +74,15 @@ def _clean_summary() -> "pd.DataFrame":
 # grammar._scope_positions_total
 # ---------------------------------------------------------------------------
 
+
+def _summary_extra(mock_logger) -> dict:
+    for c in mock_logger.info.call_args_list:
+        extra = c.kwargs.get("extra") or {}
+        if extra.get("event") == "summary":
+            return {"tg_table": extra["tg_table"], "email_html": extra["email_table_html"]}
+    return {}
+
+
 class TestScopePositionsTotalPartialOutageGuard:
     @pytest.fixture(autouse=True)
     def _wire_registry(self, monkeypatch):
@@ -430,12 +439,13 @@ class TestSendSummaryWarnsOnPartialOutage:
         import backend.shared.helpers.alert_utils as au
         from unittest.mock import patch as _patch
 
-        with _patch.object(au, "_dispatch", side_effect=_fake_dispatch):
+        with _patch.object(au, "logger") as _mock_log:
             send_summary(
                 pd.DataFrame(), _partial_outage_summary(), "26-Sep-26 10:00",
                 "open", label="Equity",
             )
 
+        captured = _summary_extra(_mock_log)
         assert "PARTIAL OUTAGE" in captured['tg_table']
         assert "ACCT_FAILED" in captured['tg_table']
         assert "PARTIAL OUTAGE" in captured['email_html']
@@ -451,11 +461,12 @@ class TestSendSummaryWarnsOnPartialOutage:
             captured['tg_table'] = tg_table
             captured['email_html'] = email_html
 
-        with _patch.object(au, "_dispatch", side_effect=_fake_dispatch):
+        with _patch.object(au, "logger") as _mock_log:
             send_summary(
                 pd.DataFrame(), _clean_summary(), "26-Sep-26 10:00",
                 "open", label="Equity",
             )
 
+        captured = _summary_extra(_mock_log)
         assert "PARTIAL OUTAGE" not in captured['tg_table']
         assert "PARTIAL OUTAGE" not in captured['email_html']
