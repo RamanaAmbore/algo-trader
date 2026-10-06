@@ -95,6 +95,29 @@ def get_main_loop() -> asyncio.AbstractEventLoop | None:
     return _main_loop
 
 
+def run_on_main_loop(coro, default, timeout: float = 5.0):
+    """Run `coro` on the main event loop from a sync caller and return its result.
+
+    Returns `default` when the main loop is missing or not running, when the
+    caller is already on the main loop (waiting there would deadlock), or on
+    error or timeout. Keeps every database connection on one loop.
+    """
+    loop = _main_loop
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if loop is None or not loop.is_running() or running is loop:
+        coro.close()
+        return default
+    fut = asyncio.run_coroutine_threadsafe(coro, loop)
+    try:
+        return fut.result(timeout=timeout)
+    except Exception:
+        fut.cancel()
+        return default
+
+
 async def stop() -> None:
     deadline = 2.0   # seconds to drain before cancelling
     for q, label in ((disk_queue, "disk"), (db_queue, "db")):

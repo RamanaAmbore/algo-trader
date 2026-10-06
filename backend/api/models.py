@@ -2296,7 +2296,7 @@ class MarketLifecycleEvent(Base):
 class MarketHoliday(Base):
     """Trading-holiday calendar per exchange, persisted for durable lookup.
 
-    Populated by the daily `_task_holiday_refresh` cron (04:00 IST) which
+    Populated by the daily `_task_holiday_refresh` cron (05:30 IST by default) which
     calls `fetch_holidays(exchange)` — that in turn hits the NSE public API
     (`nseindia.com/api/holiday-master?type=trading`) and normalises the
     payload into (exchange, date) rows. Idempotent UPSERT on the composite

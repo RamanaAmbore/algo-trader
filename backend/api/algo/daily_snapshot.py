@@ -1200,7 +1200,7 @@ async def fix_daily_book_prev_close(
     midnight = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
     today = now_ist.date()
 
-    _open = _exchange_clock.get_nse_open_time()   # sync — set at startup and at 04:00 IST
+    _open = _exchange_clock.get_nse_open_time()   # sync — set at startup and at the daily holiday refresh (05:30 IST by default)
     if _open is None:
         return 0                      # holiday — no transition fires
     today_open = midnight.replace(hour=_open.hour, minute=_open.minute, second=0, microsecond=0)

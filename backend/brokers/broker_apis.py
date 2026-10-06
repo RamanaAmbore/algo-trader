@@ -3171,7 +3171,6 @@ def _read_special_sessions_sync(exchange: str, today) -> list[dict]:
     Fires at most once per (exchange, day) per process — subsequent calls
     hit the in-process ``_SPECIAL_SESSION_CACHE``.
     """
-    import asyncio
     from sqlalchemy import select
     from datetime import date as _dt_date, time as _dt_time
 
@@ -3199,19 +3198,8 @@ def _read_special_sessions_sync(exchange: str, today) -> list[dict]:
     # correct pattern; get_event_loop() emits DeprecationWarning inside
     # coroutines and would create a NEW loop in sync thread contexts —
     # meaningless here).
-    try:
-        try:
-            asyncio.get_running_loop()
-            # Inside an async context — run in thread to avoid blocking loop.
-            import concurrent.futures
-            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(asyncio.run, _async_read())
-                return fut.result(timeout=5)
-        except RuntimeError:
-            # No running loop — safe to run one inline.
-            return asyncio.run(_async_read())
-    except Exception:
-        return []
+    from backend.api.persistence.write_queue import run_on_main_loop
+    return run_on_main_loop(_async_read(), default=[])
 
 
 def fetch_holidays(exchange="NSE"):
@@ -3223,7 +3211,7 @@ def fetch_holidays(exchange="NSE"):
       2. Module-level ``_HOLIDAY_CACHE`` (daily-TTL fallback) — used when
          the persistent store has not been warmed yet.
       3. ``market_holidays`` PostgreSQL table — durable across restarts,
-         populated daily by ``_task_holiday_refresh`` at 04:00 IST.
+         populated daily by ``_task_holiday_refresh`` at 05:30 IST by default.
       4. NSE public API (``nseindia.com/api/holiday-master``) — cold-boot
          fallback ONLY. Also invoked directly by ``_task_holiday_refresh``
          which is what normally populates Tier 3.
@@ -3329,23 +3317,8 @@ def _read_market_holidays_sync(exchange: str) -> set:
 
     Returns a set of `date` objects. Never raises — DB errors return empty.
     """
-    from datetime import date as dt_date
-    import asyncio as _asyncio
-
-    try:
-        try:
-            _asyncio.get_running_loop()
-            # We're inside an event loop — cannot use asyncio.run(). Fall
-            # back to a threadpool executor that spins up a fresh loop.
-            import concurrent.futures as _cf
-            with _cf.ThreadPoolExecutor(max_workers=1) as pool:
-                fut = pool.submit(_asyncio.run, _read_market_holidays_async(exchange))
-                return fut.result(timeout=5.0)
-        except RuntimeError:
-            # No running loop — safe to run one inline.
-            return _asyncio.run(_read_market_holidays_async(exchange))
-    except Exception:
-        return set()
+    from backend.api.persistence.write_queue import run_on_main_loop
+    return run_on_main_loop(_read_market_holidays_async(exchange), default=set())
 
 
 async def _read_market_holidays_async(exchange: str) -> set:

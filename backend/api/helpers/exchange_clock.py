@@ -79,7 +79,7 @@ _CACHE_LOCK = asyncio.Lock()
 _CACHE_TTL_S: float = 60.0
 _cache_loaded_at: float = 0.0  # unix epoch
 
-# Today's NSE session open time — set at startup and refreshed at 04:00 IST.
+# Today's NSE session open time — set at startup and refreshed at the daily holiday refresh (05:30 IST by default).
 # None when today is a holiday (no session open time).
 _TODAY_NSE_OPEN: "time | None" = time(8, 0)
 
@@ -162,8 +162,8 @@ def get_nse_open_time() -> "time | None":
 async def load_today_open_time() -> None:
     """Read today's effective NSE open time from exchange_schedule and cache it.
 
-    Called at startup (from seed_and_warm) and at 04:00 IST daily (piggybacked
-    on _task_holiday_refresh) so _TODAY_NSE_OPEN is always correct for the day.
+    Called at startup (from seed_and_warm) and at the daily holiday refresh
+    (05:30 IST by default, piggybacked on _task_holiday_refresh) so _TODAY_NSE_OPEN is always correct for the day.
     Default = time(8, 0) when cache is empty or no matching row found.
 
     Uses _effective_gate_rows (not get_today_gate_sessions) so holiday override
