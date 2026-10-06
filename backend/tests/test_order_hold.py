@@ -71,3 +71,22 @@ def test_release_price_refused_on_bad_tick():
     ok, _, reason = release_price(bid=100, ask=101, last=None,
                                   tick=0, band_low=50, band_high=200)
     assert ok is False and "tick" in reason
+
+
+def test_hold_record_round_trips():
+    from backend.api.algo.order_hold import hold_record, parse_hold_record
+    raw = hold_record(HoldCategory.EXPIRY_CLOSE, "expiry close", "CHASE_MED", None,
+                      datetime(2026, 10, 15, 15, 15))
+    rec = parse_hold_record(raw)
+    assert rec["category"] == "expiry_close"
+    assert rec["price_policy"] == "CHASE_MED"
+    assert rec["override"] is None
+    assert rec["held_at"] == "2026-10-15T15:15:00"
+
+
+def test_parse_hold_record_handles_empty_and_bad_input():
+    from backend.api.algo.order_hold import parse_hold_record
+    assert parse_hold_record(None) is None
+    assert parse_hold_record("") is None
+    assert parse_hold_record("{bad") is None
+    assert parse_hold_record("[1]") is None

@@ -430,6 +430,14 @@ async def _migrate_slice_m(conn) -> None:
         await conn.execute(text(stmt))
 
 
+async def _migrate_order_hold(conn) -> None:
+    """Idempotent hold-state column for algo_orders (see order_hold.py)."""
+    from sqlalchemy import text
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS hold_json TEXT"
+    ))
+
+
 async def _migrate_watchlist_global(conn) -> None:
     """Watchlist shared-global + item alias migration."""
     from sqlalchemy import text
@@ -1004,6 +1012,7 @@ async def init_db() -> None:
         await _migrate_slice_l(conn)
         await _migrate_slice_m(conn)
         await _migrate_watchlist_global(conn)
+        await _migrate_order_hold(conn)
         await _migrate_slice_q(conn)
         await _migrate_slice_s6_watchlist_fk(conn)
         await _migrate_slice_r6_indexes(conn)

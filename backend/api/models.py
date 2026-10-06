@@ -829,6 +829,9 @@ class AlgoOrder(Base):
     # /admin/templates audit reporting. NULL means "no attach yet"
     # (parent not yet filled, or no template was picked).
     attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # Hold state for automated orders (see order_hold.py): JSON with category,
+    # reason, override, price policy, and held_at. NULL for orders never held.
+    hold_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Per-order template parameter overrides — JSON dict with keys
     # tp_pct / sl_pct / wing_premium_pct / wing_strike_offset. Set
     # by the basket / ticket route when the operator tweaks the

@@ -57,3 +57,28 @@ def release_price(bid: float | None, ask: float | None, last: float | None,
     if price < band_low or price > band_high:
         return False, price, f"price {price} outside band {band_low}-{band_high}"
     return True, price, "ok"
+
+
+def hold_record(category: HoldCategory, reason: str, price_policy: str,
+                override: bool | None, held_at: datetime) -> str:
+    """Serialise the hold state stored on an order (AlgoOrder.hold_json)."""
+    import json
+    return json.dumps({
+        "category": category.value,
+        "reason": reason,
+        "price_policy": price_policy,
+        "override": override,
+        "held_at": held_at.isoformat(),
+    }, sort_keys=True)
+
+
+def parse_hold_record(raw: str | None) -> dict | None:
+    """Parse AlgoOrder.hold_json; None when empty or unreadable."""
+    import json
+    if not raw:
+        return None
+    try:
+        value = json.loads(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if isinstance(value, dict) else None
