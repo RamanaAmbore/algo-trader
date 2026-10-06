@@ -399,6 +399,9 @@ export const deleteAgentFragment = (id) =>
   _del(`/admin/fragments/${id}`, { auth: true });
 export const reloadFragments     = () =>
   _post('/admin/fragments/reload', {}, { auth: true });
+// Agents whose trees reach this fragment, directly or through other fragments.
+export const fetchFragmentReferences = (id) =>
+  _get(`/admin/fragments/${id}/references`, { auth: true });
 
 // ── Order templates — TP/SL/Wing exit-rule presets attached at OrderTicket
 // submit time. System rows are toggle + tune; custom rows full CRUD.

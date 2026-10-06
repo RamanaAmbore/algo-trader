@@ -441,6 +441,7 @@ def _chase_row_to_info(r, masked_acct, child_map: dict) -> "AlgoOrderInfo":
         basket_tag=r.basket_tag,
         template_id=r.template_id,
         attached_gtts_json=r.attached_gtts_json,
+        hold_json=getattr(r, "hold_json", None),
         filled_quantity=(int(r.filled_quantity) if r.filled_quantity is not None else None),
         child_order_ids=child_map.get(r.id, []),
         interval_seconds=(int(r.interval_seconds) if getattr(r, "interval_seconds", None) is not None else None),

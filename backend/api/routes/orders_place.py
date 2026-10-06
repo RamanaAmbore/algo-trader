@@ -793,18 +793,13 @@ async def _fire_template_attach_on_fill(
                     parent_row_id, parent_symbol,
                     _planned_gtt_count, _placed_gtt_count,
                     result.errors,
+                    extra={
+                        "tags": ["orders", "gtt"], "event": "partial_gtt",
+                        "parent_row_id": parent_row_id, "parent_symbol": parent_symbol,
+                        "planned": _planned_gtt_count, "placed": _placed_gtt_count,
+                        "errors": [str(e) for e in result.errors[:2]],
+                    },
                 )
-                try:
-                    from backend.shared.helpers.alert_utils import send_ntfy_alert
-                    send_ntfy_alert(
-                        "Partial GTT placement",
-                        f"parent #{parent_row_id} {parent_symbol}: "
-                        f"{_placed_gtt_count}/{_planned_gtt_count} GTTs placed. "
-                        f"Errors: {'; '.join(str(e) for e in result.errors[:2])}",
-                        priority="urgent",
-                    )
-                except Exception as _na:
-                    logger.warning("partial GTT ntfy alert failed: %s", _na)
 
             attached = _opp_build_attach_entries(result, fill_price, parent_side, parent_product)
             if attached:

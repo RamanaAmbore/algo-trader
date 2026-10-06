@@ -977,7 +977,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     """
     # Late import avoids the agent_engine → alert_utils cycle at import time.
     from backend.shared.helpers.alert_utils import (
-        _tg_alert_body, _email_alert_body, _dispatch,
+        _tg_alert_body, _email_alert_body,
     )
     from backend.shared.helpers.date_time_utils import timestamp_display
 
@@ -1025,12 +1025,17 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     subject    = f"Agent {agent.slug}"
     mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
     try:
-        await asyncio.to_thread(
-            _dispatch, 'alert', timestamp_display(), tg_body, email_html, subject,
-            sim_mode=sim_mode, mode_tag=mode_tag,
+        logger.info(
+            f"Agent [{agent.slug}] alert recorded",
+            extra={
+                "tags": ["agent"], "event": "rich_alert", "agent_slug": agent.slug,
+                "ist_display": timestamp_display(), "tg_table": tg_body,
+                "email_table_html": email_html, "subject_detail": subject,
+                "sim_mode": bool(sim_mode), "mode_tag": mode_tag,
+            },
         )
     except Exception as e:
-        logger.error(f"Agent [{agent.slug}] rich alert send failed: {e}")
+        logger.error(f"Agent [{agent.slug}] rich alert record failed: {e}")
         return False
     return True
 

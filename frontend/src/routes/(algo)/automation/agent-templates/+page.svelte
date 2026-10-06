@@ -28,7 +28,7 @@
   import CardHeader from '$lib/CardHeader.svelte';
   import {
     fetchAgentFragments, createAgentFragment,
-    patchAgentFragment, deleteAgentFragment, reloadFragments,
+    patchAgentFragment, deleteAgentFragment, reloadFragments, fetchFragmentReferences,
   } from '$lib/api';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
   import DisclosureChevron  from '$lib/DisclosureChevron.svelte';
@@ -110,6 +110,34 @@
     }, 50);
   }
 
+  function escapeHtml(/** @type {string} */ s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
+  }
+
+  /** Agents that reference this fragment. Returns null when the check itself fails. */
+  async function impactFor(/** @type {any} */ f) {
+    try {
+      const impact = await fetchFragmentReferences(f.id);
+      return impact.agents || [];
+    } catch (e) {
+      toast.error(`Impact check failed: ${e.message || 'unknown error'}`);
+      return null;
+    }
+  }
+
+  /** Ask the operator to confirm a change that would reach these agents. True means proceed. */
+  async function confirmAgents(/** @type {any} */ f, /** @type {string} */ verb, /** @type {any[]} */ agents) {
+    if (agents.length === 0) return true;
+    const rows = agents.map((a) =>
+      `<li><b>${escapeHtml(a.slug)}</b> (${escapeHtml(a.status)})</li>`).join('');
+    return !!(await _confirmRef?.ask({
+      title: `${verb} shared template?`,
+      message: `<b>${escapeHtml(f.name)}</b> is used by ${agents.length} agent(s):<ul>${rows}</ul>`,
+      danger: verb !== 'Save',
+      confirmLabel: verb,
+    }));
+  }
+
   async function saveForm() {
     formError = '';
     let body;
@@ -118,6 +146,11 @@
     } catch (e) {
       formError = `body JSON parse: ${e.message}`;
       return;
+    }
+    if (editingId) {
+      const current = fragments.find((x) => x.id === editingId);
+      const agents = current ? await impactFor(current) : [];
+      if (agents === null || !(await confirmAgents(current, 'Save', agents))) return;
     }
     busy = true;
     try {
@@ -146,8 +179,12 @@
   }
 
   async function toggleActive(/** @type {any} */ f) {
-    busy = true;
     const next = !f.is_active;
+    if (!next) {
+      const agents = await impactFor(f);
+      if (agents === null || !(await confirmAgents(f, 'Deactivate', agents))) return;
+    }
+    busy = true;
     try {
       await patchAgentFragment(f.id, { is_active: next });
       toast.success(`Template ${next ? 'activated' : 'deactivated'}: ${f.name}`);
@@ -160,9 +197,14 @@
   }
 
   async function removeFragment(/** @type {any} */ f) {
+    const agents = await impactFor(f);
+    if (agents === null) return;
+    const impact = agents.length
+      ? `<br>Used by ${agents.length} agent(s): ${agents.map((a) => `<b>${escapeHtml(a.slug)}</b>`).join(', ')}.`
+      : '';
     const ok = await _confirmRef?.ask({
       title: 'Delete agent template?',
-      message: `Delete <b>${f.name}</b>? This cannot be undone.`,
+      message: `Delete <b>${escapeHtml(f.name)}</b>? This cannot be undone.${impact}`,
       danger: true,
       confirmLabel: 'Delete',
     });

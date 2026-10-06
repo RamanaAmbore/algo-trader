@@ -178,7 +178,7 @@ class TestDispatchMarketSummaries:
     def test_dispatch_market_open_does_not_call_email(self):
         """_dispatch('open', ...) does NOT dispatch email."""
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -193,7 +193,7 @@ class TestDispatchMarketSummaries:
     def test_dispatch_market_close_does_not_call_email(self):
         """_dispatch('close', ...) does NOT dispatch email."""
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -212,7 +212,7 @@ class TestDispatchMarketSummaries:
             'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': False, 'email': True}},
         }
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', _cfg):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -498,7 +498,7 @@ class TestDispatchEmailPhasing:
         alert recipients.'
         """
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -530,7 +530,7 @@ class TestDispatchEmailPhasing:
             'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': False, 'email': True}},
         }
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', _cfg):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -549,7 +549,7 @@ class TestSimModeHandling:
     def test_dispatch_sim_mode_tags_telegram_message(self):
         """When sim_mode=True, Telegram message includes SIMULATOR prefix."""
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -571,22 +571,18 @@ class TestSimModeHandling:
             'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': False, 'email': True}},
         }
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', _cfg):
 
             from backend.shared.helpers.alert_utils import _dispatch
 
             _dispatch('alert', '14:22', 'table', '<html>email</html>', 'detail', sim_mode=True)
 
-            # Verify _dispatch_email was called
             mock_email.assert_called_once()
+            subject = mock_email.call_args[0][0]
 
-            # Get the email_prefix_full argument
-            call_kwargs = mock_email.call_args[1]
-            email_prefix = call_kwargs.get('email_prefix_full', '')
-
-            assert 'SIMULATOR' in email_prefix, \
-                "Simulator mode should tag email prefix with SIMULATOR"
+            assert 'SIMULATOR' in subject, \
+                "Simulator mode should tag email subject with SIMULATOR"
 
 
 class TestBranchTagging:
@@ -595,7 +591,7 @@ class TestBranchTagging:
     def test_dispatch_non_main_branch_tagged_in_telegram(self):
         """Non-main branches get [branch] tag in Telegram messages."""
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'dev'}):
 
             from backend.shared.helpers.alert_utils import _dispatch
@@ -613,7 +609,7 @@ class TestBranchTagging:
     def test_dispatch_main_branch_no_tag_in_telegram(self):
         """Main branch doesn't get extra branch tag (just the prefix)."""
         with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils._dispatch_email') as mock_email, \
+             patch('backend.shared.helpers.alert_utils._send_email_to_recipients') as mock_email, \
              patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
 
             from backend.shared.helpers.alert_utils import _dispatch

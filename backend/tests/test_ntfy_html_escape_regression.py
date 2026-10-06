@@ -43,158 +43,96 @@ _CFG_ORDER_FAILURE = {
 }
 
 
+def _dispatch_captured(agent_key: str, extra: dict) -> dict:
+    """Run one stored record through the event path and capture what each channel receives."""
+    import asyncio
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from backend.api.algo import event_agents
+
+    sent: dict = {}
+    saved_channels = dict(event_agents.CHANNELS)
+    saved_enabled = event_agents._channel_enabled
+    event_agents.CHANNELS["telegram"] = ("telegram", lambda t, b, tg=None, **k: sent.__setitem__("tg", tg))
+    event_agents.CHANNELS["ntfy"] = ("ntfy", lambda t, b, tg=None, priority=None: sent.__setitem__("ntfy", b))
+    event_agents._channel_enabled = lambda cap: True
+    try:
+        spec = getattr(event_agents, agent_key)
+        agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+        rec = {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "WARNING",
+               "logger": "backend.api.algo.template_attach", "message": "x",
+               "tags": ["warning", "orders"], "extra": {"tags": ["orders"], **extra}}
+        asyncio.run(event_agents.dispatch([rec], [agent]))
+    finally:
+        event_agents.CHANNELS.clear()
+        event_agents.CHANNELS.update(saved_channels)
+        event_agents._channel_enabled = saved_enabled
+    return sent
+
+
+_IST_LABEL = "Tue, Oct 06 2026, 14:30 IST"
+
+
 class TestTemplateGuardAlertEscaping:
+    def _guard(self, **over):
+        extra = {"event": "template_guard", "template_slug": "tmpl-1", "applies_to": "buy_option",
+                 "parent_side": "BUY", "parent_symbol": "NIFTY24SEPFUT", "parent_account": "ZG0790",
+                 "parent_qty": 1, "parent_fill_price": 100.0, "parent_order_id": 123,
+                 "reason": "normal reason text", "ist_label": _IST_LABEL}
+        extra.update(over)
+        return _dispatch_captured("TEMPLATE_GUARD_AGENT", extra)
+
     def test_literal_lt_in_reason_does_not_truncate_ntfy_message(self):
-        from backend.api.algo.template_attach import _fire_guard_alert
-
-        # This codebase's own guard comparison text (G1/G2 style) — a
-        # literal '<' with a trailing operator-action sentence after it.
         reason = "qty < lot_size — Arm exits manually if needed. Fix: rebalance the parent order."
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_GUARD):
-
-            _fire_guard_alert(
-                template_slug="tmpl-1", applies_to="buy_option",
-                parent_side="BUY", parent_symbol="NIFTY24SEPFUT",
-                parent_account="ZG0790", parent_qty=1,
-                parent_fill_price=100.0, parent_order_id=123,
-                reason=reason,
-            )
-
-        mock_tg.assert_called_once()
-        tg_body = mock_tg.call_args[0][0]
-        assert "qty &lt; lot_size" in tg_body
-
-        mock_ntfy.assert_called_once()
-        ntfy_body = mock_ntfy.call_args[0][1]
+        sent = self._guard(reason=reason)
+        assert "qty &lt; lot_size" in sent["tg"]
+        ntfy_body = sent["ntfy"]
         assert "qty < lot_size" in ntfy_body
         assert "Arm exits manually if needed" in ntfy_body, (
             "text after the unescaped '<' must survive — this is exactly "
             "the text the regex would have deleted pre-fix"
         )
         assert "Fix: rebalance the parent order." in ntfy_body
-        # Never leak literal tag syntax into the plain-text ntfy body.
         assert "<code>" not in ntfy_body and "</code>" not in ntfy_body
 
     def test_literal_lt_in_applies_to_and_template_slug_preserved(self):
-        from backend.api.algo.template_attach import _fire_guard_alert
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_GUARD):
-
-            _fire_guard_alert(
-                template_slug="tmpl<1", applies_to="buy<sell",
-                parent_side="BUY", parent_symbol="NIFTY24SEPFUT",
-                parent_account="ZG0790", parent_qty=1,
-                parent_fill_price=100.0, parent_order_id=123,
-                reason="normal reason text",
-            )
-
-        ntfy_body = mock_ntfy.call_args[0][1]
-        assert "tmpl<1" in ntfy_body
-        assert "buy<sell" in ntfy_body
-        assert "Arm exits manually if needed." in ntfy_body
+        sent = self._guard(template_slug="tmpl<1", applies_to="buy<sell")
+        assert "tmpl<1" in sent["ntfy"]
+        assert "buy<sell" in sent["ntfy"]
+        assert "Arm exits manually if needed." in sent["ntfy"]
 
     def test_none_template_slug_does_not_crash(self):
-        """`template.get("slug")` is `None` (not the dict-default) when a
-        DB row has slug=NULL — the escaping fix must not turn that into
-        an AttributeError on this fire-and-forget, must-never-block path."""
-        from backend.api.algo.template_attach import _fire_guard_alert
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_GUARD):
-
-            _fire_guard_alert(
-                template_slug=None, applies_to="buy_option",
-                parent_side="BUY", parent_symbol="NIFTY24SEPFUT",
-                parent_account="ZG0790", parent_qty=1,
-                parent_fill_price=100.0, parent_order_id=123,
-                reason="normal reason text",
-            )
-
-        mock_tg.assert_called_once()
-        mock_ntfy.assert_called_once()
-        assert "None" in mock_ntfy.call_args[0][1]
+        """`template.get("slug")` is `None` when a DB row has slug=NULL — the
+        escaping must not turn that into an AttributeError on this path."""
+        sent = self._guard(template_slug=None)
+        assert "None" in sent["ntfy"]
 
 
 class TestTemplateAttachFailAlertEscaping:
     def test_literal_lt_in_err_summary_does_not_truncate_ntfy_message(self):
-        from backend.api.algo.template_attach import _fire_attach_fail_alert
-
         err = "G1 guard: qty < lot_size — Arm exits manually if needed."
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_ATTACH_FAIL):
-
-            _fire_attach_fail_alert(
-                order_id=456, symbol="NIFTY24SEPFUT", account="ZG0790",
-                errors=[err],
-            )
-
-        mock_tg.assert_called_once()
-        tg_body = mock_tg.call_args[0][0]
-        assert "qty &lt; lot_size" in tg_body
-
-        mock_ntfy.assert_called_once()
-        ntfy_body = mock_ntfy.call_args[0][1]
-        assert "qty < lot_size" in ntfy_body
-        assert "Arm exits manually if needed." in ntfy_body
-        assert "<code>" not in ntfy_body and "</code>" not in ntfy_body
-
-
-class TestOrderFailureAlertEscaping:
-    def test_literal_lt_in_error_short_does_not_truncate_ntfy_message(self):
-        from backend.shared.helpers.alert_utils import _send_order_failure_messages
-
-        error = "Rejected: qty < lot_size. Please retry with a valid multiple."
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_ORDER_FAILURE), \
-             patch('backend.shared.helpers.alert_utils.get_alert_recipients', return_value=[]):
-
-            _send_order_failure_messages(
-                masked="ZG####", symbol="NIFTY24SEPFUT", exchange="NFO",
-                side="BUY", qty=1, mode="LIVE", source="ticket",
-                error=error, suppressed_count=0, ist_disp="14:22 IST",
-            )
-
-        mock_tg.assert_called_once()
-        tg_body = mock_tg.call_args[0][0]
-        assert "qty &lt; lot_size" in tg_body
-
-        mock_ntfy.assert_called_once()
-        ntfy_body = mock_ntfy.call_args[0][1]
-        assert "qty < lot_size" in ntfy_body
-        assert "Please retry with a valid multiple." in ntfy_body, (
-            "text after the unescaped '<' must survive to ntfy"
-        )
-        assert "<code>" not in ntfy_body and "</code>" not in ntfy_body
+        sent = _dispatch_captured("TEMPLATE_ATTACH_FAIL_AGENT", {
+            "event": "template_attach_fail", "order_id": 456, "symbol": "NIFTY24SEPFUT",
+            "account": "ZG0790", "err_summary": err, "ist_label": _IST_LABEL})
+        assert "qty &lt; lot_size" in sent["tg"]
+        assert "qty < lot_size" in sent["ntfy"]
+        assert "Arm exits manually if needed." in sent["ntfy"]
+        assert "<code>" not in sent["ntfy"]
 
     def test_error_short_still_truncated_to_160_chars_before_escaping(self):
         """Regression guard — the 160-char truncation contract (pre-existing)
         must survive the escaping fix unchanged."""
-        from backend.shared.helpers.alert_utils import _send_order_failure_messages
+        from backend.shared.helpers.alert_utils import order_failure_messages
 
         error = "X" * 300
 
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert'), \
-             patch('backend.shared.helpers.alert_utils.config', _CFG_ORDER_FAILURE), \
-             patch('backend.shared.helpers.alert_utils.get_alert_recipients', return_value=[]):
-
-            _send_order_failure_messages(
+        with patch('backend.shared.helpers.alert_utils.config', _CFG_ORDER_FAILURE):
+            tg_body, _subject, _html = order_failure_messages(
                 masked="ZG####", symbol="NIFTY24SEPFUT", exchange="NFO",
                 side="BUY", qty=1, mode="LIVE", source="ticket",
                 error=error, suppressed_count=0, ist_disp="14:22 IST",
             )
 
-        tg_body = mock_tg.call_args[0][0]
         assert "X" * 160 in tg_body
         assert "X" * 161 not in tg_body
 

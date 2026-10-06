@@ -108,6 +108,32 @@ async def _reload_registry() -> None:
         logger.error(f"TemplateRegistry reload failed: {e}")
 
 
+async def _load_fragment(frag_id: int):
+    from backend.api.database import async_session
+    async with async_session() as s:
+        return (await s.execute(
+            select(AgentTemplate).where(AgentTemplate.id == frag_id)
+        )).scalar_one_or_none()
+
+
+async def _load_bodies(kind: str) -> dict:
+    from backend.api.database import async_session
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(AgentTemplate).where(AgentTemplate.kind == kind)
+        )).scalars().all()
+    return {r.name: r.body for r in rows}
+
+
+async def _load_agents() -> list[dict]:
+    from backend.api.database import async_session
+    from backend.api.models import Agent
+    async with async_session() as s:
+        rows = (await s.execute(select(Agent))).scalars().all()
+    return [{"slug": a.slug, "status": a.status, "conditions": a.conditions, "events": a.events}
+            for a in rows]
+
+
 # ── Controller ─────────────────────────────────────────────────────────
 
 class AgentTemplateController(Controller):
@@ -196,6 +222,20 @@ class AgentTemplateController(Controller):
             await s.refresh(row)
         await _reload_registry()
         return _to_out(row)
+
+    @get("/{frag_id:int}/references", guards=[cap_guard("view_agents_catalog")])
+    async def fragment_references(self, frag_id: int) -> dict:
+        from backend.api.algo.agent_evaluator import referencing_agents, fragments_reaching
+        row = await _load_fragment(frag_id)
+        if row is None:
+            raise HTTPException(status_code=404, detail=f"Fragment {frag_id} not found")
+        bodies = await _load_bodies(row.kind)
+        agents = await _load_agents()
+        return {
+            "fragment": {"id": row.id, "kind": row.kind, "name": row.name},
+            "agents": referencing_agents(row.kind, row.name, bodies, agents),
+            "fragments": sorted(fragments_reaching(row.name, bodies) - {row.name}),
+        }
 
     @delete("/{frag_id:int}", guards=[cap_guard("manage_own_agents")], status_code=200)
     async def delete_fragment(self, frag_id: int) -> dict:

@@ -970,8 +970,7 @@ async def _res_cancel_live(
     logger.info(f"MCP cancel_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
 
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
-        _send_telegram(
+                _mcp_ping(
             f"<b>MCP CANCEL [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
             f"acct={acct}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
@@ -1018,8 +1017,7 @@ async def _res_cancel_paper(
     await audit_fn("ok", f"paper order_id={algo_order_id} CANCELLED")
     logger.info(f"MCP cancel_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
-        _send_telegram(
+                _mcp_ping(
             f"<b>MCP CANCEL [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
             f"acct={acct}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
@@ -1082,7 +1080,6 @@ def _res_place_telegram_ping(
 
     Extracted from place_order to reduce CC there. Swallows all exceptions."""
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
         price_chunk = (
             f" @₹{data.price:g}" if data.price else
             (f" trig=₹{data.trigger_price:g}" if data.trigger_price else "")
@@ -1094,7 +1091,7 @@ def _res_place_telegram_ping(
             f"status={res.status}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
-        _send_telegram(tg_msg)
+        _mcp_ping(tg_msg)
     except Exception as e:
         logger.warning(f"MCP place_order Telegram ping failed: {e}")
 
@@ -1109,6 +1106,11 @@ def _res_agent_action_labels(action: str) -> tuple[str, str]:
     return "inactive", "DEACTIVATE"
 
 
+def _mcp_ping(tg_html: str) -> None:
+    """Record an MCP audit ping. The event agent sends it to Telegram."""
+    logger.info("MCP ping", extra={"tags": ["mcp"], "event": "mcp_ping", "tg": tg_html})
+
+
 def _res_agent_status_telegram_ping(
     verb: str, slug: str, new_status: str, request_id: str,
     user_id: int | None, action: str,
@@ -1118,8 +1120,7 @@ def _res_agent_status_telegram_ping(
     Extracted from _agent_status_change to remove the try/except from that
     method's CC count."""
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
-        _send_telegram(
+                _mcp_ping(
             f"<b>MCP {verb}</b> agent=<code>{slug}</code> → status={new_status}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
         )
@@ -1196,8 +1197,7 @@ async def _mcp_modify_paper(
     await audit_fn("ok", f"paper order_id={algo_order_id} modified")
     logger.info(f"MCP modify_order (paper) OK: user={user_id} id={algo_order_id} acct={acct}")
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
-        _send_telegram(
+                _mcp_ping(
             f"<b>MCP MODIFY [PAPER]</b> AlgoOrder.id=<code>{algo_order_id}</code>\n"
             f"acct={acct} · {chunks}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"
@@ -1247,8 +1247,7 @@ async def _mcp_modify_live(
     await audit_fn("ok", f"order_id={res.order_id}")
     logger.info(f"MCP modify_order (live) OK: user={user_id} order_id={res.order_id} acct={acct}")
     try:
-        from backend.shared.helpers.alert_utils import _send_telegram
-        _send_telegram(
+                _mcp_ping(
             f"<b>MCP MODIFY [LIVE]</b> order_id=<code>{res.order_id}</code>\n"
             f"acct={acct} · {chunks}\n"
             f"<i>request_id={_audit_link_html(request_id)} · user_id={user_id or '-'}</i>"

@@ -761,6 +761,14 @@ class TestMatchToAlertRowMarginFalsePositive:
         assert all(r['kind'] != 'negative_margin' for r in rows)
 
 
+def _rich_extra(mock_logger) -> dict:
+    for c in mock_logger.info.call_args_list:
+        extra = c.kwargs.get("extra") or {}
+        if extra.get("event") == "rich_alert":
+            return {"tg_table": extra["tg_table"], "email_table_html": extra["email_table_html"]}
+    return {}
+
+
 class TestSendRichAlertScheduledAgentClarity:
     """_v2_send_rich_alert renders a plain, clear informational line for
     schedule-only info/low tier agents instead of the kind/threshold table
@@ -783,13 +791,10 @@ class TestSendRichAlertScheduledAgentClarity:
         now = datetime.now(timezone.utc)
         captured = {}
 
-        def fake_dispatch(msg_type, ist_display, tg_table, email_table_html,
-                           subject_detail, sim_mode=False, mode_tag=''):
-            captured['tg_table'] = tg_table
-            captured['email_table_html'] = email_table_html
 
-        with patch('backend.shared.helpers.alert_utils._dispatch', side_effect=fake_dispatch):
+        with patch('backend.api.algo.agent_engine.logger') as mock_log:
             sent = await _v2_send_rich_alert(agent, matches, now, sim_mode=False)
+        captured.update(_rich_extra(mock_log))
 
         assert sent is True
         assert captured['tg_table'] == "NSE market open — Scheduled — 09:15 IST"
@@ -817,13 +822,10 @@ class TestSendRichAlertScheduledAgentClarity:
         now = datetime.now(timezone.utc)
         captured = {}
 
-        def fake_dispatch(msg_type, ist_display, tg_table, email_table_html,
-                           subject_detail, sim_mode=False, mode_tag=''):
-            captured['tg_table'] = tg_table
-            captured['email_table_html'] = email_table_html
 
-        with patch('backend.shared.helpers.alert_utils._dispatch', side_effect=fake_dispatch):
+        with patch('backend.api.algo.agent_engine.logger') as mock_log:
             sent = await _v2_send_rich_alert(agent, matches, now, sim_mode=False)
+        captured.update(_rich_extra(mock_log))
 
         assert sent is True
         assert captured['tg_table'] == "▸ FND ACC1  -₹5K\n  Margin < 0  -₹0"

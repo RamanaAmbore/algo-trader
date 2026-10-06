@@ -64,6 +64,7 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
     }
 
     with (
+        patch("backend.api.algo.agent_engine.logger") as log_mock,
         patch("backend.api.algo.events.is_enabled", return_value=True),
         patch("backend.shared.helpers.alert_utils.is_enabled", return_value=True),
         patch("backend.shared.helpers.alert_utils.config") as cfg_mock,
@@ -81,9 +82,25 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
 
         await agent_engine._ae_dispatch_survivor_entry(entry, now, context={}, broadcast_fn=None)
 
-    assert ntfy_mock.call_count == 1, (
-        f"ntfy should fire exactly once per agent alert, got {ntfy_mock.call_count} "
-        "calls — dual-dispatch regression (rich path + events.dispatch() both firing ntfy)"
+    assert ntfy_mock.call_count == 0, (
+        "events.dispatch() must not send ntfy for an alert the rich path recorded"
+    )
+    records = [c.kwargs["extra"] for c in log_mock.info.call_args_list
+               if (c.kwargs.get("extra") or {}).get("event") == "rich_alert"]
+    assert len(records) == 1, "the rich alert must be recorded exactly once"
+
+    from types import SimpleNamespace
+    from backend.api.algo import event_agents
+    rich_agent = SimpleNamespace(slug="agent-alert-rich", **{
+        k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+    rec = {"ts": now, "level": "INFO", "logger": "backend.api.algo.agent_engine",
+           "message": "x", "tags": ["info", "agent"], "extra": records[0]}
+    with patch.object(event_agents, "_channel_enabled", lambda cap: True), \
+         patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as ntfy_event, \
+         patch("backend.shared.helpers.alert_utils.config", {"deploy_branch": "main"}):
+        await event_agents.dispatch([rec], [rich_agent])
+    assert ntfy_event.call_count == 1, (
+        f"ntfy should fire exactly once per agent alert, got {ntfy_event.call_count} calls"
     )
 
 

@@ -114,3 +114,256 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
                              "Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: 10:15:30 IST")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
                           "Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: 10:15:30 IST"]
+
+
+def _chase_rec():
+    from datetime import timezone as _tz
+    return {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": "CRITICAL",
+            "logger": "backend.api.algo.chase", "message": "Chase NIFTY: ...", "tags": ["chase"],
+            "extra": {"tags": ["chase"], "event": "cancel_unconfirmed", "transaction_type": "BUY",
+                      "symbol": "NIFTY26OCTFUT", "account": "ZG0790", "order_id": "O1",
+                      "attempt": 2, "quantity": 100, "remaining_qty": 60}}
+
+
+@pytest.mark.asyncio
+async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    agent = SimpleNamespace(slug="chase-cancel-alert",
+                            **{k: event_agents.CHASE_CANCEL_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([_chase_rec()], [agent])
+    assert sent == [(
+        "Chase cancel unconfirmed — possible resting duplicate order",
+        "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt 2/40 filled. "
+        "The chase has been ABORTED without placing a replacement order. "
+        "Manually verify the broker's order book — the old order may still be live.",
+        "urgent",
+    )]
+
+
+@pytest.mark.asyncio
+async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
+    from datetime import timezone as _tz
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": "CRITICAL",
+           "logger": "backend.api.routes.orders_place", "message": "PARTIAL GTT", "tags": ["gtt"],
+           "extra": {"tags": ["orders", "gtt"], "event": "partial_gtt", "parent_row_id": 1088,
+                     "parent_symbol": "CRUDEOIL26OCTFUT", "planned": 3, "placed": 1,
+                     "errors": ["rate limit", "invalid price"]}}
+    agent = SimpleNamespace(slug="partial-gtt-alert",
+                            **{k: event_agents.PARTIAL_GTT_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent == [("Partial GTT placement",
+                     "parent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price",
+                     "urgent")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("agent_key, event, level, extra, expected", [
+    ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_unprotected", "WARNING",
+     {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
+      "symbol": "NIFTY", "exchange": "NFO"},
+     ("Unprotected SELL position",
+      "GTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO", "urgent")),
+    ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_hard_reject", "CRITICAL",
+     {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
+     ("Wing scan hard-rejected", "premium too high | NIFTY NFO target ₹12.50", "urgent")),
+    ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_skip", "WARNING",
+     {"reason": "no candidate", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
+     ("Wing attach skipped", "no candidate | order #9 BANKNIFTY NFO", "high")),
+    ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_offset_skip", "WARNING",
+     {"reason": "offset outside band", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
+     ("Wing offset attach skipped", "offset outside band | order #9 BANKNIFTY NFO", "high")),
+])
+async def test_template_attach_golden_text_and_priority(monkeypatch, agent_key, event, level, extra, expected):
+    from datetime import timezone as _tz
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_tz.utc), "level": level,
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["gtt"],
+           "extra": {"tags": ["orders", "gtt"], "event": event, **extra}}
+    spec = getattr(event_agents, agent_key)
+    agent = SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent == [expected]
+
+
+@pytest.mark.asyncio
+async def test_order_failure_golden_text_channels_and_html(monkeypatch):
+    import hashlib
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    sent = {"tg": [], "ntfy": [], "mail": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: False)
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    import backend.shared.helpers.mail_utils as mu
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    monkeypatch.setitem(event_agents.CHANNELS, "email", ("ntfy", event_agents._send_email_channel))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    rec = {"ts": _dt.datetime(2026, 10, 6, 4, 45, 30, tzinfo=_dt.timezone.utc), "level": "WARNING",
+           "logger": "backend.shared.helpers.alert_utils", "message": "x", "tags": ["orders"],
+           "extra": {"tags": ["orders"], "event": "order_failure", "masked": "ZG####",
+                     "symbol": "NIFTY26OCTFUT", "exchange": "NFO", "side": "BUY", "qty": 75,
+                     "mode": "live", "source": "ticket", "error": "Insufficient funds <x>",
+                     "suppressed_count": 2, "ist_disp": "10:15:30 IST", "branch": "main"}}
+    agent = SimpleNamespace(slug="order-failure-alert",
+                            **{k: event_agents.ORDER_FAILURE_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
+    assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
+                             "❌ Order rejected  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
+                             "urgent")]
+    assert len(sent["mail"]) == 1
+    _, addr, subj, body = sent["mail"][0]
+    assert addr == "a@x.com"
+    assert subj == "RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
+    assert hashlib.sha256(body.encode()).hexdigest() == "d232be2a36cf32b0b0adcb3c0abf3408ecea43868b148c773a21b506e82f74c5"
+
+
+@pytest.mark.asyncio
+async def test_template_guard_golden_text_and_channels(monkeypatch):
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = {"tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["info", "orders"],
+           "extra": {"tags": ["orders"], "event": "template_guard", "template_slug": "default-bull",
+                     "applies_to": "sell_option", "reason": "qty < lot_size", "parent_order_id": 1088,
+                     "parent_side": "SELL", "parent_qty": 75, "parent_symbol": "NIFTY26OCTFUT",
+                     "parent_fill_price": 112.5, "parent_account": "ZG0790",
+                     "ist_label": "Tue, Oct 06 2026, 14:30 IST"}}
+    agent = SimpleNamespace(slug="template-guard-alert",
+                            **{k: event_agents.TEMPLATE_GUARD_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    expected_tg = ("<b>⚠ Template guard fired — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nSELL 75 NIFTY26OCTFUT\n"
+                   "@ ₹112.50  (ZG0790)\n\ntemplate:    default-bull\napplies_to:  sell_option\nreason:      qty &lt; lot_size\n\n"
+                   "Parent order FILLED. Exits NOT attached.\nArm exits manually if needed.\n\n"
+                   "Fix: at /admin/templates, change this template's 'applies_to' to 'both' or 'buy_option'.</code>")
+    assert sent["tg"] == [expected_tg]
+    assert len(sent["ntfy"]) == 1 and sent["ntfy"][0][0] == "Template guard fired" and sent["ntfy"][0][2] == "high"
+    assert "qty < lot_size" in sent["ntfy"][0][1] and "<code>" not in sent["ntfy"][0][1]
+
+
+@pytest.mark.asyncio
+async def test_template_attach_fail_golden_text_and_channels(monkeypatch):
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = {"tg": [], "ntfy": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, 0, tzinfo=_dt.timezone.utc), "level": "WARNING",
+           "logger": "backend.api.algo.template_attach", "message": "x", "tags": ["warning", "orders"],
+           "extra": {"tags": ["orders"], "event": "template_attach_fail", "order_id": 1088,
+                     "symbol": "NIFTY26OCTFUT", "account": "ZG0790",
+                     "err_summary": "qty < lot_size; rate limit", "ist_label": "Tue, Oct 06 2026, 14:30 IST"}}
+    agent = SimpleNamespace(slug="template-attach-fail-alert",
+                            **{k: event_agents.TEMPLATE_ATTACH_FAIL_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["tg"] == ["<b>⚠ Template attach failed — Tue, Oct 06 2026, 14:30 IST</b>\n\n<code>order #1088\nsymbol:   NIFTY26OCTFUT\naccount:  ZG0790\n\nerrors:   qty &lt; lot_size; rate limit\n\nParent order FILLED. Exits NOT attached.\nArm exits manually if needed.</code>"]
+    assert sent["ntfy"][0][0] == "Template attach failed" and sent["ntfy"][0][2] == "urgent"
+
+
+@pytest.mark.asyncio
+async def test_mcp_ping_sends_recorded_html_to_telegram_only(monkeypatch):
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent.append(tg)))
+    tg = "<b>MCP CANCEL [LIVE]</b> order_id=<code>O1</code>\nacct=ZG####"
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.routes.lab", "message": "MCP ping", "tags": ["info", "mcp"],
+           "extra": {"tags": ["mcp"], "event": "mcp_ping", "tg": tg}}
+    agent = SimpleNamespace(slug="mcp-ping-alert",
+                            **{k: event_agents.MCP_PING_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent == [tg]
+
+
+@pytest.mark.asyncio
+async def test_deploy_sync_sends_title_and_body_at_high_priority(monkeypatch):
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent.append((t, b, priority))))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "WARNING",
+           "logger": "backend.api.background", "message": "x", "tags": ["warning", "deploy"],
+           "extra": {"tags": ["deploy"], "event": "deploy_out_of_sync",
+                     "title": "Deploy out of sync — main", "body": "Local HEAD abc12345 != origin/main"}}
+    agent = SimpleNamespace(slug="deploy-sync-alert",
+                            **{k: event_agents.DEPLOY_SYNC_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent == [("Deploy out of sync — main", "Local HEAD abc12345 != origin/main", "high")]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("name, sim, mode_tag, expected_title, expected_subject, expected_sha, expected_tg_head", [
+    ("live", False, "", "Agent — 10:15:30 IST", "RamboQuant Agent: ZG0790 summary",
+     "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "<b>Agent — 10:15:30 IST</b>"),
+    ("paper", False, "[PAPER]", "Agent — 10:15:30 IST", "RamboQuant Agent:  [PAPER]ZG0790 summary",
+     "1af06ceba4520c4eafe151f6374e443db04ce2a2d7897ec49d58625f9b978b8e", "<b>Agent [PAPER] — 10:15:30 IST</b>"),
+    ("sim", True, "", "SIMULATOR Agent — 10:15:30 IST", "SIMULATOR RamboQuant Agent: ZG0790 summary",
+     "6096d641965b387d72f6ce35c9001cdae3950a7f7422ef0d08ba86024d823ff4", "<b>SIMULATOR Agent — 10:15:30 IST</b>"),
+])
+async def test_rich_alert_matches_the_pre_migration_dispatch(monkeypatch, name, sim, mode_tag,
+                                                              expected_title, expected_subject,
+                                                              expected_sha, expected_tg_head):
+    import hashlib
+    from backend.api.algo import event_agents
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    sent = {"tg": [], "ntfy": [], "mail": []}
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    import backend.shared.helpers.mail_utils as mu
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
+    monkeypatch.setitem(event_agents.CHANNELS, "telegram",
+                        ("telegram", lambda t, b, tg=None, **k: sent["tg"].append(tg)))
+    monkeypatch.setitem(event_agents.CHANNELS, "ntfy",
+                        ("ntfy", lambda t, b, tg=None, priority=None: sent["ntfy"].append((t, b, priority))))
+    monkeypatch.setattr(event_agents, "_channel_enabled", lambda cap: True)
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.algo.agent_engine", "message": "x", "tags": ["info", "agent"],
+           "extra": {"tags": ["agent"], "event": "rich_alert", "agent_slug": "loss-funds",
+                     "ist_display": "10:15:30 IST", "tg_table": "▸ Pos NIFTY  -₹1,200 (-1.2%)\n  rule: pnl < -1000",
+                     "email_table_html": "<table><tr><td>NIFTY</td><td>-1200</td></tr></table>",
+                     "subject_detail": "ZG0790 summary", "sim_mode": sim, "mode_tag": mode_tag}}
+    agent = SimpleNamespace(slug="agent-alert-rich",
+                            **{k: event_agents.RICH_ALERT_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [agent])
+    assert sent["ntfy"][0][0] == expected_title and sent["ntfy"][0][2] == "urgent"
+    assert sent["tg"][0].startswith(expected_tg_head)
+    subj, body = sent["mail"][0][2], sent["mail"][0][3]
+    assert subj == expected_subject
+    assert hashlib.sha256(body.encode()).hexdigest() == expected_sha

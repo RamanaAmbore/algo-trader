@@ -471,16 +471,12 @@ def _sim_banner_html() -> str:
     )
 
 
-def _dispatch_email(
+def _email_message(
     *, email_prefix_full: str, branch_tag: str, mode_tag: str,
     subject_detail: str, sim_mode: bool, branch: str,
     tg_prefix_full: str, ist_display: str, email_table_html: str,
-    sim_prefix: str, tg_prefix: str,
-) -> None:
-    """Build and queue email dispatch for _dispatch. Offloads SMTP to the pool."""
-    alert_emails = get_alert_recipients()
-    if not alert_emails:
-        return
+) -> tuple[str, str]:
+    """Subject and HTML body of an agent or summary email. Pure."""
     subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
     subject = (
         f"{subj_pfx}{subject_detail}"
@@ -500,9 +496,13 @@ def _dispatch_email(
         f"</div>"
         f"</body></html>"
     )
-    for email in alert_emails:
-        def _send_one(addr=email, subj=subject, body=html_body,
-                      pfx=f"{sim_prefix}{tg_prefix}"):
+    return subject, html_body
+
+
+def _send_email_to_recipients(subject: str, html_body: str, log_prefix: str) -> None:
+    """Queue one email per current alert recipient. Offloads SMTP to the pool."""
+    for email in get_alert_recipients():
+        def _send_one(addr=email, subj=subject, body=html_body, pfx=log_prefix):
             try:
                 send_email("", addr, subj, body)
                 logger.info(f"{pfx} email sent to {addr}")
@@ -531,6 +531,40 @@ def _build_email_banners(sim_mode: bool, branch: str) -> str:
     return banners
 
 
+def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
+                     subject_detail: str, sim_mode: bool = False, mode_tag: str = '') -> dict:
+    """Telegram message, title, route key and email for one alert. Pure; no sending."""
+    tg_prefix, email_prefix = _MSG_TYPES[msg_type]
+    tg_prefix_full    = f"SIMULATOR {tg_prefix}"    if sim_mode else tg_prefix
+    email_prefix_full = f"SIMULATOR {email_prefix}" if sim_mode else email_prefix
+
+    branch = config.get('deploy_branch', 'main')
+    branch_tag = f" [{branch}]" if branch != 'main' else ''
+    mode_pfx = f"{mode_tag} " if mode_tag else ''
+
+    warning_block = _build_tg_warning_block(sim_mode, branch)
+    telegram_msg = (
+        f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
+        f"<code>{html.escape(tg_table)}</code>"
+    )
+    event_key = 'market_open' if msg_type == 'open' else (
+                'market_close' if msg_type == 'close' else 'agent_alert')
+    subject, html_body = _email_message(
+        email_prefix_full=email_prefix_full, branch_tag=branch_tag, mode_tag=mode_tag,
+        subject_detail=subject_detail, sim_mode=sim_mode, branch=branch,
+        tg_prefix_full=tg_prefix_full, ist_display=ist_display,
+        email_table_html=email_table_html,
+    )
+    return {
+        "event_key": event_key,
+        "title": f"{tg_prefix_full} — {ist_display}",
+        "telegram_msg": telegram_msg,
+        "email_subject": subject,
+        "email_html": html_body,
+        "log_prefix": f"{'[SIM] ' if sim_mode else ''}{tg_prefix}",
+    }
+
+
 def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
               subject_detail: str, sim_mode: bool = False, mode_tag: str = ''):
     """
@@ -549,45 +583,15 @@ def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: 
     _log = logging.getLogger('backend.api.background')
     sim_prefix = '[SIM] ' if sim_mode else ''
     _log.info(f"_dispatch called: {sim_prefix}{mode_tag}{msg_type} — {subject_detail}")
-    tg_prefix, email_prefix = _MSG_TYPES[msg_type]
-    tg_prefix_full    = f"SIMULATOR {tg_prefix}"    if sim_mode else tg_prefix
-    email_prefix_full = f"SIMULATOR {email_prefix}" if sim_mode else email_prefix
-
-    branch = config.get('deploy_branch', 'main')
-    branch_tag = f" [{branch}]" if branch != 'main' else ''
-    mode_pfx = f"{mode_tag} " if mode_tag else ''
-
-    warning_block = _build_tg_warning_block(sim_mode, branch)
-    telegram_msg = (
-        f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
-        f"<code>{html.escape(tg_table)}</code>"
-    )
-    # Route via the config-driven table.
-    # open/close → info channel, email: true per backend_config.yaml
-    # alert      → ops channel, email: true per backend_config.yaml
-    event_key = 'market_open' if msg_type == 'open' else (
-                'market_close' if msg_type == 'close' else 'agent_alert')
-
-    email_kw = dict(
-        email_prefix_full=email_prefix_full,
-        branch_tag=branch_tag,
-        mode_tag=mode_tag,
-        subject_detail=subject_detail,
-        sim_mode=sim_mode,
-        branch=branch,
-        tg_prefix_full=tg_prefix_full,
-        ist_display=ist_display,
-        email_table_html=email_table_html,
-        sim_prefix=sim_prefix,
-        tg_prefix=tg_prefix,
-    )
+    p = dispatch_payload(msg_type, ist_display, tg_table, email_table_html,
+                         subject_detail, sim_mode=sim_mode, mode_tag=mode_tag)
     _alert_route(
-        event_key,
-        title=f"{tg_prefix_full} — {ist_display}",
-        body=telegram_msg,
-        email_fn=lambda: _dispatch_email(**email_kw),
+        p["event_key"],
+        title=p["title"],
+        body=p["telegram_msg"],
+        email_fn=lambda: _send_email_to_recipients(
+            p["email_subject"], p["email_html"], p["log_prefix"]),
     )
-
 
 # ---------------------------------------------------------------------------
 # Funds table helpers
@@ -913,24 +917,11 @@ def _inprocess_cooldown_check(
     return False, suppressed_count
 
 
-def _send_order_failure_messages(
-    *,
-    masked: str,
-    symbol: str,
-    exchange: str,
-    side: str,
-    qty: int,
-    mode: str,
-    source: str,
-    error: str,
-    suppressed_count: int,
-    ist_disp: str,
-) -> None:
-    """Build and deliver Telegram + email alerts for an order rejection.
-
-    Separated from `send_order_failure_alert` so the cooldown logic and the
-    message-construction/dispatch logic each have CC ≤ 10.
-    """
+def order_failure_messages(
+    *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
+    source: str, error: str, suppressed_count: int, ist_disp: str,
+) -> tuple[str, str, str]:
+    """Telegram body, email subject and email HTML for an order rejection. Pure."""
     branch      = config.get("deploy_branch", "main")
     mode_tag    = f"[{mode.upper()}]" if mode else ""
     sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
@@ -978,27 +969,25 @@ def _send_order_failure_messages(
         + (f" [{branch}]" if branch != "main" else "")
         + (f" ({mode})" if mode else "")
     )
+    return tg_body, subject, email_body
 
-    def _email_fn():
-        alert_emails = get_alert_recipients()
-        for _addr in alert_emails:
-            def _send_failure_email(addr=_addr, subj=subject, body=email_body):
-                try:
-                    send_email("", addr, subj, body)
-                except Exception as _mail_e:
-                    logger.error(f"order-failure email to {addr} failed: {_mail_e}")
-            _SMTP_EXECUTOR.submit(_send_failure_email)
 
-    _alert_route(
-        'order_failure',
-        title=f"Order Rejected: {symbol} {side}",
-        body=tg_body,
-        email_fn=_email_fn,
-    )
-
+def _send_order_failure_messages(
+    *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
+    source: str, error: str, suppressed_count: int, ist_disp: str,
+) -> None:
+    """Record an order rejection for the order-failure event agent (no direct send)."""
+    sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
     logger.warning(
-        f"order-failure alert sent: {masked} {side} {qty} {symbol} "
-        f"mode={mode} source={source}{sup_note}"
+        f"order-failure recorded: {masked} {side} {qty} {symbol} "
+        f"mode={mode} source={source}{sup_note}",
+        extra={
+            "tags": ["orders"], "event": "order_failure", "masked": masked,
+            "symbol": symbol, "exchange": exchange, "side": side, "qty": qty,
+            "mode": mode, "source": source, "error": error,
+            "suppressed_count": suppressed_count, "ist_disp": ist_disp,
+            "branch": config.get("deploy_branch", "main"),
+        },
     )
 
 

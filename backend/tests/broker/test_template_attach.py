@@ -649,8 +649,8 @@ class TestPostFillWingFailure:
             new_callable=AsyncMock,
             return_value=(None, None, "wing scan failed: quote error"),
         ), patch(
-            "backend.shared.helpers.alert_utils.send_ntfy_alert"
-        ) as mock_alert:
+            "backend.api.algo.template_attach.logger"
+        ) as mock_log:
             result_ov, note, skip_reason = await _maybe_scan_wing_by_premium(
                 template=template,
                 overrides={},
@@ -661,8 +661,10 @@ class TestPostFillWingFailure:
                 parent_order_id=42,
             )
 
-            # Alert should have been sent
-            mock_alert.assert_called()
+            # The wing skip is logged as a tagged record; the event agent sends it.
+            events = [c.kwargs.get("extra", {}).get("event")
+                      for c in mock_log.warning.call_args_list + mock_log.critical.call_args_list]
+            assert any(e in {"wing_skip", "wing_offset_skip", "wing_hard_reject"} for e in events), events
             # Reason should be captured
             assert skip_reason == "wing scan failed: quote error"
 

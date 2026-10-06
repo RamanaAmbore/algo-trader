@@ -163,7 +163,7 @@ class TestCancelAndCaptureAbortsOnUnconfirmed:
 
         with patch("backend.api.algo.chase._run", side_effect=_fake_run), \
              patch("backend.api.algo.chase._record_partial_fill", new_callable=AsyncMock), \
-             patch("backend.shared.helpers.alert_utils.send_ntfy_alert") as mock_alert:
+             patch("backend.api.algo.chase.logger") as mock_log:
             cumulative, current_filled, remaining, early = await _ch_cancel_and_capture(
                 account="ACC1", current_order_id="O1", cfg=cfg, symbol="NIFTY24DECFUT",
                 attempt=2, emit=lambda *a, **kw: None,
@@ -179,9 +179,10 @@ class TestCancelAndCaptureAbortsOnUnconfirmed:
         )
         assert early.status == ChaseStatus.FAILED
         assert "not confirmed" in early.detail.lower() or "unconfirmed" in early.detail.lower()
-        mock_alert.assert_called_once()
-        # Verify the alert is marked urgent -- this is a real-money risk.
-        assert mock_alert.call_args.kwargs.get("priority") == "urgent"
+        mock_log.critical.assert_called_once()
+        extra = mock_log.critical.call_args.kwargs["extra"]
+        assert extra["tags"] == ["chase"]
+        assert extra["event"] == "cancel_unconfirmed"
 
     @pytest.mark.asyncio
     async def test_confirmed_cancel_with_remaining_qty_proceeds_normally(self):

@@ -1680,9 +1680,6 @@ def _ch_build_cancel_unconfirmed_abort(
     errors, _ch_exhaust_max_attempts) fired any operator-visible alert
     for a cancel failure.
     """
-    from backend.shared.helpers.alert_utils import send_ntfy_alert
-    from backend.shared.helpers.utils import mask_account_in_text
-
     result.status = ChaseStatus.FAILED
     result.order_id = current_order_id or ""
     result.detail = (
@@ -1691,26 +1688,19 @@ def _ch_build_cancel_unconfirmed_abort(
         f"broker; no replacement order was placed to avoid a possible "
         f"duplicate. Manually check {account}'s order book for {symbol}."
     )
-    logger.critical("Chase %s: %s", symbol, result.detail)
+    logger.critical(
+        "Chase %s: %s", symbol, result.detail,
+        extra={
+            "tags": ["chase"], "event": "cancel_unconfirmed",
+            "transaction_type": transaction_type, "symbol": symbol, "account": account,
+            "order_id": current_order_id, "attempt": attempt,
+            "quantity": quantity, "remaining_qty": remaining_qty,
+        },
+    )
     emit("chase_cancel_unconfirmed", {
         "order_id": current_order_id, "attempt": attempt,
         "remaining_qty": remaining_qty,
     })
-    try:
-        send_ntfy_alert(
-            "Chase cancel unconfirmed — possible resting duplicate order",
-            mask_account_in_text(
-                f"{transaction_type} {symbol} — cancel of order "
-                f"{current_order_id} on {account} could not be confirmed "
-                f"after attempt {attempt}/{quantity - remaining_qty} filled. "
-                f"The chase has been ABORTED without placing a replacement "
-                f"order. Manually verify the broker's order book — the old "
-                f"order may still be live."
-            ),
-            priority="urgent",
-        )
-    except Exception as _alert_exc:
-        logger.warning(f"Chase {symbol}: cancel-unconfirmed alert failed: {_alert_exc}")
     if algo_order_id is not None:
         try:
             # Reuses the "chase_failed" outcome (not a new value) — the

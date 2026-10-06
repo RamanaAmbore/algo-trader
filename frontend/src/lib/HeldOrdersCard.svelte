@@ -6,6 +6,10 @@
   import { onMount } from 'svelte';
   import { fetchHeldOrders, releaseHeldOrder } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
+
+  let confirmRef = $state(null);
+  let releasingAll = $state(false);
 
   let rows = $state(/** @type {any[]} */ ([]));
   let busy = $state(/** @type {Record<string, boolean>} */ ({}));
@@ -39,14 +43,42 @@
     }
   }
 
+  async function releaseAll() {
+    if (!rows.length || releasingAll) return;
+    const ok = await confirmRef?.ask({
+      title: 'Release all held orders?',
+      message: `${rows.length} held order${rows.length === 1 ? '' : 's'} will be sent to the broker now.`,
+      danger: true,
+    });
+    if (!ok) return;
+    releasingAll = true;
+    let released = 0;
+    let refused = 0;
+    for (const row of [...rows]) {
+      try {
+        await releaseHeldOrder(row.id);
+        released += 1;
+      } catch (_) {
+        refused += 1;
+      }
+    }
+    releasingAll = false;
+    toast?.success?.(`Released ${released}${refused ? `, refused ${refused}` : ''}`);
+    await load();
+  }
+
   onMount(() => { load(); });
 </script>
 
+<ConfirmModal bind:this={confirmRef} />
 {#if rows.length}
   <section class="held-card" aria-label="Held orders">
     <header class="held-head">
       <span class="held-title">Held orders</span>
       <span class="held-count">{rows.length}</span>
+      <button type="button" class="held-release-all"
+              disabled={releasingAll}
+              onclick={releaseAll}>Release all</button>
     </header>
     {#each rows as row (row.id)}
       <div class="held-row">
@@ -68,4 +100,6 @@
   .held-desc { flex: 1; color: var(--algo-slate); }
   .held-release { padding: 2px 8px; border: 1px solid var(--c-action); color: var(--c-action); background: transparent; border-radius: 3px; cursor: pointer; }
   .held-release:disabled { opacity: 0.5; cursor: default; }
+  .held-release-all { padding: 2px 8px; border: 1px solid var(--c-action); color: var(--c-action); background: transparent; border-radius: 3px; cursor: pointer; font-size: var(--fs-sm); }
+  .held-release-all:disabled { opacity: 0.5; cursor: default; }
 </style>

@@ -6793,12 +6793,10 @@ async def _task_deploy_sync_check() -> None:
                             f"delivery may have been missed. Manual fallback: "
                             f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}"
                         )
-                        logger.warning(f"[DEPLOY-SYNC] {message}")
-                        await loop.run_in_executor(
-                            None,
-                            lambda: send_ntfy_alert(
-                                f"Deploy out of sync — {branch}", message, priority="high",
-                            ),
+                        logger.warning(
+                            f"[DEPLOY-SYNC] {message}",
+                            extra={"tags": ["deploy"], "event": "deploy_out_of_sync",
+                                   "title": f"Deploy out of sync — {branch}", "body": message},
                         )
         except asyncio.CancelledError:
             raise

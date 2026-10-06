@@ -1219,6 +1219,8 @@ LOG_TAG_TOKENS: list[dict] = [
         ('gtt', 'GTT placement, trigger and status records (owner: order routes).'),
         ('error', 'Error-level records, including repeats (owner: logger).'),
         ('agent', 'Alert agent firings written by the agent engine (owner: agent engine).'),
+        ('mcp', 'MCP tool actions: audit pings for cancel, place, modify, and agent status (owner: lab routes).'),
+        ('deploy', 'Deploy state: branch sync and webhook health (owner: background tasks).'),
     ]
 ]
 SYSTEM_TOKENS.extend(LOG_TAG_TOKENS)

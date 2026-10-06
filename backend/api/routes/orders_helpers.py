@@ -648,6 +648,8 @@ class AlgoOrderInfo(msgspec.Struct, kw_only=True):
     # rows that picked the 'none' template.
     template_id: int | None = None
     attached_gtts_json: str | None = None
+    # Hold state from AlgoOrder.hold_json (see order_hold.hold_record); None when not held.
+    hold_json: str | None = None
     # Sprint B — broker's running cumulative filled quantity. Lets the
     # frontend show partial-fill progress on OPEN/CANCELLED rows without
     # relying on the detail string for parsing.

@@ -352,10 +352,17 @@ class TestFireWingUnprotectedAlertGuard:
         actually exercising the guard (send_ntfy_alert really is on the
         call path from _fire_wing_unprotected_alert), not some unrelated
         no-op."""
+        import asyncio
+        from backend.api.algo import event_agents
+        from types import SimpleNamespace
+        from datetime import datetime, timezone
+        records = []
         with patch(
             "backend.shared.helpers.alert_utils.secrets",
             {"ntfy_topic": "ramboq_alerts", "ntfy_url": "https://ntfy.sh"},
-        ), patch("urllib.request.urlopen") as mock_urlopen:
+        ), patch("urllib.request.urlopen") as mock_urlopen, patch(
+            "backend.api.algo.template_attach.logger"
+        ) as mock_log, patch.object(event_agents, "_channel_enabled", lambda cap: True):
             _fire_wing_unprotected_alert(
                 wing_skipped_reason="no candidate found",
                 result=_make_attach_result_with_gtts(),
@@ -363,6 +370,16 @@ class TestFireWingUnprotectedAlertGuard:
                 parent_symbol="NIFTY24SEPFUT",
                 parent_exchange="NFO",
             )
+            for c in mock_log.warning.call_args_list:
+                extra = c.kwargs.get("extra") or {}
+                if extra.get("event") == "wing_unprotected":
+                    records.append({"ts": datetime.now(timezone.utc), "level": "WARNING",
+                                    "logger": "backend.api.algo.template_attach",
+                                    "message": "", "tags": ["gtt"], "extra": extra})
+            agent = SimpleNamespace(slug="template-attach-urgent", **{
+                k: event_agents.TEMPLATE_ATTACH_URGENT_AGENT[k]
+                for k in ("conditions", "events", "actions")})
+            asyncio.run(event_agents.dispatch(records, [agent]))
             # priority="urgent" sends 3x for redundancy (see send_ntfy_alert).
             assert mock_urlopen.call_count == 3, (
                 f"Expected 3 urgent-priority sends, got {mock_urlopen.call_count}"

@@ -184,6 +184,31 @@ _OPT_SYM_RE = re.compile(
 )
 
 
+def template_guard_message(*, template_slug, applies_to, reason, parent_order_id, parent_side,
+                           parent_qty, parent_symbol, parent_fill_price, parent_account, ist_label) -> str:
+    """Telegram-HTML body of the template guard alert. Pure; shared by the sender and the renderer."""
+    import html as _html
+    reason_html        = _html.escape(str(reason))
+    applies_to_html    = _html.escape(str(applies_to))
+    template_slug_html = _html.escape(str(template_slug))
+
+    tg_msg = (
+        f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
+        f"<code>"
+        f"order #{parent_order_id}\n"
+        f"{parent_side} {parent_qty} {parent_symbol}\n"
+        f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
+        f"template:    {template_slug_html}\n"
+        f"applies_to:  {applies_to_html}\n"
+        f"reason:      {reason_html}\n\n"
+        f"Parent order FILLED. Exits NOT attached.\n"
+        f"Arm exits manually if needed.\n\n"
+        f"Fix: at /admin/templates, change this template's "
+        f"'applies_to' to 'both' or 'buy_option'.</code>"
+    )
+    return tg_msg
+
+
 def _fire_guard_alert(*, template_slug: str, applies_to: str,
                        parent_side: str, parent_symbol: str,
                        parent_account: str, parent_qty: int,
@@ -237,46 +262,17 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     # raises AttributeError on this fire-and-forget alert path
     # (documented "never blocks the fill pipeline"); str(None) == "None"
     # matches the pre-fix f-string rendering exactly.
-    reason_html        = _html.escape(str(reason))
-    applies_to_html    = _html.escape(str(applies_to))
-    template_slug_html = _html.escape(str(template_slug))
-
-    tg_msg = (
-        f"<b>⚠ Template guard fired — {ist_label}</b>\n\n"
-        f"<code>"
-        f"order #{parent_order_id}\n"
-        f"{parent_side} {parent_qty} {parent_symbol}\n"
-        f"@ ₹{parent_fill_price:.2f}  ({parent_account})\n\n"
-        f"template:    {template_slug_html}\n"
-        f"applies_to:  {applies_to_html}\n"
-        f"reason:      {reason_html}\n\n"
-        f"Parent order FILLED. Exits NOT attached.\n"
-        f"Arm exits manually if needed.\n\n"
-        f"Fix: at /admin/templates, change this template's "
-        f"'applies_to' to 'both' or 'buy_option'.</code>"
+    logger.info(
+        f"guard alert dispatched: {summary}",
+        extra={
+            "tags": ["orders"], "event": "template_guard",
+            "template_slug": template_slug, "applies_to": applies_to, "reason": reason,
+            "parent_order_id": parent_order_id, "parent_side": parent_side,
+            "parent_qty": parent_qty, "parent_symbol": parent_symbol,
+            "parent_fill_price": float(parent_fill_price), "parent_account": parent_account,
+            "ist_label": ist_label,
+        },
     )
-
-    def _dispatch_guard() -> None:
-        try:
-            from backend.shared.helpers.alert_utils import _alert_route
-            _alert_route(
-                'template_guard',
-                title="Template guard fired",
-                body=tg_msg,
-                # template_guard routing has email:false — email_fn ignored
-            )
-        except Exception as e:
-            logger.warning(f"guard alert: dispatch failed: {e}")
-
-    async def _both():
-        _dispatch_guard()
-
-    try:
-        _asyncio.get_running_loop().create_task(_both())
-    except RuntimeError:
-        _dispatch_guard()
-
-    logger.info(f"guard alert dispatched: {summary}")
 
 
 def _check_offhours_wing_gate(
@@ -344,12 +340,30 @@ def _fire_wing_unprotected_alert(
         f"{wing_skipped_reason} | order #{parent_order_id} "
         f"{parent_symbol} {parent_exchange}"
     )
-    logger.warning("[WING-UNPROTECTED] %s", msg)
-    try:
-        from backend.shared.helpers.alert_utils import send_ntfy_alert
-        send_ntfy_alert("Unprotected SELL position", msg, priority="urgent")
-    except Exception as _e:
-        logger.warning("wing unprotected ntfy alert failed: %s", _e)
+    logger.warning(
+        "[WING-UNPROTECTED] %s", msg,
+        extra={"tags": ["orders", "gtt"], "event": "wing_unprotected",
+               "gtt_ids_text": str(result.gtt_ids), "reason": str(wing_skipped_reason),
+               "parent_order_id": parent_order_id, "symbol": parent_symbol,
+               "exchange": parent_exchange},
+    )
+
+
+def template_attach_fail_message(*, order_id, symbol, account, err_summary, ist_label) -> str:
+    """Telegram-HTML body of the template attach failure alert. Pure; shared by sender and renderer."""
+    import html as _html
+    # Escape before embedding: err_summary is raw broker/guard text and may hold a literal '<'.
+    err_summary_html = _html.escape(err_summary)
+    return (
+        f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
+        f"<code>"
+        f"order #{order_id}\n"
+        f"symbol:   {symbol}\n"
+        f"account:  {account}\n\n"
+        f"errors:   {err_summary_html}\n\n"
+        f"Parent order FILLED. Exits NOT attached.\n"
+        f"Arm exits manually if needed.</code>"
+    )
 
 
 def _fire_attach_fail_alert(
@@ -382,45 +396,18 @@ def _fire_attach_fail_alert(
     ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
 
     err_summary = "; ".join((str(e) for e in errors[:2]))
-    # Escape before embedding — see _fire_guard_alert's comment above for
-    # the exact ntfy _html_to_plain() regression this guards against
-    # (2026-09-27 council audit, Bug 2). err_summary is raw broker/guard
-    # error text and may contain a literal '<' (e.g. "qty < lot_size").
-    err_summary_html = _html.escape(err_summary)
-
-    tg_msg = (
-        f"<b>⚠ Template attach failed — {ist_label}</b>\n\n"
-        f"<code>"
-        f"order #{order_id}\n"
-        f"symbol:   {symbol}\n"
-        f"account:  {account}\n\n"
-        f"errors:   {err_summary_html}\n\n"
-        f"Parent order FILLED. Exits NOT attached.\n"
-        f"Arm exits manually if needed.</code>"
+    tg_msg = template_attach_fail_message(
+        order_id=order_id, symbol=symbol, account=account,
+        err_summary=err_summary, ist_label=ist_label,
     )
-
-    def _dispatch_attach_fail() -> None:
-        try:
-            from backend.shared.helpers.alert_utils import _alert_route
-            _alert_route(
-                'template_attach_fail',
-                title="Template attach failed",
-                body=tg_msg,
-            )
-        except Exception as _e:
-            logger.warning(f"attach fail alert: dispatch failed: {_e}")
-
-    async def _task():
-        _dispatch_attach_fail()
-
-    try:
-        _asyncio.get_running_loop().create_task(_task())
-    except RuntimeError:
-        _dispatch_attach_fail()
-
     logger.warning(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",
         order_id, symbol, account, err_summary,
+        extra={
+            "tags": ["orders"], "event": "template_attach_fail",
+            "order_id": order_id, "symbol": symbol, "account": account,
+            "err_summary": err_summary, "ist_label": ist_label,
+        },
     )
 
 
@@ -797,17 +784,10 @@ async def _pick_wing_by_premium(
         logger.critical(
             "[WING-HARD-REJECT] %s (parent=%s, exch=%s)",
             _hr_reason, parent_symbol, parent_exchange,
+            extra={"tags": ["orders", "gtt"], "event": "wing_hard_reject",
+                   "reason": str(_hr_reason), "symbol": parent_symbol,
+                   "exchange": parent_exchange, "target_premium": float(target_premium)},
         )
-        try:
-            from backend.shared.helpers.alert_utils import send_ntfy_alert
-            send_ntfy_alert(
-                "Wing scan hard-rejected",
-                f"{_hr_reason} | {parent_symbol} {parent_exchange} "
-                f"target ₹{target_premium:.2f}",
-                priority="urgent",
-            )
-        except Exception as _na:
-            logger.warning("wing hard-reject ntfy alert failed: %s", _na)
         return None, None, f"wing_premium_pct hard-reject: {_hr_reason}"
 
     used_fallback = False
@@ -2427,16 +2407,10 @@ async def _maybe_scan_wing_by_premium(
     logger.warning(
         "[WING-SKIP] wing scan returned no candidate for order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
+        extra={"tags": ["orders", "gtt"], "event": "wing_skip", "reason": str(reason),
+               "parent_order_id": parent_order_id, "symbol": parent_symbol,
+               "exchange": parent_exchange},
     )
-    try:
-        from backend.shared.helpers.alert_utils import send_ntfy_alert
-        send_ntfy_alert(
-            "Wing attach skipped",
-            f"{reason} | order #{parent_order_id} {parent_symbol} {parent_exchange}",
-            priority="high",
-        )
-    except Exception as _na:
-        logger.warning("wing skip ntfy alert failed: %s", _na)
 
     return overrides, reason, reason
 
@@ -2522,16 +2496,10 @@ async def _maybe_fetch_wing_quote_for_offset(
     logger.warning(
         "[WING-OFFSET-SKIP] order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
+        extra={"tags": ["orders", "gtt"], "event": "wing_offset_skip", "reason": str(reason),
+               "parent_order_id": parent_order_id, "symbol": parent_symbol,
+               "exchange": parent_exchange},
     )
-    try:
-        from backend.shared.helpers.alert_utils import send_ntfy_alert
-        send_ntfy_alert(
-            "Wing offset attach skipped",
-            f"{reason} | order #{parent_order_id} {parent_symbol} {parent_exchange}",
-            priority="high",
-        )
-    except Exception as _na:
-        logger.warning("wing offset skip ntfy alert failed: %s", _na)
     return overrides, reason, reason
 
 

@@ -42,13 +42,20 @@ def _reload_alert_utils():
 # Fix 2: market-hours gate
 # ---------------------------------------------------------------------------
 
+def _order_failure_records(mock_logger) -> int:
+    return sum(
+        1 for c in mock_logger.warning.call_args_list
+        if (c.kwargs.get("extra") or {}).get("event") == "order_failure"
+    )
+
+
 class TestMarketHoursGate:
     def test_suppressed_when_all_closed(self):
         """No Telegram fired when _any_segment_open() returns False."""
         m = _reload_alert_utils()
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=False),
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR") as mock_smtp,
         ):
             m.send_order_failure_alert(
@@ -61,7 +68,7 @@ class TestMarketHoursGate:
                 source="agent:test-agent",
                 error="InputException: lot_size mismatch",
             )
-            mock_tg.assert_not_called()
+            assert _order_failure_records(mock_tg) == 0
             mock_smtp.submit.assert_not_called()
 
     def test_fires_when_market_open(self):
@@ -69,7 +76,7 @@ class TestMarketHoursGate:
         m = _reload_alert_utils()
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -83,7 +90,7 @@ class TestMarketHoursGate:
                 source="agent:nifty-agent",
                 error="margin_insufficient",
             )
-            mock_tg.assert_called_once()
+            assert _order_failure_records(mock_tg) == 1
 
     def test_market_hours_check_error_fails_open(self):
         """If _any_segment_open import raises, alert still fires (fail-open)."""
@@ -93,7 +100,7 @@ class TestMarketHoursGate:
                 "backend.api.helpers.snapshot_gate._any_segment_open",
                 side_effect=ImportError("module not found"),
             ),
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -108,7 +115,7 @@ class TestMarketHoursGate:
                 error="market-hours check failed",
             )
             # Fail-open: should still fire
-            mock_tg.assert_called_once()
+            assert _order_failure_records(mock_tg) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -129,7 +136,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=fake_redis),
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -147,7 +154,7 @@ class TestRedisCooldown:
             m.send_order_failure_alert(**kwargs)
 
         # Only the first call should have fired Telegram.
-        assert mock_tg.call_count == 1
+        assert _order_failure_records(mock_tg) == 1
 
     def test_redis_setex_called_on_first_send(self):
         """SETEX is called with correct key prefix and TTL on the first send."""
@@ -189,7 +196,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=None),  # Redis unavailable
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -206,7 +213,7 @@ class TestRedisCooldown:
             m.send_order_failure_alert(**kwargs)  # fires
             m.send_order_failure_alert(**kwargs)  # should be suppressed by dict
 
-        assert mock_tg.call_count == 1  # only the first fire
+        assert _order_failure_records(mock_tg) == 1  # only the first fire
 
     def test_redis_error_during_check_falls_back_to_dict(self):
         """If Redis.get() raises, the call falls through to the in-process dict."""
@@ -219,7 +226,7 @@ class TestRedisCooldown:
         with (
             patch("backend.api.helpers.snapshot_gate._any_segment_open", return_value=True),
             patch.object(m, "_get_redis", return_value=fake_redis),
-            patch.object(m, "_send_telegram") as mock_tg,
+            patch.object(m, "logger") as mock_tg,
             patch.object(m, "_SMTP_EXECUTOR"),
             patch.object(m, "get_alert_recipients", return_value=[]),
         ):
@@ -236,7 +243,7 @@ class TestRedisCooldown:
             m.send_order_failure_alert(**kwargs)  # falls back to dict, fires
             m.send_order_failure_alert(**kwargs)  # dict suppresses
 
-        assert mock_tg.call_count == 1
+        assert _order_failure_records(mock_tg) == 1
 
 
 # ---------------------------------------------------------------------------

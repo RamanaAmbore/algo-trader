@@ -70,6 +70,13 @@
     /** @type {import('svelte').Snippet | undefined} */  actions       = undefined,
   } = $props();
 
+  // Hold state: the backend stores it as JSON on hold_json; null when the order is not held.
+  function parseHold(raw) {
+    if (!raw) return null;
+    try { return JSON.parse(raw); } catch { return null; }
+  }
+  const holdInfo = $derived(parseHold(order.hold_json));
+
   // Status → data-status attribute. .algo-status-card reads this for
   // the left-edge stripe colour; .algo-status-pill child inherits
   // --st-fg / --st-bg / --st-border via the parent's data-status.
@@ -191,7 +198,14 @@
       title={order.status === 'CANCEL_FAILED'
         ? 'Kill attempt failed — order may still be live at broker. Reconcile or retry kill.'
         : ''}>{order.status === 'CANCEL_FAILED' ? '⚠ KILL FAILED' : order.status}</span>
+    {#if holdInfo}
+      <span class="algo-status-pill held-badge ml-1"
+        title={`Held: ${holdInfo.reason || holdInfo.category}`}>HELD</span>
+    {/if}
   </div>
+  {#if holdInfo?.category === 'template_exit'}
+    <div class="held-exit-warn" role="status">Unprotected until released: exit GTTs wait for release.</div>
+  {/if}
   <!-- Chip row — same .log-chip / .log-chip-key family the LogPanel
        order rows used to render via _orderRowHtml, so the chips read
        identically when you flip between the dedicated /orders page
@@ -389,6 +403,9 @@
      the parent .algo-status-card[data-status="…"] so every new status
      variant only needs a CSS var block here, not a conditional class.
      Falls back to amber (running/default) when no data-status matches. */
+  .held-badge { color: var(--c-action); border-color: var(--c-action); }
+  .held-exit-warn { font-size: var(--fs-sm); color: var(--c-action); padding: 2px 0; }
+
   :global(.algo-status-pill) {
     font-size: 0.55rem;
     padding: 0.18rem 0.5rem;

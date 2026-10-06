@@ -669,3 +669,48 @@ def validate(cond: dict) -> list[str]:
 
     walk(cond)
     return errors
+
+
+def collect_refs(tree) -> set[str]:
+    """Every `$ref` name in a condition or notify tree, nested at any depth."""
+    refs: set[str] = set()
+
+    def walk(node):
+        if isinstance(node, dict):
+            ref = node.get('$ref')
+            if isinstance(ref, str) and ref:
+                refs.add(ref)
+            for value in node.values():
+                walk(value)
+        elif isinstance(node, list):
+            for value in node:
+                walk(value)
+
+    walk(tree)
+    return refs
+
+
+def fragments_reaching(target: str, bodies: dict) -> set[str]:
+    """`target` plus every fragment that reaches it through `$ref`, directly or via others."""
+    reach = {target}
+    changed = True
+    while changed:
+        changed = False
+        for name, body in bodies.items():
+            if name not in reach and collect_refs(body) & reach:
+                reach.add(name)
+                changed = True
+    return reach
+
+
+def referencing_agents(kind: str, name: str, bodies: dict, agents: list[dict]) -> list[dict]:
+    """Agents whose tree for this fragment kind reaches `name`. `agents` rows carry
+    slug, status, conditions and events; `bodies` maps same-kind fragment names to bodies."""
+    reach = fragments_reaching(name, bodies)
+    field = 'conditions' if kind == 'condition' else 'events'
+    hits = []
+    for agent in agents:
+        via = collect_refs(agent.get(field)) & reach
+        if via:
+            hits.append({'slug': agent['slug'], 'status': agent['status'], 'via': sorted(via)})
+    return sorted(hits, key=lambda h: h['slug'])
