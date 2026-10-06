@@ -463,6 +463,12 @@
       case 'cancel':          return 'log-row-warn';
       case 'preflight_block': return 'log-row-error';
       case 'preflight_ok':    return 'log-row-ok';
+      case 'unfilled':        return 'log-row-warn';
+      case 'cancel_failed':   return 'log-row-error';
+      case 'template_attach_ok':      return 'log-row-ok';
+      case 'template_attach_failed':  return 'log-row-error';
+      case 'template_attach_started': return 'log-row-info';
+      case 'template_attach_skipped': return 'log-row-debug';
       default:                return 'log-row-debug';
     }
   }
@@ -515,7 +521,7 @@
       });
 
       // Terminal events
-      if (st === 'COMPLETE') {
+      if (st === 'FILLED' || st === 'COMPLETE') {
         const fp = o.fill_price ?? o.average_price ?? price;
         events.push({
           id:      oid + '-fill',
@@ -528,14 +534,28 @@
           id:      oid + '-cancel',
           ts,
           kind:    'cancel',
-          message: `${side} ${qty} ${sym} cancelled${o.status_message ? ' — ' + o.status_message : ''}`,
+          message: `${side} ${qty} ${sym} cancelled${o.status_message ? ' - ' + o.status_message : ''}`,
+        });
+      } else if (st === 'UNFILLED') {
+        events.push({
+          id:      oid + '-unfilled',
+          ts,
+          kind:    'unfilled',
+          message: `${side} ${qty} ${sym} unfilled${o.status_message ? ' - ' + o.status_message : ''}`,
+        });
+      } else if (st === 'CANCEL_FAILED') {
+        events.push({
+          id:      oid + '-cancel_failed',
+          ts,
+          kind:    'cancel_failed',
+          message: `${side} ${qty} ${sym} cancel failed${o.status_message ? ' - ' + o.status_message : ''}`,
         });
       } else if (st === 'REJECTED') {
         events.push({
           id:      oid + '-reject',
           ts,
           kind:    'reject',
-          message: `${side} ${qty} ${sym} rejected${o.status_message ? ' — ' + o.status_message : ''}`,
+          message: `${side} ${qty} ${sym} rejected${o.status_message ? ' - ' + o.status_message : ''}`,
         });
       }
     }
@@ -543,7 +563,7 @@
     // order_ids that already have algo events.
     const algoIds = new Set(filteredOrderEvents.map(e => String(e.order_id || e.id || '')).filter(Boolean));
     const brokerOnly = events.filter(e => {
-      const baseId = e.id.replace(/-(?:placed|fill|cancel|reject)$/, '');
+      const baseId = e.id.replace(/-(?:placed|fill|cancel|reject|unfilled|cancel_failed)$/, '');
       return !algoIds.has(baseId);
     });
     return [...filteredOrderEvents, ...brokerOnly].sort((a, b) => {
@@ -668,7 +688,7 @@
     } catch (_) { /* keep last-good */ }
     // Fire-and-forget: fetch order lifecycle events in parallel for the
     // order tab event log. Does not block orderRows from rendering.
-    fetchOrderEvents(200).then(evts => { orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []); }).catch(() => {});
+    fetchOrderEvents(200, 'all').then(evts => { orderEvents = Array.isArray(evts) ? evts : (evts?.events ?? []); }).catch(() => {});
   }
 
   // Deferred poll flags — system and sim ticks are low-traffic tabs that
