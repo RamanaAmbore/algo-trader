@@ -119,14 +119,13 @@ class RemoteBroker(Broker):
                 "BrokerNetworkError":    BrokerNetworkError,
                 "BrokerError":           BrokerError,
             }
-            _exc_cls = _ERROR_TYPE_MAP.get(_error_type)
-            if _exc_cls is not None:
-                raise _exc_cls(
-                    f"{self._account}.{method} failed: {_error_msg}"
-                )
-            raise BrokerError(
-                f"{self._account}.{method} failed: {_error_msg}"
-            )
+            _exc_cls = _ERROR_TYPE_MAP.get(_error_type, BrokerError)
+            _exc = _exc_cls(f"{self._account}.{method} failed: {_error_msg}")
+            if payload.get("logged"):
+                # conn_service already logged this (retry-then-escalate); tell the
+                # API caller not to log it again.
+                _exc._recovery_logged = True
+            raise _exc
         return payload.get("result")
 
     # ── Account state ─────────────────────────────────────────────────

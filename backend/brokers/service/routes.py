@@ -516,11 +516,15 @@ class BrokerDispatchController(Controller):
             result = await asyncio.to_thread(fn, *args, **kwargs)
             return {"ok": True, "result": _to_jsonable(result)}
         except Exception as e:
-            logger.exception(
-                "conn_service: broker dispatch failed: %s.%s",
-                account, method,
-            )
-            return {"ok": False, "error": str(e)[:500], "error_type": type(e).__name__}
+            from backend.shared.helpers.recovery import already_logged
+            logged = already_logged(e)
+            if not logged:
+                logger.exception(
+                    "conn_service: broker dispatch failed: %s.%s",
+                    account, method,
+                )
+            return {"ok": False, "error": str(e)[:500], "error_type": type(e).__name__,
+                    "logged": logged}
 
     @post("/{account:str}/verify_postback")
     async def verify_postback(

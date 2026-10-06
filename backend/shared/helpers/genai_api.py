@@ -136,6 +136,20 @@ def _get_portfolio_details():
         return "    • (no current holdings/positions)", []
 
 
+def _generate_content_retry_on():
+    from google.genai import errors as genai_errors
+    return (genai_errors.ServerError,)
+
+
+def _generate_content(client, **kwargs):
+    """Gemini generate_content with retry-then-escalate on server-side errors (503 high demand)."""
+    from backend.shared.helpers.recovery import recoverable
+    call = recoverable("gemini.generate_content", attempts=3, backoff_s=2.0,
+                       retry_on=_generate_content_retry_on())(
+        lambda: client.models.generate_content(**kwargs))
+    return call()
+
+
 def get_market_update(strict: bool = False):
     """
     Return the AI-generated market report.
@@ -177,7 +191,8 @@ def get_market_update(strict: bool = False):
         # before emitting the answer. Cap thinking to a small budget so the full
         # response fits within max_output_tokens — otherwise the market report
         # gets truncated mid-sentence.
-        response = client.models.generate_content(
+        response = _generate_content(
+            client,
             model=ramboq_config.get('genai_model', 'gemini-2.5-flash'),
             contents=prompt,
             config=types.GenerateContentConfig(
@@ -216,7 +231,9 @@ def get_market_update(strict: bool = False):
         return resp
 
     except Exception as e:
-        logger.error(f"Gemini market update failed: {e}")
+        from backend.shared.helpers.recovery import already_logged
+        if not already_logged(e):
+            logger.error(f"Gemini market update failed: {e}")
         return fallback
 
 
