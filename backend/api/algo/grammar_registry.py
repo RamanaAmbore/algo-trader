@@ -39,6 +39,55 @@ def _import_dotted(path: str) -> Any:
     return getattr(module, attr)
 
 
+
+def _load_resolved(table: str, allow_bare: bool):
+    def load(r, tables) -> bool:
+        if r.resolver:
+            tables[table][r.token] = _import_dotted(r.resolver)
+        elif allow_bare:
+            tables[table][r.token] = None
+        return True
+    return load
+
+
+def _load_required_resolver(table: str):
+    def load(r, tables) -> bool:
+        if not r.resolver:
+            return False
+        tables[table][r.token] = _import_dotted(r.resolver)
+        return True
+    return load
+
+
+def _load_template(r, tables) -> bool:
+    tables['templates'][r.token] = r.template_body or ''
+    return True
+
+
+def _load_log_tag(r, tables) -> bool:
+    tables['log_tags'][r.token] = r.source or {}
+    return True
+
+
+def _load_action(r, tables) -> bool:
+    tables['actions'][r.token] = {
+        'fn': _import_dotted(r.resolver) if r.resolver else None,
+        'params_schema': r.params_schema or {},
+    }
+    return True
+
+
+_TOKEN_LOADERS = {
+    ('condition', 'metric'): _load_resolved('metrics', allow_bare=True),
+    ('condition', 'scope'): _load_resolved('scopes', allow_bare=True),
+    ('condition', 'operator'): _load_resolved('operators', allow_bare=False),
+    ('notify', 'channel'): _load_required_resolver('channels'),
+    ('notify', 'format'): _load_required_resolver('formats'),
+    ('notify', 'template'): _load_template,
+    ('log', 'tag'): _load_log_tag,
+    ('action', 'action_type'): _load_action,
+}
+
 class GrammarRegistry:
     """
     Thread-safe dispatch table. Reloadable at runtime.
@@ -99,39 +148,8 @@ class GrammarRegistry:
         should be skipped (no resolver where one is required).  Raises on
         import errors so the caller can count skipped rows.
         """
-        gk = r.grammar_kind
-        tk = r.token_kind
-
-        if gk == 'condition':
-            if tk == 'metric':
-                tables['metrics'][r.token] = _import_dotted(r.resolver) if r.resolver else None
-            elif tk == 'scope':
-                tables['scopes'][r.token] = _import_dotted(r.resolver) if r.resolver else None
-            elif tk == 'operator':
-                # Code-level operators are already present; DB resolver wins.
-                if r.resolver:
-                    tables['operators'][r.token] = _import_dotted(r.resolver)
-            else:
-                return False
-        elif gk == 'notify':
-            if tk == 'channel' and r.resolver:
-                tables['channels'][r.token] = _import_dotted(r.resolver)
-            elif tk == 'format' and r.resolver:
-                tables['formats'][r.token] = _import_dotted(r.resolver)
-            elif tk == 'template':
-                tables['templates'][r.token] = r.template_body or ''
-            else:
-                return False
-        elif gk == 'log' and tk == 'tag':
-            tables['log_tags'][r.token] = r.source or {}
-        elif gk == 'action' and tk == 'action_type':
-            tables['actions'][r.token] = {
-                'fn': _import_dotted(r.resolver) if r.resolver else None,
-                'params_schema': r.params_schema or {},
-            }
-        else:
-            return False
-        return True
+        loader = _TOKEN_LOADERS.get((r.grammar_kind, r.token_kind))
+        return loader(r, tables) if loader else False
 
     async def reload(self) -> None:
         """

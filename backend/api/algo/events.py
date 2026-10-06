@@ -157,6 +157,56 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
                      sim_mode=sim_mode)
 
 
+def _tags_match(ch: dict, eval_result) -> bool:
+    wanted = set(ch.get("tags") or [])
+    if not wanted:
+        return True
+    matched = {t for m in (eval_result.detail or {}).get("matches", []) for t in (m.get("tags") or [])}
+    return bool(wanted & matched)
+
+
+def _broadcast_websocket(broadcast_fn, agent, telegram_body, condition_text, sim_mode) -> None:
+    broadcast_fn("agent_alert", {
+        "slug": agent.slug,
+        "message": telegram_body,
+        "condition": condition_text,
+        "sim_mode": sim_mode,
+    })
+
+
+def _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_display, sim_mode, branch) -> None:
+    broadcast_fn("agent_inapp_notify", {
+        "slug":      agent.slug,
+        "name":      agent.name,
+        "tier":      getattr(agent, "tier", "info"),
+        "topic":     getattr(agent, "topic", None),
+        "condition": condition_text,
+        "detail":    eval_result.detail or {},
+        "when":      ist_display,
+        "sim_mode":  sim_mode,
+        "branch":    branch,
+    })
+
+
+async def _send_ntfy_channel(ch: dict, agent, telegram_body: str, ntfy_body: str | None) -> None:
+    from backend.shared.helpers.alert_utils import send_ntfy_alert
+    import asyncio
+    loop = asyncio.get_running_loop()
+    # ntfy_body is kept independent of telegram_body so an HTML-styled telegram body can
+    # never leak literal tags into ntfy. Legacy direct-call sites fall back to telegram_body.
+    _ntfy_msg = ntfy_body if ntfy_body is not None else telegram_body
+    priority = ch.get("priority")
+    await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=priority))
+
+
+def _log_channel(agent, condition_text: str, sim_mode: bool, branch_tag: str) -> None:
+    log_sim_tag = "[SIM] " if sim_mode else ""
+    logger.warning(
+        f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}",
+        extra={"tags": ["agent"], "agent_slug": agent.slug, "sim_mode": bool(sim_mode)},
+    )
+
+
 async def _dispatch_channel(
     ch: dict, agent, telegram_body: str, email_subject: str,
     email_body: str, condition_text: str, ist_display: str,
@@ -165,52 +215,20 @@ async def _dispatch_channel(
 ) -> None:
     """Route one channel event. Raises on error — caller wraps in try/except."""
     channel = ch.get("channel", "")
-    wanted = set(ch.get("tags") or [])
-    if wanted:
-        matched = {t for m in (eval_result.detail or {}).get("matches", []) for t in (m.get("tags") or [])}
-        if not wanted & matched:
-            return
+    if not _tags_match(ch, eval_result):
+        return
     if channel == "telegram" and is_enabled("telegram"):
         await _send_telegram(telegram_body)
     elif channel == "email" and is_enabled("mail"):
         await _send_email_raw(email_subject, email_body)
     elif channel == "websocket" and broadcast_fn:
-        broadcast_fn("agent_alert", {
-            "slug": agent.slug,
-            "message": telegram_body,
-            "condition": condition_text,
-            "sim_mode": sim_mode,
-        })
+        _broadcast_websocket(broadcast_fn, agent, telegram_body, condition_text, sim_mode)
     elif channel == "inapp" and broadcast_fn:
-        broadcast_fn("agent_inapp_notify", {
-            "slug":      agent.slug,
-            "name":      agent.name,
-            "tier":      getattr(agent, "tier", "info"),
-            "topic":     getattr(agent, "topic", None),
-            "condition": condition_text,
-            "detail":    eval_result.detail or {},
-            "when":      ist_display,
-            "sim_mode":  sim_mode,
-            "branch":    branch,
-        })
+        _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_display, sim_mode, branch)
     elif channel == "ntfy" and is_enabled("ntfy"):
-        from backend.shared.helpers.alert_utils import send_ntfy_alert
-        import asyncio
-        loop = asyncio.get_running_loop()
-        ntfy_priority = ch.get("priority")
-        # Prefer the dedicated ntfy_body (kept independent of telegram_body
-        # so a future HTML-styled telegram_body can never leak literal tags
-        # into ntfy — see the comment at its construction in dispatch()).
-        # Falls back to telegram_body only for legacy direct-call sites
-        # (tests) that don't pass ntfy_body; content is identical today.
-        _ntfy_msg = ntfy_body if ntfy_body is not None else telegram_body
-        await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=ntfy_priority))
+        await _send_ntfy_channel(ch, agent, telegram_body, ntfy_body)
     elif channel == "log":
-        log_sim_tag = "[SIM] " if sim_mode else ""
-        logger.warning(
-            f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}",
-            extra={"tags": ["agent"], "agent_slug": agent.slug, "sim_mode": bool(sim_mode)},
-        )
+        _log_channel(agent, condition_text, sim_mode, branch_tag)
 
 
 async def log_event(agent, event_type: str, condition_text: str = "",

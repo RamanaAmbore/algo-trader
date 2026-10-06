@@ -10,7 +10,7 @@
   import {
     fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
     fetchSimStatus,
-    startSimForAgent, aiDraftAgent,
+    startSimForAgent, aiDraftAgent, fetchGrammarTokens,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select   from '$lib/Select.svelte';
@@ -263,6 +263,56 @@
     { id: 'websocket', label: 'WebSocket', desc: 'Live UI toast / chart overlay' },
     { id: 'log',       label: 'Log',       desc: 'Server log file only (no push)' },
   ];
+
+  // ── Log tags and log matches ───────────────────────────────────────
+  // Tags come from the grammar registry (grammar_kind 'log'). A channel row may carry
+  // a tags array; the backend sends the channel only when a matched record carries one.
+  let logTags = $state([]);
+  let logTagPick = $state('');
+  let logMinLevel = $state('INFO');
+  const LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR'];
+
+  async function loadLogTags() {
+    try {
+      const rows = await fetchGrammarTokens('log');
+      logTags = (rows || [])
+        .filter((r) => r.token_kind === 'tag' && r.is_active !== false)
+        .map((r) => r.token);
+    } catch {
+      logTags = [];
+    }
+  }
+
+  function channelTags(/** @type {string} */ channelId) {
+    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
+    const row = list.find((e) => e?.channel === channelId);
+    return Array.isArray(row?.tags) ? row.tags : [];
+  }
+
+  /** Add or remove one tag on an enabled channel row. Re-serializes editForm.events. */
+  function toggleChannelTag(/** @type {string} */ channelId, /** @type {string} */ tag) {
+    let list = [];
+    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const idx = list.findIndex((e) => e?.channel === channelId && e?.enabled);
+    if (idx < 0) return;
+    const current = Array.isArray(list[idx].tags) ? list[idx].tags : [];
+    const next = current.includes(tag) ? current.filter((t) => t !== tag) : [...current, tag];
+    const row = { ...list[idx], tags: next };
+    if (next.length === 0) delete row.tags;
+    list[idx] = row;
+    editForm.events = JSON.stringify(list, null, 2);
+  }
+
+  /** Append a log leaf to the conditions tree (AND-ed with any existing condition). */
+  function addLogMatch() {
+    if (!logTagPick) return;
+    const leaf = { log: { tag: logTagPick, min_level: logMinLevel } };
+    let cond = {};
+    try { cond = JSON.parse(editForm.conditions || '{}'); } catch { cond = {}; }
+    const empty = !cond || Object.keys(cond).length === 0;
+    editForm.conditions = JSON.stringify(empty ? leaf : { all: [cond, leaf] }, null, 2);
+  }
 
   /** Returns true if the channel is enabled in editForm.events (parsed). */
   function isChannelEnabled(/** @type {string} */ channelId) {
@@ -603,6 +653,7 @@
 
   onMount(() => {
     loadAll();
+    loadLogTags();
     connectWS();
     pollSimStatus();
     refreshTeardown   = visibleInterval(loadAll, 30000);
@@ -1008,7 +1059,31 @@
                         <span class="channel-label">{ch.label}</span>
                         <span class="channel-desc">{ch.desc}</span>
                       </label>
+                      {#if isChannelEnabled(ch.id) && logTags.length}
+                        <div class="channel-tags" aria-label="{ch.label} tag filter">
+                          {#each logTags as t}
+                            <button type="button"
+                                    class="tag-chip"
+                                    class:on={channelTags(ch.id).includes(t)}
+                                    aria-pressed={channelTags(ch.id).includes(t)}
+                                    onclick={() => toggleChannelTag(ch.id, t)}>{t}</button>
+                          {/each}
+                        </div>
+                      {/if}
                     {/each}
+                  </div>
+                  <div class="log-match-row">
+                    <span class="field-label">Log match</span>
+                    <select class="log-match-select" bind:value={logTagPick} aria-label="Log tag">
+                      <option value="">Tag…</option>
+                      {#each logTags as t}<option value={t}>{t}</option>{/each}
+                    </select>
+                    <select class="log-match-select" bind:value={logMinLevel} aria-label="Minimum level">
+                      {#each LOG_LEVELS as lv}<option value={lv}>{lv}</option>{/each}
+                    </select>
+                    <button type="button" class="log-match-add" onclick={addLogMatch} disabled={!logTagPick}>
+                      Add to conditions
+                    </button>
                   </div>
                 </div>
                 <div>
