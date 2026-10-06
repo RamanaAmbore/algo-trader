@@ -28,6 +28,7 @@ from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
 
 from backend.api.algo.chase import chase_order, ChaseConfig, ChaseResult, ChaseStatus
+from backend.api.algo.order_hold_gate import expiry_close_held
 
 logger = get_logger(__name__)
 
@@ -625,6 +626,14 @@ class ExpiryEngine:
             # Determine transaction type: close long → SELL, close short → BUY
             txn = "SELL" if effective > 0 else "BUY"
             qty = abs(effective)
+            if expiry_close_held():
+                from backend.api.algo.order_hold_gate import record_held_close
+                await record_held_close(
+                    account=pos.account, symbol=pos.tradingsymbol,
+                    exchange=pos.exchange, side=txn, qty=qty,
+                    product=pos.product, reason="expiry close (held by default)",
+                )
+                continue
 
             cfg = ChaseConfig(
                 interval_seconds=self._chase_cfg.interval_seconds,
