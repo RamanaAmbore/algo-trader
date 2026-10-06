@@ -563,7 +563,9 @@ def _fetch_orders() -> OrdersResponse:
         try:
             return [_row_from_dict(o, account, broker_id) for o in reversed(broker.orders() or [])]
         except Exception as e:
-            logger.error(f"Orders list failed for {account}: {e}")
+            from backend.shared.helpers.recovery import already_logged
+            if not already_logged(e):
+                logger.error(f"Orders list failed for {account}: {e}")
             return []
 
     results: list[list[OrderRow]] = []

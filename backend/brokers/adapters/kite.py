@@ -20,6 +20,8 @@ from backend.brokers.errors import (
 )
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.shared.helpers.recovery import recoverable
+from kiteconnect.exceptions import DataException, NetworkException
 from backend.shared.helpers.ssot_fetch import ssot_fetch
 
 logger = get_logger(__name__)
@@ -358,6 +360,8 @@ class KiteBroker(Broker):
     def margins(self, segment: str | None = None) -> dict:
         return self.kite.margins(segment) if segment else self.kite.margins()
 
+    @recoverable("kite.orders", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def orders(self) -> list[dict]:
         return self.kite.orders()
 

@@ -22,6 +22,7 @@ from pathlib import Path
 import yaml
 
 from backend.shared.helpers.error_alerts import ErrorAlertHandler
+from backend.shared.helpers.text_clean import to_plain
 
 # Load configuration from YAML file (resolve relative to repo root)
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "backend" / "config" / "backend_config.yaml"
@@ -71,6 +72,20 @@ error_file_handler.setFormatter(formatter)
 console_handler = logging.StreamHandler()
 console_handler.setLevel(CONSOLE_LOG_LEVEL)
 console_handler.setFormatter(formatter)
+
+class _PlainTextFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            record.msg = to_plain(record.getMessage())
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
+
+_plain_text_filter = _PlainTextFilter()
+for _h in (console_handler, log_file_handler, error_file_handler):
+    _h.addFilter(_plain_text_filter)
 
 # --- Queue Listener ---
 error_alert_handler = ErrorAlertHandler()
