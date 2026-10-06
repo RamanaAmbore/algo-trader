@@ -21,6 +21,8 @@ from pathlib import Path
 
 import yaml
 
+from backend.shared.helpers.error_alerts import ErrorAlertHandler
+
 # Load configuration from YAML file (resolve relative to repo root)
 _CONFIG_PATH = Path(__file__).resolve().parent.parent.parent.parent / "backend" / "config" / "backend_config.yaml"
 with open(_CONFIG_PATH, 'r', encoding='utf-8', errors='ignore') as file:
@@ -71,12 +73,15 @@ console_handler.setLevel(CONSOLE_LOG_LEVEL)
 console_handler.setFormatter(formatter)
 
 # --- Queue Listener ---
+error_alert_handler = ErrorAlertHandler()
+error_alert_handler.start()
 # Processes logs asynchronously from queue to all handlers
 queue_listener = QueueListener(
     log_queue,
     console_handler,
     log_file_handler,
     error_file_handler,
+    error_alert_handler,
     respect_handler_level=True
 )
 queue_listener.start()
