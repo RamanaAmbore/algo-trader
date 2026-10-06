@@ -944,9 +944,7 @@
   // operator opted out of any GTT attach for this submit. Derived so
   // the pill toggle and the Default-template resolution stay in
   // lockstep.
-  const _shellUsingNone = $derived(
-    !!(_noneTpl && _sharedTemplateId === _noneTpl.id)
-  );
+  const _shellUsingNone = $derived(_sharedTemplateId === null);
   // Templ toggle visibility (2026-09-30 → unconditional 2026-09-30
   // follow-up, operator: "Templ toggle should show unconditionally in
   // Chain"). The toggle itself renders inside OptionChainTab's expiry
@@ -1234,7 +1232,7 @@
       _lastSideScope = scope;
       const pref = _templExplicitThisSession ? undefined : _readTemplPref(scope);
       if (pref === 'none') {
-        if (_noneTpl) _sharedTemplateId = _noneTpl.id;
+        _sharedTemplateId = null;
         return;
       }
       if (typeof pref === 'number' && _templates.some(t => t.id === pref)) {
@@ -1262,7 +1260,7 @@
       // buy_option default and flipped to SELL — clears the stale
       // template so the preview fires with templateId=null rather
       // than carrying the wrong-direction template).
-      _sharedTemplateId = _sideAwareDefault?.id ?? null;
+      _sharedTemplateId = null;
     });
   });
   // Account list — falls through three layers:
@@ -2581,11 +2579,9 @@
             }
           }}
           onSelectNone={() => {
-            if (_noneTpl) {
-              _sharedTemplateId = _noneTpl.id;
-              _writeTemplPref(_currentScope(), 'none');
-              _templExplicitThisSession = true;
-            }
+            _sharedTemplateId = null;
+            _writeTemplPref(_currentScope(), 'none');
+            _templExplicitThisSession = true;
           }}
           onSelectTemplate={(id) => {
             _sharedTemplateId = id;

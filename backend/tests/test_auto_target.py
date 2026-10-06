@@ -19,22 +19,20 @@ def test_resolve_target_pct_explicit_override():
     assert result == 0.50, "explicit override should be used"
 
 
-def test_resolve_target_pct_db_setting():
-    """No explicit override → read from DB setting."""
+def test_resolve_target_pct_no_override_means_no_target():
+    """No explicit override → no take-profit, even when a DB setting exists."""
     from backend.api.routes.orders import _resolve_target_pct
 
     with patch("backend.shared.helpers.settings.get_float", return_value=0.25):
-        result = _resolve_target_pct(None)
-        assert result == 0.25, "DB setting should be used when override is None"
+        assert _resolve_target_pct(None) == 0.0
 
 
-def test_resolve_target_pct_hardcoded_fallback():
-    """No override and no DB setting → fallback to 0.30."""
+def test_resolve_target_pct_fallback_is_zero():
+    """No override and no DB setting → no take-profit."""
     from backend.api.routes.orders import _resolve_target_pct
 
     with patch("backend.shared.helpers.settings.get_float", return_value=0.30):
-        result = _resolve_target_pct(None)
-        assert result == 0.30, "fallback should be 0.30"
+        assert _resolve_target_pct(None) == 0.0
 
 
 def test_resolve_target_pct_negative_clamped():
@@ -116,3 +114,9 @@ async def test_arm_take_profit_early_return_zero_targets():
 
     # Session should NOT have been entered (early return guard)
     session_ctx.__aenter__.assert_not_called()
+
+
+def test_no_implicit_target_on_fill_even_with_setting():
+    from backend.api.routes.orders import _resolve_target_pct
+    assert _resolve_target_pct(None) == 0.0
+    assert _resolve_target_pct(0.30) == 0.30

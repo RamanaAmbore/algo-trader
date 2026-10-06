@@ -11,7 +11,7 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 from backend.shared.helpers.alert_utils import _send_telegram, send_ntfy_alert
-from backend.shared.helpers.utils import is_enabled, mask_account
+from backend.shared.helpers.utils import is_enabled
 
 logger = logging.getLogger(__name__)
 _IST = ZoneInfo("Asia/Kolkata")
@@ -23,7 +23,7 @@ def format_fill_message(row) -> tuple[str, str]:
     symbol = str(row.symbol or "")
     title = f"Order filled: {side} {qty} {symbol}"
     body = "\n".join([
-        f"Account: {mask_account(str(row.account or ''))}",
+        f"Account: {row.account or '-'}",
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {float(row.fill_price or 0):.2f}",
         f"Product: {row.product or '-'}",
         f"Order id: {row.id}",

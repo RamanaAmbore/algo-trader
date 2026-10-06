@@ -45,6 +45,8 @@ VALID_KINDS = frozenset({
     # Sprint 1b-i — template-attach lifecycle observability.
     "template_attach_started", "template_attach_ok", "template_attach_failed",
     "template_attach_skipped",
+    # Hold and release lifecycle.
+    "held", "released",
 })
 
 

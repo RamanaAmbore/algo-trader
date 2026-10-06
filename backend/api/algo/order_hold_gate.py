@@ -39,6 +39,8 @@ async def record_held_close(*, account: str, symbol: str, exchange: str,
             await s.commit()
             row_id = row.id
         logger.info(f"[HOLD] expiry close held: {side} {qty} {symbol} acct={account} id={row_id}")
+        from backend.api.algo.order_events import write_event
+        await write_event(row_id, "held", f"Held: {side} {qty} {symbol} ({reason})", {"reason": reason})
         return row_id
     except Exception as e:
         logger.error(f"[HOLD] could not record held close for {symbol}: {e}")

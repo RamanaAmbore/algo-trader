@@ -996,20 +996,9 @@
     // First-paint pick is now the side-aware is_default template that
     // matches the current scope (`_appliesToFor` resolves SELL CE/PE
     // → sell_option, BUY any → buy_any, etc.). Falls back to a 'both'
-    // scope default, then to the 'none' row, then to null — so the
+    // scope default, then to null — so the
     // form is never stuck and a legacy install without seeded
     // defaults still works.
-    const scope = _appliesToFor(_side, symbol);
-    const sideMatch = _templates.find(t =>
-      t.is_active && t.is_default && t.applies_to === scope
-    );
-    if (sideMatch) { templateId = sideMatch.id; return; }
-    const bothMatch = _templates.find(t =>
-      t.is_active && t.is_default && t.applies_to === 'both'
-    );
-    if (bothMatch) { templateId = bothMatch.id; return; }
-    const none = _templates.find(t => t.slug === 'none');
-    if (none) { templateId = none.id; return; }
   }
 
   // Close orders must never carry a template — clear templateId

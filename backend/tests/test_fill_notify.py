@@ -74,3 +74,8 @@ async def test_ntfy_failure_does_not_block_telegram(monkeypatch, sent):
     monkeypatch.setattr(fill_notify, "send_ntfy_alert", boom)
     await fill_notify.notify_fills([_row()])
     assert len(sent["tg"]) == 1
+
+
+def test_fill_message_shows_full_account():
+    title, body = fill_notify.format_fill_message(_row(account="ZG0790"))
+    assert "Account: ZG0790" in body

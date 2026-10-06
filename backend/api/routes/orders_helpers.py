@@ -704,16 +704,14 @@ async def _fetch_child_order_ids(session, parent_ids: list[int]) -> dict[int, li
 def _resolve_target_pct(override: float | None) -> float:
     """Return the effective TP fraction for a new order.
 
-    Priority:
-      1. explicit `override` from the request (including 0.0 to disable TP)
-      2. `algo.default_target_pct` DB setting
-      3. hard-coded fallback of 0.30
-    A negative value is clamped to 0 (disabled).
+    A take-profit is placed only when the request sets one. With no target in
+    the request, no take-profit is placed: an implicit default target would
+    create an unexpected exit order on every fill. A negative value is clamped
+    to 0 (disabled).
     """
-    if override is not None:
-        return max(0.0, float(override))
-    from backend.shared.helpers.settings import get_float
-    return max(0.0, get_float("algo.default_target_pct", 0.30))
+    if override is None:
+        return 0.0
+    return max(0.0, float(override))
 
 
 def _ticket_overrides_dict(data) -> dict:
