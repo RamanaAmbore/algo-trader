@@ -21,7 +21,7 @@ from pathlib import Path
 
 import yaml
 
-from backend.shared.helpers.error_alerts import ErrorAlertHandler
+from backend.shared.helpers.log_store import HANDLER as log_store_handler
 from backend.shared.helpers.text_clean import to_plain
 
 # Load configuration from YAML file (resolve relative to repo root)
@@ -88,15 +88,13 @@ for _h in (console_handler, log_file_handler, error_file_handler):
     _h.addFilter(_plain_text_filter)
 
 # --- Queue Listener ---
-error_alert_handler = ErrorAlertHandler()
-error_alert_handler.start()
 # Processes logs asynchronously from queue to all handlers
 queue_listener = QueueListener(
     log_queue,
     console_handler,
     log_file_handler,
     error_file_handler,
-    error_alert_handler,
+    log_store_handler,
     respect_handler_level=True
 )
 queue_listener.start()

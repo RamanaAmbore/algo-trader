@@ -1067,6 +1067,9 @@ class Agent(Base):
     #   "until_date" : completes when now >= lifespan_expires_at.
     #                  Useful for "watch this until expiry" agents
     #                  that algos spawn with a known end date.
+    schema_version: Mapped[int]  = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
+    # 'cycle' agents are evaluated each engine tick; 'event' agents match each new log record.
+    kind: Mapped[str]            = mapped_column(String(16), nullable=False, default="cycle", server_default=text("'cycle'"))
     lifespan_type: Mapped[str]   = mapped_column(
         String(16), nullable=False, default="persistent"
     )
@@ -1365,6 +1368,8 @@ class GrammarToken(Base):
     # is_system=False and are freely editable/deletable via the admin UI.
     is_system: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool]   = mapped_column(Boolean, nullable=False, default=True)
+    # Where a token's data lives, e.g. {"table": "log_events", "column": "tags", "match": "contains"}.
+    source: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
@@ -2463,3 +2468,17 @@ class ExchangeSchedule(Base):
         ),
         Index("ix_exchange_schedule_gate_date", "gate", "date"),
     )
+
+
+class LogEvent(Base):
+    """Tagged log records at INFO and above. Written by log_store; read by alert agents."""
+    __tablename__ = "log_events"
+
+    id: Mapped[int]              = mapped_column(primary_key=True, autoincrement=True)
+    ts: Mapped[datetime]         = mapped_column(DateTime(timezone=True), server_default=func.now(), index=True)
+    process: Mapped[str]         = mapped_column(String(16))
+    level: Mapped[str]           = mapped_column(String(10))
+    logger: Mapped[str]          = mapped_column(String(120))
+    message: Mapped[str]         = mapped_column(Text)
+    tags: Mapped[list]           = mapped_column(PG_ARRAY(String(40)), nullable=False)
+    extra: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)

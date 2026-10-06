@@ -61,10 +61,15 @@ class GrammarRegistry:
         self.templates:  dict[str, str]      = {}
         # action
         self.actions:    dict[str, dict]     = {}   # {token: {"fn": callable, "params_schema": {...}}}
+        # log
+        self.log_tags:   dict[str, dict]     = {}   # {tag: source descriptor}
 
     # ── Accessors ──────────────────────────────────────────────────────────
     def metric(self, token: str) -> Optional[Callable]:
         return self.metrics.get(token)
+
+    def log_tag(self, token: str) -> Optional[dict]:
+        return self.log_tags.get(token)
 
     def scope(self, token: str) -> Optional[Callable]:
         return self.scopes.get(token)
@@ -117,6 +122,8 @@ class GrammarRegistry:
                 tables['templates'][r.token] = r.template_body or ''
             else:
                 return False
+        elif gk == 'log' and tk == 'tag':
+            tables['log_tags'][r.token] = r.source or {}
         elif gk == 'action' and tk == 'action_type':
             tables['actions'][r.token] = {
                 'fn': _import_dotted(r.resolver) if r.resolver else None,
@@ -147,6 +154,7 @@ class GrammarRegistry:
             'formats':   {},
             'templates': {},
             'actions':   {},
+            'log_tags':  {},
         }
 
         async with async_session() as s:
@@ -175,6 +183,7 @@ class GrammarRegistry:
             self.formats   = tables['formats']
             self.templates = tables['templates']
             self.actions   = tables['actions']
+            self.log_tags = tables['log_tags']
 
         logger.info(
             f"Grammar registry reloaded — "

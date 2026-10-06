@@ -673,6 +673,21 @@ async def _start_write_queue(app) -> None:  # noqa: ARG001
     await write_queue.start()
 
 
+async def _seed_event_agents(app) -> None:  # noqa: ARG001
+    from backend.api.algo.event_agents import seed_event_agents
+    await seed_event_agents()
+
+
+async def _start_log_store(app) -> None:  # noqa: ARG001
+    from backend.shared.helpers import log_store
+    await log_store.start("api")
+
+
+async def _stop_log_store(app) -> None:  # noqa: ARG001
+    from backend.shared.helpers import log_store
+    await log_store.stop()
+
+
 async def _stop_write_queue(app) -> None:  # noqa: ARG001
     from backend.api.persistence import write_queue
     await write_queue.stop()
@@ -734,8 +749,8 @@ app = Litestar(
     route_handlers=_route_handlers,
     cors_config=cors_config,
     openapi_config=openapi_config,
-    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, exchange_clock_seed_and_warm, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, *_perf_on_startup],
-    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues, *_perf_on_shutdown],
+    on_startup=[init_db, _rebuild_broker_connections, seed_hedge_proxies, exchange_clock_seed_and_warm, _start_kite_ticker, bg_startup, _start_write_queue, _start_event_queues, _start_log_store, _seed_event_agents, *_perf_on_startup],
+    on_shutdown=[bg_shutdown, _stop_kite_ticker, _stop_write_queue, _stop_event_queues, _stop_log_store, *_perf_on_shutdown],
     before_request=_log_visitor,
     # Audit middleware — writes one audit_log row per mutating
     # request after the response leaves the server. Reads + suppressed

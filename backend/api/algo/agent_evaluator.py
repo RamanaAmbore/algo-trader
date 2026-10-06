@@ -185,6 +185,9 @@ class Context:
     # position book; consumed by is_itm / is_ntm. Empty ⇒ those
     # resolvers return None and their leaves are skipped.
     spot_prices:     dict = field(default_factory=dict)
+    # Log records not yet offered to this agent (see log_feed). Each record is
+    # matched once, by the log leaf, on the cycle that first sees it.
+    log_records:     list = field(default_factory=list)
     # The persistent alert_state dict: holds 'pnl_history',
     # 'session_start', 'session_date', 'last_alert' keyed by bucket. Resolvers
     # read it for rate computations and the session-minutes helpers.
@@ -495,7 +498,36 @@ def _eval_all(children: list, ctx: Context, _visited: set | None) -> list[dict]:
     return out
 
 
+_LEVEL_NO = {"DEBUG": 10, "INFO": 20, "WARNING": 30, "ERROR": 40, "CRITICAL": 50}
+
+
+def _eval_log(leaf: dict, ctx: Context) -> list[dict]:
+    """Match log records by tag, minimum level, and exact extra-field values."""
+    spec = leaf.get("log") or {}
+    tag = spec.get("tag")
+    min_level = _LEVEL_NO.get(str(spec.get("min_level", "INFO")).upper(), 20)
+    where = spec.get("where") or {}
+    matches = []
+    for rec in ctx.log_records or []:
+        tags = rec.get("tags") or []
+        if tag not in tags or _LEVEL_NO.get(rec.get("level"), 0) < min_level:
+            continue
+        extra = rec.get("extra") or {}
+        if any(extra.get(k) != v for k, v in where.items()):
+            continue
+        matches.append({
+            "metric": "log", "scope": tag, "op": "match", "threshold": spec,
+            "value": rec.get("id"), "account": extra.get("account"),
+            "row": {"id": rec.get("id"), "level": rec.get("level"), "message": rec.get("message", "")[:200],
+                    "tags": tags, "extra": extra},
+            "tags": tags, "fired": True,
+        })
+    return matches
+
+
 def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
+    if "log" in leaf:
+        return _eval_log(leaf, ctx)
     try:
         metric_tok = leaf['metric']
         scope_tok  = leaf['scope']
@@ -614,6 +646,16 @@ def validate(cond: dict) -> list[str]:
             return
         if 'not' in c:
             walk(c.get('not'), f"{path}.not", visited=visited)
+            return
+        if 'log' in c:
+            spec = c.get('log') or {}
+            tag = spec.get('tag') if isinstance(spec, dict) else None
+            if not tag:
+                errors.append(f"{path}.log: missing 'tag'")
+            elif REGISTRY.log_tag(tag) is None:
+                errors.append(f"{path}.log: unknown log tag '{tag}'")
+            if str(spec.get('min_level', 'INFO')).upper() not in _LEVEL_NO:
+                errors.append(f"{path}.log: unknown min_level '{spec.get('min_level')}'")
             return
         for k in ('metric', 'scope', 'op'):
             if k not in c:

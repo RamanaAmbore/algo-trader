@@ -165,6 +165,11 @@ async def _dispatch_channel(
 ) -> None:
     """Route one channel event. Raises on error — caller wraps in try/except."""
     channel = ch.get("channel", "")
+    wanted = set(ch.get("tags") or [])
+    if wanted:
+        matched = {t for m in (eval_result.detail or {}).get("matches", []) for t in (m.get("tags") or [])}
+        if not wanted & matched:
+            return
     if channel == "telegram" and is_enabled("telegram"):
         await _send_telegram(telegram_body)
     elif channel == "email" and is_enabled("mail"):
@@ -202,7 +207,10 @@ async def _dispatch_channel(
         await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=ntfy_priority))
     elif channel == "log":
         log_sim_tag = "[SIM] " if sim_mode else ""
-        logger.warning(f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}")
+        logger.warning(
+            f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}",
+            extra={"tags": ["agent"], "agent_slug": agent.slug, "sim_mode": bool(sim_mode)},
+        )
 
 
 async def log_event(agent, event_type: str, condition_text: str = "",

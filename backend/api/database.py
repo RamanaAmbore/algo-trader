@@ -430,6 +430,26 @@ async def _migrate_slice_m(conn) -> None:
         await conn.execute(text(stmt))
 
 
+async def _migrate_grammar_source_and_schema_version(conn) -> None:
+    """Idempotent: token source location and the agent rule-format version."""
+    from sqlalchemy import text
+    await conn.execute(text("ALTER TABLE grammar_tokens ADD COLUMN IF NOT EXISTS source JSONB"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS schema_version INTEGER NOT NULL DEFAULT 1"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'cycle'"
+    ))
+
+
+async def _migrate_log_events(conn) -> None:
+    """GIN index on log_events.tags so tag filters stay fast (create_all does not add it)."""
+    from sqlalchemy import text
+    await conn.execute(text(
+        "CREATE INDEX IF NOT EXISTS ix_log_events_tags ON log_events USING GIN (tags)"
+    ))
+
+
 async def _migrate_order_hold(conn) -> None:
     """Idempotent hold-state column for algo_orders (see order_hold.py)."""
     from sqlalchemy import text
@@ -1013,6 +1033,8 @@ async def init_db() -> None:
         await _migrate_slice_m(conn)
         await _migrate_watchlist_global(conn)
         await _migrate_order_hold(conn)
+        await _migrate_log_events(conn)
+        await _migrate_grammar_source_and_schema_version(conn)
         await _migrate_slice_q(conn)
         await _migrate_slice_s6_watchlist_fk(conn)
         await _migrate_slice_r6_indexes(conn)

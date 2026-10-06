@@ -109,6 +109,62 @@ Scope: automated orders only (expiry closes, template exits, agent orders). Manu
 
 Related fixes shipped with this work: no implicit 30% take-profit on a request without a target; the order ticket no longer picks a default template; fill alerts show the full account.
 
+## Alert agents: log-driven MVP
+
+**Principle.** Logs are the foundation. Every event that can alert is written to the log, with a tag. Alert agents read log records and match conditions on their level, logger, and tags. An agent never receives a direct call from business code. Notification is the only output.
+
+**Tag ownership and storage**
+- Every process that writes a log record owns its tags. The logger does not guess them. A record without a tag falls back to its logger name, so no record is untagged.
+- Tags are stored in the database, in a log table keyed by timestamp, with the level, logger, message, a `tags` array, and extra fields as JSON. The database is the source for the order log and for alert agents. Alert agents read the same stream the database stores.
+- The log panel does not list every tag. It shows a small set of tag groups (for example orders, errors, and alerts), chosen by the operator. The full tag list stays in the database for filtering and audit.
+- Stored levels: INFO and above. DEBUG stays in the file and console logs only.
+- Retention: 7 days for all stored rows. Both the level and the retention are settings in the settings registry (`log.db_min_level`, `log.retention_days`), so they can change without a deploy.
+- Owners add tags: the process that logs a record sets its tags (for example `orders`, `chase`, `broker`, `error`). The level is always a tag as well.
+- Tag catalog: every tag an agent may match is listed in one catalog, with its owner (the module that emits it). An agent that matches an unlisted tag is rejected at load time. A test checks that each cataloged tag is emitted by its owner's log call.
+- Agents decide. An agent matches tags and fields, and decides whether a record becomes an alert. Each channel (ntfy, telegram, email) matches its own tag, so each channel can receive a different set of alerts.
+- Existing functionality must keep working through the agents with no change in what operators receive.
+
+**Record fields an agent can match**
+- `level`: `INFO`, `WARN`, `ERROR`.
+- `logger`: the emitting module name.
+- `tag`: the `alert_tag` in the record's `extra`, for example `order_fill` or `error`. Untagged records are not alert candidates, except error-level records, which default to the `error` tag.
+- Tag fields: any other `extra` values the tag declares, such as `mode`, `symbol`, `repeats`.
+
+**Condition (MVP)**
+- Comparisons `=`, `!=`, `<`, `<=`, `>`, `>=`, `in` over the fields above.
+- Combinators `all`, `any`, `not`. Conditions are data, validated at load time.
+- Fixed operators, no code from the rule.
+
+**Output**
+- Channels only: `ntfy` and `telegram`. Each checks its capability flag at send time.
+- No log channel. Writing to the log is the source of alerts, not a destination for them.
+- Fixed message format per agent. Fill: `format_fill_message`. Error: `RamboQuant error`, logger name, message, repeat count.
+
+**Repeat gate (error agent)**
+- An error alerts only when its message repeats more than 3 times in 15 minutes, or when the record sets `alert_now`. It then alerts at most once per 15 minutes per message, and reports the count of suppressed repeats.
+- This gate is state keyed by message, so it lives on the agent as its `repeat` clause, not in the handler.
+
+**Not in this design**
+- No parent and child agents, and no agent that names another agent as a target. Composition was not agreed. Agents are flat. If a shared condition is needed, it is written as a tag in the log record.
+- No `on: recovered`, which needs state beyond the repeat gate (S5).
+
+**Gaps to close (M1 to M3)**
+1. Tag fields are not registered. M1 adds a registry of tags and their fields, with the same unique key and load-time check.
+2. Agents are registered in Python. The seed loader from the repo file is M1.
+3. `UNTIL`, `WINDOW`, and `MAX_FIRINGS` do not apply to log agents yet. M2.
+4. `ELSE` is Phase 2, unchanged.
+5. A failed channel send is logged as a warning. It cannot notify through the same channel. Decide with the operator whether a fallback channel is needed.
+
+**Next:** M1, registry of tags and the seed loader, then M2 for `UNTIL`, `WINDOW`, and `MAX_FIRINGS` on log agents.
+
+## Path choice and producer contract (MVP)
+
+- **Producers** log tagged records. A tag owned by a producer must be in the tag catalog; an uncatalogued tag is stored and reported once on stderr.
+- **Cycle agents** handle threshold breaches. They keep the latch, cooldown, and schedule.
+- **Event agents** handle occurrences such as fills. They match each new record with no latch, cooldown, or schedule. The writer is woken on each record, so delivery does not wait for the flush timer.
+- **Renderers** are code, registered by name with `register_renderer`. An event agent names its renderer in its `render` action. An unknown name is reported once and sends nothing.
+- **Direct calls** remain for fixed system notices and multi-part reports until each one is migrated with a golden test.
+
 # Phase 2 design (reference)
 
 ## 1. Problem

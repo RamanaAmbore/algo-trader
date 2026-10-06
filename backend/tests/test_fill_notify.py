@@ -1,4 +1,4 @@
-"""Fill alerts: live fills notify ntfy and Telegram once; paper/sim are skipped."""
+"""Fill records: each FILLED live or paper fill is logged once, tagged orders, with its mode."""
 from types import SimpleNamespace
 
 import pytest
@@ -17,63 +17,52 @@ def _row(**over):
 
 
 @pytest.fixture
-def sent(monkeypatch):
-    calls = {"ntfy": [], "tg": []}
-    monkeypatch.setattr(fill_notify, "send_ntfy_alert",
-                        lambda title, body: calls["ntfy"].append((title, body)))
-    monkeypatch.setattr(fill_notify, "_send_telegram",
-                        lambda msg: calls["tg"].append(msg))
+def logged(monkeypatch):
+    calls = []
+    monkeypatch.setattr(fill_notify.logger, "info", lambda msg, **kw: calls.append((msg, kw)))
     return calls
 
 
-def _enable(monkeypatch, **caps):
-    monkeypatch.setattr(fill_notify, "is_enabled",
-                        lambda cap: caps.get(cap, False))
+@pytest.mark.asyncio
+async def test_live_fill_is_logged_once_with_tags_and_fields(logged):
+    await fill_notify.notify_fills([_row()])
+    assert len(logged) == 1
+    msg, kw = logged[0]
+    assert msg == "order filled"
+    extra = kw["extra"]
+    assert extra["tags"] == ["orders"]
+    assert extra["event"] == "filled"
+    assert extra["mode"] == "live"
+    assert extra["order_id"] == 101
+    assert extra["account"] == "ZG0790"
+    assert extra["symbol"] == "NIFTY26OCT25000CE"
+    assert extra["fill_price"] == 112.5
 
 
-def test_format_has_order_details():
-    title, body = fill_notify.format_fill_message(_row())
+@pytest.mark.asyncio
+async def test_paper_fill_is_logged_with_its_mode_so_agents_can_skip_it(logged):
+    await fill_notify.notify_fills([_row(mode="paper")])
+    assert logged[0][1]["extra"]["mode"] == "paper"
+
+
+@pytest.mark.asyncio
+async def test_each_row_gets_its_own_record(logged):
+    await fill_notify.notify_fills([_row(id=1), _row(id=2)])
+    assert [kw["extra"]["order_id"] for _, kw in logged] == [1, 2]
+
+
+@pytest.mark.asyncio
+async def test_a_bad_row_does_not_stop_the_others(monkeypatch, logged):
+    await fill_notify.notify_fills([SimpleNamespace(id=5), _row(id=6)])
+    assert [kw["extra"]["order_id"] for _, kw in logged] == [6]
+
+
+def test_format_uses_the_given_time_in_ist():
+    from datetime import datetime, timezone
+    title, body = fill_notify.format_fill_message(
+        _row(), when=datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
     assert title == "Order filled: BUY 75 NIFTY26OCT25000CE"
-    assert "@ 112.50" in body
-    assert "Product: NRML" in body
-    assert "Order id: 101" in body
-    assert "IST" in body
-
-
-@pytest.mark.asyncio
-async def test_live_fill_sends_to_both_channels(monkeypatch, sent):
-    _enable(monkeypatch, ntfy=True, telegram=True)
-    await fill_notify.notify_fills([_row()])
-    assert len(sent["ntfy"]) == 1
-    assert len(sent["tg"]) == 1
-    assert "Order filled" in sent["tg"][0]
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("mode", ["paper", "sim", "replay", "shadow"])
-async def test_non_live_fill_is_skipped(monkeypatch, sent, mode):
-    _enable(monkeypatch, ntfy=True, telegram=True)
-    await fill_notify.notify_fills([_row(mode=mode)])
-    assert sent["ntfy"] == [] and sent["tg"] == []
-
-
-@pytest.mark.asyncio
-async def test_disabled_capabilities_send_nothing(monkeypatch, sent):
-    _enable(monkeypatch)
-    await fill_notify.notify_fills([_row()])
-    assert sent["ntfy"] == [] and sent["tg"] == []
-
-
-@pytest.mark.asyncio
-async def test_ntfy_failure_does_not_block_telegram(monkeypatch, sent):
-    _enable(monkeypatch, ntfy=True, telegram=True)
-
-    def boom(title, body):
-        raise RuntimeError("ntfy down")
-
-    monkeypatch.setattr(fill_notify, "send_ntfy_alert", boom)
-    await fill_notify.notify_fills([_row()])
-    assert len(sent["tg"]) == 1
+    assert "Time: 10:15:30 IST" in body
 
 
 def test_fill_message_shows_full_account():

@@ -1926,11 +1926,11 @@ async def _cycle_load_agents(only_agent_ids: list[int] | None) -> list:
             if not only_agent_ids:
                 return []
             result = await session.execute(
-                select(Agent).where(Agent.id.in_(only_agent_ids))
+                select(Agent).where(Agent.id.in_(only_agent_ids), Agent.kind == "cycle")
             )
             return list(result.scalars().all())
         result = await session.execute(
-            select(Agent).where(Agent.status.in_(["active", "cooldown"]))
+            select(Agent).where(Agent.status.in_(["active", "cooldown"]), Agent.kind == "cycle")
         )
         return list(result.scalars().all())
 
@@ -1965,6 +1965,7 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         watchlist_rows=context.get("watchlist_rows") or [],
         position_rows=context.get("position_rows") or [],
         spot_prices=context.get("spot_prices") or {},
+        log_records=(context.get("log_records_by_agent") or {}).get(agent.id, []),
         alert_state=alert_state,
         now=now,
         segments=context.get("segments", []),
@@ -2365,6 +2366,10 @@ async def run_cycle(context: dict, broadcast_fn=None,
     agents = await _cycle_load_agents(only_agent_ids)
     if not agents:
         return
+
+    from backend.api.algo import log_feed
+    new_log_rows = await log_feed.records_since_last_cycle()
+    context["log_records_by_agent"] = {a.id: new_log_rows for a in agents}
 
     # Build base context BEFORE _update_pnl_history (fix #6b — the
     # segment-open flags computed here drive whether/how this tick's P&L

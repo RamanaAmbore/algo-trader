@@ -70,6 +70,16 @@ async def _start_conn_event_queue(app: Litestar) -> None:
     logger.info("conn_service: broker_conn_event_queue started")
 
 
+async def _start_log_store(app: Litestar) -> None:
+    from backend.shared.helpers import log_store
+    await log_store.start("conn")
+
+
+async def _stop_log_store(app: Litestar) -> None:
+    from backend.shared.helpers import log_store
+    await log_store.stop()
+
+
 async def _stop_conn_event_queue(app: Litestar) -> None:
     """Flush and stop the broker-connection event queue on shutdown."""
     from backend.brokers.service.conn_events import broker_conn_event_queue
@@ -89,8 +99,8 @@ def create_app() -> Litestar:
             InternalBrokerController,
             BrokerDispatchController,
         ],
-        on_startup=[_start_conn_event_queue, _init_connections_on_startup, _start_kite_ticker],
-        on_shutdown=[_stop_conn_event_queue],
+        on_startup=[_start_log_store, _start_conn_event_queue, _init_connections_on_startup, _start_kite_ticker],
+        on_shutdown=[_stop_conn_event_queue, _stop_log_store],
         debug=False,
     )
     return app

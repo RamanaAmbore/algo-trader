@@ -1186,6 +1186,7 @@ async def seed_grammar_tokens():
                     params_schema=spec.get('params_schema'),
                     enum_values=spec.get('enum_values'),
                     template_body=spec.get('template_body'),
+                    source=spec.get('source'),
                     is_system=True,
                     is_active=True,
                 ))
@@ -1198,9 +1199,26 @@ async def seed_grammar_tokens():
                 row.units         = spec.get('units',         row.units)
                 row.description   = spec.get('description',   row.description or '')
                 row.resolver      = spec.get('resolver',      row.resolver)
+                row.source        = spec.get('source',        row.source)
                 row.params_schema = spec.get('params_schema', row.params_schema)
                 row.enum_values   = spec.get('enum_values',   row.enum_values)
                 row.template_body = spec.get('template_body', row.template_body)
                 updated += 1
         await s.commit()
         logger.info(f"Grammar tokens seeded — inserted={inserted} updated={updated}")
+
+
+_LOG_SOURCE = {"table": "log_events", "column": "tags", "match": "contains"}
+LOG_TAG_TOKENS: list[dict] = [
+    {'grammar_kind': 'log', 'token_kind': 'tag', 'token': t, 'value_type': 'string',
+     'description': d, 'source': _LOG_SOURCE}
+    for t, d in [
+        ('orders', 'Order lifecycle records: placed, filled, cancelled, rejected (owner: order routes).'),
+        ('chase', 'Chase engine records: cancel-and-replace attempts and outcomes (owner: chase engine).'),
+        ('broker', 'Broker connection and API records (owner: broker layer).'),
+        ('gtt', 'GTT placement, trigger and status records (owner: order routes).'),
+        ('error', 'Error-level records, including repeats (owner: logger).'),
+        ('agent', 'Alert agent firings written by the agent engine (owner: agent engine).'),
+    ]
+]
+SYSTEM_TOKENS.extend(LOG_TAG_TOKENS)
