@@ -48,6 +48,7 @@ from backend.brokers.errors import (
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.ssot_fetch import ssot_fetch
+from backend.shared.helpers.recovery import recoverable
 
 logger = get_logger(__name__)
 
@@ -1045,14 +1046,20 @@ class DhanBroker(Broker):
         except Exception as e:
             raise RuntimeError(f"Dhan auth check failed: {e}") from e
 
+    @recoverable("dhan.holdings", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def holdings(self) -> list[dict]:
         resp = self._sdk.get_holdings()
         return _normalise_holdings(resp)
 
+    @recoverable("dhan.positions", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def positions(self) -> dict:
         resp = self._sdk.get_positions()
         return _normalise_positions(resp)
 
+    @recoverable("dhan.margins", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def margins(self, segment: str | None = None) -> dict:
         resp = self._sdk_margins.get_fund_limits()
         # Audit cycle 8 — log the raw Dhan fund_limits response ONCE per
@@ -1072,6 +1079,8 @@ class DhanBroker(Broker):
             pass
         return _normalise_margins(resp, segment)
 
+    @recoverable("dhan.orders", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def orders(self) -> list[dict]:
         resp = self._sdk.get_order_list()
         return _normalise_orders(resp)

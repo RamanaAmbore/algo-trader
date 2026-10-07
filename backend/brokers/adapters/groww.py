@@ -48,6 +48,7 @@ from backend.brokers.errors import (
 from backend.brokers.rate_limiter import TokenBucketLimiter
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.ssot_fetch import ssot_fetch
+from backend.shared.helpers.recovery import recoverable
 
 logger = get_logger(__name__)
 
@@ -624,16 +625,22 @@ class GrowwBroker(Broker):
             raise RuntimeError(f"Groww auth check failed: {e}") from e
 
     @_retry_groww_auth
+    @recoverable("groww.holdings", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def holdings(self) -> list[dict]:
         resp = self.groww.get_holdings_for_user()
         return _normalise_holdings(resp)
 
     @_retry_groww_auth
+    @recoverable("groww.positions", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def positions(self) -> dict:
         resp = self.groww.get_positions_for_user()
         return _normalise_positions(resp)
 
     @_retry_groww_auth
+    @recoverable("groww.margins", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def margins(self, segment: str | None = None) -> dict:
         resp = self.groww.get_available_margin_details()
         # Audit cycle 8 — one-time INFO log of the raw Groww margin
@@ -673,6 +680,8 @@ class GrowwBroker(Broker):
     _GROWW_ORDER_LIST_MAX_PAGES: int = 50
 
     @_retry_groww_auth
+    @recoverable("groww.orders", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def orders(self) -> list[dict]:
         """Fetch the FULL day order book across every segment, paginated.
 

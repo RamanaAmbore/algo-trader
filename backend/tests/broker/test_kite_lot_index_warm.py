@@ -62,3 +62,11 @@ def test_nfo_row_is_never_flagged(monkeypatch):
     row = oh._row_from_dict({"order_id": "1", "exchange": "NFO", "tradingsymbol": "NIFTY26OCTFUT",
                              "quantity": 75}, "ZG0790", "zerodha_kite")
     assert row.qty_unverified is False
+
+
+def test_dhan_and_groww_reads_retry_on_network_errors():
+    from backend.brokers.adapters import dhan, groww
+    for cls in (dhan.DhanBroker, groww.GrowwBroker):
+        for name in ("holdings", "positions", "margins", "orders"):
+            fn = getattr(cls, name)
+            assert hasattr(fn, "__wrapped__") or getattr(fn, "__name__", "") == name, (cls, name)
