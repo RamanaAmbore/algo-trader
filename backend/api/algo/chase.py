@@ -839,6 +839,37 @@ def _snap_to_tick(price: float, tick: float) -> float:
     return round(round(price / tick) * tick, 4)
 
 
+def _ch_apply_min_tick_progression(
+    price: float, last_placed_price: float, attempt: int,
+    transaction_type: str, cfg: "ChaseConfig", symbol: str, depth: dict,
+) -> float:
+    """Force at least 1-tick price movement when `_calc_limit_price`
+    returns the same snapped price as the previous attempt — happens
+    when the bid-ask spread is 1–2 ticks wide, making
+    spread × aggression_step × 0.5 sub-tick. Without this the chase
+    loop cancels and re-places at an IDENTICAL price, visible as a
+    frozen price in the chase panel. Returns `price` unchanged when no
+    correction is needed. Extracted out of `chase_order`'s main loop
+    (2026-10) purely to keep that function's cyclomatic complexity
+    within the project's radon gate — no behavior change.
+    """
+    if not (attempt > 1 and price == last_placed_price):
+        return price
+    tick = _tick_size_sync(cfg.exchange, symbol)
+    best_bid, best_ask = _ch_extract_best_bid_ask(depth)
+    if transaction_type == "BUY":
+        forced = _snap_to_tick(last_placed_price + tick, tick)
+        price = min(forced, best_ask) if best_ask > 0 else forced
+    else:  # SELL
+        forced = _snap_to_tick(last_placed_price - tick, tick)
+        price = max(forced, best_bid) if best_bid > 0 else forced
+    logger.debug(
+        "[CHASE] %s attempt %d: sub-tick formula, forced %s price %.4f→%.4f",
+        symbol, attempt, transaction_type, last_placed_price, price,
+    )
+    return price
+
+
 def _place_order(account: str, symbol: str, transaction_type: str,
                  quantity: int, price: float, cfg: ChaseConfig) -> str:
     """Place a limit order. Returns order_id."""
@@ -908,7 +939,7 @@ async def _run(fn, *args):
 async def _sync_algo_order_id(algo_order_id: int | None,
                               new_broker_order_id: str,
                               current_limit: float | None = None,
-                              interval_seconds: int | None = None) -> None:
+                              interval_seconds: int | None = None) -> bool:
     """Update AlgoOrder.broker_order_id to the latest one the chase
     just placed. Best-effort — never raises. Phase 0.5 — without this
     every chase cancel-and-replace orphaned the row from its broker
@@ -929,40 +960,133 @@ async def _sync_algo_order_id(algo_order_id: int | None,
     no way to distinguish "active" from "stalled" chases mid-flight.
     `interval_seconds` is forwarded from ChaseConfig so the next-attempt
     display matches the actual configured cadence.
+
+    2026-10 audit fix — final-status race: a postback for a PRIOR order
+    under the same AlgoOrder row can land and finalize the row (e.g. to
+    REJECTED) in the exact window between the chase loop deciding to
+    retry and this function writing the freshly-placed order's
+    broker_order_id onto that row. Writing the new id onto an already-
+    final row would silently orphan the new (live, possibly later
+    filled) broker order from any DB tracking — see
+    `_chase_terminal_update_db`'s identical `ALGO_ORDER_FINAL_STATUSES`
+    guard for the sibling fix. The SELECT uses `.with_for_update()` (same
+    as `_chase_terminal_update_db`) so a concurrent postback transaction
+    that has started (but not yet committed) a status flip is waited on
+    rather than read-past under READ COMMITTED — a plain unlocked SELECT
+    would still race even with the status check in place. Returns
+    `False` (and performs NO write) when the row is already final, so
+    the caller (the main chase loop) can abort instead of continuing to
+    place yet more untracked orders. Returns `True` on a normal sync
+    (row missing/non-final) — the common case — unchanged from before
+    this fix.
     """
     if algo_order_id is None or not new_broker_order_id:
-        return
+        return True
+    _race_snap: dict | None = None
     try:
         async with _async_session() as _s:
             row = (await _s.execute(
                 _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                .with_for_update()
             )).scalar_one_or_none()
             if row is not None:
-                _dirty = False
-                if row.broker_order_id != str(new_broker_order_id):
-                    row.broker_order_id = str(new_broker_order_id)
-                    _dirty = True
-                if current_limit is not None and float(current_limit) > 0:
-                    if row.current_limit != float(current_limit):
-                        row.current_limit = float(current_limit)
-                        _dirty = True
-                # Write timing fields so the chase panel shows a live
-                # countdown. Both columns are nullable; skip on models
-                # that predate the migration (hasattr guard).
-                _now = _time.time()
-                if hasattr(row, "last_attempt_at"):
-                    row.last_attempt_at = _now
-                    _dirty = True
-                if hasattr(row, "next_attempt_at") and interval_seconds is not None:
-                    row.next_attempt_at = _now + float(interval_seconds)
-                    _dirty = True
-                if hasattr(row, "interval_seconds") and interval_seconds is not None:
-                    row.interval_seconds = int(interval_seconds)
-                    _dirty = True
-                if _dirty:
-                    await _s.commit()
+                from backend.api.models import ALGO_ORDER_FINAL_STATUSES
+                if row.status in ALGO_ORDER_FINAL_STATUSES:
+                    # Snapshot what's needed for the alert and exit the
+                    # session (releasing the row lock) BEFORE doing any
+                    # alert I/O — never hold a DB row lock across a
+                    # network call.
+                    _race_snap = {
+                        "status": row.status,
+                        "account": str(getattr(row, "account", "") or ""),
+                        "symbol": str(getattr(row, "symbol", "") or ""),
+                        "exchange": str(getattr(row, "exchange", "") or ""),
+                        "transaction_type": str(getattr(row, "transaction_type", "") or ""),
+                        "quantity": int(getattr(row, "quantity", 0) or 0),
+                    }
+                else:
+                    if _ch_apply_broker_sync_fields(
+                        row, new_broker_order_id, current_limit, interval_seconds,
+                    ):
+                        await _s.commit()
     except Exception as _e:
+        # Deliberately NOT `return True` here — if `_race_snap` was
+        # already populated before the session raised on teardown (e.g.
+        # __aexit__ failing after the status check), falling through to
+        # the check below still correctly reports the detected race
+        # instead of silently discarding it.
         logger.debug(f"_sync_algo_order_id failed: {_e}")
+    if _race_snap is not None:
+        _ch_alert_sync_final_status_race(algo_order_id, new_broker_order_id, _race_snap)
+        return False
+    return True
+
+
+def _ch_apply_broker_sync_fields(
+    row, new_broker_order_id: str, current_limit: float | None,
+    interval_seconds: int | None,
+) -> bool:
+    """Apply broker_order_id/current_limit/timing field writes onto a
+    non-final AlgoOrder row (the normal cancel-and-replace sync path).
+    Returns True when any field actually changed, so the caller knows
+    whether a commit is needed. Extracted out of `_sync_algo_order_id`
+    (2026-10) purely to keep that function's cyclomatic complexity
+    within the project's radon gate — no behavior change."""
+    _dirty = False
+    if row.broker_order_id != str(new_broker_order_id):
+        row.broker_order_id = str(new_broker_order_id)
+        _dirty = True
+    if current_limit is not None and float(current_limit) > 0:
+        if row.current_limit != float(current_limit):
+            row.current_limit = float(current_limit)
+            _dirty = True
+    # Write timing fields so the chase panel shows a live countdown.
+    # Both columns are nullable; skip on models that predate the
+    # migration (hasattr guard).
+    _now = _time.time()
+    if hasattr(row, "last_attempt_at"):
+        row.last_attempt_at = _now
+        _dirty = True
+    if hasattr(row, "next_attempt_at") and interval_seconds is not None:
+        row.next_attempt_at = _now + float(interval_seconds)
+        _dirty = True
+    if hasattr(row, "interval_seconds") and interval_seconds is not None:
+        row.interval_seconds = int(interval_seconds)
+        _dirty = True
+    return _dirty
+
+
+def _ch_alert_sync_final_status_race(
+    algo_order_id: int, new_broker_order_id: str, row_snap: dict,
+) -> None:
+    """Log + alert helper for `_sync_algo_order_id`'s final-status race
+    guard — split out so the CRITICAL log + alert I/O never runs while
+    the AlgoOrder row's DB lock is held."""
+    logger.critical(
+        "[CHASE] AlgoOrder #%s already finalized to status %s — "
+        "refusing to overwrite broker_order_id with newly-placed "
+        "order %s, which is now UNTRACKED (live at the broker, "
+        "nothing in the DB pointing at it). Manual reconciliation "
+        "required.", algo_order_id, row_snap["status"], new_broker_order_id,
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=row_snap["account"], symbol=row_snap["symbol"],
+            exchange=row_snap["exchange"], side=row_snap["transaction_type"],
+            qty=row_snap["quantity"], mode="live", source="chase",
+            error=(
+                f"Chase retry placed order {new_broker_order_id} but "
+                f"AlgoOrder #{algo_order_id} already finalized to "
+                f"{row_snap['status']} (likely a racing postback) — the "
+                f"new order is now untracked; verify and reconcile "
+                f"manually at the broker."
+            ),
+        )
+    except Exception as _alert_exc:
+        logger.warning(
+            "[CHASE] final-status race alert failed: %s", _alert_exc,
+        )
 
 
 def _ch_compute_new_filled(prior_filled: int, cumulative_filled: int,
@@ -1579,6 +1703,80 @@ async def _ch_exhaust_max_attempts(
     return result
 
 
+async def _ch_abort_on_sync_race(
+    result: "ChaseResult",
+    account: str,
+    current_order_id: "str | None",
+    cfg: "ChaseConfig",
+    algo_order_id: "int | None",
+    symbol: str,
+    transaction_type: str,
+    quantity: int,
+    emit: Callable,
+) -> "ChaseResult":
+    """Abort path for `_sync_algo_order_id`'s final-status race (2026-10
+    audit fix). Mirrors `_ch_exhaust_max_attempts`'s cancel-then-FAILED
+    shape: the order just placed can no longer be tracked by its
+    AlgoOrder row (already finalized by a racing postback), so attempt a
+    best-effort cancel of it before reporting FAILED — leaving it
+    resting live would let it still fill with nothing watching it.
+    `_sync_algo_order_id` has already logged CRITICAL and fired the
+    operator alert naming the untracked order; this only adds the
+    cancel attempt and the chase-loop-level result/emit/terminal.
+
+    Also schedules the SAME `_ch_write_order_event` + `_emit_chase_terminal`
+    fire-and-forget pair every other abort path in this module fires
+    (`_ch_exhaust_max_attempts`, `_chase_abort_on_consecutive_errors`).
+    Without this, `_CH_PRE_FILL_NET_QTY[algo_order_id]` (seeded at
+    `chase_order()` entry) is never popped — a leaked entry — and
+    `record_chase_terminal` never sees this chase end. The terminal
+    write itself will hit `_chase_terminal_update_db`'s own final-status
+    guard (the row is already REJECTED/FILLED) and correctly no-op the
+    status mutation while still running the pre-fill-qty pop + agent
+    bookkeeping that don't depend on the status write succeeding.
+    """
+    _cancel_failed = False
+    if current_order_id:
+        try:
+            await _run(_cancel_order, account, current_order_id, cfg.variety, cfg.exchange)
+        except Exception as _cancel_exc:
+            _cancel_failed = True
+            logger.warning(
+                "Chase %s: best-effort cancel of untracked order %s failed "
+                "after final-status race: %s — order may still be resting live.",
+                symbol, current_order_id, _cancel_exc,
+            )
+    result.status = ChaseStatus.FAILED
+    result.detail = (
+        f"AlgoOrder #{algo_order_id} finalized mid-chase (racing postback) — "
+        f"order {current_order_id} is untracked; aborting without further retries."
+    )
+    if _cancel_failed:
+        result.detail += (
+            f" Best-effort cancel of {current_order_id} may have ALSO failed; "
+            f"manually verify the broker's order book."
+        )
+    emit("chase_failed", {
+        "reason": "final_status_race",
+        "order_id": current_order_id,
+        "cancel_failed": _cancel_failed,
+    })
+    await _ch_write_order_event(
+        algo_order_id, "error", result.detail,
+        {"reason": "final_status_race", "order_id": current_order_id,
+         "cancel_failed": _cancel_failed},
+    )
+    if current_order_id:
+        import asyncio as _asyncio
+        _asyncio.create_task(_emit_chase_terminal(
+            current_order_id, "chase_failed",
+            symbol, transaction_type, quantity,
+            attempts=result.attempts, error=result.detail,
+            algo_order_id=algo_order_id,
+        ))
+    return result
+
+
 def _ch_make_emit(
     on_event: "Callable | None",
     account: str, symbol: str, transaction_type: str, quantity: int,
@@ -2143,19 +2341,12 @@ async def chase_order(
             # _calc_limit_price can return the same snapped price for several
             # consecutive attempts. Force at least 1-tick movement so the
             # operator sees real price progression in the chase panel.
-            if attempt > 1 and price == last_placed_price:
-                tick = _tick_size_sync(cfg.exchange, symbol)
-                best_bid, best_ask = _ch_extract_best_bid_ask(depth)
-                if transaction_type == "BUY":
-                    forced = _snap_to_tick(last_placed_price + tick, tick)
-                    price = min(forced, best_ask) if best_ask > 0 else forced
-                else:  # SELL
-                    forced = _snap_to_tick(last_placed_price - tick, tick)
-                    price = max(forced, best_bid) if best_bid > 0 else forced
-                logger.debug(
-                    "[CHASE] %s attempt %d: sub-tick formula, forced %s price %.4f→%.4f",
-                    symbol, attempt, transaction_type, last_placed_price, price,
-                )
+            # Extracted to `_ch_apply_min_tick_progression` (2026-10) to
+            # keep chase_order's own cyclomatic complexity within the
+            # project's radon gate — no behavior change.
+            price = _ch_apply_min_tick_progression(
+                price, last_placed_price, attempt, transaction_type, cfg, symbol, depth,
+            )
 
             if attempt == 1:
                 result.initial_price = price
@@ -2195,11 +2386,23 @@ async def chase_order(
             # lockstep with the chase loop's current order so the
             # terminal handler + postback handler + chase panel all
             # see the LATEST broker id, not the FIRST one.
-            await _sync_algo_order_id(
+            _synced = await _sync_algo_order_id(
                 algo_order_id, current_order_id,
                 current_limit=price,
                 interval_seconds=cfg.interval_seconds,
             )
+            if not _synced:
+                # 2026-10 audit fix — the AlgoOrder row this chase is
+                # driving already finalized to a terminal status (a
+                # racing postback), so the order we JUST placed can no
+                # longer be tracked by this row. Stop immediately —
+                # placing further orders would only compound an
+                # already-untracked situation. _sync_algo_order_id has
+                # already logged CRITICAL and fired the operator alert.
+                return await _ch_abort_on_sync_race(
+                    result, account, current_order_id, cfg,
+                    algo_order_id, symbol, transaction_type, quantity, emit,
+                )
             # Sprint 1b-i — chase_modify timeline event, mirroring
             # paper.py's write_event pattern. No-op for attempt 1 (the
             # initial placement) and for a None algo_order_id.
