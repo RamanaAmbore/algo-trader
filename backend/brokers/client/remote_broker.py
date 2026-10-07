@@ -35,7 +35,10 @@ from backend.brokers.capabilities import (
 )
 from backend.brokers.errors import (
     BrokerAuthError,
+    BrokerCapabilityError,
+    BrokerInputError,
     BrokerNetworkError,
+    BrokerOrderError,
     BrokerRateLimitError,
     BrokerError,
 )
@@ -123,6 +126,9 @@ class RemoteBroker(Broker):
                 "BrokerAuthError":       BrokerAuthError,
                 "BrokerRateLimitError":  BrokerRateLimitError,
                 "BrokerNetworkError":    BrokerNetworkError,
+                "BrokerOrderError":      BrokerOrderError,
+                "BrokerInputError":      BrokerInputError,
+                "BrokerCapabilityError": BrokerCapabilityError,
                 "BrokerError":           BrokerError,
             }
             _exc_cls = _ERROR_TYPE_MAP.get(_error_type, BrokerError)

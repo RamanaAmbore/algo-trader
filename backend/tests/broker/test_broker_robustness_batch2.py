@@ -946,12 +946,20 @@ class TestRemoteBrokerErrorTypeRoundTrip:
                    isinstance(exc_info.value, BrokerError)
 
     def test_call_broker_maps_all_error_types(self):
-        """Verify _ERROR_TYPE_MAP handles all expected error types."""
+        """Verify _ERROR_TYPE_MAP handles all expected error types.
+
+        Uses a STRICT `type(...) is expected` check (not `pytest.raises`,
+        which also matches subclasses of the expected type and would pass
+        even if every entry degraded to the generic base `BrokerError`).
+        """
         from backend.brokers.client.remote_broker import RemoteBroker
         from backend.brokers.errors import (
             BrokerAuthError,
-            BrokerRateLimitError,
+            BrokerCapabilityError,
+            BrokerInputError,
             BrokerNetworkError,
+            BrokerOrderError,
+            BrokerRateLimitError,
             BrokerError,
         )
 
@@ -961,6 +969,9 @@ class TestRemoteBrokerErrorTypeRoundTrip:
             ("BrokerAuthError", BrokerAuthError),
             ("BrokerRateLimitError", BrokerRateLimitError),
             ("BrokerNetworkError", BrokerNetworkError),
+            ("BrokerOrderError", BrokerOrderError),
+            ("BrokerInputError", BrokerInputError),
+            ("BrokerCapabilityError", BrokerCapabilityError),
             ("BrokerError", BrokerError),
         ]
 
@@ -979,12 +990,100 @@ class TestRemoteBrokerErrorTypeRoundTrip:
             with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
                 mock_get.return_value = mock_client
 
-                # Each error_type should map to its corresponding exception class
-                with pytest.raises(expected_exc_class) as exc_info:
+                with pytest.raises(BrokerError) as exc_info:
                     broker._call("positions")
+
+                # Strict: must be EXACTLY the expected subclass, not a
+                # degraded generic BrokerError and not some other subclass.
+                assert type(exc_info.value) is expected_exc_class, (
+                    f"error_type={error_type_name!r} must reconstruct to "
+                    f"{expected_exc_class.__name__}, got "
+                    f"{type(exc_info.value).__name__}"
+                )
 
                 # Verify the message includes account and method
                 assert "test_account" in str(exc_info.value)
+
+    def test_call_broker_error_type_map_covers_every_broker_error_subclass(self):
+        """Drift guard: every BrokerError subclass defined in errors.py must
+        have a corresponding entry in RemoteBroker's _ERROR_TYPE_MAP.
+
+        This is the regression test for the exact defect fixed here:
+        BrokerInputError/BrokerOrderError/BrokerCapabilityError existed in
+        errors.py but were silently absent from the client-side map, so
+        conn-service mode degraded them to the generic BrokerError and
+        defeated typed-error classification (e.g. chase.py's
+        _ch_is_recoverable_error non-recoverable tuple).
+        """
+        import inspect
+        from backend.brokers import errors as errors_module
+        from backend.brokers.errors import BrokerError
+        from backend.brokers.client.remote_broker import RemoteBroker
+
+        all_subclasses = {
+            name: cls
+            for name, cls in vars(errors_module).items()
+            if inspect.isclass(cls) and issubclass(cls, BrokerError)
+        }
+        assert "BrokerError" in all_subclasses  # sanity: the module loaded
+
+        broker = RemoteBroker("test_account", "zerodha_kite")
+
+        for name, expected_cls in all_subclasses.items():
+            mock_response = MagicMock()
+            mock_response.is_success = True
+            mock_response.json.return_value = {
+                "ok": False,
+                "error": f"Test {name}",
+                "error_type": name,
+            }
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
+                mock_get.return_value = mock_client
+
+                with pytest.raises(BrokerError) as exc_info:
+                    broker._call("positions")
+
+                assert type(exc_info.value) is expected_cls, (
+                    f"{name} is defined in backend.brokers.errors but "
+                    f"RemoteBroker._ERROR_TYPE_MAP does not round-trip it "
+                    f"to its own type (got {type(exc_info.value).__name__}). "
+                    f"Add it to _ERROR_TYPE_MAP in remote_broker.py."
+                )
+
+    def test_call_broker_unknown_error_type_falls_back_to_base_broker_error(self):
+        """An error_type unknown to the map (e.g. a raw SDK exception name
+        that was never wrapped, such as 'KiteException') must fall back to
+        the generic base BrokerError — never crash, never silently become
+        a specific subclass it isn't."""
+        from backend.brokers.client.remote_broker import RemoteBroker
+        from backend.brokers.errors import BrokerError
+
+        broker = RemoteBroker("test_account", "zerodha_kite")
+
+        for unknown_type in ("KiteException", "", "SomeFutureSubclassNotYetMapped"):
+            mock_response = MagicMock()
+            mock_response.is_success = True
+            mock_response.json.return_value = {
+                "ok": False,
+                "error": "unmapped error",
+                "error_type": unknown_type,
+            }
+            mock_client = MagicMock()
+            mock_client.post.return_value = mock_response
+
+            with patch("backend.brokers.client.remote_broker._get_client") as mock_get:
+                mock_get.return_value = mock_client
+
+                with pytest.raises(BrokerError) as exc_info:
+                    broker._call("positions")
+
+                assert type(exc_info.value) is BrokerError, (
+                    f"unknown error_type={unknown_type!r} must fall back to "
+                    f"plain BrokerError, got {type(exc_info.value).__name__}"
+                )
 
 
 if __name__ == "__main__":
