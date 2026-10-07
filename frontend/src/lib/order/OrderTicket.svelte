@@ -3192,10 +3192,11 @@
                  for those. Label varies by action so the operator knows
                  what's about to fire. -->
             <button type="button" class="ot-submit"
-                    class:ot-submit-buy={_side === 'BUY' && !_draftMode}
-                    class:ot-submit-sell={_side === 'SELL' && !_draftMode}
+                    class:ot-submit-buy={_side === 'BUY' && !_draftMode && !(!_isDemo && _depthPending)}
+                    class:ot-submit-sell={_side === 'SELL' && !_draftMode && !(!_isDemo && _depthPending)}
                     class:ot-submit-draft={_draftMode}
                     class:ot-submit-demo={_isDemo}
+                    class:ot-submit-depth-pending={!_isDemo && !_draftMode && _depthPending}
                     disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol || (!_draftMode && _depthPending))}
                     title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : (_depthPending ? 'Waiting for market depth (bid/ask) for this strike' : ''))}
                     onclick={submit}>
@@ -4308,6 +4309,16 @@
   }
   .ot-submit-buy  { background: var(--c-long); }
   .ot-submit-sell { background: var(--c-short); }
+  /* Depth-pending — LIMIT/SL only (GTT exit legs never reach this button;
+     they're placed server-side via the template's one-time acceptance
+     check, not this ticket's depth poll). Overrides the buy/sell colour
+     with the same neutral slate used elsewhere for "placeholder, not
+     real yet" state (see app.css row-account-stale) so the operator reads
+     "waiting", not "ready to submit but just dimmed". */
+  .ot-submit.ot-submit-depth-pending {
+    background: rgba(148, 163, 184, 0.18);
+    color: var(--c-muted);
+  }
   /* Demo variant — amber to match the Hire Me / Tour CTAs. Reads as
      "this is informational, not a money-mover". Tooltip + click → modal
      fires regardless of which side the operator picked, so we override

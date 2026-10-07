@@ -48,6 +48,18 @@ test.describe('OrderTicket — depth-pending submit gate', () => {
   test('depthPending is piped to the host via onTicketStateChange', () => {
     expect(ticketSrc).toMatch(/depthPending: _depthPending,/);
   });
+
+  test('internal footer Submit button switches to gray while depth-pending, LIMIT/SL only', () => {
+    expect(ticketSrc).toMatch(
+      /class:ot-submit-depth-pending=\{!_isDemo && !_draftMode && _depthPending\}/
+    );
+    // buy/sell colour classes are suppressed while depth-pending so the
+    // gray override isn't fighting a higher-specificity colour rule.
+    expect(ticketSrc).toMatch(
+      /class:ot-submit-buy=\{_side === 'BUY' && !_draftMode && !\(!_isDemo && _depthPending\)\}/
+    );
+    expect(ticketSrc).toMatch(/\.ot-submit\.ot-submit-depth-pending \{/);
+  });
 });
 
 test.describe('SymbolPanel — shared Submit button respects depth-pending', () => {
@@ -66,6 +78,15 @@ test.describe('SymbolPanel — shared Submit button respects depth-pending', () 
   test('common-action Submit button disables on _ticketDepthPending', () => {
     expect(panelSrc).toMatch(
       /disabled=\{basketSubmitting\s*\n?\s*\|\|\s*\(basketLegs\.length === 0 && _activeTab === 'chain'\)\s*\n?\s*\|\|\s*_ticketOwnSubmitBusy\s*\n?\s*\|\|\s*_ticketDepthPending\}/
+    );
+  });
+
+  test('common-action Submit button switches to gray while depth-pending', () => {
+    expect(panelSrc).toMatch(
+      /class:oes-common-submit-depth-pending=\{_ticketDepthPending\}/
+    );
+    expect(panelSrc).toMatch(
+      /\.oes-common-submit\.oes-common-submit-depth-pending \{/
     );
   });
 });

@@ -3173,6 +3173,7 @@
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
             class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket'}
             class:oes-common-submit-narrow={basketLegs.length > 0}
+            class:oes-common-submit-depth-pending={_ticketDepthPending}
             title={basketLegs.length > 0
               ? 'Submit'
               : (_activeTab === 'chain'
@@ -5098,6 +5099,15 @@
     color: var(--algo-sky);
   }
   .oes-common-submit-basket:hover { background: rgba(125, 211, 252, 0.28); }
+  /* Depth-pending — LIMIT/SL ticket only (mirrors OrderTicket's own
+     .ot-submit-depth-pending; GTT exit legs never reach this button).
+     Overrides buy/sell/basket colour with the same neutral slate used
+     elsewhere for "placeholder, not real yet" state. */
+  .oes-common-submit.oes-common-submit-depth-pending {
+    background: rgba(148, 163, 184, 0.14);
+    border-color: rgba(148, 163, 184, 0.45);
+    color: var(--c-muted);
+  }
   /* Clear-basket — neutral outline. */
   .oes-common-clear {
     padding: 0.35rem 0.75rem;
