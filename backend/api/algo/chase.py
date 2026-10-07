@@ -492,6 +492,14 @@ _MAX_CHASE_ERRORS = 3
 # worth retrying — the chase loop re-reads depth and computes a fresh
 # price every iteration, so a retry after one of these is never a blind
 # resend of the same price/order.
+#
+# Type alone is not sufficient, though — `_ch_is_recoverable_error` also
+# checks the exception's own message against `_CH_NON_RECOVERABLE_REJECTION_HINTS`
+# (margin/rms/risk/permission/blocked) BEFORE this type check, so even an
+# untyped exception (or a typed-but-not-listed-here one, e.g. a
+# BrokerOrderError whose message says "margin shortfall") is refused a
+# retry — matching the same operator instruction `_ch_rejection_is_recoverable`
+# already enforces for broker status-poll REJECTED messages.
 _CH_NON_RECOVERABLE_ERRORS = (_BrokerInputError, _BrokerCapabilityError, _BrokerAuthError)
 
 # Extra backoff when the broker itself says "slow down" — longer than a
@@ -521,14 +529,27 @@ def _ch_is_recoverable_error(exc: Exception) -> bool:
     """Classify a chase-loop exception as recoverable (worth a fresh,
     repriced retry) or not.
 
-    Untyped exceptions (a plain Exception, or an SDK error we haven't
-    wrapped in the typed hierarchy yet) default to recoverable — the
-    same conservative fail-safe default used elsewhere in this module
-    (see `_ch_mcx_lots_broker`'s docstring): treating an unknown error
-    as non-recoverable would silently abandon chases on errors we simply
-    haven't classified, which is worse than a bounded retry (capped by
-    `_MAX_CHASE_ERRORS` regardless of classification either way).
+    Checked in two stages:
+    1. Message-hint override — operator instruction (2026-10): "margin
+       errors are not recoverable". If `str(exc)` matches any of
+       `_CH_NON_RECOVERABLE_REJECTION_HINTS` (margin/rms/risk/permission/
+       blocked), the exception is non-recoverable regardless of its type —
+       even a plain untyped `Exception("margin shortfall")` must be
+       refused, mirroring `_ch_rejection_is_recoverable`'s handling of the
+       same wording on a broker status-poll rejection.
+    2. Typed classification — otherwise, `isinstance(exc, _CH_NON_RECOVERABLE_ERRORS)`
+       decides. Untyped exceptions (a plain Exception, or an SDK error we
+       haven't wrapped in the typed hierarchy yet) whose message doesn't
+       match stage 1 default to recoverable — the same conservative
+       fail-safe default used elsewhere in this module (see
+       `_ch_mcx_lots_broker`'s docstring): treating an unknown error as
+       non-recoverable would silently abandon chases on errors we simply
+       haven't classified, which is worse than a bounded retry (capped by
+       `_MAX_CHASE_ERRORS` regardless of classification either way).
     """
+    msg = str(exc).lower()
+    if any(h in msg for h in _CH_NON_RECOVERABLE_REJECTION_HINTS):
+        return False
     return not isinstance(exc, _CH_NON_RECOVERABLE_ERRORS)
 
 

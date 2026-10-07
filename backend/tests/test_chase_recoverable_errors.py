@@ -4,7 +4,9 @@ operator ask — "identify if an order failure is recoverable or not; if
 recoverable, retry (with a changed price)".
 
 Covers:
-  - `_ch_is_recoverable_error` — typed BrokerError classification
+  - `_ch_is_recoverable_error` — message-hint override (margin/rms/risk/
+    permission/blocked, regardless of exception type) then typed
+    BrokerError classification
   - `_ch_rejection_is_recoverable` — REJECTED status_message classification
   - `_ch_poll_handle_rejected` retries a price-shaped rejection instead of
     aborting, and still aborts immediately for a non-price rejection
@@ -30,6 +32,7 @@ from backend.brokers.errors import (
     BrokerAuthError,
     BrokerCapabilityError,
     BrokerInputError,
+    BrokerOrderError,
     BrokerRateLimitError,
 )
 
@@ -42,6 +45,23 @@ def test_recoverable_error_classification():
     assert _ch_is_recoverable_error(BrokerRateLimitError("slow down")) is True
     assert _ch_is_recoverable_error(ConnectionError("reset")) is True
     assert _ch_is_recoverable_error(RuntimeError("unexpected")) is True
+
+
+def test_recoverable_error_classification_margin_message_never_recoverable():
+    """Operator instruction (2026-10): margin/RMS/risk/permission/blocked
+    wording in an exception's own message is never recoverable, even for
+    an untyped plain Exception (no BrokerError subclass involved)."""
+    assert _ch_is_recoverable_error(Exception("margin shortfall")) is False
+    assert _ch_is_recoverable_error(Exception("RMS: blocked for trading")) is False
+
+
+def test_recoverable_error_classification_margin_wins_over_price_wording():
+    """Mirrors test_margin_rejection_never_recoverable_even_with_price_wording
+    for the exception-based classifier: margin wins even when the same
+    message also mentions price."""
+    assert _ch_is_recoverable_error(
+        Exception("margin shortfall for this price range")
+    ) is False
 
 
 def test_rejection_message_classification():
@@ -181,6 +201,57 @@ async def test_handle_attempt_error_aborts_on_auth_error():
     assert abort.status == ChaseStatus.FAILED
     assert "auth_invalid" in abort.detail
     mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_handle_attempt_error_aborts_on_untyped_margin_exception():
+    """Integration path for the fix: an untyped `Exception("insufficient
+    margin")` (no BrokerError subclass involved) must abort the chase
+    immediately via `_ch_handle_attempt_error`, not retry — and must not
+    crash the error-handling branch itself (which derives an abort reason
+    via isinstance checks with a string default, so an untyped exception
+    is safe to pass through)."""
+    result = ChaseResult()
+    emit = MagicMock()
+    mock_alert = MagicMock()
+    with patch("backend.api.algo.chase.asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
+         patch("backend.api.algo.chase._emit_chase_terminal", new_callable=AsyncMock), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert", mock_alert):
+        abort, consecutive = await _ch_handle_attempt_error(
+            Exception("insufficient margin"), consecutive_errors=0, attempt=2,
+            symbol="NIFTY25JULFUT", account="ZG0790", transaction_type="BUY",
+            quantity=10, current_order_id="OID1", cfg=_cfg(max_attempts=5),
+            result=result, emit=emit, algo_order_id=None,
+        )
+
+    assert abort is not None
+    assert abort.status == ChaseStatus.FAILED
+    mock_alert.assert_called_once()
+    mock_sleep.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_handle_attempt_error_aborts_on_typed_order_error_with_margin_message():
+    """A typed BrokerOrderError (not in `_CH_NON_RECOVERABLE_ERRORS`, so
+    normally recoverable by type) must still abort when its own message
+    mentions margin — message-hint check wins over typed classification."""
+    result = ChaseResult()
+    emit = MagicMock()
+    mock_alert = MagicMock()
+    with patch("backend.api.algo.chase.asyncio.sleep", new_callable=AsyncMock) as mock_sleep, \
+         patch("backend.api.algo.chase._emit_chase_terminal", new_callable=AsyncMock), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert", mock_alert):
+        abort, consecutive = await _ch_handle_attempt_error(
+            BrokerOrderError("margin shortfall"), consecutive_errors=0, attempt=2,
+            symbol="NIFTY25JULFUT", account="ZG0790", transaction_type="BUY",
+            quantity=10, current_order_id="OID1", cfg=_cfg(max_attempts=5),
+            result=result, emit=emit, algo_order_id=None,
+        )
+
+    assert abort is not None
+    assert abort.status == ChaseStatus.FAILED
+    mock_alert.assert_called_once()
+    mock_sleep.assert_not_awaited()
 
 
 @pytest.mark.asyncio
