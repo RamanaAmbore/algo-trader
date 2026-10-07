@@ -24,7 +24,12 @@ from sqlalchemy import select as _sql_select
 from backend.api.cache import _store as _cache_store
 from backend.api.database import async_session as _async_session
 from backend.api.models import AlgoOrder as _AlgoOrder
-from backend.brokers.errors import BrokerInputError as _BrokerInputError
+from backend.brokers.errors import (
+    BrokerAuthError as _BrokerAuthError,
+    BrokerCapabilityError as _BrokerCapabilityError,
+    BrokerInputError as _BrokerInputError,
+    BrokerRateLimitError as _BrokerRateLimitError,
+)
 from backend.brokers.registry import get_broker as _get_broker_registry
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -477,6 +482,68 @@ _executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="chase")
 # cool-off (30s per _RATE_LIMIT_COOLOFF_SECONDS in registry.py) would
 # extend the retry window indefinitely against a broken session.
 _MAX_CHASE_ERRORS = 3
+
+# 2026-10 fix — "if any order fails, identify it as recoverable or not;
+# if recoverable, retry (with a changed price)". Typed `BrokerError`
+# subclasses (backend/brokers/errors.py) are the real signal: bad input,
+# an unsupported capability, or an invalid session fail IDENTICALLY on
+# every retry, so retrying just burns attempts and risks tripping the
+# broker's own rate limit. Network blips and rate-limit responses ARE
+# worth retrying — the chase loop re-reads depth and computes a fresh
+# price every iteration, so a retry after one of these is never a blind
+# resend of the same price/order.
+_CH_NON_RECOVERABLE_ERRORS = (_BrokerInputError, _BrokerCapabilityError, _BrokerAuthError)
+
+# Extra backoff when the broker itself says "slow down" — longer than a
+# normal re-quote interval so a burst of rate-limited attempts doesn't
+# just re-trip the same cooldown (mirrors registry.py's own
+# _RATE_LIMIT_COOLOFF_SECONDS convention for the connection layer).
+_CH_RATE_LIMIT_BACKOFF_SECONDS = 30
+
+# REJECTED broker statuses whose message text names a PRICE-shaped cause
+# (out of circuit/price band, stale quote, tick violation) — exactly the
+# class of failure chase exists to fix by re-pricing on the next
+# attempt.
+_CH_RECOVERABLE_REJECTION_HINTS = ("price", "circuit", "tick", "range", "stale", "band")
+
+# Explicit non-recoverable override, checked BEFORE the hint list above —
+# operator instruction (2026-10): "margin errors are not recoverable".
+# A margin/RMS/risk-control rejection means the SAME retry (or any
+# repriced variant of it) would fail identically — the account's
+# available margin doesn't change because the limit price moves — so it
+# must never match a recoverable hint even if its message also happens
+# to mention "price" or "range" (e.g. "margin shortfall for this price
+# range"). Checked first so it always wins over the recoverable list.
+_CH_NON_RECOVERABLE_REJECTION_HINTS = ("margin", "rms", "risk", "permission", "blocked")
+
+
+def _ch_is_recoverable_error(exc: Exception) -> bool:
+    """Classify a chase-loop exception as recoverable (worth a fresh,
+    repriced retry) or not.
+
+    Untyped exceptions (a plain Exception, or an SDK error we haven't
+    wrapped in the typed hierarchy yet) default to recoverable — the
+    same conservative fail-safe default used elsewhere in this module
+    (see `_ch_mcx_lots_broker`'s docstring): treating an unknown error
+    as non-recoverable would silently abandon chases on errors we simply
+    haven't classified, which is worse than a bounded retry (capped by
+    `_MAX_CHASE_ERRORS` regardless of classification either way).
+    """
+    return not isinstance(exc, _CH_NON_RECOVERABLE_ERRORS)
+
+
+def _ch_rejection_is_recoverable(status_message: str) -> bool:
+    """True when a broker REJECTED status looks price-related — worth
+    one more repriced attempt rather than aborting the whole chase.
+
+    Margin/RMS/risk-control/permission rejections are NEVER recoverable
+    (operator instruction, 2026-10) regardless of what else the message
+    says — checked before the price-hint list.
+    """
+    msg = (status_message or "").lower()
+    if any(h in msg for h in _CH_NON_RECOVERABLE_REJECTION_HINTS):
+        return False
+    return any(h in msg for h in _CH_RECOVERABLE_REJECTION_HINTS)
 
 
 # ── Operator kill signal ─────────────────────────────────────────────
@@ -1063,8 +1130,22 @@ def _ch_poll_handle_rejected(
     current_order_id: str, cfg: "ChaseConfig",
     algo_order_id: "int | None", emit: Callable,
 ) -> "tuple[str, int]":
-    """Handle REJECTED status: log, alert, schedule terminal event."""
+    """Handle REJECTED status: retry with a fresh price when the
+    rejection looks price-related and attempts remain; otherwise abort
+    (log, alert, schedule terminal event) same as before.
+    """
     status_msg = status.get("status_message", "") or "rejected by broker"
+    if _ch_rejection_is_recoverable(status_msg) and attempt < cfg.max_attempts:
+        logger.warning(
+            f"Chase {symbol}: REJECTED (recoverable — {status_msg}) on "
+            f"attempt {attempt}/{cfg.max_attempts} — repricing and retrying."
+        )
+        emit("chase_reprice", {
+            "attempt": attempt, "reason": "rejected_recoverable",
+            "status_message": status_msg,
+        })
+        return "rejected_continue", remaining_qty
+
     abort_msg  = f"Order rejected by broker: {status_msg}"
     logger.error(f"Chase {symbol}: REJECTED — {status_msg}. Aborting chase.")
     result.status = ChaseStatus.FAILED
@@ -1147,7 +1228,10 @@ async def _chase_poll_status(
     new_current_order_filled) where signal is one of:
       'filled'            — order fully complete; caller should return result
       'killed'            — operator cancelled; caller should return result
-      'rejected'          — broker rejected; caller should return result
+      'rejected'          — broker rejected, non-recoverable; caller should return result
+      'rejected_continue' — broker rejected but the reason looks price-
+                            related and attempts remain; caller resets
+                            current_order_id and retries with a fresh price
       'cancelled_continue'— broker/external cancel, NOT operator; caller resets
                             current_order_id and sleeps backoff before continuing
       None                — partial fill or no notable status; caller continues loop
@@ -1310,7 +1394,7 @@ async def _ch_handle_poll_signal(
     """
     if signal in ("filled", "killed", "rejected"):
         return True, current_order_id
-    if signal == "cancelled_continue":
+    if signal in ("cancelled_continue", "rejected_continue"):
         backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
         logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
         await asyncio.sleep(backoff)
@@ -1334,15 +1418,31 @@ async def _ch_handle_attempt_error(
 ) -> "tuple[ChaseResult | None, int]":
     """Handle a broker exception in the chase loop.
 
+    Classifies `exc` as recoverable or not (see `_ch_is_recoverable_error`)
+    before deciding whether to retry. Non-recoverable errors (bad input,
+    unsupported capability, invalid session) terminate the chase
+    immediately — retrying them would just resend the same doomed
+    request. Recoverable errors (network blips, rate limits, anything
+    untyped) count toward `_MAX_CHASE_ERRORS` and retry with a fresh
+    depth-derived price on the next loop iteration.
+
     Returns (abort_result, new_consecutive_errors).
     abort_result is non-None when the caller should immediately return it.
     """
-    if isinstance(exc, _BrokerInputError):
-        abort_msg = f"Order rejected by broker (input error): {exc}"
-        logger.error(f"Chase {symbol}: BrokerInputError — terminating immediately. {exc}")
+    if not _ch_is_recoverable_error(exc):
+        _reason = (
+            "auth_invalid" if isinstance(exc, _BrokerAuthError) else
+            "capability_unsupported" if isinstance(exc, _BrokerCapabilityError) else
+            "input_rejected"
+        )
+        abort_msg = f"Order rejected by broker ({_reason}): {exc}"
+        logger.error(
+            f"Chase {symbol}: non-recoverable {type(exc).__name__} — "
+            f"terminating immediately. {exc}"
+        )
         result.status = ChaseStatus.FAILED
         result.detail = abort_msg
-        emit("chase_failed", {"attempts": attempt, "error": str(exc), "reason": "input_rejected"})
+        emit("chase_failed", {"attempts": attempt, "error": str(exc), "reason": _reason})
         try:
             from backend.shared.helpers.alert_utils import send_order_failure_alert
             send_order_failure_alert(
@@ -1363,7 +1463,7 @@ async def _ch_handle_attempt_error(
 
     consecutive_errors += 1
     logger.error(
-        f"Chase {symbol}: attempt {attempt} error "
+        f"Chase {symbol}: attempt {attempt} recoverable error "
         f"({consecutive_errors}/{_MAX_CHASE_ERRORS} consecutive): {exc}"
     )
     emit("error", {"attempt": attempt, "error": str(exc)})
@@ -1374,7 +1474,13 @@ async def _ch_handle_attempt_error(
             current_order_id, cfg, result, emit, algo_order_id,
         )
         return abort, consecutive_errors
-    await asyncio.sleep(cfg.interval_seconds)
+    # Rate-limit responses get a longer cool-off than a normal re-quote
+    # interval so a burst of retries doesn't just re-trip the same
+    # broker-side cooldown (mirrors registry.py's connection-layer
+    # convention for the same situation).
+    _backoff = max(cfg.interval_seconds, _CH_RATE_LIMIT_BACKOFF_SECONDS) \
+        if isinstance(exc, _BrokerRateLimitError) else cfg.interval_seconds
+    await asyncio.sleep(_backoff)
     return None, consecutive_errors
 
 

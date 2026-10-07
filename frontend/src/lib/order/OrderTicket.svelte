@@ -103,7 +103,7 @@
    *   onMarginUpdate?: ((preview:any, loading:boolean, meta?: {isCashMode:boolean, cash:number|null, availMargin:number|null, usedMargin:number|null, fundsAccount:string, kind:string, side:string}) => void) | null,
    *   onPreviewPlanUpdate?: ((plan:any, loading:boolean, error:string, capWarning:string) => void) | null,
    *   onValidationChange?: ((err: string) => void) | null,
-   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}) => void) | null,
+   *   onTicketStateChange?: ((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean}) => void) | null,
    *   fundsHidden?: boolean,
    *   symbolHidden?: boolean,
    *   symType?: 'ALL' | 'EQ' | 'FUT' | 'OPT',
@@ -224,7 +224,7 @@
     // the operator's lot steppers / side flips — so its own common-
     // action Submit button label and disabled state would otherwise go
     // stale the moment the operator touches the ticket after opening it.
-    onTicketStateChange = /** @type {((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}) => void) | null} */ (null),
+    onTicketStateChange = /** @type {((state: {side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean}) => void) | null} */ (null),
     // When true, the in-ticket per-account funds line is suppressed.
     // The order modal sets this so the funds row only renders once in
     // the common action footer (visible on every tab).
@@ -775,6 +775,12 @@
     if (!_prevResolvedSymbol) { _prevResolvedSymbol = r; return; }
     if (r === _prevResolvedSymbol) return;
     _prevResolvedSymbol = r;
+    // Depth is per-strike — a stale quote from the PREVIOUS symbol must
+    // not make `_depthPending` look satisfied for the new one (the
+    // 2026-10 "limit price required" incident: switching strikes left
+    // `_lastQuote` holding the old strike's bid/ask, so submit fired
+    // before the new strike's depth had actually arrived).
+    untrack(() => { _lastQuote = null; });
     if (currentQty) return;
     untrack(() => { _lots = 1; _lotsTouched = false; });
   });
@@ -1598,6 +1604,13 @@
 
   // Field visibility derived from order type + variety.
   const showLimit   = $derived(_type === 'LIMIT' || _type === 'SL');
+  // All templates/tickets are LIMIT or GTT (no MARKET) — so for any
+  // order that needs a price, submission must wait for the active
+  // strike's own bid/ask to arrive at least once. Without this, an
+  // operator who clicks Submit the instant a new strike opens (before
+  // the depth poll's first tick) got a confusing server-shaped "limit
+  // price required" failure instead of a disabled button + clear reason.
+  const _depthPending = $derived(showLimit && !_lastQuote);
   // DRAFT visibility — independent of modeChaseHidden (see CHASE/DRAFT row).
   const showDraftToggle = $derived(!isEquity && action !== 'modify' && !hideDraftToggle);
   const showTrigger = $derived(_type === 'SL' || _type === 'SL-M');
@@ -1763,6 +1776,7 @@
       qty: Number(_qty) || 0,
       submitting,
       pending: !!submitPending,
+      depthPending: _depthPending,
     });
   });
 
@@ -2122,6 +2136,10 @@
     // operator click into a silent black hole.
     if (get(executionMode) === 'idle') {
       submitErr = 'Engine is idle — pick PAPER / SIM / REPLAY from the navbar before placing orders.';
+      return;
+    }
+    if (_depthPending) {
+      submitErr = 'Waiting for market depth — try again in a moment';
       return;
     }
     if (validationErr) return;
@@ -3178,8 +3196,8 @@
                     class:ot-submit-sell={_side === 'SELL' && !_draftMode}
                     class:ot-submit-draft={_draftMode}
                     class:ot-submit-demo={_isDemo}
-                    disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol)}
-                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : '')}
+                    disabled={_isDemo ? false : (!!validationErr || submitting || _noSymbol || (!_draftMode && _depthPending))}
+                    title={_isDemo ? 'Demo mode — click to learn how to enable real orders' : (_draftMode ? 'Add leg to payoff chart (no broker order)' : (_depthPending ? 'Waiting for market depth (bid/ask) for this strike' : ''))}
                     onclick={submit}>
               {#if _isDemo}Submit (Demo){:else if submitting}…
               {:else if _draftMode}Add to Payoff

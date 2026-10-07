@@ -1470,6 +1470,14 @@
     _activeTab === 'ticket' && basketLegs.length === 0
     && (_ticketState.submitting || _ticketState.pending)
   );
+  // Mirrors OrderTicket's own `_depthPending` — every template/ticket is
+  // LIMIT or GTT (no MARKET), so submission needs the active strike's
+  // bid/ask at least once. Gates the shared common-action Submit button
+  // too, not just OrderTicket's own internal footer button (2026-10 fix
+  // for the "limit price required" click-before-depth-loads incident).
+  const _ticketDepthPending = $derived.by(() =>
+    _activeTab === 'ticket' && basketLegs.length === 0 && !!_ticketState.depthPending
+  );
   // Style class for the submit button — green when the submit will
   // place a BUY OR add to long OR close short; red when it will place
   // a SELL OR close long OR add to short. Cyan when basket-submit
@@ -1500,8 +1508,8 @@
   // clickable for the ENTIRE duration of a slow submit, since it was
   // only gated on the unrelated `basketSubmitting` flag).
   let _ticketState = $state(
-    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean}} */
-    ({ side: null, qty: 0, submitting: false, pending: false })
+    /** @type {{side: 'BUY'|'SELL'|null, qty: number, submitting: boolean, pending: boolean, depthPending: boolean}} */
+    ({ side: null, qty: 0, submitting: false, pending: false, depthPending: false })
   );
   function _modalFireSubmit() {
     if (_activeTab !== 'ticket') {
@@ -1529,6 +1537,10 @@
     // common footer Submit is clicked). The operator clicks repeatedly,
     // generating 20+ preview/preflight calls with no basket/ticket POST
     // — exactly the audit pattern seen for CRUDEOIL 6500PE SELL.
+    if (_ticketDepthPending) {
+      toast.warning('Waiting for market depth — try again in a moment');
+      return;
+    }
     if (_ticketValidationErr) {
       toast.warning(_ticketValidationErr);
       return;
@@ -3167,10 +3179,13 @@
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _ticketOwnSubmitBusy
                     ? (_ticketState.pending ? 'Still processing — check Orders' : 'Placing…')
-                    : 'Place the order')}
+                    : _ticketDepthPending
+                      ? 'Waiting for market depth (bid/ask) for this strike'
+                      : 'Place the order')}
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')
-                      || _ticketOwnSubmitBusy}
+                      || _ticketOwnSubmitBusy
+                      || _ticketDepthPending}
             onclick={async () => {
               if (basketLegs.length > 0) {
                 // Global basket submit — fires from any tab whenever there
