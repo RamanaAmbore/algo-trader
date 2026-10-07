@@ -713,9 +713,50 @@
       // builds its own explicit payload) — let the strike grid show a
       // per-leg lot badge without re-resolving/parsing the tradingsymbol.
       strike, optType,
+      // Audit fix — `limit > 0` alone is not proof a live chain quote has
+      // ever actually arrived for THIS leg's strike (a stale `0` fallback
+      // reads the same as a real price once coerced). `quoteArrived`
+      // latches true the moment `chainQuotesMap` resolves ANY bid/ask for
+      // this strike+side (here, or via the sync effect below for a leg
+      // added before the first poll lands) and never resets — same "has
+      // a quote arrived at least once" invariant as OrderTicket's
+      // `_lastQuote` truthy check, applied per-leg. Read by SymbolPanel's
+      // `_legNeedsDepth()` basket-submit gate.
+      quoteArrived: !!q,
     });
     basketError = ''; _flashToast(_quickKeyOpt(strike, optType), '✓ added');
   }
+
+  // ── Keep `quoteArrived` in sync with the live chain-quotes poll ────
+  // `addOptionToBasket` stamps `quoteArrived` from whatever
+  // `chainQuotesMap` already holds at push time. If a leg is pushed in
+  // the brief window before the FIRST chain-quotes poll resolves (map
+  // still null right after the Chain tab mounts), `quoteArrived` starts
+  // false and would otherwise never update without a remove+re-add.
+  // This re-checks every option leg currently in the basket whenever
+  // the quotes map refreshes (every 30s, or the host-triggered
+  // refresh) and latches `quoteArrived` true the first time a quote
+  // resolves for that leg's own strike+side. One-way latch only — this
+  // is "has a quote arrived at least once", not a staleness/
+  // re-validation mechanism, mirroring OrderTicket's `_lastQuote`
+  // invariant (which also never re-checks once set).
+  $effect(() => {
+    const map = chainQuotesMap;
+    const legs = chainBasket;
+    if (!map) return;
+    const pending = legs.filter(l => !l.quoteArrived && l.strike != null && l.optType
+      && map[String(l.strike)]?.[String(l.optType).toLowerCase()]);
+    if (!pending.length) return;
+    untrack(() => {
+      for (const leg of pending) {
+        if (_externalBasket && onUpdateLeg) {
+          onUpdateLeg(leg.key, (l) => (l.quoteArrived ? l : { ...l, quoteArrived: true }));
+        } else {
+          _localBasket = _localBasket.map(b => b.key === leg.key ? { ...b, quoteArrived: true } : b);
+        }
+      }
+    });
+  });
 
   function addFuturesToBasket(/** @type {string} */ sym, /** @type {number} */ lotSize, /** @type {'long'|'short'} */ side) {
     const inst = getInstrument(String(sym || '').toUpperCase());

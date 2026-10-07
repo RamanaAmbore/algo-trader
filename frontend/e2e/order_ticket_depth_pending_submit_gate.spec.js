@@ -76,14 +76,19 @@ test.describe('SymbolPanel — shared Submit button respects depth-pending', () 
   });
 
   test('common-action Submit button disables on _ticketDepthPending', () => {
+    // Button now also disables on `_basketDepthPending` (basket-leg depth
+    // gate, see basket_leg_depth_pending_submit_gate.spec.js) — the
+    // `_ticketDepthPending` term from the original fix is unchanged.
     expect(panelSrc).toMatch(
-      /disabled=\{basketSubmitting\s*\n?\s*\|\|\s*\(basketLegs\.length === 0 && _activeTab === 'chain'\)\s*\n?\s*\|\|\s*_ticketOwnSubmitBusy\s*\n?\s*\|\|\s*_ticketDepthPending\}/
+      /disabled=\{basketSubmitting\s*\n?\s*\|\|\s*\(basketLegs\.length === 0 && _activeTab === 'chain'\)\s*\n?\s*\|\|\s*_ticketOwnSubmitBusy\s*\n?\s*\|\|\s*_ticketDepthPending\s*\n?\s*\|\|\s*_basketDepthPending\}/
     );
   });
 
   test('common-action Submit button switches to gray while depth-pending', () => {
+    // Class now ORs in `_basketDepthPending` too — same gray override,
+    // extended to cover the basket-leg depth gate.
     expect(panelSrc).toMatch(
-      /class:oes-common-submit-depth-pending=\{_ticketDepthPending\}/
+      /class:oes-common-submit-depth-pending=\{_ticketDepthPending \|\| _basketDepthPending\}/
     );
     expect(panelSrc).toMatch(
       /\.oes-common-submit\.oes-common-submit-depth-pending \{/

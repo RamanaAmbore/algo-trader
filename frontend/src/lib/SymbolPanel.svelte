@@ -1860,6 +1860,33 @@
   const legAccountOf = (/** @type {any} */ leg) =>
     leg.account || _sharedAccount || account || '';
 
+  /**
+   * Audit fix — a basket leg's `limit > 0` was the ONLY submit gate,
+   * which a stale or operator-typed positive number satisfies just as
+   * easily as a real one. Mirrors OrderTicket's `_depthPending`
+   * invariant (a quote must have arrived at least once) applied
+   * per-leg instead of to one ticket. Option legs (strike + optType,
+   * stamped by OptionChainTab's +CE/+PE path) are gated on
+   * `quoteArrived` — latched true once OptionChainTab's chain-quotes
+   * poll resolves ANY bid/ask for that strike's side. Deliberately
+   * does NOT require confirmed real market depth (`depthAvail`) —
+   * illiquid strikes that only ever report last-traded-price must
+   * still be submittable, same as OrderTicket's `_lastQuote` check,
+   * which doesn't require real depth either. Futures legs carry no
+   * strike/optType and have no live depth-quote map in the Chain tab
+   * (operator fills `limit` manually there), so they keep the
+   * original limit-only gate.
+   */
+  const _legNeedsDepth = (/** @type {any} */ leg) =>
+    !(Number(leg.limit) > 0) || (leg.strike != null && leg.optType != null && !leg.quoteArrived);
+
+  // Gates the shared common-action Submit button for the basket path —
+  // mirrors `_ticketDepthPending` (which only covers the single-ticket
+  // path, `basketLegs.length === 0`).
+  const _basketDepthPending = $derived.by(() =>
+    basketLegs.length > 0 && basketLegs.some(_legNeedsDepth)
+  );
+
   /** Submit every leg in the shell basket via POST /api/orders/basket. */
   // Resolves effective basket execution mode: if the current mode is
   // paper/live, confirms against the server's branch + paper_trading_mode
@@ -1895,8 +1922,10 @@
     if (basketSubmitting || !basketLegs.length) return;
     basketSubmitting = true; basketResultMsg = '';
 
-    // Validate that every leg has a limit price before going to the backend.
-    const missingQuote = basketLegs.find(leg => !(Number(leg.limit) > 0));
+    // Validate that every leg has a limit price AND (for option legs) a
+    // live chain quote has actually arrived for its own strike — see
+    // `_legNeedsDepth` for the full rationale.
+    const missingQuote = basketLegs.find(_legNeedsDepth);
     if (missingQuote) {
       const msg = `${missingQuote.side} ${missingQuote.sym}: no quote yet — wait for bid/ask to load`;
       basketResultMsg = msg;
@@ -2859,11 +2888,15 @@
               <!-- Per-leg limit price — editable so operator can submit
                    outside market hours when bid/ask hasn't pre-filled. -->
               <span class="oes-basket-pill-limit-wrap"
-                    title={!(Number(leg.limit) > 0) ? 'Set a limit price to submit' : `Limit ₹${leg.limit}`}>
+                    title={_legNeedsDepth(leg)
+                      ? (!(Number(leg.limit) > 0)
+                          ? 'Set a limit price to submit'
+                          : 'Waiting for market depth (bid/ask) for this strike')
+                      : `Limit ₹${leg.limit}`}>
                 <span class="oes-basket-pill-limit-prefix">₹</span>
                 <input type="number"
                        class="oes-basket-pill-limit"
-                       class:oes-basket-pill-limit-warn={!(Number(leg.limit) > 0)}
+                       class:oes-basket-pill-limit-warn={_legNeedsDepth(leg)}
                        disabled={basketSubmitting}
                        min="0"
                        step="0.05"
@@ -3173,9 +3206,9 @@
             class:oes-common-submit-sell={_submitFlavor === 'sell'}
             class:oes-common-submit-basket={basketLegs.length > 0 || _submitFlavor === 'basket'}
             class:oes-common-submit-narrow={basketLegs.length > 0}
-            class:oes-common-submit-depth-pending={_ticketDepthPending}
+            class:oes-common-submit-depth-pending={_ticketDepthPending || _basketDepthPending}
             title={basketLegs.length > 0
-              ? 'Submit'
+              ? (_basketDepthPending ? 'Waiting for market depth (bid/ask) for a leg' : 'Submit')
               : (_activeTab === 'chain'
                   ? 'Add legs via +CE / +PE on the chain rows first'
                   : _ticketOwnSubmitBusy
@@ -3186,7 +3219,8 @@
             disabled={basketSubmitting
                       || (basketLegs.length === 0 && _activeTab === 'chain')
                       || _ticketOwnSubmitBusy
-                      || _ticketDepthPending}
+                      || _ticketDepthPending
+                      || _basketDepthPending}
             onclick={async () => {
               if (basketLegs.length > 0) {
                 // Global basket submit — fires from any tab whenever there
@@ -5099,7 +5133,8 @@
     color: var(--algo-sky);
   }
   .oes-common-submit-basket:hover { background: rgba(125, 211, 252, 0.28); }
-  /* Depth-pending — LIMIT/SL ticket only (mirrors OrderTicket's own
+  /* Depth-pending — LIMIT/SL ticket path OR any basket leg still
+     waiting on a live chain quote (mirrors OrderTicket's own
      .ot-submit-depth-pending; GTT exit legs never reach this button).
      Overrides buy/sell/basket colour with the same neutral slate used
      elsewhere for "placeholder, not real yet" state. */
