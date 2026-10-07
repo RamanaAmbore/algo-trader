@@ -104,6 +104,7 @@ try:
     from growwapi.groww.exceptions import (  # type: ignore[import-not-found]
         GrowwAPIAuthenticationException,
         GrowwAPIAuthorisationException,
+        GrowwAPIException,
         GrowwAPIRateLimitException,
         GrowwAPITimeoutException,
     )
@@ -119,12 +120,21 @@ try:
     )
     _GROWW_RATE_EXC: tuple = (GrowwAPIRateLimitException,)
     _GROWW_TIMEOUT_EXC: tuple = (GrowwAPITimeoutException,)
+    # Base class for every growwapi SDK exception (Authentication/
+    # Authorisation/RateLimit/Timeout/BadRequest/NotFound/...). Every
+    # subtype carries a `.code` string HTTP-status attribute (see
+    # growwapi.groww.exceptions.GrowwAPIException.__init__) — used by
+    # place_order's outer classification layer (see _groww_exc) to map
+    # SDK exception subtypes NOT already retried by `_retry_groww_auth`
+    # (e.g. BadRequest/NotFound) onto the typed BrokerError hierarchy.
+    _GROWW_API_EXC: tuple = (GrowwAPIException,)
 except ImportError:
     _GROWW_AUTHN_EXC = ()
     _GROWW_AUTHZ_EXC = ()
     _GROWW_AUTH_EXC = ()
     _GROWW_RATE_EXC = ()
     _GROWW_TIMEOUT_EXC = ()
+    _GROWW_API_EXC = ()
 
 
 def _retry_groww_auth(fn: Callable) -> Callable:
@@ -1154,8 +1164,46 @@ class GrowwBroker(Broker):
                 out.append({"total": 0.0, "error": str(e), "raw": None})
         return out
 
-    @_retry_groww_auth
     def place_order(self, *, intent: str | None = None, **kwargs: Any) -> str:
+        """Place a live order via the Groww SDK. Returns Groww's order id.
+
+        Thin outer layer over `_place_order_impl` (the `@_retry_groww_auth`
+        -decorated body that owns the actual SDK call plus auth re-mint /
+        rate-limit backoff / timeout retry). This layer's only job is to
+        classify whatever exception finally leaves `_place_order_impl`
+        — after retries are exhausted, or that was never retryable at
+        all (e.g. a 400/404) — into the typed `BrokerError` hierarchy,
+        so chase.py's `_ch_is_recoverable_error()` isinstance-based
+        recoverable/non-recoverable classification sees a real type
+        instead of a raw growwapi SDK exception (2026-10 fix — mirrors
+        the Kite `_kite_exc`/Dhan typed-error-preservation pattern).
+
+        Deliberately narrow: catches ONLY `GrowwAPIException` subtypes
+        (`_GROWW_API_EXC`) and SSL errors. The AMO `NotImplementedError`
+        and the exchange/segment-resolution `ValueError` raised inside
+        `_place_order_impl` before the SDK call must pass through
+        unconverted — chase must never retry an unsupported AMO order
+        or a bad exchange as if it were a transient broker failure.
+        """
+        try:
+            return self._place_order_impl(intent=intent, **kwargs)
+        except _GROWW_API_EXC as e:  # type: ignore[misc]
+            # Every GrowwAPIException subtype (Authentication/
+            # Authorisation/RateLimit/Timeout/BadRequest/NotFound/...)
+            # carries a `.code` string HTTP-status (see growwapi's own
+            # `GrowwAPIException.__init__`) — reuse the EXISTING
+            # status-based mapping helper (`_groww_exc`, previously
+            # defined but never called) instead of duplicating the
+            # dict-response rejection mapping below.
+            code = getattr(e, "code", None)
+            status = int(code) if code is not None and str(code).isdigit() else None
+            raise _groww_exc(e, status=status) from e
+        except (ssl.SSLError, urllib3.exceptions.SSLError,
+                requests.exceptions.SSLError) as e:
+            raise BrokerNetworkError(str(e), broker="groww") from e
+
+    @_retry_groww_auth
+    def _place_order_impl(self, *, intent: str | None = None, **kwargs: Any) -> str:
         # Audit fix (M-3) — `variety` is Kite-semantic. AMO needs
         # explicit Groww-side handling that isn't wired today; raise
         # so the operator knows the request isn't honored instead of
@@ -1170,20 +1218,46 @@ class GrowwBroker(Broker):
             )
         ex, seg = _groww_exchange_and_segment(kwargs.get("exchange", ""))
         _GROWW_RATE_LIMITER.throttle("orders")
-        resp = self.groww.place_order(
-            validity=kwargs.get("validity", "DAY"),
-            exchange=ex,
-            order_type=_ORDER_TYPE_TO_GROWW.get(kwargs.get("order_type", "MARKET"),
-                                                "MARKET"),
-            product=_PRODUCT_TO_GROWW.get(kwargs.get("product", "MIS"), "MIS"),
-            quantity=int(kwargs.get("quantity", 0)),
-            segment=seg,
-            trading_symbol=kwargs.get("tradingsymbol", ""),
-            transaction_type=kwargs.get("transaction_type", "BUY"),
-            price=float(kwargs.get("price") or 0),
-            trigger_price=(float(kwargs.get("trigger_price"))
-                           if kwargs.get("trigger_price") else None),
-        )
+        try:
+            resp = self.groww.place_order(
+                validity=kwargs.get("validity", "DAY"),
+                exchange=ex,
+                order_type=_ORDER_TYPE_TO_GROWW.get(kwargs.get("order_type", "MARKET"),
+                                                    "MARKET"),
+                product=_PRODUCT_TO_GROWW.get(kwargs.get("product", "MIS"), "MIS"),
+                quantity=int(kwargs.get("quantity", 0)),
+                segment=seg,
+                trading_symbol=kwargs.get("tradingsymbol", ""),
+                transaction_type=kwargs.get("transaction_type", "BUY"),
+                price=float(kwargs.get("price") or 0),
+                trigger_price=(float(kwargs.get("trigger_price"))
+                               if kwargs.get("trigger_price") else None),
+            )
+        except BrokerError:
+            # Already a typed BrokerError (e.g. surfaced from a lower
+            # layer) — re-raise as-is. Re-wrapping here would destroy
+            # the real type and break chase.py's isinstance-based
+            # recoverable/non-recoverable classification (see
+            # chase.py:_ch_is_recoverable_error). Mirrors Dhan's
+            # identical pattern (dhan.py:DhanBroker.place_order).
+            raise
+        except (_GROWW_API_EXC + (ssl.SSLError, urllib3.exceptions.SSLError,
+                                   requests.exceptions.SSLError)) as e:  # type: ignore[misc]
+            # Known growwapi SDK exception types that `@_retry_groww_auth`
+            # (decorating this method) already retries — auth re-mint,
+            # rate-limit backoff, timeout retry, SSL-EOF retry. Re-raise
+            # UNCHANGED so the decorator's own except clauses (matched by
+            # exact SDK exception type) see the real type on every
+            # attempt; converting here would stop them from ever
+            # matching, silently disabling retry on the very first
+            # attempt. The outer `place_order()` wrapper classifies
+            # whatever (if anything) survives retry exhaustion.
+            raise
+        except Exception as e:
+            # Genuinely unclassifiable exception (network error, SDK
+            # internal bug, etc.) — same documented "unknown failure,
+            # treat as transient/network-shaped" fallback Kite/Dhan use.
+            raise BrokerNetworkError(str(e), broker="groww") from e
         data = resp.get("data") if isinstance(resp, dict) else {}
         order_id = (data.get("groww_order_id") or data.get("order_id")
                     if isinstance(data, dict) else None)
