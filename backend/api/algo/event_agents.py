@@ -157,6 +157,12 @@ def _render_breach(rec: dict) -> tuple:
             (x.get("email_subject") or "", x.get("email_body") or ""), list(x.get("channels") or []))
 
 
+def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
+    x = rec.get("extra") or {}
+    return ("GTT not accepted at broker",
+            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}")
+
+
 def _render_error(rec: dict) -> tuple[str, str, str]:
     from backend.shared.helpers.utils import mask_account_in_text
     name = rec.get("logger") or ""
@@ -188,6 +194,7 @@ register_renderer("deploy_sync")(_render_deploy_sync)
 register_renderer("rich_alert")(_render_rich_alert)
 register_renderer("summary")(_render_summary)
 register_renderer("breach")(_render_breach)
+register_renderer("gtt_not_accepted")(_render_gtt_not_accepted)
 
 
 def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | None = None) -> None:
@@ -493,6 +500,15 @@ BREACH_AGENT = {
     "actions": [{"type": "render", "render": "breach"}],
 }
 
+GTT_NOT_ACCEPTED_AGENT = {
+    "slug": "gtt-not-accepted-alert",
+    "name": "GTT not accepted",
+    "conditions": {"log": {"tag": "gtt", "min_level": "ERROR",
+                           "where": {"alert_event": "gtt_not_accepted"}}},
+    "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False}],
+    "actions": [{"type": "render", "render": "gtt_not_accepted"}],
+}
+
 FILL_AGENT = {
     "slug": "fill-alert",
     "name": "Fill alert",
@@ -551,6 +567,7 @@ SEEDED_AGENTS = (
     TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
     TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
+    GTT_NOT_ACCEPTED_AGENT,
 )
 
 

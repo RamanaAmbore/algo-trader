@@ -223,6 +223,9 @@
         ? `${qtyFmt(_qtyFilled)}/${qtyFmt(order.quantity)}`
         : qtyFmt(order.quantity)}
     </span>
+    {#if order.qty_unverified}
+      <span class="log-chip qty-unverified" title="Lot size not loaded: this quantity is shown unconverted">qty ?</span>
+    {/if}
     {#if order.order_type}<span class="log-chip"><span class="log-chip-key">type:</span>{order.order_type}</span>{/if}
     <span class="log-chip"><span class="log-chip-key">price:</span>{_filled != null ? priceFmt(_filled) : _limit != null ? priceFmt(_limit) : '—'}</span>
     {#if _slip != null}
@@ -537,4 +540,5 @@
     border: 1px solid rgba(248, 113, 113, 0.32);
   }
   .gtt-leg-missing { color: var(--c-short); border-color: rgba(248,113,113,0.45); }
+.qty-unverified { color: var(--c-action); }
 </style>

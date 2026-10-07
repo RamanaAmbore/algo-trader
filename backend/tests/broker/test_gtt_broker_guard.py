@@ -208,7 +208,8 @@ class TestApplyPlanLiveValidation:
         )
 
         broker = MagicMock()
-        broker.validate_gtt_exchange.return_value = None  # No error for Kite
+        broker.validate_gtt_exchange.return_value = None
+        broker.get_gtts.side_effect = lambda: [{"id": str(broker.place_gtt.return_value), "status": "active"}]  # No error for Kite
 
         result = apply_plan_live(plan, broker)
 
@@ -243,7 +244,8 @@ class TestApplyPlanLiveValidation:
         )
 
         broker = MagicMock()
-        broker.validate_gtt_exchange.return_value = None  # No error for NSE
+        broker.validate_gtt_exchange.return_value = None
+        broker.get_gtts.side_effect = lambda: [{"id": str(broker.place_gtt.return_value), "status": "active"}]  # No error for NSE
 
         result = apply_plan_live(plan, broker)
 

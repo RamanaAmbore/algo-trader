@@ -875,6 +875,8 @@ class OrderRow(msgspec.Struct):
     exchange_timestamp: Optional[str] = None
     status_message: Optional[str] = None
     tag: Optional[str] = None
+    # True when the broker quantity could not be converted from lots (lot size not loaded).
+    qty_unverified: bool = False
 
 
 class OrdersResponse(msgspec.Struct):

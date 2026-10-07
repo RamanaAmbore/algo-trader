@@ -338,3 +338,32 @@ def test_email_channel_sends_only_to_its_configured_recipients(monkeypatch):
     monkeypatch.setattr(mu, "send_email", lambda name, addr, subj, body: sent.append(addr))
     event_agents._send_email_channel("t", "b", None, email=("s", "<html/>"), recipients=["only@x.com"])
     assert sent == ["only@x.com"]
+
+
+def test_gtt_acceptance_accepts_active_and_rejects_refused(monkeypatch):
+    from backend.api.algo import template_attach as ta
+    class _B:
+        def __init__(self, rows):
+            self.rows = rows
+
+        def get_gtts(self):
+            return self.rows
+
+    assert ta._verify_gtt_accepted(_B([{"id": 7, "status": "active"}]), "7") is None
+    assert "rejected" in ta._verify_gtt_accepted(_B([{"id": 7, "status": "rejected"}]), "7")
+    assert "not present" in ta._verify_gtt_accepted(_B([]), "7")
+
+
+def test_gtt_acceptance_reports_a_failed_read():
+    from backend.api.algo import template_attach as ta
+    class _B:
+        def get_gtts(self):
+            raise RuntimeError("down")
+
+    assert "status read failed" in ta._verify_gtt_accepted(_B(), "7")
+
+
+def test_gtt_not_accepted_agent_is_seeded_and_renders():
+    from backend.api.algo import event_agents as ea
+    assert ea.GTT_NOT_ACCEPTED_AGENT in ea.SEEDED_AGENTS
+    assert ea.validate_seed_spec(ea.GTT_NOT_ACCEPTED_AGENT) == []

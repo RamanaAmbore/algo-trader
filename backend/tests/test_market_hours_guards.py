@@ -245,6 +245,7 @@ class TestApplyTemplateToOrderMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-999"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-999", "status": "active"}]
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
         with patch(
@@ -289,6 +290,7 @@ class TestApplyTemplateToOrderMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-101"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-101", "status": "active"}]
         mock_broker.place_order.return_value = "order-202"
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
@@ -413,6 +415,7 @@ class TestApplyPlanLiveMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-55"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-55", "status": "active"}]
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
         with patch(
@@ -436,6 +439,7 @@ class TestApplyPlanLiveMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-55"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-55", "status": "active"}]
         mock_broker.place_order.return_value = "order-55"
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
@@ -477,6 +481,7 @@ class TestApplyPlanLiveMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-mcx"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-mcx", "status": "active"}]
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 
         with patch(
@@ -499,6 +504,7 @@ class TestApplyPlanLiveMarketHoursGuard:
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"
         mock_broker.place_gtt.return_value = "gtt-77"
+        mock_broker.get_gtts.return_value = [{"id": "gtt-77", "status": "active"}]
         mock_broker.place_order.return_value = "order-77"
         mock_broker.translate_qty.side_effect = lambda e, q, ls: q
 

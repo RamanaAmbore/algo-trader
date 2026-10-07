@@ -873,3 +873,88 @@ def _make_test_plan(
         parent_fill_price=parent_fill_price,
     )
     return plan
+
+
+class TestLimitWingGoesToChase:
+    def _plan(self, order_type):
+        from types import SimpleNamespace
+        from backend.api.algo.template_attach import _ta_live_place_wing
+        plan = SimpleNamespace(
+            wing=SimpleNamespace(order_type=order_type, tradingsymbol="NIFTY26OCT25000PE",
+                                 exchange="NFO", transaction_type="BUY", quantity=75,
+                                 placed_id=None, product="NRML", limit_price=100.0,
+                                 estimated_price=100.0),
+            parent_account="ZG0790",
+        )
+        result = SimpleNamespace(wing_order_id=None, errors=[])
+        return plan, result, _ta_live_place_wing
+
+    def test_limit_wing_is_handed_to_chase_not_placed_directly(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import backend.api.algo.template_attach as ta
+        started = []
+        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: started.append(plan) or True)
+        broker = MagicMock()
+        plan, result, place = self._plan("LIMIT")
+        place(broker, plan, result)
+        assert len(started) == 1
+        broker.place_order.assert_not_called()
+        assert result.wing_order_id is None
+
+    def test_limit_wing_falls_back_to_direct_placement_without_a_loop(self, monkeypatch):
+        import backend.api.algo.template_attach as ta
+        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: False)
+        monkeypatch.setattr(ta, "_place_wing_leg", lambda broker, plan: "W1")
+        plan, result, place = self._plan("LIMIT")
+        place(object(), plan, result)
+        assert result.wing_order_id == "W1"
+
+    def test_market_wing_is_placed_directly(self, monkeypatch):
+        import backend.api.algo.template_attach as ta
+        called = []
+        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: called.append(plan) or True)
+        monkeypatch.setattr(ta, "_place_wing_leg", lambda broker, plan: "W2")
+        plan, result, place = self._plan("MARKET")
+        place(object(), plan, result)
+        assert called == []
+        assert result.wing_order_id == "W2"
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_records_a_row_and_chases_it(monkeypatch):
+    from types import SimpleNamespace
+    import backend.api.algo.template_attach as ta
+    import backend.api.algo.chase as ch
+    import backend.api.database as db
+    saved, chased = [], []
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def add(self, row):
+            row.id = 42
+            saved.append(row)
+
+        async def commit(self):
+            pass
+
+    async def fake_chase(**kwargs):
+        chased.append(kwargs)
+        return None
+
+    monkeypatch.setattr(db, "async_session", lambda: _Sess())
+    monkeypatch.setattr(ch, "chase_order", fake_chase)
+    plan = SimpleNamespace(
+        parent_account="ZG0790",
+        wing=SimpleNamespace(tradingsymbol="NIFTY26OCT25000PE", exchange="NFO",
+                             transaction_type="BUY", quantity=75, product="NRML",
+                             limit_price=100.0, order_type="LIMIT"),
+    )
+    await ta._chase_wing(plan)
+    assert saved[0].source == "template_wing" and saved[0].status == "OPEN"
+    assert chased[0]["algo_order_id"] == 42
+    assert chased[0]["quantity"] == 75

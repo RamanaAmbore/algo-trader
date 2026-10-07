@@ -38,6 +38,7 @@ SAMPLES = {
                    "subject_detail": "ZG0790", "sim_mode": False, "mode_tag": ""},
     "summary": {"msg_type": "open", "ist_display": "10:15:30 IST", "tg_table": "row",
                 "email_table_html": "<table/>", "subject_detail": "Summary"},
+    "gtt_not_accepted": {"symbol": "NIFTY", "label": "tp", "gtt_id": "G1", "reason": "not present"},
     "breach": {"agent_name": "Loss", "ntfy_body": "n", "telegram_body": "t",
                "email_subject": "s", "email_body": "b", "channels": []},
 }

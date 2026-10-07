@@ -37,3 +37,28 @@ async def test_get_lot_size_falls_back_to_stale_value_when_refresh_fails(clean_i
     with patch.object(kite, "ensure_lot_index", new=AsyncMock(return_value=False)):
         assert await kite.get_lot_size("MCX", "GOLDM26OCTFUT") == 10
         assert await kite.get_lot_size("MCX", "UNKNOWN") == 0
+
+
+def test_row_flags_unverified_mcx_quantity_when_lot_size_is_missing(monkeypatch):
+    from backend.api.routes import orders_helpers as oh
+    monkeypatch.setattr(kite, "_LOT_INDEX", {})
+    row = oh._row_from_dict({"order_id": "1", "exchange": "MCX", "tradingsymbol": "CRUDEOIL26OCT8400CE",
+                             "quantity": 3}, "ZG0790", "zerodha_kite")
+    assert row.qty_unverified is True
+
+
+def test_row_is_verified_when_lot_size_is_loaded(monkeypatch):
+    from backend.api.routes import orders_helpers as oh
+    monkeypatch.setattr(kite, "_LOT_INDEX", {("MCX", "CRUDEOIL26OCT8400CE"): 100})
+    row = oh._row_from_dict({"order_id": "1", "exchange": "MCX", "tradingsymbol": "CRUDEOIL26OCT8400CE",
+                             "quantity": 3}, "ZG0790", "zerodha_kite")
+    assert row.qty_unverified is False
+    assert row.quantity == 300
+
+
+def test_nfo_row_is_never_flagged(monkeypatch):
+    from backend.api.routes import orders_helpers as oh
+    monkeypatch.setattr(kite, "_LOT_INDEX", {})
+    row = oh._row_from_dict({"order_id": "1", "exchange": "NFO", "tradingsymbol": "NIFTY26OCTFUT",
+                             "quantity": 75}, "ZG0790", "zerodha_kite")
+    assert row.qty_unverified is False

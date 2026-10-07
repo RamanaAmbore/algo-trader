@@ -1815,6 +1815,38 @@ def _place_wing_leg(broker, plan: TemplatePlan) -> str:
     return str(order_id)
 
 
+_GTT_REJECTED_STATUSES = frozenset({"rejected", "cancelled", "canceled", "deleted", "expired", "disabled"})
+_GTT_ACCEPTED_STATUSES = frozenset({"active", "triggered", "enabled", "pending"})
+
+
+def _gtt_id_of(g: dict) -> str:
+    for key in ("id", "trigger_id", "gtt_id"):
+        if g.get(key) is not None:
+            return str(g[key])
+    return ""
+
+
+def _verify_gtt_accepted(broker, gtt_id) -> str | None:
+    """None when the broker lists this GTT as accepted. Otherwise the reason it is not.
+
+    A single read of the broker's GTT list after placement. Chase does not reprice
+    or replace a GTT; this only confirms that the broker took it.
+    """
+    try:
+        listed = broker.get_gtts() or []
+    except Exception as e:  # noqa: BLE001
+        return f"status read failed: {e}"
+    for g in listed:
+        if _gtt_id_of(g) == str(gtt_id):
+            status = str(g.get("status", "")).lower()
+            if status in _GTT_REJECTED_STATUSES:
+                return f"broker status {status}"
+            if status in _GTT_ACCEPTED_STATUSES or not status:
+                return None
+            return f"unrecognised broker status {status}"
+    return "not present in the broker's GTT list"
+
+
 def _ta_live_place_one_gtt(
     broker,
     plan: TemplatePlan,
@@ -1846,6 +1878,15 @@ def _ta_live_place_one_gtt(
         )
         spec.placed_id = str(gtt_id)
         result.gtt_ids.append(spec.placed_id)
+        _gtt_reason = _verify_gtt_accepted(broker, spec.placed_id)
+        if _gtt_reason:
+            result.errors.append(f"GTT {spec.label} not accepted at broker: {_gtt_reason}")
+            logger.error(
+                "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
+                extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+                       "symbol": plan.parent_symbol, "label": spec.label,
+                       "gtt_id": str(spec.placed_id), "reason": _gtt_reason},
+            )
         if pair_two_singles and idx == 0:
             return spec.placed_id
         if pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:
@@ -1861,15 +1902,68 @@ def _ta_live_place_one_gtt(
     return pair_first_id
 
 
+async def _chase_wing(plan: TemplatePlan) -> None:
+    """Record the wing as an order row, then chase it until it fills.
+
+    The row makes the wing visible in the order list and lets chase recovery
+    find it after a restart.
+    """
+    from backend.api.algo.chase import chase_order, ChaseConfig
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    async with async_session() as s:
+        row = AlgoOrder(
+            account=plan.parent_account, symbol=plan.wing.tradingsymbol,
+            exchange=plan.wing.exchange, transaction_type=plan.wing.transaction_type,
+            quantity=int(plan.wing.quantity), status="OPEN", engine="live", mode="live",
+            product=plan.wing.product, source="template_wing",
+            initial_price=(float(plan.wing.limit_price) if plan.wing.limit_price else None),
+        )
+        s.add(row)
+        await s.commit()
+        algo_order_id = row.id
+    return await chase_order(
+        account=plan.parent_account,
+        symbol=plan.wing.tradingsymbol,
+        transaction_type=plan.wing.transaction_type,
+        quantity=int(plan.wing.quantity),
+        cfg=ChaseConfig(exchange=plan.wing.exchange),
+        algo_order_id=algo_order_id,
+    )
+
+
+def _start_wing_chase(plan: TemplatePlan) -> bool:
+    """Hand a LIMIT wing leg to chase, which monitors it until it fills.
+
+    Runs on the main event loop in the background, the same way the take-profit
+    helper does. Returns False when no main loop is running, so the caller can
+    fall back to a direct placement.
+    """
+    import asyncio
+    from backend.api.persistence import write_queue
+    loop = write_queue.get_main_loop()
+    if loop is None or not loop.is_running():
+        return False
+    asyncio.run_coroutine_threadsafe(_chase_wing(plan), loop)
+    return True
+
+
 def _ta_live_place_wing(
     broker,
     plan: TemplatePlan,
     result: AttachResult,
 ) -> None:
-    """Translate qty and call broker.place_order for the wing leg."""
+    """LIMIT wing legs go to chase; anything else is placed directly."""
     if plan.wing is None:
         return
     try:
+        if str(plan.wing.order_type).upper() == "LIMIT" and _start_wing_chase(plan):
+            plan.wing.placed_id = "chase"
+            result.wing_order_id = None
+            return
+        if str(plan.wing.order_type).upper() == "LIMIT":
+            logger.warning("[WING-CHASE] no main loop; placing LIMIT wing directly for %s",
+                           plan.wing.tradingsymbol)
         order_id = _place_wing_leg(broker, plan)
         plan.wing.placed_id = order_id
         result.wing_order_id = plan.wing.placed_id

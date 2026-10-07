@@ -509,6 +509,24 @@ def _mcx_row_qty_to_contracts(exchange: str, symbol: str, broker_id: str, qty) -
     return _qty_int
 
 
+def _mcx_qty_unverified(exchange: str, symbol: str, broker_id: str, qty) -> bool:
+    """True when this row's MCX/NCO quantity is still in lots because the lot size is not loaded."""
+    try:
+        if int(qty or 0) <= 0:
+            return False
+    except (TypeError, ValueError):
+        return False
+    if (exchange or "").upper() not in ("MCX", "NCO"):
+        return False
+    if str(broker_id or "").lower() not in _MCX_LOTS_CONVENTION_BROKER_IDS:
+        return False
+    try:
+        from backend.brokers.adapters.kite import _LOT_INDEX
+        return _LOT_INDEX.get((exchange, symbol), 0) <= 1
+    except Exception:
+        return True
+
+
 def _row_from_dict(d: dict, account: str, broker_id: str = "") -> OrderRow:
     """Build an `OrderRow` from a broker-native order dict.
 
@@ -530,6 +548,7 @@ def _row_from_dict(d: dict, account: str, broker_id: str = "") -> OrderRow:
         tradingsymbol=symbol,
         transaction_type=str(d.get("transaction_type", "")),
         quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("quantity")),
+        qty_unverified=_mcx_qty_unverified(exchange, symbol, broker_id, d.get("quantity")),
         pending_quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("pending_quantity")),
         filled_quantity=_mcx_row_qty_to_contracts(exchange, symbol, broker_id, d.get("filled_quantity")),
         price=float(d.get("price") or 0),

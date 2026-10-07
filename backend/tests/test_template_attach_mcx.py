@@ -97,6 +97,7 @@ def _make_mock_broker(lot_size: int) -> MagicMock:
     broker = MagicMock()
     broker.broker_id = "zerodha_kite"
     broker.place_gtt.return_value = "gtt-123"
+    broker.get_gtts.return_value = [{"id": "gtt-123", "status": "active"}]
     broker.place_order.return_value = "order-456"
     broker.translate_qty.side_effect = lambda exch, qty, ls: to_kite_qty(exch, qty, ls)
     return broker
@@ -479,6 +480,7 @@ def test_g1_guard_skips_when_lot_size_one():
     broker = MagicMock()
     broker.broker_id = "zerodha_kite"
     broker.place_gtt.return_value = "gtt-789"
+    broker.get_gtts.return_value = [{"id": "gtt-789", "status": "active"}]
     broker.translate_qty.side_effect = lambda exch, qty, ls: qty  # NSE passthrough
 
     # Should not error even if qty=7 (odd number)
