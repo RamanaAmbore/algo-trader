@@ -11,6 +11,7 @@
     fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
     fetchSimStatus,
     startSimForAgent, aiDraftAgent, fetchGrammarTokens,
+    fetchAgentRenderers, fetchSetting,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select   from '$lib/Select.svelte';
@@ -257,12 +258,223 @@
   // The four supported channels (matches backend/api/algo/events.py:dispatch).
   // Each one is one row in the edit-form checkbox grid. Description
   // shown next to the channel name so operators pick the right one.
+  // THRESHOLD-agent channel set only — do NOT reuse for event agents,
+  // which use a different, backend-enforced set (EVENT_CHANNELS below).
   const ALERT_CHANNELS = [
     { id: 'telegram',  label: 'Telegram',  desc: 'Push to the ops Telegram group' },
     { id: 'email',     label: 'Email',     desc: 'SMTP to alert recipients' },
     { id: 'websocket', label: 'WebSocket', desc: 'Live UI toast / chart overlay' },
     { id: 'log',       label: 'Log',       desc: 'Server log file only (no push)' },
   ];
+
+  // EVENT-agent channel set (matches backend/api/algo/event_agents.py:CHANNELS).
+  // Deliberately separate from ALERT_CHANNELS — event agents (kind='event')
+  // are dispatched by a different pipeline with a different channel list
+  // (ntfy + telegram_info instead of websocket/log).
+  const EVENT_CHANNELS = [
+    { id: 'ntfy',           label: 'ntfy',           desc: 'Push via ntfy.sh (supports priority)' },
+    { id: 'telegram',       label: 'Telegram',        desc: 'Push to the ops Telegram group' },
+    { id: 'telegram_info',  label: 'Telegram (info)', desc: 'Low-noise info channel' },
+    { id: 'email',          label: 'Email',            desc: 'SMTP to alert recipients' },
+  ];
+  // event_agents.py seed specs use CRITICAL (chase-cancel, partial-gtt);
+  // the threshold editor's LOG_LEVELS below deliberately stays unchanged.
+  const EVENT_LOG_LEVELS = ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'];
+
+  // ── "+ New Agent" entry point ──────────────────────────────────────
+  // Independent of the Ask-AI flow above. null = closed, 'pick' = kind
+  // selector shown, 'threshold' = reuses the inline editor (editForm,
+  // editing='__new__'), 'event' = the dedicated event-agent builder.
+  let creatingKind  = $state(/** @type {'pick'|'threshold'|'event'|null} */ (null));
+  let newAgentSlug  = $state('');
+
+  function toggleNewAgentPanel() {
+    if (creatingKind) {
+      creatingKind = null;
+      if (editing === '__new__') editing = null;
+    } else {
+      creatingKind = 'pick';
+    }
+  }
+
+  /** @type {{key:string, label:string, description?:string}[]} */
+  let renderers      = $state([]);
+  let renderersError = $state('');
+  async function loadRenderers() {
+    try {
+      const rows = await fetchAgentRenderers();
+      renderers = Array.isArray(rows) ? rows : [];
+      renderersError = '';
+    } catch (e) {
+      // Never clobber a previously-successful list with [] on a
+      // transient failure (templates.js cache-poisoning rule).
+      renderersError = e.message || 'Renderers unavailable';
+    }
+  }
+
+  // Global default trade mode — informational "Global: X" display next
+  // to the per-agent trade_mode override (which already exists as the
+  // editable field; no separate override mechanism is added here).
+  let globalDefaultTradeMode = $state('paper');
+  async function loadGlobalDefaultTradeMode() {
+    try {
+      const s = await fetchSetting('execution.default_agent_trade_mode');
+      globalDefaultTradeMode = s?.value || 'paper';
+    } catch (_) { /* keep last-known value */ }
+  }
+
+  /** @type {{slug:string, name:string, description:string, renderer:string,
+   *          tag:string, minLevel:string, whereKey:string, whereValue:string,
+   *          channels: Record<string,boolean>, ntfyPriority:string,
+   *          gateBypass: Record<string,boolean>}} */
+  let eventCreateForm = $state({
+    slug: '', name: '', description: '', renderer: '',
+    tag: '', minLevel: 'INFO', whereKey: '', whereValue: '',
+    channels:   { ntfy: false, telegram: false, telegram_info: false, email: false },
+    ntfyPriority: 'normal',
+    gateBypass: { ntfy: false, telegram: false, telegram_info: false, email: false },
+  });
+  let eventCreateErrors = $state(/** @type {string[]} */ ([]));
+  let eventCreateBusy   = $state(false);
+
+  /** Reset state and open either the threshold editor (blank editForm)
+   *  or the event-agent builder (blank eventCreateForm). */
+  function startCreate(/** @type {'threshold'|'event'} */ kind) {
+    creatingKind = kind;
+    validationErrors = []; validationGrammar = '';
+    if (kind === 'threshold') {
+      editing = '__new__';
+      expandedSlug = null;
+      newAgentSlug = '';
+      editForm = {
+        name: '', long_name: '', description: '',
+        conditions: '{}', events: '[]', actions: '[]',
+        cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
+        fire_at_time: '',
+        lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
+        tier: 'medium', topic: 'general',
+        trade_mode: 'paper', debounce_minutes: 0,
+        tags: '', blackout_windows: '[]',
+      };
+    } else {
+      editing = null;
+      eventCreateErrors = [];
+      eventCreateForm = {
+        slug: '', name: '', description: '', renderer: '',
+        tag: '', minLevel: 'INFO', whereKey: '', whereValue: '',
+        channels:   { ntfy: false, telegram: false, telegram_info: false, email: false },
+        ntfyPriority: 'normal',
+        gateBypass: { ntfy: false, telegram: false, telegram_info: false, email: false },
+      };
+      if (!renderers.length) loadRenderers();
+    }
+  }
+
+  /** Build the create payload for a new event agent and POST it.
+   *  Full backend validation errors surface inline (eventCreateErrors). */
+  async function saveEventCreate() {
+    eventCreateErrors = [];
+    const f = eventCreateForm;
+    const slug = (f.slug.trim() || f.name.trim())
+      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
+    if (!slug)            { eventCreateErrors = ['Slug or name is required']; return; }
+    if (!f.renderer)      { eventCreateErrors = ['Pick a renderer']; return; }
+    if (!f.tag.trim())    { eventCreateErrors = ['Log tag is required']; return; }
+    const enabledIds = EVENT_CHANNELS.filter((ch) => f.channels[ch.id]).map((ch) => ch.id);
+    if (!enabledIds.length) { eventCreateErrors = ['Pick at least one channel']; return; }
+    const events = enabledIds.map((id) => {
+      const row = /** @type {any} */ ({ channel: id, enabled: true });
+      if (id === 'ntfy' && f.ntfyPriority !== 'normal') row.priority = f.ntfyPriority;
+      if (f.gateBypass[id]) row.gate = false;
+      return row;
+    });
+    const conditions = {
+      log: {
+        tag: f.tag.trim(),
+        min_level: f.minLevel,
+        ...(f.whereKey.trim() ? { where: { [f.whereKey.trim()]: f.whereValue } } : {}),
+      },
+    };
+    eventCreateBusy = true;
+    try {
+      await createAgent({
+        slug, name: f.name.trim() || slug,
+        description: f.description || '',
+        kind: 'event',
+        conditions, events,
+        actions: [{ type: 'render', render: f.renderer }],
+      });
+      toast.success(`Agent created: ${slug}`);
+      creatingKind = null;
+      await loadAgents();
+    } catch (e) {
+      toast.error(`Create failed: ${e.message}`);
+      eventCreateErrors = [e.fullMessage || e.message];
+    } finally { eventCreateBusy = false; }
+  }
+
+  /** Read-only renderer key for an existing event agent (actions[0].render). */
+  function eventRendererKey(/** @type {any} */ agent) {
+    return (agent?.actions || []).find((a) => a?.type === 'render')?.render || null;
+  }
+  function rendererLabel(/** @type {string|null} */ key) {
+    if (!key) return '—';
+    return renderers.find((r) => r.key === key)?.label || key;
+  }
+
+  /** Per-channel priority (ntfy-only in practice) — read/write editForm.events. */
+  function channelPriority(/** @type {string} */ channelId) {
+    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
+    return list.find((e) => e?.channel === channelId)?.priority || 'normal';
+  }
+  function setChannelPriority(/** @type {string} */ channelId, /** @type {string} */ priority) {
+    let list = [];
+    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const idx = list.findIndex((e) => e?.channel === channelId);
+    if (idx < 0) return;
+    const row = { ...list[idx] };
+    if (priority === 'normal') delete row.priority; else row.priority = priority;
+    list[idx] = row;
+    editForm.events = JSON.stringify(list, null, 2);
+  }
+  /** Per-channel capability gate (default true = respect capability flag). */
+  function channelGate(/** @type {string} */ channelId) {
+    const list = parsedEvents.ok ? (parsedEvents.value || []) : [];
+    const row = list.find((e) => e?.channel === channelId);
+    return row?.gate !== undefined ? row.gate : true;
+  }
+  function setChannelGate(/** @type {string} */ channelId, /** @type {boolean} */ gate) {
+    let list = [];
+    try { list = JSON.parse(editForm.events || '[]'); } catch { list = []; }
+    if (!Array.isArray(list)) list = [];
+    const idx = list.findIndex((e) => e?.channel === channelId);
+    if (idx < 0) return;
+    const row = { ...list[idx] };
+    if (gate === true) delete row.gate; else row.gate = gate;
+    list[idx] = row;
+    editForm.events = JSON.stringify(list, null, 2);
+  }
+
+  /** Minimal save path for an existing event agent — channels (incl.
+   *  per-channel priority/gate) only. Renderer / condition / slug are
+   *  fixed at creation and never sent. Does NOT go through
+   *  runValidation() (that posts conditions to the grammar validator,
+   *  irrelevant here since conditions never change). */
+  async function saveEventEdit(/** @type {any} */ agent) {
+    let events;
+    try { events = JSON.parse(editForm.events || '[]'); }
+    catch (e) { validationErrors = [`events JSON invalid: ${e.message}`]; return; }
+    try {
+      await updateAgent(editing, { events });
+      editing = null; validationErrors = [];
+      toast.success(`Agent saved: ${agent.name}`);
+      await loadAgents();
+    } catch (e) {
+      toast.error(`Save failed: ${e.message}`);
+      validationErrors = [e.fullMessage || e.message];
+    }
+  }
 
   // ── Log tags and log matches ───────────────────────────────────────
   // Tags come from the grammar registry (grammar_kind 'log'). A channel row may carry
@@ -491,14 +703,30 @@
     // "iron-condor, nifty, review-q3" — round-tripped to a list.
     const tagsList = String(editForm.tags || '')
       .split(',').map(t => t.trim()).filter(Boolean);
+    const isCreate = editing === '__new__';
+    if (isCreate && !newAgentSlug.trim()) {
+      validationErrors = ['Slug is required'];
+      return;
+    }
     try {
-      await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
+      if (isCreate) {
+        await createAgent({
+          slug: newAgentSlug.trim(),
+          kind: 'threshold',
+          ..._buildEditPayload(tagsList, bwResult.value),
+        });
+        toast.success(`Agent created: ${editForm.name}`);
+        creatingKind = null;
+      } else {
+        await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
+        toast.success(`Agent saved: ${editForm.name}`);
+      }
       editing = null;
       validationErrors = []; validationGrammar = '';
-      toast.success(`Agent saved: ${editForm.name}`);
       await loadAgents();
     } catch (e) {
       toast.error(`Save failed: ${e.message}`);
+      validationErrors = [e.fullMessage || e.message];
     }
   }
 
@@ -551,6 +779,12 @@
     email:     `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="4" width="20" height="16" rx="2"/><polyline points="2,4 12,13 22,4"/></svg>`,
     websocket: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="10"/><line x1="2" y1="12" x2="22" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>`,
     log:       `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/></svg>`,
+    // Event-agent channels (EVENT_CHANNELS) — ntfy gets its own bell
+    // glyph; telegram_info reuses the telegram paper-plane (same
+    // underlying transport, lower-noise routing) so the icon strip
+    // stays recognizable without a third distinct shape.
+    ntfy:          `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>`,
+    telegram_info: `<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#22d3ee" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>`,
   };
   function enabledChannels(/** @type {any[]} */ events) {
     if (!Array.isArray(events)) return [];
@@ -654,6 +888,7 @@
   onMount(() => {
     loadAll();
     loadLogTags();
+    loadGlobalDefaultTradeMode();
     connectWS();
     pollSimStatus();
     refreshTeardown   = visibleInterval(loadAll, 30000);
@@ -694,6 +929,12 @@
        Default-size icons sit RIGHT of ml-auto). -->
   <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
     {aiOpen ? '× Close AI' : '✦ Ask AI'}
+  </button>
+  <!-- "+ New Agent" — independent of Ask-AI. Kind selector (Threshold
+       reuses the inline editor form; Notification opens the dedicated
+       event-agent builder). -->
+  <button class="ai-pill new-agent-pill" onclick={toggleNewAgentPanel}>
+    {creatingKind ? '× Close' : '+ New Agent'}
   </button>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
@@ -754,6 +995,43 @@
   </div>
 {/if}
 
+{#if creatingKind}
+  <!-- "+ New Agent" panel. 'pick' = kind selector only; 'threshold' reuses
+       thresholdEditorBody(null) below (the exact same inline-editor form
+       threshold agents already use, seeded blank); 'event' renders the
+       dedicated event-agent builder (eventCreateBuilder snippet). -->
+  <div class="ai-card new-agent-card">
+    {#if creatingKind === 'pick'}
+      <div class="ai-head">
+        <span class="ai-title" style="color: var(--c-long)">+ New Agent</span>
+        <span class="ai-hint">Pick a kind</span>
+      </div>
+      <div class="flex gap-2 mt-2">
+        <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-3"
+          onclick={() => startCreate('threshold')}>Threshold</button>
+        <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-3"
+          onclick={() => startCreate('event')}>Notification</button>
+      </div>
+      <p class="text-[length:var(--fs-xs)] opacity-60 mt-2">
+        Threshold — fires when a metric (P&amp;L, margin, etc.) crosses a value.
+        Notification — fires on a matching log event (renderer-driven, no metric).
+      </p>
+    {:else if creatingKind === 'threshold'}
+      <div class="ai-head">
+        <span class="ai-title" style="color: var(--c-long)">New Threshold Agent</span>
+        <span class="ai-hint">Lands using the same editor as an existing agent — review before activating.</span>
+      </div>
+      <div class="mt-2 mb-1 max-w-xs">
+        <span class="field-label">Slug</span>
+        <input class="field-input" bind:value={newAgentSlug} placeholder="my-new-agent" />
+      </div>
+      {@render thresholdEditorBody(null)}
+    {:else if creatingKind === 'event'}
+      {@render eventCreateBuilder()}
+    {/if}
+  </div>
+{/if}
+
 <!-- Recursive tree renderer used by both the normal expanded view and the
      inline editor. Grammar nodes are:
        { all: [...] } | { any: [...] } | { not: node } | { metric, scope, op, value } -->
@@ -784,84 +1062,13 @@
   {/if}
 {/snippet}
 
-<!-- Grouped agent list — compact rows, click to expand.
-     Two-column magazine-flow on ≥1024 px (lg:columns-2): items
-     fill column 1 top-to-bottom, then column 2 starts; expanding a
-     card just grows its own column without pulling its row-neighbour
-     down (true CSS-columns behaviour, unlike a 2-col Grid where
-     row siblings would equalise heights). Single column on mobile. -->
-{#each groupedAgents() as group}
-  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
-    {group.name}
-    <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
-  </h2>
-  <div class="page-grid agent-group-grid mb-3">
-    {#each group.agents as agent}
-      {@const isOpen = expandedSlug === agent.slug}
-      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
-           data-status={agent.status}
-           style="padding: 0">
-        <!-- Compact row (always visible). Div + role="button" so the inner
-             ON/OFF can stay a real <button> — nested buttons aren't valid. -->
-        <div role="button" tabindex="0"
-          aria-expanded={isOpen}
-          onclick={() => expandedSlug = isOpen ? null : agent.slug}
-          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedSlug = isOpen ? null : agent.slug; } }}
-          class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
-          <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
-          <!-- Name column: display name on top, 3-part long_name
-               (condition - alert - action) below in muted mono so an
-               operator can scan "what does this agent do" without
-               expanding the row. -->
-          <span class="flex-1 min-w-0 flex flex-col leading-tight">
-            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{agent.name}</span>
-            {#if agent.long_name}
-              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
-            {/if}
-          </span>
-          <!-- Notify-channel icon strip — one tiny emoji per enabled
-               channel. Grouped on the right alongside the trade-mode +
-               ON/OFF buttons + chevron so every controller-style affordance
-               clusters in one visual zone. Operator scans "📨✉" to know
-               "this agent pages Telegram + email"; the tooltip carries
-               the full channel list for accessibility. -->
-          <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(agent.events).join(', ') || 'none')}>
-            {#each enabledChannels(agent.events) as ch (ch)}
-              <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
-            {/each}
-          </span>
-          <button type="button"
-            onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
-            title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
-            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
-              {(agent.trade_mode || 'paper') === 'live'
-                ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                : 'bg-sky-500/15 text-sky-400 border-sky-500/40'}">
-            {(agent.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
-          </button>
-          <button type="button"
-            onclick={(e) => { e.stopPropagation(); toggle(agent); }}
-            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
-              {agent.status !== 'inactive'
-                ? 'bg-green-500/15 text-green-400 border-green-500/40'
-                : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
-            {agent.status !== 'inactive' ? 'ON' : 'OFF'}
-          </button>
-          <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
-        </div>
-
-        {#if isOpen}
-          {#if editing === agent.slug}
-            <!-- ──────── Inline editor (form on top, tree preview below) ──────── -->
-            <div class="px-3 pb-3 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
-              {#if agent.kind === 'event'}
-                <div class="mb-3 p-2 rounded bg-[#7dd3fc]/10 text-[#7dd3fc] text-[length:var(--fs-sm)] border border-[#7dd3fc]/30">
-                  System event agent — this agent is seeded by the alert pipeline. Its condition, channels, and
-                  renderer are read-only here. Use Activate / Deactivate to change whether it fires.
-                </div>
-              {/if}
-              <!-- ── FORM FIELDS ── -->
-              <fieldset disabled={agent.kind === 'event'} style="display:contents;">
+<!-- Threshold-agent editor body — used BOTH to edit an existing
+     threshold-kind agent (agent = the real row, editing=agent.slug) and
+     to create a brand-new one (agent = null, editing='__new__'). Every
+     field is always editable here — event-kind agents never reach this
+     snippet (they render eventEditorBody instead), so no fieldset-level
+     disable is needed. -->
+{#snippet thresholdEditorBody(/** @type {any} */ agent)}
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <span class="field-label">Name</span>
@@ -919,6 +1126,14 @@
                       { value: 'paper', label: 'Paper (simulated)' },
                       { value: 'live',  label: 'Live (real broker)' },
                     ]} />
+                  <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1">
+                    Global default: <b>{globalDefaultTradeMode.toUpperCase()}</b>
+                    {#if editForm.trade_mode !== globalDefaultTradeMode}
+                      <span class="text-[var(--c-action)]">(overridden)</span>
+                    {:else}
+                      <span class="opacity-70">(inherited)</span>
+                    {/if}
+                  </div>
                 </div>
                 <div>
                   <span class="field-label">
@@ -945,12 +1160,12 @@
                       { value: 'n_fires',    label: 'N fires' },
                       { value: 'until_date', label: 'Until date' },
                     ]} />
-                  {#if lifespanChip(agent)}
+                  {#if agent && lifespanChip(agent)}
                     {@const _ls = lifespanChip(agent)}
                     <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1" title={_ls.tooltip}>
                       Current: <span class={'lifespan-chip lifespan-chip-' + _ls.color}>{_ls.label}</span>
                     </div>
-                  {:else if agent.lifespan_type === 'persistent'}
+                  {:else if !agent || agent.lifespan_type === 'persistent'}
                     <div class="text-[length:var(--fs-xs)] text-[var(--c-muted)] mt-1 italic">
                       Persistent — fires until manually deactivated.
                     </div>
@@ -1161,17 +1376,14 @@
                 </div>
               {/if}
 
-              </fieldset>
-
               <div class="flex gap-2 mt-3">
                 <button type="button" onclick={async () => { await runValidation(); }}
-                  disabled={agent.kind === 'event'}
                   class="text-[length:var(--fs-md)] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold disabled:opacity-40">
                   Validate
                 </button>
-                <button type="button" onclick={saveEdit} disabled={agent.kind === 'event'}
-                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">Save</button>
-                <button type="button" onclick={() => { editing = null; validationErrors = []; validationGrammar = ''; }}
+                <button type="button" onclick={saveEdit}
+                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">{agent ? 'Save' : 'Create'}</button>
+                <button type="button" onclick={() => { editing = null; creatingKind = null; validationErrors = []; validationGrammar = ''; }}
                   class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
               </div>
 
@@ -1243,6 +1455,266 @@
                   </div>
                 </div>
               </div>
+{/snippet}
+
+<!-- Event-agent editor body (existing event-kind agents only). Renderer,
+     condition, and slug are FIXED at creation — shown read-only. Channel
+     enabled/priority/capability-gate stay editable per plan item 3. -->
+{#snippet eventEditorBody(/** @type {any} */ agent)}
+              <div class="mb-3 p-2 rounded bg-[#7dd3fc]/10 text-[#7dd3fc] text-[length:var(--fs-sm)] border border-[#7dd3fc]/30">
+                System event agent — renderer, condition, and slug are fixed at creation.
+                Channels, priority, and the capability gate stay editable below.
+                Use Activate / Deactivate to change whether it fires.
+              </div>
+              <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+                <div>
+                  <span class="field-label">Slug <span class="opacity-50">(fixed)</span></span>
+                  <input class="field-input" value={agent.slug} disabled />
+                </div>
+                <div>
+                  <span class="field-label">Renderer <span class="opacity-50">(fixed)</span></span>
+                  <input class="field-input" value={rendererLabel(eventRendererKey(agent))} disabled />
+                </div>
+              </div>
+              <div class="mb-3">
+                <span class="field-label">Condition <span class="opacity-50">(fixed)</span></span>
+                <div class="preview-tree">{@render renderCondNode(agent.conditions)}</div>
+              </div>
+              <div class="mb-1">
+                <span class="field-label">Alert channels</span>
+                <div class="channel-grid">
+                  {#each EVENT_CHANNELS as ch}
+                    <label class="channel-row">
+                      <input type="checkbox"
+                             class="channel-check"
+                             checked={isChannelEnabled(ch.id)}
+                             onchange={(e) => toggleChannel(ch.id, /** @type {HTMLInputElement} */(e.target).checked)} />
+                      <span class="channel-label">{ch.label}</span>
+                      <span class="channel-desc">{ch.desc}</span>
+                    </label>
+                    {#if isChannelEnabled(ch.id)}
+                      <div class="channel-tags" style="padding-left: 1.4rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
+                        {#if ch.id === 'ntfy'}
+                          <span class="text-[length:var(--fs-xs)] opacity-60">Priority</span>
+                          <Select ariaLabel="Priority" value={channelPriority(ch.id)}
+                            onValueChange={(v) => setChannelPriority(ch.id, String(v))}
+                            options={[
+                              { value: 'normal', label: 'normal' },
+                              { value: 'high',   label: 'high' },
+                              { value: 'urgent', label: 'urgent' },
+                            ]} />
+                        {/if}
+                        <label class="flex items-center gap-1 text-[length:var(--fs-xs)] opacity-70 cursor-pointer">
+                          <input type="checkbox" checked={channelGate(ch.id) === false}
+                            onchange={(e) => setChannelGate(ch.id, /** @type {HTMLInputElement} */(e.target).checked ? false : true)} />
+                          Always send (bypass capability gate)
+                        </label>
+                      </div>
+                    {/if}
+                  {/each}
+                </div>
+              </div>
+              {#if validationErrors.length}
+                <div class="mt-2 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
+                  <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
+                </div>
+              {/if}
+              <div class="flex gap-2 mt-3">
+                <button type="button" onclick={() => saveEventEdit(agent)}
+                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4">Save</button>
+                <button type="button" onclick={() => { editing = null; validationErrors = []; }}
+                  class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
+              </div>
+{/snippet}
+
+<!-- New event-agent builder (kind='event' creation). Renderer fetched
+     live from GET /api/agents/renderers — never hardcoded. -->
+{#snippet eventCreateBuilder()}
+  <div class="ai-head">
+    <span class="ai-title" style="color: var(--c-long)">New Notification Agent</span>
+    <span class="ai-hint">Fires on a matching log event, not a threshold tick.</span>
+  </div>
+  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
+    <div>
+      <span class="field-label">Name</span>
+      <input class="field-input" bind:value={eventCreateForm.name} placeholder="My alert" />
+    </div>
+    <div>
+      <span class="field-label">Slug <span class="opacity-50">(auto from name if blank)</span></span>
+      <input class="field-input" bind:value={eventCreateForm.slug} placeholder="my-alert" />
+    </div>
+    <div class="md:col-span-2">
+      <span class="field-label">Description</span>
+      <input class="field-input" bind:value={eventCreateForm.description} />
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <span class="field-label">
+      Renderer
+      <InfoHint popup panel title="Renderer" text="The server-side template that formats this event into a message. Fetched live from the alert pipeline — never hardcoded in the frontend." />
+    </span>
+    {#if renderersError && !renderers.length}
+      <div class="text-[length:var(--fs-sm)] text-red-300">
+        {renderersError} <button type="button" class="underline" onclick={loadRenderers}>Retry</button>
+      </div>
+    {:else}
+      <div class="flex flex-wrap gap-1">
+        {#each renderers as r}
+          <button type="button"
+            class="tag-chip" class:on={eventCreateForm.renderer === r.key}
+            title={r.description || ''}
+            onclick={() => eventCreateForm.renderer = r.key}>{r.label}</button>
+        {/each}
+        {#if !renderers.length}<span class="text-[length:var(--fs-sm)] opacity-60">loading…</span>{/if}
+      </div>
+    {/if}
+  </div>
+
+  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
+    <div>
+      <span class="field-label">Log tag</span>
+      <select class="log-match-select w-full" bind:value={eventCreateForm.tag} aria-label="Log tag">
+        <option value="">Tag…</option>
+        {#each logTags as t}<option value={t}>{t}</option>{/each}
+      </select>
+    </div>
+    <div>
+      <span class="field-label">Min level</span>
+      <select class="log-match-select w-full" bind:value={eventCreateForm.minLevel} aria-label="Minimum level">
+        {#each EVENT_LOG_LEVELS as lv}<option value={lv}>{lv}</option>{/each}
+      </select>
+    </div>
+    <div>
+      <span class="field-label">Where <span class="opacity-50">(optional)</span></span>
+      <div class="flex gap-1">
+        <input class="field-input" placeholder="key (e.g. alert_event)" bind:value={eventCreateForm.whereKey} />
+        <input class="field-input" placeholder="value" bind:value={eventCreateForm.whereValue} />
+      </div>
+    </div>
+  </div>
+
+  <div class="mt-3">
+    <span class="field-label">Alert channels</span>
+    <div class="channel-grid">
+      {#each EVENT_CHANNELS as ch}
+        <label class="channel-row">
+          <input type="checkbox"
+                 class="channel-check"
+                 checked={eventCreateForm.channels[ch.id]}
+                 onchange={(e) => eventCreateForm.channels[ch.id] = /** @type {HTMLInputElement} */(e.target).checked} />
+          <span class="channel-label">{ch.label}</span>
+          <span class="channel-desc">{ch.desc}</span>
+        </label>
+        {#if eventCreateForm.channels[ch.id]}
+          <div style="padding-left: 1.4rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
+            {#if ch.id === 'ntfy'}
+              <span class="text-[length:var(--fs-xs)] opacity-60">Priority</span>
+              <select class="log-match-select" bind:value={eventCreateForm.ntfyPriority} aria-label="Priority">
+                <option value="normal">normal</option>
+                <option value="high">high</option>
+                <option value="urgent">urgent</option>
+              </select>
+            {/if}
+            <label class="flex items-center gap-1 text-[length:var(--fs-xs)] opacity-70 cursor-pointer">
+              <input type="checkbox" bind:checked={eventCreateForm.gateBypass[ch.id]} />
+              Always send (bypass capability gate)
+            </label>
+          </div>
+        {/if}
+      {/each}
+    </div>
+  </div>
+
+  {#if eventCreateErrors.length}
+    <div class="mt-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
+      <ul class="list-disc ml-4">{#each eventCreateErrors as err}<li>{err}</li>{/each}</ul>
+    </div>
+  {/if}
+
+  <div class="flex gap-2 mt-3">
+    <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-4" disabled={eventCreateBusy} onclick={saveEventCreate}>
+      {eventCreateBusy ? 'Creating…' : 'Create'}
+    </button>
+    <button type="button" class="btn-secondary text-[length:var(--fs-md)] py-1 px-4" onclick={() => creatingKind = null}>Cancel</button>
+  </div>
+{/snippet}
+
+<!-- Grouped agent list — compact rows, click to expand.
+     Two-column magazine-flow on ≥1024 px (lg:columns-2): items
+     fill column 1 top-to-bottom, then column 2 starts; expanding a
+     card just grows its own column without pulling its row-neighbour
+     down (true CSS-columns behaviour, unlike a 2-col Grid where
+     row siblings would equalise heights). Single column on mobile. -->
+{#each groupedAgents() as group}
+  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
+    {group.name}
+    <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
+  </h2>
+  <div class="page-grid agent-group-grid mb-3">
+    {#each group.agents as agent}
+      {@const isOpen = expandedSlug === agent.slug}
+      <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
+           data-status={agent.status}
+           style="padding: 0">
+        <!-- Compact row (always visible). Div + role="button" so the inner
+             ON/OFF can stay a real <button> — nested buttons aren't valid. -->
+        <div role="button" tabindex="0"
+          aria-expanded={isOpen}
+          onclick={() => expandedSlug = isOpen ? null : agent.slug}
+          onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); expandedSlug = isOpen ? null : agent.slug; } }}
+          class="w-full flex items-center gap-2 px-2 py-1 text-left cursor-pointer select-none">
+          <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
+          <!-- Name column: display name on top, 3-part long_name
+               (condition - alert - action) below in muted mono so an
+               operator can scan "what does this agent do" without
+               expanding the row. -->
+          <span class="flex-1 min-w-0 flex flex-col leading-tight">
+            <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{agent.name}</span>
+            {#if agent.long_name}
+              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
+            {/if}
+          </span>
+          <!-- Notify-channel icon strip — one tiny emoji per enabled
+               channel. Grouped on the right alongside the trade-mode +
+               ON/OFF buttons + chevron so every controller-style affordance
+               clusters in one visual zone. Operator scans "📨✉" to know
+               "this agent pages Telegram + email"; the tooltip carries
+               the full channel list for accessibility. -->
+          <span class="agent-row-icons" title={'Notify: ' + (enabledChannels(agent.events).join(', ') || 'none')}>
+            {#each enabledChannels(agent.events) as ch (ch)}
+              <span class="agent-notify-ico" aria-label={ch}>{@html CHANNEL_ICON[ch] || '•'}</span>
+            {/each}
+          </span>
+          <button type="button"
+            onclick={(e) => { e.stopPropagation(); toggleTradeMode(agent); }}
+            title={`Trade mode: ${(agent.trade_mode || 'paper').toUpperCase()} — click to flip (paper ↔ live)`}
+            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
+              {(agent.trade_mode || 'paper') === 'live'
+                ? 'bg-red-500/15 text-red-400 border-red-500/40'
+                : 'bg-sky-500/15 text-sky-400 border-sky-500/40'}">
+            {(agent.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
+          </button>
+          <button type="button"
+            onclick={(e) => { e.stopPropagation(); toggle(agent); }}
+            class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
+              {agent.status !== 'inactive'
+                ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
+            {agent.status !== 'inactive' ? 'ON' : 'OFF'}
+          </button>
+          <DisclosureChevron open={isOpen} ariaLabel={isOpen ? 'Collapse row' : 'Expand row'} />
+        </div>
+
+        {#if isOpen}
+          {#if editing === agent.slug}
+            <!-- ──────── Inline editor ──────── -->
+            <div class="px-3 pb-3 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
+              {#if agent.kind === 'event'}
+                {@render eventEditorBody(agent)}
+              {:else}
+                {@render thresholdEditorBody(agent)}
+              {/if}
             </div>
           {:else}
             {@const _aiMeta = parseAIDescription(agent.description)}
@@ -1321,6 +1793,15 @@
                   Cooldown: {agent.cooldown_minutes}m
                   <span class="mx-1">|</span>
                   Scope: {agent.scope}
+                  {#if agent.kind !== 'event'}
+                    <span class="mx-1">|</span>
+                    <!-- The trade_mode Select in the editor IS the per-agent
+                         override — this is purely informational so the
+                         operator can see at a glance whether the row is
+                         inheriting the global default or has been overridden. -->
+                    Mode: {(agent.trade_mode || 'paper').toUpperCase()}
+                    <span class="opacity-60">(global: {globalDefaultTradeMode.toUpperCase()})</span>
+                  {/if}
                   {#if lifespanChip(agent)}
                     {@const _lc = lifespanChip(agent)}
                     <span class="mx-1">|</span>
@@ -1390,6 +1871,14 @@
     transition: background 0.1s;
   }
   .ai-pill:hover { background: rgba(167,139,250,0.20); }
+  /* "+ New Agent" pill — green-tinted variant of .ai-pill, same shape. */
+  .new-agent-pill {
+    border-color: rgba(74,222,128,0.45);
+    background: var(--c-long-10);
+    color: var(--c-long);
+  }
+  .new-agent-pill:hover { background: rgba(74,222,128,0.20); }
+  .new-agent-card { border-color: rgba(74,222,128,0.30); }
 
   /* Notify-channel icon strip on each agent row — sits between the
      name and the trade-mode / ON-OFF cluster on the right. Single

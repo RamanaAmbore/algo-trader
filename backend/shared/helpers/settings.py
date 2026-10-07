@@ -842,6 +842,76 @@ async def reload_cache() -> None:
     logger.info(f"Settings: cache reloaded ({len(_CACHE)} keys)")
 
 
+async def upsert_setting(
+    key: str, value_str: str, value_type: str, *,
+    category: str | None = None, description: str | None = None,
+    schema: "dict | None" = None, session: "Any" = None,
+) -> "str | None":
+    """Write `value_str` for `key` into the `settings` table — the exact
+    storage `get_int/get_float/get_bool/get_string` read from (DB first,
+    YAML fallback). Updates the row in place when `key` already has one;
+    inserts a new row (categorised by its first dotted segment unless
+    `category` is given) when it doesn't. Returns the PREVIOUS string
+    value, or None when a row was just inserted.
+
+    Pass an existing AsyncSession via `session=` to fold this write into
+    a caller-owned transaction — e.g. so a Setting change and an
+    AuditLog row documenting who changed it commit atomically, with
+    neither landing if the other fails. The caller is then responsible
+    for `await session.commit()` and any cache refresh.
+
+    With no `session`, this opens + commits its own transaction and
+    updates the in-process cache directly before returning, so an
+    immediate `get_bool`/`get_string` call in the same request sees the
+    new value without waiting on the fire-and-forget `invalidate_cache()`
+    background task.
+    """
+    from sqlalchemy import select
+    from backend.api.models import Setting
+
+    async def _apply(s) -> "str | None":
+        row = (await s.execute(select(Setting).where(Setting.key == key))).scalar_one_or_none()
+        if row is None:
+            s.add(Setting(
+                category=category or key.split(".", 1)[0], key=key,
+                value_type=value_type, value=value_str, default_value=value_str,
+                description=description or "", schema=schema,
+            ))
+            return None
+        old = row.value
+        row.value = value_str
+        return old
+
+    if session is not None:
+        return await _apply(session)
+
+    from backend.api.database import async_session
+    async with async_session() as s:
+        old = await _apply(s)
+        await s.commit()
+    _CACHE[key] = value_str
+    return old
+
+
+async def set_bool(key: str, value: bool, *, category: "str | None" = None,
+                    description: "str | None" = None) -> "bool | None":
+    """Persist a bool setting (same `settings` table get_bool() reads).
+    Returns the previous value, or None if the key had no row yet.
+    See `upsert_setting` for storage + transaction details."""
+    old = await upsert_setting(key, "true" if value else "false", "bool",
+                                category=category, description=description)
+    return None if old is None else old.strip().lower() in ("1", "true", "yes", "on")
+
+
+async def set_string(key: str, value: str, *, category: "str | None" = None,
+                      description: "str | None" = None) -> "str | None":
+    """Persist a string setting (same `settings` table get_string() reads).
+    Returns the previous value, or None if the key had no row yet.
+    See `upsert_setting` for storage + transaction details."""
+    return await upsert_setting(key, str(value), "string",
+                                 category=category, description=description)
+
+
 def invalidate_cache() -> None:
     """Schedule a reload — called after PATCH."""
     try:

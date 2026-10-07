@@ -589,6 +589,19 @@ export const resetSetting      = (key) =>
 export const fetchRecentAgentEvents = (n = 100) => _get(`/agents/events/recent?n=${n}`, { auth: true });
 export const createAgent      = (payload) => _post('/agents/', payload, { auth: true });
 
+// GET /api/agents/renderers — one entry per available event-agent
+// renderer: [{key, label, description}, ...]. Never hardcode this
+// list in the frontend — it's sourced live from the alert pipeline.
+export const fetchAgentRenderers = () => _get('/agents/renderers', { auth: true });
+
+// GET /api/admin/global-switches — current { paper_trading_mode, default_agent_trade_mode }.
+export const fetchGlobalSwitches = () => _get('/admin/global-switches', { auth: true });
+// PATCH /api/admin/global-switches — master execution switches,
+// audit-logged server-side. { paper_trading_mode?: bool,
+// default_agent_trade_mode?: string }.
+export const updateGlobalSwitches = (payload) =>
+  _patch('/admin/global-switches', payload, { auth: true });
+
 // Dry-validate a condition tree against the grammar registry. Returns
 // { ok: bool, errors: string[], grammar: 'v2' }.
 export const validateAgentCondition = (condTree) =>

@@ -15,6 +15,7 @@ POST /api/agents/interpret      — terminal command parser
 import json
 import re
 from datetime import datetime, timezone
+from typing import Literal
 
 import msgspec
 from litestar import Controller, Request, delete, get, post, put
@@ -92,6 +93,15 @@ class AgentInfo(msgspec.Struct):
     # actions._resolve_mode AFTER dev/shadow gates and the master
     # execution.paper_trading_mode kill-switch.
     trade_mode:           str        = "paper"
+    # 'cycle' (ordinary metric-threshold agent, evaluated every engine
+    # tick) or 'event' (matches each new log record — see
+    # backend/api/algo/event_agents.py). Mirrors Agent.kind verbatim;
+    # the frontend's read-only event-agent editor gates on this field.
+    kind:                 str        = "cycle"
+    # Alert hierarchy / noise-reduction fields — see Agent.tier / .topic
+    # in backend/api/models.py for full semantics.
+    tier:                  str        = "medium"
+    topic:                 str        = "general"
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -121,6 +131,16 @@ class AgentCreateRequest(msgspec.Struct):
     # Phase 22 — tagging + quiet hours.
     tags:                 list       = msgspec.field(default_factory=list)
     blackout_windows:     list       = msgspec.field(default_factory=list)
+    # 'cycle' = ordinary threshold agent (default). 'threshold' is
+    # accepted as a plan-level synonym for 'cycle' and normalised on
+    # the way in — see _age_normalize_kind(). 'event' = log-driven
+    # agent; conditions/events/actions are validated against
+    # event_agents.validate_seed_spec() instead of the threshold path.
+    kind:                  Literal["cycle", "threshold", "event"] = "cycle"
+    # Alert hierarchy / noise-reduction — see Agent.tier / .topic.
+    # None lets the model defaults ("medium" / "general") apply.
+    tier:                   str | None = None
+    topic:                  str | None = None
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -144,6 +164,13 @@ class AgentUpdateRequest(msgspec.Struct):
     lifespan_max_fires:   int | None = None
     lifespan_expires_at:  str | None = None
     trade_mode:           str | None = None
+    # kind is accepted here ONLY so a client that always sends its full
+    # form state doesn't 400 on an unknown field; changing kind on an
+    # existing row is rejected (see update_agent) — kind is fixed at
+    # creation, never re-pointed between 'cycle' and 'event'.
+    kind:                  Literal["cycle", "threshold", "event"] | None = None
+    tier:                  str | None = None
+    topic:                 str | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -171,6 +198,12 @@ class InterpretResponse(msgspec.Struct):
     success: bool = True
 
 
+class RendererInfo(msgspec.Struct):
+    key: str
+    label: str
+    description: str
+
+
 class AIDraftRequest(msgspec.Struct):
     prompt: str
 
@@ -192,6 +225,25 @@ class AIDraftResponse(msgspec.Struct):
 
 
 _VALID_TRADE_MODES = {"paper", "live"}
+
+# Agent.kind + agent_engine.run_cycle() / event_agents.load_agents() only
+# recognise the model's real vocabulary: 'cycle' (evaluated every engine
+# tick) or 'event' (matches each new log record). 'threshold' is a
+# plan-level synonym for 'cycle' accepted at the API boundary for a more
+# descriptive name — it must NEVER be written to the DB column as-is:
+# run_cycle()'s query filters `Agent.kind == "cycle"` and would silently
+# skip any row stored with kind="threshold" forever.
+_VALID_KINDS_INPUT = {"cycle", "threshold", "event"}
+
+
+def _age_normalize_kind(raw: str | None) -> str:
+    """Normalise an incoming `kind` value to the Agent model's real
+    vocabulary ('cycle' or 'event'). Raises 400 on anything else."""
+    k = (raw or "cycle").strip().lower()
+    if k not in _VALID_KINDS_INPUT:
+        raise HTTPException(status_code=400,
+            detail=f"kind must be one of {sorted(_VALID_KINDS_INPUT)}")
+    return "cycle" if k == "threshold" else k
 
 _AI_PROMPT_PREFIX = "[AI prompt] "
 _AI_WHY_PREFIX    = "[AI why] "
@@ -451,6 +503,9 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         debounce_minutes=int(getattr(a, "debounce_minutes", 0) or 0),
         tags=list(getattr(a, "tags", None) or []),
         blackout_windows=list(getattr(a, "blackout_windows", None) or []),
+        kind=getattr(a, "kind", "cycle") or "cycle",
+        tier=getattr(a, "tier", "medium") or "medium",
+        topic=getattr(a, "topic", "general") or "general",
     )
 
 
@@ -544,6 +599,24 @@ def _age_resolve_trade_mode(raw: str | None) -> str:
     return tm
 
 
+def _age_validate_event_spec(slug: str, conditions: dict, events: list, actions: list) -> None:
+    """Build the seed-spec shape event_agents.validate_seed_spec() expects
+    and raise 422 (with the full error list in `extra`) on any problem —
+    unknown log tag, unknown min_level, unknown renderer, unknown channel.
+    Used by both create_agent and update_agent for kind='event' agents
+    instead of whatever (lack of) validation threshold agents get."""
+    from backend.api.algo.event_agents import validate_seed_spec
+    spec = {
+        "slug": slug, "kind": "event",
+        "conditions": conditions or {}, "events": events or [],
+        "actions": actions or [],
+    }
+    errors = validate_seed_spec(spec)
+    if errors:
+        raise HTTPException(status_code=422,
+            detail="; ".join(errors), extra={"errors": errors})
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -614,6 +687,33 @@ class AgentController(Controller):
         errors = v2_validate(cond)
         return {"ok": not errors, "errors": errors, "grammar": "v2"}
 
+    @get("/renderers")
+    async def list_renderers(self) -> list[RendererInfo]:
+        """Every renderer key an event agent's `actions: [{"type": "render",
+        "render": <key>}]` can name — lets the frontend's renderer picker
+        read the live catalogue from event_agents.RENDERS instead of
+        hardcoding it. `label` is derived from the key; `description` is
+        the renderer function's own one-line docstring (empty when none).
+
+        Static path — registered ahead of `/{slug:str}` below so a GET
+        here resolves to this handler, not a "slug=renderers" agent lookup
+        (Litestar's router prefers literal segments over path params
+        regardless of declaration order, but this placement keeps the
+        source readable in router-match order too).
+        """
+        from backend.api.algo.event_agents import RENDERS
+        out = []
+        for key in sorted(RENDERS):
+            fn = RENDERS[key]
+            doc = (fn.__doc__ or "").strip()
+            description = doc.splitlines()[0].strip() if doc else ""
+            out.append(RendererInfo(
+                key=key,
+                label=key.replace("_", " ").title(),
+                description=description,
+            ))
+        return out
+
     @get("/{slug:str}")
     async def get_agent(self, slug: str) -> AgentInfo:
         async with async_session() as session:
@@ -633,6 +733,9 @@ class AgentController(Controller):
             if lifespan_type not in _LIFESPAN_TYPES:
                 raise HTTPException(status_code=400,
                     detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
+            kind = _age_normalize_kind(data.kind)
+            if kind == "event":
+                _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
             tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
                 slug=data.slug, name=data.name,
@@ -649,10 +752,20 @@ class AgentController(Controller):
                 debounce_minutes=max(0, int(data.debounce_minutes or 0)),
                 tags=list(data.tags or []),
                 blackout_windows=list(data.blackout_windows or []),
+                kind=kind,
+                tier=(data.tier or "medium"),
+                topic=(data.topic or "general"),
             )
             session.add(agent)
             await session.commit()
-        logger.info(f"Agent created: {data.slug} [lifespan={lifespan_type}]")
+        if kind == "event":
+            # Force the event-dispatch cache to see this row immediately —
+            # it's cached for 60s (event_agents._CACHE_S) so without this
+            # a freshly-created+activated event agent could sit dark for
+            # up to a minute after this request returns.
+            from backend.api.algo import event_agents as _ea
+            _ea._cache["at"] = float("-inf")
+        logger.info(f"Agent created: {data.slug} [lifespan={lifespan_type}] [kind={kind}]")
         return {"detail": f"Agent '{data.slug}' created"}
 
     def _age_apply_lifespan_fields(self, agent, data: 'AgentUpdateRequest') -> None:
@@ -680,10 +793,23 @@ class AgentController(Controller):
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
+            # kind is fixed at creation — reject any attempt to re-point an
+            # existing row between 'cycle' and 'event'. Simplest safe rule:
+            # the two kinds have completely different dispatch pipelines
+            # (agent_engine.run_cycle vs event_agents.dispatch_rows) and
+            # different column semantics (schedule/cooldown/trade_mode are
+            # meaningless for 'event' rows), so silently flipping kind
+            # mid-life would be a correctness landmine, not a convenience.
+            if data.kind is not None:
+                requested = _age_normalize_kind(data.kind)
+                if requested != agent.kind:
+                    raise HTTPException(status_code=400,
+                        detail="kind cannot be changed after creation "
+                               f"(agent is {agent.kind!r})")
             for field in ('name', 'long_name', 'description', 'conditions',
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
-                          'tags', 'blackout_windows'):
+                          'tags', 'blackout_windows', 'tier', 'topic'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
@@ -696,7 +822,20 @@ class AgentController(Controller):
                         detail=f"trade_mode must be one of {sorted(_VALID_TRADE_MODES)}")
                 agent.trade_mode = tm
             self._age_apply_lifespan_fields(agent, data)
+            # Re-validate the MERGED spec for event agents — by this point
+            # agent.conditions/events/actions already reflect the merge
+            # (unchanged fields kept their prior value via the `val is not
+            # None` guard above; changed fields were just overwritten), so
+            # validating straight off `agent` here covers a save that only
+            # touches e.g. `actions` while leaving a previously-valid
+            # `conditions`/`events` alone.
+            if agent.kind == "event":
+                _age_validate_event_spec(agent.slug, agent.conditions,
+                                          agent.events, agent.actions)
             await session.commit()
+        if agent.kind == "event":
+            from backend.api.algo import event_agents as _ea
+            _ea._cache["at"] = float("-inf")
         logger.info(f"Agent updated: {slug}")
         return {"detail": f"Agent '{slug}' updated"}
 

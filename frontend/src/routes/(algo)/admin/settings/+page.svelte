@@ -10,10 +10,12 @@
   import RefreshButton from '$lib/RefreshButton.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import EmptyState from '$lib/EmptyState.svelte';
+  import ConfirmModal from '$lib/ConfirmModal.svelte';
   import { fetchSettings, updateSetting, resetSetting, fetchWatchlists,
            fetchHedgeProxies, createHedgeProxy, updateHedgeProxy, deleteHedgeProxy,
            computeHedgeProxy,
-           fetchExchangeSchedule, upsertExchangeSchedule, deleteExchangeSchedule } from '$lib/api';
+           fetchExchangeSchedule, upsertExchangeSchedule, deleteExchangeSchedule,
+           fetchGlobalSwitches, updateGlobalSwitches } from '$lib/api';
   import { loadHedgeProxies as _invalidateHedgeProxyCache } from '$lib/data/hedgeProxies';
   import Select   from '$lib/Select.svelte';
   import LoadingSkeleton from '$lib/LoadingSkeleton.svelte';
@@ -74,6 +76,59 @@
     catch (e) { error = e.message; }
     finally   { loading = false; }
     loadProxies();
+    loadGlobalSwitches();
+  }
+
+  // ── Global switches ──────────────────────────────────────────────────
+  // Master execution toggles, read + written via GET/PATCH
+  // /api/admin/global-switches (audit-logged server-side on write).
+  // default_agent_trade_mode is ALSO visible below under the generic
+  // `execution` settings category (same underlying key) — this panel is
+  // a second, audit-logged write path for the SAME key, not a duplicate
+  // concept. Setting paper_trading_mode=True server-side also clears
+  // execution.shadow_mode (mirrors the navbar execution-mode combobox's
+  // own paper-target semantics), so this panel can't desync the two.
+  /** @type {{paper_trading_mode:boolean, default_agent_trade_mode:string}|null} */
+  let globalSwitches = $state(null);
+  async function loadGlobalSwitches() {
+    try { globalSwitches = await fetchGlobalSwitches(); } catch (_) { /* keep last-known */ }
+  }
+  /** @type {{ ask: (opts: any) => Promise<boolean> } | null} */
+  let _globalSwitchConfirmRef = $state(null);
+
+  async function saveDefaultAgentTradeMode(/** @type {string} */ v) {
+    try {
+      const updated = await updateGlobalSwitches({ default_agent_trade_mode: v });
+      globalSwitches = updated;
+      toast.success(`default_agent_trade_mode → ${v}`);
+      // Generic settings catalog below carries the same key — refresh it
+      // too so the two displays never show stale/divergent values.
+      await load();
+    } catch (e) { toast.error(`Update failed: ${e.message}`); }
+  }
+
+  /** paper_trading_mode is a real risk switch — prod-wide, every account.
+   *  Confirm-gated (danger) like toggleTradeMode on /automation. The
+   *  canonical day-to-day control remains the navbar execution-mode
+   *  combobox (/api/admin/execution/mode); this panel is a direct
+   *  override of the same underlying flag (server clears shadow_mode
+   *  in lockstep when switching to paper, same as that combobox does). */
+  async function toggleGlobalPaperMode() {
+    if (!globalSwitches) return;
+    const next = !globalSwitches.paper_trading_mode;
+    const ok = await _globalSwitchConfirmRef?.ask({
+      title: next ? 'Switch to PAPER (global)?' : 'Switch to LIVE (global)?',
+      message: `This flips <b>execution.paper_trading_mode</b> for <b>every account, prod-wide</b> — ${next ? 'disables' : 'enables'} real broker orders platform-wide. Prefer the navbar execution-mode control for shadow/live nuance; this is a direct single-flag override.`,
+      danger: true,
+      confirmLabel: next ? 'Switch to PAPER' : 'Switch to LIVE',
+      cancelLabel: 'Cancel',
+    });
+    if (!ok) return;
+    try {
+      const updated = await updateGlobalSwitches({ paper_trading_mode: next });
+      globalSwitches = updated;
+      toast.success(`paper_trading_mode → ${next}`);
+    } catch (e) { toast.error(`Update failed: ${e.message}`); }
   }
 
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
@@ -367,6 +422,8 @@
 
 <svelte:head><title>Settings | RamboQuant Analytics</title></svelte:head>
 
+<ConfirmModal bind:this={_globalSwitchConfirmRef} />
+
 <div class="page-header">
   <span class="algo-title-group">
     <h1 class="page-title-chip">Settings</h1>
@@ -395,6 +452,56 @@
 
 {#if _canView}
 {#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-md)] border border-red-500/40">{error}</div>{/if}
+
+<!-- Global Switches — audit-logged master toggles via PATCH
+     /api/admin/global-switches. paper_trading_mode is a real risk
+     switch (prod-wide, every account) and gets its own explicit
+     danger-styled warning + confirm modal, distinct from the generic
+     settings rows below. -->
+<section class="algo-card mb-2 content-fade-in" data-status="inactive">
+  <h3 class="section-heading">Global Switches</h3>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div>
+        <span class="font-mono text-[#7dd3fc]">paper_trading_mode</span>
+        <div class="text-[length:var(--fs-xs)] text-red-300 font-semibold mt-0.5">
+          ⚠ Affects every account, prod-wide — flips real-money execution.
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
+          {globalSwitches == null ? 'opacity-50'
+            : globalSwitches.paper_trading_mode ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'}">
+          {globalSwitches == null ? '…' : (globalSwitches.paper_trading_mode ? 'PAPER' : 'LIVE')}
+        </span>
+        <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
+          disabled={globalSwitches == null}
+          onclick={toggleGlobalPaperMode}>
+          Flip to {globalSwitches?.paper_trading_mode ? 'LIVE' : 'PAPER'}
+        </button>
+      </div>
+    </div>
+    <p class="text-[length:var(--fs-xs)] opacity-60 mt-1">
+      Day-to-day shadow/live nuance belongs on the navbar execution-mode control —
+      this is a direct single-flag override of the same underlying setting.
+    </p>
+  </div>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <span class="font-mono text-[#7dd3fc]">default_agent_trade_mode</span>
+      <div class="flex items-center gap-2 w-40">
+        <Select ariaLabel="default_agent_trade_mode" value={globalSwitches?.default_agent_trade_mode || 'paper'}
+          onValueChange={(v) => saveDefaultAgentTradeMode(String(v))}
+          options={[{ value: 'paper', label: 'paper' }, { value: 'live', label: 'live' }]} />
+      </div>
+    </div>
+    <p class="text-[length:var(--fs-xs)] opacity-60 mt-1">
+      Applied once, at agent-creation time only — editing an existing agent's own
+      trade_mode (on /automation) is unaffected. Also mirrored below under the
+      <span class="font-mono">execution</span> category (same key, generic settings editor).
+    </p>
+  </div>
+</section>
 
 {#if execRows.length}
   <div class="mb-3 p-2 rounded text-[length:var(--fs-md)] border

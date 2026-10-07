@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 import msgspec
-from litestar import Controller, Request, delete, get, post, put
+from litestar import Controller, Request, delete, get, patch, post, put
 from litestar.datastructures import UploadFile
 from litestar.enums import RequestEncodingType
 from litestar.exceptions import HTTPException
@@ -30,6 +30,7 @@ from sqlalchemy import select, text
 from backend.api.auth_guard import admin_guard, designated_guard
 from backend.api.database import async_session
 from backend.api.models import AdminEmailEvent, User
+from backend.api.rbac import cap_guard
 from backend.shared.helpers.alert_utils import refresh_alert_recipients
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
@@ -1075,6 +1076,29 @@ class UpdateUserRequest(msgspec.Struct):
     compliance_designated: bool | None = None
 
 
+class GlobalSwitchesRequest(msgspec.Struct):
+    """PATCH /api/admin/global-switches body. Both fields optional —
+    only the ones supplied are read/written; omitted ones are left
+    untouched. None applied + no genuine value change ⇒ no audit row.
+    """
+    # Master kill-switch. True forces EVERY live-routed agent/order into
+    # paper mode system-wide (same column _resolve_mode() already reads:
+    # execution.paper_trading_mode). Setting True also clears
+    # execution.shadow_mode (mirrors /api/admin/execution/mode's own
+    # paper-target semantics — paper and shadow are mutually exclusive).
+    paper_trading_mode: bool | None = None
+    # Default trade_mode ('paper' or 'live') a newly-created agent with
+    # no explicit trade_mode inherits at creation time (see
+    # agents.py:_age_resolve_trade_mode). Does NOT retroactively change
+    # any existing agent's already-frozen trade_mode.
+    default_agent_trade_mode: str | None = None
+
+
+class GlobalSwitchesResponse(msgspec.Struct):
+    paper_trading_mode: bool
+    default_agent_trade_mode: str
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -1851,3 +1875,111 @@ class AdminController(Controller):
             await session.commit()
         await refresh_alert_recipients()
         return {"detail": f"User {username!r} deactivated"}
+
+    @get("/global-switches", guards=[cap_guard("view_settings_readonly")])
+    async def get_global_switches(self) -> GlobalSwitchesResponse:
+        from backend.shared.helpers.settings import get_bool, get_string
+        return GlobalSwitchesResponse(
+            paper_trading_mode=get_bool("execution.paper_trading_mode", False),
+            default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
+        )
+
+    @patch("/global-switches", guards=[cap_guard("manage_settings")])
+    async def update_global_switches(
+        self, data: GlobalSwitchesRequest, request: Request,
+    ) -> GlobalSwitchesResponse:
+        """
+        Flip one or both system-wide execution switches.
+
+        Every APPLIED change (old value actually differs from new) is
+        written to `audit_log` in the SAME DB transaction as the Setting
+        row update — actor, timestamp, old value, new value. If the
+        audit insert fails for any reason, the whole transaction rolls
+        back and the switch does NOT take effect; a flip here must never
+        land untracked. No-op requests (value unchanged, or both fields
+        omitted) write nothing and audit nothing.
+
+        `paper_trading_mode=True` also clears `execution.shadow_mode`
+        when it was set — same invariant /api/admin/execution/mode's
+        "paper" target already enforces (paper and shadow are mutually
+        exclusive master states). This route intentionally does NOT
+        reproduce the rest of that endpoint's side effects (branch
+        gating, stopping sim/replay drivers, KiteTicker rehydrate) —
+        it's a narrower, synchronous kill-switch for out-of-band
+        operator/automation use, not a replacement for the navbar mode
+        picker.
+        """
+        import uuid as _uuid
+        from sqlalchemy import select as _select
+        from backend.api.models import AuditLog, Setting
+        from backend.api.routes.settings import _validate
+        from backend.shared.helpers.settings import (
+            get_bool, get_string, reload_cache, upsert_setting,
+        )
+
+        payload = getattr(request.state, "token_payload", None) or {}
+        actor_username = str(payload.get("sub") or "system")
+        actor_role = str(payload.get("role") or "system")
+        actor_user_id = None
+        try:
+            actor_user_id = int(payload["user_id"]) if payload.get("user_id") else None
+        except (TypeError, ValueError):
+            actor_user_id = None
+
+        changes: list[tuple[str, str, str, str]] = []  # (key, old, new, value_type)
+
+        async with async_session() as session:
+            if data.paper_trading_mode is not None:
+                new_bool = bool(data.paper_trading_mode)
+                new_val = "true" if new_bool else "false"
+                old_val = "true" if get_bool("execution.paper_trading_mode", False) else "false"
+                if new_val != old_val:
+                    changes.append(("execution.paper_trading_mode", old_val, new_val, "bool"))
+                if new_bool and get_bool("execution.shadow_mode", False):
+                    changes.append(("execution.shadow_mode", "true", "false", "bool"))
+
+            if data.default_agent_trade_mode is not None:
+                row = (await session.execute(
+                    _select(Setting).where(Setting.key == "execution.default_agent_trade_mode")
+                )).scalar_one_or_none()
+                schema = row.schema if row else {"enum": ["paper", "live"]}
+                value_type = row.value_type if row else "enum"
+                new_val = _validate(value_type, data.default_agent_trade_mode, schema)
+                old_val = row.value if row else get_string("execution.default_agent_trade_mode", "paper")
+                if new_val != old_val:
+                    changes.append(("execution.default_agent_trade_mode", old_val, new_val, value_type))
+
+            for key, old_val, new_val, value_type in changes:
+                await upsert_setting(
+                    key, new_val, value_type, category="execution",
+                    description="Set via PATCH /api/admin/global-switches.",
+                    session=session,
+                )
+                session.add(AuditLog(
+                    actor_user_id=actor_user_id,
+                    actor_username=actor_username,
+                    actor_role=actor_role,
+                    action="GLOBAL_SWITCH_CHANGED",
+                    category="config.global_switch",
+                    method="PATCH",
+                    path="/api/admin/global-switches",
+                    target_type="setting",
+                    target_id=key,
+                    status_code=200,
+                    summary=f"{key}: {old_val!r} -> {new_val!r}",
+                    request_id=str(_uuid.uuid4()),
+                ))
+
+            await session.commit()
+
+        if changes:
+            await reload_cache()
+            logger.info(
+                f"[global-switches] {actor_username}: " +
+                "; ".join(f"{k} {o!r}->{n!r}" for k, o, n, _ in changes)
+            )
+
+        return GlobalSwitchesResponse(
+            paper_trading_mode=get_bool("execution.paper_trading_mode", False),
+            default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
+        )

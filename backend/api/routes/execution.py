@@ -130,10 +130,7 @@ class ExecutionController(Controller):
         resulting state.
         """
         from backend.shared.helpers.utils import config, is_prod_branch
-        from backend.shared.helpers.settings import get_bool, reload_cache
-        from sqlalchemy import select
-        from backend.api.database import async_session
-        from backend.api.models import Setting
+        from backend.shared.helpers.settings import get_bool, reload_cache, set_bool
 
         branch  = config.get("deploy_branch", "dev") or "dev"
         is_prod = is_prod_branch()
@@ -192,24 +189,14 @@ class ExecutionController(Controller):
             # Upsert — these rows are intentionally not in SEEDS (the seeder
             # auto-prunes them and the navbar combobox is the only writer),
             # so a plain UPDATE would no-op silently when the row is absent.
-            async with async_session() as s:
-                for key, val in updates.items():
-                    existing = await s.execute(
-                        select(Setting).where(Setting.key == key)
-                    )
-                    row = existing.scalar_one_or_none()
-                    if row is not None:
-                        row.value = val
-                    else:
-                        s.add(Setting(
-                            category="execution",
-                            key=key,
-                            value_type="bool",
-                            value=val,
-                            default_value=val,
-                            description="Set by /api/admin/execution/mode (navbar mode chip).",
-                        ))
-                await s.commit()
+            # set_bool() does the actual upsert (same `settings` table, same
+            # shape as before this was factored out) — see
+            # backend/shared/helpers/settings.py:upsert_setting.
+            for key, val in updates.items():
+                await set_bool(
+                    key, val == "true", category="execution",
+                    description="Set by /api/admin/execution/mode (navbar mode chip).",
+                )
             # Rehydrate the KiteTicker when leaving IDLE on dev — the
             # ticker was either skipped at boot (engine was idle) or
             # explicitly stopped when the operator picked IDLE earlier.

@@ -22,6 +22,7 @@ _cache: dict = {"at": float("-inf"), "agents": []}
 
 
 def _render_fill(rec: dict) -> tuple[str, str]:
+    """Order fill notification — side, qty, symbol, fill price."""
     extra = rec.get("extra") or {}
     row = SimpleNamespace(
         id=extra.get("order_id"), account=extra.get("account"), symbol=extra.get("symbol"),
@@ -50,6 +51,7 @@ def _get_gate():
 
 
 def _render_chase_cancel(rec: dict) -> tuple[str, str]:
+    """Chase cancel-and-replace could not confirm the cancel landed."""
     from backend.shared.helpers.utils import mask_account_in_text
     x = rec.get("extra") or {}
     body = (
@@ -63,6 +65,7 @@ def _render_chase_cancel(rec: dict) -> tuple[str, str]:
 
 
 def _render_partial_gtt(rec: dict) -> tuple[str, str]:
+    """Only some of a parent order's planned GTTs were placed."""
     x = rec.get("extra") or {}
     body = (
         f"parent #{x.get('parent_row_id')} {x.get('parent_symbol')}: "
@@ -73,6 +76,7 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
 
 
 def _render_template_attach(rec: dict) -> tuple[str, str]:
+    """Template exit attach outcome — unprotected position, wing skip/reject."""
     x = rec.get("extra") or {}
     ev = x.get("alert_event")
     if ev == "wing_unprotected":
@@ -92,6 +96,7 @@ def _render_template_attach(rec: dict) -> tuple[str, str]:
 
 
 def _render_order_failure(rec: dict) -> tuple:
+    """A live order was rejected or failed to place."""
     from backend.shared.helpers.alert_utils import order_failure_messages
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
@@ -104,6 +109,7 @@ def _render_order_failure(rec: dict) -> tuple:
 
 
 def _render_template_guard(rec: dict) -> tuple[str, str, str]:
+    """A template exit guard fired (held/released/blocked an exit)."""
     from backend.api.algo.template_attach import template_guard_message
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
@@ -114,6 +120,7 @@ def _render_template_guard(rec: dict) -> tuple[str, str, str]:
 
 
 def _render_attach_fail(rec: dict) -> tuple[str, str, str]:
+    """A template's exit GTTs/wing failed to attach to the filled parent."""
     from backend.api.algo.template_attach import template_attach_fail_message
     from backend.shared.helpers.alert_utils import _html_to_plain
     x = rec.get("extra") or {}
@@ -124,17 +131,20 @@ def _render_attach_fail(rec: dict) -> tuple[str, str, str]:
 
 
 def _render_mcp_ping(rec: dict) -> tuple[str, str, str]:
+    """An MCP tool call performed an audited action (place/cancel/modify/...)."""
     from backend.shared.helpers.alert_utils import _html_to_plain
     tg = (rec.get("extra") or {}).get("tg") or ""
     return "MCP", _html_to_plain(tg), tg
 
 
 def _render_deploy_sync(rec: dict) -> tuple[str, str]:
+    """dev/main branches or their deploy webhooks have drifted out of sync."""
     x = rec.get("extra") or {}
     return x.get("title") or "Deploy out of sync", x.get("body") or ""
 
 
 def _render_rich_alert(rec: dict) -> tuple:
+    """A threshold ('cycle') agent fired — full rich alert table."""
     from backend.shared.helpers.alert_utils import dispatch_payload, _html_to_plain
     x = rec.get("extra") or {}
     p = dispatch_payload("alert", x["ist_display"], x["tg_table"], x["email_table_html"],
@@ -144,6 +154,7 @@ def _render_rich_alert(rec: dict) -> tuple:
 
 
 def _render_summary(rec: dict) -> tuple:
+    """Open/close market performance summary."""
     from backend.shared.helpers.alert_utils import dispatch_payload, _html_to_plain
     x = rec.get("extra") or {}
     p = dispatch_payload(x["msg_type"], x["ist_display"], x["tg_table"], x["email_table_html"],
@@ -152,18 +163,21 @@ def _render_summary(rec: dict) -> tuple:
 
 
 def _render_breach(rec: dict) -> tuple:
+    """An agent-engine cycle took longer than its breach threshold."""
     x = rec.get("extra") or {}
     return (x.get("agent_name") or "", x.get("ntfy_body") or "", x.get("telegram_body") or "",
             (x.get("email_subject") or "", x.get("email_body") or ""), list(x.get("channels") or []))
 
 
 def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
+    """A placed GTT was not accepted by the broker (status mismatch)."""
     x = rec.get("extra") or {}
     return ("GTT not accepted at broker",
             f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}")
 
 
 def _render_error(rec: dict) -> tuple[str, str, str]:
+    """An ERROR+ log line was written somewhere in the app."""
     from backend.shared.helpers.utils import mask_account_in_text
     name = rec.get("logger") or ""
     msg = clean_message(mask_account_in_text(rec.get("message") or "") or "")
@@ -571,6 +585,32 @@ SEEDED_AGENTS = (
 )
 
 
+def event_agent_row_fields(
+    conditions: dict, events: list, actions: list, *,
+    scope: str = "per_account", cooldown_minutes: int = 0,
+    trade_mode: str = "live", lifespan_type: str = "persistent",
+) -> dict:
+    """Shared Agent-row field shape for kind='event' agents — conditions/
+    events/actions/kind plus the defaults a log-driven agent needs for
+    the columns the engine still requires (scope/cooldown_minutes/
+    trade_mode/lifespan_type are meaningless for dispatch — event agents
+    bypass agent_engine.run_cycle() entirely — but the Agent model has no
+    NULL-able escape hatch for them).
+
+    Reused by `seed_event_agents()` (code-seeded built-in agents, which
+    default to active+live+per_account) and the agents API's create/update
+    path for operator-authored event agents (which pass their own
+    scope/cooldown_minutes/trade_mode through instead of these defaults).
+    Callers still own `slug` / `name` / `status` / `seed_version`, which
+    differ by caller and don't belong in a shared row-shape helper.
+    """
+    return {
+        "conditions": conditions or {}, "events": events or [], "actions": actions or [],
+        "kind": "event", "scope": scope, "cooldown_minutes": cooldown_minutes,
+        "trade_mode": trade_mode, "lifespan_type": lifespan_type,
+    }
+
+
 def seed_action(row, current_version: int = SEED_VERSION) -> str:
     """Decide what seeding does to one agent row: 'insert', 'update', or 'keep'."""
     if row is None:
@@ -593,11 +633,10 @@ async def seed_event_agents() -> None:
             row = (await s.execute(select(Agent).where(Agent.slug == spec["slug"]))).scalar_one_or_none()
             action = seed_action(row)
             if action == "insert":
-                s.add(Agent(slug=spec["slug"], name=spec["name"], conditions=spec["conditions"],
-                            events=spec["events"], actions=spec["actions"], kind="event",
-                            status="active", scope="per_account", cooldown_minutes=0,
-                            trade_mode="live", lifespan_type="persistent",
-                            seed_version=SEED_VERSION))
+                s.add(Agent(slug=spec["slug"], name=spec["name"], status="active",
+                            seed_version=SEED_VERSION,
+                            **event_agent_row_fields(spec["conditions"], spec["events"],
+                                                      spec["actions"])))
             elif action == "update":
                 row.conditions = spec["conditions"]
                 row.events = spec["events"]
