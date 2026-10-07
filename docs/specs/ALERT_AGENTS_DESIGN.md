@@ -1,6 +1,7 @@
 # Alert Agents: Design, Before and After
 
-Status: implemented on `main` as of `9323f9d3`; gap status in section 5 is current as of the working tree after that commit. Source of truth for the alert
+Status: implemented on `main` as of `9323f9d3`; gap status in section 5 is
+current as of `e37fab01` (G14 fully fixed). Source of truth for the alert
 pipeline. Companion to `docs/proposals/AGENT_RULES_PROPOSAL.md`, which holds
 the wider agent grammar roadmap.
 
@@ -228,10 +229,15 @@ the full HTML table. Storage grows with each alert and is capped only by the
 7-day retention. Fix: store the inputs and rebuild the table in the renderer,
 as the order-failure path does.
 
-**G14 (L). No UI for event agents. [PARTLY: the automation editor now shows a read-only view for kind='event' agents, with Activate/Deactivate still available. There is no structured builder for a new event agent's condition or channels]** Event agents are visible on the agents
-page, but their conditions and channels cannot be edited there (the editor
-writes cycle-agent JSON). Fix: extend the editor with a log-tag picker, which
-is already built, and mark system agents read-only.
+**G14 (L). No UI for event agents. [FULLY FIXED (e37fab01)]** The automation
+editor now supports full CRUD for event agents: "+ New Agent" entry point
+with Kind selector (Threshold / Notification); dedicated builder with
+renderer picker (from `GET /api/agents/renderers`), condition fields (log
+tag / min-level / where), channel checklist using `EVENT_CHANNELS` vocabulary,
+priority, and gate. Existing event agents are editable: channel-enabled /
+priority / gate stay mutable; renderer / condition / slug stay fixed
+post-creation (same lifecycle as seeded agents). Threshold agents retain their
+existing inline JSON editor.
 
 **G15 (L). Browser and live verification pending. [FIXED for the code path: `scripts/alert_smoke.py` validates every seeded agent and renders a sample through its renderer, sending nothing. Browser and live checks remain]** Golden tests pin the text.
 Delivery has been confirmed only on prod for real events that have happened.

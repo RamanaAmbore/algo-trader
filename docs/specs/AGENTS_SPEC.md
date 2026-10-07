@@ -241,6 +241,37 @@ are deleted (orphans from removed builtin rules). Non-system agents are never pr
 Loss-agent conditions are editable live via `/automation` page. Edition does NOT
 invalidate the current run — changes apply on the next `run_cycle()`.
 
+### Agent kind, tier, and topic fields
+
+**`kind`** — selects dispatch pipeline. Written via `POST /api/agents` with 
+write-only vocabulary: `"cycle"` (default, threshold agents), `"threshold"` 
+(alias for `"cycle"` normalized via `_age_normalize_kind()`), `"event"` 
+(log-driven agents). Stored as-written in the `kind` column. Reads via 
+`GET /api/agents/{slug}` always return `"cycle"` or `"event"` (never 
+`"threshold"`). `kind` is immutable after creation — attempted changes via 
+`PATCH` return 400 with detail "kind cannot be changed after creation". 
+The two kinds have entirely different dispatch pipelines (cycle agents via 
+`run_cycle()`, event agents via `event_agents.dispatch_rows()`), so 
+post-creation flipping would be unsafe.
+
+**`tier`** and **`topic`** — alert hierarchy / noise-reduction fields. Both 
+default to `"medium"` and `"general"` respectively if unset on creation. 
+Mutable on `PATCH` (no immutability gate).
+
+**Renderers catalog** — `GET /api/agents/renderers` returns a list of 
+available renderers for event agents: each entry has `key` (the renderer ID), 
+`label` (human-readable name derived from key), and `description` (the 
+renderer function's own one-line docstring, empty if none). Sourced from 
+`backend/api/algo/event_agents.RENDERS` dict at request time (no caching). 
+Frontend event-agent builder uses this endpoint instead of hardcoding the 
+renderer list, making new renderers available immediately after code changes.
+
+**Event-agent validation** — `POST` and `PATCH` requests with `kind="event"` 
+are validated via `event_agents.validate_seed_spec()` instead of the 
+threshold-agent path. On `PATCH`, the MERGED spec (existing row + supplied 
+fields) is re-validated, so partial updates still get full validation. 
+Validation failure returns 422 with the error list.
+
 ---
 
 ## 9. Grammar Tokens and Registry
@@ -322,4 +353,5 @@ which was populated by `_update_pnl_history()` on the same cycle. No staleness e
 
 | Date | Change |
 |---|---|
+| 2026-10-07 | e37fab01: Event agents UI — full CRUD in `/automation`, new `GET /api/agents/renderers`, `kind` write vocabulary with read-time normalization, `tier` and `topic` persistence, `kind` immutability post-creation, event-agent writes validated via `validate_seed_spec()` (422 on failure). |
 | 2026-07-11 | v1.0 initial spec from codebase audit |

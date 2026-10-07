@@ -661,7 +661,28 @@ The first thing you see on the page is the execution mode banner:
 - **Green — `PAPER mode`** — `execution.paper_trading_mode = True`. Every fired agent writes a paper `AlgoOrder` row instead of touching Kite. Real positions don't change.
 - **Pink — `SIMULATOR running`** / **Orange — `SHADOW mode`** / **Sky — `REPLAY running`** — the corresponding mode is active.
 
-The single master toggle `execution.paper_trading_mode` (flipped via the navbar dropdown or `/admin/execution`) decides PAPER vs LIVE; no per-action flags. SHADOW and REPLAY are separate opt-ins on top.
+The single master toggle `execution.paper_trading_mode` (flipped via the navbar
+dropdown or `/admin/execution`) decides PAPER vs LIVE; no per-action flags.
+SHADOW and REPLAY are separate opt-ins on top.
+
+### Global Switches — master kill-switches via PATCH
+
+The **Global Switches** panel sits at the top of `/admin/settings` and handles
+two kill-switches via `PATCH /api/admin/global-switches` (audit-logged,
+transactional with rollback on audit failure). Guards: `view_settings_readonly`
+(read-only access to both), `manage_settings` (write access).
+
+| Switch | Type | Purpose | Warn |
+|---|---|---|---|
+| `paper_trading_mode` | BOOL | When True, every broker action (across all accounts) goes to paper instead of live. Identical to the navbar PAPER/LIVE toggle; this is just an alternate UI for the same setting. | Yes — danger-confirm modal with "⚠ Affects every account, prod-wide" |
+| `default_agent_trade_mode` | SELECT (paper / live) | Default trade mode for newly-created agents: when an agent is created with no explicit `trade_mode`, this value is applied once at creation time and frozen. Changing this does NOT retroactively change existing agents. | No |
+
+The `default_agent_trade_mode` dropdown is a direct read/write of the same
+`execution.default_agent_trade_mode` setting that appears in the regular
+Settings grid below (under the `execution` category). They reference the same
+DB row; editing either one updates the other. Note: per-agent overrides (the
+nullable `trade_mode` column on each `Agent` row) remain editable on
+`/automation`; the Global Switch controls the default applied at creation time.
 
 ### The five execution modes
 

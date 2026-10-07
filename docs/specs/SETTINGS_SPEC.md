@@ -116,6 +116,14 @@ Regression parameters for proxy-hedge computation.
 | hedge_proxies.regression_min_bars | INT | 15 | Minimum bars required for valid regression (else reject) |
 | hedge_proxies.regression_max_age_days | INT | 30 | Re-run regression if older than N days |
 
+### execution.*
+Master trading-mode flags (live-order gatekeeping, not per-agent overrides).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| execution.paper_trading_mode | BOOL | false | Kill-switch: when True, all broker actions go to paper simulator instead of live broker. Applies prod-wide to every account. |
+| execution.default_agent_trade_mode | STRING | "paper" | Default trade mode for newly-created agents: "paper" or "live". Applied once at creation time; changing this does NOT retroactively affect existing agents. |
+
 ### cap_in_dev
 Capability flag overrides for development/testing only. **Dict structure** (not string).
 
@@ -186,13 +194,53 @@ without restart).
 Reset a setting back to its YAML default_value. Deletes the DB row (if present) so
 next read falls back to YAML.
 
+**`GET /api/admin/global-switches`** (requires `view_settings_readonly` capability)
+
+Fetch the current values of the two master trading-mode switches. Response:
+
+```json
+{
+  "paper_trading_mode": false,
+  "default_agent_trade_mode": "paper"
+}
+```
+
+**`PATCH /api/admin/global-switches`** (requires `manage_settings` capability)
+
+Update one or both switches. Request body (both fields optional):
+
+```json
+{
+  "paper_trading_mode": true,
+  "default_agent_trade_mode": "live"
+}
+```
+
+Only changes (old ≠ new) are written to the DB. Every write is audited in a 
+single transaction: the `Setting` row update and an `audit_log` row are 
+committed together or rolled back together. If the audit insert fails, the 
+entire write fails (no partial updates). The new values are returned 
+immediately in the response (cache is busted synchronously).
+
 ---
 
 ## 4. Admin Page
 
 **`/admin/settings`** — Grouped card layout, one card per bucket.
 
-**Card features**:
+**Global Switches panel** (top of page, pinned card):
+- Two rows: `paper_trading_mode` and `default_agent_trade_mode`
+- `paper_trading_mode` row: current value (green "PAPER" / red "LIVE" chip), 
+  "Flip to X" button
+- `default_agent_trade_mode` row: dropdown selector (paper / live)
+- Flipping `paper_trading_mode` opens a danger-confirm modal with explicit 
+  warning "⚠ Affects every account, prod-wide — flips real-money execution"
+- Description on each row clarifies: paper_trading_mode is an outer kill-switch 
+  (same as navbar dropdown); default_agent_trade_mode is applied only at 
+  agent-creation time and does NOT retroactively change existing agents
+- Saves via `PATCH /api/admin/global-switches` (not the generic settings route)
+
+**Card features** (regular settings below the Global Switches panel):
 - Bucket title + summary (e.g. "Alerts: 3 settings")
 - Per-setting row: key · value_type · input field · units · description
 - Reset button per setting (reverts to YAML default)
@@ -327,4 +375,5 @@ live-effect handlers to re-apply the new value.
 
 | Date | Change |
 |---|---|
+| 2026-10-07 | e37fab01: Global switches — new `/api/admin/global-switches` GET/PATCH endpoint + Global Switches panel on `/admin/settings`, `execution.paper_trading_mode` kill-switch and `execution.default_agent_trade_mode` defaults added to execution.* bucket. Transactional audit logging with rollback on audit failure. |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
