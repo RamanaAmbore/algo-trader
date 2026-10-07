@@ -655,10 +655,18 @@ def _opp_build_attach_entries(
     # _retry_build_attached_payload's existing wing handling (orders.py)
     # field-for-field.
     if result.wing_order_id:
+        # `wing_chased=True` → `result.wing_order_id` is the sentinel
+        # string "chase", NOT a real broker order id (the wing was handed
+        # to chase's cancel-and-replace loop instead of placed directly —
+        # see `_ta_live_place_wing` in template_attach.py). The `chased`
+        # flag lets any downstream reader of this entry (cancel/lookup by
+        # id) tell the two cases apart without guessing from the string
+        # value "chase" alone.
         attached.append({
-            "kind":  "wing",
-            "label": "Wing",
-            "id":    result.wing_order_id,
+            "kind":   "wing",
+            "label":  "Wing",
+            "id":     result.wing_order_id,
+            "chased": bool(getattr(result, "wing_chased", False)),
         })
     return attached
 

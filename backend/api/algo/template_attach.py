@@ -160,6 +160,14 @@ class AttachResult:
     # threshold, quote failure, etc.). Surfaced in the API response so the
     # operator and alert channel can see WHY the wing wasn't attached.
     wing_skipped_reason:  Optional[str] = None
+    # Set True when the wing leg was handed to chase (cancel-and-replace
+    # loop) rather than placed directly — `wing_order_id` is then the
+    # sentinel string "chase", NOT a real broker order id. Callers that
+    # persist `wing_order_id` into attached_gtts_json (orders_place.py,
+    # orders.py) must carry this flag alongside it so any downstream
+    # consumer (cancel/lookup by id) can tell the two cases apart without
+    # guessing from the string value. See `_ta_live_place_wing`.
+    wing_chased:          bool = False
 
     def to_dict(self) -> dict:
         return {
@@ -169,6 +177,7 @@ class AttachResult:
             "sibling_pairs":      [list(p) for p in self.sibling_pairs],
             "errors":             list(self.errors),
             "wing_skipped_reason": self.wing_skipped_reason,
+            "wing_chased":        self.wing_chased,
         }
 
 
@@ -1902,11 +1911,25 @@ def _ta_live_place_one_gtt(
     return pair_first_id
 
 
-async def _chase_wing(plan: TemplatePlan) -> None:
+async def _chase_wing(
+    plan: TemplatePlan,
+    parent_order_id: Optional[int] = None,
+) -> None:
     """Record the wing as an order row, then chase it until it fills.
 
     The row makes the wing visible in the order list and lets chase recovery
     find it after a restart.
+
+    `parent_order_id` links the wing's own row back to the parent fill that
+    triggered it, matching the convention every other child AlgoOrder row in
+    this codebase follows (TP children, sim GTTs — see
+    `_ta_sim_place_one_gtt`). `template_id` is only ever stamped when
+    `parent_order_id` is known — a wing row with `template_id` set but no
+    `parent_order_id` would look like a templated PARENT order to the
+    dedupe/retry checks (`_retry_precheck_row`, `isAttachFailedState`),
+    which key off `template_id IS NOT NULL AND parent_order_id IS NULL`.
+    Stamping both together, never `template_id` alone, keeps the wing row
+    unambiguously a CHILD.
     """
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.api.database import async_session
@@ -1918,6 +1941,8 @@ async def _chase_wing(plan: TemplatePlan) -> None:
             quantity=int(plan.wing.quantity), status="OPEN", engine="live", mode="live",
             product=plan.wing.product, source="template_wing",
             initial_price=(float(plan.wing.limit_price) if plan.wing.limit_price else None),
+            parent_order_id=parent_order_id,
+            template_id=(plan.template_id if parent_order_id is not None else None),
         )
         s.add(row)
         await s.commit()
@@ -1932,7 +1957,10 @@ async def _chase_wing(plan: TemplatePlan) -> None:
     )
 
 
-def _start_wing_chase(plan: TemplatePlan) -> bool:
+def _start_wing_chase(
+    plan: TemplatePlan,
+    parent_order_id: Optional[int] = None,
+) -> bool:
     """Hand a LIMIT wing leg to chase, which monitors it until it fills.
 
     Runs on the main event loop in the background, the same way the take-profit
@@ -1944,7 +1972,7 @@ def _start_wing_chase(plan: TemplatePlan) -> bool:
     loop = write_queue.get_main_loop()
     if loop is None or not loop.is_running():
         return False
-    asyncio.run_coroutine_threadsafe(_chase_wing(plan), loop)
+    asyncio.run_coroutine_threadsafe(_chase_wing(plan, parent_order_id), loop)
     return True
 
 
@@ -1952,14 +1980,26 @@ def _ta_live_place_wing(
     broker,
     plan: TemplatePlan,
     result: AttachResult,
+    parent_order_id: Optional[int] = None,
 ) -> None:
     """LIMIT wing legs go to chase; anything else is placed directly."""
     if plan.wing is None:
         return
     try:
-        if str(plan.wing.order_type).upper() == "LIMIT" and _start_wing_chase(plan):
+        if str(plan.wing.order_type).upper() == "LIMIT" and _start_wing_chase(plan, parent_order_id):
+            # "chase" is the SAME sentinel `plan.wing.placed_id` carries —
+            # a chase-routed wing has no real broker order id yet (chase
+            # cancel-and-replaces until it fills), so `wing_order_id` must
+            # never be cleared to None: a None here means "attach wrote
+            # nothing to attached_gtts_json at all", which is indistinguishable
+            # from "wing was never placed" and lets a second trigger (chase +
+            # postback racing the same fill, or a manual Re-attach) place a
+            # SECOND live wing. `wing_chased=True` is the explicit flag
+            # callers must persist alongside the sentinel so nothing ever
+            # mistakes "chase" for a real, cancellable broker order id.
             plan.wing.placed_id = "chase"
-            result.wing_order_id = None
+            result.wing_order_id = "chase"
+            result.wing_chased = True
             return
         if str(plan.wing.order_type).upper() == "LIMIT":
             logger.warning("[WING-CHASE] no main loop; placing LIMIT wing directly for %s",
@@ -2053,7 +2093,7 @@ def apply_plan_live(
             pair_two_singles, result,
         )
 
-    _ta_live_place_wing(broker, plan, result)
+    _ta_live_place_wing(broker, plan, result, parent_order_id)
     return result
 
 

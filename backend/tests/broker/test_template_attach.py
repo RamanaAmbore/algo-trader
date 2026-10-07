@@ -885,45 +885,108 @@ class TestLimitWingGoesToChase:
                                  placed_id=None, product="NRML", limit_price=100.0,
                                  estimated_price=100.0),
             parent_account="ZG0790",
+            template_id=11,
         )
-        result = SimpleNamespace(wing_order_id=None, errors=[])
+        result = SimpleNamespace(wing_order_id=None, wing_chased=False, errors=[])
         return plan, result, _ta_live_place_wing
 
     def test_limit_wing_is_handed_to_chase_not_placed_directly(self, monkeypatch):
         from unittest.mock import MagicMock
         import backend.api.algo.template_attach as ta
         started = []
-        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: started.append(plan) or True)
+        monkeypatch.setattr(
+            ta, "_start_wing_chase",
+            lambda plan, parent_order_id=None: started.append((plan, parent_order_id)) or True,
+        )
         broker = MagicMock()
         plan, result, place = self._plan("LIMIT")
-        place(broker, plan, result)
+        place(broker, plan, result, 321)
         assert len(started) == 1
+        assert started[0][1] == 321
         broker.place_order.assert_not_called()
-        assert result.wing_order_id is None
+        # "chase" is the sentinel, not a real broker order id — clearing
+        # this to None would make attached_gtts_json unable to record the
+        # wing was already handed off, letting a second trigger place a
+        # duplicate live wing order.
+        assert result.wing_order_id == "chase"
+        assert result.wing_chased is True
 
     def test_limit_wing_falls_back_to_direct_placement_without_a_loop(self, monkeypatch):
         import backend.api.algo.template_attach as ta
-        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: False)
+        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan, parent_order_id=None: False)
         monkeypatch.setattr(ta, "_place_wing_leg", lambda broker, plan: "W1")
         plan, result, place = self._plan("LIMIT")
         place(object(), plan, result)
         assert result.wing_order_id == "W1"
+        assert result.wing_chased is False
 
     def test_market_wing_is_placed_directly(self, monkeypatch):
         import backend.api.algo.template_attach as ta
         called = []
-        monkeypatch.setattr(ta, "_start_wing_chase", lambda plan: called.append(plan) or True)
+        monkeypatch.setattr(
+            ta, "_start_wing_chase",
+            lambda plan, parent_order_id=None: called.append(plan) or True,
+        )
         monkeypatch.setattr(ta, "_place_wing_leg", lambda broker, plan: "W2")
         plan, result, place = self._plan("MARKET")
         place(object(), plan, result)
         assert called == []
         assert result.wing_order_id == "W2"
+        assert result.wing_chased is False
 
 
-@pytest.mark.asyncio
-async def test_chase_wing_records_a_row_and_chases_it(monkeypatch):
+class TestApplyPlanLiveThreadsParentOrderIdToWingChase:
+    """`apply_plan_live(plan, broker, parent_order_id=...)` must forward
+    its `parent_order_id` kwarg all the way to `_start_wing_chase` (and
+    from there to `_chase_wing`), so the wing's own AlgoOrder row can be
+    linked back to the parent fill. Pre-fix, `_ta_live_place_wing` was
+    called with no `parent_order_id` at all, so a chase-routed wing's row
+    was never traceable to its parent."""
+
+    def test_parent_order_id_reaches_start_wing_chase(self, monkeypatch):
+        from unittest.mock import MagicMock
+        import backend.api.algo.template_attach as ta
+        from backend.api.algo.template_attach import (
+            TemplatePlan, WingSpec, apply_plan_live,
+        )
+
+        started = []
+        monkeypatch.setattr(
+            ta, "_start_wing_chase",
+            lambda plan, parent_order_id=None: started.append(parent_order_id) or True,
+        )
+        monkeypatch.setattr(
+            "backend.api.algo.agent_engine._symbol_exchange_open",
+            lambda *a, **kw: True,
+        )
+        monkeypatch.setattr(
+            "backend.api.algo.agent_engine._build_now_ctx",
+            lambda: {},
+        )
+
+        plan = TemplatePlan(
+            template_id=11, template_name="t", template_slug="t",
+            parent_account="ZG0790", parent_symbol="NIFTY26OCT25000PE",
+            parent_side="SELL", parent_qty=75, parent_exchange="NFO",
+            parent_fill_price=100.0, parent_lot_size=75,
+            gtts=[],
+            wing=WingSpec(tradingsymbol="NIFTY26OCT25200PE", transaction_type="BUY",
+                          quantity=75, exchange="NFO", order_type="LIMIT",
+                          limit_price=50.0, estimated_price=50.0),
+        )
+        broker = MagicMock()
+        broker.broker_id = "zerodha_kite"
+        broker.capabilities.gtt_single = True
+
+        result = apply_plan_live(plan, broker, parent_order_id=777)
+
+        assert started == [777]
+        assert result.wing_order_id == "chase"
+        assert result.wing_chased is True
+
+
+def _wing_chase_fixture(monkeypatch):
     from types import SimpleNamespace
-    import backend.api.algo.template_attach as ta
     import backend.api.algo.chase as ch
     import backend.api.database as db
     saved, chased = [], []
@@ -950,11 +1013,37 @@ async def test_chase_wing_records_a_row_and_chases_it(monkeypatch):
     monkeypatch.setattr(ch, "chase_order", fake_chase)
     plan = SimpleNamespace(
         parent_account="ZG0790",
+        template_id=11,
         wing=SimpleNamespace(tradingsymbol="NIFTY26OCT25000PE", exchange="NFO",
                              transaction_type="BUY", quantity=75, product="NRML",
                              limit_price=100.0, order_type="LIMIT"),
     )
+    return plan, saved, chased
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_records_a_row_and_chases_it(monkeypatch):
+    import backend.api.algo.template_attach as ta
+    plan, saved, chased = _wing_chase_fixture(monkeypatch)
     await ta._chase_wing(plan)
     assert saved[0].source == "template_wing" and saved[0].status == "OPEN"
     assert chased[0]["algo_order_id"] == 42
     assert chased[0]["quantity"] == 75
+    # No parent_order_id was supplied — template_id must NOT be stamped
+    # either, so the row can never look like a templated PARENT order
+    # (template_id set + parent_order_id None) to the dedupe/retry checks.
+    assert saved[0].parent_order_id is None
+    assert saved[0].template_id is None
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_row_links_back_to_parent_and_template(monkeypatch):
+    """The wing's own AlgoOrder row must carry both `parent_order_id` and
+    `template_id` when a parent_order_id is supplied, so it's traceable
+    back to the fill that triggered it — matching the convention every
+    other child AlgoOrder row (TP children, sim GTTs) follows."""
+    import backend.api.algo.template_attach as ta
+    plan, saved, chased = _wing_chase_fixture(monkeypatch)
+    await ta._chase_wing(plan, parent_order_id=999)
+    assert saved[0].parent_order_id == 999
+    assert saved[0].template_id == 11

@@ -323,10 +323,15 @@ def _retry_build_attached_payload(result, product: str) -> list:
                 _spec, _gid, result.plan, product,
             ))
     if result.wing_order_id:
+        # Mirror orders_place.py:_opp_build_attach_entries field-for-field —
+        # `chased=True` means `result.wing_order_id` is the sentinel string
+        # "chase" (the wing was handed to chase, not placed directly) and
+        # must never be treated as a real, cancellable broker order id.
         payload.append({
-            "kind":  "wing",
-            "label": "Wing",
-            "id":    result.wing_order_id,
+            "kind":   "wing",
+            "label":  "Wing",
+            "id":     result.wing_order_id,
+            "chased": bool(getattr(result, "wing_chased", False)),
         })
     return payload
 
@@ -398,6 +403,20 @@ def _retry_precheck_row(row) -> Optional[dict]:
     """
     if row.template_id is None:
         return {"ok": False, "reason": "no template attached to this order"}
+    # A child row (parent_order_id set) is never itself a templated PARENT
+    # order, even if it carries a `template_id` for traceability — e.g. a
+    # chase-routed wing's own AlgoOrder row (`_chase_wing` in
+    # template_attach.py) is stamped with both `parent_order_id` and
+    # `template_id` so it's traceable back to its parent fill. Without this
+    # guard, that wing row — once chase fills it (status FILLED,
+    # attached_gtts_json never populated on a wing's OWN row, only on the
+    # parent's) — looks identical to a stalled/failed template attach and
+    # would run apply_template_to_order AGAINST THE WING ITSELF, arming a
+    # second full template (GTTs + another wing) recursively.
+    if getattr(row, "parent_order_id", None) is not None:
+        return {"ok": False, "reason":
+                "this is a child order (wing/GTT leg) — template retry "
+                "only applies to the parent order"}
     if row.attached_gtts_json:
         return {"ok": False, "reason":
                 "template already attached — nothing to retry"}

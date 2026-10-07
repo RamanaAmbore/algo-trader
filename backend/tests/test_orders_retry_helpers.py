@@ -81,6 +81,34 @@ class TestPrecheckRow:
         )
         assert _retry_precheck_row(r) is None
 
+    def test_child_row_with_parent_order_id_is_refused(self):
+        """A child AlgoOrder row (e.g. a chase-routed wing's own row,
+        `_chase_wing` in template_attach.py) is stamped with both
+        `parent_order_id` and `template_id` for traceability, but must
+        never be retry-eligible itself — only the templated PARENT order
+        (parent_order_id IS NULL) can be retried. Without this guard, a
+        FILLED wing row with template_id set and no attached_gtts_json of
+        its own (that field is only ever written on the PARENT row) looks
+        identical to a stalled/failed attach and would recursively arm a
+        second full template against the wing."""
+        r = SimpleNamespace(
+            template_id=11, attached_gtts_json=None, status="FILLED",
+            mode="live", parent_order_id=999,
+        )
+        out = _retry_precheck_row(r)
+        assert out is not None
+        assert out["ok"] is False
+        assert "child order" in out["reason"]
+
+    def test_parent_row_without_parent_order_id_is_unaffected(self):
+        """A genuine templated parent (parent_order_id None) must still
+        pass the precheck — this guard only excludes child rows."""
+        r = SimpleNamespace(
+            template_id=1, attached_gtts_json=None, status="FILLED",
+            mode="live", parent_order_id=None,
+        )
+        assert _retry_precheck_row(r) is None
+
     @pytest.mark.parametrize("mode", ["paper", "replay", "shadow", None, ""])
     def test_non_live_non_sim_mode_is_refused(self, mode):
         """2026-09-30 fix — companion to the _fire_template_attach_on_fill
@@ -212,7 +240,26 @@ class TestBuildAttachedPayload:
         )
         payload = _retry_build_attached_payload(result, "NRML")
         assert len(payload) == 1
-        assert payload[0] == {"kind": "wing", "label": "Wing", "id": "W1"}
+        assert payload[0] == {
+            "kind": "wing", "label": "Wing", "id": "W1", "chased": False,
+        }
+
+    def test_wing_only_chased_sets_chased_flag(self):
+        """A chase-routed wing (`wing_order_id == "chase"`, `wing_chased`
+        True — see `_ta_live_place_wing` in template_attach.py) must carry
+        `chased: True` in its own retry-built entry, mirroring
+        `_opp_build_attach_entries` field-for-field, so no downstream
+        reader of this entry mistakes the "chase" sentinel for a real,
+        cancellable broker order id."""
+        result = SimpleNamespace(
+            plan=None, gtt_ids=None, wing_order_id="chase",
+            wing_chased=True, errors=[],
+        )
+        payload = _retry_build_attached_payload(result, "NRML")
+        assert len(payload) == 1
+        assert payload[0] == {
+            "kind": "wing", "label": "Wing", "id": "chase", "chased": True,
+        }
 
     def test_gtts_and_wing(self):
         spec = SimpleNamespace(

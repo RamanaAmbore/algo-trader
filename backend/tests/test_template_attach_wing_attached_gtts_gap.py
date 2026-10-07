@@ -145,3 +145,39 @@ def test_opp_build_attach_entries_includes_wing_order():
         "trigger."
     )
     assert wing_entries[0]["id"] == "wing-order-999"
+    assert wing_entries[0]["chased"] is False
+
+
+class _FakeChasedAttachResult(_FakeAttachResult):
+    """A wing-only plan where the LIMIT wing was handed to chase instead
+    of placed directly — `wing_order_id` is the "chase" sentinel, not a
+    real broker order id (see `_ta_live_place_wing`, template_attach.py)."""
+    wing_order_id = "chase"
+    wing_chased = True
+
+
+def test_opp_build_attach_entries_records_chase_routed_wing():
+    """A chase-routed wing (never a real broker order id) must still be
+    recorded in attached_gtts_json — not just non-double-recorded, but
+    recorded at all — with an explicit `chased` flag so no downstream
+    reader mistakes the "chase" sentinel for a cancellable broker order
+    id. Before the fix, `_ta_live_place_wing` cleared `wing_order_id` to
+    `None` for this exact case, so `attached` came back empty and the
+    idempotency check in `_opp_load_row_for_attach` treated the row as
+    "never attached" — a second trigger (chase + postback racing the
+    same fill, or a manual Re-attach) could then place a SECOND live
+    wing order with nothing to catch the duplicate."""
+    from backend.api.routes.orders_place import _opp_build_attach_entries
+
+    result = _FakeChasedAttachResult()
+    attached = _opp_build_attach_entries(
+        result, fill_price=100.0, parent_side="BUY",
+    )
+
+    wing_entries = [e for e in attached if e.get("kind") == "wing"]
+    assert len(wing_entries) == 1, (
+        "chase-routed wing must still produce a non-empty attached_gtts_json "
+        "entry so the idempotency check sees it was already handed off"
+    )
+    assert wing_entries[0]["id"] == "chase"
+    assert wing_entries[0]["chased"] is True
