@@ -868,6 +868,8 @@ class GrowwBroker(Broker):
         except Exception as e:
             logger.debug(f"Groww ltp segment={seg}: {e}")
 
+    @recoverable("groww.ltp", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def ltp(self, symbols: list[str]) -> dict:
         """Groww's `get_ltp` wants a Tuple of `"EXCHANGE_TRADINGSYMBOL"` keys
         plus a segment. The codebase passes Kite-style `"NSE:RELIANCE"`
@@ -891,6 +893,8 @@ class GrowwBroker(Broker):
         return out
 
     @_retry_groww_auth
+    @recoverable("groww.quote", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def quote(self, symbols: list[str]) -> dict:
         """Two-tier quote fetch:
           * **Single symbol** — call `get_quote(trading_symbol, exchange,
@@ -1597,6 +1601,8 @@ class GrowwBroker(Broker):
             raise
 
     @_retry_groww_auth
+    @recoverable("groww.get_gtts", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def get_gtts(self) -> list[dict]:
         """List all active Groww GTT Smart Orders, normalised to Kite GTT shape.
         Paginates automatically (page_size=50 max per Groww docs)."""

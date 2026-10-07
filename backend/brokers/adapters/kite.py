@@ -404,10 +404,14 @@ class KiteBroker(Broker):
 
     # ── Market data ───────────────────────────────────────────────────
 
+    @recoverable("kite.ltp", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def ltp(self, symbols: list[str]) -> dict:
         _KITE_RATE_LIMITER.throttle("quote")
         return self.kite.ltp(symbols)
 
+    @recoverable("kite.quote", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def quote(self, symbols: list[str]) -> dict:
         _KITE_RATE_LIMITER.throttle("quote")
         return self.kite.quote(symbols)
@@ -621,6 +625,8 @@ class KiteBroker(Broker):
         resp = self.kite.delete_gtt(trigger_id=int(gtt_id))
         return str(resp.get("trigger_id", gtt_id) if isinstance(resp, dict) else gtt_id)
 
+    @recoverable("kite.get_gtts", attempts=2, backoff_s=0.5,
+                 retry_on=(NetworkException, DataException))
     def get_gtts(self) -> list[dict]:
         return self.kite.get_gtts()
 

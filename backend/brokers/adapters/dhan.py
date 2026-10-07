@@ -1154,6 +1154,8 @@ class DhanBroker(Broker):
 
     # ── Market data ───────────────────────────────────────────────────
 
+    @recoverable("dhan.ltp", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def ltp(self, symbols: list[str]) -> dict:
         """Audit fix (B-2) — was returning {} by design which silently
         broke `_task_trail_stop` for every Dhan trailing position (the
@@ -1193,6 +1195,8 @@ class DhanBroker(Broker):
             return {}
         return _parse_dhan_ohlc_response(resp, sid_to_key, len(symbols))
 
+    @recoverable("dhan.quote", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def quote(self, symbols: list[str]) -> dict:
         """Empty dict — `quote()` is a richer shape than `ltp()`
         (depth + OI + day-change + OHLC), and Dhan's batch quote API
@@ -1560,6 +1564,8 @@ class DhanBroker(Broker):
             raise RuntimeError(f"Dhan cancel_gtt rejected: {resp}")
         return gtt_id
 
+    @recoverable("dhan.get_gtts", attempts=2, backoff_s=0.5,
+                 retry_on=(ConnectionError, TimeoutError))
     def get_gtts(self) -> list[dict]:
         """List all active Dhan Forever Orders, normalised to Kite GTT shape."""
         resp = self._sdk_orders.get_forever()

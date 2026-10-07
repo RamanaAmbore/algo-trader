@@ -228,7 +228,7 @@ the full HTML table. Storage grows with each alert and is capped only by the
 7-day retention. Fix: store the inputs and rebuild the table in the renderer,
 as the order-failure path does.
 
-**G14 (L). No UI for event agents.** Event agents are visible on the agents
+**G14 (L). No UI for event agents. [PARTLY: the automation editor now shows a read-only view for kind='event' agents, with Activate/Deactivate still available. There is no structured builder for a new event agent's condition or channels]** Event agents are visible on the agents
 page, but their conditions and channels cannot be edited there (the editor
 writes cycle-agent JSON). Fix: extend the editor with a log-tag picker, which
 is already built, and mark system agents read-only.

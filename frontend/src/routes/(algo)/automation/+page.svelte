@@ -854,7 +854,14 @@
           {#if editing === agent.slug}
             <!-- ──────── Inline editor (form on top, tree preview below) ──────── -->
             <div class="px-3 pb-3 pt-2 border-t" style="border-top-color: rgba(126,151,184,0.10)">
+              {#if agent.kind === 'event'}
+                <div class="mb-3 p-2 rounded bg-[#7dd3fc]/10 text-[#7dd3fc] text-[length:var(--fs-sm)] border border-[#7dd3fc]/30">
+                  System event agent — this agent is seeded by the alert pipeline. Its condition, channels, and
+                  renderer are read-only here. Use Activate / Deactivate to change whether it fires.
+                </div>
+              {/if}
               <!-- ── FORM FIELDS ── -->
+              <fieldset disabled={agent.kind === 'event'} style="display:contents;">
               <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
                 <div>
                   <span class="field-label">Name</span>
@@ -1154,12 +1161,16 @@
                 </div>
               {/if}
 
+              </fieldset>
+
               <div class="flex gap-2 mt-3">
                 <button type="button" onclick={async () => { await runValidation(); }}
-                  class="text-[length:var(--fs-md)] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold">
+                  disabled={agent.kind === 'event'}
+                  class="text-[length:var(--fs-md)] py-1 px-3 rounded border border-[#7dd3fc]/50 bg-[#7dd3fc]/15 text-[#7dd3fc] hover:bg-[#7dd3fc]/25 font-semibold disabled:opacity-40">
                   Validate
                 </button>
-                <button type="button" onclick={saveEdit} class="btn-primary text-[length:var(--fs-md)] py-1 px-4">Save</button>
+                <button type="button" onclick={saveEdit} disabled={agent.kind === 'event'}
+                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">Save</button>
                 <button type="button" onclick={() => { editing = null; validationErrors = []; validationGrammar = ''; }}
                   class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
               </div>

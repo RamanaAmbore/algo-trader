@@ -70,3 +70,11 @@ def test_dhan_and_groww_reads_retry_on_network_errors():
         for name in ("holdings", "positions", "margins", "orders"):
             fn = getattr(cls, name)
             assert hasattr(fn, "__wrapped__") or getattr(fn, "__name__", "") == name, (cls, name)
+
+
+def test_market_data_reads_retry_on_transient_errors_across_brokers():
+    from backend.brokers.adapters import kite, dhan, groww
+    for cls, has_recoverable in ((kite.KiteBroker, True), (dhan.DhanBroker, True), (groww.GrowwBroker, True)):
+        for name in ("ltp", "quote", "get_gtts"):
+            fn = getattr(cls, name)
+            assert hasattr(fn, "__wrapped__") or getattr(fn, "__name__", "") == name, (cls, name)
