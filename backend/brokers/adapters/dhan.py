@@ -1383,7 +1383,17 @@ class DhanBroker(Broker):
                 validity=kwargs.get("validity", "DAY"),
                 **({"tag": tag} if tag else {}),
             )
+        except BrokerError:
+            # Already a typed BrokerError (e.g. BrokerAuthError from the
+            # proxy's auth-failure retry path, BrokerRateLimitError from
+            # DH-904, or BrokerNetworkError from a 5xx) — re-raise as-is.
+            # Re-wrapping here would destroy the real type and break
+            # chase.py's isinstance-based recoverable/non-recoverable
+            # classification (see chase.py:_ch_is_recoverable_error).
+            raise
         except Exception as e:
+            # Genuinely untyped exception — fall back to treating it as a
+            # transient, network-shaped failure.
             raise BrokerNetworkError(str(e), broker="dhan") from e
         if not isinstance(resp, dict) or resp.get("status") != "success":
             code = resp.get("code", "") if isinstance(resp, dict) else ""
