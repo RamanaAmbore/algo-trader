@@ -194,17 +194,3 @@ template:
   tp_limit_tick_offset_default: 0.5
   wing_min_oi_hard_reject:      0
 
-# Alert channel routing — telegram: ops|info|false, ntfy: urgent|high|default|false, email: true|false
-alert_routing:
-  order_failure:        { telegram: ops,   ntfy: urgent,  email: true  }
-  ticker_degraded:      { telegram: ops,   ntfy: urgent,  email: false }
-  ticker_recovered:     { telegram: ops,   ntfy: high,    email: false }
-  gtt_asymmetric:       { telegram: ops,   ntfy: high,    email: false }
-  oco_double_fire:      { telegram: ops,   ntfy: urgent,  email: false }
-  template_guard:       { telegram: ops,   ntfy: high,    email: false }
-  template_attach_fail: { telegram: ops,   ntfy: urgent,  email: false }
-  market_open:          { telegram: info,  ntfy: false,   email: true  }
-  market_close:         { telegram: info,  ntfy: false,   email: true  }
-  visitor_report:       { telegram: info,  ntfy: false,   email: false }
-  agent_alert:          { telegram: ops,   ntfy: urgent,  email: true  }
-  deploy:               { telegram: info,  ntfy: default, email: false }

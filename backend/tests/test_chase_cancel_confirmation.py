@@ -182,7 +182,7 @@ class TestCancelAndCaptureAbortsOnUnconfirmed:
         mock_log.critical.assert_called_once()
         extra = mock_log.critical.call_args.kwargs["extra"]
         assert extra["tags"] == ["chase"]
-        assert extra["event"] == "cancel_unconfirmed"
+        assert extra["alert_event"] == "cancel_unconfirmed"
 
     @pytest.mark.asyncio
     async def test_confirmed_cancel_with_remaining_qty_proceeds_normally(self):

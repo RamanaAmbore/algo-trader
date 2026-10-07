@@ -45,7 +45,7 @@ def _reload_alert_utils():
 def _order_failure_records(mock_logger) -> int:
     return sum(
         1 for c in mock_logger.warning.call_args_list
-        if (c.kwargs.get("extra") or {}).get("event") == "order_failure"
+        if (c.kwargs.get("extra") or {}).get("alert_event") == "order_failure"
     )
 
 
@@ -327,7 +327,7 @@ class TestPreflightBlockRouting:
         with (
             patch.object(actions_mod, "run_preflight", return_value=fake_pf),
             patch.object(actions_mod, "_fetch_ltp", return_value=None),
-            patch("backend.shared.helpers.alert_utils._dispatch") as mock_dispatch,
+            patch("backend.shared.helpers.alert_utils.dispatch_payload") as mock_dispatch,
             patch("backend.shared.helpers.alert_utils.send_order_failure_alert"),
             patch.object(actions_mod, "_write_live_order", return_value=None),
         ):

@@ -1691,7 +1691,7 @@ def _ch_build_cancel_unconfirmed_abort(
     logger.critical(
         "Chase %s: %s", symbol, result.detail,
         extra={
-            "tags": ["chase"], "event": "cancel_unconfirmed",
+            "tags": ["chase"], "alert_event": "cancel_unconfirmed",
             "transaction_type": transaction_type, "symbol": symbol, "account": account,
             "order_id": current_order_id, "attempt": attempt,
             "quantity": quantity, "remaining_qty": remaining_qty,

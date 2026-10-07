@@ -180,3 +180,42 @@ async def test_log_channel_writes_a_tagged_agent_record(monkeypatch):
     assert kw["extra"]["tags"] == ["agent"]
     assert kw["extra"]["agent_slug"] == "loss-funds-negative"
     assert kw["extra"]["sim_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_feed_resumes_from_the_stored_high_water_mark(monkeypatch):
+    log_feed.reset_for_tests()
+    stored = {}
+    monkeypatch.setattr(log_feed, "_load_stored_high_water", lambda: 5)
+    monkeypatch.setattr(log_feed, "_store_high_water", lambda v: stored.__setitem__("hw", v))
+    calls = []
+
+    async def fetch(after):
+        calls.append(after)
+        return [{"id": 6, "tags": ["orders"]}, {"id": 7, "tags": ["orders"]}]
+
+    async def newest():
+        raise AssertionError("must not read newest when a mark is stored")
+
+    rows = await log_feed.records_since_last_cycle(fetch=fetch, newest=newest)
+    assert [r["id"] for r in rows] == [6, 7]
+    assert calls == [5]
+    assert stored["hw"] == 7
+    log_feed.reset_for_tests()
+
+
+@pytest.mark.asyncio
+async def test_feed_without_stored_mark_starts_at_newest(monkeypatch):
+    log_feed.reset_for_tests()
+    monkeypatch.setattr(log_feed, "_load_stored_high_water", lambda: None)
+    monkeypatch.setattr(log_feed, "_store_high_water", lambda v: None)
+
+    async def newest():
+        return 9
+
+    async def fetch(after):
+        raise AssertionError("first call without a mark must not fetch")
+
+    assert await log_feed.records_since_last_cycle(fetch=fetch, newest=newest) == []
+    assert log_feed._high_water == 9
+    log_feed.reset_for_tests()

@@ -372,7 +372,7 @@ class TestFireWingUnprotectedAlertGuard:
             )
             for c in mock_log.warning.call_args_list:
                 extra = c.kwargs.get("extra") or {}
-                if extra.get("event") == "wing_unprotected":
+                if extra.get("alert_event") == "wing_unprotected":
                     records.append({"ts": datetime.now(timezone.utc), "level": "WARNING",
                                     "logger": "backend.api.algo.template_attach",
                                     "message": "", "tags": ["gtt"], "extra": extra})

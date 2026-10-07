@@ -31,7 +31,7 @@ async def test_live_fill_is_logged_once_with_tags_and_fields(logged):
     assert msg == "order filled"
     extra = kw["extra"]
     assert extra["tags"] == ["orders"]
-    assert extra["event"] == "filled"
+    assert extra["alert_event"] == "filled"
     assert extra["mode"] == "live"
     assert extra["order_id"] == 101
     assert extra["account"] == "ZG0790"

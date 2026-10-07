@@ -440,6 +440,12 @@ async def _migrate_grammar_source_and_schema_version(conn) -> None:
     await conn.execute(text(
         "ALTER TABLE agents ADD COLUMN IF NOT EXISTS kind VARCHAR(16) NOT NULL DEFAULT 'cycle'"
     ))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS seed_version INTEGER NOT NULL DEFAULT 0"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE algo_orders ADD COLUMN IF NOT EXISTS template_hold_override BOOLEAN"
+    ))
 
 
 async def _migrate_log_events(conn) -> None:

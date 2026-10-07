@@ -6809,7 +6809,7 @@ async def _task_deploy_sync_check() -> None:
                         )
                         logger.warning(
                             f"[DEPLOY-SYNC] {message}",
-                            extra={"tags": ["deploy"], "event": "deploy_out_of_sync",
+                            extra={"tags": ["deploy"], "alert_event": "deploy_out_of_sync",
                                    "title": f"Deploy out of sync — {branch}", "body": message},
                         )
         except asyncio.CancelledError:

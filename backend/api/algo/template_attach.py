@@ -265,7 +265,7 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     logger.info(
         f"guard alert dispatched: {summary}",
         extra={
-            "tags": ["orders"], "event": "template_guard",
+            "tags": ["orders"], "alert_event": "template_guard",
             "template_slug": template_slug, "applies_to": applies_to, "reason": reason,
             "parent_order_id": parent_order_id, "parent_side": parent_side,
             "parent_qty": parent_qty, "parent_symbol": parent_symbol,
@@ -342,7 +342,7 @@ def _fire_wing_unprotected_alert(
     )
     logger.warning(
         "[WING-UNPROTECTED] %s", msg,
-        extra={"tags": ["orders", "gtt"], "event": "wing_unprotected",
+        extra={"tags": ["orders", "gtt"], "alert_event": "wing_unprotected",
                "gtt_ids_text": str(result.gtt_ids), "reason": str(wing_skipped_reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
                "exchange": parent_exchange},
@@ -404,7 +404,7 @@ def _fire_attach_fail_alert(
         "attach fail alert dispatched: order #%s %s %s errors=[%s]",
         order_id, symbol, account, err_summary,
         extra={
-            "tags": ["orders"], "event": "template_attach_fail",
+            "tags": ["orders"], "alert_event": "template_attach_fail",
             "order_id": order_id, "symbol": symbol, "account": account,
             "err_summary": err_summary, "ist_label": ist_label,
         },
@@ -784,7 +784,7 @@ async def _pick_wing_by_premium(
         logger.critical(
             "[WING-HARD-REJECT] %s (parent=%s, exch=%s)",
             _hr_reason, parent_symbol, parent_exchange,
-            extra={"tags": ["orders", "gtt"], "event": "wing_hard_reject",
+            extra={"tags": ["orders", "gtt"], "alert_event": "wing_hard_reject",
                    "reason": str(_hr_reason), "symbol": parent_symbol,
                    "exchange": parent_exchange, "target_premium": float(target_premium)},
         )
@@ -2407,7 +2407,7 @@ async def _maybe_scan_wing_by_premium(
     logger.warning(
         "[WING-SKIP] wing scan returned no candidate for order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
-        extra={"tags": ["orders", "gtt"], "event": "wing_skip", "reason": str(reason),
+        extra={"tags": ["orders", "gtt"], "alert_event": "wing_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
                "exchange": parent_exchange},
     )
@@ -2496,7 +2496,7 @@ async def _maybe_fetch_wing_quote_for_offset(
     logger.warning(
         "[WING-OFFSET-SKIP] order #%s %s: %s",
         parent_order_id, parent_symbol, reason,
-        extra={"tags": ["orders", "gtt"], "event": "wing_offset_skip", "reason": str(reason),
+        extra={"tags": ["orders", "gtt"], "alert_event": "wing_offset_skip", "reason": str(reason),
                "parent_order_id": parent_order_id, "symbol": parent_symbol,
                "exchange": parent_exchange},
     )

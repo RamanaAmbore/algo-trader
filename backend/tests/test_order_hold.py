@@ -90,3 +90,14 @@ def test_parse_hold_record_handles_empty_and_bad_input():
     assert parse_hold_record("") is None
     assert parse_hold_record("{bad") is None
     assert parse_hold_record("[1]") is None
+
+
+def test_template_exit_override_beats_global_switch(monkeypatch):
+    from backend.api.algo import order_hold_gate as g
+    monkeypatch.setattr(g, "get_bool", lambda key, default=False: False)
+    assert g.template_exit_held() is True
+    assert g.template_exit_held(False) is False
+    monkeypatch.setattr(g, "get_bool", lambda key, default=False: True)
+    assert g.template_exit_held() is False
+    assert g.template_exit_held(True) is True
+    assert g.template_exit_held(None) is False

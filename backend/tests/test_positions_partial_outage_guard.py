@@ -78,7 +78,7 @@ def _clean_summary() -> "pd.DataFrame":
 def _summary_extra(mock_logger) -> dict:
     for c in mock_logger.info.call_args_list:
         extra = c.kwargs.get("extra") or {}
-        if extra.get("event") == "summary":
+        if extra.get("alert_event") == "summary":
             return {"tg_table": extra["tg_table"], "email_html": extra["email_table_html"]}
     return {}
 

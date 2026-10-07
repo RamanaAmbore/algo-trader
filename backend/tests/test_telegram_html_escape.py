@@ -123,11 +123,6 @@ class TestTelegramHtmlEscape:
 class TestAlertDispatchTelegramPayload:
     """Alert dispatch payloads are correctly formatted for Telegram."""
 
-    def test_dispatch_function_exists(self):
-        """Verify _dispatch function is callable."""
-        from backend.shared.helpers.alert_utils import _dispatch
-
-        assert callable(_dispatch), "_dispatch should be callable"
 
     def test_telegram_send_function_exists(self):
         """Verify _send_telegram function is callable."""

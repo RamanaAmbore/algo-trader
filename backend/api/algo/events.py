@@ -137,12 +137,20 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     from backend.api.algo.template_registry import resolve_events
     channels = resolve_events(agent.events if isinstance(agent.events, list) else [])
 
+    # Telegram, email, and ntfy are sent by the event path from one tagged record,
+    # so their text and routing are decided in one place. Websocket, in-app, and
+    # log channels stay here: they are UI broadcasts or the audit log line.
+    recorded_channels = []
     for ch in channels:
         if not ch.get("enabled", False):
             continue
         if ch.get("channel") in skip_channels:
             continue
-
+        if ch.get("channel") in _RECORDED_CHANNELS:
+            if _tags_match(ch, eval_result):
+                recorded_channels.append({k: v for k, v in ch.items() if k in ("channel", "priority", "tags")}
+                                         | {"enabled": True, "gate": True})
+            continue
         try:
             await _dispatch_channel(
                 ch, agent, telegram_body, email_subject, email_body,
@@ -152,9 +160,24 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         except Exception as e:
             logger.error(f"Agent event dispatch failed ({ch.get('channel', '')}): {e}")
 
+    if recorded_channels:
+        logger.info(
+            f"ALERT recorded [{agent.slug}]{branch_tag}: {agent.name}",
+            extra={
+                "tags": ["agent"], "alert_event": "breach", "agent_slug": agent.slug,
+                "agent_name": agent.name, "condition_text": condition_text,
+                "channels": recorded_channels, "telegram_body": telegram_body,
+                "ntfy_body": ntfy_body, "email_subject": email_subject,
+                "email_body": email_body, "sim_mode": bool(sim_mode),
+            },
+        )
+
     # Persist to agent_events table (sim_mode flag flows through)
     await _log_event(agent, "triggered", condition_text, eval_result.detail,
                      sim_mode=sim_mode)
+
+
+_RECORDED_CHANNELS = frozenset({"telegram", "email", "ntfy"})
 
 
 def _tags_match(ch: dict, eval_result) -> bool:

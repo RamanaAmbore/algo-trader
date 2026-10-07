@@ -242,3 +242,68 @@ def test_report_dropped_writes_once_per_new_drop(capsys):
     assert "3 record(s) dropped" in capsys.readouterr().err
     assert log_store.report_dropped(h, reported) == 3
     assert capsys.readouterr().err == ""
+
+
+def test_alert_records_use_their_own_queue():
+    h = log_store.LogStoreHandler()
+    h.emit(_rec(msg="routine"))
+    h.emit(_rec(msg="fill", tags=["orders"], alert_event="filled"))
+    h.emit(_rec(level=logging.ERROR, msg="boom"))
+    assert h._alerts.qsize() == 2
+    assert h._q.qsize() == 1
+
+
+def test_alerts_drain_before_routine_records():
+    h = log_store.LogStoreHandler()
+    h.emit(_rec(msg="routine"))
+    h.emit(_rec(msg="fill", alert_event="filled"))
+    assert [r["message"] for r in h.drain(10)] == ["fill", "routine"]
+
+
+def test_routine_burst_cannot_drop_an_alert():
+    h = log_store.LogStoreHandler()
+    for _ in range(log_store._QUEUE_MAX):
+        h.emit(_rec(msg="routine"))
+    h.emit(_rec(msg="fill", alert_event="filled"))
+    assert h.dropped == 0
+    assert [r["message"] for r in h.drain(1)] == ["fill"]
+
+
+def test_alert_queue_full_counts_alert_drops(capsys):
+    h = log_store.LogStoreHandler()
+    for _ in range(log_store._ALERT_QUEUE_MAX):
+        h.emit(_rec(msg="fill", alert_event="filled"))
+    h.emit(_rec(msg="fill", alert_event="filled"))
+    assert h.alert_dropped == 1
+    assert log_store.report_dropped(h, 0) == 1
+    assert "alert records 1" in capsys.readouterr().err
+
+
+def test_bulk_bodies_are_kept_out_of_the_stored_extra():
+    rec = _rec(tags=["agent"], alert_event="breach", telegram_body="<b>big</b>", agent_slug="x")
+    row = log_store.row_for(rec)
+    assert "telegram_body" not in row["extra"]
+    assert row["extra"]["agent_slug"] == "x"
+    assert row["_bulk"] == {"telegram_body": "<b>big</b>"}
+
+
+def test_insert_strips_bulk_bodies(monkeypatch):
+    import asyncio
+    captured = {}
+
+    class _Sess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def execute(self, stmt, params=None):
+            captured["rows"] = params
+
+        async def commit(self):
+            pass
+
+    rec = _rec(tags=["agent"], alert_event="breach", telegram_body="x")
+    asyncio.run(log_store.insert_rows([log_store.row_for(rec)], lambda: _Sess()))
+    assert all("_bulk" not in r for r in captured["rows"])

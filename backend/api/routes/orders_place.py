@@ -749,8 +749,8 @@ async def _fire_template_attach_on_fill(
     # and double-place GTTs at the broker. The lock is per-row +
     # in-process (uvicorn --workers 1 on prod) so there's zero
     # contention against unrelated fills.
-    from backend.api.algo.order_hold_gate import template_exit_held, hold_template_exit
-    if template_exit_held():
+    from backend.api.algo.order_hold_gate import template_exit_held, hold_template_exit, template_exit_override
+    if template_exit_held(await template_exit_override(parent_row_id)):
         await hold_template_exit(parent_row_id, parent_symbol)
         return
     _row_lock = await _get_template_attach_lock(parent_row_id)
@@ -794,7 +794,7 @@ async def _fire_template_attach_on_fill(
                     _planned_gtt_count, _placed_gtt_count,
                     result.errors,
                     extra={
-                        "tags": ["orders", "gtt"], "event": "partial_gtt",
+                        "tags": ["orders", "gtt"], "alert_event": "partial_gtt",
                         "parent_row_id": parent_row_id, "parent_symbol": parent_symbol,
                         "planned": _planned_gtt_count, "placed": _placed_gtt_count,
                         "errors": [str(e) for e in result.errors[:2]],
@@ -1694,6 +1694,7 @@ async def _ticket_persist_live_algo_order(
                 target_pct=(_eff_target_pct
                             if _eff_target_pct > 0 else None),
                 template_id=data.template_id,
+                template_hold_override=getattr(data, "hold_template_exit", None),
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
                 intent=getattr(data, "intent", None),
@@ -2138,6 +2139,7 @@ async def _opp_paper_persist_row(
                 request_id=_req_id,
                 target_pct=(_eff_target_pct if _eff_target_pct > 0 else None),
                 template_id=data.template_id,
+                template_hold_override=getattr(data, "hold_template_exit", None),
                 template_overrides_json=_build_overrides_json(data),
                 product=(data.product or "NRML"),
                 source=(data.source or "ticket"),

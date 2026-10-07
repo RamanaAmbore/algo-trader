@@ -98,12 +98,18 @@ def tags_for(record: logging.LogRecord) -> list[str]:
     return out[:_MAX_TAGS]
 
 
+# Large rendered bodies are needed to send an alert but not to keep the record.
+# They travel with the row for dispatch and are dropped before the insert.
+BULK_KEYS = frozenset({"tg_table", "email_table_html", "telegram_body", "ntfy_body", "email_body"})
+
+
 def row_for(record: logging.LogRecord) -> dict:
     extra = {
         k: v for k, v in record.__dict__.items()
         if k not in _STANDARD_ATTRS and not k.startswith("_")
     }
-    return {
+    bulk = {k: extra.pop(k) for k in list(extra) if k in BULK_KEYS}
+    row = {
         "ts": datetime.fromtimestamp(record.created, tz=timezone.utc),
         "process": PROCESS,
         "level": record.levelname,
@@ -112,32 +118,53 @@ def row_for(record: logging.LogRecord) -> dict:
         "tags": tags_for(record),
         "extra": json.loads(json.dumps(extra, default=str)) if extra else None,
     }
+    if bulk:
+        row["_bulk"] = json.loads(json.dumps(bulk, default=str))
+    return row
+
+
+_ALERT_QUEUE_MAX = 5000
+
+
+def is_alert_record(record: logging.LogRecord) -> bool:
+    """Records that can alert get their own queue, so a burst of routine logs cannot push them out."""
+    return getattr(record, "alert_event", None) is not None or record.levelno >= logging.ERROR
 
 
 class LogStoreHandler(logging.Handler):
     def __init__(self) -> None:
         super().__init__(level=logging.INFO)
         self._q: queue.Queue = queue.Queue(maxsize=_QUEUE_MAX)
+        self._alerts: queue.Queue = queue.Queue(maxsize=_ALERT_QUEUE_MAX)
         self.dropped = 0
+        self.alert_dropped = 0
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
             if record.levelno < self.level or record.name.startswith(_SKIP_PREFIXES):
                 return
-            self._q.put_nowait(row_for(record))
+            target = self._alerts if is_alert_record(record) else self._q
+            target.put_nowait(row_for(record))
             _wake_writer()
         except queue.Full:
             self.dropped += 1
+            if is_alert_record(record):
+                self.alert_dropped += 1
         except Exception:
             self.dropped += 1
 
+    def pending(self) -> bool:
+        return not (self._q.empty() and self._alerts.empty())
+
     def drain(self, limit: int) -> list[dict]:
+        """Alert records first, then routine records."""
         rows: list[dict] = []
-        while len(rows) < limit:
-            try:
-                rows.append(self._q.get_nowait())
-            except queue.Empty:
-                break
+        for source in (self._alerts, self._q):
+            while len(rows) < limit:
+                try:
+                    rows.append(source.get_nowait())
+                except queue.Empty:
+                    break
         return rows
 
 
@@ -153,8 +180,9 @@ async def insert_rows(rows: list[dict], session_factory=None) -> None:
     from sqlalchemy import insert
     from backend.api.models import LogEvent
     factory = session_factory or _default_session_factory()
+    clean = [{k: v for k, v in r.items() if k != "_bulk"} for r in rows]
     async with factory() as session:
-        await session.execute(insert(LogEvent), rows)
+        await session.execute(insert(LogEvent), clean)
         await session.commit()
 
 
@@ -198,7 +226,8 @@ def report_dropped(handler: LogStoreHandler, reported: int) -> int:
     if handler.dropped > reported:
         sys.stderr.write(
             f"log_store: {handler.dropped - reported} record(s) dropped "
-            f"(total {handler.dropped}); their alerts were not sent\n"
+            f"(total {handler.dropped}, alert records {handler.alert_dropped}); "
+            f"dropped alert records were not sent\n"
         )
         return handler.dropped
     return reported
@@ -255,7 +284,7 @@ async def stop() -> None:
         _task.cancel()
         _task = None
     for _ in range(_MAX_DRAIN_ROUNDS):
-        if HANDLER._q.empty():
+        if not HANDLER.pending():
             break
         try:
             if await flush_once(HANDLER, dispatch=_event_dispatcher()) == 0:

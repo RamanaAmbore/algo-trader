@@ -662,7 +662,7 @@ class TestPostFillWingFailure:
             )
 
             # The wing skip is logged as a tagged record; the event agent sends it.
-            events = [c.kwargs.get("extra", {}).get("event")
+            events = [c.kwargs.get("extra", {}).get("alert_event")
                       for c in mock_log.warning.call_args_list + mock_log.critical.call_args_list]
             assert any(e in {"wing_skip", "wing_offset_skip", "wing_hard_reject"} for e in events), events
             # Reason should be captured

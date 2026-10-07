@@ -95,7 +95,8 @@ class TestFireTemplateAttachModeGate:
         from backend.api.routes.orders_place import _fire_template_attach_on_fill
         # Template exits are held by default; this test covers the live path, so
         # release the hold for its duration.
-        monkeypatch.setattr("backend.api.algo.order_hold_gate.template_exit_held", lambda: False)
+        monkeypatch.setattr("backend.api.algo.order_hold_gate.template_exit_held", lambda override=None: False)
+        monkeypatch.setattr("backend.api.algo.order_hold_gate.template_exit_override", AsyncMock(return_value=None))
 
         mock_broker = MagicMock()
         mock_broker.broker_id = "zerodha_kite"

@@ -72,7 +72,7 @@ async def _start_conn_event_queue(app: Litestar) -> None:
 
 def _origin_hook(request) -> None:
     from backend.shared.helpers.log_store import ORIGIN_BRANCH
-    ORIGIN_BRANCH.set(request.headers.get("X-Ramboq-Branch") or "main")
+    ORIGIN_BRANCH.set(request.headers.get("X-Ramboq-Branch") or "unknown")
 
 
 async def _start_log_store(app: Litestar) -> None:

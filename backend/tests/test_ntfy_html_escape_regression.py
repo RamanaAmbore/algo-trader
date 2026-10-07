@@ -75,7 +75,7 @@ _IST_LABEL = "Tue, Oct 06 2026, 14:30 IST"
 
 class TestTemplateGuardAlertEscaping:
     def _guard(self, **over):
-        extra = {"event": "template_guard", "template_slug": "tmpl-1", "applies_to": "buy_option",
+        extra = {"alert_event": "template_guard", "template_slug": "tmpl-1", "applies_to": "buy_option",
                  "parent_side": "BUY", "parent_symbol": "NIFTY24SEPFUT", "parent_account": "ZG0790",
                  "parent_qty": 1, "parent_fill_price": 100.0, "parent_order_id": 123,
                  "reason": "normal reason text", "ist_label": _IST_LABEL}
@@ -112,7 +112,7 @@ class TestTemplateAttachFailAlertEscaping:
     def test_literal_lt_in_err_summary_does_not_truncate_ntfy_message(self):
         err = "G1 guard: qty < lot_size — Arm exits manually if needed."
         sent = _dispatch_captured("TEMPLATE_ATTACH_FAIL_AGENT", {
-            "event": "template_attach_fail", "order_id": 456, "symbol": "NIFTY24SEPFUT",
+            "alert_event": "template_attach_fail", "order_id": 456, "symbol": "NIFTY24SEPFUT",
             "account": "ZG0790", "err_summary": err, "ist_label": _IST_LABEL})
         assert "qty &lt; lot_size" in sent["tg"]
         assert "qty < lot_size" in sent["ntfy"]
@@ -143,20 +143,9 @@ class TestDispatchStillCorrectRegression:
     TestAlertRouteNtfyPlainText suite."""
 
     def test_dispatch_alert_still_escapes_correctly(self):
-        _cfg = {
-            'deploy_branch': 'main',
-            'alert_routing': {'agent_alert': {'telegram': 'ops', 'ntfy': 'urgent', 'email': False}},
-        }
+        from backend.shared.helpers.alert_utils import dispatch_payload
         tg_table = "COND: pnl < -5000\nACCT   SYMBOL   PNL\nacct1  NIFTY    -5230.50"
-
-        with patch('backend.shared.helpers.alert_utils._send_telegram') as mock_tg, \
-             patch('backend.shared.helpers.alert_utils.send_ntfy_alert') as mock_ntfy, \
-             patch('backend.shared.helpers.alert_utils.config', _cfg):
-
-            from backend.shared.helpers.alert_utils import _dispatch
-
-            _dispatch('alert', '14:22 IST', tg_table, '<html>email</html>', 'Loss threshold hit')
-
-            ntfy_body = mock_ntfy.call_args[0][1]
-            assert "pnl < -5000" in ntfy_body
-            assert "-5230.50" in ntfy_body
+        with patch('backend.shared.helpers.alert_utils.config', {'deploy_branch': 'main'}):
+            payload = dispatch_payload('alert', '14:22 IST', tg_table, '<html>email</html>', 'Loss threshold hit')
+        assert "pnl &lt; -5000" in payload["telegram_msg"]
+        assert "-5230.50" in payload["telegram_msg"]

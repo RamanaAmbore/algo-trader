@@ -86,7 +86,7 @@ async def test_ntfy_fires_exactly_once_when_rich_alert_succeeds():
         "events.dispatch() must not send ntfy for an alert the rich path recorded"
     )
     records = [c.kwargs["extra"] for c in log_mock.info.call_args_list
-               if (c.kwargs.get("extra") or {}).get("event") == "rich_alert"]
+               if (c.kwargs.get("extra") or {}).get("alert_event") == "rich_alert"]
     assert len(records) == 1, "the rich alert must be recorded exactly once"
 
     from types import SimpleNamespace

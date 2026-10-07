@@ -10,6 +10,13 @@ from pathlib import Path
 import pytest
 from unittest.mock import patch, MagicMock, AsyncMock
 
+
+@pytest.fixture(autouse=True)
+def _direct_channels(monkeypatch):
+    """These tests cover the dispatch loop. Telegram, email, and ntfy are recorded and sent by the event path."""
+    from backend.api.algo import events
+    monkeypatch.setattr(events, "_RECORDED_CHANNELS", frozenset())
+
 _SRC = Path("backend/api/algo/events.py").read_text()
 
 

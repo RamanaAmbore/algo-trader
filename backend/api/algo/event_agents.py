@@ -74,7 +74,7 @@ def _render_partial_gtt(rec: dict) -> tuple[str, str]:
 
 def _render_template_attach(rec: dict) -> tuple[str, str]:
     x = rec.get("extra") or {}
-    ev = x.get("event")
+    ev = x.get("alert_event")
     if ev == "wing_unprotected":
         return ("Unprotected SELL position",
                 f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {x['reason']} | "
@@ -151,6 +151,12 @@ def _render_summary(rec: dict) -> tuple:
     return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
+def _render_breach(rec: dict) -> tuple:
+    x = rec.get("extra") or {}
+    return (x.get("agent_name") or "", x.get("ntfy_body") or "", x.get("telegram_body") or "",
+            (x.get("email_subject") or "", x.get("email_body") or ""), list(x.get("channels") or []))
+
+
 def _render_error(rec: dict) -> tuple[str, str, str]:
     from backend.shared.helpers.utils import mask_account_in_text
     name = rec.get("logger") or ""
@@ -181,6 +187,7 @@ register_renderer("mcp_ping")(_render_mcp_ping)
 register_renderer("deploy_sync")(_render_deploy_sync)
 register_renderer("rich_alert")(_render_rich_alert)
 register_renderer("summary")(_render_summary)
+register_renderer("breach")(_render_breach)
 
 
 def _send_ntfy(title: str, body: str, tg: str | None = None, priority: str | None = None) -> None:
@@ -209,16 +216,25 @@ def _channel_enabled(capability: str | None) -> bool:
     return is_enabled(capability)
 
 
-def _send_email_channel(title: str, body: str, tg: str | None = None,
-                        email: tuple | None = None, **_kw) -> None:
+def resolve_email_recipients(recipients) -> list[str]:
+    """'alert' (default) is the current alert list. A list is explicit addresses; anything without '@' is dropped."""
     from backend.shared.helpers.alert_utils import get_alert_recipients
+    if recipients in (None, "alert"):
+        return list(get_alert_recipients())
+    if isinstance(recipients, (list, tuple)):
+        return [a for a in recipients if isinstance(a, str) and "@" in a]
+    return []
+
+
+def _send_email_channel(title: str, body: str, tg: str | None = None,
+                        email: tuple | None = None, recipients=None, **_kw) -> None:
     from backend.shared.helpers.mail_utils import send_email
     if not email:
         return
     subject, html_body = email
-    for addr in get_alert_recipients():
+    for addr in resolve_email_recipients(recipients):
         try:
-            send_email("", addr, subject, html_body)
+            send_email("RamboQuant", addr, subject, html_body)
         except Exception as e:
             sys.stderr.write(f"event_agents: email to {addr} failed: {e}\n")
 
@@ -232,7 +248,7 @@ CHANNELS = {
     "ntfy": ("ntfy", _send_ntfy),
     "telegram": ("telegram", _send_telegram_html),
     "telegram_info": (None, _send_telegram_info_html),
-    "email": (None, _send_email_channel),
+    "email": ("mail", _send_email_channel),
 }
 
 
@@ -263,6 +279,7 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
     kwargs = {"priority": ch["priority"]} if ch.get("priority") else {}
     if ch.get("channel") == "email":
         kwargs["email"] = out[3] if len(out) > 3 else None
+        kwargs["recipients"] = ch.get("recipients")
     try:
         await asyncio.to_thread(send, title, body, tg, **kwargs)
         return True
@@ -288,7 +305,8 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
         if to_render is None:
             continue
         out = render(to_render)
-        for ch in agent.events or []:
+        channels = out[4] if len(out) > 4 else (agent.events or [])
+        for ch in channels:
             if await _send_channel(ch, out, agent):
                 sent += 1
     return sent
@@ -320,10 +338,18 @@ def _alerts_enabled_here() -> bool:
     return config.get("deploy_branch", "main") == "main"
 
 
+def _sim_notify_allowed() -> bool:
+    from backend.shared.helpers.settings import get_bool
+    return get_bool("simulator.notify_during_run", False)
+
+
 async def dispatch_rows(rows: list[dict]) -> None:
     if not _alerts_enabled_here():
         return
+    rows = [{**r, "extra": {**(r.get("extra") or {}), **(r.get("_bulk") or {})}} for r in rows]
     rows = [r for r in rows if (r.get("extra") or {}).get("origin") in (None, "main")]
+    if not _sim_notify_allowed():
+        rows = [r for r in rows if not (r.get("extra") or {}).get("sim_mode")]
     if not rows:
         return
     try:
@@ -346,7 +372,7 @@ CHASE_CANCEL_AGENT = {
     "slug": "chase-cancel-alert",
     "name": "Chase cancel unconfirmed",
     "conditions": {"log": {"tag": "chase", "min_level": "CRITICAL",
-                           "where": {"event": "cancel_unconfirmed"}}},
+                           "where": {"alert_event": "cancel_unconfirmed"}}},
     "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
     "actions": [{"type": "render", "render": "chase_cancel"}],
 }
@@ -355,7 +381,7 @@ PARTIAL_GTT_AGENT = {
     "slug": "partial-gtt-alert",
     "name": "Partial GTT placement",
     "conditions": {"log": {"tag": "gtt", "min_level": "CRITICAL",
-                           "where": {"event": "partial_gtt"}}},
+                           "where": {"alert_event": "partial_gtt"}}},
     "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
     "actions": [{"type": "render", "render": "partial_gtt"}],
 }
@@ -364,8 +390,8 @@ TEMPLATE_ATTACH_URGENT_AGENT = {
     "slug": "template-attach-urgent",
     "name": "Template attach urgent",
     "conditions": {"any": [
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"event": "wing_unprotected"}}},
-        {"log": {"tag": "gtt", "min_level": "CRITICAL", "where": {"event": "wing_hard_reject"}}},
+        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_unprotected"}}},
+        {"log": {"tag": "gtt", "min_level": "CRITICAL", "where": {"alert_event": "wing_hard_reject"}}},
     ]},
     "events": [{"channel": "ntfy", "enabled": True, "priority": "urgent"}],
     "actions": [{"type": "render", "render": "template_attach"}],
@@ -375,8 +401,8 @@ TEMPLATE_ATTACH_HIGH_AGENT = {
     "slug": "template-attach-high",
     "name": "Template attach high",
     "conditions": {"any": [
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"event": "wing_skip"}}},
-        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"event": "wing_offset_skip"}}},
+        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_skip"}}},
+        {"log": {"tag": "gtt", "min_level": "WARNING", "where": {"alert_event": "wing_offset_skip"}}},
     ]},
     "events": [{"channel": "ntfy", "enabled": True, "priority": "high"}],
     "actions": [{"type": "render", "render": "template_attach"}],
@@ -386,7 +412,7 @@ ORDER_FAILURE_AGENT = {
     "slug": "order-failure-alert",
     "name": "Order failure",
     "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
-                           "where": {"event": "order_failure"}}},
+                           "where": {"alert_event": "order_failure"}}},
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
@@ -399,7 +425,7 @@ TEMPLATE_GUARD_AGENT = {
     "slug": "template-guard-alert",
     "name": "Template guard",
     "conditions": {"log": {"tag": "orders", "min_level": "INFO",
-                           "where": {"event": "template_guard"}}},
+                           "where": {"alert_event": "template_guard"}}},
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "high", "gate": False},
@@ -411,7 +437,7 @@ TEMPLATE_ATTACH_FAIL_AGENT = {
     "slug": "template-attach-fail-alert",
     "name": "Template attach failed",
     "conditions": {"log": {"tag": "orders", "min_level": "WARNING",
-                           "where": {"event": "template_attach_fail"}}},
+                           "where": {"alert_event": "template_attach_fail"}}},
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
@@ -422,7 +448,7 @@ TEMPLATE_ATTACH_FAIL_AGENT = {
 MCP_PING_AGENT = {
     "slug": "mcp-ping-alert",
     "name": "MCP audit ping",
-    "conditions": {"log": {"tag": "mcp", "min_level": "INFO", "where": {"event": "mcp_ping"}}},
+    "conditions": {"log": {"tag": "mcp", "min_level": "INFO", "where": {"alert_event": "mcp_ping"}}},
     "events": [{"channel": "telegram", "enabled": True, "gate": False}],
     "actions": [{"type": "render", "render": "mcp_ping"}],
 }
@@ -431,7 +457,7 @@ DEPLOY_SYNC_AGENT = {
     "slug": "deploy-sync-alert",
     "name": "Deploy out of sync",
     "conditions": {"log": {"tag": "deploy", "min_level": "WARNING",
-                           "where": {"event": "deploy_out_of_sync"}}},
+                           "where": {"alert_event": "deploy_out_of_sync"}}},
     "events": [{"channel": "ntfy", "enabled": True, "priority": "high", "gate": False}],
     "actions": [{"type": "render", "render": "deploy_sync"}],
 }
@@ -439,7 +465,7 @@ DEPLOY_SYNC_AGENT = {
 RICH_ALERT_AGENT = {
     "slug": "agent-alert-rich",
     "name": "Agent alert",
-    "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"event": "rich_alert"}}},
+    "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "rich_alert"}}},
     "events": [
         {"channel": "telegram", "enabled": True, "gate": False},
         {"channel": "ntfy", "enabled": True, "priority": "urgent", "gate": False},
@@ -451,7 +477,7 @@ RICH_ALERT_AGENT = {
 SUMMARY_AGENT = {
     "slug": "market-summary",
     "name": "Market summary",
-    "conditions": {"log": {"tag": "summary", "min_level": "INFO", "where": {"event": "summary"}}},
+    "conditions": {"log": {"tag": "summary", "min_level": "INFO", "where": {"alert_event": "summary"}}},
     "events": [
         {"channel": "telegram_info", "enabled": True, "gate": False},
         {"channel": "email", "enabled": True, "gate": False},
@@ -459,33 +485,106 @@ SUMMARY_AGENT = {
     "actions": [{"type": "render", "render": "summary"}],
 }
 
+BREACH_AGENT = {
+    "slug": "cycle-breach-alert",
+    "name": "Cycle breach",
+    "conditions": {"log": {"tag": "agent", "min_level": "INFO", "where": {"alert_event": "breach"}}},
+    "events": [],
+    "actions": [{"type": "render", "render": "breach"}],
+}
+
 FILL_AGENT = {
     "slug": "fill-alert",
     "name": "Fill alert",
     "conditions": {"log": {"tag": "orders", "min_level": "INFO",
-                           "where": {"event": "filled", "mode": "live"}}},
+                           "where": {"alert_event": "filled", "mode": "live"}}},
     "events": [{"channel": "telegram", "enabled": True}, {"channel": "ntfy", "enabled": True}],
     "actions": [{"type": "render", "render": "fill"}],
 }
 
 
+SEED_VERSION = 1
+
+
+def validate_seed_spec(spec: dict) -> list[str]:
+    """Errors that would make a seeded agent silently never fire or never render."""
+    from backend.api.algo.grammar import LOG_TAG_TOKENS
+    known_tags = {t["token"] for t in LOG_TAG_TOKENS}
+    errors: list[str] = []
+    if not spec.get("slug"):
+        errors.append("missing slug")
+    if spec.get("kind", "event") != "event":
+        errors.append("seeded agents must be kind 'event'")
+    for leaf in _log_leaves(spec.get("conditions") or {}):
+        tag = (leaf.get("tag") or "")
+        if tag not in known_tags:
+            errors.append(f"unknown log tag '{tag}'")
+        if str(leaf.get("min_level", "INFO")).upper() not in _LEVEL_NAMES:
+            errors.append(f"unknown min_level '{leaf.get('min_level')}'")
+    for action in spec.get("actions") or []:
+        if isinstance(action, dict) and action.get("type") == "render" and action.get("render") not in RENDERS:
+            errors.append(f"unknown renderer '{action.get('render')}'")
+    for ch in spec.get("events") or []:
+        if not isinstance(ch, dict) or ch.get("channel") not in CHANNELS:
+            errors.append(f"unknown channel {ch!r}")
+    return errors
+
+
+_LEVEL_NAMES = {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}
+
+
+def _log_leaves(cond) -> list[dict]:
+    if not isinstance(cond, dict):
+        return []
+    if "log" in cond and isinstance(cond["log"], dict):
+        return [cond["log"]]
+    out: list[dict] = []
+    for key in ("all", "any"):
+        for child in cond.get(key) or []:
+            out.extend(_log_leaves(child))
+    if "not" in cond:
+        out.extend(_log_leaves(cond["not"]))
+    return out
+
+SEEDED_AGENTS = (
+    FILL_AGENT, ERROR_AGENT, CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT,
+    TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
+    TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
+    DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT, BREACH_AGENT,
+)
+
+
+def seed_action(row, current_version: int = SEED_VERSION) -> str:
+    """Decide what seeding does to one agent row: 'insert', 'update', or 'keep'."""
+    if row is None:
+        return "insert"
+    if int(row.seed_version or 0) < current_version:
+        return "update"
+    return "keep"
+
+
 async def seed_event_agents() -> None:
+    """Insert missing seeded agents. Rewrite an existing row only when the code's seed version is newer."""
     from backend.api.database import async_session
     from backend.api.models import Agent
     async with async_session() as s:
-        for spec in (FILL_AGENT, ERROR_AGENT, CHASE_CANCEL_AGENT, PARTIAL_GTT_AGENT,
-                     TEMPLATE_ATTACH_URGENT_AGENT, TEMPLATE_ATTACH_HIGH_AGENT, ORDER_FAILURE_AGENT,
-                     TEMPLATE_GUARD_AGENT, TEMPLATE_ATTACH_FAIL_AGENT, MCP_PING_AGENT,
-                     DEPLOY_SYNC_AGENT, RICH_ALERT_AGENT, SUMMARY_AGENT):
+        for spec in SEEDED_AGENTS:
+            problems = validate_seed_spec(spec)
+            if problems:
+                sys.stderr.write(f"event_agents: seed '{spec.get('slug')}' skipped: {'; '.join(problems)}\n")
+                continue
             row = (await s.execute(select(Agent).where(Agent.slug == spec["slug"]))).scalar_one_or_none()
-            if row is None:
+            action = seed_action(row)
+            if action == "insert":
                 s.add(Agent(slug=spec["slug"], name=spec["name"], conditions=spec["conditions"],
                             events=spec["events"], actions=spec["actions"], kind="event",
                             status="active", scope="per_account", cooldown_minutes=0,
-                            trade_mode="live", lifespan_type="persistent"))
-            else:
+                            trade_mode="live", lifespan_type="persistent",
+                            seed_version=SEED_VERSION))
+            elif action == "update":
                 row.conditions = spec["conditions"]
                 row.events = spec["events"]
                 row.actions = spec["actions"]
                 row.kind = "event"
+                row.seed_version = SEED_VERSION
         await s.commit()

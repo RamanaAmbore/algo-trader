@@ -34,7 +34,7 @@ async def notify_fills(rows: list) -> None:
                 "order filled",
                 extra={
                     "tags": ["orders"],
-                    "event": "filled",
+                    "alert_event": "filled",
                     "mode": str(getattr(row, "mode", "")),
                     "order_id": row.id,
                     "account": row.account,

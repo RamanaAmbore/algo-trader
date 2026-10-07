@@ -629,6 +629,8 @@ class TicketOrderRequest(msgspec.Struct):
     price: Optional[float] = None
     trigger_price: Optional[float] = None
     account: str = ""       # required for PAPER + LIVE; blank → 400
+    # Per-ticket override of the attached template exit hold. None = use the global switch.
+    hold_template_exit: Optional[bool] = None
     # Chase the order to closure — re-quote the limit each tick
     # until filled, capped by `simulator.chase_max_attempts`. PAPER
     # orders honour this via the paper engine's tick loop; the flag

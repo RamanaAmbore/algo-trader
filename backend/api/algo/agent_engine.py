@@ -1028,7 +1028,7 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
         logger.info(
             f"Agent [{agent.slug}] alert recorded",
             extra={
-                "tags": ["agent"], "event": "rich_alert", "agent_slug": agent.slug,
+                "tags": ["agent"], "alert_event": "rich_alert", "agent_slug": agent.slug,
                 "ist_display": timestamp_display(), "tg_table": tg_body,
                 "email_table_html": email_html, "subject_detail": subject,
                 "sim_mode": bool(sim_mode), "mode_tag": mode_tag,

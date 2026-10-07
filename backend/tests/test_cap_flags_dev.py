@@ -22,6 +22,13 @@ from unittest.mock import AsyncMock, MagicMock, patch, call
 import pandas as pd
 
 
+@pytest.fixture(autouse=True)
+def _direct_channels(monkeypatch):
+    """These tests cover the dispatch loop. Telegram, email, and ntfy are recorded and sent by the event path."""
+    from backend.api.algo import events
+    monkeypatch.setattr(events, "_RECORDED_CHANNELS", frozenset())
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------

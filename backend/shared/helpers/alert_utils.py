@@ -18,8 +18,7 @@ What lives here now
                      — narrow Telegram <code> block and coloured HTML table
                         formatters. Consumed by the v2 agent engine's rich
                         alert path (agent_engine._v2_send_rich_alert).
-  - _dispatch()      — channel router (Telegram + SMTP + log), gated by
-                        cap_in_dev.telegram / cap_in_dev.mail.
+  - dispatch_payload() — builds Telegram and email payloads for summaries and rich alerts (pure)
 
 Secrets (secrets.yaml)
   telegram_bot_token  bot token from @BotFather
@@ -325,54 +324,6 @@ def _html_to_plain(s: str) -> str:
     return html.unescape(_HTML_TAG_RE.sub("", s))
 
 
-def _alert_route(
-    event_key: str,
-    title: str,
-    body: str,
-    email_fn: "Callable[[], None] | None" = None,
-) -> None:
-    """Config-driven alert dispatch.
-
-    Reads ``alert_routing.<event_key>`` from backend_config.yaml and dispatches
-    to the configured channels:
-      telegram: ops  → _send_telegram
-      telegram: info → _send_telegram_info
-      telegram: false → skip
-      ntfy: <priority> → send_ntfy_alert with that priority; false → skip
-      email: true → call email_fn() if provided; false → skip
-
-    ``title`` is the ntfy notification title.
-    ``body``  is the Telegram message (HTML-safe).
-    ``email_fn`` is a zero-arg callable that delivers the email. Ignored when the
-    routing table has ``email: false`` or when email_fn is None.
-    """
-    routing = config.get('alert_routing', {})
-    route   = routing.get(event_key, {})
-
-    tg_channel = route.get('telegram', 'ops')
-    if tg_channel == 'ops':
-        _send_telegram(body)
-    elif tg_channel == 'info':
-        _send_telegram_info(body)
-    # tg_channel == false/False → skip
-
-    ntfy_priority = route.get('ntfy', False)
-    if ntfy_priority:
-        # ntfy has no HTML rendering — `body` is Telegram-HTML (<b>/<code>
-        # tags, html.escape()'d dynamic content); convert to plain text so
-        # ntfy clients don't show literal tags. `title` is never HTML-tagged
-        # by any caller of _alert_route (checked 2026-09-27), so it's passed
-        # through unchanged.
-        send_ntfy_alert(title, _html_to_plain(body), priority=str(ntfy_priority))
-
-    send_email_flag = route.get('email', False)
-    if send_email_flag and email_fn is not None:
-        try:
-            email_fn()
-        except Exception as _email_err:
-            logger.error(f"_alert_route email delivery failed for {event_key!r}: {_email_err}")
-
-
 def _fixed_table(headers, rows):
     """Render a list of string-tuple rows as a fixed-width monospace table (for Telegram)."""
     col_widths = [max(len(h), max((len(r[i]) for r in rows), default=0))
@@ -564,34 +515,6 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         "log_prefix": f"{'[SIM] ' if sim_mode else ''}{tg_prefix}",
     }
 
-
-def _dispatch(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
-              subject_detail: str, sim_mode: bool = False, mode_tag: str = ''):
-    """
-    Send Telegram + email with correct prefixes for the message type.
-
-    When `sim_mode` is True every surface (subjects, Telegram preamble, email
-    banner, log lines) is tagged `SIMULATOR` so the operator can distinguish
-    a simulated fire from a real one.
-
-    `mode_tag` is the additional execution-mode marker for prod alerts —
-    typically `[PAPER]` (when this agent's broker actions all wrote
-    paper rows) or `[MIXED]` (some paper, some live). Empty string for
-    "all live" (default real-mode alert) or for non-broker agents.
-    """
-    import logging
-    _log = logging.getLogger('backend.api.background')
-    sim_prefix = '[SIM] ' if sim_mode else ''
-    _log.info(f"_dispatch called: {sim_prefix}{mode_tag}{msg_type} — {subject_detail}")
-    p = dispatch_payload(msg_type, ist_display, tg_table, email_table_html,
-                         subject_detail, sim_mode=sim_mode, mode_tag=mode_tag)
-    _alert_route(
-        p["event_key"],
-        title=p["title"],
-        body=p["telegram_msg"],
-        email_fn=lambda: _send_email_to_recipients(
-            p["email_subject"], p["email_html"], p["log_prefix"]),
-    )
 
 # ---------------------------------------------------------------------------
 # Funds table helpers
@@ -794,7 +717,7 @@ def send_summary(sum_holdings, sum_positions, ist_display: str, msg_type: str,
     logger.info(
         f"Background: {msg_type} summary recorded",
         extra={
-            "tags": ["summary"], "event": "summary", "msg_type": msg_type,
+            "tags": ["summary"], "alert_event": "summary", "msg_type": msg_type,
             "ist_display": ist_display, "tg_table": tg_table,
             "email_table_html": email_html, "subject_detail": subject_detail,
         },
@@ -988,7 +911,7 @@ def _send_order_failure_messages(
         f"order-failure recorded: {masked} {side} {qty} {symbol} "
         f"mode={mode} source={source}{sup_note}",
         extra={
-            "tags": ["orders"], "event": "order_failure", "masked": masked,
+            "tags": ["orders"], "alert_event": "order_failure", "masked": masked,
             "symbol": symbol, "exchange": exchange, "side": side, "qty": qty,
             "mode": mode, "source": source, "error": error,
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,

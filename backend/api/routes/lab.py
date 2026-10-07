@@ -1108,7 +1108,7 @@ def _res_agent_action_labels(action: str) -> tuple[str, str]:
 
 def _mcp_ping(tg_html: str) -> None:
     """Record an MCP audit ping. The event agent sends it to Telegram."""
-    logger.info("MCP ping", extra={"tags": ["mcp"], "event": "mcp_ping", "tg": tg_html})
+    logger.info("MCP ping", extra={"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg_html})
 
 
 def _res_agent_status_telegram_ping(

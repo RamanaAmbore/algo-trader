@@ -831,6 +831,8 @@ class AlgoOrder(Base):
     attached_gtts_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Hold state for automated orders (see order_hold.py): JSON with category,
     # reason, override, price policy, and held_at. NULL for orders never held.
+    # Per-ticket template exit hold: True held, False released, None = global switch.
+    template_hold_override: Mapped[Optional[bool]] = mapped_column(Boolean, nullable=True)
     hold_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     # Per-order template parameter overrides — JSON dict with keys
     # tp_pct / sl_pct / wing_premium_pct / wing_strike_offset. Set
@@ -1070,6 +1072,9 @@ class Agent(Base):
     schema_version: Mapped[int]  = mapped_column(Integer, nullable=False, default=1, server_default=text("1"))
     # 'cycle' agents are evaluated each engine tick; 'event' agents match each new log record.
     kind: Mapped[str]            = mapped_column(String(16), nullable=False, default="cycle", server_default=text("'cycle'"))
+    # Version of the seeded definition last written to this row. Seeding only rewrites a
+    # row when the code's version is newer, so operator edits survive restarts.
+    seed_version: Mapped[int]    = mapped_column(Integer, nullable=False, default=0, server_default=text("0"))
     lifespan_type: Mapped[str]   = mapped_column(
         String(16), nullable=False, default="persistent"
     )

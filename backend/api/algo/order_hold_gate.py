@@ -50,10 +50,26 @@ async def record_held_close(*, account: str, symbol: str, exchange: str,
 TEMPLATE_EXIT_RELEASED_KEY = "hold.template_exit_released"
 
 
-def template_exit_held() -> bool:
-    """True when template exit GTTs must be held (global default is held)."""
+def template_exit_held(override: bool | None = None) -> bool:
+    """True when template exit GTTs must be held.
+
+    A per-order override (the ticket's Hold switch) wins. Otherwise the global
+    switch decides, and the default is held.
+    """
     released = get_bool(TEMPLATE_EXIT_RELEASED_KEY, False)
-    return effective_hold(HoldCategory.TEMPLATE_EXIT, None, {"template_exit": released})
+    return effective_hold(HoldCategory.TEMPLATE_EXIT,
+                          None if override is None else bool(override),
+                          {"template_exit": released})
+
+
+async def template_exit_override(parent_row_id: int) -> bool | None:
+    """The ticket's per-order template exit hold for a parent row, or None when unset."""
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import select
+    async with async_session() as s:
+        return (await s.execute(select(AlgoOrder.template_hold_override)
+                                .where(AlgoOrder.id == parent_row_id))).scalar_one_or_none()
 
 
 async def hold_template_exit(parent_row_id: int, symbol: str) -> None:
