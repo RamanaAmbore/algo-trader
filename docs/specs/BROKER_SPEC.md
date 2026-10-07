@@ -2073,6 +2073,44 @@ When a chase order attempts to cancel and replace an existing order:
 
 **Invariant**: Never replace a live order without proof that the previous cancel reached the broker in a terminal state.
 
+### Chase error recovery — error classification and backoff (2026-10)
+
+**File**: `backend/api/algo/chase.py` — `_ch_is_recoverable_error()`, `_ch_rejection_is_recoverable()`, `_ch_handle_attempt_error()`
+
+The chase loop distinguishes between **recoverable errors** (worth a fresh repriced retry) and **non-recoverable errors** (abort immediately):
+
+**Non-recoverable error types** (abort instantly, no retry):
+- `BrokerInputError` — malformed order (bad price, invalid exchange, lot size mismatch)
+- `BrokerCapabilityError` — broker doesn't support this order type (e.g., GTT + MARKET on exchange that only supports LIMIT GTTs)
+- `BrokerAuthError` — session expired, invalid token, insufficient permissions
+
+**Recoverable error types** (count toward max-attempts cap, retry with fresh price):
+- `BrokerNetworkError` — transient network failure (DNS, TCP timeout, connection reset)
+- `BrokerRateLimitError` — broker says "slow down" (429, quota exceeded)
+- Untyped exceptions (any Exception not in the typed hierarchy) — default to recoverable to avoid silently abandoning chases on errors we haven't classified yet
+
+When a recoverable error occurs:
+1. Exception counts toward `_MAX_CHASE_ERRORS` cap (3 consecutive errors)
+2. Chase backs off by `cfg.interval_seconds` (default 30s per attempt)
+3. **Exception**: `BrokerRateLimitError` gets longer backoff (`_CH_RATE_LIMIT_BACKOFF_SECONDS = 30s`, matched against interval, take max) to avoid re-tripping the broker's own cooldown
+4. Next loop iteration reads fresh market depth and reprices the order
+
+**Rejection-status recovery** (broker status=REJECTED with message):
+
+When a placed order comes back from the broker's status poll with REJECTED status, the message text is checked for **price-shaped rejection reasons**:
+
+| Recoverable hints (retry with repricing) | Non-recoverable overrides (abort immediately) |
+|---|---|
+| "price", "circuit", "tick", "range", "stale", "band" | "margin", "rms", "risk", "permission", "blocked" |
+
+If the message contains BOTH a recoverable hint and a non-recoverable override, the override wins. Example: "margin shortfall for this price range" is still non-recoverable despite mentioning "price" or "range", because margin/RMS/risk-control rejections mean the SAME retry would fail identically regardless of reprice.
+
+**Recovery logic**:
+- If message matches a recoverable hint AND attempts remain: backs off `cfg.rejection_backoff_seconds or cfg.interval_seconds`, resets `current_order_id = None`, loop continues to next iteration (re-reads depth, places fresh order)
+- Otherwise: abort the chase immediately, alert the operator, record terminal FAILED event
+
+**Invariant**: Non-recoverable errors and non-recoverable rejections terminate the chase immediately without any retry, preventing futile loops on errors that a repriced order cannot fix (bad input, permission denied, margin shortfall). Recoverable errors are bounded by `_MAX_CHASE_ERRORS` so a burst of transients (network blips, rate limits) cannot cause an unbounded retry loop.
+
 ### Frontend polling guard
 
 **File**: `frontend/src/lib/order/ChaseCard.svelte`
@@ -3050,3 +3088,4 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-08-31 | v1.29 Holdings collateral_quantity merge fix (commit TBD): Added §7.3.11a Holdings Collateral Quantity Merge documenting `_enrich_holdings()` now merges `collateral_quantity + t1_quantity` into `quantity` as a pre-step before computing `inv_val`, `cur_val`, and `avg_combined`. Kite returns `quantity=0, collateral_quantity=N` for shares pledged as margin collateral; without merge, 56 holdings across two accounts were invisible (quantity=0, inv_val=0, avg_price="—") in Pulse and PositionStrip. Merge is a no-op for Dhan/Groww (those adapters do not populate `collateral_quantity` field). Ensures pledged holdings display correctly during market hours with accurate cost basis and current values. |
 | 2026-09-22 | v1.29 BrokerHealthBadge popup body overflow fix + EOD snapshot guard (commit 516937c5): (1) **BrokerHealthBadge modal body min-height fix**: `.bh-modal-body` now includes `min-height: 0` CSS property. Without it, flex container used `min-height: auto`, causing ag-Grid data to overflow modal bounds and clip. With fix, `overflow-y: auto` works correctly when grid rows exceed modal's max-height, ensuring all rows remain visible and scrollable. Updated §6 "Broker connection chip popup" subsection. File: `frontend/src/lib/BrokerHealthBadge.svelte`. (2) **Server restart EOD snapshot guard**: On restart between MCX EOD snapshot time and 08:00 IST, system previously fired spurious broker API call via `_ds_startup_snapshot`, displacing correct EOD `daily_book` snapshot with stale BHAV data (close_price=0, day_pnl=ltp−0=ltp wrong). Fix: new `_preload_snapshot_sentinels()` function queries `daily_book` at startup to restore `_snapshot_fired_today` sentinels from DB before `_session_guard()` runs. Second guard in `_ds_startup_snapshot` skips broker call if both sentinels are set. Sentinel now DB-backed (not just in-process memory), surviving process restarts. Updated §7.3.2 "Admin Snapshot Trigger" and added note on Startup Snapshot Idempotency. Files: `backend/api/background.py`. |
 | 2026-09-29 | v1.30 Interval-gate stale marking fix + funds aggregation include-not-exclude (commit bc7526f9): (1) **Stale account marking semantics fix**: Updated §7.2 Fallback chain subsection and added new paragraph documenting `mark_stale` parameter. Only genuine failures (circuit-breaker OPEN or fetch exception) set `account_stale=True`; deliberate Dhan poll-priority interval-gate skips pass `mark_stale=False` so the per-row flag remains trustworthy for frontend staleness indicators. Response-level `attrs['stale']` and `attrs['stale_since']` set either way (describe frame AGE); only per-row `account_stale` failure-flavoured marker gated by `mark_stale`. Fixes false-amber account-stale badges on interval-throttled healthy Dhan accounts. (2) **Backend funds response schema**: `FundsRow` fields `cash`, `avail_margin`, `used_margin`, `collateral`, `live_cash`, `option_premium` now `float\|None` to preserve missing-vs-zero distinction (see CLAUDE.md "Alert evaluation and latching"). Applies missing-vs-zero convention at display layer — `funds.py:_fetch()` targeted fillna excludes funds-meaning columns, only filling non-semantic numeric cols. `_append_total_row` TOTAL aggregation skips nulls via Polars `.sum()` semantics. Files: `backend/brokers/broker_apis.py` (lines 611–690), `backend/api/routes/funds.py` (lines 160–195), `backend/api/schemas.py` (FundsRow). |
+| 2026-10-07 | v1.31 Chase error recovery — classification and backoff (commit daee65d2): Added §8.5 subsection "Chase error recovery — error classification and backoff" documenting new helper `_ch_is_recoverable_error(exc)` classifying exceptions into three non-recoverable types (`BrokerInputError`, `BrokerCapabilityError`, `BrokerAuthError` — abort instantly, no retry) and recoverable types (`BrokerNetworkError`, `BrokerRateLimitError`, untyped — retry with `_MAX_CHASE_ERRORS` cap). Module-level `_CH_NON_RECOVERABLE_ERRORS` tuple, `_CH_RATE_LIMIT_BACKOFF_SECONDS = 30s` (longer than normal interval to avoid re-tripping broker cooldown). New helper `_ch_rejection_is_recoverable(status_message)` checks broker REJECTED statuses: non-recoverable override hints ("margin", "rms", "risk", "permission", "blocked") checked FIRST (abort immediately), then recoverable price-hint list ("price", "circuit", "tick", "range", "stale", "band"). When message matches recoverable hint AND attempts remain, chase returns "rejected_continue" signal (backs off, resets `current_order_id`, re-reads depth, places fresh order). Otherwise aborts. `_ch_handle_attempt_error()` gates retry backoff on exception type: `BrokerRateLimitError` gets 30s minimum (vs normal `cfg.interval_seconds`). Prevents futile retries on bad input or permission denied; unbounded retries guarded by 3-error cap. Impact: chase no longer wears out on margin rejections or tries to bypass bad prices via retry; recoverable transients and rate limits get appropriate backoff without re-tripping the broker's own queue. File: `backend/api/algo/chase.py` (functions at lines 520–546, 1127–1172, 1405–1484). |

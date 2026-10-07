@@ -157,6 +157,8 @@ SUBMITTING → (SUBMITTED | ERROR) → back to IDLE
 **IDLE**:
 - Initial state; form visible; Submit button enabled
 - User can enter/change all fields
+- Exception: Submit stays disabled for LIMIT/SL orders while depth is pending
+  (no quote yet for the current strike) — see §6 Price (Limit / SL Price)
 
 **LOADING_PREFLIGHT**:
 - User clicks Submit or reaches the preflight gate
@@ -349,6 +351,55 @@ cache; F&O (lot_size > 1) shows lots field; equity (≤1) shows qty.
 - Shows LTP + top-5 bid/ask depth
 - Auto-fills limit price on BUY/SELL flip (top ask for BUY, top bid for SELL)
 - Fails gracefully to em-dashes when broker unavailable (off-hours)
+
+**Depth-pending pre-submission gate** (fixed 2026-10, commit `daee65d2`):
+
+`frontend/src/lib/order/OrderTicket.svelte` pre-fills the limit price from an
+`onDepthQuote` callback that sets `_lastQuote`, starting `null` until the first
+depth tick arrives for the
+currently active strike. Before this fix, switching strikes (clicking a different
+row's +CE/+PE, or any other change to the resolved symbol) left `_lastQuote` holding
+the *previous* strike's stale bid/ask — the "has depth loaded yet" check was
+satisfied by old data, so an operator who clicked Submit the instant a new strike
+opened (before that strike's own first depth tick landed) could have the click reach
+the server, which then failed with a confusing, late "limit price required" error
+instead of a disabled button with a clear reason.
+
+- **Derived gate**: `const _depthPending = $derived(showLimit && !_lastQuote);`
+  (`showLimit` is true for order types LIMIT / SL, the only types that need a
+  price) — true whenever the ticket needs a price and no depth quote has arrived
+  yet for the current strike.
+- **Reset on strike change**: `_lastQuote` is reset to `null` inside the existing
+  `_prevResolvedSymbol` change-detection effect, alongside the existing
+  `_lots`/`_lotsTouched` reset — a stale quote from a previous strike can never
+  satisfy `_depthPending` for a new strike.
+- **Submit guard**: `submit()` has an early-return guard — `if (_depthPending) {
+  submitErr = 'Waiting for market depth — try again in a moment'; return; }` —
+  placed *before* the existing `if (validationErr) return;` guard, so a pending-depth
+  click never reaches the broker/server call.
+- **Button state**: OrderTicket's own footer Submit button's `disabled` condition
+  now also includes `(!_draftMode && _depthPending)` — deliberately excluded for
+  draft mode, since drafts never place a real broker order (they only save a
+  payoff-chart leg), so there is no reason to block that path on live depth. The
+  button's `title` tooltip reads "Waiting for market depth (bid/ask) for this
+  strike" while pending.
+- **Propagation to host**: `_depthPending` is piped out via the existing
+  `onTicketStateChange` callback, adding a `depthPending` field alongside the
+  existing `side` / `qty` / `submitting` / `pending` fields.
+- **SymbolPanel shared Submit button**: `frontend/src/lib/SymbolPanel.svelte`
+  mirrors this via a new derived `_ticketDepthPending` (=
+  `_ticketState.depthPending`, gated the same way as the existing
+  `_ticketOwnSubmitBusy` derived — only live when the Ticket tab is active and
+  no basket legs are staged). `_modalFireSubmit()` (the shared
+  button's click handler) checks `_ticketDepthPending` and shows
+  `toast.warning('Waiting for market depth — try again in a moment')` + returns,
+  *before* the existing `_ticketValidationErr` check. The shared button's own
+  `disabled` attribute and `title` tooltip also account for `_ticketDepthPending`,
+  parallel to how they already account for `_ticketOwnSubmitBusy`.
+- **Scope**: Single-ticket Submit path only (OrderTicket's own footer button and
+  SymbolPanel's shared common-action button) — does not apply to the Chain-tab
+  basket/spread-threshold gate (see §9 Chain-Tab Spread-Threshold Pre-Submission Gate),
+  which is a separate, pre-existing check on a different submission path.
 
 ### Trigger (SL Price)
 
@@ -618,8 +669,9 @@ global setting).
 "Retry" / "Place anyway" / "Cancel" choices rather than hanging indefinitely.
 
 **Scope**: Chain-tab only (multi-leg entry via `POST /api/orders/basket`). The
-Order Ticket (`/ticket`) has no equivalent pre-submission check; template attach
-fires post-fill only (see §13 Postback Fan-Out).
+Order Ticket (`/ticket`) has no equivalent spread-threshold check; template attach
+fires post-fill only (see §13 Postback Fan-Out). (The single-ticket path does have
+a separate depth-pending gate on LIMIT/SL orders — see §6 Price (Limit / SL Price).)
 
 **Implementation**: Backend `GET /api/orders/spread-check` endpoint
 (`backend/api/routes/orders.py`, commit `31c27d6b`) returns structured result
@@ -1427,6 +1479,7 @@ List concrete things to verify in an audit:
 
 | Date | Change |
 |---|---|
+| 2026-10 | v2.2 Documented depth-pending pre-submission gate (commit `daee65d2`): `_depthPending` derived + `_lastQuote` reset on strike change in `frontend/src/lib/order/OrderTicket.svelte`; mirrored shared-button gate (`_ticketDepthPending`) in `frontend/src/lib/SymbolPanel.svelte` — see §6 Price (Limit / SL Price) |
 | 2026-09-30 | v2.1 Updated Status Histogram Filter: merged Rejected/Cancelled chip, added GTT chip (standalone broker GTTs), documented default-first-non-zero-chip behavior (reactive), kept exclusive-filter selection mode |
 | 2026-07-11 | v2.0 complete rewrite from codebase audit; added Surface Variants, State Machine, Field Validation, OrderCard, Timeline Drawer, Audit Cases, Test Map; expanded Preflight, Basket, API Contract sections; F&O lot convention detailed |
 | 2026-07-11 | v1.0 initial spec from codebase audit; lot convention, prefill contract, basket execution |
