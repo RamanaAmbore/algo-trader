@@ -466,6 +466,62 @@ async def test_paper_place_or_close_default_side():
     assert call_args[2]["side"] == "SELL"
 
 
+@pytest.mark.asyncio
+async def test_paper_place_or_close_qty_key_fallback_when_quantity_absent():
+    """params={"qty": 50} with no 'quantity' key resolves to quantity=50,
+    not 0 — mirrors the live executor's qty/quantity dual-key fallback
+    (test_action_place_order_qty_key_fallback_when_quantity_absent in
+    test_actions.py) so the sim->paper->shadow->live validation ladder
+    behaves consistently for the Automation quick-add skeleton's params."""
+    from backend.api.algo.actions_paper import _paper_place_or_close
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+
+    params = {
+        "account": "ZG0790",
+        "symbol": "NIFTY25JULFUT",
+        "side": "BUY",
+        "qty": 50,
+        # no 'quantity' key — matches the Automation quick-add skeleton
+        "price": 24500.0,
+        "exchange": "NFO",
+    }
+    context = {}
+
+    with patch("backend.api.algo.actions_paper._write_paper_order", new=AsyncMock()) as mock_write:
+        await _paper_place_or_close(agent, "place_order", params, context)
+
+    call_args = mock_write.call_args[0]
+    assert call_args[2]["qty"] == 50
+
+
+@pytest.mark.asyncio
+async def test_paper_place_or_close_quantity_key_wins_over_qty():
+    """When both keys are present, 'quantity' takes priority over 'qty'."""
+    from backend.api.algo.actions_paper import _paper_place_or_close
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+
+    params = {
+        "account": "ZG0790",
+        "symbol": "NIFTY25JULFUT",
+        "side": "BUY",
+        "quantity": 75,
+        "qty": 50,
+        "price": 24500.0,
+        "exchange": "NFO",
+    }
+    context = {}
+
+    with patch("backend.api.algo.actions_paper._write_paper_order", new=AsyncMock()) as mock_write:
+        await _paper_place_or_close(agent, "place_order", params, context)
+
+    call_args = mock_write.call_args[0]
+    assert call_args[2]["qty"] == 75
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # _paper_chase_close tests
 # ─────────────────────────────────────────────────────────────────────────────

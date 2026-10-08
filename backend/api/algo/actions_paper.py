@@ -279,7 +279,15 @@ async def _paper_place_or_close(
         side = params.get("transaction_type")
     else:
         side = "SELL"
-    qty   = int(params.get("quantity") or 0)
+    # Quantity accepts either `quantity` or `qty` (checked in that order) —
+    # mirrors the dual-key read already shipped to the live executor's
+    # `_al_place_resolve_params` (actions_live.py). Without this, params
+    # produced by the Automation page's "+ place_order" quick-add
+    # skeleton (which ships `qty`, not `quantity`) resolve to 0 here and
+    # the paper order never registers with `PaperTradeEngine` — breaking
+    # the sim→paper→shadow→live validation ladder for anyone using that
+    # UI control. Fixed 2026-10.
+    qty   = int(params.get("quantity") or params.get("qty") or 0)
     price = params.get("price")
     await _write_paper_order(agent, action_type, {
         "account":  account,

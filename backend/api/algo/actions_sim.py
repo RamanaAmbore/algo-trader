@@ -304,9 +304,19 @@ def _sim_resolve_side(params: dict, qty_held: "int | None") -> str:
 
 
 def _sim_resolve_qty(params: dict, qty_held: "int | None") -> int:
-    """Determine order quantity from params or current held quantity."""
+    """Determine order quantity from params or current held quantity.
+
+    Quantity accepts either `quantity` or `qty` (checked in that order) —
+    mirrors the dual-key read shipped to the live executor's
+    `_al_place_resolve_params` (actions_live.py). The qty_held
+    position-size fallback below must only trigger when NEITHER key is
+    present in params — it must not mask a genuine qty/quantity key-name
+    bug by silently substituting whatever is already held.
+    """
     if params.get("quantity") is not None:
         return int(params.get("quantity") or 0)
+    if params.get("qty") is not None:
+        return int(params.get("qty") or 0)
     if qty_held is not None:
         return abs(int(qty_held))
     return 0
@@ -408,7 +418,9 @@ async def _replay_paper_trade(agent, action_type: str, params: dict, context: di
     account = str(params.get("account") or "REPLAY")
     symbol = str(params.get("symbol") or f"{agent.slug}-{action_type}")
     side = params.get("side") or params.get("transaction_type") or "SELL"
-    qty = int(params.get("quantity") or 0)
+    # Quantity accepts either `quantity` or `qty` (checked in that order) —
+    # see `_sim_resolve_qty`'s docstring for the full rationale.
+    qty = int(params.get("quantity") or params.get("qty") or 0)
     price = params.get("price")
 
     price_str = f"@₹{price:,.2f}" if price is not None else "@MARKET"
@@ -450,7 +462,9 @@ async def _shadow_trade(agent, action_type: str, params: dict, context: dict):
     account = str(params.get("account") or "")
     symbol = str(params.get("symbol") or f"{agent.slug}-{action_type}")
     side = params.get("side") or params.get("transaction_type") or "SELL"
-    qty = int(params.get("quantity") or 0)
+    # Quantity accepts either `quantity` or `qty` (checked in that order) —
+    # see `_sim_resolve_qty`'s docstring for the full rationale.
+    qty = int(params.get("quantity") or params.get("qty") or 0)
     price = params.get("price")
 
     result = await get_shadow_engine().capture_order(
