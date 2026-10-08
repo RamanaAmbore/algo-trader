@@ -287,7 +287,10 @@ def test_expiry_agents_seeded_with_correct_shape():
     assert leaf["scope"] == "positions.expiring_today.nfo"
     assert equity["actions"][0]["type"] == "expiry_auto_close"
     assert equity["actions"][0]["params"]["exchange"] == "NFO"
-    assert equity["status"] == "active"  # safety-net: only fires on expiry day when ITM positions exist
+    # Ships INACTIVE (destructive) per its own description — matches
+    # status so a fresh/reset DB doesn't resurrect it active with zero
+    # operator review. Fixed 2026-10.
+    assert equity["status"] == "inactive"
 
     # Commodity: fires at 23:00 IST against MCX-unhedged scope, exchange=MCX
     assert commodity["fire_at_time"] == "23:00"
@@ -295,7 +298,10 @@ def test_expiry_agents_seeded_with_correct_shape():
     assert leaf["scope"] == "positions.expiring_today.mcx_unhedged"
     assert commodity["actions"][0]["type"] == "expiry_auto_close"
     assert commodity["actions"][0]["params"]["exchange"] == "MCX"
-    assert commodity["status"] == "active"  # safety-net: only fires on expiry day when ITM positions exist
+    # Ships INACTIVE (destructive) per its own description — matches
+    # status so a fresh/reset DB doesn't resurrect it active with zero
+    # operator review. Fixed 2026-10.
+    assert commodity["status"] == "inactive"
 
 
 def test_expiry_auto_close_action_token_has_exchange_param():

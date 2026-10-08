@@ -1374,7 +1374,7 @@ _EXPIRY_AGENTS = [
          schedule="market_hours",
          fire_at_time="15:00",
          cooldown_minutes=60,
-         status="active",
+         status="inactive",
          actions=[
              {"type": "expiry_auto_close",
               "params": {"exchange": "NFO"}},
@@ -1412,7 +1412,7 @@ _EXPIRY_AGENTS = [
          schedule="market_hours",
          fire_at_time="23:00",
          cooldown_minutes=60,
-         status="active",
+         status="inactive",
          actions=[
              {"type": "expiry_auto_close",
               "params": {"exchange": "MCX"}},
@@ -1560,6 +1560,38 @@ MANUAL_AGENT = dict(
 BUILTIN_AGENTS.append(MANUAL_AGENT)
 
 
+_SEED_SHIPS_INACTIVE_PHRASE = "Ships INACTIVE"
+
+
+def _ae_guard_seed_status(agent_def: dict, default: str | None = "active") -> str | None:
+    """Fail-safe guard: a seed dict whose own description states 'Ships
+    INACTIVE' must never actually be seeded (or re-synced) with
+    status='active'. Catches the class of bug where a seed's description
+    text contradicts its status field (e.g. a destructive auto-close agent
+    accidentally left status='active' despite its own docs promising
+    otherwise). Forces the effective status to 'inactive' and logs ERROR
+    naming the slug — loud, but fail-safe rather than fail-loud: a startup
+    crash over a seed-description mismatch would be worse than silently
+    (from the operator's perspective) correcting it.
+
+    `default` mirrors whatever fallback the caller would otherwise apply
+    to a missing `status` key (``"active"`` for the insert path in
+    `_ae_build_agent_row`, ``None`` for the sync path in
+    `_ae_sync_existing_builtin`, which no-ops on a falsy desired status).
+    """
+    status = agent_def.get("status", default)
+    description = agent_def.get("description", "") or ""
+    if status == "active" and _SEED_SHIPS_INACTIVE_PHRASE in description:
+        logger.error(
+            "Agent engine: seed '%s' has status='active' but its own "
+            "description says '%s' — forcing status='inactive'. Fix the "
+            "seed dict in agent_engine.py.",
+            agent_def.get("slug", "<unknown>"), _SEED_SHIPS_INACTIVE_PHRASE,
+        )
+        return "inactive"
+    return status
+
+
 def _ae_sync_builtin_status(existing, desired: str | None) -> None:
     """Bidirectionally sync status on a built-in Agent row.
 
@@ -1615,7 +1647,7 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     _def_topic = agent_def.get("topic", "general")
     if existing.topic == "general" and _def_topic != "general":
         existing.topic = _def_topic
-    _ae_sync_builtin_status(existing, agent_def.get("status"))
+    _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
     # Additive-sync events: add any default channel missing from the stored events.
     # Never removes channels the operator may have added manually.
     code_events = agent_def.get("events", [])
@@ -1654,7 +1686,7 @@ def _ae_build_agent_row(agent_def: dict) -> 'Agent':
         tier=agent_def.get("tier", "medium"),
         topic=agent_def.get("topic", "general"),
         digest_window_sec=agent_def.get("digest_window_sec", 30),
-        status=agent_def.get("status", "active"),
+        status=_ae_guard_seed_status(agent_def, default="active"),
         fire_at_time=agent_def.get("fire_at_time"),
         is_system=True,
     )
