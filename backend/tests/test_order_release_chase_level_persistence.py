@@ -61,6 +61,23 @@ def test_live_chase_config_stamps_level(aggressiveness, expected_level, expected
     assert (cfg.interval_seconds, cfg.aggression_step, cfg.max_attempts) == expected_tuple
 
 
+@pytest.mark.parametrize("aggressiveness", [None, "", "ultra", "HIGH!!", "bogus"])
+def test_live_chase_config_normalises_level_for_unrecognised_input(aggressiveness):
+    """`chase_aggressiveness` is an unvalidated free-form `str` on the
+    request schemas — any unrecognised value must fall back to the LOW
+    tier AND stamp `level="low"` (the canonical tag matching that
+    tuple), never the raw unrecognised string. Stamping the raw string
+    would make `chase.py`'s hold writer fall back to `"CHASE_MED"`
+    (since it only recognises low/med/high), causing a release to
+    resume at the WRONG tier (MED tuple) for an order that actually
+    ran at the LOW tuple."""
+    from backend.api.routes.orders_helpers import _live_chase_config
+
+    cfg = _live_chase_config(aggressiveness)
+    assert cfg.level == "low"
+    assert (cfg.interval_seconds, cfg.aggression_step, cfg.max_attempts) == (30, 0.05, 30)
+
+
 # ── Write side: _ch_hold_on_repeated_rejection persists cfg.level ───────
 
 def _chase_mock_session(row):
