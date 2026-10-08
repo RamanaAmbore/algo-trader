@@ -20,7 +20,11 @@ const orderInfo = read('../../backend/api/routes/orders_helpers.py');
 test.describe('hold UI (H6)', () => {
   test('order list exposes hold_json to the card', () => {
     expect(orderInfo).toMatch(/hold_json: str \| None = None/);
-    expect(read('../../backend/api/routes/orders.py')).toMatch(/hold_json=r\.hold_json,/);
+    // getattr(..., None) form (2026-10 P1 defensive fix) — still sources
+    // from the row's own hold_json field, not a copy.
+    expect(read('../../backend/api/routes/orders.py')).toMatch(
+      /hold_json=getattr\(r,\s*"hold_json",\s*None\),/
+    );
   });
 
   test('order card shows a HELD badge from hold_json', () => {

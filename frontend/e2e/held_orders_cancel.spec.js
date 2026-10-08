@@ -74,9 +74,14 @@ test.describe('held orders — cancel action', () => {
     expect(cardSrc).toMatch(/class="held-cancel"\s*\n\s*disabled=\{busy\[row\.id\]\}/);
   });
 
-  test('Cancel button is styled with the danger (--c-short) token, not a new color', () => {
-    expect(cardSrc).toMatch(
-      /\.held-cancel \{[^}]*border: 1px solid var\(--c-short\);[^}]*color: var\(--c-short\);/
-    );
+  test('Cancel button is styled with the danger (--btn-sell) token family, not a new color', () => {
+    // 2026-10 token cleanup: switched from the generic --c-short text
+    // token to the --btn-sell-* button family (same red hue, the
+    // dedicated button-color convention OrderCard's own buttons use —
+    // see app.css's own "--btn-sell-*: red (SELL/short/negative/close)"
+    // comment) — still the one danger color, not a new one.
+    const rule = cardSrc.match(/\.held-cancel\s*\{[^}]*\}/)?.[0] ?? '';
+    expect(rule).toMatch(/border:\s*1px solid var\(--btn-sell-border\)/);
+    expect(rule).toMatch(/color:\s*var\(--btn-sell\)/);
   });
 });
