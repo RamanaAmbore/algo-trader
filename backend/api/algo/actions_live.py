@@ -174,16 +174,18 @@ async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
                                     side: str, qty: int, price,
                                     product: str = "NRML",
-                                    template_id=None) -> "int | None":
+                                    template_id=None,
+                                    template_slug=None,
+                                    overrides: "dict | None" = None) -> "int | None":
     """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort).
 
     Returns the AlgoOrder row id so callers can pass algo_order_id to chase_order.
 
-    `product`/`template_id` are applied via `_place_order_set_product_template`
-    AFTER `_write_live_order` returns — that shared constructor (used by
-    close_position/chase_close_positions too) is never touched. The helper
-    swallows its own exceptions, so a failure there can never turn a real
-    `intent_id` into None here.
+    `product`/`template_id`/`template_slug`/`overrides` are applied via
+    `_place_order_set_product_template` AFTER `_write_live_order` returns —
+    that shared constructor (used by close_position/chase_close_positions
+    too) is never touched. The helper swallows its own exceptions, so a
+    failure there can never turn a real `intent_id` into None here.
     """
     from backend.api.algo.actions import _write_live_order
 
@@ -195,7 +197,10 @@ async def _place_order_write_intent(agent_shim, pf: dict,
             status="OPEN",
         )
         if intent_id:
-            await _place_order_set_product_template(intent_id, product, template_id)
+            await _place_order_set_product_template(
+                intent_id, product, template_id,
+                template_slug=template_slug, overrides=overrides,
+            )
             from backend.api.algo.order_events import write_event as _write_ev_ok
             import asyncio as _aio
             _aio.create_task(_write_ev_ok(
@@ -243,7 +248,7 @@ async def _place_order_on_failure(
 
 def _al_place_resolve_params(
     agent, context: dict, params: dict
-) -> "tuple[object, str, str, str, str, int, object, str, object]":
+) -> "tuple[object, str, str, str, str, int, object, str, object, object]":
     """Resolve _action_place_order params and build the _AgentShim sentinel.
 
     `agent` is the real Agent DB row the caller (`_dispatch_live_action`)
@@ -266,8 +271,17 @@ def _al_place_resolve_params(
     already-shipped `quantity`/`qty` dual-key read for close_position.
     Fixed 2026-10.
 
+    `template_slug` is read alongside `template_id` (2026-10 fix) — the
+    place_order params_schema (agent_grammar.yaml) documents both as
+    mutually exclusive, and the Automation page's Bracket picker writes
+    `template_slug`, not `template_id`. Prior to this fix only
+    `template_id` was ever read here, so an agent configured via
+    `template_slug` silently got a naked live entry with zero exits.
+    `template_id` still wins when both are set (matches
+    `load_template_for_slug_or_id`'s own id-over-slug priority).
+
     Returns (shim, account, symbol, exchange, side, qty, price, product,
-    template_id).
+    template_id, template_slug).
     """
     class _AgentShim:
         slug = getattr(agent, "slug", None) or context.get("agent_slug", "place_order")
@@ -283,13 +297,73 @@ def _al_place_resolve_params(
         params.get("price"),
         str(params.get("product") or "NRML"),
         params.get("template_id"),
+        params.get("template_slug"),
     )
+
+
+async def _place_order_resolve_template_slug(template_slug: str) -> "int | None":
+    """Resolve a `template_slug` to its `OrderTemplate.id`.
+
+    Reuses `template_attach.load_template_for_slug_or_id` — the SAME
+    resolver every other template-attach path (OrderTicket, basket, the
+    sim-mode agent action via `_maybe_attach_template_from_action`)
+    already relies on for id-over-slug priority + the `OrderTemplate.slug
+    == slug` DB lookup. The live place_order path needs its own call
+    site for this (rather than passing `template_slug` straight through
+    like the sim path does) because `AlgoOrder.template_id` is a plain
+    int FK column with no slug column — resolution has to happen before
+    persist, not at fill time inside `apply_template_to_order`.
+
+    Returns None (and logs a warning) when the slug does not resolve to
+    any OrderTemplate row, or when the lookup itself fails — callers
+    treat None the same as "no template requested" rather than guessing.
+    """
+    from backend.api.algo.template_attach import load_template_for_slug_or_id
+
+    try:
+        tmpl = await load_template_for_slug_or_id(
+            template_id=None, template_slug=str(template_slug)
+        )
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] place_order: template_slug={template_slug!r} lookup failed: {e}"
+        )
+        return None
+    if tmpl is None:
+        logger.warning(
+            f"[LIVE] place_order: template_slug={template_slug!r} did not resolve "
+            f"to any OrderTemplate — no template will be attached on fill"
+        )
+        return None
+    return int(tmpl["id"])
+
+
+def _place_order_overrides_json(overrides: "dict | None") -> "str | None":
+    """Serialize place_order per-leg template overrides to a JSON string
+    for `AlgoOrder.template_overrides_json`.
+
+    Keys/shape mirror `orders_helpers._build_overrides_json` exactly
+    (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) — the same
+    shape `_opp_load_row_for_attach` (orders_place.py) parses back out of
+    this column and feeds to `apply_template_to_order` at fill time.
+    Returns None when `overrides` is empty/None or every value is None,
+    so the DB column is left NULL rather than storing an empty object.
+    """
+    if not overrides:
+        return None
+    payload = {k: v for k, v in overrides.items() if v is not None}
+    if not payload:
+        return None
+    import json
+    return json.dumps(payload)
 
 
 async def _place_order_set_product_template(
     row_id: int, product: str, template_id,
+    template_slug=None, overrides: "dict | None" = None,
 ) -> None:
-    """Set product/template_id on a freshly-written place_order AlgoOrder row.
+    """Set product/template_id/template_overrides_json on a freshly-written
+    place_order AlgoOrder row.
 
     Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2): the
     shared `_write_live_order` constructor (actions.py) is also used by
@@ -306,12 +380,24 @@ async def _place_order_set_product_template(
     `place_order` action can carry a non-NULL `template_id` through to
     its AlgoOrder row — until now that auto-attach path only ever fired
     for OrderTicket/basket-submitted orders. An agent action that
-    specifies `params.template_id` will now have real exit GTTs (and
-    possibly a wing order) armed on fill, exactly like a manually
-    ticketed templated order. Swallows all exceptions (logs + returns)
-    so a failure here can never take down the caller's `intent_id`.
+    specifies `params.template_id` (OR `params.template_slug` — resolved
+    here via `_place_order_resolve_template_slug`, 2026-10 fix) will now
+    have real exit GTTs (and possibly a wing order) armed on fill, exactly
+    like a manually ticketed templated order. The four `*_override`
+    params (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) are
+    now persisted too, via `template_overrides_json` — the SAME column
+    `_opp_load_row_for_attach` already reads back for OrderTicket/basket
+    fills, so no change was needed on the fill-time consumer side.
+    Swallows all exceptions (logs + returns) so a failure here can never
+    take down the caller's `intent_id`.
     """
-    if not product and template_id is None:
+    resolved_template_id = template_id
+    if resolved_template_id is None and template_slug:
+        resolved_template_id = await _place_order_resolve_template_slug(template_slug)
+
+    overrides_json = _place_order_overrides_json(overrides)
+
+    if not product and resolved_template_id is None and overrides_json is None:
         return
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -320,11 +406,16 @@ async def _place_order_set_product_template(
     values: dict = {}
     if product:
         values["product"] = str(product)
-    if template_id is not None:
+    if resolved_template_id is not None:
         try:
-            values["template_id"] = int(template_id)
+            values["template_id"] = int(resolved_template_id)
         except (TypeError, ValueError):
-            logger.warning(f"[LIVE] place_order ignoring non-numeric template_id={template_id!r}")
+            logger.warning(
+                f"[LIVE] place_order ignoring non-numeric "
+                f"template_id={resolved_template_id!r}"
+            )
+    if overrides_json is not None:
+        values["template_overrides_json"] = overrides_json
     if not values:
         return
     try:
@@ -337,6 +428,27 @@ async def _place_order_set_product_template(
         logger.warning(
             f"[LIVE] place_order product/template_id update failed for row {row_id}: {e}"
         )
+
+
+def _al_place_build_overrides(params: dict) -> "dict | None":
+    """Build the template-override dict from a live place_order action's
+    params, for persisting onto `AlgoOrder.template_overrides_json`.
+
+    Reuses `actions._build_template_overrides` (lazy import to avoid a
+    circular import — `actions.py` imports from this module too) — the
+    EXACT same override-resolution function the sim-mode path already
+    calls via `_maybe_attach_template_from_action`, including its
+    legacy `target_pct` → `tp_pct` back-compat mapping. Returns None
+    (rather than a dict of all-None values) when none of the four
+    `*_override` params (or `target_pct`) were supplied, so
+    `_place_order_set_product_template` can tell "no overrides" apart
+    from "overrides explicitly set to null".
+    """
+    from backend.api.algo.actions import _build_template_overrides
+
+    overrides = _build_template_overrides(params)
+    overrides = {k: v for k, v in overrides.items() if v is not None}
+    return overrides or None
 
 
 async def _action_place_order(agent, context: dict, params: dict):
@@ -372,7 +484,7 @@ async def _action_place_order(agent, context: dict, params: dict):
     from backend.api.routes.orders_helpers import _live_chase_config
     from backend.brokers import get_broker
 
-    _shim, account, symbol, exchange, side, qty, price, product, template_id = (
+    _shim, account, symbol, exchange, side, qty, price, product, template_id, template_slug = (
         _al_place_resolve_params(agent, context, params)
     )
 
@@ -402,7 +514,8 @@ async def _action_place_order(agent, context: dict, params: dict):
     # Emit preflight_ok event (fire-and-forget); capture row id for chase.
     _oid = await _place_order_write_intent(
         _shim, pf, account, symbol, exchange, side, qty, price,
-        product=product, template_id=template_id,
+        product=product, template_id=template_id, template_slug=template_slug,
+        overrides=_al_place_build_overrides(params),
     )
     if _oid is None:
         # AlgoOrder pre-persist failed (DB exception) — fail closed.
@@ -613,20 +726,48 @@ async def _action_live_close_position(agent, context: dict, params: dict):
 def _al_modify_build_kwargs(params: dict) -> dict:
     """Build the kwargs dict for modify_order from action params.
 
-    Iterates recognised field names and includes only values that are not None.
+    `agent_grammar.yaml`'s `modify_order` params_schema documents
+    `new_qty` / `new_price` / `new_trigger` as the canonical field names
+    (alongside `account` / `broker_order_id`), but this handler has
+    always actually read `quantity` / `price` / `trigger_price` instead
+    — a schema/behavior mismatch flagged by a 2026-10 audit. An agent
+    written to match the documented schema silently did nothing in live
+    mode (no error — the params it set were just never read). Fixed:
+    the schema-documented key is now checked FIRST (using `is not None`
+    semantics, matching this function's existing convention) with the
+    original internal key name kept as a fallback so any
+    already-authored agent using either vocabulary still works.
+    `order_type` / `validity` have no schema-documented alias — they are
+    internal-only knobs, unchanged.
     """
     kwargs: dict = {}
-    for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
+    for schema_field, legacy_field, kwarg in (
+        ("new_qty",     "quantity",      "quantity"),
+        ("new_price",   "price",         "price"),
+        ("new_trigger", "trigger_price", "trigger_price"),
+    ):
+        v = params.get(schema_field)
+        if v is None:
+            v = params.get(legacy_field)
+        if v is not None:
+            kwargs[kwarg] = v
+    for field in ("order_type", "validity"):
         v = params.get(field)
         if v is not None:
             kwargs[field] = v
     return kwargs
 
 
-async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
-    """Fetch the exchange stored on the AlgoOrder row for a given broker_order_id.
+async def _al_modify_fetch_order_meta(order_id: str) -> "tuple[str | None, str | None]":
+    """Fetch (exchange, tradingsymbol) from the AlgoOrder row for a given
+    broker_order_id.
 
-    Returns None when the row does not exist or the DB call fails.
+    Returns (None, None) when the row does not exist or the DB call
+    fails. Single query serves both the pre-existing "fill in a missing
+    `exchange` kwarg for Groww" use (Slice Q) and the new G1
+    lot-multiple / `translate_qty` resolution below — both need the
+    row's own exchange, and the latter additionally needs the symbol to
+    resolve `lot_size`.
     """
     try:
         from sqlalchemy import select as _select
@@ -636,11 +777,62 @@ async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
             _row = (await _s.execute(
                 _select(_AO).where(_AO.broker_order_id == order_id)
             )).scalar_one_or_none()
-        if _row and _row.exchange:
-            return _row.exchange
+        if _row:
+            return (_row.exchange or None), (_row.symbol or None)
     except Exception:
         pass
-    return None
+    return None, None
+
+
+async def _al_modify_resolve_qty(
+    broker, raw_qty: int, exchange: "str | None", symbol: "str | None",
+) -> int:
+    """Resolve a modify_order quantity to the broker's wire convention,
+    with a G1 lot-multiple preflight check applied uniformly across every
+    F&O exchange (not just MCX/NCO) — see CLAUDE.md "Lot/contract oversize
+    guards" (C7 fix) for why MCX/NCO is not special-cased here.
+
+    2026-10 fix: `_action_live_modify_order` used to send `quantity`
+    straight to `broker.modify_order()` with a comment claiming this was
+    deliberate ("supply Kite qty"). `order_fields.yaml` documents the
+    `qty` field as lots × lot_size (contracts) — an agent author
+    following that documentation on MCX/NCO got an N× oversize modify,
+    the exact "Option qty vs lot_size" trap CLAUDE.md's math guards
+    describe. Every other order-placing path in this codebase resolves
+    `lot_size` and calls `broker.translate_qty(exchange, raw_qty,
+    lot_size)` before touching the broker (see
+    `orders_place.py`'s `broker.translate_qty(data.exchange or "NFO",
+    qty, ls_for_translate)` call for the canonical pattern) — this
+    mirrors that.
+
+    Fails closed (raises) rather than guessing when `exchange`/`symbol`
+    can't be resolved, or when `lot_size` resolution itself comes back
+    as the cache-miss sentinel (0) — sending a bare, unverified quantity
+    straight to the broker is exactly the failure mode this fix closes.
+    `broker.translate_qty` is a no-op for non-MCX/NCO exchanges once
+    `lot_size` is confirmed (equity lot_size is always 1), so this adds
+    no behavior change for NSE/BSE/CDS modifies beyond the new G1 check.
+    """
+    if not exchange or not symbol:
+        raise RuntimeError(
+            f"modify_order: cannot resolve exchange/symbol for this order "
+            f"— refusing to send quantity={raw_qty} to the broker without "
+            f"lot-size verification"
+        )
+    from backend.brokers.adapters.kite import get_lot_size
+    lot_size = await get_lot_size(exchange, symbol)
+    if not lot_size:
+        raise RuntimeError(
+            f"modify_order: lot_size unresolved for {exchange}/{symbol} "
+            f"(instruments cache miss) — refusing to send "
+            f"quantity={raw_qty} to the broker without lot-size verification"
+        )
+    if lot_size > 1 and raw_qty % lot_size != 0:
+        raise ValueError(
+            f"modify_order: G1 lot-multiple violation — quantity={raw_qty} "
+            f"is not a multiple of lot_size={lot_size} for {exchange}/{symbol}"
+        )
+    return broker.translate_qty(exchange, raw_qty, lot_size)
 
 
 async def _al_modify_write_reject(order_id: str, e: Exception) -> None:
@@ -701,12 +893,27 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     """
     Modify an open broker order.  Wraps kite.modify_order in run_in_executor.
     Updates the matching AlgoOrder row on success.
+
+    `broker_order_id` is read first (the `modify_order` params_schema's
+    documented key, `agent_grammar.yaml`), falling back to the legacy
+    `order_id` key — same schema/legacy dual-read pattern as
+    `_al_modify_build_kwargs`'s qty/price/trigger fields below.
+
+    2026-10 fix: quantity used to go straight to `broker.modify_order()`
+    with a comment claiming this was deliberate ("supply Kite qty").
+    `order_fields.yaml` documents `qty` as lots × lot_size (contracts) —
+    an agent author following that documentation on MCX/NCO got an N×
+    oversize modify. Now, whenever a quantity is actually being modified,
+    `_al_modify_resolve_qty` runs the G1 lot-multiple check and
+    `broker.translate_qty` before the quantity reaches the broker — see
+    that function's docstring. Price-only / trigger-only modifies (no
+    quantity key present) are completely unaffected.
     """
     import asyncio
     from backend.brokers import get_broker
 
     account  = str(params.get("account") or "")
-    order_id = str(params.get("order_id") or "")
+    order_id = str(params.get("broker_order_id") or params.get("order_id") or "")
     variety  = str(params.get("variety") or "regular")
 
     if not account or not order_id:
@@ -715,26 +922,34 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
-    # Note: MCX qty translation (to_kite_qty) is NOT applied here because
-    # modify_order references a live Kite order_id — any quantity in params
-    # should already be in Kite's convention (lots for MCX). Agent actions
-    # that modify orders are expected to supply the correct Kite qty.
     kwargs = _al_modify_build_kwargs(params)
 
-    # Slice Q — pass exchange from persisted AlgoOrder row so Groww's
-    # segment resolver doesn't raise ValueError on empty exchange.
-    if "exchange" not in kwargs:
-        exch = await _al_modify_fetch_exchange(order_id)
-        if exch:
-            kwargs["exchange"] = exch
+    # Resolve the AlgoOrder row's own exchange/symbol once — used both as
+    # the pre-existing fallback for the broker call's `exchange` kwarg
+    # (Slice Q, so Groww's segment resolver doesn't raise ValueError on
+    # empty exchange) and, new in this fix, for G1 lot-multiple
+    # validation + translate_qty whenever `quantity` is in kwargs.
+    row_exchange, row_symbol = await _al_modify_fetch_order_meta(order_id)
+
+    if "exchange" not in kwargs and row_exchange:
+        kwargs["exchange"] = row_exchange
 
     try:
+        if "quantity" in kwargs:
+            exch_for_qty = kwargs.get("exchange") or row_exchange
+            kwargs["quantity"] = await _al_modify_resolve_qty(
+                broker, int(kwargs["quantity"]), exch_for_qty, row_symbol,
+            )
         await loop.run_in_executor(
             None,
             lambda: broker.modify_order(order_id, variety=variety, **kwargs)
         )
     except Exception as e:
         # Update the AlgoOrder row to REJECTED so the operator can see it.
+        # Covers both a real broker-call failure AND a G1/lot_size
+        # resolution failure above — neither ever reached the broker in
+        # the latter case, but annotating `detail` still gives the
+        # operator visibility into why the modify never happened.
         await _al_modify_write_reject(order_id, e)
         raise
 
