@@ -195,3 +195,59 @@ async def test_release_refuses_when_positions_data_is_stale():
     assert result["ok"] is False
     assert "stale" in result["reason"] or "unavailable" in result["reason"]
     assert row.status == "HELD"
+
+
+# ── Fix 2 — release_held_order must clear hold_json ─────────────────────
+#
+# orders_held.py's list_held query matches `status == "HELD" OR
+# hold_json IS NOT NULL`. release_held_order set status="OPEN" but never
+# cleared hold_json, so a released expiry-close row stayed stuck in
+# HeldOrdersCard forever (both Release and Cancel on it then 409'd,
+# "not HELD").
+
+def _list_held_predicate_matches(row) -> bool:
+    """Mirrors orders_held.py:list_held's SQLAlchemy filter
+    (`or_(AlgoOrder.status == "HELD", AlgoOrder.hold_json.isnot(None))`)
+    as a plain Python predicate over an already-fetched row."""
+    return row.status == "HELD" or row.hold_json is not None
+
+
+@pytest.mark.asyncio
+async def test_release_clears_hold_json_so_row_no_longer_matches_list_held():
+    from backend.api.algo import order_release as m
+    from datetime import datetime, timezone
+    from backend.api.algo.order_hold import HoldCategory, hold_record
+
+    row = _held_expiry_row(hold_json=hold_record(
+        HoldCategory.EXPIRY_CLOSE, "expiry close", "CHASE_MED", None,
+        datetime.now(timezone.utc),
+    ))
+    assert _list_held_predicate_matches(row) is True  # sanity: starts HELD
+
+    mock_session = _mock_session(row)
+    frame = _mcx_positions_frame(quantity_lots=1, multiplier=100)
+    mock_broker = MagicMock()
+    mock_broker.quote.return_value = {
+        "MCX:CRUDEOIL26OCT8600CE": {
+            "depth": {"buy": [{"price": 100.0}], "sell": [{"price": 100.2}]},
+            "last_price": 100.1,
+            "lower_circuit_limit": 50.0,
+            "upper_circuit_limit": 200.0,
+        }
+    }
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.get_broker", return_value=mock_broker), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
+         patch("backend.api.routes.orders_helpers._ensure_tick_index", new_callable=AsyncMock), \
+         patch.dict("backend.api.routes.orders_helpers._TICK_INDEX",
+                    {("MCX", "CRUDEOIL26OCT8600CE"): 0.1}, clear=True), \
+         patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
+         patch("backend.api.algo.chase.chase_order", new_callable=AsyncMock):
+        result = await m.release_held_order(501, actor="operator")
+        await asyncio.sleep(0)
+
+    assert result["ok"] is True
+    assert row.status == "OPEN"
+    assert row.hold_json is None
+    assert _list_held_predicate_matches(row) is False

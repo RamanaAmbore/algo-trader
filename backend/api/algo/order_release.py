@@ -178,6 +178,13 @@ async def release_held_order(order_id: int, actor: str) -> dict:
             return {"ok": False, "reason": f"broker check failed: {e}", "status": "HELD"}
 
         row.status = "OPEN"
+        # Clear hold_json alongside the status change, matching the sibling
+        # release paths (release_template_exit, release_repeated_rejection_hold).
+        # orders_held.py's list_held query matches `status == "HELD" OR
+        # hold_json IS NOT NULL` — leaving hold_json populated here left a
+        # released expiry-close row stuck in HeldOrdersCard forever, and both
+        # Release and Cancel on it then 409'd ("not HELD").
+        row.hold_json = None
         row.detail = f"{row.detail or ''} · released by {actor} at {datetime.now(timezone.utc).isoformat()}"
         await s.commit()
         account, symbol, exchange = row.account, row.symbol, row.exchange
