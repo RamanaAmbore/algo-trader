@@ -3040,14 +3040,14 @@
     <!-- #16 — brief amber flash when auto-selection fired due to side/scope flip -->
     {#if _templateChanged}
       <div class="ot-tmpl-changed-flash" role="status" aria-live="polite">
-        Template auto-updated for new side
+        Bracket auto-updated for new side
       </div>
     {/if}
 
     <!-- #25 — warn when no default template exists for current scope -->
     {#if !_isUsingNone && templateId !== null && _defaultTemplate === null && _templates.length > 0}
       <div class="ot-tmpl-no-default-warn" role="note">
-        No default template for this scope
+        No default Bracket for this scope
       </div>
     {/if}
 

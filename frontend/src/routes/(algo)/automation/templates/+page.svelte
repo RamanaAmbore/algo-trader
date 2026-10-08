@@ -307,7 +307,7 @@
   <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <RefreshButton onClick={load} loading={loading} label="Templates" />
+    <RefreshButton onClick={load} loading={loading} label="Brackets" />
     <PageHeaderActions />
   </span>
 </div>
@@ -317,7 +317,7 @@
 {#if isDemo}
   <div class="algo-card mb-3">
     <p class="text-xs text-slate-300">
-      Demo mode — system templates visible (read-only); create / edit / delete require sign-in.
+      Demo mode — system Brackets visible (read-only); create / edit / delete require sign-in.
     </p>
   </div>
 {/if}
@@ -331,7 +331,7 @@
   <div class="tpl-matrix-head">
     <span class="mp-section-label">Side-default coverage</span>
     <InfoHint popup={true} panel title="Side-default coverage" align="right"
-      text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default template. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
+      text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default Bracket. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
   </div>
   <!-- #27 — info chip when a 'both' template covers all scopes -->
   {#if _bothDefault}
@@ -356,7 +356,7 @@
                 ? `${def.name} — TP ${fmtPct(def.tp_pct)} · SL ${fmtPct(def.sl_pct)}`
                 : bothFallback
                   ? `${bothFallback.name} (all-scope default) — TP ${fmtPct(bothFallback.tp_pct)} · SL ${fmtPct(bothFallback.sl_pct)}`
-                  : `No default template seeded for ${s.label}`}
+                  : `No default Bracket seeded for ${s.label}`}
               type="button">
         <span class="tpl-matrix-scope">{s.label}</span>
         <span class="tpl-matrix-tpl">
@@ -376,7 +376,7 @@
     bind:isCollapsed={_colTemplates}
     bind:isFullscreen={_fsTemplates}
     cardId="automation-templates"
-    label="Templates"
+    label="Brackets"
     onRefresh={load}
     bind:refreshLoading={loading}
     showSearch={false}
@@ -395,10 +395,10 @@
         {/each}
         <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
                 onclick={() => { filterScope = 'both'; }} type="button"
-                title="Custom templates that target every direction">Both</button>
+                title="Custom Brackets that target every direction">Both</button>
         {#if !isDemo}
           <button class="tpl-create-btn" onclick={startCreate} type="button">
-            + Create custom template
+            + Create custom Bracket
           </button>
         {/if}
       </div>
@@ -416,7 +416,7 @@
       <div class="p-3 text-xs text-slate-400">Loading…</div>
     {:else if sorted.length === 0}
       <div class="p-3 text-xs text-slate-400">
-        No templates match the current filter.
+        No Brackets match the current filter.
       </div>
     {:else}
       <section class="tpl-list">
@@ -647,7 +647,7 @@
         <button class="tpl-btn tpl-btn-primary"
                 disabled={busy || !!_scalesParseErr}
                 onclick={saveCreate} type="button">
-          {busy ? 'Creating…' : 'Create template'}
+          {busy ? 'Creating…' : 'Create Bracket'}
         </button>
         <button class="tpl-btn" onclick={resetForm} type="button">Cancel</button>
       </div>

@@ -30,7 +30,7 @@ test.describe('held orders — cancel action', () => {
 
   test('kindOf() still labels template_exit and falls back to Expiry close', () => {
     expect(cardSrc).toMatch(/h\.category === 'template_exit'/);
-    expect(cardSrc).toMatch(/return 'Template exit'/);
+    expect(cardSrc).toMatch(/return 'Bracket exit'/);
     expect(cardSrc).toMatch(/return 'Expiry close'/);
   });
 

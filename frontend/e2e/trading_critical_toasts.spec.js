@@ -239,7 +239,7 @@ test.describe('(c) Template-attach stall — one toast per order_id, not one per
     // (15s) before it's treated as a genuine stall rather than the
     // normal async attach-latency window.
     await expect.poll(() => pollCount, { timeout: 10_000 }).toBeGreaterThanOrEqual(1);
-    const attachToast = page.locator('.rbq-toast').filter({ hasText: /template did not attach/i });
+    const attachToast = page.locator('.rbq-toast').filter({ hasText: /bracket did not attach/i });
     await expect(attachToast).toHaveCount(0);
 
     // Wait past the threshold — the toast should now have fired exactly once.

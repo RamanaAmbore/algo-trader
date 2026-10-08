@@ -681,7 +681,7 @@ test.describe('Chain leg badge — template short-label suffix', () => {
     const badgeMatches = CHAIN_TAB.match(/\{(?:ce|pe)Leg\.lots\}L\{tmplAttached \? ' · ' \+ tmplShort : ''\}/g) ?? [];
     expect(badgeMatches.length, 'expected 4 leg-badge occurrences (ATM CE/PE + non-ATM CE/PE)').toBe(4);
     // The tooltip's own template-name string construction is untouched.
-    expect(CHAIN_TAB).toMatch(/tmplAttached \? ' · template: ' \+ templateName : ' · no template'/);
+    expect(CHAIN_TAB).toMatch(/tmplAttached \? ' · bracket: ' \+ templateName : ' · no bracket'/);
   });
 });
 

@@ -216,7 +216,7 @@
       for (const o of merged) {
         if (noteAttachObservation(o)) {
           const oid = o?.id ?? o?.order_id;
-          toast.warning(`Order #${oid} template did not attach — check Order Book`, { timeoutMs: 5000 });
+          toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });
         }
       }
     } catch (_) { /* keep last-good */ } finally {

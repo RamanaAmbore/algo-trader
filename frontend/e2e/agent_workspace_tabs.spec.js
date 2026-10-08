@@ -1,5 +1,5 @@
 // Verify the AutomationTabs strip on the Automation workspace surfaces.
-// The strip shows exactly three tabs — Agents, Order Templates, Agent
+// The strip shows exactly three tabs — Agents, Brackets, Agent
 // Templates — and the one matching the current route carries the active
 // state (AlgoTabs: role=tab + aria-selected="true").
 //
@@ -31,7 +31,7 @@ test.describe.configure({ mode: 'serial' });
 
 const TABS = [
   { href: '/automation',                 label: 'Agents'          },
-  { href: '/automation/templates',       label: 'Order Templates' },
+  { href: '/automation/templates',       label: 'Brackets' },
   { href: '/automation/agent-templates', label: 'Agent Templates' },
 ];
 

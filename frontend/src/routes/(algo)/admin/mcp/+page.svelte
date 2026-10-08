@@ -753,9 +753,9 @@
         Mint, copy the token, paste into Claude Code. Token is single-use,
         expires in 60 seconds, and is bound to <i>this exact action</i> —
         the LLM can't swap the symbol / quantity / order id post-mint.
-        For <b>place</b>, the exit template is part of the token too: the
+        For <b>place</b>, the exit bracket is part of the token too: the
         token redeems only with the same template slug (or none if blank).
-        To change the template, re-mint the token.
+        To change the bracket, re-mint the token.
       </p>
       <div class="mint-grid">
         <label><span>Kind</span>
@@ -780,7 +780,7 @@
           </label>
           <label><span>Price</span><input type="number" step="0.05" bind:value={mintForm.price} placeholder="(LIMIT/SL)" /></label>
           <label><span>Trigger</span><input type="number" step="0.05" bind:value={mintForm.trigger_price} placeholder="(SL/SL-M)" /></label>
-          <label><span>Exit template</span><input bind:value={mintForm.template_slug} placeholder="(none) e.g. default-bull" /></label>
+          <label><span>Exit bracket</span><input bind:value={mintForm.template_slug} placeholder="(none) e.g. default-bull" /></label>
         {:else if mintForm.kind === 'cancel'}
           <label><span>Mode</span>
             <Select bind:value={mintForm.mode} options={MODE_OPTIONS_LIVE_DEFAULT} ariaLabel="Cancel mode" />
@@ -896,7 +896,7 @@
     <article class="lab-card">
       <h2>4. Safety</h2>
       <ul class="safety-list">
-        <li>MCP <b>can</b> place / cancel / modify orders (<code>place_order</code> / <code>cancel_order</code> / <code>modify_order</code>) — but every call requires an <b>operator-minted confirm token</b> (see 0. above): single-use, expires in 60 seconds, and bound to the exact order parameters (account/symbol/side/qty/mode/price/trigger/exit template — new qty/price too for modify). The exit template is bound too: a place call with a different or missing <code>template_slug</code> is rejected; re-mint to change it. A mismatched, reused, or expired token is rejected with 403; the LLM cannot mint a token for itself.</li>
+        <li>MCP <b>can</b> place / cancel / modify orders (<code>place_order</code> / <code>cancel_order</code> / <code>modify_order</code>) — but every call requires an <b>operator-minted confirm token</b> (see 0. above): single-use, expires in 60 seconds, and bound to the exact order parameters (account/symbol/side/qty/mode/price/trigger/exit bracket — new qty/price too for modify). The exit bracket is bound too: a place call with a different or missing <code>template_slug</code> is rejected; re-mint to change it. A mismatched, reused, or expired token is rejected with 403; the LLM cannot mint a token for itself.</li>
         <li><code>save_agent_draft</code> creates agents that ship <b>status=inactive</b> + <b>trade_mode=paper</b>. The endpoint cannot create an active or live agent.</li>
         <li>Operator's next step on every draft: <b>Run in Simulator</b> on /automation to validate the condition tree before activating.</li>
         <li>The JWT inherits your admin role. Don't paste it into untrusted MCP servers.</li>
