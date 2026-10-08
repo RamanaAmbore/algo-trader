@@ -1312,7 +1312,7 @@
                   <div class="flex items-center justify-between flex-wrap gap-1">
                     <span class="field-label">
                       Actions (JSON)
-                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>O.Template</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The O.Template runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation/templates' target='_blank'>/automation/templates</a>." />
+                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>Bracket</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The Bracket runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation/templates' target='_blank'>Brackets</a>." />
                     </span>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the
@@ -1351,8 +1351,8 @@
                           onChange={(v) => _updatePlaceOrderParam('chase_aggressiveness', v)} />
                       </div>
                       <div class="pos-field">
-                        <span class="pos-label">O.Template</span>
-                        <Select ariaLabel="O.Template"
+                        <span class="pos-label">Bracket</span>
+                        <Select ariaLabel="Bracket"
                           value={_singlePlaceOrderAction.params?.template_slug ?? 'none'}
                           options={[
                             { value: 'none', label: 'None' },

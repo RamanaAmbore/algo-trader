@@ -201,10 +201,10 @@
           class:active={_toggleOn}
           title={_toggleOn
             ? (selectedTemplate.description || `Attached: ${_toggleOnLabel}`)
-            : 'No O.Template — entry only, no TP/SL/Wing attach (click to attach the side-aware default)'}
+            : 'No Bracket — entry only, no TP/SL/Wing attach (click to attach the side-aware default)'}
           onclick={() => { if (_toggleOn) { onSelectNone?.(); } else { onSelectDefault?.(); } }}>
     <span class="oes-tpl-button-dot" aria-hidden="true"></span>
-    O.Template
+    Bracket
   </button>
   {#if !shellUsingNone && selectedTemplate}
     <!-- #30 expand toggle — reveals the full param set.

@@ -1,17 +1,17 @@
 /**
- * Structured product / chase aggressiveness / O.Template controls for
+ * Structured product / chase aggressiveness / Bracket controls for
  * place_order agent actions on the /automation page.
  *
  * Covers:
  *  1. Structured controls appear when the Actions JSON parses to exactly
  *     one place_order action, and stay hidden for other action types.
  *  2. Changing the Product dropdown, Chase aggressiveness picker, or
- *     O.Template dropdown re-serializes the raw-JSON textarea to match.
+ *     Bracket dropdown re-serializes the raw-JSON textarea to match.
  *  3. Manually editing the raw textarea with a different place_order
  *     shape updates the structured controls to reflect it.
- *  4. Selecting "None" for O.Template clears template_slug from params.
+ *  4. Selecting "None" for Bracket clears template_slug from params.
  *
- * Note: the dropdown's operator-visible label is "O.Template" (display
+ * Note: the dropdown's operator-visible label is "Bracket" (display
  * only — the underlying JSON param key stays `template_slug` unchanged).
  *
  * See CLAUDE.md "F&O order qty convention" / chase-aggressiveness thread
@@ -103,11 +103,11 @@ test.describe('Automation — structured place_order controls', () => {
     await chaseGroup.getByRole('button', { name: 'H' }).click();
     await expect(textarea).toHaveValue(/"chase_aggressiveness":\s*"high"/);
 
-    // O.Template dropdown: pick "None" explicitly → clears template_slug.
+    // Bracket dropdown: pick "None" explicitly → clears template_slug.
     // The currently-selected option's accessible name carries a CSS
     // ::before checkmark ("✓ None") per Chromium's accname computation,
     // so match by substring (no `exact`), not literal "None".
-    await struct.getByRole('button', { name: 'O.Template' }).click();
+    await struct.getByRole('button', { name: 'Bracket' }).click();
     await struct.getByRole('option', { name: 'None' }).click();
     await expect(textarea).not.toHaveValue(/template_slug/);
   });
@@ -120,7 +120,7 @@ test.describe('Automation — structured place_order controls', () => {
     const struct = page.getByTestId('place-order-struct');
     await expect(struct).toBeVisible();
 
-    await struct.getByRole('button', { name: 'O.Template' }).click();
+    await struct.getByRole('button', { name: 'Bracket' }).click();
     const panel = struct.locator('.rbq-select-panel');
     await panel.waitFor({ state: 'visible' });
     const options = panel.getByRole('option');
@@ -141,7 +141,7 @@ test.describe('Automation — structured place_order controls', () => {
       expect(label).toBeTruthy();
 
       // Now clear it back via "None".
-      await struct.getByRole('button', { name: 'O.Template' }).click();
+      await struct.getByRole('button', { name: 'Bracket' }).click();
       await struct.getByRole('option', { name: 'None' }).click();
       await expect(textarea).not.toHaveValue(/template_slug/);
     }

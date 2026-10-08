@@ -315,11 +315,11 @@
       <span class="log-chip log-chip-template"
             class:log-chip-template-partial={_missingId}
             title={_atJson
-              ? `O.Template attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
+              ? `Bracket attached on fill — ${_gttCount} GTT spec(s)${_hasWing ? ', wing attached' : ''}${_missingId ? `. ⚠ Partial attach — missing: ${_failedLegs}.` : '.'} ${_atSummary}`
               : (order.status === 'FILLED'
-                  ? 'O.Template was selected but attach did not run — click Re-attach to retry.'
-                  : 'O.Template selected — will attach on fill')}>
-        <span class="log-chip-key">O.Template:</span>#{order.template_id}{_chipBadge}
+                  ? 'Bracket was selected but attach did not run — click Re-attach to retry.'
+                  : 'Bracket selected — will attach on fill')}>
+        <span class="log-chip-key">Bracket:</span>#{order.template_id}{_chipBadge}
       </span>
       {#each gttLegs as leg (leg.id || leg.label)}
         <span class="log-chip gtt-leg-chip"
