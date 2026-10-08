@@ -707,7 +707,8 @@ async def _fire_template_attach_on_fill(
     template_id: int,
     parent_product: str = "NRML",
     mode: str,
-) -> None:
+    bypass_hold: bool = False,
+):
     """Fire apply_plan_live for a templated parent order that just
     flipped to FILLED via Kite/Dhan/Groww postback.
 
@@ -739,9 +740,32 @@ async def _fire_template_attach_on_fill(
     paper simulator. Do NOT reintroduce a default value for `mode` — a
     default silently recreates the exact bug for any future caller that
     forgets to pass it.
+
+    `bypass_hold` — skips the `template_exit_held()` re-check (but NOT
+    the `mode != "live"` gate above it, which always applies). CRITICAL
+    FIX (2026-10): `release_template_exit` (order_release.py) used to
+    call this function with no way to skip the hold re-check, so every
+    release of a held bracket/template-exit order immediately re-hit
+    `template_exit_held()` against the SAME still-held global switch and
+    re-held itself — the operator was told exits were placed
+    (`"status": "FILLED"` was hardcoded unconditionally) while nothing
+    was ever sent to the broker. Only `release_template_exit` passes
+    `bypass_hold=True` — releasing IS the operator's explicit
+    authorization, so the hold must not re-fire on that one path. Every
+    other caller (postback, chase terminal, paper engine, admin
+    reconcile) leaves this at its default `False` and is still subject
+    to the hold exactly as before.
+
+    Returns the `AttachResult` on every path that actually ran the
+    resolver (even when it placed nothing), or `None` on every early
+    return (no fill price, non-live mode, held-and-not-bypassed, no
+    parent row) and on any caught exception. Callers that need to know
+    whether anything was actually armed must check
+    `result is not None and (result.gtt_ids or result.wing_order_id)`
+    — do not infer success from this function merely returning.
     """
     if not fill_price or fill_price <= 0:
-        return
+        return None
     if (mode or "").lower() != "live":
         logger.info(
             "[TPL-ATTACH] skipping — parent #%s %s is mode=%r, not 'live'; "
@@ -750,7 +774,7 @@ async def _fire_template_attach_on_fill(
             "broker here. No GTTs armed for this fill.",
             parent_row_id, parent_symbol, mode,
         )
-        return
+        return None
     # Phase 3D #4 — serialise concurrent calls for the same parent_row_id
     # so the postback handler and chase terminal can't both pass the
     # `attached_gtts_json is None` idempotency check simultaneously
@@ -758,9 +782,9 @@ async def _fire_template_attach_on_fill(
     # in-process (uvicorn --workers 1 on prod) so there's zero
     # contention against unrelated fills.
     from backend.api.algo.order_hold_gate import template_exit_held, hold_template_exit, template_exit_override
-    if template_exit_held(await template_exit_override(parent_row_id)):
+    if not bypass_hold and template_exit_held(await template_exit_override(parent_row_id)):
         await hold_template_exit(parent_row_id, parent_symbol)
-        return
+        return None
     _row_lock = await _get_template_attach_lock(parent_row_id)
     async with _row_lock:
         try:
@@ -768,7 +792,7 @@ async def _fire_template_attach_on_fill(
 
             row_info = await _opp_load_row_for_attach(parent_row_id)
             if row_info is None:
-                return
+                return None
 
             result = await apply_template_to_order(
                 template_id=template_id,
@@ -785,7 +809,7 @@ async def _fire_template_attach_on_fill(
                 apply_path="live",
             )
             if result is None:
-                return
+                return None
 
             # #11 — compare placed GTT count vs planned GTT count.
             # A mismatch means a broker call silently failed for one spec
@@ -827,12 +851,14 @@ async def _fire_template_attach_on_fill(
                     except Exception:
                         pass
                 await _opp_persist_attached_gtts(parent_row_id, attached, fill_price)
+            return result
 
         except Exception as _e:
             logger.warning(
                 f"[TPL-ATTACH] _fire_template_attach_on_fill failed "
                 f"for parent #{parent_row_id}: {_e}"
             )
+            return None
 
 
 async def _maybe_attach_template_to_ticket(

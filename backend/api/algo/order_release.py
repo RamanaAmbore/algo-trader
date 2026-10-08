@@ -298,7 +298,24 @@ async def _resume_chase_after_hold(
 
 
 async def release_template_exit(order_id: int, actor: str) -> dict:
-    """Release held template exits: place the exit GTTs for a filled parent."""
+    """Release held template exits: place the exit GTTs for a filled parent.
+
+    CRITICAL FIX (2026-10): `_fire_template_attach_on_fill` re-checks
+    `template_exit_held()` against the SAME still-held global switch /
+    per-order override before doing anything — so calling it here with
+    no way to skip that check meant every release immediately re-held
+    the order again (via `hold_template_exit`), while this function
+    still returned a hardcoded `{"ok": True, "status": "FILLED"}`
+    regardless of what actually happened. The operator was told exits
+    were placed when nothing was ever sent to the broker. Fixed by
+    calling with `bypass_hold=True` — releasing IS the operator's
+    explicit authorization, so the hold must not re-fire on this path —
+    and by inspecting the REAL `AttachResult`: `ok` is only `True` when
+    it actually produced a GTT id or a wing order id. On a non-success,
+    the hold is restored via `hold_template_exit()` so the row stays in
+    HeldOrdersCard and a second Release attempt remains possible,
+    instead of silently falling out of view with nothing armed.
+    """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
     from sqlalchemy import select
@@ -318,6 +335,7 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
             return {"ok": True, "reason": "exits already attached", "status": row.status}
         row.hold_json = None
         await s.commit()
+        row_status = row.status
         args = dict(parent_row_id=row.id, parent_account=row.account,
                     parent_symbol=row.symbol, parent_exchange=row.exchange,
                     parent_side=row.transaction_type, parent_qty=int(row.quantity),
@@ -325,8 +343,12 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
                     parent_product=row.product or "NRML", mode=row.mode or "live")
     from backend.api.algo.order_events import write_event
     await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})
-    await _fire_template_attach_on_fill(**args)
-    return {"ok": True, "reason": "template exits placed", "status": "FILLED"}
+    result = await _fire_template_attach_on_fill(**args, bypass_hold=True)
+    if result is not None and (result.gtt_ids or result.wing_order_id):
+        return {"ok": True, "reason": "template exits placed", "status": row_status}
+    from backend.api.algo.order_hold_gate import hold_template_exit
+    await hold_template_exit(order_id, args["parent_symbol"])
+    return {"ok": False, "reason": "template exit attach failed — hold restored", "status": row_status}
 
 
 # ── Release dispatch registry ───────────────────────────────────────────
