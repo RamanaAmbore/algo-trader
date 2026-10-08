@@ -453,6 +453,7 @@ class TestApplyTemplateToOrderPreAttachGuard:
             return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
+            new_callable=AsyncMock,
             return_value=MagicMock(errors=[], guard_alert_fired=False),
         ):
 
@@ -537,6 +538,7 @@ class TestApplyTemplateToOrderPreAttachGuard:
             return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
+            new_callable=AsyncMock,
             return_value=MagicMock(errors=[], guard_alert_fired=False),
         ):
 
@@ -637,6 +639,7 @@ class TestOffHoursGttNote:
             return_value=({}, None, None),
         ), patch(
             "backend.api.algo.template_attach._route_apply_path",
+            new_callable=AsyncMock,
             return_value=MagicMock(errors=[], guard_alert_fired=False),
         ):
 

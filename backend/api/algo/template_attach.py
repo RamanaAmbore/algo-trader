@@ -23,6 +23,7 @@ commit fans them out.
 
 from __future__ import annotations
 
+import asyncio
 import math
 import re
 import time
@@ -1858,13 +1859,15 @@ _GTT_NOT_PRESENT_REASON = "not present in the broker's GTT list"
 # Broker-agnostic by design (no "if groww" branch) — the retry is cheap and
 # harmless for Kite/Dhan too, where the GTT already reliably appears on the
 # first read. Kept small: this whole call chain (apply_plan_live ->
-# _ta_live_place_one_gtt -> _verify_gtt_accepted) runs synchronously on
-# whatever thread calls it — for the live-order-placement path that is the
-# asyncio event loop thread (`_route_apply_path` is called un-awaited from
-# inside the async `_apply_template_to_order_impl`) — so `time.sleep` here
-# blocks that loop for the sleep's duration, same as the preceding
-# synchronous `broker.place_gtt` network call already does. Total added
-# worst-case delay is `_GTT_VERIFY_RETRIES * _GTT_VERIFY_BACKOFF_S` seconds.
+# _ta_live_place_one_gtt -> _verify_gtt_accepted) runs synchronously, but
+# (2026-10 perf fix) `_route_apply_path` now offloads the LIVE branch's
+# call into `apply_plan_live` via `asyncio.to_thread`, so this runs on a
+# worker thread, NOT the asyncio event loop thread — `time.sleep` here
+# blocks only that worker thread, same as the preceding synchronous
+# `broker.place_gtt` network call. Total added worst-case delay is still
+# `_GTT_VERIFY_RETRIES * _GTT_VERIFY_BACKOFF_S` seconds, it just no longer
+# stalls every other route/WebSocket/postback ACK on the process while it
+# waits. See `_route_apply_path`'s own docstring for the offload design.
 _GTT_VERIFY_RETRIES = 2       # extra get_gtts() reads after the first
 _GTT_VERIFY_BACKOFF_S = 0.5   # sleep before each retry read
 
@@ -2735,7 +2738,7 @@ def _ta_resolve_sim_active(apply_path: str) -> bool:
         return False
 
 
-def _route_apply_path(
+async def _route_apply_path(
     plan:            TemplatePlan,
     apply_path:      str,
     parent_account:  str,
@@ -2747,6 +2750,22 @@ def _route_apply_path(
     'sim' / 'auto'+SimDriver.active: route to apply_plan_sim.
     'live' / 'auto'+not sim: resolve broker + route to apply_plan_live.
     Fallback: return AttachResult(plan) unchanged.
+
+    Perf (2026-10): only the LIVE branch is offloaded to a worker thread
+    via `asyncio.to_thread`. `apply_plan_live` does 5-8 synchronous broker
+    round-trips (translate_qty, place_gtt, get_gtts-with-retry via
+    `_verify_gtt_accepted`, place_order for the wing) plus up to
+    `_GTT_VERIFY_RETRIES * _GTT_VERIFY_BACKOFF_S` seconds of `time.sleep` —
+    run inline on the event loop this stalled EVERY route, WebSocket
+    broadcast, and postback ACK on the whole process for that entire
+    duration. The sim branch (`apply_plan_sim`) is pure in-memory
+    (SimGttBook + SimDriver._paper) with no broker I/O and no sleeps, so
+    it stays on the loop thread — offloading it would just add thread-hop
+    overhead for zero benefit, and could race SimDriver's own state
+    against `PaperTradeEngine.tick_loop`'s executor-offloaded `step()`.
+    `get_broker()` is a cheap in-memory lookup (no re-auth, no network
+    call — see its own docstring) so it also stays inline; only the
+    broker-calling `apply_plan_live` itself is thread-offloaded.
     """
     # Preview short-circuit — never apply.
     if apply_path == "preview":
@@ -2770,7 +2789,9 @@ def _route_apply_path(
                 f"could not resolve broker for {parent_account!r}: {e}"
             )
             return result
-        return apply_plan_live(plan, broker, parent_order_id=parent_order_id)
+        return await asyncio.to_thread(
+            apply_plan_live, plan, broker, parent_order_id=parent_order_id
+        )
 
     return AttachResult(plan=plan)
 
@@ -3187,7 +3208,7 @@ async def _apply_template_to_order_impl(
     if _offhours_note:
         plan.notes.append(_offhours_note)
 
-    result = _route_apply_path(plan, apply_path, parent_account, parent_order_id)
+    result = await _route_apply_path(plan, apply_path, parent_account, parent_order_id)
     # (#6) Propagate wing skip reason into the result so callers and the
     # API response can surface why the wing wasn't attached.
     if wing_skipped_reason:
@@ -3233,9 +3254,11 @@ async def apply_template_to_order(
     `_apply_template_to_order_impl`, single-ownership point for
     template-attach lifecycle events (Sprint 1b-i).
 
-    The impl (unchanged, including its sync call into `apply_plan_live` —
-    that function is NOT touched by this wrapper; see the Sprint 1b-i plan
-    review) has 7+ distinct exit points. Rather than wiring `write_event`
+    The impl (unchanged aside from the 2026-10 `_route_apply_path`
+    thread-offload described on that function's own docstring — the
+    live broker calls inside `apply_plan_live` itself are NOT touched by
+    this wrapper; see the Sprint 1b-i plan review) has 7+ distinct exit
+    points. Rather than wiring `write_event`
     at each one (risking double-firing on paths that already call
     `_fire_attach_fail_alert` internally), this wrapper calls the impl
     EXACTLY ONCE and inspects the single returned value:
