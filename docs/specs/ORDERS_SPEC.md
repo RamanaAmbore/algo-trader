@@ -1681,12 +1681,25 @@ write an `order_events` record:
 - Release: event kind `"released"`, message shows action + actor
 - Cancel: event kind `"cancelled"`, message shows actor + symbol/qty
 
+### Hold Gate Configuration (Expiry-Close and Template-Exit)
+
+**Amended 2026-10 (`c7ddcb56`)**: The hold gates for `expiry_close` and `template_exit` 
+categories are now tunable via the Global Switches panel on `/admin/settings`, without 
+requiring code changes or redeploy. Four new fields added to `GlobalSwitchesRequest`/`Response` 
+in `backend/api/routes/admin.py`: `expiry_close_hold_enabled`, `template_exit_hold_enabled` 
+(bool toggles, with bool-field inversion), plus `expiry_close_lead_minutes_mcx` and 
+`expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively). See 
+[SETTINGS_SPEC.md](../SETTINGS_SPEC.md#hold) for the underlying storage keys, defaults, 
+and validation bounds. New `set_int()` setter function added to `backend/shared/helpers/settings.py` 
+alongside existing `set_bool`/`set_string` helpers.
+
 ---
 
 ## Change log
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | c7ddcb56: Hold gates for expiry-close and template-exit now tunable from Global Switches panel (see §18 Hold Gate Configuration); new `expiry_close_hold_enabled`, `template_exit_hold_enabled` (bool, inverted), `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo` (int) fields on GlobalSwitchesRequest/Response. See SETTINGS_SPEC.md hold.* bucket for storage keys and validation bounds. |
 | 2026-10 | v2.4 Documented cancel-held-order feature (commit `475b07e2`): new `POST /api/orders/held/{id}/cancel` endpoint; state-based branching (HELD→CANCELLED vs template_exit→keep status); `kindOf` recognizes `agent_order` as "Repeated rejection" — see §14 §18 |
 | 2026-10 | v2.3 Documented six fixes to depth-gating, chase-wing recording, and error handling (commits `8723beac` `a23e067e` `fcbeeb75` `7843cbf8` `4ae6a231` `0aedf13f`): modify mode no longer gated on depth (§4, §6); depth-pending button gray color (§6); chain-tab per-leg `quoteArrived` latch + futures limit-only gate (§9); chase-routed wings recorded in `attached_gtts_json` with `wing_chased` flag + `parent_order_id` (§13); chase-wing failures surface via alert + UNFILLED status instead of silently failing (§13); UI label "Bracket" replaces "O.Template" everywhere operator-visible — see §6 §9 §13 |
 | 2026-10 | v2.2 Documented depth-pending pre-submission gate (commit `daee65d2`): `_depthPending` derived + `_lastQuote` reset on strike change in `frontend/src/lib/order/OrderTicket.svelte`; mirrored shared-button gate (`_ticketDepthPending`) in `frontend/src/lib/SymbolPanel.svelte` — see §6 Price (Limit / SL Price) |

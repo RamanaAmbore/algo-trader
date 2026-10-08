@@ -124,6 +124,16 @@ Master trading-mode flags (live-order gatekeeping, not per-agent overrides).
 | execution.paper_trading_mode | BOOL | false | Kill-switch: when True, all broker actions go to paper simulator instead of live broker. Applies prod-wide to every account. |
 | execution.default_agent_trade_mode | STRING | "paper" | Default trade mode for newly-created agents: "paper" or "live". Applied once at creation time; changing this does NOT retroactively affect existing agents. |
 
+### hold.*
+Order hold gates for expiry-close and template-exit automation (tunable via Global Switches panel).
+
+| Key | Type | Default | Description |
+|---|---|---|---|
+| hold.expiry_close_released | BOOL | false | Release automated expiry closes. False = closes are held for review (operator must click Release on the held-orders card). |
+| hold.template_exit_released | BOOL | false | Release template exit GTTs after the entry fills. False = exits are held for review. |
+| hold.lead_minutes_nfo | INT | 15 | Minutes before the NFO close at which expiry closes are created. Valid range: 0–120 min. |
+| hold.lead_minutes_mcx | INT | 30 | Minutes before the MCX close at which expiry closes are created. Valid range: 0–180 min. |
+
 ### cap_in_dev
 Capability flag overrides for development/testing only. **Dict structure** (not string).
 
@@ -207,12 +217,16 @@ Fetch the current values of the two master trading-mode switches. Response:
 
 **`PATCH /api/admin/global-switches`** (requires `manage_settings` capability)
 
-Update one or both switches. Request body (both fields optional):
+Update one or more switches. Request body (all fields optional):
 
 ```json
 {
   "paper_trading_mode": true,
-  "default_agent_trade_mode": "live"
+  "default_agent_trade_mode": "live",
+  "expiry_close_hold_enabled": false,
+  "expiry_close_lead_minutes_mcx": 30,
+  "expiry_close_lead_minutes_nfo": 15,
+  "template_exit_hold_enabled": false
 }
 ```
 
@@ -222,6 +236,15 @@ committed together or rolled back together. If the audit insert fails, the
 entire write fails (no partial updates). The new values are returned 
 immediately in the response (cache is busted synchronously).
 
+**Amended 2026-10 (`c7ddcb56`)**: Four new fields added for expiry-close and 
+template-exit hold gates. `expiry_close_hold_enabled` and `template_exit_hold_enabled` 
+are **inverted** bools: the underlying storage keys are `hold.expiry_close_released` 
+and `hold.template_exit_released` (True = released/not held); this field is named 
+for operator readability — `expiry_close_hold_enabled=True` means closes ARE held 
+(maps to `released=False`). Both follow the identical inversion pattern via a 
+shared helper `_gs_collect_bool_hold_changes()` in `backend/api/routes/admin.py` 
+so the inversion logic is never hand-copied.
+
 ---
 
 ## 4. Admin Page
@@ -229,10 +252,19 @@ immediately in the response (cache is busted synchronously).
 **`/admin/settings`** — Grouped card layout, one card per bucket.
 
 **Global Switches panel** (top of page, pinned card):
-- Two rows: `paper_trading_mode` and `default_agent_trade_mode`
+- Six rows: `paper_trading_mode`, `default_agent_trade_mode`, `expiry_close_hold_enabled`, 
+  `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo`, `template_exit_hold_enabled`
 - `paper_trading_mode` row: current value (green "PAPER" / red "LIVE" chip), 
   "Flip to X" button
 - `default_agent_trade_mode` row: dropdown selector (paper / live)
+- `expiry_close_hold_enabled` row: toggle (bool). When On, automated expiry-close orders 
+  are held for operator review before placement; when Off, they fire without review 
+  (default holds for safety)
+- `expiry_close_lead_minutes_mcx` and `expiry_close_lead_minutes_nfo` rows: numeric 
+  input fields (0–180 for MCX, 0–120 for NFO). Minutes before market close at which 
+  expiry closes are auto-created
+- `template_exit_hold_enabled` row: toggle (bool). When On, template exit GTTs are 
+  held after a parent order fills; when Off, they attach automatically
 - Flipping `paper_trading_mode` opens a danger-confirm modal with explicit 
   warning "⚠ Affects every account, prod-wide — flips real-money execution"
 - Description on each row clarifies: paper_trading_mode is an outer kill-switch 
@@ -375,5 +407,6 @@ live-effect handlers to re-apply the new value.
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | c7ddcb56: Hold gates now tunable via Global Switches panel — four new fields: `expiry_close_hold_enabled`, `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo`, `template_exit_hold_enabled`. New `hold.*` bucket documented with real defaults (hold.expiry_close_released/template_exit_released bool False, lead_minutes_nfo int 15, lead_minutes_mcx int 30). Bool field inversion handled by shared helper `_gs_collect_bool_hold_changes()` in admin.py. New `set_int()` setter added to settings.py alongside existing `set_bool`/`set_string`. |
 | 2026-10-07 | e37fab01: Global switches — new `/api/admin/global-switches` GET/PATCH endpoint + Global Switches panel on `/admin/settings`, `execution.paper_trading_mode` kill-switch and `execution.default_agent_trade_mode` defaults added to execution.* bucket. Transactional audit logging with rollback on audit failure. |
 | 2026-07-11 | v1.0 initial spec from codebase audit |

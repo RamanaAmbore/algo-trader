@@ -148,25 +148,65 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
 ## 5. Action Types and Dispatch
 
 **Supported actions**:
-- `place_order` — create new order (symbol, side, qty, price, product, account)
+- `place_order` — create new order (symbol, side, qty, price, product, account, optional chase_level)
 - `modify_order` — update pending order (new price/qty)
 - `cancel_order` — cancel pending order
 - `close_position` — flatten an open position (reverse trade, market/limit)
 - `chase_close_positions` — iteratively chase a position close (loop with delay)
 - `cancel_all_orders` — cancel all pending orders for this agent's symbol (or account if scope=per_account)
 
+**`place_order` parameters** (shared catalog in `backend/config/grammars/order_fields.yaml`):
+- Amended 2026-10 (`0005aeb8`): Field metadata (`qty`, `order_type`, `price`, `trigger_price`, 
+  `product`, `variety`, `tag`) unified into `order_fields.yaml`, shared between agent grammar's 
+  `place_order` params_schema and frontend CLI's order tokens (resolved via `$ref:` markers). 
+  New `chase_level` parameter added (enum: LOW, MED, HIGH) — routes to the live adaptive 
+  chase engine's corresponding tier in `_live_chase_config()`. Takes priority over legacy 
+  `chase_aggressiveness` key when both present. Known gap (queued for separate fix): schema 
+  field is named `qty`, but the executor reads `params.get("quantity")` — no immediate impact 
+  since agent authors always specify the same value under whichever key the executor happens 
+  to read, but a future agent grammar PATCH will unify the naming.
+
 **Dispatch flow**:
 1. Condition evaluates true
 2. Agent enters `triggered` status
 3. For each action in `actions[]`:
-   - Serialize order payload (symbol, qty, price, etc.)
-   - Call broker.place_order() or equivalent
+   - Serialize order payload (symbol, qty, price, chase_level, etc.)
+   - Resolve mode (sim / paper / live via `_resolve_mode()`)
+   - Route to appropriate handler via registry (see Handler Registries below)
    - Write AlgoOrder row (chain to parent agent_id)
    - Log audit_log entry (category: 'agent')
 4. For each notify in `events[]`:
    - Serialize message (title, body, tags)
    - Dispatch to channel (Telegram, Email, Log, WebSocket)
 5. Set cooldown timer (agent won't re-fire for `cooldown_minutes`)
+
+**Handler Registries** (Amended 2026-10 (`7972b60b`)):
+Action dispatch refactored from hardcoded if/elif chains to module-level registries:
+- `_LIVE_ACTION_HANDLERS` — dict[action_type → _HandlerRef] for broker-hitting actions 
+  (place_order, modify_order, cancel_order, close_position, chase_close, chase_close_positions, 
+  expiry_auto_close). Each entry references a handler function in `backend.api.algo.actions_live` 
+  via a `_HandlerRef(module, attr)` tuple.
+- `_NOOP_ACTION_HANDLERS` — dict[action_type → _HandlerRef] for non-broker actions 
+  (send_summary, monitor_order, deactivate_agent, set_flag, emit_log). Each entry references 
+  a handler (mostly in `actions.py` itself) and carries a `swallow_errors` flag controlling 
+  whether exceptions propagate or are logged + silently swallowed.
+
+Dispatch via `_dispatch_live_action(agent, action_type, params, context)` and 
+`_al_run_noop_handler(agent, action_type, params, context)` — handler functions are resolved 
+fresh on every call via `getattr(module, attr)`, preserving original lazy-import semantics so 
+existing tests that `unittest.mock.patch()` handlers by module path continue to work without 
+pre/post-patch binding issues.
+
+**Agent Grammar Metadata** (Amended 2026-10 (`a938340c`)):
+SYSTEM_TOKENS and LOG_TAG_TOKENS (condition metrics, notification tokens, action-event tokens) 
+metadata moved from Python list literals in `backend/api/algo/grammar.py` to external file 
+`backend/config/grammars/agent_grammar.yaml`. Pure data relocation — resolver function bodies 
+remain exactly where they were (real Python functions in `grammar.py`, `actions.py`, 
+`actions_live.py`). No behavior change; the grammar-loading path (`GrammarRegistry.reload()` 
+in `grammar_registry.py`) reconstructs the identical token shape every downstream consumer 
+expects. This enables operator-friendly documentation of the agent DSL without requiring 
+code changes, and prepares for future Phase N unifications where other parts of the 
+order/agent grammars are similarly externalized.
 
 ---
 
@@ -392,4 +432,5 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | Phase 1–4 order/agent grammar unification (commits `a938340c` `0005aeb8` `7972b60b` `1a6869b0`): (1) SYSTEM_TOKENS/LOG_TAG_TOKENS moved to `backend/config/grammars/agent_grammar.yaml` — pure data, no behavior change. (2) Order-field vocabulary unified in `backend/config/grammars/order_fields.yaml`, with `$ref` resolution in `place_order` params_schema + frontend CLI; new `chase_level` param (LOW/MED/HIGH) added to `place_order`, routes to `_live_chase_config()` mapping. (3) Action dispatch refactored to registries (`_LIVE_ACTION_HANDLERS`, `_NOOP_ACTION_HANDLERS`); handler functions resolved fresh via `getattr()` on every call for test-patch compatibility. (4) Frontend CLI reads `order_fields.yaml` directly via new symlink, with local `values:` lists preserved for display order override. Known gap: `place_order` schema field `qty` vs executor reads `quantity` — queued as separate fix. |
 | 2026-07-11 | v1.0 initial spec from codebase audit; condition tree v2, lifespan, action dispatch, templates |

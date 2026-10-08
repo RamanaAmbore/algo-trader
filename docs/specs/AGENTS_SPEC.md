@@ -22,6 +22,7 @@ the rule lifecycle from condition evaluation through delivery and side-effect ex
 9. [Grammar Tokens and Registry](#9-grammar-tokens-and-registry)
 10. [run_cycle() Timing](#10-run_cycle-timing)
 11. [Test Coverage Map](#11-test-coverage-map)
+12. [Automated Order Hold and Release](#12-automated-order-hold-and-release)
 
 ---
 
@@ -236,6 +237,25 @@ Market-lifecycle agents:
 On startup, database rows with `is_system=True` that are NOT in `BUILTIN_AGENTS`
 are deleted (orphans from removed builtin rules). Non-system agents are never pruned.
 
+### Seed status guard
+
+A builtin agent whose `description` contains the phrase "Ships INACTIVE" (case-sensitive
+substring match) must always seed or resync with `status="inactive"`, regardless of the
+seed dict's own `status` field. The `_ae_guard_seed_status()` function
+([`agent_engine.py:1566–1592`](../../backend/api/algo/agent_engine.py#L1566-L1592)) enforces this:
+
+- On insert (new agent): the guard checks at row-build time and forces any active status to
+  "inactive" if the description includes the phrase.
+- On sync (existing agent): the guard checks again at startup, so every process restart
+  converges existing rows to "inactive" if the description says so.
+- Failed guard applies an ERROR log and continues (fail-safe, no crash).
+
+This protects destructive auto-close agents (`expiry-day-equity-itm-auto-close` and
+`expiry-day-commodity-itm-auto-close`) from accidentally being enabled at seed time when
+their own documentation promises they ship inactive. Operator activations of these agents
+are reverted on the next process restart, so enable them only after understanding they are
+destructive (chase-close every ITM/NTM position without operator confirmation).
+
 ### Editing loss agents
 
 Loss-agent conditions are editable live via `/automation` page. Edition does NOT
@@ -349,9 +369,94 @@ which was populated by `_update_pnl_history()` on the same cycle. No staleness e
 
 ---
 
+## 12. Automated Order Hold and Release
+
+Agents and background tasks that delay or reject an order placement ("hold") use a
+category-based registry to re-release it later. Adding a new hold category (a fourth or
+beyond) is a registration in code, not a change to dispatcher routes.
+
+### Hold categories and release handlers
+
+| Category | Meaning | Release handler | When |
+|---|---|---|---|
+| `expiry_close` | Close position held until expiry cutoff | `release_held_order` | Operator clicks Release |
+| `template_exit` | GTTs held until operator confirms | `release_template_exit` | Operator clicks Release |
+| `agent_order` | Resume order held after repeated rejections | `release_repeated_rejection_hold` | Operator clicks Release |
+| (unregistered) | Fallback default | `release_held_order` | Any unregistered category |
+
+Every held order is persisted as an `AlgoOrder` row with `status="HELD"` and a JSON
+`hold_json` record carrying `{"category", "reason", "price_policy", "override",
+"held_at"}`. The operator releases via `/api/orders/held/{id}/release` route
+([`orders_held.py`](../../backend/api/routes/orders_held.py)), which dispatches
+through `get_release_handler(category)` to the registered handler. Cancelling
+via `/api/orders/held/{id}/cancel` abandons the hold instead.
+
+### Adding a new hold category
+
+The 4-step recipe from
+[`order_release.py`](../../backend/api/algo/order_release.py#L1-L43):
+
+1. Add a member to `HoldCategory` enum in
+   [`order_hold.py:10–13`](../../backend/api/algo/order_hold.py#L10-L13)
+   (e.g., `MY_CATEGORY = "my_category"`).
+
+2. Wherever your agent/task decides to hold instead of fire, call
+   `record_held_order(category=HoldCategory.MY_CATEGORY, ...)` from
+   [`order_hold_gate.py:44–75`](../../backend/api/algo/order_hold_gate.py#L44-L75)
+   to persist the row.
+
+3. Write an async release function matching one of the existing shapes:
+   - `release_held_order()` if release means "check live position + quote, then place
+     a NEW close order". Example: expiry closes.
+   - `release_repeated_rejection_hold()` if release means "resume an already-in-flight
+     order from its persisted state without re-checking". Example: chase orders held
+     on repeated price rejections.
+
+4. Register it in `_RELEASE_HANDLERS` dict at
+   [`order_release.py:275–278`](../../backend/api/algo/order_release.py#L275-L278):
+   ```python
+   _RELEASE_HANDLERS[HoldCategory.MY_CATEGORY.value] = release_my_category_hold
+   ```
+   No route code to edit — `/api/orders/held/{id}/release` always dispatches through
+   `get_release_handler()`.
+
+### Critical safety guards
+
+**Unregistered categories silently receive close semantics** — A category forgotten
+in `_RELEASE_HANDLERS` falls through to `_DEFAULT_RELEASE_HANDLER` (`release_held_order`),
+which applies position-matching and close-intent logic correct only for `EXPIRY_CLOSE`.
+If your category does not represent "close an existing position", it MUST be registered,
+or release will silently misbehave (wrong position check, wrong price, wrong order intent).
+
+**`record_held_order()` hardcodes `engine="live"` / `mode="live"`** — The generic recorder
+always writes live-mode rows. A category whose agent runs in paper/sim/replay/shadow mode
+cannot use `record_held_order()` as-is for its hold — it would create a live-mode row,
+and releasing it later places a REAL broker order on a simulated position. Such a category
+needs its own hold-recording path that threads the agent's real mode through, or it must
+only run in live mode. See the equivalent guard on `_fire_template_attach_on_fill` in
+[`CLAUDE.md`](../../CLAUDE.md) for the same invariant applied elsewhere.
+
+### Global switch and re-resolution
+
+Every category reads a global boolean setting `hold.<category.value>_released` (e.g.
+`hold.expiry_close_released`) via `held_for()` in
+[`order_hold_gate.py:15–26`](../../backend/api/algo/order_hold_gate.py#L15-L26).
+Setting `hold.<category>_released = true` globally releases all held orders of that
+category (operator can bypass holds during testing).
+
+The release handler function is re-resolved by name against module globals every call
+(see [`order_release.py:282–288`](../../backend/api/algo/order_release.py#L282-L288))
+to honor test monkeypatches. A patched handler is always what actually runs — the registry
+stores function references at import time, but `get_release_handler()` fetches the
+current value by name every call.
+
+---
+
 ## Change log
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | c5e8814b: Expiry-close agents seeded as inactive with `_ae_guard_seed_status()` — validates that seed dicts with "Ships INACTIVE" in description are never seeded active, wired into both insert and sync paths, logs ERROR and force-corrects on mismatch. |
+| 2026-10-08 | a87db772: Generalized hold/release into a reusable registry — `record_held_order()` replaces category-hardcoded functions, `held_for()` generic check, `get_release_handler()` dispatches via `_RELEASE_HANDLERS` dict. Adding a new hold category is a 4-step registration, not a route edit. |
 | 2026-10-07 | e37fab01: Event agents UI — full CRUD in `/automation`, new `GET /api/agents/renderers`, `kind` write vocabulary with read-time normalization, `tier` and `topic` persistence, `kind` immutability post-creation, event-agent writes validated via `validate_seed_spec()` (422 on failure). |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
