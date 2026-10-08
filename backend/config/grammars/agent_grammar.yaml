@@ -1,0 +1,938 @@
+# Agent grammar — condition / notify / action token catalog.
+#
+# Phase 1 of the order/agent grammar unification — externalizes
+# backend/api/algo/grammar.py's former SYSTEM_TOKENS / LOG_TAG_TOKENS
+# Python list literal into this file, matching the convention
+# `backend/config/grammars/orders.yaml` already established for the
+# frontend CLI grammar (a sibling file, not a shared schema — the two
+# grammars are unified in a later phase). This file holds CATALOG
+# METADATA ONLY: grammar_kind, token_kind, token, value_type, units,
+# description, resolver (a dotted Python import path — a STRING, never
+# the function itself), params_schema, template_body, etc.
+#
+# Resolver FUNCTION BODIES stay exactly where they always were — as
+# real Python functions in backend/api/algo/grammar.py / actions.py /
+# actions_live.py. Nothing about dispatch changes: GrammarRegistry
+# still imports each resolver by dotted path from the grammar_tokens
+# DB table at reload() time (grammar_registry.py), same as before this
+# file existed.
+#
+# Loaded at import time by backend/api/algo/grammar.py, which
+# reconstructs the exact same SYSTEM_TOKENS / LOG_TAG_TOKENS
+# list-of-dicts shape every downstream consumer
+# (seed_grammar_tokens(), event_agents.py, tests) already expects.
+# Pure data relocation — zero behavior change.
+#
+# log_tags.source is reused verbatim (as a nested dict) on every
+# reconstructed log-tag token entry, matching the original
+# _LOG_SOURCE constant in grammar.py.
+
+system_tokens:
+
+# ════════════════════════════════════════════════════════════════════════
+#  CONDITION — METRICS (number-producing)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: condition
+  token_kind: metric
+  token: pnl
+  value_type: number
+  units: ₹
+  description: Positions mark-to-market P&L in ₹ for the selected scope.
+  resolver: backend.api.algo.grammar._metric_pnl
+- grammar_kind: condition
+  token_kind: metric
+  token: pnl_pct
+  value_type: number
+  units: '%'
+  description: Positions P&L as percent of used margin. Undefined when no open positions.
+  resolver: backend.api.algo.grammar._metric_pnl_pct
+- grammar_kind: condition
+  token_kind: metric
+  token: day_val
+  value_type: number
+  units: ₹
+  description: Holdings day-change value in ₹ for the selected scope.
+  resolver: backend.api.algo.grammar._metric_day_val
+- grammar_kind: condition
+  token_kind: metric
+  token: day_pct
+  value_type: number
+  units: '%'
+  description: Holdings day-change percentage for the selected scope.
+  resolver: backend.api.algo.grammar._metric_day_pct
+- grammar_kind: condition
+  token_kind: metric
+  token: inv_val
+  value_type: number
+  units: ₹
+  description: Holdings invested value (cost basis).
+  resolver: backend.api.algo.grammar._metric_inv_val
+- grammar_kind: condition
+  token_kind: metric
+  token: cur_val
+  value_type: number
+  units: ₹
+  description: Holdings current market value.
+  resolver: backend.api.algo.grammar._metric_cur_val
+- grammar_kind: condition
+  token_kind: metric
+  token: cash
+  value_type: number
+  units: ₹
+  description: Live available cash on the funds row (moves intraday). None when the broker does not report
+    this field for the account.
+  resolver: backend.api.algo.grammar._metric_cash
+- grammar_kind: condition
+  token_kind: metric
+  token: sod_cash
+  value_type: number
+  units: ₹
+  description: Start-of-day cash (opening balance) — does not move intraday. None when the broker does
+    not report this field for the account.
+  resolver: backend.api.algo.grammar._metric_sod_cash
+- grammar_kind: condition
+  token_kind: metric
+  token: avail_margin
+  value_type: number
+  units: ₹
+  description: Net available margin.
+  resolver: backend.api.algo.grammar._metric_avail_margin
+- grammar_kind: condition
+  token_kind: metric
+  token: used_margin
+  value_type: number
+  units: ₹
+  description: Utilised margin (positions denominator for pnl_pct).
+  resolver: backend.api.algo.grammar._metric_used_margin
+- grammar_kind: condition
+  token_kind: metric
+  token: collateral
+  value_type: number
+  units: ₹
+  description: Collateral component of margin.
+  resolver: backend.api.algo.grammar._metric_collateral
+
+# Rate-of-change metrics (computed over the rolling history held by the engine)
+- grammar_kind: condition
+  token_kind: metric
+  token: pnl_rate_abs
+  value_type: number
+  units: ₹/min
+  description: Positions P&L rate of change in ₹ per minute over the last window.
+  resolver: backend.api.algo.grammar._metric_pnl_rate_abs
+- grammar_kind: condition
+  token_kind: metric
+  token: pnl_rate_pct
+  value_type: number
+  units: '%/min'
+  description: Positions P&L rate of change in percent per minute over the last window.
+  resolver: backend.api.algo.grammar._metric_pnl_rate_pct
+- grammar_kind: condition
+  token_kind: metric
+  token: day_rate_abs
+  value_type: number
+  units: ₹/min
+  description: Holdings day-change rate of change in ₹ per minute over the last window.
+  resolver: backend.api.algo.grammar._metric_day_rate_abs
+- grammar_kind: condition
+  token_kind: metric
+  token: day_rate_pct
+  value_type: number
+  units: '%/min'
+  description: Holdings day-change rate of change in percent per minute over the last window.
+  resolver: backend.api.algo.grammar._metric_day_rate_pct
+
+# Phase 24 — Rolling-window statistical metrics. Read the same pnl_history
+# buckets the rate metrics use; aggregate the whole slice instead of just
+# endpoints. Useful when an operator wants "exit if P&L has been bleeding
+# for 30 min" rather than "exit on a single tick crossing a threshold".
+# Return None until the window holds ≥2 samples (newly opened sessions
+# don't accidentally fire on cold-start).
+- grammar_kind: condition
+  token_kind: metric
+  token: mean_pnl_30m
+  value_type: number
+  units: ₹
+  description: Average positions P&L over the last 30 minutes.
+  resolver: backend.api.algo.grammar._metric_mean_pnl_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: mean_pnl_1h
+  value_type: number
+  units: ₹
+  description: Average positions P&L over the last hour.
+  resolver: backend.api.algo.grammar._metric_mean_pnl_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: mean_day_30m
+  value_type: number
+  units: ₹
+  description: Average holdings day-change value over the last 30 minutes.
+  resolver: backend.api.algo.grammar._metric_mean_day_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: mean_day_1h
+  value_type: number
+  units: ₹
+  description: Average holdings day-change value over the last hour.
+  resolver: backend.api.algo.grammar._metric_mean_day_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_pnl_30m
+  value_type: number
+  units: ₹
+  description: Worst peak-to-trough drop in positions P&L over the last 30 minutes (always ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_pnl_1h
+  value_type: number
+  units: ₹
+  description: Worst peak-to-trough drop in positions P&L over the last hour (always ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_pnl_4h
+  value_type: number
+  units: ₹
+  description: Worst peak-to-trough drop in positions P&L over the last 4 hours (always ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_4h
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_day_1h
+  value_type: number
+  units: ₹
+  description: Worst peak-to-trough drop in holdings day-change over the last hour (always ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_day_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_pnl_pct_30m
+  value_type: number
+  units: '%'
+  description: Worst peak-to-trough drop in positions P&L percentage over the last 30 minutes (always
+    ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_pct_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: max_drawdown_pnl_pct_1h
+  value_type: number
+  units: '%'
+  description: Worst peak-to-trough drop in positions P&L percentage over the last hour (always ≤ 0).
+  resolver: backend.api.algo.grammar._metric_max_drawdown_pnl_pct_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: stdev_pnl_30m
+  value_type: number
+  units: ₹
+  description: Standard deviation of positions P&L over the last 30 minutes (volatility proxy).
+  resolver: backend.api.algo.grammar._metric_stdev_pnl_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: stdev_pnl_1h
+  value_type: number
+  units: ₹
+  description: Standard deviation of positions P&L over the last hour.
+  resolver: backend.api.algo.grammar._metric_stdev_pnl_1h
+- grammar_kind: condition
+  token_kind: metric
+  token: range_pnl_30m
+  value_type: number
+  units: ₹
+  description: max(P&L) − min(P&L) over the last 30 minutes (swing magnitude).
+  resolver: backend.api.algo.grammar._metric_range_pnl_30m
+- grammar_kind: condition
+  token_kind: metric
+  token: range_pnl_1h
+  value_type: number
+  units: ₹
+  description: max(P&L) − min(P&L) over the last hour.
+  resolver: backend.api.algo.grammar._metric_range_pnl_1h
+
+# ── Expiry-aware metrics (Item 1 / Phase 25) ─────────────────────
+# Parse the tradingsymbol on every call. Returns None for
+# non-derivatives (cash equity) → leaf is skipped.
+- grammar_kind: condition
+  token_kind: metric
+  token: days_until_expiry
+  value_type: number
+  units: days
+  description: Days until this position's option/future expires (parses tradingsymbol). None for cash
+    equity.
+  resolver: backend.api.algo.grammar._metric_days_until_expiry
+- grammar_kind: condition
+  token_kind: metric
+  token: is_itm
+  value_type: number
+  units: ''
+  description: Returns 1.0 when an option is in-the-money at current spot, 0.0 otherwise. Needs ctx.spot_prices.
+  resolver: backend.api.algo.grammar._metric_is_itm
+- grammar_kind: condition
+  token_kind: metric
+  token: is_ntm
+  value_type: number
+  units: ''
+  description: Returns 1.0 when an option is within ±1.5%% of spot (near-the-money), 0.0 otherwise. Needs
+    ctx.spot_prices.
+  resolver: backend.api.algo.grammar._metric_is_ntm
+- grammar_kind: condition
+  token_kind: metric
+  token: is_future
+  description: Returns 1.0 for futures contracts, 0.0 for options, None for equity.
+  units: binary
+  resolver: backend.api.algo.grammar._metric_is_future
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_since_open
+  value_type: number
+  units: min
+  description: Minutes since the first market segment opened today.
+  resolver: backend.api.algo.grammar._metric_minutes_since_open
+- grammar_kind: condition
+  token_kind: metric
+  token: minutes_until_close
+  value_type: number
+  units: min
+  description: Minutes until the nearest market segment close.
+  resolver: backend.api.algo.grammar._metric_minutes_until_close
+
+# ════════════════════════════════════════════════════════════════════════
+#  CONDITION — SCOPES (row selectors)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: condition
+  token_kind: scope
+  token: holdings.total
+  value_type: object
+  description: The single TOTAL row of the holdings summary.
+  resolver: backend.api.algo.grammar._scope_holdings_total
+- grammar_kind: condition
+  token_kind: scope
+  token: holdings.any_acct
+  value_type: array
+  description: Every non-TOTAL account row of the holdings summary (leaf is OR-combined).
+  resolver: backend.api.algo.grammar._scope_holdings_any_acct
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.total
+  value_type: object
+  description: The single TOTAL row of the positions summary.
+  resolver: backend.api.algo.grammar._scope_positions_total
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.any_acct
+  value_type: array
+  description: Every non-TOTAL account row of the positions summary (leaf is OR-combined).
+  resolver: backend.api.algo.grammar._scope_positions_any_acct
+- grammar_kind: condition
+  token_kind: scope
+  token: funds.total
+  value_type: object
+  description: The single TOTAL row of the funds/margins dataframe.
+  resolver: backend.api.algo.grammar._scope_funds_total
+
+# Per-symbol positions expiring today (or already past expiry).
+# Reads from ctx.position_rows (the per-symbol list the engine
+# already fetched), NOT from the aggregate sum_positions frame.
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.expiring_today
+  value_type: array
+  description: Per-symbol position rows where the F&O contract is expiring today (≤ 1.5 days). Leaf is
+    OR-combined.
+  resolver: backend.api.algo.grammar._scope_positions_expiring_today
+
+# Segment-specific expiry scopes — see the equity / commodity
+# auto-close agents in agent_engine.py for the operator-facing
+# rationale. NFO closes ALL ITM; MCX closes only UNHEDGED ITM
+# (CE/PE pairs that net to zero are skipped, mirroring the legacy
+# ExpiryEngine grouping logic).
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.expiring_today.nfo
+  value_type: array
+  description: Per-symbol position rows expiring today on NFO (equity F&O). Leaf is OR-combined.
+  resolver: backend.api.algo.grammar._scope_positions_expiring_today_nfo
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.expiring_today.mcx_unhedged
+  value_type: array
+  description: Per-symbol position rows expiring today on MCX where CE/PE net qty does NOT balance — i.e.
+    unhedged. Hedged pairs (net = 0) are skipped because broker settles them against each other. Leaf
+    is OR-combined.
+  resolver: backend.api.algo.grammar._scope_positions_expiring_today_mcx_unhedged
+- grammar_kind: condition
+  token_kind: scope
+  token: funds.any_acct
+  value_type: array
+  description: Every non-TOTAL account row of the funds dataframe (leaf is OR-combined).
+  resolver: backend.api.algo.grammar._scope_funds_any_acct
+
+# Worst-case scopes — collapse N per-account agents into 1 by selecting
+# the single biggest-loser row each tick. Pair with the standard day_pct
+# / pnl_pct / pnl metrics. Operator-facing benefit: one agent, one
+# threshold, one notification per fire.
+- grammar_kind: condition
+  token_kind: scope
+  token: holdings.worst_acct
+  value_type: object
+  description: The single account row with the most-negative day_pct in holdings.
+  resolver: backend.api.algo.grammar._scope_holdings_worst_acct
+- grammar_kind: condition
+  token_kind: scope
+  token: holdings.worst_symbol
+  value_type: object
+  description: The single per-symbol holding row with the most-negative day_pct.
+  resolver: backend.api.algo.grammar._scope_holdings_worst_symbol
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.worst_acct
+  value_type: object
+  description: The single account row with the most-negative pnl_pct in positions.
+  resolver: backend.api.algo.grammar._scope_positions_worst_acct
+- grammar_kind: condition
+  token_kind: scope
+  token: positions.worst_symbol
+  value_type: object
+  description: The single per-symbol position row with the most-negative pnl.
+  resolver: backend.api.algo.grammar._scope_positions_worst_symbol
+
+# ── Watchlist metric ─────────────────────────────────────────────
+- grammar_kind: condition
+  token_kind: metric
+  token: ltp
+  value_type: number
+  units: ₹
+  description: Last-traded price of a watchlist row (or any row with a last_price column).
+  resolver: backend.api.algo.grammar._metric_ltp
+
+# ── Watchlist scopes ─────────────────────────────────────────────
+- grammar_kind: condition
+  token_kind: scope
+  token: watchlist.all
+  value_type: array
+  description: Every row across every watchlist the operator owns (leaf is OR-combined per row).
+  resolver: backend.api.algo.grammar._scope_watchlist_all
+- grammar_kind: condition
+  token_kind: scope
+  token: watchlist.default
+  value_type: array
+  description: Rows in the operator's Default watchlist.
+  resolver: backend.api.algo.grammar._scope_watchlist_default
+- grammar_kind: condition
+  token_kind: scope
+  token: watchlist.markets
+  value_type: array
+  description: Rows in the auto-seeded Markets watchlist (indices + MCX commodities).
+  resolver: backend.api.algo.grammar._scope_watchlist_markets
+
+# ════════════════════════════════════════════════════════════════════════
+#  CONDITION — OPERATORS (leaf comparators)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: condition
+  token_kind: operator
+  token: <
+  value_type: boolean
+  description: Strictly less than.
+- grammar_kind: condition
+  token_kind: operator
+  token: <=
+  value_type: boolean
+  description: Less than or equal to.
+- grammar_kind: condition
+  token_kind: operator
+  token: '>'
+  value_type: boolean
+  description: Strictly greater than.
+- grammar_kind: condition
+  token_kind: operator
+  token: '>='
+  value_type: boolean
+  description: Greater than or equal to.
+- grammar_kind: condition
+  token_kind: operator
+  token: ==
+  value_type: boolean
+  description: Equal to.
+- grammar_kind: condition
+  token_kind: operator
+  token: '!='
+  value_type: boolean
+  description: Not equal to.
+- grammar_kind: condition
+  token_kind: operator
+  token: in
+  value_type: boolean
+  description: Membership test. The RHS must be an array literal.
+- grammar_kind: condition
+  token_kind: operator
+  token: not_in
+  value_type: boolean
+  description: Non-membership test. The RHS must be an array literal.
+- grammar_kind: condition
+  token_kind: operator
+  token: between
+  value_type: boolean
+  description: Range test, inclusive. RHS is a [min, max] literal.
+
+# ════════════════════════════════════════════════════════════════════════
+#  NOTIFY — CHANNELS (how the alert is delivered)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: notify
+  token_kind: channel
+  token: telegram
+  value_type: enum
+  description: Telegram group defined by secrets.telegram_chat_id.
+- grammar_kind: notify
+  token_kind: channel
+  token: email
+  value_type: enum
+  description: Email to every address in secrets.alert_emails.
+- grammar_kind: notify
+  token_kind: channel
+  token: websocket
+  value_type: enum
+  description: Live push to connected /algo dashboard clients.
+- grammar_kind: notify
+  token_kind: channel
+  token: log
+  value_type: enum
+  description: Write to the app log only — useful for silent testing of new agents.
+
+# In-app rich popup channel. Distinct from `websocket` (which is the
+# raw live-data feed every algo page subscribes to). `inapp` is
+# operator-facing: it raises a toast top-right and bumps the
+# AgentNotifications bell badge so the fire interrupts attention
+# exactly the way an order-ticket popup does. Surface is the
+# AgentFireModal in the frontend — pair this channel with the
+# other channels (telegram, email, log) on the loss / expiry
+# agents so a Telegram-muted operator still sees the popup in
+# the browser tab.
+- grammar_kind: notify
+  token_kind: channel
+  token: inapp
+  value_type: enum
+  description: In-app rich popup + toast for the AgentNotifications bell. Same delivery surface as the
+    order-ticket modal.
+
+# ════════════════════════════════════════════════════════════════════════
+#  NOTIFY — FORMATS (how the alert body is rendered)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: notify
+  token_kind: format
+  token: text_narrow
+  value_type: enum
+  description: Two-line-per-row fixed-width monospace — sized for phone-width Telegram.
+- grammar_kind: notify
+  token_kind: format
+  token: html_table
+  value_type: enum
+  description: Structured HTML table with per-kind row colour — for email.
+- grammar_kind: notify
+  token_kind: format
+  token: plain_text
+  value_type: enum
+  description: Minimal single-line-per-row text.
+- grammar_kind: notify
+  token_kind: format
+  token: json
+  value_type: enum
+  description: Machine-readable JSON — for webhook channels.
+
+# ════════════════════════════════════════════════════════════════════════
+#  NOTIFY — TEMPLATES (default message bodies, overridable per agent)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: notify
+  token_kind: template
+  token: alert_loss_default
+  value_type: string
+  description: Default body for P&L-loss alerts — a list of triggered rows.
+  template_body: |-
+    Alert — ${timestamp}
+
+    ${row_lines}
+- grammar_kind: notify
+  token_kind: template
+  token: deploy_ok_default
+  value_type: string
+  description: Default deploy-ok ping body.
+  template_body: |-
+    Deploy OK${branch_tag}
+    ${timestamp}
+    ${service_status}
+
+# ════════════════════════════════════════════════════════════════════════
+#  ACTION — ACTION TYPES (what the alert makes happen)
+# ════════════════════════════════════════════════════════════════════════
+- grammar_kind: action
+  token_kind: action_type
+  token: place_order
+  value_type: void
+  description: Place a new broker order with the supplied parameters.
+  resolver: backend.api.algo.actions.place_order
+  params_schema:
+    account:
+      type: string
+      required: true
+      token_ref_ok: true
+      description: Masked account id to route the order to (e.g. ZG####).
+    symbol:
+      type: string
+      required: true
+      description: Tradingsymbol, e.g. NIFTY26APR22500CE or RELIANCE.
+    exchange:
+      type: enum
+      enum:
+      - NSE
+      - BSE
+      - NFO
+      - CDS
+      - MCX
+      required: false
+      default: NFO
+    side:
+      type: enum
+      enum:
+      - BUY
+      - SELL
+      required: true
+      description: BUY opens long / covers short; SELL opens short / closes long.
+    qty:
+      type: number
+      required: true
+      token_ref_ok: true
+      description: Number of lots × lot size. Must be positive.
+    order_type:
+      type: enum
+      enum:
+      - MARKET
+      - LIMIT
+      - SL
+      - SL-M
+      required: false
+      default: MARKET
+    price:
+      type: number
+      required: false
+      token_ref_ok: true
+      description: Required for LIMIT / SL.
+    trigger_price:
+      type: number
+      required: false
+      token_ref_ok: true
+      description: Required for SL / SL-M.
+    product:
+      type: enum
+      enum:
+      - MIS
+      - CNC
+      - NRML
+      required: false
+      default: MIS
+    variety:
+      type: enum
+      enum:
+      - regular
+      - amo
+      - co
+      - iceberg
+      - auction
+      required: false
+      default: regular
+    tag:
+      type: string
+      required: false
+      description: Free-form tag propagated into the broker order id and AlgoOrder row.
+    # ── Template attachment (v2.1+) ─────────────────────────────
+    # When set, the unified template-attach pipeline runs after
+    # the parent order persists. TP / SL → broker GTT (or sim
+    # SimGttBook); Wing → spread basket leg for SELL options.
+    # Picking template_slug="none" or leaving everything null
+    # places the entry without any follow-on attachments.
+    template_id:
+      type: number
+      required: false
+      description: OrderTemplate row id. Mutually exclusive with template_slug.
+    template_slug:
+      type: string
+      required: false
+      description: OrderTemplate stable slug (e.g. "default-bull", "default-short-vol", "none").
+    tp_pct_override:
+      type: number
+      required: false
+      description: Per-action TP% override (e.g. 25.0 = +25%). Wins over template default.
+    sl_pct_override:
+      type: number
+      required: false
+      description: Per-action SL% override (e.g. 15.0 = -15%). Wins over template default.
+    wing_premium_pct_override:
+      type: number
+      required: false
+      description: Per-action wing premium % override (sell_option only).
+    wing_strike_offset_override:
+      type: number
+      required: false
+      description: Per-action wing strike offset override (e.g. 500 → wing at +500 strike).
+- grammar_kind: action
+  token_kind: action_type
+  token: modify_order
+  value_type: void
+  description: Modify an existing open broker order by broker_order_id.
+  resolver: backend.api.algo.actions.modify_order
+  params_schema:
+    account:
+      type: string
+      required: true
+    broker_order_id:
+      type: string
+      required: true
+    new_price:
+      type: number
+      required: false
+      token_ref_ok: true
+    new_qty:
+      type: number
+      required: false
+      token_ref_ok: true
+    new_trigger:
+      type: number
+      required: false
+      token_ref_ok: true
+- grammar_kind: action
+  token_kind: action_type
+  token: cancel_order
+  value_type: void
+  description: Cancel a specific open broker order by broker_order_id.
+  resolver: backend.api.algo.actions.cancel_order
+  params_schema:
+    account:
+      type: string
+      required: true
+    broker_order_id:
+      type: string
+      required: true
+    variety:
+      type: enum
+      enum:
+      - regular
+      - amo
+      - co
+      - iceberg
+      - auction
+      required: false
+      default: regular
+- grammar_kind: action
+  token_kind: action_type
+  token: cancel_all_orders
+  value_type: void
+  description: Cancel every pending/open order matching the scope filter.
+  resolver: backend.api.algo.actions.cancel_all_orders
+  params_schema:
+    scope:
+      type: enum
+      enum:
+      - total
+      - account
+      default: total
+    account:
+      type: string
+      required: false
+      description: Required when scope=account.
+    side:
+      type: enum
+      enum:
+      - BUY
+      - SELL
+      required: false
+    symbol:
+      type: string
+      required: false
+      description: If set, cancel only orders on this tradingsymbol.
+- grammar_kind: action
+  token_kind: action_type
+  token: chase_close_positions
+  value_type: void
+  description: Close every open position in scope using the adaptive limit-order chase engine.
+  resolver: backend.api.algo.actions.chase_close_positions
+  params_schema:
+    scope:
+      type: enum
+      enum:
+      - total
+      - account
+      default: total
+    account:
+      type: string
+      required: false
+    timeout_minutes:
+      type: number
+      default: 10
+      description: Bail out if not filled within this many minutes.
+    adjust_pct:
+      type: number
+      default: 0.1
+      description: Percent of spread to adjust on each chase step.
+
+# Expiry-day surgical close. Unlike chase_close_positions (which
+# closes everything in scope), this wraps the legacy ExpiryEngine
+# so it APPLIES THE SAME RULES THE BG TASK USES — NFO closes all
+# ITM + NTM; MCX closes only UNHEDGED ITM/NTM. The exchange param
+# narrows the scan to ONE segment so the equity (15:00 IST) and
+# commodity (23:00 IST) agents don't step on each other.
+- grammar_kind: action
+  token_kind: action_type
+  token: expiry_auto_close
+  value_type: void
+  description: Run ExpiryEngine scan + close, restricted to ONE exchange. NFO closes all ITM/NTM; MCX
+    closes only unhedged ITM/NTM (CE/PE pairs that net to zero are skipped). Used by the expiry-day auto-close
+    agents.
+  resolver: backend.api.algo.actions.expiry_auto_close
+  params_schema:
+    exchange:
+      type: enum
+      enum:
+      - NFO
+      - MCX
+      required: true
+      description: Restrict scan + close to this exchange.
+
+# Simpler one-shot close of a specific position — LIMIT order at the
+# instrument's current LTP. Side is derived from position direction
+# (long → SELL to flatten, short → BUY to cover); operators can still
+# override via `side`. In the simulator, the order is paper-traded:
+# an AlgoOrder row is written with mode='sim' and initial_price = LTP
+# at the moment the agent fired, so operators can see exactly what
+# price the engine would have used.
+- grammar_kind: action
+  token_kind: action_type
+  token: close_position
+  value_type: void
+  description: Close a single open position with a LIMIT order at current LTP. In sim mode, records a
+    paper AlgoOrder with the sim's current LTP so the trade price is visible in order logs.
+  resolver: backend.api.algo.actions.close_position
+  params_schema:
+    account:
+      type: string
+      required: true
+      token_ref_ok: true
+      description: Masked account id (e.g. ZG####).
+    symbol:
+      type: string
+      required: true
+      description: Tradingsymbol to close. Must match an open position.
+    exchange:
+      type: enum
+      enum:
+      - NSE
+      - BSE
+      - NFO
+      - CDS
+      - MCX
+      required: false
+      default: NFO
+    quantity:
+      type: number
+      required: false
+      token_ref_ok: true
+      description: Partial close. Omit to flatten the full position.
+    side:
+      type: enum
+      enum:
+      - BUY
+      - SELL
+      required: false
+      description: 'Override auto-derived side. Default: long → SELL, short → BUY.'
+    product:
+      type: enum
+      enum:
+      - MIS
+      - CNC
+      - NRML
+      required: false
+      default: NRML
+- grammar_kind: action
+  token_kind: action_type
+  token: monitor_order
+  value_type: void
+  description: Poll an order until it fills or times out, then trigger on_fill / on_timeout actions.
+  resolver: backend.api.algo.actions.monitor_order
+  params_schema:
+    account:
+      type: string
+      required: true
+    broker_order_id:
+      type: string
+      required: true
+    timeout_minutes:
+      type: number
+      default: 5
+    on_fill:
+      type: array
+      required: false
+      description: List of action_spec objects to run after fill.
+    on_timeout:
+      type: array
+      required: false
+      description: List of action_spec objects to run on timeout.
+- grammar_kind: action
+  token_kind: action_type
+  token: deactivate_agent
+  value_type: void
+  description: Pause the agent that fired — useful for one-shot safety rules.
+  resolver: backend.api.algo.actions.deactivate_agent
+  params_schema: {}
+- grammar_kind: action
+  token_kind: action_type
+  token: set_flag
+  value_type: void
+  description: Set a named runtime flag that other agents can read via the condition grammar.
+  resolver: backend.api.algo.actions.set_flag
+  params_schema:
+    name:
+      type: string
+      required: true
+    value:
+      type: boolean
+      required: true
+- grammar_kind: action
+  token_kind: action_type
+  token: emit_log
+  value_type: void
+  description: Write a message to the app log (quiet action for testing agent wiring).
+  resolver: backend.api.algo.actions.emit_log
+  params_schema:
+    level:
+      type: enum
+      enum:
+      - info
+      - warning
+      - error
+      default: info
+    message:
+      type: string
+      required: true
+      token_ref_ok: true
+
+log_tags:
+  source:
+    table: log_events
+    column: tags
+    match: contains
+  tags:
+  - token: orders
+    description: 'Order lifecycle records: placed, filled, cancelled, rejected (owner: order routes).'
+  - token: chase
+    description: 'Chase engine records: cancel-and-replace attempts and outcomes (owner: chase engine).'
+  - token: broker
+    description: 'Broker connection and API records (owner: broker layer).'
+  - token: gtt
+    description: 'GTT placement, trigger and status records (owner: order routes).'
+  - token: error
+    description: 'Error-level records, including repeats (owner: logger).'
+  - token: agent
+    description: 'Alert agent firings written by the agent engine (owner: agent engine).'
+  - token: mcp
+    description: 'MCP tool actions: audit pings for cancel, place, modify, and agent status (owner: lab
+      routes).'
+  - token: deploy
+    description: 'Deploy state: branch sync and webhook health (owner: background tasks).'
+  - token: summary
+    description: 'Open and close market summaries (owner: background tasks).'

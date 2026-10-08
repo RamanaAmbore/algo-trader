@@ -1,40 +1,33 @@
-# Plan: Create/update agent UI + global switches with per-card override
+# Plan: Unify the order grammar into the agent grammar (Phase 1 of 3)
 
 ## Task
-Add a real create/update flow for both threshold and notification (event) agents
-from the frontend, add a global-switches settings panel (paper_trading_mode,
-default_agent_trade_mode, capability flags) with write access, and add a
-per-agent-card override that falls back to the global default when unset. Also
-fix a live bug: `tier`/`topic` silently fail to persist on agent save because
-`AgentCreateRequest`/`AgentUpdateRequest` lack those fields even though the model
-and frontend already carry them.
-
-Hard scope boundary: renderers (`RENDERS` in `event_agents.py`) are hand-written
-Python functions — the event-agent create form is a renderer PICKER (existing
-renderer + condition + channel), never a code editor for a new renderer.
-
-Full design rationale, research findings, and out-of-scope items:
-/Users/ramanambore/.claude/plans/purrfect-marinating-pixel.md
+Phase 1 of a 3-phase plan (full plan: /Users/ramanambore/.claude/plans/purrfect-marinating-pixel.md).
+Externalize `backend/api/algo/grammar.py`'s `SYSTEM_TOKENS` (and `LOG_TAG_TOKENS`)
+Python list literal into a new YAML file, matching the convention
+`backend/config/grammars/orders.yaml` already established for the frontend
+CLI grammar. Zero behavior change — this is pure data relocation. Phases 2
+(unify order-field vocabulary between agent `place_order` and `orders.yaml`)
+and 3 (make action dispatch genuinely registry-driven) come later, each as
+their own plan/implementation cycle, not part of this task.
 
 ## Agents
-- backend: In `backend/api/routes/agents.py`: add `kind` (literal "threshold"|"event", default "threshold"), `tier`, `topic` to `AgentCreateRequest` and `AgentUpdateRequest`; fix `update_agent`'s per-field copy loop to persist `tier`/`topic` (currently silently dropped on save — confirmed live bug, write a regression test for this specifically). For `kind=="event"` creates/updates, call `validate_seed_spec()` from `event_agents.py` (slug uniqueness, known log tag against `grammar.py:LOG_TAG_TOKENS`, known renderer key, known channel) instead of the threshold-agent condition/action validator — on the event-agent create/update path do NOT run the threshold-only validation. Add `GET /api/agents/renderers` returning `{key, label, description}` for every entry in `event_agents.py`'s `RENDERS` dict. Add `set_bool`/`set_string` write helpers to `backend/shared/helpers/settings.py` (currently read-only `get_bool`/`get_string`) and a `PATCH /api/admin/global-switches` route (in `backend/api/routes/admin.py`) covering `execution.paper_trading_mode`, `execution.default_agent_trade_mode`, and the `cap_in_dev`/`alert_*` capability flags — every write audit-logged (who/when/old→new) via the existing write-event pattern, never silent. A threshold agent's effective `trade_mode` must resolve at READ time as `row.trade_mode or global_default` — never freeze the default at creation time; this is the one subtle correctness point in the whole design, give it an explicit test. For every file you change, write or update a pytest test covering the changed lines (tier/topic round-trip, event-agent create via validate_seed_spec rejecting an unknown renderer/channel/tag, renderers-list endpoint, global-switch write + audit log entry, and the trade_mode fallback-resolution-at-read-time behavior).
-- frontend: In `frontend/src/routes/(algo)/automation/+page.svelte`: add a real "+ New Agent" entry point (not routed through Ask-AI) with a Kind selector (threshold vs notification/event). Threshold kind reuses the existing inline editor form as-is. Event kind shows a new builder: renderer picker populated from the new `GET /api/agents/renderers` endpoint (human label + description, never hardcode the renderer list), log-tag/min-level/where condition fields, a channel checklist using the EVENT-agent channel vocabulary only (`ntfy`/`telegram`/`telegram_info`/`email` — do NOT reuse or merge with the threshold-agent channel set `telegram`/`email`/`websocket`/`log`), priority, gate. After creation, relax the existing `disabled={agent.kind === 'event'}` whole-form `<fieldset>` (around line 864) to field-level: channel-enabled, priority, and gate stay editable for an event agent post-creation; renderer, condition, and slug stay fixed (same lifecycle as a seeded agent) — keep the Save/Validate buttons disabled only for the fixed fields' validation path, not unconditionally. Confirm `_buildEditPayload()` already includes `tier`/`topic` in its outgoing payload (likely yes — this fix is mostly backend-side) and add a UI regression check that editing tier/topic and reloading shows the new value. Add a global-switches panel to `frontend/src/routes/(algo)/admin/settings/+page.svelte`: each switch's current value with a toggle that calls the new PATCH route, plus an explicit blast-radius warning specifically on paper_trading_mode ("affects every account, prod-wide"). On each agent card in the automation page, show "Global: <value>" with an override toggle — threshold agents toggle `trade_mode` (null = inherit), event agents toggle per-channel `enabled` inside the existing `events: [...]` array on the spec. Add `frontend/src/lib/api.js` wrappers for the new renderers-list and global-switches-PATCH endpoints. For every file you change, write or update a Playwright spec per the standing test rule — source-level specs (reading component source, asserting the expected markup/guard logic, matching this session's established pattern) are fine for the override-toggle wiring and renderer-picker plumbing; write at least one spec that actually drives the create-event-agent flow if a dev server is reachable, otherwise a thorough source-level spec is an acceptable substitute — note which you did in your summary.
+- backend: Move `SYSTEM_TOKENS` and `LOG_TAG_TOKENS` (both in `backend/api/algo/grammar.py`) out of the Python list literal into a new YAML file `backend/config/grammars/agent_grammar.yaml`. The YAML holds catalog metadata only — `grammar_kind`, `token_kind`, `token`, `value_type`, `description`, `resolver` (the dotted Python path string, unchanged), `params_schema`, `enum`, etc. — NOT the resolver function bodies, which stay exactly where they are as real Python functions in `grammar.py`/`actions.py`/`actions_live.py`. Load the YAML at module-import time (or wherever `SYSTEM_TOKENS` is currently referenced — check `seed_grammar_tokens()` in `grammar.py` and `grammar_registry.py`'s `GrammarRegistry.reload()` for every consumer) and reconstruct the exact same Python list-of-dicts shape so every downstream consumer (`seed_grammar_tokens()`, `GrammarRegistry.reload()`, any test that imports `SYSTEM_TOKENS` directly) sees byte-for-byte identical data to today. Check for any entries whose dict values aren't YAML-serializable as-is (e.g. a lambda, a non-string enum member) and handle those specifically — flag any such case found rather than silently reshaping it. For every file you change, write or update a test covering the changed behavior: a regression test asserting the YAML-loaded token catalog is byte-for-byte equivalent (same set of tokens, same resolver dotted-paths, same params_schema, same descriptions) to today's literal — snapshot the OLD list's content before making the change (e.g. via `git show HEAD:backend/api/algo/grammar.py` or just capture it in the test as a frozen expected structure) and diff it against the new YAML-loaded version. Also run the EXISTING grammar/registry test suite (`backend/tests/` — grep for `grammar_registry`, `SYSTEM_TOKENS`, `seed_grammar_tokens` test files) and confirm every existing test still passes unchanged, proving this is genuinely behavior-preserving. Run the full backend suite and confirm 0 regressions.
+- frontend: skip
 - broker: skip
-- doc: skip (doc sync happens after commit, in Step 5.5 of /impl)
-- backend-test: skip (backend agent above writes its own tests per the standing rule)
-- playwright: skip (frontend agent above writes its own specs per the standing rule)
+- doc: skip
+- backend-test: skip
+- playwright: skip
 
 ## Tests
 - pytest: yes
-- svelte-check: yes
-- playwright: yes
+- svelte-check: no
+- playwright: no
 
 ## Commit message
-feat(agents): create/update UI for threshold + event agents; global switches with per-card override; fix tier/topic save bug
+refactor(agents): externalize SYSTEM_TOKENS/LOG_TAG_TOKENS into agent_grammar.yaml (Phase 1 of grammar unification)
 
 ## Done when
-- Creating a new event (notification) agent from the UI works end-to-end: renderer picker populated from the backend, condition + channel + priority set, saved, fires correctly through the existing event-agent pipeline.
-- Editing tier/topic on any agent persists (regression test added for the silent-drop bug).
-- Global switches panel shows current values and can set them, each write audited.
-- Each agent card shows the global default and can override it; threshold agents via `trade_mode`, event agents via per-channel `events[]` enabled flags.
-- Full pytest + svelte-check + the new Playwright coverage green.
+`backend/api/algo/grammar.py` no longer contains the SYSTEM_TOKENS/LOG_TAG_TOKENS
+Python list literals — both are loaded from `backend/config/grammars/agent_grammar.yaml`
+at runtime, with every downstream consumer (seeding, registry reload, existing
+tests) behaving identically to before. Full pytest suite green.
