@@ -734,6 +734,18 @@ class ChaseConfig:
     intent: str | None = None
     # forwarded to broker.place_order so the adapter ceiling in kite.py
     # treats close orders correctly (intent="close" bypasses the 50-lot cap).
+    level: str | None = None
+    # P1 fix (2026-10): the operator-facing L/M/H aggressiveness tag this
+    # cfg was built from (set by `orders_helpers._live_chase_config`). Pure
+    # metadata — nothing in the chase loop itself reads this to change
+    # behaviour. Its only consumer today is `_ch_hold_on_repeated_rejection`,
+    # which stamps it into the held row's `hold_json["price_policy"]`
+    # (as `f"CHASE_{level.upper()}"`) so `order_release.py` can resume the
+    # chase at the SAME tier the order was originally placed with instead
+    # of a hardcoded MED tuple. None on any cfg built without going through
+    # `_live_chase_config` (e.g. expiry-close's own fixed engine cfg) —
+    # `order_release.py` treats a missing/unrecognised tag as MED, matching
+    # the hardcoded behaviour that existed before this fix.
 
 
 def _get_broker(account: str):
@@ -1621,8 +1633,21 @@ async def _ch_hold_on_repeated_rejection(
     chase abort path in this module uses, writes a `held` timeline
     event, and pops `_CH_PRE_FILL_NET_QTY` so this chase's pre-fill
     snapshot never leaks (mirrors every other terminal path).
+
+    P1 fix (2026-10): stamps the ORIGINAL chase's aggressiveness level
+    (`cfg.level`, set by `orders_helpers._live_chase_config`) into
+    `hold_json["price_policy"]` as `f"CHASE_{level.upper()}"` — the same
+    field `record_held_order` already uses for expiry-close holds
+    (default `"CHASE_MED"`). Without this, `order_release.py` had no way
+    to know the row was originally chased at HIGH/LOW and silently
+    resumed every release at a hardcoded MED tuple.
     """
     from backend.api.algo.order_hold import HoldCategory, hold_record
+
+    _level = getattr(cfg, "level", None)
+    price_policy = (
+        f"CHASE_{_level.upper()}" if _level in ("low", "med", "high") else "CHASE_MED"
+    )
 
     reason = (
         "repeated price rejection — two consecutive price-shaped REJECTED "
@@ -1651,7 +1676,7 @@ async def _ch_hold_on_repeated_rejection(
                     held_at = datetime.now(timezone.utc)
                     row.status = "HELD"
                     row.hold_json = hold_record(
-                        HoldCategory.AGENT_ORDER, reason, "n/a", None, held_at,
+                        HoldCategory.AGENT_ORDER, reason, price_policy, None, held_at,
                     )
                     row.detail = (row.detail or "")[:200] + f" · {reason}"
                     await _s.commit()

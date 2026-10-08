@@ -122,6 +122,31 @@ def _positions_data_unreliable(dfs) -> bool:
     return False
 
 
+def _chase_level_from_price_policy(price_policy: str | None) -> str:
+    """Map a held row's `hold_json["price_policy"]` tag (e.g. `"CHASE_HIGH"`,
+    the record_held_order/`_ch_hold_on_repeated_rejection` default
+    `"CHASE_MED"`, or legacy `"n/a"`) back to the L/M/H level string
+    `orders_helpers._live_chase_config` expects.
+
+    P1 fix (2026-10): this is the read side of persisting the ORIGINAL
+    chase's aggressiveness across a hold/release cycle — see
+    `ChaseConfig.level`'s docstring (chase.py) and
+    `_live_chase_config`'s `cfg.level = a` line (orders_helpers.py) for
+    the write side. Unknown, missing, or legacy (`"n/a"`) tags fall back
+    to `"med"` — the exact tuple every release path hardcoded before this
+    fix — so a row held before this change, or one whose hold was never
+    told a level (e.g. expiry-close's own fixed engine cfg), keeps
+    today's resumed-chase behaviour unchanged.
+    """
+    if not price_policy:
+        return "med"
+    tag = price_policy.strip().upper()
+    if tag.startswith("CHASE_"):
+        tag = tag[len("CHASE_"):]
+    tag = tag.lower()
+    return tag if tag in ("low", "med", "high") else "med"
+
+
 async def _verify_close_still_valid(
     account: str, symbol: str, exchange: str, side: str, remaining_qty: int,
 ) -> tuple[bool, str]:
@@ -247,19 +272,29 @@ async def release_held_order(order_id: int, actor: str) -> dict:
         await s.commit()
         account, symbol, exchange = row.account, row.symbol, row.exchange
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
+        # P1 fix (2026-10): resume at the chase tier the row was originally
+        # held/placed with (see `_chase_level_from_price_policy`'s docstring)
+        # instead of a hardcoded MED tuple.
+        chase_level = _chase_level_from_price_policy(rec.get("price_policy"))
 
     from backend.api.algo.order_events import write_event
     await write_event(row_id, "released", f"Released by {actor}: {side} {qty} {symbol}", {"actor": actor})
 
-    asyncio.create_task(_chase_released(row_id, account, symbol, exchange, side, qty, product))
+    asyncio.create_task(_chase_released(row_id, account, symbol, exchange, side, qty, product, chase_level))
     logger.info(f"[RELEASE] order {row_id} released by {actor}")
     return {"ok": True, "reason": "released; chasing", "status": "OPEN"}
 
 
-async def _chase_released(row_id, account, symbol, exchange, side, qty, product) -> None:
-    from backend.api.algo.chase import chase_order, ChaseConfig
-    cfg = ChaseConfig(interval_seconds=20, aggression_step=0.10, max_attempts=20,
-                      exchange=exchange, product=product, intent="close")
+async def _chase_released(row_id, account, symbol, exchange, side, qty, product,
+                          level: str = "med") -> None:
+    from backend.api.algo.chase import chase_order
+    from backend.api.routes.orders_helpers import _live_chase_config
+    # P1 fix (2026-10): was a hardcoded MED tuple regardless of `level` —
+    # now goes through the SAME single source of truth every other
+    # chase-starting path uses (`orders_helpers._live_chase_config`),
+    # collapsing a third independent copy of the L/M/H tier table.
+    cfg = _live_chase_config(level, intent="close", product=product)
+    cfg.exchange = exchange
     try:
         await chase_order(account=account, symbol=symbol, transaction_type=side,
                           quantity=qty, cfg=cfg, algo_order_id=row_id)
@@ -353,6 +388,10 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
         intent = row.intent or None
         already_filled = int(row.filled_quantity or 0)
+        # P1 fix (2026-10): resume at the original chase tier (see
+        # `_chase_level_from_price_policy`'s docstring), not a hardcoded
+        # MED tuple.
+        chase_level = _chase_level_from_price_policy(rec.get("price_policy"))
 
     from backend.api.algo.order_events import write_event
     await write_event(
@@ -363,6 +402,7 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
 
     asyncio.create_task(_resume_chase_after_hold(
         row_id, account, symbol, exchange, side, qty, product, intent, already_filled,
+        chase_level,
     ))
     logger.info(f"[RELEASE] repeated-rejection hold {row_id} released by {actor} — resuming chase")
     return {"ok": True, "reason": "released; chasing resumed", "status": "OPEN"}
@@ -370,10 +410,16 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
 
 async def _resume_chase_after_hold(
     row_id, account, symbol, exchange, side, qty, product, intent, already_filled,
+    level: str = "med",
 ) -> None:
-    from backend.api.algo.chase import chase_order, ChaseConfig, _ch_mark_chase_inactive
-    cfg = ChaseConfig(interval_seconds=20, aggression_step=0.10, max_attempts=20,
-                      exchange=exchange, product=product, intent=intent)
+    from backend.api.algo.chase import chase_order, _ch_mark_chase_inactive
+    from backend.api.routes.orders_helpers import _live_chase_config
+    # P1 fix (2026-10): was a hardcoded MED tuple regardless of `level` —
+    # now goes through the SAME single source of truth every other
+    # chase-starting path uses (`orders_helpers._live_chase_config`),
+    # collapsing a third independent copy of the L/M/H tier table.
+    cfg = _live_chase_config(level, intent=intent, product=product)
+    cfg.exchange = exchange
     try:
         await chase_order(account=account, symbol=symbol, transaction_type=side,
                           quantity=qty, cfg=cfg, algo_order_id=row_id,

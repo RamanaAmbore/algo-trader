@@ -265,6 +265,12 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None,
     cfg.product = product
     cfg.variety = variety
     cfg.validity = validity
+    # P1 fix (2026-10): stamp the normalised L/M/H tag onto the cfg itself
+    # so a hold recorded mid-chase (`chase.py:_ch_hold_on_repeated_rejection`)
+    # can persist which tier the order was ORIGINALLY placed with — see
+    # `ChaseConfig.level`'s own docstring. `a` is already normalised to
+    # low/med/high above.
+    cfg.level = a
     return cfg
 
 
