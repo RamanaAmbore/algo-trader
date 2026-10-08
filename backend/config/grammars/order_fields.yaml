@@ -116,26 +116,13 @@ fields:
       same backend.api.routes.orders_helpers._live_chase_config() mapping
       every manual-ticket chase already uses.
 
-# ─────────────────────────────────────────────────────────────────────────
-# CLI-only reference mirror — NOT the live chase engine's config.
-#
 # orders.yaml's own `chase_levels:` block (band_ticks / retry_seconds) is a
 # DIFFERENT, unrelated chase config from `_live_chase_config()`'s
-# interval_seconds / aggression_step / max_attempts tiers used by
-# place_order's new `chase_level` param above — same LOW/MED/HIGH naming
-# convention, different mechanics, different consumer (CLI command-bar
-# preview vs. the live agent chase engine). Do NOT wire one into the other.
-#
-# This mirror exists so the catalog documents the CLI's own LOW/MED/HIGH
-# table in one place too; it is cross-checked byte-for-byte against
-# orders.yaml's `chase_levels:` block by the drift-guard test. NOTE: unlike
-# the `fields:` entries above, this mirror is deliberately NOT wired into
-# orders.js's `$ref` resolver — `chase_levels:` (band_ticks/retry_seconds)
-# is a different, CLI-only config from the live chase engine's
-# `chase_level` enum (see the block comment below), so there is no
-# `$ref`-style per-token resolution to do here; the drift-guard test
-# remains the sole cross-check for this specific mirror.
-chase_levels_cli_reference:
-  LOW: { band_ticks: 8, retry_seconds: 60 }
-  MED: { band_ticks: 4, retry_seconds: 30 }
-  HIGH: { band_ticks: 1, retry_seconds: 10 }
+# interval_seconds / aggression_step / max_attempts tiers used by the
+# `chase_level` field above — same LOW/MED/HIGH naming convention, different
+# mechanics, different consumer (CLI command-bar preview vs. the live agent
+# chase engine). Do NOT wire one into the other. (2026-10 cleanup: the
+# mirror of orders.yaml's table that used to live in this file was removed —
+# it was read by nothing at runtime, only a drift-guard test; that test was
+# removed too, leaving orders.yaml as the single source for its own
+# chase_levels block.)

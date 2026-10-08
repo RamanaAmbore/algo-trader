@@ -99,14 +99,6 @@ class TestOrderFieldsCatalogStructure:
         for key in ("order_type", "product", "variety"):
             assert "description" not in grammar._ORDER_FIELDS[key]
 
-    def test_cli_chase_levels_mirror_present(self):
-        mirror = grammar._ORDER_FIELDS_CATALOG.get("chase_levels_cli_reference")
-        assert mirror == {
-            "LOW": {"band_ticks": 8, "retry_seconds": 60},
-            "MED": {"band_ticks": 4, "retry_seconds": 30},
-            "HIGH": {"band_ticks": 1, "retry_seconds": 10},
-        }
-
 
 # ─────────────────────────────────────────────────────────────────────────
 #  $ref resolver unit tests
@@ -363,16 +355,6 @@ class TestOrdersYamlDriftGuard:
         cli_values = set(doc["verbs"][verb]["kwargs"]["product"]["values"])
         catalog_values = set(grammar._ORDER_FIELDS["product"]["enum"])
         assert cli_values == catalog_values
-
-    def test_chase_levels_block_byte_identical_to_catalog_mirror(self):
-        """orders.yaml's own `chase_levels:` (band_ticks/retry_seconds) —
-        a DIFFERENT config from the live chase engine's chase_level tiers
-        — must stay byte-identical to order_fields.yaml's
-        `chase_levels_cli_reference` mirror. This mirror is deliberately
-        NOT wired into orders.js's `$ref` resolver (see order_fields.yaml's
-        header) — the drift-guard test remains its sole cross-check."""
-        doc = _load_orders_yaml()
-        assert doc["chase_levels"] == grammar._ORDER_FIELDS_CATALOG["chase_levels_cli_reference"]
 
     def test_orders_yaml_actually_uses_ref_for_shared_fields(self):
         """Phase 4 — guards against someone reverting orders.yaml's buy/

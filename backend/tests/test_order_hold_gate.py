@@ -17,7 +17,7 @@ def test_expiry_close_released_when_setting_on(monkeypatch):
     assert gate.expiry_close_held() is False
 
 
-def test_record_held_close_returns_none_on_db_failure(monkeypatch):
+def test_record_held_order_returns_none_on_db_failure(monkeypatch):
     import backend.api.database as db
 
     class _Boom:
@@ -25,7 +25,8 @@ def test_record_held_close_returns_none_on_db_failure(monkeypatch):
             raise RuntimeError("db down")
 
     monkeypatch.setattr(db, "async_session", _Boom())
-    out = asyncio.run(gate.record_held_close(
+    out = asyncio.run(gate.record_held_order(
+        HoldCategory.EXPIRY_CLOSE,
         account="ZG0790", symbol="CRUDEOIL26OCT8600CE", exchange="MCX",
         side="SELL", qty=200, product="NRML", reason="test"))
     assert out is None
@@ -149,16 +150,3 @@ def test_record_held_order_creates_row_with_requested_category_agent_order(monke
     assert rec["price_policy"] == "n/a"
 
 
-def test_record_held_close_wrapper_still_tags_expiry_close_category(monkeypatch):
-    """record_held_close is now a thin wrapper over record_held_order —
-    confirm it still stamps the expiry_close category unchanged."""
-    mock_session = _mock_session_for_insert()
-    monkeypatch.setattr("backend.api.database.async_session", lambda: mock_session)
-    with patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock):
-        row_id = asyncio.run(gate.record_held_close(
-            account="ZG0790", symbol="CRUDEOIL26OCT8600CE", exchange="MCX",
-            side="SELL", qty=200, product="NRML", reason="expiry close"))
-
-    assert row_id == 123
-    created = mock_session.add.call_args.args[0]
-    assert parse_hold_record(created.hold_json)["category"] == "expiry_close"

@@ -14,7 +14,6 @@ All routes require admin JWT via admin_guard.
 import io
 import os
 import asyncio
-import subprocess
 from datetime import date as dt_date
 from pathlib import Path
 from typing import Any, Optional

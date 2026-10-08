@@ -790,21 +790,6 @@ async def test_al_run_noop_handler_send_summary():
 
 
 @pytest.mark.asyncio
-async def test_al_run_noop_handler_chase_close():
-    """chase_close is a safety-net noop entry (BROKER_ACTIONS normally
-    routes it to live/paper/sim/replay first) — must still dispatch to
-    _action_chase_close when reached as a noop."""
-    from backend.api.algo.actions import _al_run_noop_handler
-
-    agent = _mk_agent()
-    mock = AsyncMock()
-    with patch("backend.api.algo.actions_live._action_chase_close", new=mock):
-        ok = await _al_run_noop_handler(agent, "chase_close", {"a": 1}, {"c": 2})
-    assert ok is True
-    mock.assert_called_once_with({"c": 2}, {"a": 1})
-
-
-@pytest.mark.asyncio
 async def test_al_run_noop_handler_unregistered_type_warns_and_returns_false():
     """Unregistered action_type: no handler invoked, warning logged, returns False."""
     from backend.api.algo.actions import _al_run_noop_handler
@@ -818,8 +803,8 @@ async def test_al_run_noop_handler_unregistered_type_warns_and_returns_false():
     )
 
 
-# ── Asymmetric exception-handling: send_summary/chase_close NEVER wrapped,
-#    the other four handlers always are ──────────────────────────────────
+# ── Asymmetric exception-handling: send_summary NEVER wrapped, the other
+#    four handlers always are ──────────────────────────────────────────
 
 @pytest.mark.asyncio
 async def test_al_run_noop_handler_send_summary_exception_propagates():
@@ -833,20 +818,6 @@ async def test_al_run_noop_handler_send_summary_exception_propagates():
                new=AsyncMock(side_effect=boom)):
         with pytest.raises(RuntimeError, match="summary boom"):
             await _al_run_noop_handler(agent, "send_summary", {}, {})
-
-
-@pytest.mark.asyncio
-async def test_al_run_noop_handler_chase_close_exception_propagates():
-    """chase_close (noop safety-net path) raising must propagate, not be
-    swallowed — matches the original un-wrapped early-return behavior."""
-    from backend.api.algo.actions import _al_run_noop_handler
-
-    agent = _mk_agent()
-    boom = RuntimeError("chase boom")
-    with patch("backend.api.algo.actions_live._action_chase_close",
-               new=AsyncMock(side_effect=boom)):
-        with pytest.raises(RuntimeError, match="chase boom"):
-            await _al_run_noop_handler(agent, "chase_close", {}, {})
 
 
 @pytest.mark.asyncio

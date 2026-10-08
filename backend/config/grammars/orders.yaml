@@ -176,8 +176,8 @@ verbs:
 # retry_seconds table — a DIFFERENT, unrelated chase config from the live
 # agent chase engine's `_live_chase_config()` interval_seconds/aggression_
 # step/max_attempts tiers (same LOW/MED/HIGH naming convention, different
-# mechanics — see order_fields.yaml's `chase_levels_cli_reference` for the
-# mirrored copy + the drift-guard test that keeps the two byte-identical).
+# mechanics). This file is the single source for this table — no mirror
+# elsewhere (2026-10 cleanup removed an unread copy from order_fields.yaml).
 chase_levels:
   LOW:  { band_ticks: 8, retry_seconds: 60 }
   MED:  { band_ticks: 4, retry_seconds: 30 }

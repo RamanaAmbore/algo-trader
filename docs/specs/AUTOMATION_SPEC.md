@@ -217,7 +217,6 @@ Action dispatch refactored from hardcoded if/elif chains to module-level registr
 | `expiry_auto_close` | _LIVE | actions_live | `_action_live_expiry_auto_close` | — |
 | **NOOP (non-broker)** |
 | `send_summary` | _NOOP | actions_live | `_action_send_summary` | False |
-| `chase_close` | _NOOP | actions_live | `_action_chase_close` (safety net) | False |
 | `monitor_order` | _NOOP | actions | `monitor_order` | True |
 | `deactivate_agent` | _NOOP | actions | `deactivate_agent` | True |
 | `set_flag` | _NOOP | actions | `set_flag` | True |
