@@ -25,7 +25,9 @@ import pytest
 from unittest.mock import AsyncMock, MagicMock, patch
 
 from backend.shared.helpers import settings as settings_mod
-from backend.shared.helpers.settings import set_bool, set_string, upsert_setting, get_bool
+from backend.shared.helpers.settings import (
+    set_bool, set_int, set_string, upsert_setting, get_bool, get_int,
+)
 
 
 class _FakeSettingRow:
@@ -88,6 +90,57 @@ async def test_set_bool_updates_existing_row_and_returns_old_value():
     assert row.value == "true"
     session.add.assert_not_called()
     session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_int_inserts_missing_row_and_returns_none():
+    session_factory, session = _mock_session(existing=None)
+    with patch("backend.api.database.async_session", session_factory):
+        old = await set_int("hold.lead_minutes_mcx", 45)
+
+    assert old is None
+    session.add.assert_called_once()
+    added = session.add.call_args[0][0]
+    assert added.value == "45"
+    assert added.value_type == "int"
+    assert added.category == "hold"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_int_updates_existing_row_and_returns_old_value():
+    row = _FakeSettingRow("hold.lead_minutes_mcx", "30", "int")
+    session_factory, session = _mock_session(existing=row)
+    with patch("backend.api.database.async_session", session_factory):
+        old = await set_int("hold.lead_minutes_mcx", 45)
+
+    assert old == 30
+    assert row.value == "45"
+    session.add.assert_not_called()
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_set_int_tolerates_stored_float_style_old_value():
+    """A stored "30.0"-style string (legacy serialisation) must still
+    coerce to int 30 for the returned previous value."""
+    row = _FakeSettingRow("hold.lead_minutes_mcx", "30.0", "int")
+    session_factory, _ = _mock_session(existing=row)
+    with patch("backend.api.database.async_session", session_factory):
+        old = await set_int("hold.lead_minutes_mcx", 45)
+
+    assert old == 30
+    assert row.value == "45"
+
+
+@pytest.mark.asyncio
+async def test_set_int_updates_in_process_cache_synchronously():
+    row = _FakeSettingRow("hold.lead_minutes_mcx", "30", "int")
+    session_factory, _ = _mock_session(existing=row)
+    with patch("backend.api.database.async_session", session_factory):
+        await set_int("hold.lead_minutes_mcx", 45)
+
+    assert get_int("hold.lead_minutes_mcx", 0) == 45
 
 
 @pytest.mark.asyncio

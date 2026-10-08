@@ -1092,11 +1092,123 @@ class GlobalSwitchesRequest(msgspec.Struct):
     # agents.py:_age_resolve_trade_mode). Does NOT retroactively change
     # any existing agent's already-frozen trade_mode.
     default_agent_trade_mode: str | None = None
+    # Expiry-close hold gate (order_hold_gate.py). NOTE THE INVERSION:
+    # the underlying storage key is `hold.expiry_close_released` (True =
+    # released/not held). This field is named for operator readability —
+    # expiry_close_hold_enabled=True means closes ARE held, which maps to
+    # hold.expiry_close_released=False. See _gs_collect_hold_changes().
+    expiry_close_hold_enabled: bool | None = None
+    # Per-exchange lead time (minutes before close) at which an expiry
+    # close is created — order_hold_gate.py:cutoff_for(). Only MCX/NCO
+    # (lead 30) and NFO/BFO/NSE (lead 15) are seeded; MCX and NFO are the
+    # two exchanges builtin expiry-close agents actually target.
+    expiry_close_lead_minutes_mcx: int | None = None
+    expiry_close_lead_minutes_nfo: int | None = None
+    # Template exit hold gate (order_hold_gate.py:template_exit_held()).
+    # SAME INVERSION as expiry_close_hold_enabled: underlying storage key
+    # is `hold.template_exit_released` (True = released/not held).
+    # template_exit_hold_enabled=True maps to released=False.
+    template_exit_hold_enabled: bool | None = None
 
 
 class GlobalSwitchesResponse(msgspec.Struct):
     paper_trading_mode: bool
     default_agent_trade_mode: str
+    expiry_close_hold_enabled: bool
+    expiry_close_lead_minutes_mcx: int
+    expiry_close_lead_minutes_nfo: int
+    template_exit_hold_enabled: bool
+
+
+# Defaults mirrored from order_hold_gate.py's own in-code defaults
+# (cutoff_for: 30 for MCX/NCO, 15 for everything else). Kept here too
+# so GET/PATCH never drift from the gate's own fallback if the DB row
+# is somehow missing (it's seeded in settings.py, so this is belt-and-
+# suspenders, not the primary source).
+_HOLD_LEAD_DEFAULT_MCX = 30
+_HOLD_LEAD_DEFAULT_NFO = 15
+
+
+def _gs_collect_bool_hold_changes(
+    data: "GlobalSwitchesRequest", get_bool,
+) -> list[tuple[str, str, str, str]]:
+    """Inverted-bool hold-switch changes (expiry-close + template-exit).
+    Both follow the identical operator-facing-`*_hold_enabled` ⇒
+    storage-`*_released` inversion — get this backwards and the gate
+    silently flips meaning, so both are driven through this one
+    shared loop rather than two hand-copied blocks that could drift.
+    """
+    from backend.api.algo.order_hold_gate import (
+        EXPIRY_CLOSE_RELEASED_KEY, TEMPLATE_EXIT_RELEASED_KEY,
+    )
+
+    out: list[tuple[str, str, str, str]] = []
+    for field_val, key in (
+        (data.expiry_close_hold_enabled, EXPIRY_CLOSE_RELEASED_KEY),
+        (data.template_exit_hold_enabled, TEMPLATE_EXIT_RELEASED_KEY),
+    ):
+        if field_val is None:
+            continue
+        # INVERSION: operator-facing hold_enabled=True ⇒ storage
+        # released=False (held by default).
+        new_released = not bool(field_val)
+        new_val = "true" if new_released else "false"
+        old_val = "true" if get_bool(key, False) else "false"
+        if new_val != old_val:
+            out.append((key, old_val, new_val, "bool"))
+    return out
+
+
+def _gs_collect_hold_changes(
+    data: "GlobalSwitchesRequest",
+) -> list[tuple[str, str, str, str]]:
+    """Expiry-close + template-exit hold-gate changes (hold switches +
+    per-exchange lead minutes) for PATCH /api/admin/global-switches.
+    Factored out of update_global_switches to keep that handler's
+    cyclomatic complexity under the push-gate D threshold.
+
+    Local import of get_bool/get_int (not module-level) matches the
+    existing pattern in update_global_switches — tests patch
+    `backend.shared.helpers.settings.get_bool`/`get_int`, which only
+    takes effect on a fresh `from ... import` at call time.
+    """
+    from backend.shared.helpers.settings import get_bool, get_int
+
+    out = _gs_collect_bool_hold_changes(data, get_bool)
+
+    for field_val, key, default in (
+        (data.expiry_close_lead_minutes_mcx, "hold.lead_minutes_mcx", _HOLD_LEAD_DEFAULT_MCX),
+        (data.expiry_close_lead_minutes_nfo, "hold.lead_minutes_nfo", _HOLD_LEAD_DEFAULT_NFO),
+    ):
+        if field_val is None:
+            continue
+        new_int = int(field_val)
+        if new_int < 0:
+            raise HTTPException(status_code=400, detail=f"{key} must be >= 0")
+        old_int = get_int(key, default)
+        if new_int != old_int:
+            out.append((key, str(old_int), str(new_int), "int"))
+
+    return out
+
+
+def _gs_snapshot() -> "GlobalSwitchesResponse":
+    """Current effective values for all six global switches. Single
+    source for both GET and the PATCH response so the two paths can't
+    drift apart."""
+    from backend.shared.helpers.settings import get_bool, get_int, get_string
+    from backend.api.algo.order_hold_gate import (
+        EXPIRY_CLOSE_RELEASED_KEY, TEMPLATE_EXIT_RELEASED_KEY,
+    )
+    return GlobalSwitchesResponse(
+        paper_trading_mode=get_bool("execution.paper_trading_mode", False),
+        default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
+        # INVERSION: see _gs_collect_bool_hold_changes's docstring.
+        expiry_close_hold_enabled=not get_bool(EXPIRY_CLOSE_RELEASED_KEY, False),
+        expiry_close_lead_minutes_mcx=get_int("hold.lead_minutes_mcx", _HOLD_LEAD_DEFAULT_MCX),
+        expiry_close_lead_minutes_nfo=get_int("hold.lead_minutes_nfo", _HOLD_LEAD_DEFAULT_NFO),
+        template_exit_hold_enabled=not get_bool(TEMPLATE_EXIT_RELEASED_KEY, False),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -1878,11 +1990,7 @@ class AdminController(Controller):
 
     @get("/global-switches", guards=[cap_guard("view_settings_readonly")])
     async def get_global_switches(self) -> GlobalSwitchesResponse:
-        from backend.shared.helpers.settings import get_bool, get_string
-        return GlobalSwitchesResponse(
-            paper_trading_mode=get_bool("execution.paper_trading_mode", False),
-            default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
-        )
+        return _gs_snapshot()
 
     @patch("/global-switches", guards=[cap_guard("manage_settings")])
     async def update_global_switches(
@@ -1949,9 +2057,11 @@ class AdminController(Controller):
                 if new_val != old_val:
                     changes.append(("execution.default_agent_trade_mode", old_val, new_val, value_type))
 
+            changes.extend(_gs_collect_hold_changes(data))
+
             for key, old_val, new_val, value_type in changes:
                 await upsert_setting(
-                    key, new_val, value_type, category="execution",
+                    key, new_val, value_type, category=key.split(".", 1)[0],
                     description="Set via PATCH /api/admin/global-switches.",
                     session=session,
                 )
@@ -1979,7 +2089,4 @@ class AdminController(Controller):
                 "; ".join(f"{k} {o!r}->{n!r}" for k, o, n, _ in changes)
             )
 
-        return GlobalSwitchesResponse(
-            paper_trading_mode=get_bool("execution.paper_trading_mode", False),
-            default_agent_trade_mode=get_string("execution.default_agent_trade_mode", "paper"),
-        )
+        return _gs_snapshot()

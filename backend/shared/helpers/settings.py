@@ -912,6 +912,17 @@ async def set_string(key: str, value: str, *, category: "str | None" = None,
                                  category=category, description=description)
 
 
+async def set_int(key: str, value: int, *, category: "str | None" = None,
+                   description: "str | None" = None) -> "int | None":
+    """Persist an int setting (same `settings` table get_int() reads).
+    Returns the previous value (coerced to int, tolerating a stored
+    "5.0"-style string), or None if the key had no row yet.
+    See `upsert_setting` for storage + transaction details."""
+    old = await upsert_setting(key, str(int(value)), "int",
+                                category=category, description=description)
+    return None if old is None else int(float(old))
+
+
 def invalidate_cache() -> None:
     """Schedule a reload — called after PATCH."""
     try:
