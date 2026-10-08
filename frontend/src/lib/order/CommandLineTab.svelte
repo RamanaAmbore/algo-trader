@@ -257,6 +257,15 @@
    */
   function _buildOrderLeg(payload, inst, lot, sym) {
     const hasPrice = payload.price > 0;
+    // 2026-10 fix: a typed `chase=HIGH`/`chase=MED` token was parsed and
+    // validated by the grammar but silently discarded here — every CLI
+    // order always chased at the hardcoded 'low' tier regardless of what
+    // the operator typed. payload.chase_level carries the raw LOW/MED/HIGH
+    // token (see buildOrderPayload); fall back to 'low' only when the
+    // operator didn't type a chase token at all.
+    const _chaseAgg = /** @type {'low'|'med'|'high'} */ (
+      (payload.chase_level ? payload.chase_level.toLowerCase() : 'low')
+    );
     return {
       key:      `cmd|${payload.transaction_type}|${sym}|${Date.now()}`,
       side:     /** @type {'BUY'|'SELL'} */ (payload.transaction_type),
@@ -267,7 +276,7 @@
       lotSize:  lot,
       product:  payload.product || 'NRML',
       limit:    hasPrice ? Number(payload.price) : 0,
-      chaseAgg: /** @type {'low'|'med'|'high'} */ ('low'),
+      chaseAgg: _chaseAgg,
     };
   }
 

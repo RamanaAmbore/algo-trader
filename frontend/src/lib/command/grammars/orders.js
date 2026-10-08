@@ -597,6 +597,14 @@ export function buildOrderPayload(parsed) {
     variety: 'regular',
     validity: 'DAY',
     chase: args.chase ? chaseConfig(args.chase) : null,
+    // The raw LOW/MED/HIGH token (uppercase, per the `chase` token's
+    // `parse: upper` rule) — `chase` above is the CLI-preview-only
+    // band_ticks/retry_seconds config (see chaseConfig's own docs), not
+    // something a basket leg's `chaseAgg` field can consume directly.
+    // 2026-10 fix: this was previously discarded entirely, so a typed
+    // `chase=HIGH` token was parsed+validated but never reached the
+    // actual order submission — _buildOrderLeg always hardcoded 'low'.
+    chase_level: args.chase ? String(args.chase).toUpperCase() : null,
   };
 }
 
