@@ -390,7 +390,7 @@
   }
   .filter-label {
     font-size: var(--fs-md);
-    color: rgba(180,200,230,0.6);
+    color: var(--c-muted);
     font-family: var(--font-numeric);
     letter-spacing: 0.04em;
     text-transform: uppercase;
@@ -400,7 +400,7 @@
     font-size: var(--fs-sm);
     border-radius: 3px;
     padding: 0.2rem 0.55rem;
-    color: rgba(180,200,230,0.70);
+    color: var(--c-muted);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(180,200,230,0.18);
     cursor: pointer;
@@ -422,7 +422,7 @@
   }
   .filter-hint {
     font-size: var(--fs-sm);
-    color: rgba(180,200,230,0.5);
+    color: var(--c-muted);
     font-family: var(--font-numeric);
   }
 
@@ -472,7 +472,7 @@
     text-align: left;
   }
   .frag-name {
-    font-size: var(--fs-md);
+    font-size: var(--fs-lg);
     font-weight: 700;
     color: var(--c-action);
     letter-spacing: 0.02em;
@@ -499,7 +499,7 @@
     border: 1px solid rgba(251,113,133,0.32);
   }
   .frag-desc {
-    color: rgba(180,200,230,0.6);
+    color: var(--c-muted);
     font-size: var(--fs-md);
     flex: 1;
     overflow: hidden;
@@ -590,7 +590,7 @@
   }
   .form-row span {
     font-size: var(--fs-md);
-    color: rgba(180,200,230,0.7);
+    color: var(--c-muted);
     font-family: var(--font-numeric);
     letter-spacing: 0.04em;
   }
@@ -608,7 +608,7 @@
   .form-input:focus { border-color: rgba(251,191,36,0.5); }
   .form-readonly {
     font-size: var(--fs-lg);
-    color: rgba(180,200,230,0.6);
+    color: var(--c-muted);
     font-family: var(--font-numeric);
     padding: 0.3rem 0;
   }
@@ -631,7 +631,7 @@
   }
 
   .muted {
-    color: rgba(180,200,230,0.5);
+    color: var(--c-muted);
     font-size: var(--fs-md);
     font-family: var(--font-numeric);
   }

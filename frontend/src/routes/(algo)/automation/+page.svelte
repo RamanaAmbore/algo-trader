@@ -1672,7 +1672,7 @@
           <span class="flex-1 min-w-0 flex flex-col leading-tight">
             <span class="text-[length:var(--fs-lg)] text-[var(--c-action)] truncate">{agent.name}</span>
             {#if agent.long_name}
-              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--algo-slate-muted)">{agent.long_name}</span>
+              <span class="text-[length:var(--fs-lg)] font-mono truncate" style="color: var(--c-muted)">{agent.long_name}</span>
             {/if}
           </span>
           <!-- Notify-channel icon strip — one tiny emoji per enabled

@@ -2170,8 +2170,10 @@
     line-height: 1.3;
   }
   :global(.log-panel.log-rows .log-row-msg) {
-    /* Message text uses the page base size, the same as the news titles. */
-    font-size: var(--fs-base);
+    /* A little smaller than the page base size (2026-10 operator request) —
+       still readable for line-by-line scanning but less of a size jump
+       against the surrounding compact-density UI. */
+    font-size: var(--fs-lg);
     /* flex-basis: 100% pushes msg to its own line below time + tag
        on narrow viewports — mobile convention. Desktop override
        below collapses time + msg into one row. */
