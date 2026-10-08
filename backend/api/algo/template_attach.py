@@ -131,6 +131,12 @@ class TemplatePlan:
     # keeps resolve_template_plan sync (pure data), same pattern as
     # parent_lot_size.
     parent_tick_size:   float = 0.0
+    # The parent order's AlgoOrder.agent_id, when known (None for a
+    # manually-placed parent). Threaded through to every chase_order()/
+    # send_order_failure_alert() call this module makes for the wing leg,
+    # so a wing-chase failure alert correctly labels "Agent Bracket" vs
+    # "Manual Bracket" — see alert_utils._classify_order_origin_label.
+    parent_agent_id:    Optional[int] = None
     gtts:               list[GttSpec] = field(default_factory=list)
     wing:               Optional[WingSpec] = None
     notes:              list[str] = field(default_factory=list)
@@ -148,6 +154,7 @@ class TemplatePlan:
             "parent_fill_price":  self.parent_fill_price,
             "parent_lot_size":    self.parent_lot_size,
             "parent_tick_size":   self.parent_tick_size,
+            "parent_agent_id":    self.parent_agent_id,
             "gtts":               [asdict(g) for g in self.gtts],
             "wing":               asdict(self.wing) if self.wing else None,
             "notes":              list(self.notes),
@@ -2071,6 +2078,7 @@ def _chase_wing_alert_create_failed(
             account=plan.parent_account, symbol=plan.wing.tradingsymbol,
             exchange=plan.wing.exchange, side=plan.wing.transaction_type,
             qty=int(plan.wing.quantity), mode="live", source="template_wing_chase",
+            agent_id=plan.parent_agent_id,
             error=(
                 f"wing AlgoOrder row creation failed: {exc} "
                 f"(parent_order_id={parent_order_id}) — wing was NEVER "
@@ -2116,6 +2124,7 @@ def _chase_wing_alert_chase_failed(
             account=plan.parent_account, symbol=plan.wing.tradingsymbol,
             exchange=plan.wing.exchange, side=plan.wing.transaction_type,
             qty=int(plan.wing.quantity), mode="live", source="template_wing_chase",
+            agent_id=plan.parent_agent_id,
             error=(
                 f"wing chase_order() raised: {exc} "
                 f"(parent_order_id={parent_order_id}) — {_broker_note}"
@@ -2245,6 +2254,7 @@ async def _chase_wing(
             quantity=int(plan.wing.quantity),
             cfg=ChaseConfig(exchange=plan.wing.exchange),
             algo_order_id=algo_order_id,
+            agent_id=plan.parent_agent_id,
         )
     except Exception as e:
         _broker_order_id = await _chase_wing_mark_row_unfilled(algo_order_id, e)
@@ -3064,6 +3074,7 @@ async def _apply_template_to_order_impl(
     parent_fill_price:  float,
     parent_product:     str = "NRML",
     parent_order_id:    Optional[int] = None,
+    parent_agent_id:    Optional[int] = None,
     apply_path:         str = "auto",  # 'auto' | 'sim' | 'live' | 'preview'
 ) -> Optional[AttachResult]:
     """One entry point used by:
@@ -3203,6 +3214,7 @@ async def _apply_template_to_order_impl(
         parent_lot_size=parent_lot_size,
         parent_tick_size=parent_tick_size,
     )
+    plan.parent_agent_id = parent_agent_id
     if wing_scan_note:
         plan.notes.append(wing_scan_note)
     if _offhours_note:
@@ -3248,6 +3260,7 @@ async def apply_template_to_order(
     parent_fill_price:  float,
     parent_product:     str = "NRML",
     parent_order_id:    Optional[int] = None,
+    parent_agent_id:    Optional[int] = None,
     apply_path:         str = "auto",  # 'auto' | 'sim' | 'live' | 'preview'
 ) -> Optional[AttachResult]:
     """Public entry point — thin async wrapper around
@@ -3309,6 +3322,7 @@ async def apply_template_to_order(
         parent_fill_price=parent_fill_price,
         parent_product=parent_product,
         parent_order_id=parent_order_id,
+        parent_agent_id=parent_agent_id,
         apply_path=apply_path,
     )
 

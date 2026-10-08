@@ -227,15 +227,20 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     agent = SimpleNamespace(slug="order-failure-alert",
                             **{k: event_agents.ORDER_FAILURE_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
-    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
+    # 2026-10 fix: every order-failure alert is now prefixed with its
+    # origin label (Manual/Manual Bracket/Agent/Agent Bracket) ahead of
+    # the mode tag — this record's `extra` has no "agent_id" key (the
+    # shape persisted logs had before that fix), so it correctly
+    # defaults to "Manual" (see alert_utils._classify_order_origin_label).
+    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "❌ Order rejected  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
+                             "❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]
     assert addr == "a@x.com"
-    assert subj == "RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
-    assert hashlib.sha256(body.encode()).hexdigest() == "d232be2a36cf32b0b0adcb3c0abf3408ecea43868b148c773a21b506e82f74c5"
+    assert subj == "[Manual] RamboQuant Order Rejected: NIFTY26OCTFUT BUY (live)"
+    assert hashlib.sha256(body.encode()).hexdigest() == "3617fd02eb9f98ba63c409024aabfac8764c5e88383b0c6d1c1c038123aab9c1"
 
 
 @pytest.mark.asyncio

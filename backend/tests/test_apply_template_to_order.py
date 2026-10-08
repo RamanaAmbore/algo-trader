@@ -1333,6 +1333,7 @@ async def test_apply_template_to_order_calls_impl_exactly_once():
         parent_fill_price=1000.0,
         parent_product="MIS",
         parent_order_id=2002,
+        parent_agent_id=None,
         apply_path="live",
     )
     kinds = [c.args[1] for c in mock_we.call_args_list]

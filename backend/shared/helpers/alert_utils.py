@@ -846,11 +846,38 @@ def _inprocess_cooldown_check(
     return False, suppressed_count
 
 
+# Sources whose failure is about the template/Bracket exit mechanism
+# (wing order, OCO exit GTT) rather than the parent entry order itself —
+# used by _classify_order_origin_label below regardless of who placed
+# the parent (operator or agent).
+_BRACKET_SOURCES = frozenset({"template_wing", "template_wing_chase"})
+
+
+def _classify_order_origin_label(source: str, agent_id: "int | None") -> str:
+    """One of 'Manual' / 'Manual Bracket' / 'Agent' / 'Agent Bracket'.
+
+    2026-10 operator request: alerts for a manually-placed order say
+    "Manual"; alerts about that order's template/Bracket exit say
+    "Manual Bracket". An agent-placed order (agent_id set, reliably
+    populated since the Sprint 1a _al_place_resolve_params fix) gets
+    "Agent" / "Agent Bracket" instead — parallel naming, no slug (the
+    existing agent-CONDITION rich-alert path already renders
+    "Agent [{slug}]" separately; this is the order-failure path only).
+    """
+    is_bracket = source in _BRACKET_SOURCES
+    is_agent = agent_id is not None
+    if is_agent:
+        return "Agent Bracket" if is_bracket else "Agent"
+    return "Manual Bracket" if is_bracket else "Manual"
+
+
 def order_failure_messages(
     *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
     source: str, error: str, suppressed_count: int, ist_disp: str,
+    agent_id: "int | None" = None,
 ) -> tuple[str, str, str]:
     """Telegram body, email subject and email HTML for an order rejection. Pure."""
+    origin_label = _classify_order_origin_label(source, agent_id)
     branch      = config.get("deploy_branch", "main")
     mode_tag    = f"[{mode.upper()}]" if mode else ""
     sup_note    = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
@@ -865,7 +892,7 @@ def order_failure_messages(
     error_short_html = html.escape(error_short)
 
     tg_body = (
-        f"<b>&#10060; Order rejected</b>  {mode_tag}{sup_note}\n"
+        f"<b>&#10060; Order rejected</b>  [{origin_label}]  {mode_tag}{sup_note}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
         f"source: {source}\n"
         f"<code>{error_short_html}</code>"
@@ -874,6 +901,7 @@ def order_failure_messages(
     rows_html = _html_table(
         ("Field", "Value"),
         [
+            ("Origin",    origin_label),
             ("Account",   masked),
             ("Symbol",    symbol),
             ("Exchange",  exchange),
@@ -889,11 +917,13 @@ def order_failure_messages(
         f"<html><body style='font-family:sans-serif'>"
         + (_branch_banner_html(branch) if branch != "main" else "")
         + f"<p style='font-size:14px;color:#c0392b'><b>&#10060; Order rejected</b>"
+          f"{' [' + origin_label + ']'}"
           f"{' ' + mode_tag if mode_tag else ''}</p>"
         + rows_html
         + f"</body></html>"
     )
     subject = (
+        f"[{origin_label}] "
         f"RamboQuant Order Rejected: {symbol} {side}"
         + (f" [{branch}]" if branch != "main" else "")
         + (f" ({mode})" if mode else "")
@@ -904,17 +934,26 @@ def order_failure_messages(
 def _send_order_failure_messages(
     *, masked: str, symbol: str, exchange: str, side: str, qty: int, mode: str,
     source: str, error: str, suppressed_count: int, ist_disp: str,
+    agent_id: "int | None" = None,
 ) -> None:
-    """Record an order rejection for the order-failure event agent (no direct send)."""
+    """Record an order rejection for the order-failure event agent (no direct send).
+
+    `agent_id` rides along in `extra` so it survives the log→event-agent
+    pipeline — `event_agents.py:_render_order_failure` reads it back out
+    of the replayed record's `extra` dict and passes it straight through
+    to `order_failure_messages()` for the Manual/Agent/Bracket label.
+    """
     sup_note = f"  (+{suppressed_count} suppressed)" if suppressed_count else ""
+    origin_label = _classify_order_origin_label(source, agent_id)
     logger.warning(
-        f"order-failure recorded: {masked} {side} {qty} {symbol} "
+        f"order-failure recorded: [{origin_label}] {masked} {side} {qty} {symbol} "
         f"mode={mode} source={source}{sup_note}",
         extra={
             "tags": ["orders"], "alert_event": "order_failure", "masked": masked,
             "symbol": symbol, "exchange": exchange, "side": side, "qty": qty,
             "mode": mode, "source": source, "error": error,
             "suppressed_count": suppressed_count, "ist_disp": ist_disp,
+            "agent_id": agent_id,
             "branch": config.get("deploy_branch", "main"),
         },
     )
@@ -931,6 +970,7 @@ def send_order_failure_alert(
     source: str,
     error: str,
     detail: dict | None = None,
+    agent_id: "int | None" = None,
 ) -> None:
     """
     Telegram + email alert when an order placement fails.
@@ -948,6 +988,13 @@ def send_order_failure_alert(
 
     All exceptions are swallowed — a broken Telegram connection must never
     interrupt order placement or the chase loop.
+
+    `agent_id` — pass the originating AlgoOrder row's `agent_id` when known
+    (chase.py / template_attach.py call sites have the row in scope) so the
+    rendered alert is labeled "Manual"/"Manual Bracket" (agent_id is None)
+    or "Agent"/"Agent Bracket" (agent_id is set) — see
+    `_classify_order_origin_label`. Callers with no row context (a plain
+    manual ticket placement) omit it, correctly defaulting to "Manual".
     """
     try:
         try:
@@ -993,7 +1040,7 @@ def send_order_failure_alert(
             masked=masked, symbol=symbol, exchange=exchange,
             side=side, qty=qty, mode=mode, source=source,
             error=error, suppressed_count=suppressed_count,
-            ist_disp=timestamp_display(),
+            ist_disp=timestamp_display(), agent_id=agent_id,
         )
     except Exception as _top_e:
         logger.error(f"send_order_failure_alert internal error: {_top_e}")

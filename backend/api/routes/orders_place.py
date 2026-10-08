@@ -537,8 +537,9 @@ async def _opp_load_row_for_attach(
     """Load the AlgoOrder row for template-attach idempotency check.
 
     Returns None when: row has vanished, or already has attached_gtts_json
-    (duplicate postback). Otherwise returns {'overrides': dict} with
-    parsed template_overrides_json (empty dict when null/unset).
+    (duplicate postback). Otherwise returns {'overrides': dict, 'agent_id':
+    int | None} with parsed template_overrides_json (empty dict when
+    null/unset) and the row's own agent_id (for alert-origin labeling).
     """
     import json as _json
     from sqlalchemy import select as _sel_t
@@ -568,7 +569,7 @@ async def _opp_load_row_for_attach(
                     f"[TPL-ATTACH] could not parse template_overrides_json "
                     f"for parent #{parent_row_id}: {_e}"
                 )
-    return {"overrides": _row_overrides}
+    return {"overrides": _row_overrides, "agent_id": getattr(_row, "agent_id", None)}
 
 
 def _opl_build_sibling_map(sibling_pairs) -> dict[str, str]:
@@ -806,6 +807,7 @@ async def _fire_template_attach_on_fill(
                 parent_fill_price=fill_price,
                 parent_product=parent_product,
                 parent_order_id=parent_row_id,
+                parent_agent_id=row_info.get("agent_id"),
                 apply_path="live",
             )
             if result is None:
@@ -1848,7 +1850,7 @@ def _opl_send_failure_alert(account: str, sym: str, data, side: str,
         send_order_failure_alert(
             account=account, symbol=sym,
             exchange=(data.exchange or "NFO"), side=side,
-            qty=qty, mode="live", source="agent:manual:ticket",
+            qty=qty, mode="live", source="ticket",
             error=kite_msg,
         )
     except Exception:

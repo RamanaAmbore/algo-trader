@@ -19,16 +19,6 @@ from backend.api.algo.actions_preflight import run_preflight, diagnose_live_fail
 logger = get_logger(__name__)
 
 
-async def _action_chase_close(context: dict, params: dict):
-    """Close positions using the adaptive chase engine."""
-    from backend.api.algo.expiry import ExpiryEngine
-
-    engine = ExpiryEngine()
-    to_close = engine.scan_positions()
-    if to_close:
-        await engine.close_positions(to_close)
-
-
 async def _action_send_summary(context: dict, params: dict):
     """Send portfolio summary via existing send_summary."""
     from backend.shared.helpers.alert_utils import send_summary
@@ -540,6 +530,7 @@ async def _action_place_order(agent, context: dict, params: dict):
             transaction_type=side, quantity=qty,
             cfg=cfg,
             algo_order_id=_oid,
+            agent_id=_shim.id,
         )
     except Exception as e:
         await _place_order_on_failure(e, context, account, symbol, exchange, side, qty, price, product)
@@ -715,6 +706,7 @@ async def _action_live_close_position(agent, context: dict, params: dict):
             transaction_type=side, quantity=qty,
             cfg=cfg,
             algo_order_id=_oid,
+            agent_id=getattr(agent, "id", None),
         )
     except Exception as e:
         await _close_position_on_failure(
@@ -1211,7 +1203,7 @@ async def _chase_build_tasks(
             asyncio.create_task(
                 chase_order(account=acct, symbol=symbol,
                             transaction_type=side, quantity=qty, cfg=cfg,
-                            algo_order_id=_oid)
+                            algo_order_id=_oid, agent_id=getattr(agent, "id", None))
             )
         )
         task_rows.append(p)
@@ -1376,7 +1368,7 @@ async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
         logger.info(f"[LIVE] expiry_auto_close: {exch} before cut-off; scan deferred (agent={agent.slug})")
         return
 
-    engine = ExpiryEngine()
+    engine = ExpiryEngine(agent_id=getattr(agent, "id", None))
     try:
         to_close = engine.scan_positions()
     except Exception as e:

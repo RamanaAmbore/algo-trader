@@ -6525,6 +6525,7 @@ async def recover_live_chases() -> None:
                     cfg=cfg,
                     already_filled=already_filled,
                     already_filled_price=already_filled_price,
+                    agent_id=getattr(row, "agent_id", None),
                 ),
                 name=f"bg-chase-recovery-{row.id}",
             )

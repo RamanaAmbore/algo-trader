@@ -12,12 +12,11 @@ Usage:
 """
 
 import asyncio
-import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
-from typing import Callable, Optional
+from typing import Callable
 
 from sqlalchemy import select as _sql_select
 
@@ -183,6 +182,7 @@ def _chase_snapshot_algo_row(row, broker_order_id: str) -> dict:
     """
     return {
         "id":                int(row.id),
+        "agent_id":          getattr(row, "agent_id", None),
         "target_pct":        row.target_pct,
         "target_abs":        row.target_abs,
         "parent_order_id":   row.parent_order_id,
@@ -1085,6 +1085,7 @@ async def _sync_algo_order_id(algo_order_id: int | None,
                         "exchange": str(getattr(row, "exchange", "") or ""),
                         "transaction_type": str(getattr(row, "transaction_type", "") or ""),
                         "quantity": int(getattr(row, "quantity", 0) or 0),
+                        "agent_id": getattr(row, "agent_id", None),
                     }
                 else:
                     if _ch_apply_broker_sync_fields(
@@ -1157,6 +1158,7 @@ def _ch_alert_sync_final_status_race(
             account=row_snap["account"], symbol=row_snap["symbol"],
             exchange=row_snap["exchange"], side=row_snap["transaction_type"],
             qty=row_snap["quantity"], mode="live", source="chase",
+            agent_id=row_snap.get("agent_id"),
             error=(
                 f"Chase retry placed order {new_broker_order_id} but "
                 f"AlgoOrder #{algo_order_id} already finalized to "
@@ -1356,6 +1358,7 @@ def _ch_poll_handle_rejected(
     account: str, symbol: str, transaction_type: str, quantity: int,
     current_order_id: str, cfg: "ChaseConfig",
     algo_order_id: "int | None", emit: Callable,
+    agent_id: "int | None" = None,
 ) -> "tuple[str, int]":
     """Handle REJECTED status: retry with a fresh price when the
     rejection looks price-related and attempts remain; otherwise abort
@@ -1386,7 +1389,7 @@ def _ch_poll_handle_rejected(
         send_order_failure_alert(
             account=account, symbol=symbol, exchange=cfg.exchange,
             side=transaction_type, qty=quantity, mode="live", source="chase",
-            error=abort_msg,
+            error=abort_msg, agent_id=agent_id,
         )
     except Exception:
         pass
@@ -1440,6 +1443,7 @@ async def _chase_poll_status(
     emit: Callable,
     cumulative_filled: int = 0,
     current_order_filled: int = 0,
+    agent_id: "int | None" = None,
 ) -> tuple[str | None, int, int, int]:
     """Check order status after the per-attempt sleep. Mutates result in-place.
 
@@ -1519,6 +1523,7 @@ async def _chase_poll_status(
             result, status, attempt, remaining_qty,
             account, symbol, transaction_type, quantity,
             current_order_id, cfg, algo_order_id, emit,
+            agent_id=agent_id,
         )
         return signal, remaining_qty, cumulative_filled, current_order_filled
 
@@ -1563,6 +1568,7 @@ async def _chase_abort_on_consecutive_errors(
     result: "ChaseResult",
     emit: Callable,
     algo_order_id: int | None,
+    agent_id: "int | None" = None,
 ) -> "ChaseResult":
     """Handle consecutive-error abort in the chase loop.
 
@@ -1591,6 +1597,7 @@ async def _chase_abort_on_consecutive_errors(
             account=account, symbol=symbol,
             exchange=cfg.exchange, side=transaction_type,
             qty=quantity, mode="live", source="chase",
+            agent_id=agent_id,
             error=abort_msg,
         )
     except Exception:
@@ -1615,6 +1622,7 @@ async def _ch_hold_on_repeated_rejection(
     cfg: "ChaseConfig",
     algo_order_id: "int | None",
     emit: Callable,
+    agent_id: "int | None" = None,
 ) -> "ChaseResult":
     """Operator instruction (2026-10): a SECOND consecutive price-shaped
     REJECTED outcome for the SAME chase must stop auto-retrying and hand
@@ -1622,7 +1630,7 @@ async def _ch_hold_on_repeated_rejection(
 
     Reuses the EXISTING held-order mechanism verbatim — `AlgoOrder.status
     == "HELD"` + `hold_json` (`order_hold.py`), the same fields
-    `order_hold_gate.py:record_held_close` already writes for expiry-
+    `order_hold_gate.py:record_held_order` already writes for expiry-
     close holds, surfaced today by `GET /api/orders/held` and released
     via `POST /api/orders/held/{id}/release` — no new status, column, or
     UI surface. Category `AGENT_ORDER` (defined in `order_hold.py`,
@@ -1694,6 +1702,7 @@ async def _ch_hold_on_repeated_rejection(
         send_order_failure_alert(
             account=account, symbol=symbol, exchange=cfg.exchange,
             side=transaction_type, qty=quantity, mode="live", source="chase",
+            agent_id=agent_id,
             error=f"{reason}. No further auto-retry will be attempted.",
         )
     except Exception:
@@ -1714,6 +1723,7 @@ async def _ch_handle_poll_signal(
     algo_order_id: "int | None" = None,
     result: "ChaseResult | None" = None,
     emit: "Callable | None" = None,
+    agent_id: "int | None" = None,
 ) -> "tuple[bool, str | None, int]":
     """Interpret the poll signal, apply the cancelled/rejected-continue
     backoff, and track consecutive price-shaped rejections.
@@ -1739,6 +1749,7 @@ async def _ch_handle_poll_signal(
             await _ch_hold_on_repeated_rejection(
                 result, account, symbol, transaction_type, quantity,
                 current_order_id, cfg, algo_order_id, emit or (lambda *a, **k: None),
+                agent_id=agent_id,
             )
             return True, current_order_id, 0
         backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
@@ -1766,6 +1777,7 @@ async def _ch_handle_attempt_error(
     result: "ChaseResult",
     emit: Callable,
     algo_order_id: "int | None",
+    agent_id: "int | None" = None,
 ) -> "tuple[ChaseResult | None, int]":
     """Handle a broker exception in the chase loop.
 
@@ -1799,6 +1811,7 @@ async def _ch_handle_attempt_error(
             send_order_failure_alert(
                 account=account, symbol=symbol, exchange=cfg.exchange,
                 side=transaction_type, qty=quantity, mode="live", source="chase",
+                agent_id=agent_id,
                 error=abort_msg,
             )
         except Exception:
@@ -1823,6 +1836,7 @@ async def _ch_handle_attempt_error(
             consecutive_errors, attempt, exc,
             account, symbol, transaction_type, quantity,
             current_order_id, cfg, result, emit, algo_order_id,
+            agent_id=agent_id,
         )
         return abort, consecutive_errors
     # Rate-limit responses get a longer cool-off than a normal re-quote
@@ -1841,6 +1855,7 @@ async def _ch_exhaust_max_attempts(
     cfg: "ChaseConfig",
     account: str, symbol: str, transaction_type: str,
     quantity: int, algo_order_id: "int | None", emit: Callable,
+    agent_id: "int | None" = None,
 ) -> "ChaseResult":
     """Handle max-attempts exhaustion: cancel live order, set FAILED, schedule terminal.
 
@@ -1885,6 +1900,7 @@ async def _ch_exhaust_max_attempts(
             account=account, symbol=symbol,
             exchange=cfg.exchange, side=transaction_type,
             qty=quantity, mode="live", source="chase",
+            agent_id=agent_id,
             error=_msg,
         )
     except Exception as _alert_exc:
@@ -2396,6 +2412,7 @@ async def chase_order(
     algo_order_id: int | None = None,
     already_filled: int = 0,
     already_filled_price: float = 0.0,
+    agent_id: int | None = None,
 ) -> ChaseResult:
     """Chase a limit order until filled — public entry point.
 
@@ -2409,6 +2426,15 @@ async def chase_order(
     rationale (2026-10 fix). The `finally` guarantees the marker clears
     on every return/exception path, including every early-return branch
     inside `_chase_order_impl`.
+
+    `agent_id` — the originating AlgoOrder row's `agent_id`, when the
+    caller already has it in scope (e.g. an agent-fired place_order
+    action passes `agent.id`). Threaded straight through to every
+    failure alert fired inside the retry loop so it's labeled
+    "Agent"/"Agent Bracket" instead of defaulting to "Manual" — see
+    `alert_utils._classify_order_origin_label`. Callers with no agent
+    context (ticket/basket placement, template-wing chase) omit it,
+    correctly defaulting to None.
     """
     _ch_mark_chase_active(algo_order_id)
     try:
@@ -2416,6 +2442,7 @@ async def chase_order(
             account, symbol, transaction_type, quantity,
             cfg=cfg, on_event=on_event, algo_order_id=algo_order_id,
             already_filled=already_filled, already_filled_price=already_filled_price,
+            agent_id=agent_id,
         )
     finally:
         _ch_mark_chase_inactive(algo_order_id)
@@ -2431,6 +2458,7 @@ async def _chase_order_impl(
     algo_order_id: int | None = None,
     already_filled: int = 0,
     already_filled_price: float = 0.0,
+    agent_id: int | None = None,
 ) -> ChaseResult:
     """
     Chase a limit order until filled.
@@ -2672,13 +2700,14 @@ async def _chase_order_impl(
             signal, remaining_qty, cumulative_filled, current_order_filled = await _chase_poll_status(
                 account, current_order_id, cfg, symbol, transaction_type,
                 quantity, result, attempt, remaining_qty, algo_order_id, emit,
-                cumulative_filled, current_order_filled,
+                cumulative_filled, current_order_filled, agent_id=agent_id,
             )
             done, current_order_id, consecutive_price_rejections = await _ch_handle_poll_signal(
                 signal, current_order_id, cfg, symbol,
                 consecutive_price_rejections=consecutive_price_rejections,
                 account=account, transaction_type=transaction_type, quantity=quantity,
                 algo_order_id=algo_order_id, result=result, emit=emit,
+                agent_id=agent_id,
             )
             if done:
                 return result
@@ -2687,7 +2716,7 @@ async def _chase_order_impl(
             abort, consecutive_errors = await _ch_handle_attempt_error(
                 e, consecutive_errors, attempt, symbol,
                 account, transaction_type, quantity, current_order_id,
-                cfg, result, emit, algo_order_id,
+                cfg, result, emit, algo_order_id, agent_id=agent_id,
             )
             if abort is not None:
                 return abort
@@ -2695,4 +2724,5 @@ async def _chase_order_impl(
     return await _ch_exhaust_max_attempts(
         result, current_order_id, cfg,
         account, symbol, transaction_type, quantity, algo_order_id, emit,
+        agent_id=agent_id,
     )

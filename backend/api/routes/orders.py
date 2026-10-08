@@ -1242,6 +1242,7 @@ async def _rco_run_template_attach(row) -> "tuple | None":
             parent_fill_price=float(row.fill_price or row.initial_price or 0),
             parent_product=row.product or "NRML",
             parent_order_id=row.id,
+            parent_agent_id=getattr(row, "agent_id", None),
             apply_path=apply_path,
         )
     return result

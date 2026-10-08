@@ -43,12 +43,19 @@ def template_exit_held(override: bool | None = None) -> bool:
 
 async def record_held_order(category: HoldCategory, *, account: str, symbol: str,
                             exchange: str, side: str, qty: int, product: str,
-                            reason: str, price_policy: str = "CHASE_MED") -> int | None:
+                            reason: str, price_policy: str = "CHASE_MED",
+                            agent_id: "int | None" = None) -> int | None:
     """Persist one HELD AlgoOrder for any hold category. Returns the row id.
 
     Generic form of the old `record_held_close` (which held one and only one
     category, `EXPIRY_CLOSE`, hardcoded). See the module docstring in
     `order_release.py` for how to wire up a new category end to end.
+
+    `agent_id` — the firing agent's row id, when the caller is an agent
+    action (e.g. ExpiryEngine, fired by expiry-day-*-itm-auto-close). Persisted
+    on the row so a later release's resumed chase correctly labels its
+    failure alerts "Agent"/"Agent Bracket" instead of defaulting to "Manual"
+    — see `alert_utils._classify_order_origin_label`.
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -60,7 +67,7 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
                 account=account, symbol=symbol, exchange=exchange,
                 transaction_type=side, quantity=qty, product=product,
                 initial_price=None, status="HELD", engine="live", mode="live",
-                broker_order_id="", detail=f"HELD: {reason}",
+                broker_order_id="", detail=f"HELD: {reason}", agent_id=agent_id,
                 hold_json=hold_record(category, reason, price_policy, None, held_at),
             )
             s.add(row)
@@ -73,19 +80,6 @@ async def record_held_order(category: HoldCategory, *, account: str, symbol: str
     except Exception as e:
         logger.error(f"[HOLD] could not record held order ({category.value}) for {symbol}: {e}")
         return None
-
-
-async def record_held_close(*, account: str, symbol: str, exchange: str,
-                            side: str, qty: int, product: str,
-                            reason: str) -> int | None:
-    """Backward-compat wrapper: persist one HELD AlgoOrder for an expiry
-    close specifically. New code should call `record_held_order` directly
-    with the category it needs; this is kept because callers/tests still
-    reference it by this exact name."""
-    return await record_held_order(
-        HoldCategory.EXPIRY_CLOSE, account=account, symbol=symbol, exchange=exchange,
-        side=side, qty=qty, product=product, reason=reason,
-    )
 
 
 async def template_exit_override(parent_row_id: int) -> bool | None:

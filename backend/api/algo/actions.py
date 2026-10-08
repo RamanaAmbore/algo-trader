@@ -206,17 +206,20 @@ _LIVE_ACTION_HANDLERS: dict[str, _HandlerRef] = {
 
 
 # action_type → noop (non-broker) handler. `swallow_errors=False` for
-# `send_summary` / `chase_close` preserves their EXISTING un-wrapped
-# behavior (an exception propagates out of `_al_run_noop_handler` to
-# `execute()`'s outer try/except → `_al_action_failed_audit`).
+# `send_summary` preserves its EXISTING un-wrapped behavior (an
+# exception propagates out of `_al_run_noop_handler` to `execute()`'s
+# outer try/except → `_al_action_failed_audit`).
 # `swallow_errors=True` for the other four preserves their existing
 # wrapped behavior (exception is logged + swallowed, handler returns
 # False, `execute()` continues without logging success or failure).
+# `chase_close` was REMOVED from this dict (2026-10 cleanup) — it was
+# dead code: `chase_close` is in `BROKER_ACTIONS` (above), so
+# `_resolve_mode` always routes it to `_LIVE_ACTION_HANDLERS` first;
+# this noop entry's own comment admitted reaching it meant
+# BROKER_ACTIONS was already misconfigured. Its target function,
+# `_action_chase_close` in actions_live.py, was deleted alongside it.
 _NOOP_ACTION_HANDLERS: dict[str, _HandlerRef] = {
     "send_summary":     _HandlerRef("backend.api.algo.actions_live", "_action_send_summary", False),
-    # Safety net — chase_close is in BROKER_ACTIONS; reaching here means
-    # BROKER_ACTIONS is misconfigured.
-    "chase_close":      _HandlerRef("backend.api.algo.actions_live", "_action_chase_close", False),
     "monitor_order":    _HandlerRef(__name__, "monitor_order", True),
     "deactivate_agent": _HandlerRef(__name__, "deactivate_agent", True),
     "set_flag":         _HandlerRef(__name__, "set_flag", True),
@@ -473,6 +476,7 @@ async def _al_apply_template(
                 parent_fill_price=parent_price,
                 parent_product=str(params.get("product") or "NRML"),
                 parent_order_id=algo_order_id,
+                parent_agent_id=getattr(agent, "id", None),
                 apply_path=apply_path,
             )
     except Exception as e:
@@ -704,7 +708,6 @@ from backend.api.algo.actions_paper import (  # noqa: E402
 )
 
 from backend.api.algo.actions_live import (  # noqa: E402
-    _action_chase_close,
     _action_send_summary,
     _fetch_ltp,
     _action_place_order,

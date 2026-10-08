@@ -1014,6 +1014,7 @@ def _wing_chase_fixture(monkeypatch):
     plan = SimpleNamespace(
         parent_account="ZG0790",
         template_id=11,
+        parent_agent_id=None,
         wing=SimpleNamespace(tradingsymbol="NIFTY26OCT25000PE", exchange="NFO",
                              transaction_type="BUY", quantity=75, product="NRML",
                              limit_price=100.0, order_type="LIMIT"),
@@ -1057,6 +1058,7 @@ def _wing_test_plan():
     return SimpleNamespace(
         parent_account="ZG0790",
         template_id=11,
+        parent_agent_id=None,
         wing=SimpleNamespace(tradingsymbol="NIFTY26OCT25000PE", exchange="NFO",
                              transaction_type="BUY", quantity=75, product="NRML",
                              limit_price=100.0, order_type="LIMIT"),

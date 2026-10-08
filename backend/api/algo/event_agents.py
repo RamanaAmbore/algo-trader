@@ -104,6 +104,7 @@ def _render_order_failure(rec: dict) -> tuple:
         masked=x["masked"], symbol=x["symbol"], exchange=x["exchange"], side=x["side"],
         qty=x["qty"], mode=x["mode"], source=x["source"], error=x["error"],
         suppressed_count=x["suppressed_count"], ist_disp=x["ist_disp"],
+        agent_id=x.get("agent_id"),
     )
     return f"Order Rejected: {x['symbol']} {x['side']}", _html_to_plain(tg_body), tg_body, (subject, email_body)
 

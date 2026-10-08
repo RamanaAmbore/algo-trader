@@ -22,8 +22,7 @@ from datetime import date, datetime, time as dtime, timedelta
 from typing import Callable, Optional
 
 from backend.brokers import broker_apis
-from backend.brokers.connections import Connections
-from backend.shared.helpers.date_time_utils import timestamp_indian, timestamp_display, is_market_open
+from backend.shared.helpers.date_time_utils import timestamp_indian, timestamp_display
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.shared.helpers.utils import config
 
@@ -200,9 +199,14 @@ def _exp_net_one_pair(
 
 
 class ExpiryEngine:
-    def __init__(self, on_event: Callable | None = None):
+    def __init__(self, on_event: Callable | None = None, agent_id: "int | None" = None):
         self.state = ExpiryState()
         self.on_event = on_event
+        # The firing agent's row id (expiry-day-*-itm-auto-close), when known
+        # — threaded into every chase_order()/record_held_order() call this
+        # engine makes so failure/hold alerts correctly label "Agent"/
+        # "Agent Bracket" instead of defaulting to "Manual".
+        self._agent_id = agent_id
         # Settings live in DB now (algo.*); YAML `algo:` block is the
         # boot-time fallback. Re-read on every engine construction so a
         # tweak via /admin/settings takes effect on the next chase run
@@ -251,7 +255,7 @@ class ExpiryEngine:
         if exchange in self._instruments_cache:
             return self._instruments_cache[exchange]
 
-        from backend.brokers.registry import get_broker, all_brokers
+        from backend.brokers.registry import all_brokers
         # Pick any loaded account — instruments are the same broker-side.
         brokers = all_brokers()
         if not brokers:
@@ -633,6 +637,7 @@ class ExpiryEngine:
                     account=pos.account, symbol=pos.tradingsymbol,
                     exchange=pos.exchange, side=txn, qty=qty,
                     product=pos.product, reason="expiry close (held by default)",
+                    agent_id=self._agent_id,
                 )
                 continue
 
@@ -653,6 +658,7 @@ class ExpiryEngine:
                     quantity=q,
                     cfg=c,
                     on_event=self.on_event,
+                    agent_id=self._agent_id,
                 )
                 if result.status == ChaseStatus.FILLED:
                     self.state.closed.append(result)

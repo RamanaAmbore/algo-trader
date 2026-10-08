@@ -34,8 +34,7 @@ beyond) is a registration, not a change to the dispatcher in
   MUST be registered, or release will silently misbehave.
 
   IMPORTANT: `order_hold_gate.record_held_order` hardcodes
-  `engine="live"` / `mode="live"` on the row it writes (unchanged from the
-  original `record_held_close`). A category whose agent can run in
+  `engine="live"` / `mode="live"` on the row it writes. A category whose agent can run in
   paper/sim/replay/shadow mode must NOT use `record_held_order` as-is for
   its hold — doing so creates a live-mode row, and releasing it later
   places a REAL broker order (see the mode-gate invariant on
@@ -272,6 +271,7 @@ async def release_held_order(order_id: int, actor: str) -> dict:
         await s.commit()
         account, symbol, exchange = row.account, row.symbol, row.exchange
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
+        agent_id = getattr(row, "agent_id", None)
         # P1 fix (2026-10): resume at the chase tier the row was originally
         # held/placed with (see `_chase_level_from_price_policy`'s docstring)
         # instead of a hardcoded MED tuple.
@@ -280,13 +280,16 @@ async def release_held_order(order_id: int, actor: str) -> dict:
     from backend.api.algo.order_events import write_event
     await write_event(row_id, "released", f"Released by {actor}: {side} {qty} {symbol}", {"actor": actor})
 
-    asyncio.create_task(_chase_released(row_id, account, symbol, exchange, side, qty, product, chase_level))
+    asyncio.create_task(_chase_released(
+        row_id, account, symbol, exchange, side, qty, product, chase_level,
+        agent_id=agent_id,
+    ))
     logger.info(f"[RELEASE] order {row_id} released by {actor}")
     return {"ok": True, "reason": "released; chasing", "status": "OPEN"}
 
 
 async def _chase_released(row_id, account, symbol, exchange, side, qty, product,
-                          level: str = "med") -> None:
+                          level: str = "med", agent_id: "int | None" = None) -> None:
     from backend.api.algo.chase import chase_order
     from backend.api.routes.orders_helpers import _live_chase_config
     # P1 fix (2026-10): was a hardcoded MED tuple regardless of `level` —
@@ -297,7 +300,8 @@ async def _chase_released(row_id, account, symbol, exchange, side, qty, product,
     cfg.exchange = exchange
     try:
         await chase_order(account=account, symbol=symbol, transaction_type=side,
-                          quantity=qty, cfg=cfg, algo_order_id=row_id)
+                          quantity=qty, cfg=cfg, algo_order_id=row_id,
+                          agent_id=agent_id)
     except Exception as e:
         logger.error(f"[RELEASE] chase failed for order {row_id}: {e}")
 
@@ -388,6 +392,7 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
         side, qty, product, row_id = row.transaction_type, int(row.quantity), row.product, row.id
         intent = row.intent or None
         already_filled = int(row.filled_quantity or 0)
+        agent_id = getattr(row, "agent_id", None)
         # P1 fix (2026-10): resume at the original chase tier (see
         # `_chase_level_from_price_policy`'s docstring), not a hardcoded
         # MED tuple.
@@ -402,7 +407,7 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
 
     asyncio.create_task(_resume_chase_after_hold(
         row_id, account, symbol, exchange, side, qty, product, intent, already_filled,
-        chase_level,
+        chase_level, agent_id=agent_id,
     ))
     logger.info(f"[RELEASE] repeated-rejection hold {row_id} released by {actor} — resuming chase")
     return {"ok": True, "reason": "released; chasing resumed", "status": "OPEN"}
@@ -410,7 +415,7 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
 
 async def _resume_chase_after_hold(
     row_id, account, symbol, exchange, side, qty, product, intent, already_filled,
-    level: str = "med",
+    level: str = "med", agent_id: "int | None" = None,
 ) -> None:
     from backend.api.algo.chase import chase_order, _ch_mark_chase_inactive
     from backend.api.routes.orders_helpers import _live_chase_config
@@ -423,7 +428,7 @@ async def _resume_chase_after_hold(
     try:
         await chase_order(account=account, symbol=symbol, transaction_type=side,
                           quantity=qty, cfg=cfg, algo_order_id=row_id,
-                          already_filled=already_filled)
+                          already_filled=already_filled, agent_id=agent_id)
     except Exception as e:
         logger.error(f"[RELEASE] resume-chase failed for order {row_id}: {e}")
     finally:
@@ -527,7 +532,7 @@ async def cancel_held_order(order_id: int, actor: str) -> dict:
 
     Deliberate deviation from "generic across all hold categories, don't
     branch by category": `EXPIRY_CLOSE` and `AGENT_ORDER` holds both set
-    `row.status = "HELD"` at hold-time (`order_hold_gate.py:record_held_close`,
+    `row.status = "HELD"` at hold-time (`order_hold_gate.py:record_held_order`,
     `chase.py`'s repeated-rejection hold), but `TEMPLATE_EXIT` holds
     (`order_hold_gate.py:hold_template_exit`) do NOT touch `row.status` —
     they mark a FILLED parent's pending exit-attach with `hold_json` only,
