@@ -73,6 +73,13 @@
       title: 'Release all held orders?',
       message: `${rows.length} held order${rows.length === 1 ? '' : 's'} will be sent to the broker now.`,
       danger: true,
+      // Explicit labels (audit fix, 2026-10) — `danger: true` with no
+      // override defaults to ConfirmModal's generic 'Delete'/'Cancel',
+      // which reads backwards here: this is a non-destructive release-to-
+      // broker action, not a delete. Matches the per-row cancel()'s own
+      // unambiguous-labeling convention above.
+      confirmLabel: 'Release all',
+      cancelLabel: 'Keep held',
     });
     if (!ok) return;
     releasingAll = true;
