@@ -123,7 +123,15 @@
    * silently disappear at the next 08:00 rollover.
    */
   function _isCurrentSessionRow(/** @type {any} */ o) {
-    if (_STATUS_PREDICATES.open((o?.status || '').toUpperCase())) return true;
+    const st = (o?.status || '').toUpperCase();
+    if (_STATUS_PREDICATES.open(st)) return true;
+    // HELD/CANCEL_FAILED rows are never session-filtered either, same
+    // rationale as `open` above — a row awaiting operator review, or one
+    // whose cancel request may have failed and could still be live at the
+    // broker, must stay visible across the 08:00 IST rollover until the
+    // operator actually resolves it (audit fix, 2026-10 — see `held`
+    // predicate below for why both statuses are grouped together).
+    if (_STATUS_PREDICATES.held(st)) return true;
     const ms = _rowTsMs(o);
     if (!Number.isFinite(ms)) return true; // can't judge — keep, don't hide data we can't classify
     return isCurrentTradingSession(ms);
@@ -369,8 +377,24 @@
     // broker's own COMPLETE status lands) never carry 'COMPLETE'.
     complete:  st => st === 'COMPLETE' || st === 'FILLED',
     // Rejected + Cancelled merged into one chip (2026-09-30, operator
-    // instruction) — single combined predicate, single chip.
-    rejected_cancelled: st => st === 'REJECTED' || st === 'CANCELLED',
+    // instruction) — single combined predicate, single chip. UNFILLED
+    // joined here too (audit fix, 2026-10): it's a terminal give-up with
+    // no further position effect (strategies.py already treats it as
+    // "closed" alongside REJECTED/CANCELLED), and `_isInFlight` below
+    // deliberately does NOT offer Reconcile for it — this file already
+    // treats UNFILLED as resolved, not as something still needing
+    // operator attention the way HELD/CANCEL_FAILED do (see `held` below).
+    rejected_cancelled: st => st === 'REJECTED' || st === 'CANCELLED' || st === 'UNFILLED',
+    // Held/Attention (audit fix, 2026-10) — HELD (an operator-review hold,
+    // `order_hold_gate.py`) and CANCEL_FAILED (a cancel request failed —
+    // the order MAY STILL BE LIVE AT THE BROKER) matched NO predicate
+    // above and were completely invisible in this view before this fix,
+    // only ever shown in HeldOrdersCard's own (HELD-only) list. Grouped
+    // together because `backend/api/models.py`'s ALGO_ORDER_FINAL_STATUSES
+    // excludes both from "truly final" for the identical reason: a late
+    // event can still change the outcome, so a possibly-still-live,
+    // unprotected order must never be hidden from the main order book.
+    held: st => st === 'HELD' || st === 'CANCEL_FAILED',
   };
 
   /**
@@ -533,14 +557,15 @@
   // an empty list underneath.
   const _countScopedOrderRows = $derived.by(() => _applyAccountFilter(orderRows, accountFilter));
   const _statusCounts = $derived.by(() => ({
+    held:                _countScopedOrderRows.filter(o => _STATUS_PREDICATES.held((o.status || '').toUpperCase())).length,
     chase:               _countScopedOrderRows.filter(_isChaseInFlight).length,
     open:                _countScopedOrderRows.filter(o => _STATUS_PREDICATES.open((o.status || '').toUpperCase())).length,
     complete:            _countScopedOrderRows.filter(o => _STATUS_PREDICATES.complete((o.status || '').toUpperCase())).length,
     rejected_cancelled:  _countScopedOrderRows.filter(o => _STATUS_PREDICATES.rejected_cancelled((o.status || '').toUpperCase())).length,
   }));
 
-  // ── Default chip resolution (2026-09-30) ────────────────────────────────
-  // Fixed display order for the 5 chips. When nothing has been explicitly
+  // ── Default chip resolution (2026-09-30, extended 2026-10 for Held) ────
+  // Fixed display order for the 6 chips. When nothing has been explicitly
   // clicked (`_internalStatus === null`), the SINGLE chip highlighted +
   // shown is the first one in this order whose count is non-zero — not a
   // union of every non-zero chip. Both `_statusCounts` and
@@ -548,7 +573,9 @@
   // `_defaultActiveId` recompute automatically on every poll tick/status
   // change with no extra wiring — e.g. Open emptying while Filled still
   // has rows moves the highlight+list to Filled on the very next tick.
-  const CHIP_ORDER = ['chase', 'open', 'complete', 'rejected_cancelled', 'gtt'];
+  // `held` sits FIRST — a possibly-still-live, unprotected order (HELD /
+  // CANCEL_FAILED) outranks every other bucket for default visibility.
+  const CHIP_ORDER = ['held', 'chase', 'open', 'complete', 'rejected_cancelled', 'gtt'];
   const _countsById = $derived.by(() => ({ ..._statusCounts, gtt: _filteredGttRows.length }));
   // Gated on `_loading` (the ORDERS fetch flag) so the default can't
   // transiently resolve to 'gtt' purely because the independent GTT poll
@@ -634,6 +661,7 @@
 {#if !isCollapsed}
   <div class="ob-status-bar">
     {#each [
+      { id: 'held',               label: 'Held/Attn',          status: 'held',    count: _statusCounts.held },
       { id: 'chase',              label: 'Chase',              status: 'chase',   count: _statusCounts.chase },
       { id: 'open',               label: 'Open',               status: 'running', count: _statusCounts.open },
       { id: 'complete',           label: 'Filled',             status: 'active',  count: _statusCounts.complete },
@@ -896,7 +924,7 @@
 
   .ob-status-bar {
     display: grid;
-    grid-template-columns: repeat(5, minmax(0, 1fr));
+    grid-template-columns: repeat(6, minmax(0, 1fr));
     gap: 0.25rem;
     padding: 0.3rem 0.4rem 0.2rem;
   }
@@ -993,6 +1021,23 @@
       linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
     border-color: rgba(34, 211, 238, 0.55);
   }
+  /* Held/Attention chip — violet tint (audit fix, 2026-10), the one
+     remaining palette color not already claimed by a sibling chip
+     (sky=Chase, amber=Open, green=Filled, red=Rejected/Cancelled,
+     cyan=GTT). Covers HELD (operator-review hold) and CANCEL_FAILED (a
+     cancel request failed — order may still be live at the broker): both
+     need an unmistakably distinct, attention-grabbing color since they
+     represent orders needing operator action, not a routine resting or
+     already-resolved state. */
+  .ob-sc[data-status="held"] {
+    background:
+      linear-gradient(180deg,
+        rgba(192, 132, 252, 0.18) 0%,
+        rgba(192, 132, 252, 0.05) 60%,
+        rgba(0, 0, 0, 0.08) 100%),
+      linear-gradient(180deg, #2c3a5a 0%, #1a2740 100%);
+    border-color: rgba(192, 132, 252, 0.55);
+  }
 
   /* Count number — bigger + color-coded by status. 2026-09 font-size
      audit: 1.1rem falls in the gap between --fs-xl (0.85rem/13.6px)
@@ -1014,6 +1059,7 @@
   .ob-sc[data-status="error"]     .ob-sc-n { color: var(--c-short, #f87171); }
   .ob-sc[data-status="chase"]     .ob-sc-n { color: var(--algo-sky, #7dd3fc); }
   .ob-sc[data-status="gtt"]       .ob-sc-n { color: var(--algo-cyan, #22d3ee); }
+  .ob-sc[data-status="held"]      .ob-sc-n { color: var(--algo-violet, #c084fc); }
 
   .ob-sc-l {
     font-size: var(--fs-xs, 0.6rem);
@@ -1028,11 +1074,11 @@
     white-space: nowrap;
   }
 
-  /* 5 status chips (Chase/Open/Filled/Rejected-Cancelled/GTT) need to fit
-     a 320-375px phone viewport without forcing the grid wider than the
-     card — tighten padding + letter-spacing below 600px so the labels
-     truncate gracefully instead of overflowing. "Rejected/Cancelled" is
-     the longest label in the row and relies on .ob-sc-l's existing
+  /* 6 status chips (Held-Attn/Chase/Open/Filled/Rejected-Cancelled/GTT)
+     need to fit a 320-375px phone viewport without forcing the grid wider
+     than the card — tighten padding + letter-spacing below 600px so the
+     labels truncate gracefully instead of overflowing. "Rejected/Cancelled"
+     is the longest label in the row and relies on .ob-sc-l's existing
      overflow:hidden + ellipsis to degrade instead of wrapping/overflowing. */
   @media (max-width: 600px) {
     .ob-sc { padding: 0.35rem 0.2rem; }

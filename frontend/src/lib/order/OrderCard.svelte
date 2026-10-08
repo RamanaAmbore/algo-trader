@@ -86,6 +86,12 @@
     if (c === 'COMPLETE' || c === 'FILLED')            return 'complete';
     if (c === 'REJECTED')                              return 'rejected';
     if (c === 'CANCELLED')                             return 'cancelled';
+    // Audit fix (2026-10) — HELD (operator-review hold, order_hold_gate.py)
+    // previously fell through to the `inactive` catch-all (grey,
+    // indistinguishable from a long-dead row) despite being an order that
+    // actively needs operator action (release or cancel). Distinct
+    // violet treatment, matching OrderBook.svelte's new "Held/Attn" chip.
+    if (c === 'HELD')                                   return 'held';
     // Audit fix (H-1, H-2) — CANCEL_FAILED is a distinct state from
     // CANCELLED: the operator clicked Kill but the broker.cancel call
     // failed; the order is still live at the broker. Pre-fix it
@@ -451,6 +457,16 @@
     --st-fg:     #94a3b8;
     --st-bg:     rgba(100,116,139,0.15);
     --st-border: rgba(100,116,139,0.38);
+  }
+  /* Audit fix (2026-10) — HELD rows (operator-review hold) get their own
+     violet treatment, matching OrderBook.svelte's "Held/Attn" chip color
+     (--algo-violet). Distinct from `.held-badge` below, which is an
+     ADDITIONAL small pill keyed off `hold_json` presence regardless of
+     base status — this block colors the row's main status card/pill. */
+  :global(.algo-status-card[data-status="held"])     {
+    --st-fg:     #c084fc;
+    --st-bg:     rgba(192,132,252,0.12);
+    --st-border: rgba(192,132,252,0.38);
   }
   :global(.algo-status-card[data-status="running"])   {
     --st-fg:     #fbbf24;
