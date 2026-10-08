@@ -1,10 +1,11 @@
 <!--
-  HeldOrdersCard.svelte — automated orders held for review, with a release
-  action per order. Held expiry closes and held template exits are listed.
+  HeldOrdersCard.svelte — automated orders held for review, with release
+  and cancel actions per order. Lists held expiry closes, held template
+  exits, and held agent orders (chase paused after repeated rejection).
 -->
 <script>
   import { onMount } from 'svelte';
-  import { fetchHeldOrders, releaseHeldOrder } from '$lib/api';
+  import { fetchHeldOrders, releaseHeldOrder, cancelHeldOrder } from '$lib/api';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
 
@@ -17,7 +18,9 @@
   function kindOf(row) {
     try {
       const h = JSON.parse(row.hold || '{}');
-      return h.category === 'template_exit' ? 'Template exit' : 'Expiry close';
+      if (h.category === 'template_exit') return 'Template exit';
+      if (h.category === 'agent_order') return 'Repeated rejection';
+      return 'Expiry close';
     } catch {
       return 'Held';
     }
@@ -38,6 +41,27 @@
       await load();
     } catch (e) {
       toast?.error?.(e?.message || 'Release refused');
+    } finally {
+      busy = { ...busy, [row.id]: false };
+    }
+  }
+
+  async function cancel(row) {
+    const ok = await confirmRef?.ask({
+      title: 'Cancel held order?',
+      message: `${row.side} ${row.qty} ${row.symbol} will be cancelled, not sent to the broker.`,
+      danger: true,
+      confirmLabel: 'Cancel order',
+      cancelLabel: 'Keep held',
+    });
+    if (!ok) return;
+    busy = { ...busy, [row.id]: true };
+    try {
+      await cancelHeldOrder(row.id);
+      toast?.success?.(`Cancelled ${row.side} ${row.qty} ${row.symbol}`);
+      await load();
+    } catch (e) {
+      toast?.error?.(e?.message || 'Cancel refused');
     } finally {
       busy = { ...busy, [row.id]: false };
     }
@@ -87,6 +111,9 @@
         <button type="button" class="held-release"
                 disabled={busy[row.id]}
                 onclick={() => release(row)}>Release</button>
+        <button type="button" class="held-cancel"
+                disabled={busy[row.id]}
+                onclick={() => cancel(row)}>Cancel</button>
       </div>
     {/each}
   </section>
@@ -100,6 +127,8 @@
   .held-desc { flex: 1; color: var(--algo-slate); }
   .held-release { padding: 2px 8px; border: 1px solid var(--c-action); color: var(--c-action); background: transparent; border-radius: 3px; cursor: pointer; }
   .held-release:disabled { opacity: 0.5; cursor: default; }
+  .held-cancel { padding: 2px 8px; border: 1px solid var(--c-short); color: var(--c-short); background: transparent; border-radius: 3px; cursor: pointer; }
+  .held-cancel:disabled { opacity: 0.5; cursor: default; }
   .held-release-all { padding: 2px 8px; border: 1px solid var(--c-action); color: var(--c-action); background: transparent; border-radius: 3px; cursor: pointer; font-size: var(--fs-sm); }
   .held-release-all:disabled { opacity: 0.5; cursor: default; }
 </style>

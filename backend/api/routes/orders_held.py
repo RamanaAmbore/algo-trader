@@ -56,3 +56,11 @@ class HeldOrdersController(Controller):
         if not result["ok"]:
             raise HTTPException(status_code=409, detail=result["reason"])
         return result
+
+    @post("/{order_id:int}/cancel", guards=[admin_guard])
+    async def cancel(self, order_id: int) -> dict:
+        from backend.api.algo.order_release import cancel_held_order
+        result = await cancel_held_order(order_id, actor="operator")
+        if not result["ok"]:
+            raise HTTPException(status_code=409, detail=result["reason"])
+        return result

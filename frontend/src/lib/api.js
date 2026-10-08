@@ -1386,3 +1386,7 @@ export const fetchHeldOrders = () => _get('/orders/held/', { auth: true });
 /** POST /api/orders/held/{id}/release — release one held order or its template exits. */
 export const releaseHeldOrder = (orderId) =>
   _post(`/orders/held/${Number(orderId)}/release`, {}, { auth: true });
+
+/** POST /api/orders/held/{id}/cancel — cancel one held order outright (DB state change only). */
+export const cancelHeldOrder = (orderId) =>
+  _post(`/orders/held/${Number(orderId)}/cancel`, {}, { auth: true });

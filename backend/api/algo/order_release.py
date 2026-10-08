@@ -214,3 +214,70 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
     await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})
     await _fire_template_attach_on_fill(**args)
     return {"ok": True, "reason": "template exits placed", "status": "FILLED"}
+
+
+async def cancel_held_order(order_id: int, actor: str) -> dict:
+    """Abandon a held order instead of releasing it. Pure DB state transition —
+    no held order (any category) has a live resting broker order, so no
+    broker-side cancel call is needed (see `order_hold.py`'s own docstring and
+    the structure of the three `release_*` functions above: each one PLACES
+    something new on release, none of them resume/cancel an already-resting
+    broker order).
+
+    Deliberate deviation from "generic across all hold categories, don't
+    branch by category": `EXPIRY_CLOSE` and `AGENT_ORDER` holds both set
+    `row.status = "HELD"` at hold-time (`order_hold_gate.py:record_held_close`,
+    `chase.py`'s repeated-rejection hold), but `TEMPLATE_EXIT` holds
+    (`order_hold_gate.py:hold_template_exit`) do NOT touch `row.status` —
+    they mark a FILLED parent's pending exit-attach with `hold_json` only,
+    leaving `row.status == "FILLED"`. Branching on hold category (not
+    `row.status`) would mean a template_exit cancel could never succeed
+    (status would always read "FILLED, not HELD"), defeating the feature for
+    one of the three listed categories. Branching on row state instead:
+    - `status == "HELD"` (expiry_close / agent_order): transition to
+      CANCELLED, same as the literal spec.
+    - `status != "HELD"` but a `template_exit` hold is pending: clear the
+      hold only (abandon the pending exit attach), leave `status` untouched.
+      Never overwrite a FILLED parent's status to CANCELLED — that would
+      misstate a real broker fill and corrupt order history/reconcile.
+    - Anything else: refuse, mirroring `release_held_order`'s own refusal
+      shape.
+    """
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder
+    from sqlalchemy import select
+
+    async with async_session() as s:
+        row = (await s.execute(select(AlgoOrder).where(AlgoOrder.id == order_id)
+                               .with_for_update())).scalar_one_or_none()
+        if row is None:
+            return {"ok": False, "reason": "order not found", "status": ""}
+
+        rec = parse_hold_record(row.hold_json) or {}
+        category = rec.get("category")
+        now = datetime.now(timezone.utc).isoformat()
+
+        if row.status == "HELD":
+            row.status = "CANCELLED"
+            row.hold_json = None
+            row.detail = f"{row.detail or ''} · cancelled by {actor} at {now}"
+            await s.commit()
+            account, symbol, exchange = row.account, row.symbol, row.exchange
+            side, qty, row_id = row.transaction_type, int(row.quantity), row.id
+            new_status = "CANCELLED"
+            msg = f"Cancelled by {actor}: {side} {qty} {symbol}"
+        elif category == "template_exit" and row.hold_json:
+            row.hold_json = None
+            row.detail = f"{row.detail or ''} · template exits cancelled by {actor} at {now}"
+            await s.commit()
+            account, symbol, exchange = row.account, row.symbol, row.exchange
+            side, qty, row_id = row.transaction_type, int(row.quantity), row.id
+            new_status = row.status
+            msg = f"Template exits cancelled by {actor}: {side} {qty} {symbol}"
+        else:
+            return {"ok": False, "reason": f"order is {row.status}, not HELD", "status": row.status}
+
+    from backend.api.algo.order_events import write_event
+    await write_event(row_id, "cancelled", msg, {"actor": actor})
+    logger.info(f"[CANCEL] order {row_id} cancelled by {actor}")
+    return {"ok": True, "reason": "cancelled", "status": new_status}

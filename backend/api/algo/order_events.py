@@ -46,7 +46,7 @@ VALID_KINDS = frozenset({
     "template_attach_started", "template_attach_ok", "template_attach_failed",
     "template_attach_skipped",
     # Hold and release lifecycle.
-    "held", "released",
+    "held", "released", "cancelled",
 })
 
 
