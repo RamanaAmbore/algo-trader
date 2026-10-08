@@ -2111,6 +2111,103 @@ If the message contains BOTH a recoverable hint and a non-recoverable override, 
 
 **Invariant**: Non-recoverable errors and non-recoverable rejections terminate the chase immediately without any retry, preventing futile loops on errors that a repriced order cannot fix (bad input, permission denied, margin shortfall). Recoverable errors are bounded by `_MAX_CHASE_ERRORS` so a burst of transients (network blips, rate limits) cannot cause an unbounded retry loop.
 
+### Broker exception type preservation — Dhan & Groww wrapping fixes (2026-10)
+
+**File**: `backend/brokers/adapters/dhan.py` · `backend/brokers/adapters/groww.py`
+
+Chase error classification depends on typed exceptions reaching its handlers. Two fixes:
+
+**Dhan (`d5b12f6d`)**: `place_order` now catches `BrokerError` subclasses separately and 
+re-raises them unchanged. Previously, a blanket `except Exception` re-wrapped EVERY exception 
+(including already-typed `BrokerAuthError`, `BrokerRateLimitError` from the SDK proxy's own 
+auth-retry / rate-limit paths) as `BrokerNetworkError`, destroying the real type before 
+`chase.py:_ch_is_recoverable_error()` ever saw it. Fixed: lines 1386–1397 check `except 
+BrokerError: raise` BEFORE the generic `except Exception as e: raise BrokerNetworkError(...)`, 
+preserving typed exceptions.
+
+**Groww (`5182f3d4`)**: `place_order` had no exception handling at all around the SDK call. 
+Any raised exception (network, auth-expiry, bad-input) propagated untyped. Fixed with a 
+split design: `_place_order_impl` (the `@_retry_groww_auth`-decorated body) still re-raises 
+known Groww SDK exception types UNCHANGED (lines 1236–1255) so the decorator's own 
+retry/backoff logic sees the real type. A new thin outer `place_order` wrapper (lines 
+1167–1203) then classifies whatever survives retry via the previously-unused `_groww_exc()` 
+status-code mapper, translating `GrowwAPIException` subtypes to `BrokerError` hierarchy. 
+Non-retryable exceptions (`NotImplementedError`, `ValueError` for bad exchange) pass through 
+unconverted.
+
+**Invariant**: Broker exceptions are never double-wrapped. Typed `BrokerError` subclasses 
+reach chase's own classification layer intact.
+
+### Chase rejection classification now checks message hints (2026-10, amends error recovery above)
+
+**File**: `backend/api/algo/chase.py` — `_ch_is_recoverable_error()`, `_ch_rejection_is_recoverable()`
+
+Amends the "Rejection-status recovery" logic: `_ch_is_recoverable_error(exc)` (the 
+exception-raised path at line 528) now checks exception message text BEFORE checking type, 
+identical to `_ch_rejection_is_recoverable()` (the status-poll path at line 556). Both now 
+run `_CH_NON_RECOVERABLE_REJECTION_HINTS` ("margin", "rms", "risk", "permission", "blocked") 
+against the message FIRST — if matched, the exception/status is non-recoverable regardless 
+of type. This prevents a margin-shortfall raised as an exception from falling through to 
+"recoverable" and wasting retries. Example: `_ch_is_recoverable_error(Exception("margin 
+shortfall"))` now returns False (abort), matching the behavior of a REJECTED status with 
+the same message (line 565). The ordering is critical: non-recoverable overrides checked 
+before price-hint recoverable list at lines 551–552 (exception path) and 565–567 (status path).
+
+### Chase repeated-rejection hold gate (2026-10, amends recovery logic above)
+
+**File**: `backend/api/algo/chase.py` — `_ch_hold_on_repeated_rejection()`
+
+Amends the "Recovery logic" bullet: when two consecutive price-shaped rejections occur on 
+the same chase, the second rejection now places the order in a HELD state 
+(`HoldCategory.AGENT_ORDER`, line 1654) instead of continuing to retry a third time. The 
+operator releases the hold via `POST /api/orders/release` (function `release_repeated_rejection_hold` 
+in `backend/api/routes/order_release.py`), resuming the chase with the row's own persisted 
+side/qty/intent intact. The gate at line 1714 calls `_ch_hold_on_repeated_rejection()` when 
+`_rejection_count >= 2`. No cancel path exists for held orders today; release-only. A 
+race-safe release protocol was fixed (commit `c5322d53`): releasing must mark the row 
+chase-active BEFORE committing `status=OPEN`, not after, or the reconcile sweep can flip 
+a freshly-released row back to REJECTED in the gap before the resumed chase starts.
+
+### Active-chase registry prevents false "untracked order" aborts (2026-10)
+
+**File**: `backend/api/algo/chase.py` — `_ACTIVE_CHASE_REFCOUNT`, `is_chase_active()`, 
+`mark_chase_active()`, `unmark_chase_active()`  
+**File**: `backend/api/routes/orders_postback.py`, `backend/api/routes/orders.py` — postback 
+handlers + `_chase_process_live_row` reconcile finalizer
+
+**Root cause**: Kite's rejection postback lands within seconds of order placement — well 
+before the chase loop's next poll (~20s). When rejection postback updates the row's status 
+to REJECTED, a guard in `_sync_algo_order_id()` (line 1064, checking 
+`ALGO_ORDER_FINAL_STATUSES = {FILLED, REJECTED}`) correctly prevents overwriting `broker_order_id` 
+on a final row. But the original check was insufficient: it still forced the chase loop to 
+abort with a false "untracked order" alert, even though the rejection was genuinely 
+received and the order was NOT untracked (it was simply rejected and correctly finalized).
+
+**Fix**: A new module-level registry `_ACTIVE_CHASE_REFCOUNT` (line 648, `dict[int, int]`) 
+tracks in-flight chase executions. `chase_order()` calls `mark_chase_active(algo_order_id)` 
+at entry (line 660, increments refcount) and `unmark_chase_active()` at exit (lines 
+672–676, decrements and deletes when refcount reaches 0), wrapping the entire chase body 
+in a try/finally. The Kite postback handler (lines in `orders_postback.py`), Dhan/Groww 
+postback handler (lines in `orders_postback.py`), AND the reconcile path's `_chase_process_live_row` 
+finalizer (line 225 in `orders.py`) now check `is_chase_active(algo_order_id)` before 
+writing any non-FILLED terminal status. If a chase is active, the postback/reconcile withholds 
+the status write (logs and continues) — allowing the active chase to finish naturally and 
+reach its own graceful abort/completion. FILLED status always applies regardless (cannot un-fill).
+
+**Causal chain**: (1) Chase places order at timestamp T0. (2) Within seconds, postback 
+arrives with REJECTED status. (3) `_sync_algo_order_id` correctly refuses to update 
+`broker_order_id` on a FINAL row (the guard at line 1064). (4) BUT before this fix, the 
+loop would still abort with a false "untracked" alert because it SAW the row's status was 
+FINAL but had NO WAY to know whether the postback or some other cause had finalized it. 
+(5) With the registry, the postback checks `is_chase_active(row.id)` — if active, it 
+skips the status write entirely. (6) Chase loop's own `_emit_chase_terminal()` completes 
+naturally, reads the genuinely-REJECTED order from the broker, and terminates correctly 
+with a "rejected" result (not a false "untracked" abort).
+
+**Invariant**: A rejection postback that arrives while a chase is active is withheld until 
+the chase loop exits, preventing race conditions between in-process retry logic and 
+asynchronous postback arrivals.
+
 ### Frontend polling guard
 
 **File**: `frontend/src/lib/order/ChaseCard.svelte`
@@ -2209,6 +2306,18 @@ Instead, it:
 - Transport failures (socket errors, timeouts) → `BrokerNetworkError`
 
 This enables circuit breaker and PriceBroker failover logic to correctly handle remote errors.
+
+**Error type map completeness** (Oct 2026, commit `e8d9a4d7`): `_ERROR_TYPE_MAP` 
+(lines 125–133 in `remote_broker.py`) now includes all `BrokerError` subclasses: 
+`BrokerAuthError`, `BrokerRateLimitError`, `BrokerNetworkError`, `BrokerOrderError`, 
+`BrokerInputError`, `BrokerCapabilityError`, plus base `BrokerError`. Previously missing 
+`BrokerInputError`, `BrokerOrderError`, `BrokerCapabilityError` — in conn-service mode 
+these degraded to generic `BrokerError` and chase.py's `_ch_is_recoverable_error()` 
+misclassified them as recoverable. Also added drift-guard test 
+(`backend/tests/broker/test_broker_robustness_batch2.py`) that enumerates every `BrokerError` 
+subclass via introspection and fails automatically if a new subclass is added without a 
+matching map entry. No silent regressions if future code adds a new exception type to the 
+hierarchy.
 
 `_ALLOWED_BROKER_METHODS` whitelist (28 methods) — unknown method → 403.
 
@@ -3089,3 +3198,8 @@ broker to prefetch during the quiet window without polluting snapshots.
 | 2026-09-22 | v1.29 BrokerHealthBadge popup body overflow fix + EOD snapshot guard (commit 516937c5): (1) **BrokerHealthBadge modal body min-height fix**: `.bh-modal-body` now includes `min-height: 0` CSS property. Without it, flex container used `min-height: auto`, causing ag-Grid data to overflow modal bounds and clip. With fix, `overflow-y: auto` works correctly when grid rows exceed modal's max-height, ensuring all rows remain visible and scrollable. Updated §6 "Broker connection chip popup" subsection. File: `frontend/src/lib/BrokerHealthBadge.svelte`. (2) **Server restart EOD snapshot guard**: On restart between MCX EOD snapshot time and 08:00 IST, system previously fired spurious broker API call via `_ds_startup_snapshot`, displacing correct EOD `daily_book` snapshot with stale BHAV data (close_price=0, day_pnl=ltp−0=ltp wrong). Fix: new `_preload_snapshot_sentinels()` function queries `daily_book` at startup to restore `_snapshot_fired_today` sentinels from DB before `_session_guard()` runs. Second guard in `_ds_startup_snapshot` skips broker call if both sentinels are set. Sentinel now DB-backed (not just in-process memory), surviving process restarts. Updated §7.3.2 "Admin Snapshot Trigger" and added note on Startup Snapshot Idempotency. Files: `backend/api/background.py`. |
 | 2026-09-29 | v1.30 Interval-gate stale marking fix + funds aggregation include-not-exclude (commit bc7526f9): (1) **Stale account marking semantics fix**: Updated §7.2 Fallback chain subsection and added new paragraph documenting `mark_stale` parameter. Only genuine failures (circuit-breaker OPEN or fetch exception) set `account_stale=True`; deliberate Dhan poll-priority interval-gate skips pass `mark_stale=False` so the per-row flag remains trustworthy for frontend staleness indicators. Response-level `attrs['stale']` and `attrs['stale_since']` set either way (describe frame AGE); only per-row `account_stale` failure-flavoured marker gated by `mark_stale`. Fixes false-amber account-stale badges on interval-throttled healthy Dhan accounts. (2) **Backend funds response schema**: `FundsRow` fields `cash`, `avail_margin`, `used_margin`, `collateral`, `live_cash`, `option_premium` now `float\|None` to preserve missing-vs-zero distinction (see CLAUDE.md "Alert evaluation and latching"). Applies missing-vs-zero convention at display layer — `funds.py:_fetch()` targeted fillna excludes funds-meaning columns, only filling non-semantic numeric cols. `_append_total_row` TOTAL aggregation skips nulls via Polars `.sum()` semantics. Files: `backend/brokers/broker_apis.py` (lines 611–690), `backend/api/routes/funds.py` (lines 160–195), `backend/api/schemas.py` (FundsRow). |
 | 2026-10-07 | v1.31 Chase error recovery — classification and backoff (commit daee65d2): Added §8.5 subsection "Chase error recovery — error classification and backoff" documenting new helper `_ch_is_recoverable_error(exc)` classifying exceptions into three non-recoverable types (`BrokerInputError`, `BrokerCapabilityError`, `BrokerAuthError` — abort instantly, no retry) and recoverable types (`BrokerNetworkError`, `BrokerRateLimitError`, untyped — retry with `_MAX_CHASE_ERRORS` cap). Module-level `_CH_NON_RECOVERABLE_ERRORS` tuple, `_CH_RATE_LIMIT_BACKOFF_SECONDS = 30s` (longer than normal interval to avoid re-tripping broker cooldown). New helper `_ch_rejection_is_recoverable(status_message)` checks broker REJECTED statuses: non-recoverable override hints ("margin", "rms", "risk", "permission", "blocked") checked FIRST (abort immediately), then recoverable price-hint list ("price", "circuit", "tick", "range", "stale", "band"). When message matches recoverable hint AND attempts remain, chase returns "rejected_continue" signal (backs off, resets `current_order_id`, re-reads depth, places fresh order). Otherwise aborts. `_ch_handle_attempt_error()` gates retry backoff on exception type: `BrokerRateLimitError` gets 30s minimum (vs normal `cfg.interval_seconds`). Prevents futile retries on bad input or permission denied; unbounded retries guarded by 3-error cap. Impact: chase no longer wears out on margin rejections or tries to bypass bad prices via retry; recoverable transients and rate limits get appropriate backoff without re-tripping the broker's own queue. File: `backend/api/algo/chase.py` (functions at lines 520–546, 1127–1172, 1405–1484). |
+| 2026-10-07 | v1.32 Broker exception type preservation — Dhan & Groww wrapping fixes (commits d5b12f6d, 5182f3d4): Added §8.5 subsection "Broker exception type preservation — Dhan & Groww wrapping fixes" documenting two fixes preventing loss of exception type information before chase classification. (1) **Dhan** (`d5b12f6d`, `backend/brokers/adapters/dhan.py:place_order` lines 1386–1397): Separate catch for `BrokerError` subclasses (re-raised unchanged) before generic `except Exception` (wrapped as `BrokerNetworkError`); prevents re-wrapping already-typed `BrokerAuthError`/`BrokerRateLimitError` from SDK proxy. (2) **Groww** (`5182f3d4`, `backend/brokers/adapters/groww.py` lines 1167–1203): Split design — `_place_order_impl` (decorated with `@_retry_groww_auth`) re-raises known SDK exception types unchanged (lines 1236–1255) so decorator's retry logic sees real type; outer `place_order` wrapper classifies survivors via `_groww_exc()` status mapper, translating `GrowwAPIException` to typed `BrokerError` hierarchy. Non-retryable exceptions (`NotImplementedError`, `ValueError`) pass through unconverted. Invariant: typed `BrokerError` subclasses reach chase's classification layer intact. |
+| 2026-10-07 | v1.32 Chase rejection classification message-hint check (commit bdbe7fec): Updated §8.5 subsection "Chase error recovery — error classification and backoff" to document message-hint override in `_ch_is_recoverable_error()`. Now checks `_CH_NON_RECOVERABLE_REJECTION_HINTS` ("margin", "rms", "risk", "permission", "blocked") against exception text BEFORE type check (line 550–552 in `backend/api/algo/chase.py`), mirroring behavior in `_ch_rejection_is_recoverable()` (line 565–567). Prevents margin-shortfall exceptions from defaulting to recoverable and wasting retries. Amends the "Rejection-status recovery" bullet: non-recoverable overrides checked FIRST, then price-hint list ("price", "circuit", "tick", "range", "stale", "band"). Example: `_ch_is_recoverable_error(Exception("margin shortfall"))` now correctly returns False (abort), matching REJECTED status with same message. |
+| 2026-10-07 | v1.32 Chase repeated-rejection hold gate (commit c5322d53): Updated §8.5 subsection "Chase error recovery" to document repeated-rejection hold. Amends the "Recovery logic" bullet: two consecutive price-shaped rejections now place order in HELD state (`HoldCategory.AGENT_ORDER`, `backend/api/algo/order_hold.py` line 13 + `chase.py` line 1654) instead of retry attempt 3. Operator releases via `POST /api/orders/release` → `release_repeated_rejection_hold()` in `backend/api/routes/order_release.py`, resuming chase with row's persisted side/qty/intent. Gate fires when `_rejection_count >= 2` (line 1714 in `chase.py`). No cancel path exists for held orders (release-only). Release race-safety: mark row chase-active BEFORE committing `status=OPEN`, preventing reconcile sweep from flipping freshly-released row back to REJECTED in gap before resumed chase starts. |
+| 2026-10-07 | v1.32 RemoteBroker error type map completeness (commit e8d9a4d7): Updated §9 Remote Broker & Conn Service with new "Error type map completeness" paragraph. `_ERROR_TYPE_MAP` in `remote_broker.py` (lines 125–133) now includes all `BrokerError` subclasses: `BrokerAuthError`, `BrokerRateLimitError`, `BrokerNetworkError`, `BrokerOrderError`, `BrokerInputError`, `BrokerCapabilityError`, plus base `BrokerError`. Previously missing `BrokerInputError`, `BrokerOrderError`, `BrokerCapabilityError` degraded to generic `BrokerError` in conn-service mode, causing `_ch_is_recoverable_error()` misclassification as recoverable. Added drift-guard test in `backend/tests/broker/test_broker_robustness_batch2.py` enumerating every `BrokerError` subclass via introspection, failing automatically if new subclass added without map entry. No silent regressions if future code adds exception type to hierarchy. |
+| 2026-10-07 | v1.32 Active-chase registry prevents false "untracked order" aborts (commits cc353596, c5322d53): Added §8.5 subsection "Active-chase registry prevents false untracked order aborts" documenting in-process registry pattern. Module-level `_ACTIVE_CHASE_REFCOUNT` dict (`backend/api/algo/chase.py` line 648) tracks in-flight chases; `chase_order()` calls `mark_chase_active(algo_order_id)` at entry (line 660, increments refcount) and `unmark_chase_active()` at exit in try/finally (lines 672–676). Kite postback, Dhan/Groww postback, and `_chase_process_live_row()` reconcile finalizer (`orders.py` line 225) check `is_chase_active()` before writing non-FILLED terminal status — if active, withhold write (log + continue), allowing active chase to finish naturally. FILLED always applies. **Causal chain**: (1) Chase places order (T0). (2) Seconds later, postback arrives REJECTED. (3) Old code: `_sync_algo_order_id()` (line 1064) correctly refused update on FINAL row but loop still aborted with false "untracked" alert (saw final row, had no way to know postback caused it vs another race). (4) Registry: postback checks `is_chase_active(row.id)` — if active, skips status write. (5) Chase loop's `_emit_chase_terminal()` completes naturally, reads genuinely-REJECTED order, terminates correctly (not false "untracked" abort). Root cause fix for cc353596's original guard. Files: `backend/api/algo/chase.py` (functions `mark_chase_active`, `unmark_chase_active`, `is_chase_active`, `_sync_algo_order_id`); `backend/api/routes/orders_postback.py` (Kite/Dhan/Groww postback handlers); `backend/api/routes/orders.py` (`_chase_process_live_row`). |

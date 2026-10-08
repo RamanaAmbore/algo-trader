@@ -159,6 +159,7 @@ SUBMITTING → (SUBMITTED | ERROR) → back to IDLE
 - User can enter/change all fields
 - Exception: Submit stays disabled for LIMIT/SL orders while depth is pending
   (no quote yet for the current strike) — see §6 Price (Limit / SL Price)
+  (not in modify mode, which already has a real price on a resting order)
 
 **LOADING_PREFLIGHT**:
 - User clicks Submit or reaches the preflight gate
@@ -369,6 +370,9 @@ instead of a disabled button with a clear reason.
   (`showLimit` is true for order types LIMIT / SL, the only types that need a
   price) — true whenever the ticket needs a price and no depth quote has arrived
   yet for the current strike.
+  - **Amended 2026-10 (`8723beac`)**: Now excludes modify mode: `action !== 'modify' && showLimit && !_lastQuote`.
+    Modify mode orders already have a real price on the resting order, so gating on
+    depth-arrival produced needless grayed-out Submit on every modify-mode open.
 - **Reset on strike change**: `_lastQuote` is reset to `null` inside the existing
   `_prevResolvedSymbol` change-detection effect, alongside the existing
   `_lots`/`_lotsTouched` reset — a stale quote from a previous strike can never
@@ -383,6 +387,12 @@ instead of a disabled button with a clear reason.
   payoff-chart leg), so there is no reason to block that path on live depth. The
   button's `title` tooltip reads "Waiting for market depth (bid/ask) for this
   strike" while pending.
+  - **Added 2026-10 (`a23e067e`)**: While depth-pending, the button switches to
+    a distinct gray color scheme (`rgba(148, 163, 184, *)`, the neutral slate
+    convention from elsewhere in the app) instead of a dimmed buy/sell color —
+    reuses existing precedent from placeholder/not-ready-yet states
+    (e.g., `row-account-stale`). Scope: LIMIT/SL only; GTT exit legs never reach
+    this button.
 - **Propagation to host**: `_depthPending` is piped out via the existing
   `onTicketStateChange` callback, adding a `depthPending` field alongside the
   existing `side` / `qty` / `submitting` / `pending` fields.
@@ -396,10 +406,12 @@ instead of a disabled button with a clear reason.
   *before* the existing `_ticketValidationErr` check. The shared button's own
   `disabled` attribute and `title` tooltip also account for `_ticketDepthPending`,
   parallel to how they already account for `_ticketOwnSubmitBusy`.
-- **Scope**: Single-ticket Submit path only (OrderTicket's own footer button and
-  SymbolPanel's shared common-action button) — does not apply to the Chain-tab
-  basket/spread-threshold gate (see §9 Chain-Tab Spread-Threshold Pre-Submission Gate),
-  which is a separate, pre-existing check on a different submission path.
+- **Scope**: Applies to both single-ticket Submit path (OrderTicket's own footer
+  button and SymbolPanel's shared common-action button) AND the Chain-tab basket
+  path (see §9 Chain-Tab Depth-Pending Gate for Option Legs). The Chain-tab has
+  its own depth-gating mechanic per-leg, separate from (but parallel to) the
+  single-ticket gate — see also §9 Chain-Tab Spread-Threshold Pre-Submission Gate,
+  a distinct, pre-existing check on the same path.
 
 ### Trigger (SL Price)
 
@@ -550,6 +562,11 @@ validation). Still records AlgoOrder + registers with paper engine.
 **Purpose**: Place multiple correlated orders (spreads, hedges) with
 offset-aware margin calculation and shared basket tag.
 
+**Terminology note**: Operator-visible UI labels use "Bracket" (industry-standard
+term for entry + attached TP/SL + protective leg). Backend routes, fields, and
+database columns remain `template_*`, `template_id`, `/automation/templates` —
+naming did not change.
+
 ### Basket API Payload
 
 ```json
@@ -645,6 +662,29 @@ POST /api/orders/basket/margin
 - Chases tagged with same `basket_tag` for cross-reference
 - Chase page shows all active chases grouped by basket
 
+### Chain-Tab Depth-Pending Gate for Option Legs
+
+**Trigger**: Before submitting a multi-leg order in the Chain tab, each option leg
+(strike + optType) must have received at least one live bid/ask quote from the
+broker's chain-quotes poll. Equity and futures legs require only a positive limit
+price (matched existing behavior).
+
+**Latch mechanism** (fixed 2026-10, commit `fcbeeb75`):
+- Each option leg carries a one-way `quoteArrived` latch, stamped true the moment
+  `OptionChainTab`'s chain-quotes poll resolves ANY bid/ask for that leg's strike
+  + side. Once true, the latch never re-checks or resets — same "has a quote
+  arrived at least once" invariant as the single-ticket path's `_lastQuote` check.
+- Futures legs (no chain quote map exists for them) keep the original limit-only
+  gate: `Number(leg.limit) > 0`.
+- Deliberately does NOT require confirmed real market depth — illiquid strikes
+  that only report last-traded-price are submittable, same tolerance as the
+  single-ticket `_lastQuote` check.
+
+**Failure safety**: On backend quote failure or timeout, the shared SymbolPanel
+Submit button gates both paths via `_ticketDepthPending` (single ticket) and
+`_basketDepthPending` (basket), showing "Waiting for market depth — try again
+in a moment" via toast if either is set.
+
 ### Chain-Tab Spread-Threshold Pre-Submission Gate
 
 **Trigger**: Before submitting a multi-leg order in the Chain tab with a
@@ -670,8 +710,10 @@ global setting).
 
 **Scope**: Chain-tab only (multi-leg entry via `POST /api/orders/basket`). The
 Order Ticket (`/ticket`) has no equivalent spread-threshold check; template attach
-fires post-fill only (see §13 Postback Fan-Out). (The single-ticket path does have
-a separate depth-pending gate on LIMIT/SL orders — see §6 Price (Limit / SL Price).)
+fires post-fill only (see §13 Postback Fan-Out). (The single-ticket path has a
+separate depth-pending gate on LIMIT/SL orders — see §6 Price (Limit / SL Price);
+the Chain-tab has its own per-leg depth gate — see §9 Chain-Tab Depth-Pending
+Gate for Option Legs.)
 
 **Implementation**: Backend `GET /api/orders/spread-check` endpoint
 (`backend/api/routes/orders.py`, commit `31c27d6b`) returns structured result
@@ -988,6 +1030,32 @@ OPEN chase order.
   `attached_gtts_json` at the same time as the primary GTT
 - Prevents duplicate live wing orders on retry/race conditions
 - Applied in all template-attach code paths
+- **Amended 2026-10 (`7843cbf8`)**: Chase-routed LIMIT wings (handed to
+  `chase_order()` instead of placed directly via broker) now also record an entry.
+  For chase-routed wings, `wing_order_id` carries the sentinel string `"chase"`
+  (not a real broker order id), plus a `wing_chased: true` flag on the
+  `AttachResult` so downstream readers can distinguish a chased wing from a broker
+  order id without guessing. The wing's own `AlgoOrder` row is stamped with both
+  `parent_order_id` (pointing to the parent fill) and `template_id` (for
+  traceability) so it's unambiguously a child order.
+
+### Chase-Wing Failure Handling
+
+**Fire-and-forget safety** (fixed 2026-10, commit `4ae6a231`):
+When a LIMIT wing is handed to chase via `_start_wing_chase()`, the coroutine
+is scheduled via `asyncio.run_coroutine_threadsafe()` without awaiting, meaning
+the wing chase runs in the background. Any exception raised inside `_chase_wing()`
+(row creation, `chase_order()` call, or latent BaseException subclass) is now
+caught and handled explicitly: (1) the row's status is set to UNFILLED (terminal
+but not final — a late postback FILLED can still land), (2) an operator alert is
+sent via `send_order_failure_alert()`, and (3) a defensive log-only backstop
+(`_chase_wing_future_done()` added as a `done_callback` on the returned Future)
+ensures nothing slips through silently if the internal handling has a bug.
+
+Previously, the Future was discarded with zero error handling, so failure was
+100% silent (not even a buried log line, since `run_coroutine_threadsafe`
+internally marks the Task's exception as retrieved, suppressing asyncio's own
+"exception was never retrieved" warning).
 
 ### Mode Gate (Non-Live Fills)
 
@@ -1479,6 +1547,7 @@ List concrete things to verify in an audit:
 
 | Date | Change |
 |---|---|
+| 2026-10 | v2.3 Documented six fixes to depth-gating, chase-wing recording, and error handling (commits `8723beac` `a23e067e` `fcbeeb75` `7843cbf8` `4ae6a231` `0aedf13f`): modify mode no longer gated on depth (§4, §6); depth-pending button gray color (§6); chain-tab per-leg `quoteArrived` latch + futures limit-only gate (§9); chase-routed wings recorded in `attached_gtts_json` with `wing_chased` flag + `parent_order_id` (§13); chase-wing failures surface via alert + UNFILLED status instead of silently failing (§13); UI label "Bracket" replaces "O.Template" everywhere operator-visible — see §6 §9 §13 |
 | 2026-10 | v2.2 Documented depth-pending pre-submission gate (commit `daee65d2`): `_depthPending` derived + `_lastQuote` reset on strike change in `frontend/src/lib/order/OrderTicket.svelte`; mirrored shared-button gate (`_ticketDepthPending`) in `frontend/src/lib/SymbolPanel.svelte` — see §6 Price (Limit / SL Price) |
 | 2026-09-30 | v2.1 Updated Status Histogram Filter: merged Rejected/Cancelled chip, added GTT chip (standalone broker GTTs), documented default-first-non-zero-chip behavior (reactive), kept exclusive-filter selection mode |
 | 2026-07-11 | v2.0 complete rewrite from codebase audit; added Surface Variants, State Machine, Field Validation, OrderCard, Timeline Drawer, Audit Cases, Test Map; expanded Preflight, Basket, API Contract sections; F&O lot convention detailed |
