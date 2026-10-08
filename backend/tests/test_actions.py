@@ -253,6 +253,17 @@ async def test_action_place_order_no_aggressiveness_key_matches_prior_bare_chase
     (30 / 0.05 / 30). Defaulting the absent-key case to 'low' would
     silently slow every existing live agent's chase cadence by 50%
     with no operator action — see actions_live.py docstring.
+
+    P1 fix (2026-10): `ChaseConfig` gained a `level` field (pure
+    metadata — `orders_helpers._live_chase_config` stamps the normalised
+    L/M/H tag onto it so a hold/release cycle can resume at the
+    ORIGINAL tier instead of a hardcoded MED tuple; see
+    `order_release._chase_level_from_price_policy`). `_live_chase_config`
+    now sets `level="med"` here, so a bare `ChaseConfig()` (which leaves
+    `level=None`) is no longer byte-identical — the comparison below
+    excludes `level` and asserts it separately, since it's new metadata,
+    not a change to the actual chase behaviour fields this guard exists
+    to protect.
     """
     import dataclasses
     from backend.api.algo.actions import _action_place_order
@@ -292,7 +303,11 @@ async def test_action_place_order_no_aggressiveness_key_matches_prior_bare_chase
     mock_chase.assert_called_once()
     cfg = mock_chase.call_args.kwargs["cfg"]
     prior_bare = ChaseConfig(exchange="NFO", product="NRML")
-    assert dataclasses.asdict(cfg) == dataclasses.asdict(prior_bare)
+    cfg_fields = dataclasses.asdict(cfg)
+    bare_fields = dataclasses.asdict(prior_bare)
+    assert cfg_fields.pop("level") == "med"
+    assert bare_fields.pop("level") is None
+    assert cfg_fields == bare_fields
 
 
 # ---------------------------------------------------------------------------

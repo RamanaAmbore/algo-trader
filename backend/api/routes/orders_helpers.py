@@ -253,18 +253,36 @@ def _live_chase_config(aggressiveness: str, intent: str | None = None,
     if a == "high":
         cfg = ChaseConfig(interval_seconds=10, aggression_step=0.25,
                           max_attempts=10)
+        level = "high"
     elif a == "med":
         cfg = ChaseConfig(interval_seconds=20, aggression_step=0.10,
                           max_attempts=20)
+        level = "med"
     else:
         # low (default) — patient: peg passively, ease into the
-        # spread only after enough ticks pass.
+        # spread only after enough ticks pass. Also the fallback tier
+        # for any unrecognised `aggressiveness` string, so `level` is
+        # pinned to "low" here too (NOT the raw `a`) — otherwise a
+        # malformed value (e.g. a client typo; `chase_aggressiveness`
+        # is an unvalidated free-form str in schemas.py) would run at
+        # the LOW tuple while stamping a non-canonical `level` that
+        # `chase.py`'s hold writer can't recognise, falls back to
+        # "CHASE_MED", and resumes a HELD release at the WRONG
+        # (MED, not LOW) tier.
         cfg = ChaseConfig(interval_seconds=30, aggression_step=0.05,
                           max_attempts=30)
+        level = "low"
     cfg.intent = intent
     cfg.product = product
     cfg.variety = variety
     cfg.validity = validity
+    # P1 fix (2026-10): stamp the NORMALISED L/M/H tag (one of the three
+    # branch-local `level` values above, never the raw `a`) onto the cfg
+    # itself so a hold recorded mid-chase
+    # (`chase.py:_ch_hold_on_repeated_rejection`) can persist which tier
+    # the order was ORIGINALLY placed with — see `ChaseConfig.level`'s
+    # own docstring.
+    cfg.level = level
     return cfg
 
 

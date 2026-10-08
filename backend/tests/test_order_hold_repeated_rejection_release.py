@@ -87,14 +87,23 @@ async def test_release_resumes_chase_with_rows_own_fields():
 
 @pytest.mark.asyncio
 async def test_release_resumes_a_close_intent_chase_with_close_preserved():
+    """A close-intent hold whose position STILL supports the close
+    (net 40 long, remaining 30 to SELL) must resume normally — the P1
+    re-verification fix (`_verify_close_still_valid`) must not refuse a
+    legitimate release."""
     from backend.api.algo import order_release as m
+    import pandas as pd
 
     row = _held_row(hold_json=_agent_order_hold_json(), intent="close",
                     transaction_type="SELL", filled_quantity=20, quantity=50)
     mock_session = _mock_session(row)
     mock_chase_order = AsyncMock()
+    frame = pd.DataFrame([{
+        "tradingsymbol": "NIFTY24APR25000CE", "exchange": "NFO", "quantity": 40,
+    }])
 
     with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.brokers.broker_apis.fetch_positions", return_value=[frame]), \
          patch("backend.api.algo.order_events.write_event", new_callable=AsyncMock), \
          patch("backend.api.algo.chase.chase_order", mock_chase_order), \
          patch("backend.api.algo.chase._ch_mark_chase_active"), \
