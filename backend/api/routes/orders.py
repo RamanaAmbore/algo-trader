@@ -680,52 +680,71 @@ async def _positions_refresh_after_fill(
 ) -> None:
     """Fire-and-forget: poll broker positions for up to 5 s after a fill,
     then invalidate the raw cache + broadcast positions_refreshed once the
-    symbol shows up (or qty changes).  The initial cache bust in
+    fill is reflected (or qty changes). The initial cache bust in
     _rco_invalidate_terminal_caches() clears stale data immediately; this
     task handles the broker-propagation lag so the UI eventually sees the
     new position without waiting for the 5-min performance poll.
+
+    Scoped to `account` — `fetch_positions(account=..., force_refresh=True)`
+    falls straight through to `_fetch_positions_local` for just that one
+    account (no `@for_all_accounts` fan-out), so a multi-leg/multi-account
+    fill doesn't force every OTHER account's broker session on every poll
+    attempt. That single-account branch also sits entirely outside the
+    30s-TTL SSOT cache that wraps the zero-arg all-accounts entry — every
+    read here is already a direct, uncached broker round-trip, so
+    `force_refresh=True` has no additional effect on this call shape; it's
+    kept for signature parity/documentation with the all-accounts call. A
+    genuinely empty `account` (Groww's postback carries none at all — see
+    `order_postback_groww` below) falls back to the all-accounts scan via
+    the SAME `@for_all_accounts` falsy-account check every other
+    single-account caller in this codebase relies on — not a crash, just
+    the pre-existing (less targeted) behaviour, preserved for that broker.
     """
     try:
         import asyncio as _aio
         from backend.brokers.broker_apis import fetch_positions, _raw_cache_invalidate
-        initial_qty: int | None = None
-        # Give the broker 2 s to propagate the fill before the first poll so
-        # that (a) we don't read pre-fill data and set initial_qty incorrectly,
-        # and (b) a fully-closed position (rows=[]) is not confused with "no
-        # position ever existed".
+
+        async def _read_qty() -> int:
+            dfs = await _aio.to_thread(
+                fetch_positions, account=account, force_refresh=True,
+            )
+            rows = [
+                r for df in (dfs or [])
+                for r in df.to_dict(orient="records")
+                if r.get("tradingsymbol") == tradingsymbol
+            ]
+            return sum(int(r.get("quantity", 0)) for r in rows)
+
+        # Baseline reading BEFORE the propagation sleep — the OLD bug:
+        # this read used to happen at t+3s (after the sleep below), by
+        # which point the broker had USUALLY ALREADY applied the fill, so
+        # `cur_qty` could never differ from that late "baseline" on any
+        # later poll and the loop reliably timed out with
+        # positions_refreshed essentially never firing in practice.
+        # Reading now (t+0, genuinely pre-fill) and comparing against the
+        # algebraically EXPECTED post-fill quantity (baseline + qty_delta —
+        # the parameter the old comparison never used) makes every later
+        # poll attempt a real test instead of a guaranteed no-op.
+        try:
+            initial_qty = await _read_qty()
+        except Exception as _base_err:
+            logger.debug("[FILL-POLL] baseline read failed: %s", _base_err)
+            initial_qty = 0
+        expected_qty = initial_qty + qty_delta
+
+        # Give the broker 2 s to propagate the fill before the first poll.
         await _aio.sleep(2)
         for _attempt in range(5):
             await _aio.sleep(1)
             try:
-                # 2026-09 council audit fix (perf + architect lenses,
-                # independently): fetch_positions() is memoized behind a
-                # 30s-TTL cache. _rco_invalidate_terminal_caches() busts it
-                # once, synchronously, right before this task is scheduled —
-                # so only the FIRST read in this 5-attempt loop was ever a
-                # real broker round-trip; every subsequent read (t+3..t+7s)
-                # silently re-read that same first result. cur_qty could
-                # never differ from initial_qty under normal conditions, so
-                # this loop reliably timed out and positions_refreshed
-                # essentially never fired — directly undermining the
-                # operator's "call position APIs immediately" requirement.
-                # force_refresh=True makes every attempt a genuine broker
-                # call, not just the first.
-                dfs = await _aio.to_thread(fetch_positions, force_refresh=True)
-                rows = [
-                    r for df in (dfs or [])
-                    for r in df.to_dict(orient="records")
-                    if r.get("tradingsymbol") == tradingsymbol
-                ]
-                if initial_qty is None:
-                    initial_qty = sum(int(r.get("quantity", 0)) for r in rows)
-
-                cur_qty = sum(int(r.get("quantity", 0)) for r in rows)
-                # Fire only when quantity has actually changed, or when the
-                # position disappeared entirely (close fill → empty rows) after
-                # we already had a non-empty baseline.  The old
-                # `qty_delta > 0 and cur_qty > 0` arm fired on the very first
-                # poll for any existing BUY position, sending pre-fill data.
-                changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None and initial_qty > 0)
+                cur_qty = await _read_qty()
+                # Fire once quantity hits the algebraically expected
+                # post-fill value, OR on any other change from the
+                # (now-genuinely-pre-fill) baseline — the latter is a
+                # robustness fallback for lot-size rounding or a
+                # concurrent second leg moving the same symbol further
+                # than this call's own delta.
+                changed = (cur_qty == expected_qty) or (cur_qty != initial_qty)
                 if changed:
                     _raw_cache_invalidate("positions")
                     # Bug fix (2026-09-30): only the raw broker-DataFrame
@@ -848,13 +867,22 @@ def _postback_broadcast_fanout(
             # under/over-count by lot_size. See _mcx_postback_qty_to_contracts.
             _qty_contracts = _mcx_postback_qty_to_contracts(exchange, symbol, qty, broker)
             _rco_broadcast_position_filled(masked, exchange, symbol, txn, _qty_contracts, price, order_id)
-            try:
-                _side_sign = 1 if (txn or "").upper() == "BUY" else -1
-                asyncio.create_task(
-                    _positions_refresh_after_fill(account, symbol, _qty_contracts * _side_sign)
-                )
-            except Exception:
-                pass
+            # 2026-10 fix: paper/sim/replay fills never touch a real
+            # broker position — all three modes share PaperTradeEngine
+            # and fan out through this SAME helper with the one literal
+            # broker="paper" (see paper.py:_paper_fanout_terminal) — so
+            # polling the real broker for up to 5 attempts on every
+            # simulated fill was pure waste, contending with live
+            # chase/postback traffic for the same shared conn-service
+            # broker session.
+            if broker != "paper":
+                try:
+                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                    asyncio.create_task(
+                        _positions_refresh_after_fill(account, symbol, _qty_contracts * _side_sign)
+                    )
+                except Exception:
+                    pass
 
         if _terminal:
             broadcast(json.dumps({
