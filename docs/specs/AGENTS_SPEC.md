@@ -379,17 +379,20 @@ beyond) is a registration in code, not a change to dispatcher routes.
 
 | Category | Meaning | Release handler | When |
 |---|---|---|---|
-| `expiry_close` | Close position held until expiry cutoff | `release_held_order` | Operator clicks Release |
+| `expiry_close` | Close position held until operator releases it (cutoff controls creation timing, not release) | `release_held_order` | Operator clicks Release |
 | `template_exit` | GTTs held until operator confirms | `release_template_exit` | Operator clicks Release |
 | `agent_order` | Resume order held after repeated rejections | `release_repeated_rejection_hold` | Operator clicks Release |
 | (unregistered) | Fallback default | `release_held_order` | Any unregistered category |
 
-Every held order is persisted as an `AlgoOrder` row with `status="HELD"` and a JSON
-`hold_json` record carrying `{"category", "reason", "price_policy", "override",
-"held_at"}`. The operator releases via `/api/orders/held/{id}/release` route
-([`orders_held.py`](../../backend/api/routes/orders_held.py)), which dispatches
-through `get_release_handler(category)` to the registered handler. Cancelling
-via `/api/orders/held/{id}/cancel` abandons the hold instead.
+Every held order is persisted as an `AlgoOrder` row with a JSON `hold_json`
+record carrying `{"category", "reason", "price_policy", "override", "held_at"}`.
+Status persistence is category-dependent: `expiry_close` and `agent_order` set
+`status="HELD"`, while `template_exit` leaves the parent order at its original
+status (e.g. `"FILLED"`) with only `hold_json` indicating pending exit-attach.
+The operator releases via `/api/orders/held/{id}/release` route
+([`orders_release.py`](../../backend/api/algo/order_release.py)), which
+dispatches through `get_release_handler(category)` to the registered handler.
+Cancelling via `/api/orders/held/{id}/cancel` abandons the hold instead.
 
 ### Adding a new hold category
 
@@ -456,6 +459,7 @@ current value by name every call.
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | (pre-existing corrections): Fixed incorrect statement about `expiry_close` being "held until expiry cutoff" — clarified that cutoff controls creation timing only, not release (operator must click Release to remove hold indefinitely). Fixed incorrect statement that "every held order" has `status="HELD"` — `template_exit` holds leave the parent at original status (e.g. FILLED) with only `hold_json` set. |
 | 2026-10-08 | c5e8814b: Expiry-close agents seeded as inactive with `_ae_guard_seed_status()` — validates that seed dicts with "Ships INACTIVE" in description are never seeded active, wired into both insert and sync paths, logs ERROR and force-corrects on mismatch. |
 | 2026-10-08 | a87db772: Generalized hold/release into a reusable registry — `record_held_order()` replaces category-hardcoded functions, `held_for()` generic check, `get_release_handler()` dispatches via `_RELEASE_HANDLERS` dict. Adding a new hold category is a 4-step registration, not a route edit. |
 | 2026-10-07 | e37fab01: Event agents UI — full CRUD in `/automation`, new `GET /api/agents/renderers`, `kind` write vocabulary with read-time normalization, `tier` and `topic` persistence, `kind` immutability post-creation, event-agent writes validated via `validate_seed_spec()` (422 on failure). |

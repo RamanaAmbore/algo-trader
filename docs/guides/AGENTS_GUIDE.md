@@ -22,7 +22,7 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 | Surface | URL | Purpose |
 |---|---|---|
 | Agents list | `/automation` | Rule editor — create, edit, activate, deactivate, dry-run, run-in-sim |
-| Order Templates | `/automation/templates` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
+| Brackets | `/automation/templates` | Per-position TP/SL/wing/scale/trail exit rules attached at order fill |
 | Agent Templates | `/automation/agent-templates` | Reusable saved sub-trees (notify channel sets + condition snippets) |
 | Activity | `/activity?tab=agent` | Recent fires (real, not sim) |
 | Tokens | `/admin/tokens` | Grammar catalog — every metric / scope / op / action (Config group) |

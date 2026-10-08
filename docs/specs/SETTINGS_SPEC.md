@@ -206,12 +206,16 @@ next read falls back to YAML.
 
 **`GET /api/admin/global-switches`** (requires `view_settings_readonly` capability)
 
-Fetch the current values of the two master trading-mode switches. Response:
+Fetch the current values of all six global switches. Response:
 
 ```json
 {
   "paper_trading_mode": false,
-  "default_agent_trade_mode": "paper"
+  "default_agent_trade_mode": "paper",
+  "expiry_close_hold_enabled": true,
+  "template_exit_hold_enabled": true,
+  "expiry_close_lead_minutes_mcx": 30,
+  "expiry_close_lead_minutes_nfo": 15
 }
 ```
 
@@ -252,25 +256,36 @@ so the inversion logic is never hand-copied.
 **`/admin/settings`** — Grouped card layout, one card per bucket.
 
 **Global Switches panel** (top of page, pinned card):
-- Six rows: `paper_trading_mode`, `default_agent_trade_mode`, `expiry_close_hold_enabled`, 
-  `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo`, `template_exit_hold_enabled`
-- `paper_trading_mode` row: current value (green "PAPER" / red "LIVE" chip), 
-  "Flip to X" button
-- `default_agent_trade_mode` row: dropdown selector (paper / live)
-- `expiry_close_hold_enabled` row: toggle (bool). When On, automated expiry-close orders 
-  are held for operator review before placement; when Off, they fire without review 
-  (default holds for safety)
-- `expiry_close_lead_minutes_mcx` and `expiry_close_lead_minutes_nfo` rows: numeric 
-  input fields (0–180 for MCX, 0–120 for NFO). Minutes before market close at which 
-  expiry closes are auto-created
-- `template_exit_hold_enabled` row: toggle (bool). When On, template exit GTTs are 
-  held after a parent order fills; when Off, they attach automatically
-- Flipping `paper_trading_mode` opens a danger-confirm modal with explicit 
-  warning "⚠ Affects every account, prod-wide — flips real-money execution"
-- Description on each row clarifies: paper_trading_mode is an outer kill-switch 
-  (same as navbar dropdown); default_agent_trade_mode is applied only at 
-  agent-creation time and does NOT retroactively change existing agents
-- Saves via `PATCH /api/admin/global-switches` (not the generic settings route)
+
+Six rows (in order):
+1. `paper_trading_mode`: green "PAPER" / red "LIVE" chip, "Flip to X" button.
+   Confirm-gated: opening the danger modal shows "⚠ Affects every account,
+   prod-wide — flips real-money execution".
+2. `default_agent_trade_mode`: dropdown selector (paper / live). Applied once
+   at agent-creation time; does NOT retroactively change existing agents.
+3. `expiry_close_hold_enabled`: shows `HELD` / `AUTO` chip + "Flip to AUTO" /
+   "Flip to HELD" button. When HELD (On), expiry-close orders are created and
+   written to the Held Orders card; when AUTO (Off), they fire immediately.
+   Flipping to AUTO opens a danger confirm: "Disable expiry-close hold?" with
+   warning "⚠ Expiry closes will fire automatically with no review". Flipping
+   back to HELD needs no confirm.
+4. `template_exit_hold_enabled`: shows `HELD` / `AUTO` chip + button. When HELD
+   (On), template/bracket exit GTTs are created and held; when AUTO (Off), they
+   attach after a parent order fills. Same danger confirm as #3, with message
+   "Disable template exit hold?" / "⚠ Template exits will attach automatically
+   with no review".
+5. `expiry_close_lead_minutes_mcx`: numeric input field, 0–180 min. Minutes
+   before MCX close at which an expiry-close hold is created. Client-side
+   validation: integers only; empty string rejected with toast error "Lead must
+   be 0–180 min"; field reverts on rejection.
+6. `expiry_close_lead_minutes_nfo`: numeric input field, 0–120 min. Minutes
+   before NFO close at which an expiry-close hold is created. Same validation
+   pattern with error message "Lead must be 0–120 min".
+
+All saves via `PATCH /api/admin/global-switches` (not the generic settings
+route). After any successful save, the generic settings grid below is refreshed
+to prevent divergence (the hold fields map to `hold.*_released` keys in storage
+with **inverted** polarity — "HELD" maps to `released=false`).
 
 **Card features** (regular settings below the Global Switches panel):
 - Bucket title + summary (e.g. "Alerts: 3 settings")
@@ -407,6 +422,7 @@ live-effect handlers to re-apply the new value.
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | 2c9c42a5: Global Switches panel UI ships all six fields (four were backend-only after c7ddcb56). Frontend now renders hold toggles with `HELD`/`AUTO` chip + flip button (confirm-gated on disable), lead-time numeric inputs with client-side validation (0–180 MCX, 0–120 NFO, integers only), and three palette fixes (replaced `text-[#7dd3fc]`, `bg-emerald-500/15 text-emerald-300`, `bg-red-500/20 text-red-300` with app CSS variables `--algo-sky`, `--algo-green`, `--algo-red`). Spec amended: §3 response now shows all six fields; §4 describes UI controls, validation, polarity inversion. |
 | 2026-10-08 | c7ddcb56: Hold gates now tunable via Global Switches panel — four new fields: `expiry_close_hold_enabled`, `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo`, `template_exit_hold_enabled`. New `hold.*` bucket documented with real defaults (hold.expiry_close_released/template_exit_released bool False, lead_minutes_nfo int 15, lead_minutes_mcx int 30). Bool field inversion handled by shared helper `_gs_collect_bool_hold_changes()` in admin.py. New `set_int()` setter added to settings.py alongside existing `set_bool`/`set_string`. |
 | 2026-10-07 | e37fab01: Global switches — new `/api/admin/global-switches` GET/PATCH endpoint + Global Switches panel on `/admin/settings`, `execution.paper_trading_mode` kill-switch and `execution.default_agent_trade_mode` defaults added to execution.* bucket. Transactional audit logging with rollback on audit failure. |
 | 2026-07-11 | v1.0 initial spec from codebase audit |

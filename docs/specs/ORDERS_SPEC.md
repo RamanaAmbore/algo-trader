@@ -1016,6 +1016,16 @@ OPEN chase order.
 - Kite delivery retries can fire the same postback multiple times
 - Guard ensures one-time execution
 
+**Unverified GTT tracking** (2026-10-08, commit `90ad3d6d`):
+When GTT placement (`_ta_live_place_one_gtt`) gets an ambiguous outcome from
+`_verify_gtt_accepted` (status-read failure or Groww's "not present after 1s"
+false negative), the code now calls `broker.cancel_gtt()` on the id and marks
+it with a new `unverified: bool` flag in the `GttSpec`. If cancellation itself
+fails, the id is tracked with `unverified=True` and surfaced via `result.errors`
++ critical log, so `attached_gtts_json` ends up non-NULL either way. Prevents
+duplicate GTTs on a subsequent re-attach (the idempotency guard correctly blocks
+them when `attached_gtts_json` is populated).
+
 ### Fill Status Recording
 
 **filled_quantity contract** (2026-09-30):
@@ -1577,7 +1587,7 @@ List concrete things to verify in an audit:
 
 Automated orders that require operator review before placement or release.
 Three hold categories exist, each triggered by a distinct condition; see
-[BROKER_SPEC.md](../BROKER_SPEC.md#85-orders-fetching-resilience--chase-timeouts)
+[BROKER_SPEC.md](BROKER_SPEC.md#85-orders-fetching-resilience--chase-timeouts)
 for repeated-rejection hold triggering logic.
 
 ### Hold Categories
@@ -1651,6 +1661,28 @@ be cancelled.
 genuinely-filled parent order. Cancelling the exit-attach must not
 misstate that fill in order history or break reconciliation logic.
 
+### Release Implementation Details (2026-10-08 Fixes)
+
+**Commit 5d5ab349** — `release_template_exit` was silently reporting success
+(`"ok": true, "reason": "template exits placed"`) even when no GTTs were placed.
+`_fire_template_attach_on_fill` gained a `bypass_hold: bool = False` kwarg that
+skips the `template_exit_held()` re-check only for this release path (every other
+caller — postback, chase terminal, paper engine, admin reconcile — still gets the
+hold gate). Success now requires `result.wing_order_id` or non-empty GTT ids; on
+failure the hold is restored via `hold_template_exit()` for operator retry.
+
+**Commit 2e1f0dd8** — `release_held_order` (expiry-close release) now clears
+`row.hold_json = None` alongside the status change. Previously a released row
+stayed in the Held Orders list forever (matched by `hold_json IS NOT NULL` in the
+list predicate) and both Release/Cancel returned 409 on reclick.
+
+**Commit e77c8993** — `release_held_order`'s position-match check for MCX expiry
+closes was comparing row contracts against raw `broker.positions()` (Kite reports
+MCX in LOTS), so even unchanged 1-lot MCX failed as "position changed". Now routes
+through normalized `broker_apis.fetch_positions()` via new helpers
+`_positions_net_rows_from_dfs()` and `_positions_data_unreliable()`. Also fails
+closed (refuses release) on stale/circuit-open/fetch-failed data.
+
 ### Frontend UI
 
 **ConfirmModal danger styling** (`HeldOrdersCard.svelte`):
@@ -1689,7 +1721,7 @@ requiring code changes or redeploy. Four new fields added to `GlobalSwitchesRequ
 in `backend/api/routes/admin.py`: `expiry_close_hold_enabled`, `template_exit_hold_enabled` 
 (bool toggles, with bool-field inversion), plus `expiry_close_lead_minutes_mcx` and 
 `expiry_close_lead_minutes_nfo` (int minute fields, 0–180 and 0–120 respectively). See 
-[SETTINGS_SPEC.md](../SETTINGS_SPEC.md#hold) for the underlying storage keys, defaults, 
+[SETTINGS_SPEC.md](SETTINGS_SPEC.md#hold) for the underlying storage keys, defaults, 
 and validation bounds. New `set_int()` setter function added to `backend/shared/helpers/settings.py` 
 alongside existing `set_bool`/`set_string` helpers.
 
@@ -1699,6 +1731,11 @@ alongside existing `set_bool`/`set_string` helpers.
 
 | Date | Change |
 |---|---|
+| 2026-10-08 | 90ad3d6d: Template GTT placement now tracks unverified ids with a new `unverified` flag; on ambiguous outcome (`_verify_gtt_accepted` failure), code calls `broker.cancel_gtt()` then surfaces the id + flag via `result.errors` + critical log, preventing duplicate GTTs on re-attach (§13 Duplicate Postbacks). |
+| 2026-10-08 | e77c8993: `release_held_order` (expiry-close release) now compares contracts vs contracts via normalized `broker_apis.fetch_positions()`, not raw broker (Kite reports MCX in lots). Fails closed on stale/circuit-open/fetch-failed data (§18 Release Implementation Details). |
+| 2026-10-08 | 2e1f0dd8: `release_held_order` now clears `hold_json = None` alongside status change; fixes stuck-in-held-list and 409-on-reclick bugs (§18 Release Implementation Details). |
+| 2026-10-08 | 5d5ab349: `release_template_exit` now validates GTT placement with `bypass_hold` kwarg; reports success only when GTTs/wing placed; restores hold on failure for operator retry (§18 Release Implementation Details). |
+| 2026-10-08 | (pre-existing corrections): Fixed broken relative links in §18 (BROKER_SPEC.md → BROKER_SPEC.md, SETTINGS_SPEC.md → SETTINGS_SPEC.md); fixed stale BROKER_SPEC refs to release route location and cancel-path availability. |
 | 2026-10-08 | c7ddcb56: Hold gates for expiry-close and template-exit now tunable from Global Switches panel (see §18 Hold Gate Configuration); new `expiry_close_hold_enabled`, `template_exit_hold_enabled` (bool, inverted), `expiry_close_lead_minutes_mcx`, `expiry_close_lead_minutes_nfo` (int) fields on GlobalSwitchesRequest/Response. See SETTINGS_SPEC.md hold.* bucket for storage keys and validation bounds. |
 | 2026-10 | v2.4 Documented cancel-held-order feature (commit `475b07e2`): new `POST /api/orders/held/{id}/cancel` endpoint; state-based branching (HELD→CANCELLED vs template_exit→keep status); `kindOf` recognizes `agent_order` as "Repeated rejection" — see §14 §18 |
 | 2026-10 | v2.3 Documented six fixes to depth-gating, chase-wing recording, and error handling (commits `8723beac` `a23e067e` `fcbeeb75` `7843cbf8` `4ae6a231` `0aedf13f`): modify mode no longer gated on depth (§4, §6); depth-pending button gray color (§6); chain-tab per-leg `quoteArrived` latch + futures limit-only gate (§9); chase-routed wings recorded in `attached_gtts_json` with `wing_chased` flag + `parent_order_id` (§13); chase-wing failures surface via alert + UNFILLED status instead of silently failing (§13); UI label "Bracket" replaces "O.Template" everywhere operator-visible — see §6 §9 §13 |

@@ -169,6 +169,15 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
   control unmodified fired a place_order agent action whose quantity silently resolved to `0`. 
   Fixed by accepting either key (`quantity` checked first, falling back to `qty`), mirroring 
   the already-shipped dual-key read in the sibling `_al_close_resolve_params` (close_position).
+- **Amended 2026-10-08 (`04e0b58c`)**: The qty/quantity dual-key fallback was incomplete — it 
+  only covered the live path. Agents validate through the sim→paper→shadow→live ladder BEFORE 
+  going live, so the validation ladder was broken: paper (`actions_paper.py`) and 
+  sim/replay/shadow (`actions_sim.py`) executors still read `quantity` only, resolving to 0-qty 
+  or wrong-fallback-value orders in every mode except live. Fixed: the same `params.get 
+  ("quantity") or params.get("qty") or 0` pattern now applies in `actions_paper.py`'s place/close 
+  handler and `actions_sim.py`'s `_sim_resolve_qty`, `_replay_paper_trade`, and `_shadow_trade`. 
+  The held-position-size fallback behavior (only triggers when neither key resolves a usable 
+  quantity) is preserved.
 
 **Dispatch flow**:
 1. Condition evaluates true
@@ -177,7 +186,15 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
    - Serialize order payload (symbol, qty, price, chase_level, etc.)
    - Resolve mode (sim / paper / live via `_resolve_mode()`)
    - Route to appropriate handler via registry (see Handler Registries below)
-   - Write AlgoOrder row (chain to parent agent_id)
+   - **AlgoOrder pre-persist fail-closed** (Fixed 2026-10-08, commit `3aac91e6`): Write 
+     AlgoOrder row. If the DB insert fails (constraint violation, transaction rollback, 
+     timeout), handler logs ERROR via `_on_algo_order_write_failure()` (fires an alert), 
+     then raises RuntimeError. For `chase_close_positions`, the per-position loop 
+     (`_chase_build_tasks`) skips the failed position and continues others, then raises 
+     only after all positions are processed — ensuring already-queued chases aren't orphaned 
+     and other positions proceed. The result is `outcome: 'action_failure'` (not a false 
+     `action_success`), giving operator visibility. Mirrors the manual-ticket path fix 
+     (incident AlgoOrder #1088, commit `8fca413b`).
    - Log audit_log entry (category: 'agent')
 4. For each notify in `events[]`:
    - Serialize message (title, body, tags)
@@ -200,6 +217,19 @@ Dispatch via `_dispatch_live_action(agent, action_type, params, context)` and
 fresh on every call via `getattr(module, attr)`, preserving original lazy-import semantics so 
 existing tests that `unittest.mock.patch()` handlers by module path continue to work without 
 pre/post-patch binding issues.
+
+**`expiry_auto_close` fire_at_time invariant** (Fixed 2026-10-08, commit `692e852c`): The 
+seeded `expiry-day-equity-itm-auto-close` (NFO) agent's `before_cutoff()` gate defers the 
+entire action cycle (scan + close) every time it evaluates outside the cutoff window. 
+`cutoff_for(exchange)` computes `session_close − lead_minutes`, and `fire_at_time` must 
+be at or after that computed cutoff, or the action never runs. Example: NFO closes at 
+15:30 IST with default 15-minute lead, so cutoff = 15:15; an agent with `fire_at_time: 
+"15:00"` defers in the 15:00-15:06 firing window and never completes. MCX (23:30 close, 
+30-minute lead, cutoff 23:00) only happened to work by coincidence with its own schedule. 
+Fixed by seeding NFO agent at `fire_at_time: "15:15"`. Agent remains seeded 
+`status='inactive'`, so no production behavior changed — but the feature is now functional 
+when activated. Operator must ensure custom expiry_auto_close agents also respect this 
+invariant: `fire_at_time >= cutoff_for(exchange)`.
 
 **Agent Grammar Metadata** (Amended 2026-10 (`a938340c`)):
 SYSTEM_TOKENS and LOG_TAG_TOKENS (condition metrics, notification tokens, action-event tokens) 
@@ -436,5 +466,8 @@ order/agent grammars are similarly externalized.
 
 | Date | Change |
 |---|---|
-| 2026-10-08 | Phase 1–4 order/agent grammar unification (commits `a938340c` `0005aeb8` `7972b60b` `1a6869b0`): (1) SYSTEM_TOKENS/LOG_TAG_TOKENS moved to `backend/config/grammars/agent_grammar.yaml` — pure data, no behavior change. (2) Order-field vocabulary unified in `backend/config/grammars/order_fields.yaml`, with `$ref` resolution in `place_order` params_schema + frontend CLI; new `chase_level` param (LOW/MED/HIGH) added to `place_order`, routes to `_live_chase_config()` mapping. (3) Action dispatch refactored to registries (`_LIVE_ACTION_HANDLERS`, `_NOOP_ACTION_HANDLERS`); handler functions resolved fresh via `getattr()` on every call for test-patch compatibility. (4) Frontend CLI reads `order_fields.yaml` directly via new symlink, with local `values:` lists preserved for display order override. Known gap: `place_order` schema field `qty` vs executor reads `quantity` — queued as separate fix. |
+| 2026-10-08 | Agent order actions DB-write fail-closed (`3aac91e6`): place_order / close_position / chase_close_positions previously placed real live orders even when the AlgoOrder row write failed (exception in `_write_live_order` or `_place_order_write_intent`). Same incident class as AlgoOrder #1088 (fixed for manual-ticket path). Fixed: actions_live.py now has shared `_on_algo_order_write_failure()` helper (logs ERROR + fires alert) and action handlers raise RuntimeError instead of proceeding to `chase_order()`. For `_action_live_chase_close_positions`, per-position loop skips (alerts + continue) only failed positions so already-queued chases proceed, then raises after all positions evaluated — outcome is `action_failure`, not false success. |
+| 2026-10-08 | expiry_auto_close fire_at_time invariant (`692e852c`): Seeded NFO expiry-day-equity-itm-auto-close agent's `fire_at_time` was 15:00, but `cutoff_for()` computes 15:30 − 15-min lead = 15:15 — before_cutoff() gate deferred every cycle and action never ran. Fixed by seeding fire_at_time to 15:15. Agent remains inactive; feature now functional when activated. Operator must ensure custom expiry_auto_close agents respect invariant: `fire_at_time >= cutoff_for(exchange)`. |
+| 2026-10-08 | qty/quantity dual-key fallback extended to all execution modes (`04e0b58c`): Live-path fix (commit 0005aeb8) incomplete — agents validate through sim→paper→shadow→live ladder before going live, but paper and sim/replay/shadow still read `quantity` only. Fixed: params_schema `qty` field now read in actions_paper.py, actions_sim.py via `_sim_resolve_qty`, _replay_paper_trade, `_shadow_trade` with same fallback logic as live path. Held-position-size fallback behavior preserved. |
+| 2026-10-08 | Phase 1–4 order/agent grammar unification (commits `a938340c` `0005aeb8` `7972b60b` `1a6869b0`): (1) SYSTEM_TOKENS/LOG_TAG_TOKENS moved to `backend/config/grammars/agent_grammar.yaml` — pure data, no behavior change. (2) Order-field vocabulary unified in `backend/config/grammars/order_fields.yaml`, with `$ref` resolution in `place_order` params_schema + frontend CLI; new `chase_level` param (LOW/MED/HIGH) added to `place_order`, routes to `_live_chase_config()` mapping. (3) Action dispatch refactored to registries (`_LIVE_ACTION_HANDLERS`, `_NOOP_ACTION_HANDLERS`); handler functions resolved fresh via `getattr()` on every call for test-patch compatibility. (4) Frontend CLI reads `order_fields.yaml` directly via new symlink, with local `values:` lists preserved for display order override. |
 | 2026-07-11 | v1.0 initial spec from codebase audit; condition tree v2, lifespan, action dispatch, templates |
