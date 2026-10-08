@@ -15,9 +15,11 @@ beyond) is a registration, not a change to the dispatcher in
          fresh quote before placing a NEW close order) if your category
          means "place something new on release".
        - `release_repeated_rejection_hold`'s pattern (resume `chase_order`
-         with the row's own already-persisted fields, no position/price
-         pre-check) if your category means "resume something already in
-         flight".
+         with the row's own already-persisted fields; no position/price
+         pre-check for plain OPEN orders, but a close-intent row DOES get
+         re-verified against the current position before resuming — see
+         that function's own docstring, P1 fix 2026-10) if your category
+         means "resume something already in flight".
   4. Register it in `_RELEASE_HANDLERS` below, keyed by
      `HoldCategory.MY_AGENT.value`. No route code to touch — the
      `/api/orders/held/{id}/release` route (`orders_held.py`) dispatches
@@ -118,6 +120,62 @@ def _positions_data_unreliable(dfs) -> bool:
                 or attrs.get("circuit_open") or attrs.get("interval_skipped"):
             return True
     return False
+
+
+async def _verify_close_still_valid(
+    account: str, symbol: str, exchange: str, side: str, remaining_qty: int,
+) -> tuple[bool, str]:
+    """Re-verify a HELD row's claimed `intent="close"` against the broker's
+    CURRENT position immediately before resuming its chase on release.
+
+    P1 fix (2026-10): `release_repeated_rejection_hold` used to resume a
+    close-intent chase purely from the row's own already-persisted fields
+    with no fresh check at all. A repeated-rejection hold can sit for
+    hours awaiting operator review; a plausible operator response during
+    that window is to flatten the position some other way. Resuming on
+    release without re-checking would then place a FRESH opening order
+    (wrong direction) with NO size cap, since `intent="close"` also
+    bypasses the 50-lot adapter ceiling.
+
+    Deliberately reuses THIS module's own `_positions_data_unreliable` /
+    `_positions_net_rows_from_dfs` / `_find_net_qty` helpers — the same
+    normalised-contracts, fail-closed-on-stale-data pipeline
+    `release_held_order` already runs for its own position check — rather
+    than `orders_place.py`'s `_verify_close_intent`, which has no
+    staleness guard against a last-known-good substitute frame (exactly
+    the gap this fix needs to close) and would silently verify "ok"
+    against stale data.
+
+    Sign + magnitude only (not exact equality): a SELL-close is valid
+    while the account is still net LONG by at least `remaining_qty`; a
+    BUY-close is valid while still net SHORT by at least `remaining_qty`.
+    An operator adding to the position (making it net larger, same sign)
+    must not refuse a legitimate resume.
+
+    @returns (ok, reason). `remaining_qty <= 0` (fully filled already,
+    nothing left to resume) is vacuously True.
+    """
+    if remaining_qty <= 0:
+        return True, "nothing remaining to close"
+    try:
+        from backend.brokers import broker_apis
+        pos_dfs = await asyncio.get_running_loop().run_in_executor(
+            None, lambda: broker_apis.fetch_positions(account=account))
+    except Exception as e:
+        return False, f"position check failed: {e}"
+    if _positions_data_unreliable(pos_dfs):
+        return False, "position check failed: positions data stale or unavailable"
+    positions = {"net": _positions_net_rows_from_dfs(pos_dfs)}
+    net = _find_net_qty(positions, symbol, exchange)
+    side_upper = (side or "").upper()
+    if side_upper == "SELL" and net > 0 and remaining_qty <= net:
+        return True, "ok"
+    if side_upper == "BUY" and net < 0 and remaining_qty <= abs(net):
+        return True, "ok"
+    return False, (
+        f"position no longer supports close: net={net}, "
+        f"remaining={remaining_qty}, side={side_upper}"
+    )
 
 
 async def release_held_order(order_id: int, actor: str) -> dict:
@@ -221,9 +279,20 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
     row's OWN already-persisted `transaction_type` / `quantity` /
     `exchange` / `product` / `intent` (set at original order placement,
     untouched by the hold) and resumes `chase_order()` with those exact
-    values — no position/price pre-check, since the only reason this row
-    was held is "the broker kept rejecting the price", not "the position
-    changed underneath it".
+    values — no position/price pre-check for a plain OPEN order, since the
+    only reason THAT row was held is "the broker kept rejecting the
+    price", not "the position changed underneath it".
+
+    P1 fix (2026-10): a row whose persisted `intent == "close"` IS now
+    re-verified against the CURRENT broker position (`_verify_close_still_
+    valid`) immediately before resuming, because this hold can sit for
+    hours awaiting operator review, and the operator may have flattened
+    the position some other way in that window. Resuming unconditionally
+    would then place a FRESH opening order (wrong direction) with no size
+    cap, since `intent="close"` also bypasses the 50-lot adapter ceiling.
+    On a failed re-verification the release is refused (row stays HELD,
+    `hold_json` untouched, no chase resumed, operator alerted) instead of
+    silently misfiring.
     """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -239,6 +308,28 @@ async def release_repeated_rejection_hold(order_id: int, actor: str) -> dict:
         rec = parse_hold_record(row.hold_json) or {}
         if rec.get("category") != "agent_order":
             return {"ok": False, "reason": "not a repeated-rejection hold", "status": row.status}
+
+        if row.intent == "close":
+            remaining = int(row.quantity) - int(row.filled_quantity or 0)
+            ok, why = await _verify_close_still_valid(
+                row.account, row.symbol, row.exchange, row.transaction_type, remaining,
+            )
+            if not ok:
+                logger.warning(
+                    "[RELEASE] refusing to resume close-intent chase for "
+                    "order %s: %s", order_id, why,
+                )
+                try:
+                    from backend.shared.helpers.alert_utils import send_order_failure_alert
+                    send_order_failure_alert(
+                        account=row.account, symbol=row.symbol, exchange=row.exchange,
+                        side=row.transaction_type, qty=remaining, mode="live",
+                        source="release",
+                        error=f"refused to resume close-intent chase on release: {why}",
+                    )
+                except Exception:
+                    pass
+                return {"ok": False, "reason": f"position check failed: {why}", "status": "HELD"}
 
         # Mark chase-active BEFORE committing status="OPEN" — otherwise
         # the row sits OPEN with its old rejected broker_order_id, visible
