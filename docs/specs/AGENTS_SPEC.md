@@ -217,20 +217,33 @@ influence today's fire order.
 
 ### Seeded at startup
 
-Nine builtin agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
+Fourteen builtin agents ship as hardcoded rows (`BUILTIN_AGENTS` in `agent_engine.py`):
 
-Loss agents:
-- `loss-aggregate` — firm P&L threshold
-- `loss-positions` — position-level P&L threshold
-- `loss-holdings` — holding-level loss threshold
-- `loss-day-percent` — daily intraday move threshold
-- `loss-fund-negative` — available funds exhausted
-- `loss-rate-acct` — rolling P&L rate threshold per account
+Loss agents (6):
+- `loss-positions-acct` (high tier, 30-min cooldown, status=inactive)
+- `loss-rate-acct` (critical tier, 10-min cooldown, status=inactive)
+- `loss-positions-total` (critical tier, 30-min cooldown)
+- `loss-margin-low` (high tier, status=inactive, disabled)
+- `loss-funds-negative` (critical tier)
+- `loss-pos-total-auto-close` (critical tier, status=inactive, Ships INACTIVE)
 
-Market-lifecycle agents:
-- `expiry-auto-close-nse` — Auto-close F&O legs at 15:25 IST
-- `expiry-auto-close-mcx` — Auto-close F&O at 23:25 IST
-- `expiry-day-equity-itm-auto-close` — Auto-close ITM equity options on expiry day
+Expiry-day agents (3):
+- `expiry-day-positions-alert` (high tier, status=inactive, Ships INACTIVE)
+- `expiry-day-equity-itm-auto-close` (critical tier, status=inactive, fire_at=15:15,
+  Ships INACTIVE)
+- `expiry-day-commodity-itm-auto-close` (critical tier, status=inactive, fire_at=23:00,
+  Ships INACTIVE)
+
+Expiry risk agents (2):
+- `expiry-nfo-risk-alert` (high tier)
+- `expiry-mcx-risk-alert` (high tier)
+
+Market lifecycle agents (2):
+- `market-open-nse` (info tier, fire_at=09:15)
+- `market-preclose-mcx` (info tier, fire_at=23:00)
+
+Manual agent (1):
+- `manual` (audit trail only)
 
 ### Orphan pruning
 
@@ -242,7 +255,7 @@ are deleted (orphans from removed builtin rules). Non-system agents are never pr
 A builtin agent whose `description` contains the phrase "Ships INACTIVE" (case-sensitive
 substring match) must always seed or resync with `status="inactive"`, regardless of the
 seed dict's own `status` field. The `_ae_guard_seed_status()` function
-([`agent_engine.py:1566–1592`](../../backend/api/algo/agent_engine.py#L1566-L1592)) enforces this:
+([`agent_engine.py:1579–1600`](../../backend/api/algo/agent_engine.py#L1579-L1600)) enforces this:
 
 - On insert (new agent): the guard checks at row-build time and forces any active status to
   "inactive" if the description includes the phrase.
@@ -250,11 +263,12 @@ seed dict's own `status` field. The `_ae_guard_seed_status()` function
   converges existing rows to "inactive" if the description says so.
 - Failed guard applies an ERROR log and continues (fail-safe, no crash).
 
-This protects destructive auto-close agents (`expiry-day-equity-itm-auto-close` and
-`expiry-day-commodity-itm-auto-close`) from accidentally being enabled at seed time when
-their own documentation promises they ship inactive. Operator activations of these agents
-are reverted on the next process restart, so enable them only after understanding they are
-destructive (chase-close every ITM/NTM position without operator confirmation).
+This protects four destructive auto-close agents from accidentally being enabled at seed
+time: `loss-pos-total-auto-close`, `expiry-day-positions-alert`,
+`expiry-day-equity-itm-auto-close`, and `expiry-day-commodity-itm-auto-close`. Operator
+activations of these agents are reverted on the next process restart, so enable them only
+after understanding they are destructive (initiate trades or close positions without
+operator confirmation).
 
 ### Editing loss agents
 

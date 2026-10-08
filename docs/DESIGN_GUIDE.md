@@ -381,7 +381,8 @@ flowchart TD
 | `backend/api/schemas.py` | msgspec.Struct wire types. Mirror of models for HTTP responses. |
 | `backend/shared/helpers/settings.py` | `SEEDS` list + cached settings reader (`get_int / get_float / get_bool / get_string`) |
 | `backend/api/algo/templates_seed.py` | `SYSTEM_TEMPLATES` + the seeder |
-| `backend/api/algo/grammar.py` | `_SYSTEM_TOKENS` + grammar registry seeder |
+| `backend/config/grammars/agent_grammar.yaml` | System tokens catalog (metrics, operators, scopes, actions, notifications) |
+| `backend/api/algo/grammar.py` | Token resolver functions + grammar registry seeder |
 | `backend/api/cache.py` | In-memory TTL cache with per-key locking (NOT a substitute for the DB; cache invalidates on PATCH) |
 
 ### 4.5.3 Engine + session factory
@@ -2136,13 +2137,17 @@ stateDiagram-v2
     Polling --> Partial: cumulative_filled > already_filled
     Partial --> Polling: still has residual
     Partial --> Filled: cumulative = total
-    Polling --> Rejected: status=REJECTED
+    Polling --> Rejected: status=REJECTED (recoverable price-shaped)
+    Polling --> Held: status=REJECTED (second consecutive)
+    Polling --> TerminalRejected: status=REJECTED (non-recoverable or exhausted)
+    Rejected --> Placing: backoff + reprice
+    Held --> [*]: operator review via /api/orders/held
     Polling --> KilledMidReplace: is_killed(NEW_id) post-replace
     Polling --> Killed: operator kill detected at status check
     Polling --> Unfilled: attempts >= max_attempts
-    Polling --> ErrorAbort: >= _MAX_CHASE_ERRORS consecutive
+    Polling --> ErrorAbort: >= 3 consecutive exceptions
     Filled --> [*]: _emit_chase_terminal(chase_fill)
-    Rejected --> [*]: _emit_chase_terminal(chase_failed)
+    TerminalRejected --> [*]: _emit_chase_terminal(chase_failed)
     Killed --> [*]: _emit_chase_terminal(chase_cancelled)
     KilledMidReplace --> [*]: _emit_chase_terminal(chase_cancelled, post-replace)
     Unfilled --> [*]: _emit_chase_terminal(chase_unfilled)
@@ -2165,8 +2170,8 @@ attempt 3m ago"), and the current chase interval.
 
 **Partial-fill math (post C-1 fix):**
 ```
-already_filled = quantity - remaining_qty
-new_delta = cumulative_filled - already_filled
+cumulative_filled tracks fills across all cancel-and-replace attempts (counter, not recomputed)
+new_delta = cumulative_filled - already_filled (from prior fill check)
 fire partial branch when: cumulative_filled > 0 AND new_delta > 0 AND cumulative_filled < quantity
 ```
 
@@ -2389,7 +2394,7 @@ Six things the chase loop MUST guarantee:
 
 5. **Partial fills get persisted on every NEW delta, not just the first.** The branch fires when `cumulative > already_filled` post-C-1 fix.
 
-6. **A chase that hits >= `_MAX_CHASE_ERRORS` consecutive exceptions aborts.** Prevents infinite re-trying against a broker that's down.
+6. **A chase that hits >= 3 consecutive exceptions aborts** (`_MAX_CHASE_ERRORS = 3`). Prevents infinite re-trying against a broker that's down.
 
 Break any of these and template attach sizes wrong, kills get ignored, or zombie chases burn rate limit.
 
@@ -6250,48 +6255,72 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
 
 ## 34. Recipe: add a new agent action
 
-**Scenario:** you want `square_off_underlying` so an agent can close every position on a given underlying.
+**Scenario:** you want `square_off_underlying` so an agent can close every position on a
+given underlying. This is a broker-hitting (live) action.
 
 ### Steps
 
-1. **Add the handler** in `backend/api/algo/actions.py`. Mirror the shape of `_action_close_position`:
-   ```python
-   async def _action_square_off_underlying(
-       action: AgentAction,
-       context: dict[str, Any],
-   ) -> ActionResult:
-       params = action.params or {}
-       underlying = params.get("underlying")
-       if not underlying:
-           return ActionResult(ok=False, reason="missing underlying")
-       ...
-   ```
+1. **Decide: live or noop?** Broker-hitting actions (place, cancel, close, chase, etc.)
+   are live. Non-broker actions (send summary, log, deactivate agent) are noop.
+   Our example is live.
 
-2. **Register it** in the `_ACTION_HANDLERS` map at the bottom of `actions.py`:
+2. **Add to `BROKER_ACTIONS`** in `backend/api/algo/actions.py` (line ~33):
    ```python
-   _ACTION_HANDLERS["square_off_underlying"] = _action_square_off_underlying
-   ```
-
-3. **Add the grammar token** in `backend/api/algo/grammar.py::_SYSTEM_TOKENS`:
-   ```python
-   {
-       "grammar_kind": "action",
-       "token_kind": "action_type",
-       "token": "square_off_underlying",
-       "value_type": "enum",
-       "resolver": "backend.api.algo.actions._action_square_off_underlying",
-       "params_schema": {
-           "required": ["underlying"],
-           "properties": {"underlying": {"type": "string"}},
-       },
-       "is_system": True,
-       "is_active": True,
+   BROKER_ACTIONS = {
+       "place_order", ..., "square_off_underlying",  # add here
    }
    ```
 
-4. **Mode resolution.** Honor `_resolve_mode()` — never call broker directly. Use `get_broker(account)` and respect the row's mode.
+3. **Add the handler** in `backend/api/algo/actions_live.py`. Live handlers take
+   `(agent, context, params)`:
+   ```python
+   async def _action_live_square_off_underlying(
+       agent: Agent,
+       context: dict[str, Any],
+       params: dict,
+   ) -> None:
+       underlying = params.get("underlying")
+       if not underlying:
+           logger.error(f"Agent [{agent.slug}]: missing underlying param")
+           raise ValueError("missing underlying")
+       # Broker call: get positions for underlying, close all
+       ...
+   ```
 
-5. **Verify.** Create a test agent in dev via `/admin/tokens` + `/automation`, fire-in-simulator, confirm event row + broker call.
+4. **Register in `_LIVE_ACTION_HANDLERS`** in `actions.py` (line ~196):
+   ```python
+   _LIVE_ACTION_HANDLERS: dict[str, _HandlerRef] = {
+       ...,
+       "square_off_underlying": _HandlerRef(
+           "backend.api.algo.actions_live",
+           "_action_live_square_off_underlying"
+       ),
+   }
+   ```
+
+5. **Add token to agent grammar** in `backend/config/grammars/agent_grammar.yaml`:
+   ```yaml
+   - grammar_kind: action
+     token_kind: action_type
+     token: square_off_underlying
+     value_type: string
+     description: Close all positions on a given underlying
+     resolver: backend.api.algo.actions_live._action_live_square_off_underlying
+     params_schema:
+       required: [underlying]
+       properties:
+         underlying:
+           type: string
+           description: "E.g. NIFTY, BANKNIFTY"
+   ```
+
+6. **Optional: add sim/paper branches** in `backend/api/algo/actions_sim.py` and
+   `actions_paper.py` if your action has trading logic. Check if those files
+   switch on action type — if so, add your type.
+
+7. **Verify.** Create a test agent via `/admin/agents`, set action to
+   `square_off_underlying`, fire-in-simulator, confirm event logged + (for live
+   mode) broker call executed.
 
 ---
 
@@ -6491,15 +6520,14 @@ The cookbook is intentionally prescriptive. You do not need to read the full doc
        requests.post(webhook, json={"text": message}, timeout=5)
    ```
 
-4. **Add the grammar token** for the notify channel:
-   ```python
-   # backend/api/algo/grammar.py::_SYSTEM_TOKENS
-   {
-       "grammar_kind": "notify",
-       "token_kind": "channel",
-       "token": "slack",
-       ...
-   }
+4. **Add the grammar token** for the notify channel in
+   `backend/config/grammars/agent_grammar.yaml`:
+   ```yaml
+   - grammar_kind: notify
+     token_kind: channel
+     token: slack
+     description: Send alert via Slack webhook
+     resolver: backend.shared.helpers.alert_utils._send_slack
    ```
 
 5. **Wire it in `_dispatch`** in `alert_utils.py` — for each notify event, check `channel == 'slack'` and call `_send_slack`.

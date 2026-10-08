@@ -281,19 +281,24 @@ Auto-deactivation is final — to re-enable, flip `status` back to `active` on `
 
 ## Built-in agents you can study
 
-Open `/automation` and look at these — all 9 are teaching examples you can clone:
+Open `/automation` and look at these — 14 builtin agents include teaching examples:
 
 | Slug | Topic | Why it's worth reading |
 |---|---|---|
-| `loss-positions-acct` | per-account guardrail (30-min cooldown) | Uses an `any:` block to OR four threshold types; routes to ntfy at urgent priority |
-| `loss-rate-acct` | per-account rate alert (10-min cooldown, 15-min baseline) | Rate-of-loss metric + re-fire suppression; fires only when **both** absolute loss rate ≤ -₹10,000/min **AND** percentage rate ≤ -0.25%/min; silent for first 15 min after segment opens; routes to ntfy at urgent priority |
-| `loss-positions-total` | book-wide guardrail (critical tier) | Same shape, scoped to TOTAL; suppresses `loss-positions-acct` on same fire; routes to ntfy at urgent priority |
-| `loss-margin-low` | available margin warning (DISABLED) | Disabled: cross-account false positive with Dhan/Groww zero margin; `loss-funds-negative` covers the critical case |
-| `loss-funds-negative` | cash / margin hard stop | Fires when balance goes negative |
-| `loss-pos-total-auto-close` | destructive action | Wraps `chase_close_positions` — ships INACTIVE for a reason |
-| `expiry-day-positions-alert` | expiry alert | Uses `days_until_expiry` + `positions.expiring_today` |
-| `expiry-day-equity-itm-auto-close` | equity expiry close (INACTIVE) | Combines `is_itm` + `chase_close_positions` |
-| `expiry-day-commodity-itm-auto-close` | commodity expiry close (INACTIVE) | Same pattern for MCX |
+| `loss-positions-acct` | per-account guardrail (status=inactive) | Uses an `any:` block to OR two thresholds (`day_val ≤ -30k`, `day_pct ≤ -2%`); routes to ntfy at high priority |
+| `loss-rate-acct` | per-account burn-rate (10-min cooldown) | Rate-of-loss metric + hysteresis; fires only when **both** absolute AND percentage conditions hold; silent first 15 min; routes to ntfy at urgent priority |
+| `loss-positions-total` | book-wide guardrail (critical tier) | Uses `any:` to OR four sub-conditions; suppresses `loss-positions-acct` on same fire; routes to ntfy at urgent priority |
+| `loss-margin-low` | margin warning (status=inactive) | Disabled: cross-account false positive with Dhan/Groww |
+| `loss-funds-negative` | negative cash or margin (critical) | Fire when either balance goes < 0 |
+| `loss-pos-total-auto-close` | auto-close on loss (status=inactive) | Destructive: takes action `expiry_auto_close` with scope total; ships INACTIVE |
+| `expiry-day-positions-alert` | expiry review (status=inactive) | Notifies of positions expiring today; 180-min cooldown (one alert per half-day) |
+| `expiry-day-equity-itm-auto-close` | equity expiry auto-close (status=inactive) | Fires at 15:15 IST on expiry day; action `expiry_auto_close` exchange=NFO; ships INACTIVE |
+| `expiry-day-commodity-itm-auto-close` | commodity expiry auto-close (status=inactive) | Fires at 23:00 IST; action `expiry_auto_close` exchange=MCX; ships INACTIVE |
+| `expiry-nfo-risk-alert` | equity expiry risk (active) | Notifies on expiry day when any NFO is ITM or future |
+| `expiry-mcx-risk-alert` | commodity expiry risk (active) | Notifies on expiry day when any MCX position is unhedged |
+| `market-open-nse` | NSE open (active) | Fires at 09:15 IST; uses sentinel condition for timing gate |
+| `market-preclose-mcx` | MCX pre-close (active) | Fires at 23:00 IST; same timing-gate pattern |
+| `manual` | operator order (audit trail) | Every manual ticket / chain order writes a `manual` event here |
 
 Built-in agents are **force-reseeded on every boot** — your changes to their `conditions / cooldown / events / actions` are PRESERVED, but `slug / schedule / status` are pinned to code. To customise, clone to a new slug.
 

@@ -203,20 +203,34 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
 
 **Handler Registries** (Amended 2026-10 (`7972b60b`)):
 Action dispatch refactored from hardcoded if/elif chains to module-level registries:
-- `_LIVE_ACTION_HANDLERS` — dict[action_type → _HandlerRef] for broker-hitting actions 
-  (place_order, modify_order, cancel_order, close_position, chase_close, chase_close_positions, 
-  expiry_auto_close). Each entry references a handler function in `backend.api.algo.actions_live` 
-  via a `_HandlerRef(module, attr)` tuple.
-- `_NOOP_ACTION_HANDLERS` — dict[action_type → _HandlerRef] for non-broker actions 
-  (send_summary, monitor_order, deactivate_agent, set_flag, emit_log). Each entry references 
-  a handler (mostly in `actions.py` itself) and carries a `swallow_errors` flag controlling 
-  whether exceptions propagate or are logged + silently swallowed.
 
+| action_type | registry | module | handler | swallow_errors |
+|---|---|---|---|---|
+| **LIVE (broker-hitting)** |
+| `place_order` | _LIVE | actions_live | `_action_place_order` | — |
+| `close_position` | _LIVE | actions_live | `_action_live_close_position` | — |
+| `modify_order` | _LIVE | actions_live | `_action_live_modify_order` | — |
+| `cancel_order` | _LIVE | actions_live | `_action_live_cancel_order` | — |
+| `cancel_all_orders` | _LIVE | actions_live | `_action_live_cancel_all_orders` | — |
+| `chase_close` | _LIVE | actions_live | `_action_live_chase_close_positions` (alias) | — |
+| `chase_close_positions` | _LIVE | actions_live | `_action_live_chase_close_positions` | — |
+| `expiry_auto_close` | _LIVE | actions_live | `_action_live_expiry_auto_close` | — |
+| **NOOP (non-broker)** |
+| `send_summary` | _NOOP | actions_live | `_action_send_summary` | False |
+| `chase_close` | _NOOP | actions_live | `_action_chase_close` (safety net) | False |
+| `monitor_order` | _NOOP | actions | `monitor_order` | True |
+| `deactivate_agent` | _NOOP | actions | `deactivate_agent` | True |
+| `set_flag` | _NOOP | actions | `set_flag` | True |
+| `emit_log` | _NOOP | actions | `emit_log` | True |
+
+Each entry references a handler via `_HandlerRef(module, attr[, swallow_errors])` tuple.
 Dispatch via `_dispatch_live_action(agent, action_type, params, context)` and 
 `_al_run_noop_handler(agent, action_type, params, context)` — handler functions are resolved 
 fresh on every call via `getattr(module, attr)`, preserving original lazy-import semantics so 
 existing tests that `unittest.mock.patch()` handlers by module path continue to work without 
-pre/post-patch binding issues.
+pre/post-patch binding issues. `swallow_errors=False` (send_summary, chase_close in noop) 
+preserves their existing un-wrapped behavior (exceptions propagate); `swallow_errors=True` 
+wraps individually (logs + silently swallows, handler returns False, caller continues).
 
 **`expiry_auto_close` fire_at_time invariant** (Fixed 2026-10-08, commit `692e852c`): The 
 seeded `expiry-day-equity-itm-auto-close` (NFO) agent's `before_cutoff()` gate defers the 
