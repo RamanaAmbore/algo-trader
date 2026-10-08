@@ -397,12 +397,19 @@ class TestAeSyncExistingBuiltinPreservesCustomizationAcrossStatusChange:
     agent's code-default `status` to 'inactive' (loss-rate-acct,
     loss-positions-acct) must not make _ae_sync_existing_builtin more
     aggressive about any OTHER field. conditions/cooldown_minutes/actions
-    on an operator-customized existing row stay untouched. `status` itself
-    IS expected to bidirectionally converge to the code default — that is
-    pre-existing, documented, intentional behavior (`_ae_sync_builtin_status`
-    force-syncs schedule + status; only conditions/cooldown/events/actions
-    are preserved) and unrelated to this change, so it is asserted
-    separately rather than frozen.
+    on an operator-customized existing row stay untouched.
+
+    `status` itself (2026-10 fix, amends this docstring): neither
+    loss-rate-acct nor loss-positions-acct's description contains the
+    literal phrase "Ships INACTIVE" — they are ordinary builtins whose
+    code-default status is merely a one-time seed default, not a
+    safety-critical floor. Pre-fix, `_ae_sync_builtin_status` force-synced
+    `status` bidirectionally on every restart, silently reverting an
+    operator's enable/disable choice made from /agents. Post-fix,
+    `_ae_sync_existing_builtin` only force-syncs `status` for the
+    "Ships INACTIVE" category (`_ae_seed_ships_inactive`); for these two
+    (and every other non-"Ships INACTIVE" builtin), an existing row's
+    status now survives sync completely untouched.
     """
 
     def _make_existing(self, conditions, status="active", cooldown_minutes=45,
@@ -474,15 +481,15 @@ class TestAeSyncExistingBuiltinPreservesCustomizationAcrossStatusChange:
         )
 
     @pytest.mark.parametrize("slug", ["loss-rate-acct", "loss-positions-acct"])
-    def test_status_does_bidirectionally_converge_by_design(self, slug):
-        """Unlike conditions/cooldown/actions, status IS expected to flip —
-        pre-existing, intentional force-sync behavior (`_ae_sync_builtin_status`),
-        not something this change should freeze. An existing 'active' row
-        converges to the new code default 'inactive' on next sync."""
+    def test_status_no_longer_force_syncs_for_non_ships_inactive_builtin(self, slug):
+        """2026-10 fix: neither slug's description says "Ships INACTIVE",
+        so status is no longer force-synced on an existing row at all — an
+        operator's 'active' choice must survive, not get silently reverted
+        to the code's seed default of 'inactive' on the next restart."""
         agent_def = next(a for a in BUILTIN_AGENTS if a["slug"] == slug)
         existing = self._make_existing(agent_def["conditions"], status="active")
         _ae_sync_existing_builtin(existing, agent_def)
-        assert existing.status == "inactive", (
-            f"{slug}: status should converge to the new code default "
-            f"'inactive', got {existing.status}"
+        assert existing.status == "active", (
+            f"{slug}: an operator-activated status must survive sync "
+            f"untouched (not a 'Ships INACTIVE' agent), got {existing.status}"
         )

@@ -1620,6 +1620,16 @@ BUILTIN_AGENTS.append(MANUAL_AGENT)
 _SEED_SHIPS_INACTIVE_PHRASE = "Ships INACTIVE"
 
 
+def _ae_seed_ships_inactive(agent_def: dict) -> bool:
+    """True when a seed dict's own description explicitly declares it
+    'Ships INACTIVE' (the safety-critical category — see
+    `_ae_guard_seed_status` / `_ae_sync_existing_builtin`). Single SSOT
+    for the literal phrase check so the insert-time guard and the
+    existing-row sync decision can never drift apart (2026-10 fix)."""
+    description = agent_def.get("description", "") or ""
+    return _SEED_SHIPS_INACTIVE_PHRASE in description
+
+
 def _ae_guard_seed_status(agent_def: dict, default: str | None = "active") -> str | None:
     """Fail-safe guard: a seed dict whose own description states 'Ships
     INACTIVE' must never actually be seeded (or re-synced) with
@@ -1637,8 +1647,7 @@ def _ae_guard_seed_status(agent_def: dict, default: str | None = "active") -> st
     `_ae_sync_existing_builtin`, which no-ops on a falsy desired status).
     """
     status = agent_def.get("status", default)
-    description = agent_def.get("description", "") or ""
-    if status == "active" and _SEED_SHIPS_INACTIVE_PHRASE in description:
+    if status == "active" and _ae_seed_ships_inactive(agent_def):
         logger.error(
             "Agent engine: seed '%s' has status='active' but its own "
             "description says '%s' — forcing status='inactive'. Fix the "
@@ -1653,7 +1662,14 @@ def _ae_sync_builtin_status(existing, desired: str | None) -> None:
     """Bidirectionally sync status on a built-in Agent row.
 
     Only flips active↔inactive; ignores other states.
-    Extracted from _ae_sync_existing_builtin to reduce CC there."""
+    Extracted from _ae_sync_existing_builtin to reduce CC there.
+
+    Callers MUST gate this on `_ae_seed_ships_inactive(agent_def)` first
+    (2026-10 fix) — this function itself still force-syncs unconditionally
+    whenever called, which is exactly the safety-critical "Ships INACTIVE"
+    behavior; it must never be called for an ordinary builtin on an
+    existing row, or an operator's enable/disable choice gets silently
+    reverted on every deploy."""
     if not desired or existing.status == desired:
         return
     if desired == "active" and existing.status == "inactive":
@@ -1691,7 +1707,19 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     Operator-editable fields (conditions, cooldown, actions) are left
     untouched EXCEPT when stale ``pnl``/``pnl_pct`` leaves are detected
     (one-time day-P&L metric migration via ``_ae_should_reset_conditions``).
-    Extracted from seed_agents to reduce CC there."""
+    Extracted from seed_agents to reduce CC there.
+
+    `status` sync (2026-10 fix): only force-synced for the safety-critical
+    "Ships INACTIVE" category (`_ae_seed_ships_inactive`) — these must
+    always revert to the seed's effective status (always 'inactive' once
+    `_ae_guard_seed_status` runs) on every restart, no operator override
+    possible, by design (destructive/broker-touching actions). Every OTHER
+    builtin agent's `status` is left completely untouched here — the seed
+    value is a one-time DEFAULT applied only at first insert
+    (`_ae_build_agent_row`); re-enforcing it on every process restart was
+    silently reverting an operator's enable/disable choice made from
+    /agents (both directions — activating a default-off agent, or
+    deactivating a default-on one)."""
     code_long = agent_def.get("long_name")
     if code_long and existing.long_name != code_long:
         existing.long_name = code_long
@@ -1704,7 +1732,8 @@ def _ae_sync_existing_builtin(existing, agent_def: dict) -> None:
     _def_topic = agent_def.get("topic", "general")
     if existing.topic == "general" and _def_topic != "general":
         existing.topic = _def_topic
-    _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
+    if _ae_seed_ships_inactive(agent_def):
+        _ae_sync_builtin_status(existing, _ae_guard_seed_status(agent_def, default=None))
     # Additive-sync events: add any default channel missing from the stored events.
     # Never removes channels the operator may have added manually.
     code_events = agent_def.get("events", [])
@@ -1770,8 +1799,11 @@ async def seed_agents():
     Sync BUILTIN_AGENTS into the `agents` table.
 
     - Insert system agents that don't exist yet.
-    - For existing system rows, force-sync `schedule` and `status` so the
-      engine state converges on the current code definition. User-tuned
+    - For existing system rows, force-sync `schedule` always. `status` is
+      force-synced ONLY for the safety-critical "Ships INACTIVE" category
+      (`_ae_seed_ships_inactive`) — every other builtin's operator-set
+      status survives restarts untouched; the seed value is a one-time
+      default applied only at first insert (2026-10 fix). User-tuned
       conditions/cooldown/events/actions are preserved.
     - Delete orphan system rows whose slug is no longer in BUILTIN_AGENTS
       (retired built-ins after the v1→v2 cutover).
