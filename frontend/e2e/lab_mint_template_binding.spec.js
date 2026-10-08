@@ -2,12 +2,12 @@
  * Test the template-slug binding on the Lab mint form (commit ac4d08c9).
  *
  * Verifies that:
- * 1. The "Exit template" input is visible when mint kind='place'
+ * 1. The "Exit bracket" input is visible when mint kind='place'
  * 2. The input is hidden for other kinds (cancel, modify, activate, deactivate, update)
  * 3. The POST body to /api/mcp/confirm-token includes template_slug:
  *    - With the entered value when filled
  *    - As null when left empty
- * 4. The Safety card mentions the exit template is bound and re-minting is required
+ * 4. The Safety card mentions the exit bracket is bound and re-minting is required
  *
  * NOTE: The research lab requires the view_research capability, which is granted to
  * designated, trader, risk, and demo roles (not admin). If running locally with
@@ -48,8 +48,8 @@ test.describe('Lab mint form template_slug binding', () => {
   });
 
   test(`template_slug input is visible when kind='place'`, async ({ page }) => {
-    // By default, kind is 'place', so the Exit template input should be visible
-    const exitTemplateLabel = page.locator('label', { hasText: /exit template/i });
+    // By default, kind is 'place', so the Exit bracket input should be visible
+    const exitTemplateLabel = page.locator('label', { hasText: /exit bracket/i });
     await expect(exitTemplateLabel).toBeVisible();
 
     // The input itself should also be visible and empty
@@ -64,9 +64,9 @@ test.describe('Lab mint form template_slug binding', () => {
     await expect(safetyCard).toBeVisible();
     await safetyCard.scrollIntoViewIfNeeded();
 
-    // Verify the safety text mentions "exit template" and "re-mint"
+    // Verify the safety text mentions "exit bracket" and "re-mint"
     const safetyText = await safetyCard.textContent();
-    expect(safetyText).toContain('exit template');
+    expect(safetyText).toContain('exit bracket');
     expect(safetyText).toContain('template_slug');
     expect(safetyText).toContain('re-mint');
   });
@@ -76,9 +76,9 @@ test.describe('Lab mint form template_slug binding', () => {
     const mintCard = page.locator('article.lab-card', { hasText: /0\.\s*mint a confirm token/i });
     await expect(mintCard).toBeVisible();
 
-    // Verify the help text mentions the exit template binding
+    // Verify the help text mentions the exit bracket binding
     const helpText = await mintCard.textContent();
-    expect(helpText).toContain('exit template is part of the token too');
+    expect(helpText).toContain('exit bracket is part of the token too');
     expect(helpText).toContain('re-mint the token');
   });
 
@@ -101,8 +101,8 @@ test.describe('Lab mint form template_slug binding', () => {
     const symbolInput = symbolLabel.locator('input');
     await symbolInput.fill('NIFTY25APRFUT');
 
-    // Fill the Exit template field
-    const exitTemplateLabel = page.locator('label', { hasText: /exit template/i });
+    // Fill the Exit bracket field
+    const exitTemplateLabel = page.locator('label', { hasText: /exit bracket/i });
     const exitTemplateInput = exitTemplateLabel.locator('input');
     await exitTemplateInput.fill('my-exit-template');
 
@@ -127,7 +127,7 @@ test.describe('Lab mint form template_slug binding', () => {
       route.abort('blockedbyclient');
     });
 
-    // Fill the form but leave Exit template empty
+    // Fill the form but leave Exit bracket empty
     const accountLabel = page.locator('label').filter({ hasText: /^Account/ }).first();
     const accountInput = accountLabel.locator('input');
     await accountInput.fill('ZG0790');
@@ -136,8 +136,8 @@ test.describe('Lab mint form template_slug binding', () => {
     const symbolInput = symbolLabel.locator('input');
     await symbolInput.fill('NIFTY25APRFUT');
 
-    // Leave Exit template empty (default behavior)
-    const exitTemplateLabel = page.locator('label', { hasText: /exit template/i });
+    // Leave Exit bracket empty (default behavior)
+    const exitTemplateLabel = page.locator('label', { hasText: /exit bracket/i });
     const exitTemplateInput = exitTemplateLabel.locator('input');
     await expect(exitTemplateInput).toHaveValue('');
 
@@ -155,7 +155,7 @@ test.describe('Lab mint form template_slug binding', () => {
   });
 
   test(`template_slug field renders correct placeholder text`, async ({ page }) => {
-    const exitTemplateLabel = page.locator('label', { hasText: /exit template/i });
+    const exitTemplateLabel = page.locator('label', { hasText: /exit bracket/i });
     const exitTemplateInput = exitTemplateLabel.locator('input');
     await expect(exitTemplateInput).toHaveAttribute('placeholder', /\(none\) e\.g\. default-bull/);
   });

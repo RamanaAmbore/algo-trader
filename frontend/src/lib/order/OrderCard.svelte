@@ -351,7 +351,7 @@
       <button type="button"
               class="log-chip log-chip-retry-attach"
               disabled={_retrying}
-              title="Re-run template attach against this filled parent — useful when the original attach silently dropped the wing (low OI etc.)."
+              title="Re-run Bracket attach against this filled parent — useful when the original attach silently dropped the wing (low OI etc.)."
               onclick={async () => {
                 _retrying = true;
                 try {
@@ -380,7 +380,7 @@
     <!-- #26 — re-attach failure count chip (shown when >= 2 failed attempts) -->
     {#if _failCount >= 2}
       <span class="log-chip log-chip-reattach-fail"
-            title={`Re-attach has failed ${_failCount} time(s) for this order. Check template config or broker availability.`}>
+            title={`Re-attach has failed ${_failCount} time(s) for this order. Check bracket config or broker availability.`}>
         ⟳ failed ×{_failCount}
       </span>
     {/if}

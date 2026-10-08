@@ -141,7 +141,7 @@
       bullets: [
         'Basket-building UI: one symbol per leg, per-leg account dropdown. Margin strip shows per-account Required / Avail / After.',
         'Auto profit target: default +30% (tunable in /admin/settings → algo.default_target_pct). Override per-order inline.',
-        'On-fill template attach (per ticket OR per basket) — pick one TP/SL/wing template, every leg auto-arms its bracket OCO when the parent fills',
+        'On-fill Bracket attach (per ticket OR per basket) — pick one TP/SL/wing bracket, every leg auto-arms its bracket OCO when the parent fills',
         'Submit → POST /api/orders/basket: one Kite basket_order call per account in parallel',
         'Spread-aware adaptive chase loop — same code path paper + live, validates via basket_margin before any order touches the broker',
         'REJECTED aborts the chase immediately so a broker reject can\'t loop into a fee-burning retry storm',
@@ -166,7 +166,7 @@
         'Inline warning chip on OrderTicket flags the broker gaps at SUBMIT time ("Groww OCO emulated — 15s race window", "MCX not on Dhan"), not at fill time',
         'Trailing stops now correctly modify both legs on Dhan OCO; Sprint A fix to the silent ENTRY_LEG-only modify_forever bug',
       ],
-      link: { href: '/automation/templates', label: 'Open Templates' },
+      link: { href: '/automation/templates', label: 'Open Brackets' },
     },
     {
       title: 'Rich order entry context',

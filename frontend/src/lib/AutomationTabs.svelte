@@ -29,7 +29,7 @@
 
   const TABS = [
     { id: '/automation',                 label: 'Agents'          },
-    { id: '/automation/templates',       label: 'Order Templates' },
+    { id: '/automation/templates',       label: 'Brackets' },
     { id: '/automation/agent-templates', label: 'Agent Templates' },
   ];
 

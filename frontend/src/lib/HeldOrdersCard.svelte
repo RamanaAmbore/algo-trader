@@ -18,7 +18,7 @@
   function kindOf(row) {
     try {
       const h = JSON.parse(row.hold || '{}');
-      if (h.category === 'template_exit') return 'Template exit';
+      if (h.category === 'template_exit') return 'Bracket exit';
       if (h.category === 'agent_order') return 'Repeated rejection';
       return 'Expiry close';
     } catch {

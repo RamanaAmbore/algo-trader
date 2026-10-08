@@ -1628,11 +1628,11 @@
     const leg = _focusedLeg;
     const tplName = _legEffectiveTpl(leg)?.name
       || _legEffectiveTpl(leg)?.slug
-      || 'no template';
+      || 'no bracket';
     const acct = legAccountOf(leg) || '—';
     const qty = ((leg.lots || 1) * (leg.lotSize || 1));
     const cycleHint = basketLegs.length > 1 ? ' · click to cycle to next leg' : '';
-    return `${leg.side} ${qty} ${leg.sym} · acct ${acct} · template: ${tplName}${cycleHint}`;
+    return `${leg.side} ${qty} ${leg.sym} · acct ${acct} · bracket: ${tplName}${cycleHint}`;
   });
   // Which preview drives the displayed chip — last-leg on Chain when
   // basket has legs, Ticket form everywhere else. Single derivation
@@ -2713,7 +2713,7 @@
       <div class="oes-basket-tpl-row oes-basket-tpl-row-shell"
            title={_selectedTemplate
              ? `${_selectedTemplate.name || _selectedTemplate.slug}${_selectedTemplate.description ? ' — ' + _selectedTemplate.description : ''}`
-             : 'Default attaches the saved template that matches the current side + symbol type. None opts out of any GTT attach.'}>
+             : 'Default attaches the saved bracket that matches the current side + symbol type. None opts out of any GTT attach.'}>
         <!-- On-fill preview chip + cap warning. Piped up from OrderTicket
              via onPreviewPlanUpdate (mirrors onMarginUpdate). Visible on
              BOTH tabs because it lives in the shell-level Template
@@ -2945,9 +2945,9 @@
                         disabled={basketSubmitting}
                         title={_has
                           ? `Per-leg override active. Click to edit / clear.`
-                          : `Inheriting shell defaults. Click to set a per-leg template or override TP / SL / Wing for THIS leg only.`}
+                          : `Inheriting shell defaults. Click to set a per-leg bracket or override TP / SL / Wing for THIS leg only.`}
                         onclick={() => _toggleLegEditor(leg.key)}>
-                  ⚙ {(_eff?.name || _eff?.slug || 'tmpl')}
+                  ⚙ {(_eff?.name || _eff?.slug || 'bracket')}
                 </button>
               {/if}
               <button type="button" class="oes-basket-pill-remove"
@@ -2986,9 +2986,9 @@
                    fields. Empty = inherit shell defaults. -->
               {@const _eff2 = _legEffectiveTpl(leg)}
               {@const _showWing2 = (_eff2?.applies_to || '').toLowerCase() === 'sell_option'}
-              <div class="oes-leg-editor" role="group" aria-label={`Override template for ${leg.sym}`}>
-                <span class="oes-leg-editor-label">tmpl for {leg.sym}</span>
-                <label class="oes-leg-editor-field" title="Override the template for THIS leg only. (shell default) inherits the On-fill picker; (no template) explicitly skips any GTT attach for this leg even when the shell has one set.">
+              <div class="oes-leg-editor" role="group" aria-label={`Override bracket for ${leg.sym}`}>
+                <span class="oes-leg-editor-label">bracket for {leg.sym}</span>
+                <label class="oes-leg-editor-field" title="Override the bracket for THIS leg only. (shell default) inherits the On-fill picker; (no bracket) explicitly skips any GTT attach for this leg even when the shell has one set.">
                   <span>on fill</span>
                   <!-- Audit fix — per-leg null-template sentinel.
                        Pre-fix the dropdown only had "(shell default)"
@@ -3007,7 +3007,7 @@
                     value={leg.template_id ?? ''}
                     options={[
                       { value: '', label: '(shell default)' },
-                      ...(_noneTpl ? [{ value: _noneTpl.id, label: '(no template — entry only)' }] : []),
+                      ...(_noneTpl ? [{ value: _noneTpl.id, label: '(no bracket — entry only)' }] : []),
                       ..._nonNoneTemplates.map(t => ({ value: t.id, label: t.name || t.slug || `#${t.id}` })),
                     ]}
                     onValueChange={(v) => {
@@ -3015,7 +3015,7 @@
                       updateLegByKey(leg.key, b => ({ ...b, template_id: id }));
                     }} />
                 </label>
-                <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / template default.">
+                <label class="oes-leg-editor-field" title="TP% for this leg. Empty = inherit shell / bracket default.">
                   <span>TP %</span>
                   <input type="number" step="0.5" disabled={basketSubmitting}
                          placeholder={_eff2?.tp_pct != null ? String(_eff2.tp_pct) : '—'}
@@ -3026,7 +3026,7 @@
                            updateLegByKey(leg.key, b => ({ ...b, tp_pct_override: v }));
                          }} />
                 </label>
-                <label class="oes-leg-editor-field" title="SL% for this leg. Empty = inherit shell / template default.">
+                <label class="oes-leg-editor-field" title="SL% for this leg. Empty = inherit shell / bracket default.">
                   <span>SL %</span>
                   <input type="number" step="0.5" disabled={basketSubmitting}
                          placeholder={_eff2?.sl_pct != null ? String(_eff2.sl_pct) : '—'}

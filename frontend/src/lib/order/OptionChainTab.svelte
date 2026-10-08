@@ -1369,7 +1369,7 @@
                       </span>
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · bracket: ' + templateName : ' · no bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1393,7 +1393,7 @@
                       </span>
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · bracket: ' + templateName : ' · no bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1429,7 +1429,7 @@
                       </span>
                       {#if ceLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                              title={`${ceLeg.side} ${ceLeg.lots} lot${ceLeg.lots === 1 ? '' : 's'} × ${ceLeg.lotSize} = ${ceLeg.lots * ceLeg.lotSize} qty${tmplAttached ? ' · bracket: ' + templateName : ' · no bracket'}`}>{ceLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === ceKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
@@ -1453,7 +1453,7 @@
                       </span>
                       {#if peLeg}
                         <span class="chain-leg-badge" class:chain-leg-badge-tmpl={tmplAttached}
-                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · template: ' + templateName : ' · no template'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
+                              title={`${peLeg.side} ${peLeg.lots} lot${peLeg.lots === 1 ? '' : 's'} × ${peLeg.lotSize} = ${peLeg.lots * peLeg.lotSize} qty${tmplAttached ? ' · bracket: ' + templateName : ' · no bracket'}`}>{peLeg.lots}L{tmplAttached ? ' · ' + tmplShort : ''}</span>
                       {/if}
                       {#if quickToast?.key === peKey}
                         <span class="chain-quick-toast">{quickToast.msg}</span>
