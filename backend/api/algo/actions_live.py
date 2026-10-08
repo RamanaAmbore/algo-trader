@@ -726,20 +726,48 @@ async def _action_live_close_position(agent, context: dict, params: dict):
 def _al_modify_build_kwargs(params: dict) -> dict:
     """Build the kwargs dict for modify_order from action params.
 
-    Iterates recognised field names and includes only values that are not None.
+    `agent_grammar.yaml`'s `modify_order` params_schema documents
+    `new_qty` / `new_price` / `new_trigger` as the canonical field names
+    (alongside `account` / `broker_order_id`), but this handler has
+    always actually read `quantity` / `price` / `trigger_price` instead
+    — a schema/behavior mismatch flagged by a 2026-10 audit. An agent
+    written to match the documented schema silently did nothing in live
+    mode (no error — the params it set were just never read). Fixed:
+    the schema-documented key is now checked FIRST (using `is not None`
+    semantics, matching this function's existing convention) with the
+    original internal key name kept as a fallback so any
+    already-authored agent using either vocabulary still works.
+    `order_type` / `validity` have no schema-documented alias — they are
+    internal-only knobs, unchanged.
     """
     kwargs: dict = {}
-    for field in ("quantity", "price", "trigger_price", "order_type", "validity"):
+    for schema_field, legacy_field, kwarg in (
+        ("new_qty",     "quantity",      "quantity"),
+        ("new_price",   "price",         "price"),
+        ("new_trigger", "trigger_price", "trigger_price"),
+    ):
+        v = params.get(schema_field)
+        if v is None:
+            v = params.get(legacy_field)
+        if v is not None:
+            kwargs[kwarg] = v
+    for field in ("order_type", "validity"):
         v = params.get(field)
         if v is not None:
             kwargs[field] = v
     return kwargs
 
 
-async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
-    """Fetch the exchange stored on the AlgoOrder row for a given broker_order_id.
+async def _al_modify_fetch_order_meta(order_id: str) -> "tuple[str | None, str | None]":
+    """Fetch (exchange, tradingsymbol) from the AlgoOrder row for a given
+    broker_order_id.
 
-    Returns None when the row does not exist or the DB call fails.
+    Returns (None, None) when the row does not exist or the DB call
+    fails. Single query serves both the pre-existing "fill in a missing
+    `exchange` kwarg for Groww" use (Slice Q) and the new G1
+    lot-multiple / `translate_qty` resolution below — both need the
+    row's own exchange, and the latter additionally needs the symbol to
+    resolve `lot_size`.
     """
     try:
         from sqlalchemy import select as _select
@@ -749,11 +777,62 @@ async def _al_modify_fetch_exchange(order_id: str) -> "str | None":
             _row = (await _s.execute(
                 _select(_AO).where(_AO.broker_order_id == order_id)
             )).scalar_one_or_none()
-        if _row and _row.exchange:
-            return _row.exchange
+        if _row:
+            return (_row.exchange or None), (_row.symbol or None)
     except Exception:
         pass
-    return None
+    return None, None
+
+
+async def _al_modify_resolve_qty(
+    broker, raw_qty: int, exchange: "str | None", symbol: "str | None",
+) -> int:
+    """Resolve a modify_order quantity to the broker's wire convention,
+    with a G1 lot-multiple preflight check applied uniformly across every
+    F&O exchange (not just MCX/NCO) — see CLAUDE.md "Lot/contract oversize
+    guards" (C7 fix) for why MCX/NCO is not special-cased here.
+
+    2026-10 fix: `_action_live_modify_order` used to send `quantity`
+    straight to `broker.modify_order()` with a comment claiming this was
+    deliberate ("supply Kite qty"). `order_fields.yaml` documents the
+    `qty` field as lots × lot_size (contracts) — an agent author
+    following that documentation on MCX/NCO got an N× oversize modify,
+    the exact "Option qty vs lot_size" trap CLAUDE.md's math guards
+    describe. Every other order-placing path in this codebase resolves
+    `lot_size` and calls `broker.translate_qty(exchange, raw_qty,
+    lot_size)` before touching the broker (see
+    `orders_place.py`'s `broker.translate_qty(data.exchange or "NFO",
+    qty, ls_for_translate)` call for the canonical pattern) — this
+    mirrors that.
+
+    Fails closed (raises) rather than guessing when `exchange`/`symbol`
+    can't be resolved, or when `lot_size` resolution itself comes back
+    as the cache-miss sentinel (0) — sending a bare, unverified quantity
+    straight to the broker is exactly the failure mode this fix closes.
+    `broker.translate_qty` is a no-op for non-MCX/NCO exchanges once
+    `lot_size` is confirmed (equity lot_size is always 1), so this adds
+    no behavior change for NSE/BSE/CDS modifies beyond the new G1 check.
+    """
+    if not exchange or not symbol:
+        raise RuntimeError(
+            f"modify_order: cannot resolve exchange/symbol for this order "
+            f"— refusing to send quantity={raw_qty} to the broker without "
+            f"lot-size verification"
+        )
+    from backend.brokers.adapters.kite import get_lot_size
+    lot_size = await get_lot_size(exchange, symbol)
+    if not lot_size:
+        raise RuntimeError(
+            f"modify_order: lot_size unresolved for {exchange}/{symbol} "
+            f"(instruments cache miss) — refusing to send "
+            f"quantity={raw_qty} to the broker without lot-size verification"
+        )
+    if lot_size > 1 and raw_qty % lot_size != 0:
+        raise ValueError(
+            f"modify_order: G1 lot-multiple violation — quantity={raw_qty} "
+            f"is not a multiple of lot_size={lot_size} for {exchange}/{symbol}"
+        )
+    return broker.translate_qty(exchange, raw_qty, lot_size)
 
 
 async def _al_modify_write_reject(order_id: str, e: Exception) -> None:
@@ -814,12 +893,27 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     """
     Modify an open broker order.  Wraps kite.modify_order in run_in_executor.
     Updates the matching AlgoOrder row on success.
+
+    `broker_order_id` is read first (the `modify_order` params_schema's
+    documented key, `agent_grammar.yaml`), falling back to the legacy
+    `order_id` key — same schema/legacy dual-read pattern as
+    `_al_modify_build_kwargs`'s qty/price/trigger fields below.
+
+    2026-10 fix: quantity used to go straight to `broker.modify_order()`
+    with a comment claiming this was deliberate ("supply Kite qty").
+    `order_fields.yaml` documents `qty` as lots × lot_size (contracts) —
+    an agent author following that documentation on MCX/NCO got an N×
+    oversize modify. Now, whenever a quantity is actually being modified,
+    `_al_modify_resolve_qty` runs the G1 lot-multiple check and
+    `broker.translate_qty` before the quantity reaches the broker — see
+    that function's docstring. Price-only / trigger-only modifies (no
+    quantity key present) are completely unaffected.
     """
     import asyncio
     from backend.brokers import get_broker
 
     account  = str(params.get("account") or "")
-    order_id = str(params.get("order_id") or "")
+    order_id = str(params.get("broker_order_id") or params.get("order_id") or "")
     variety  = str(params.get("variety") or "regular")
 
     if not account or not order_id:
@@ -828,26 +922,34 @@ async def _action_live_modify_order(agent, context: dict, params: dict):
     broker = get_broker(account)
     loop = asyncio.get_running_loop()
 
-    # Note: MCX qty translation (to_kite_qty) is NOT applied here because
-    # modify_order references a live Kite order_id — any quantity in params
-    # should already be in Kite's convention (lots for MCX). Agent actions
-    # that modify orders are expected to supply the correct Kite qty.
     kwargs = _al_modify_build_kwargs(params)
 
-    # Slice Q — pass exchange from persisted AlgoOrder row so Groww's
-    # segment resolver doesn't raise ValueError on empty exchange.
-    if "exchange" not in kwargs:
-        exch = await _al_modify_fetch_exchange(order_id)
-        if exch:
-            kwargs["exchange"] = exch
+    # Resolve the AlgoOrder row's own exchange/symbol once — used both as
+    # the pre-existing fallback for the broker call's `exchange` kwarg
+    # (Slice Q, so Groww's segment resolver doesn't raise ValueError on
+    # empty exchange) and, new in this fix, for G1 lot-multiple
+    # validation + translate_qty whenever `quantity` is in kwargs.
+    row_exchange, row_symbol = await _al_modify_fetch_order_meta(order_id)
+
+    if "exchange" not in kwargs and row_exchange:
+        kwargs["exchange"] = row_exchange
 
     try:
+        if "quantity" in kwargs:
+            exch_for_qty = kwargs.get("exchange") or row_exchange
+            kwargs["quantity"] = await _al_modify_resolve_qty(
+                broker, int(kwargs["quantity"]), exch_for_qty, row_symbol,
+            )
         await loop.run_in_executor(
             None,
             lambda: broker.modify_order(order_id, variety=variety, **kwargs)
         )
     except Exception as e:
         # Update the AlgoOrder row to REJECTED so the operator can see it.
+        # Covers both a real broker-call failure AND a G1/lot_size
+        # resolution failure above — neither ever reached the broker in
+        # the latter case, but annotating `detail` still gives the
+        # operator visibility into why the modify never happened.
         await _al_modify_write_reject(order_id, e)
         raise
 
