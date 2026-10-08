@@ -276,9 +276,13 @@ class TestAeSyncExistingBuiltinUsesGuard:
             f"guard-corrected 'inactive', got {existing.status!r}"
         )
 
-    def test_normal_def_sync_still_converges_status_unaffected_by_guard(self):
-        """Control case: a normal (non-mismatched) seed dict's status
-        sync behavior is completely unaffected by the guard."""
+    def test_normal_def_sync_leaves_operator_status_untouched(self):
+        """Control case (2026-10 behavior change): a normal (non-'Ships
+        INACTIVE') seed dict's status is NOT force-synced onto an
+        existing row at all — only the safety-critical 'Ships INACTIVE'
+        category gets the unconditional force-sync. Pre-fix, this exact
+        scenario silently reverted an operator's choice (e.g. activating
+        loss-rate-acct from /agents) on every process restart."""
         existing = self._make_existing(status="inactive")
         agent_def = {
             "slug": "synthetic-sync-normal",
@@ -287,7 +291,7 @@ class TestAeSyncExistingBuiltinUsesGuard:
             "schedule": "market_hours",
         }
         _ae_sync_existing_builtin(existing, agent_def)
-        assert existing.status == "active", (
-            f"expected normal def's status to sync through unaffected by "
-            f"the guard, got {existing.status!r}"
+        assert existing.status == "inactive", (
+            f"expected an ordinary (non-Ships-INACTIVE) builtin's existing "
+            f"row status to survive sync untouched, got {existing.status!r}"
         )
