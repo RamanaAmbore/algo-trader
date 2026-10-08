@@ -68,13 +68,13 @@ describe('(algo)/+layout.svelte — mount-independent template-attach toast', ()
 
   it('calls noteAttachObservation on every algo row and toasts on a true return', () => {
     expect(src.includes('if (noteAttachObservation(o)) {')).toBe(true);
-    expect(src.includes('toast.warning(`Order #${oid} bracket did not attach — check Order Book`, { timeoutMs: 5000 });'))
+    expect(src.includes('toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });'))
       .toBe(true);
   });
 
   it('uses the EXACT same toast wording OrderBook.svelte already uses (no copy-drift)', () => {
     expect(orderBookSrc.includes(
-      'toast.warning(`Order #${oid} bracket did not attach — check Order Book`, { timeoutMs: 5000 });'
+      'toast.warning(`Order #${oid} Bracket did not attach — check Order Book`, { timeoutMs: 5000 });'
     )).toBe(true);
   });
 
