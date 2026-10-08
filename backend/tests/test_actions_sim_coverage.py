@@ -397,6 +397,37 @@ def test_sim_resolve_qty_default():
     assert qty == 0
 
 
+def test_sim_resolve_qty_key_fallback_when_quantity_absent():
+    """params={"qty": 50} with no 'quantity' key resolves to quantity=50,
+    not 0 and not the qty_held fallback value — mirrors the live
+    executor's qty/quantity dual-key fallback
+    (test_action_place_order_qty_key_fallback_when_quantity_absent in
+    test_actions.py) so the sim leg of the validation ladder behaves
+    consistently for the Automation quick-add skeleton's params."""
+    from backend.api.algo.actions_sim import _sim_resolve_qty
+
+    qty = _sim_resolve_qty({"qty": 50}, qty_held=999)
+    assert qty == 50
+
+
+def test_sim_resolve_qty_quantity_key_wins_over_qty():
+    """When both keys are present, 'quantity' takes priority over 'qty'."""
+    from backend.api.algo.actions_sim import _sim_resolve_qty
+
+    qty = _sim_resolve_qty({"quantity": 75, "qty": 50}, qty_held=None)
+    assert qty == 75
+
+
+def test_sim_resolve_qty_held_fallback_only_when_both_keys_absent():
+    """Neither 'quantity' nor 'qty' present → falls back to position
+    size (qty_held). Confirms the dual-key fix doesn't break the
+    separate genuinely-unspecified-qty fallback behavior."""
+    from backend.api.algo.actions_sim import _sim_resolve_qty
+
+    qty = _sim_resolve_qty({}, qty_held=-5)
+    assert qty == 5
+
+
 def test_sim_resolve_price_sell_uses_bid():
     """SELL side → bid price."""
     from backend.api.algo.actions_sim import _sim_resolve_price
@@ -665,6 +696,47 @@ async def test_replay_paper_trade_writes_filled():
 
 
 @pytest.mark.asyncio
+async def test_replay_paper_trade_qty_key_fallback_when_quantity_absent():
+    """params={"qty": 50} with no 'quantity' key resolves to quantity=50,
+    not 0 — mirrors the live executor's qty/quantity dual-key fallback."""
+    from backend.api.algo.actions_sim import _replay_paper_trade
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+
+    params = {
+        "symbol": "NIFTY25JULFUT",
+        "account": "REPLAY",
+        "qty": 50,
+        # no 'quantity' key — matches the Automation quick-add skeleton
+        "price": 24500.0,
+        "exchange": "NFO",
+    }
+    context = {}
+
+    mock_row = MagicMock()
+    mock_row.id = 777
+
+    mock_session = AsyncMock()
+    mock_session.__aenter__.return_value = MagicMock()
+    mock_session.__aenter__.return_value.add = MagicMock()
+    mock_session.__aenter__.return_value.commit = AsyncMock()
+
+    captured = {}
+
+    def _capture_order_kwargs(*args, **kwargs):
+        captured.update(kwargs)
+        return mock_row
+
+    with patch("backend.api.database.async_session", return_value=mock_session), \
+         patch("backend.api.models.AlgoOrder", side_effect=_capture_order_kwargs):
+        await _replay_paper_trade(agent, "place_order", params, context)
+
+    assert captured["quantity"] == 50
+
+
+@pytest.mark.asyncio
 async def test_replay_paper_trade_db_error():
     """DB error → caught, logged."""
     from backend.api.algo.actions_sim import _replay_paper_trade
@@ -716,6 +788,34 @@ async def test_shadow_trade_calls_shadow_engine():
         await _shadow_trade(agent, "place_order", params, context)
 
     mock_engine.capture_order.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_shadow_trade_qty_key_fallback_when_quantity_absent():
+    """params={"qty": 50} with no 'quantity' key resolves to quantity=50,
+    not 0 — mirrors the live executor's qty/quantity dual-key fallback."""
+    from backend.api.algo.actions_sim import _shadow_trade
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+
+    params = {
+        "account": "ZG0790",
+        "symbol": "NIFTY25JULFUT",
+        "qty": 50,
+        # no 'quantity' key — matches the Automation quick-add skeleton
+        "price": 24500.0,
+    }
+    context = {}
+
+    mock_engine = MagicMock()
+    mock_engine.capture_order = AsyncMock(return_value={"ok": True})
+
+    with patch("backend.api.algo.shadow.get_shadow_engine", return_value=mock_engine):
+        await _shadow_trade(agent, "place_order", params, context)
+
+    mock_engine.capture_order.assert_called_once()
+    assert mock_engine.capture_order.call_args.kwargs["resolved"]["qty"] == 50
 
 
 @pytest.mark.asyncio
