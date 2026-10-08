@@ -181,12 +181,21 @@ def test_index_ltp_key_maps_nifty():
         )
 
 
-def test_expiry_auto_close_agents_ship_active():
-    """Both expiry auto-close built-in agents must ship with status='active'."""
+def test_expiry_auto_close_agents_ship_inactive():
+    """Both expiry auto-close built-in agents must ship with status='inactive'.
+
+    Both agents' own `description` text says "Ships INACTIVE (destructive)"
+    — their seed `status` must match. Fixed 2026-10: the seed dicts
+    previously said status='active', contradicting their own description
+    (a fresh/reset DB would have resurrected both as active with zero
+    operator review). See `_ae_guard_seed_status` in agent_engine.py for
+    the runtime guard that now catches this class of bug for any future
+    seeded agent.
+    """
     from backend.api.algo.agent_engine import BUILTIN_AGENTS
     slugs = {a["slug"]: a for a in BUILTIN_AGENTS}
-    assert slugs["expiry-day-equity-itm-auto-close"]["status"] == "active"
-    assert slugs["expiry-day-commodity-itm-auto-close"]["status"] == "active"
+    assert slugs["expiry-day-equity-itm-auto-close"]["status"] == "inactive"
+    assert slugs["expiry-day-commodity-itm-auto-close"]["status"] == "inactive"
 
 
 @pytest.mark.asyncio
@@ -399,3 +408,45 @@ def test_compute_theta_nfo_stays_on_plain_bs():
     assert spy_bs.called, "NFO position theta must use plain BS greeks()"
     assert not spy_76.called, "NFO position theta must NOT dispatch through greeks_76"
     assert theta != 0.0
+
+
+@pytest.mark.asyncio
+async def test_close_positions_records_held_order_with_expiry_close_category():
+    """close_positions() must route through the generic record_held_order
+    (order_hold_gate.py) with HoldCategory.EXPIRY_CLOSE when holds are on —
+    regression guard for the record_held_close -> record_held_order
+    call-site migration."""
+    from datetime import date
+    from unittest.mock import AsyncMock, patch
+    from backend.api.algo.expiry import ExpiryEngine, OptionPosition
+    from backend.api.algo.order_hold import HoldCategory
+
+    engine = ExpiryEngine()
+    pos = OptionPosition(
+        account="ZG0790",
+        tradingsymbol="CRUDEOIL26OCT8600CE",
+        exchange="MCX",
+        instrument_type="CE",
+        underlying="CRUDEOIL",
+        strike=8600.0,
+        expiry=date.today(),
+        quantity=1,
+        product="NRML",
+        residual_qty=1,
+    )
+
+    mock_record = AsyncMock(return_value=123)
+
+    with patch("backend.api.algo.expiry.expiry_close_held", return_value=True), \
+         patch("backend.api.algo.expiry.record_held_order", mock_record):
+        await engine.close_positions([pos])
+
+    mock_record.assert_called_once()
+    args, kwargs = mock_record.call_args
+    assert args[0] is HoldCategory.EXPIRY_CLOSE
+    assert kwargs["account"] == "ZG0790"
+    assert kwargs["symbol"] == "CRUDEOIL26OCT8600CE"
+    assert kwargs["exchange"] == "MCX"
+    assert kwargs["side"] == "SELL"
+    assert kwargs["qty"] == 1
+    assert kwargs["product"] == "NRML"

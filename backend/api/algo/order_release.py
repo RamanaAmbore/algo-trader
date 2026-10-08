@@ -1,10 +1,53 @@
-"""Release a held automated order: re-check the position and price, then send and chase."""
+"""Release a held automated order: re-check the position and price, then send and chase.
+
+Adding hold-support for a NEW agent category (a fourth `HoldCategory`, and
+beyond) is a registration, not a change to the dispatcher in
+`orders_held.py`. To wire one up end to end:
+
+  1. Add a member to `HoldCategory` in `order_hold.py` (e.g. `MY_AGENT`).
+  2. Wherever your agent decides to hold instead of fire, call
+     `order_hold_gate.record_held_order(category=HoldCategory.MY_AGENT, ...)`.
+  3. Write a release function with the shape
+     `async def release_my_agent_hold(order_id: int, actor: str) -> dict`,
+     returning `{"ok": bool, "reason": str, "status": str}`. Reuse whichever
+     existing release function's SHAPE matches what your hold represents:
+       - `release_held_order`'s pattern (re-check the live position + a
+         fresh quote before placing a NEW close order) if your category
+         means "place something new on release".
+       - `release_repeated_rejection_hold`'s pattern (resume `chase_order`
+         with the row's own already-persisted fields, no position/price
+         pre-check) if your category means "resume something already in
+         flight".
+  4. Register it in `_RELEASE_HANDLERS` below, keyed by
+     `HoldCategory.MY_AGENT.value`. No route code to touch — the
+     `/api/orders/held/{id}/release` route (`orders_held.py`) dispatches
+     purely through `get_release_handler()`.
+
+  IMPORTANT: a category you forget to register in `_RELEASE_HANDLERS`
+  silently falls through to `_DEFAULT_RELEASE_HANDLER`
+  (`release_held_order`) on release — which applies CLOSE semantics (the
+  `position_matches` check, and `intent="close"` on the resumed order).
+  That is correct only for `EXPIRY_CLOSE`-shaped holds. If your new
+  category's hold does not represent "close an existing position", it
+  MUST be registered, or release will silently misbehave.
+
+  IMPORTANT: `order_hold_gate.record_held_order` hardcodes
+  `engine="live"` / `mode="live"` on the row it writes (unchanged from the
+  original `record_held_close`). A category whose agent can run in
+  paper/sim/replay/shadow mode must NOT use `record_held_order` as-is for
+  its hold — doing so creates a live-mode row, and releasing it later
+  places a REAL broker order (see the mode-gate invariant on
+  `_fire_template_attach_on_fill` in `orders_place.py` / CLAUDE.md, which
+  exists to stop exactly this class of bug). Such a category needs its
+  own hold-recording path that threads the agent's real mode through.
+"""
 import asyncio
 from datetime import datetime, timezone
+from typing import Callable
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
-from backend.api.algo.order_hold import parse_hold_record, release_price
+from backend.api.algo.order_hold import HoldCategory, parse_hold_record, release_price
 
 logger = get_logger(__name__)
 
@@ -214,6 +257,35 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
     await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})
     await _fire_template_attach_on_fill(**args)
     return {"ok": True, "reason": "template exits placed", "status": "FILLED"}
+
+
+# ── Release dispatch registry ───────────────────────────────────────────
+#
+# Keyed by `HoldCategory.value` (the string stored in `hold_json["category"]`
+# — see `order_hold.py:hold_record`). The route (`orders_held.py`) looks up
+# the handler for a held row's category here instead of an if/elif chain.
+#
+# The dict below is built once at import time and holds references to the
+# functions as they exist THEN. Tests patch handlers by module attribute
+# name (e.g. `patch("backend.api.algo.order_release.release_held_order",
+# ...)`) — that mutates this module's `__dict__`, not the dict's stored
+# reference. `get_release_handler()` re-resolves each handler's CURRENT
+# value by name every call, so a patched/mocked handler is always what
+# actually runs.
+_RELEASE_HANDLERS: dict[str | None, Callable] = {
+    HoldCategory.TEMPLATE_EXIT.value: release_template_exit,
+    HoldCategory.AGENT_ORDER.value: release_repeated_rejection_hold,
+}
+_DEFAULT_RELEASE_HANDLER: Callable = release_held_order  # expiry_close + anything unregistered
+
+
+def get_release_handler(category: str | None) -> Callable:
+    """Return the release function registered for `category`, re-resolved
+    by name against this module's current globals so test monkeypatching
+    of a handler by module attribute always takes effect (see the registry
+    comment above)."""
+    fn = _RELEASE_HANDLERS.get(category, _DEFAULT_RELEASE_HANDLER)
+    return globals().get(fn.__name__, fn)
 
 
 async def cancel_held_order(order_id: int, actor: str) -> dict:

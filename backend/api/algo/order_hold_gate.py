@@ -9,18 +9,47 @@ from backend.api.algo.order_hold import HoldCategory, effective_hold, hold_recor
 logger = get_logger(__name__)
 
 EXPIRY_CLOSE_RELEASED_KEY = "hold.expiry_close_released"
+TEMPLATE_EXIT_RELEASED_KEY = "hold.template_exit_released"
+
+
+def held_for(category: HoldCategory, override: bool | None = None) -> bool:
+    """Generic hold-check for any `HoldCategory`.
+
+    A per-order override wins when given. Otherwise the category's own
+    global release switch (`hold.<category>_released`) decides, and the
+    default is held. `expiry_close_held()` and `template_exit_held()` are
+    thin wrappers over this for the two categories that existed before this
+    was generalised — kept so existing callers/tests that monkeypatch those
+    names by name keep working unchanged.
+    """
+    released = get_bool(f"hold.{category.value}_released", False)
+    return effective_hold(category, override, {category.value: released})
 
 
 def expiry_close_held() -> bool:
     """True when expiry closes must be held (global default is held)."""
-    released = get_bool(EXPIRY_CLOSE_RELEASED_KEY, False)
-    return effective_hold(HoldCategory.EXPIRY_CLOSE, None, {"expiry_close": released})
+    return held_for(HoldCategory.EXPIRY_CLOSE, None)
 
 
-async def record_held_close(*, account: str, symbol: str, exchange: str,
-                            side: str, qty: int, product: str,
-                            reason: str) -> int | None:
-    """Persist one HELD AlgoOrder for an expiry close. Returns the row id."""
+def template_exit_held(override: bool | None = None) -> bool:
+    """True when template exit GTTs must be held.
+
+    A per-order override (the ticket's Hold switch) wins. Otherwise the global
+    switch decides, and the default is held.
+    """
+    return held_for(HoldCategory.TEMPLATE_EXIT,
+                    None if override is None else bool(override))
+
+
+async def record_held_order(category: HoldCategory, *, account: str, symbol: str,
+                            exchange: str, side: str, qty: int, product: str,
+                            reason: str, price_policy: str = "CHASE_MED") -> int | None:
+    """Persist one HELD AlgoOrder for any hold category. Returns the row id.
+
+    Generic form of the old `record_held_close` (which held one and only one
+    category, `EXPIRY_CLOSE`, hardcoded). See the module docstring in
+    `order_release.py` for how to wire up a new category end to end.
+    """
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
 
@@ -32,34 +61,31 @@ async def record_held_close(*, account: str, symbol: str, exchange: str,
                 transaction_type=side, quantity=qty, product=product,
                 initial_price=None, status="HELD", engine="live", mode="live",
                 broker_order_id="", detail=f"HELD: {reason}",
-                hold_json=hold_record(HoldCategory.EXPIRY_CLOSE, reason,
-                                      "CHASE_MED", None, held_at),
+                hold_json=hold_record(category, reason, price_policy, None, held_at),
             )
             s.add(row)
             await s.commit()
             row_id = row.id
-        logger.info(f"[HOLD] expiry close held: {side} {qty} {symbol} acct={account} id={row_id}")
+        logger.info(f"[HOLD] {category.value} held: {side} {qty} {symbol} acct={account} id={row_id}")
         from backend.api.algo.order_events import write_event
         await write_event(row_id, "held", f"Held: {side} {qty} {symbol} ({reason})", {"reason": reason})
         return row_id
     except Exception as e:
-        logger.error(f"[HOLD] could not record held close for {symbol}: {e}")
+        logger.error(f"[HOLD] could not record held order ({category.value}) for {symbol}: {e}")
         return None
 
 
-TEMPLATE_EXIT_RELEASED_KEY = "hold.template_exit_released"
-
-
-def template_exit_held(override: bool | None = None) -> bool:
-    """True when template exit GTTs must be held.
-
-    A per-order override (the ticket's Hold switch) wins. Otherwise the global
-    switch decides, and the default is held.
-    """
-    released = get_bool(TEMPLATE_EXIT_RELEASED_KEY, False)
-    return effective_hold(HoldCategory.TEMPLATE_EXIT,
-                          None if override is None else bool(override),
-                          {"template_exit": released})
+async def record_held_close(*, account: str, symbol: str, exchange: str,
+                            side: str, qty: int, product: str,
+                            reason: str) -> int | None:
+    """Backward-compat wrapper: persist one HELD AlgoOrder for an expiry
+    close specifically. New code should call `record_held_order` directly
+    with the category it needs; this is kept because callers/tests still
+    reference it by this exact name."""
+    return await record_held_order(
+        HoldCategory.EXPIRY_CLOSE, account=account, symbol=symbol, exchange=exchange,
+        side=side, qty=qty, product=product, reason=reason,
+    )
 
 
 async def template_exit_override(parent_row_id: int) -> bool | None:
