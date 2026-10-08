@@ -262,9 +262,13 @@ class TestBuildAttachedPayload:
         }
 
     def test_gtts_and_wing(self):
+        # `_retry_build_attached_payload` keys off each spec's own
+        # `placed_id` (not a positional zip with `result.gtt_ids`) — see
+        # the GTT-rejection fix in template_attach.py. `placed_id` must be
+        # set on the spec itself for it to appear in the payload.
         spec = SimpleNamespace(
             label="SL", trigger_type="single",
-            trigger_values=[95.0], sl_trail_pct=None,
+            trigger_values=[95.0], sl_trail_pct=None, placed_id="gid1",
         )
         plan = _plan()
         plan.gtts = [spec]
@@ -275,6 +279,23 @@ class TestBuildAttachedPayload:
         assert len(payload) == 2
         assert payload[0]["kind"] == "gtt"
         assert payload[1]["kind"] == "wing"
+
+    def test_gtt_without_placed_id_is_skipped(self):
+        """A spec whose placement was never confirmed (e.g. broker-rejected
+        GTT — `_ta_live_place_one_gtt` leaves `placed_id` unset) must not
+        appear in the built payload, even though `result.gtt_ids` may
+        still be non-empty from a sibling spec that WAS accepted."""
+        spec = SimpleNamespace(
+            label="TP", trigger_type="single",
+            trigger_values=[110.0], sl_trail_pct=None, placed_id=None,
+        )
+        plan = _plan()
+        plan.gtts = [spec]
+        result = SimpleNamespace(
+            plan=plan, gtt_ids=[], wing_order_id=None, errors=["rejected"],
+        )
+        payload = _retry_build_attached_payload(result, "NRML")
+        assert payload == []
 
 
 # ── _retry_build_result_response ─────────────────────────────────────────

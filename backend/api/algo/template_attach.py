@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import math
 import re
+import time
 from dataclasses import dataclass, field, asdict
 from typing import Optional
 
@@ -1835,16 +1836,39 @@ def _gtt_id_of(g: dict) -> str:
     return ""
 
 
-def _verify_gtt_accepted(broker, gtt_id) -> str | None:
-    """None when the broker lists this GTT as accepted. Otherwise the reason it is not.
+_GTT_NOT_PRESENT_REASON = "not present in the broker's GTT list"
 
-    A single read of the broker's GTT list after placement. Chase does not reprice
-    or replace a GTT; this only confirms that the broker took it.
+# Read-after-write gap: some brokers' GTT list is server-side filtered to an
+# "active"-only status (e.g. Groww's get_gtts() calls get_smart_order_list
+# with status="ACTIVE") — a GTT the broker has genuinely accepted but which
+# is still briefly "PENDING" at the instant of this check will not appear in
+# the list at all yet. Only the "not present at all" outcome is ambiguous
+# like this; a GTT that IS present but REJECTED/CANCELLED (or carries an
+# unrecognised status) is an unambiguous, immediate verdict and must never
+# be retried — no amount of retrying changes a real rejection.
+#
+# Broker-agnostic by design (no "if groww" branch) — the retry is cheap and
+# harmless for Kite/Dhan too, where the GTT already reliably appears on the
+# first read. Kept small: this whole call chain (apply_plan_live ->
+# _ta_live_place_one_gtt -> _verify_gtt_accepted) runs synchronously on
+# whatever thread calls it — for the live-order-placement path that is the
+# asyncio event loop thread (`_route_apply_path` is called un-awaited from
+# inside the async `_apply_template_to_order_impl`) — so `time.sleep` here
+# blocks that loop for the sleep's duration, same as the preceding
+# synchronous `broker.place_gtt` network call already does. Total added
+# worst-case delay is `_GTT_VERIFY_RETRIES * _GTT_VERIFY_BACKOFF_S` seconds.
+_GTT_VERIFY_RETRIES = 2       # extra get_gtts() reads after the first
+_GTT_VERIFY_BACKOFF_S = 0.5   # sleep before each retry read
+
+
+def _classify_listed_gtt(listed: list[dict], gtt_id) -> str | None:
+    """Classify one `get_gtts()` snapshot for *gtt_id*. Pure, no I/O.
+
+    Returns None when accepted, `_GTT_NOT_PRESENT_REASON` when the id is
+    simply missing from *listed* (ambiguous — may be a read-after-write
+    gap, see module-level retry docstring above), or a reason string for
+    an unambiguous rejected/unrecognised status.
     """
-    try:
-        listed = broker.get_gtts() or []
-    except Exception as e:  # noqa: BLE001
-        return f"status read failed: {e}"
     for g in listed:
         if _gtt_id_of(g) == str(gtt_id):
             status = str(g.get("status", "")).lower()
@@ -1853,7 +1877,29 @@ def _verify_gtt_accepted(broker, gtt_id) -> str | None:
             if status in _GTT_ACCEPTED_STATUSES or not status:
                 return None
             return f"unrecognised broker status {status}"
-    return "not present in the broker's GTT list"
+    return _GTT_NOT_PRESENT_REASON
+
+
+def _verify_gtt_accepted(broker, gtt_id) -> str | None:
+    """None when the broker lists this GTT as accepted. Otherwise the reason it is not.
+
+    Reads the broker's GTT list after placement, with a short bounded retry
+    (see `_GTT_VERIFY_RETRIES`) ONLY when the id is absent from the list
+    entirely. A listed-but-rejected (or unrecognised-status) GTT returns
+    immediately with no retry/sleep. Chase does not reprice or replace a
+    GTT; this only confirms that the broker took it.
+    """
+    for attempt in range(_GTT_VERIFY_RETRIES + 1):
+        try:
+            listed = broker.get_gtts() or []
+        except Exception as e:  # noqa: BLE001
+            return f"status read failed: {e}"
+        reason = _classify_listed_gtt(listed, gtt_id)
+        if reason != _GTT_NOT_PRESENT_REASON:
+            return reason
+        if attempt < _GTT_VERIFY_RETRIES:
+            time.sleep(_GTT_VERIFY_BACKOFF_S)
+    return _GTT_NOT_PRESENT_REASON
 
 
 def _ta_live_place_one_gtt(
@@ -1885,17 +1931,29 @@ def _ta_live_place_one_gtt(
             trigger_values=list(spec.trigger_values),
             tag=f"tpl-{plan.template_id}-{spec.label}",
         )
-        spec.placed_id = str(gtt_id)
-        result.gtt_ids.append(spec.placed_id)
-        _gtt_reason = _verify_gtt_accepted(broker, spec.placed_id)
+        # Verify acceptance BEFORE recording the id anywhere. A rejected
+        # GTT must never look like live protection: `spec.placed_id` stays
+        # None and the id is never appended to `result.gtt_ids`, so neither
+        # `_opp_build_attach_entries` (orders_place.py — keys off
+        # `spec.placed_id`) nor `_retry_build_attached_payload` (orders.py —
+        # iterates specs keyed off `spec.placed_id` too) can ever surface a
+        # rejected GTT in `attached_gtts_json`. This mirrors the existing
+        # except-branches below, which already never set placed_id/gtt_ids
+        # on a failed placement.
+        _gtt_reason = _verify_gtt_accepted(broker, gtt_id)
         if _gtt_reason:
-            result.errors.append(f"GTT {spec.label} not accepted at broker: {_gtt_reason}")
+            result.errors.append(
+                f"GTT {spec.label} (id={gtt_id}) not accepted at broker: {_gtt_reason}"
+            )
             logger.error(
                 "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
                 extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
                        "symbol": plan.parent_symbol, "label": spec.label,
-                       "gtt_id": str(spec.placed_id), "reason": _gtt_reason},
+                       "gtt_id": str(gtt_id), "reason": _gtt_reason},
             )
+            return pair_first_id
+        spec.placed_id = str(gtt_id)
+        result.gtt_ids.append(spec.placed_id)
         if pair_two_singles and idx == 0:
             return spec.placed_id
         if pair_two_singles and idx == 1 and pair_first_id and spec.placed_id:

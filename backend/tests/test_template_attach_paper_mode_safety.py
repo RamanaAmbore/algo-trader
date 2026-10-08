@@ -103,6 +103,11 @@ class TestFireTemplateAttachModeGate:
         mock_broker.place_gtt = MagicMock(return_value="gtt-123")
         mock_broker.place_order = MagicMock(return_value="order-456")
         mock_broker.translate_qty.side_effect = lambda exch, qty, ls: qty
+        # _ta_live_place_one_gtt now verifies broker-acceptance (a single
+        # get_gtts() read-back) before recording the id as placed — this
+        # mock must report the placed GTT as accepted, or the fix
+        # correctly treats it as never-placed and skips the persist below.
+        mock_broker.get_gtts = MagicMock(return_value=[{"id": "gtt-123", "status": "active"}])
 
         template = {
             "id": 7, "slug": "default-bull", "name": "Default Bull",

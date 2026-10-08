@@ -342,6 +342,11 @@ def test_email_channel_sends_only_to_its_configured_recipients(monkeypatch):
 
 def test_gtt_acceptance_accepts_active_and_rejects_refused(monkeypatch):
     from backend.api.algo import template_attach as ta
+    # "not present" now retries a few times before giving up (see
+    # _GTT_VERIFY_RETRIES) — patch out the real sleep so this still-valid
+    # outcome doesn't add real wall-clock delay to the suite.
+    monkeypatch.setattr(ta.time, "sleep", lambda *_a, **_k: None)
+
     class _B:
         def __init__(self, rows):
             self.rows = rows

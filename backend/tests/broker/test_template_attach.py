@@ -1407,3 +1407,416 @@ async def test_start_wing_chase_backstop_fires_when_chase_wing_escapes(monkeypat
         await asyncio.sleep(0)
 
     assert mock_logger.critical.called
+
+
+# ── Rejected GTT must never be recorded as live protection ───────────
+#
+# `_ta_live_place_one_gtt` places a GTT then runs a single read-back
+# (`_verify_gtt_accepted`) against the broker's own GTT list. Before this
+# fix, `spec.placed_id` was set and the id appended to `result.gtt_ids`
+# BEFORE that verdict was known, so a broker-rejected GTT still looked
+# like live protection to every downstream consumer of
+# `attached_gtts_json` (`_opp_build_attach_entries` in orders_place.py,
+# `_retry_build_attached_payload` in orders.py) — the only signal of the
+# failure was a log line an operator could miss.
+
+def _rejecting_mock_broker(place_gtt_ids, gtt_statuses):
+    """MagicMock broker: place_gtt returns ids in order; get_gtts reports
+    the given status per id."""
+    broker = MagicMock()
+    broker.broker_id = "zerodha_kite"
+    broker.capabilities.gtt_single = True
+    broker.validate_gtt_exchange.return_value = None
+    broker.translate_qty.side_effect = lambda exch, qty, ls: qty  # passthrough
+    broker.place_gtt.side_effect = list(place_gtt_ids)
+    broker.get_gtts.return_value = [
+        {"id": gid, "status": status} for gid, status in gtt_statuses.items()
+    ]
+    return broker
+
+
+def _one_shot_oco_plan() -> "TemplatePlan":
+    """A single two-leg (native OCO) GTT spec — Kite/Dhan shape."""
+    from backend.api.algo.template_attach import TemplatePlan, GttSpec
+
+    return TemplatePlan(
+        template_id=1, template_name="t", template_slug="t",
+        parent_account="ZG0790", parent_symbol="RELIANCE",
+        parent_side="BUY", parent_qty=10, parent_exchange="NSE",
+        parent_fill_price=1000.0, parent_lot_size=1,
+        gtts=[
+            GttSpec(
+                trigger_type="two-leg", trigger_values=[1100.0, 950.0],
+                orders=[
+                    {"quantity": 10, "transaction_type": "SELL", "product": "CNC"},
+                    {"quantity": 10, "transaction_type": "SELL", "product": "CNC"},
+                ],
+                label="TP+SL",
+            ),
+        ],
+        wing=None,
+    )
+
+
+def _two_singles_plan() -> "TemplatePlan":
+    """Two single-leg GTTs (TP + SL) — the Groww-style two-singles shape
+    that triggers `pair_two_singles` OCO-sibling stitching."""
+    from backend.api.algo.template_attach import TemplatePlan, GttSpec
+
+    return TemplatePlan(
+        template_id=1, template_name="t", template_slug="t",
+        parent_account="ZG0790", parent_symbol="RELIANCE",
+        parent_side="BUY", parent_qty=10, parent_exchange="NSE",
+        parent_fill_price=1000.0, parent_lot_size=1,
+        gtts=[
+            GttSpec(
+                trigger_type="single", trigger_values=[1100.0],
+                orders=[{"quantity": 10, "transaction_type": "SELL", "product": "CNC"}],
+                label="TP",
+            ),
+            GttSpec(
+                trigger_type="single", trigger_values=[950.0],
+                orders=[{"quantity": 10, "transaction_type": "SELL", "product": "CNC"}],
+                label="SL",
+            ),
+        ],
+        wing=None,
+    )
+
+
+class TestRejectedGttNeverRecordedAsAttached:
+    """Core fix: a broker-rejected GTT must never reach `gtt_ids` /
+    `spec.placed_id`, so it can never be mistaken for live protection."""
+
+    def test_rejected_gtt_not_in_gtt_ids_and_placed_id_stays_none(self):
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _one_shot_oco_plan()
+        broker = _rejecting_mock_broker(
+            ["G1"], {"G1": "rejected"},
+        )
+
+        result = apply_plan_live(plan, broker, parent_order_id=1)
+
+        assert result.gtt_ids == [], (
+            "A broker-rejected GTT must never be appended to gtt_ids"
+        )
+        assert plan.gtts[0].placed_id is None, (
+            "spec.placed_id must stay unset on rejection — downstream "
+            "consumers key off this field directly"
+        )
+        assert any(
+            "TP+SL" in e and "G1" in e and "not accepted" in e
+            for e in result.errors
+        ), f"expected a clear rejection error, got {result.errors}"
+
+    def test_accepted_gtt_unchanged_happy_path(self):
+        """Regression guard — acceptance still behaves exactly as before."""
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _one_shot_oco_plan()
+        broker = _rejecting_mock_broker(
+            ["G1"], {"G1": "active"},
+        )
+
+        result = apply_plan_live(plan, broker, parent_order_id=1)
+
+        assert result.gtt_ids == ["G1"]
+        assert plan.gtts[0].placed_id == "G1"
+        assert result.errors == []
+
+    def test_rejected_first_leg_does_not_become_oco_sibling(self):
+        """TP (idx 0) rejected, SL (idx 1) accepted. The rejected leg must
+        not be recorded as the accepted leg's OCO sibling — pairing a
+        rejected id would let the OCO pair-watcher mistake a rejection for
+        'the other leg fired' and cancel the only real protection."""
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _two_singles_plan()
+        broker = _rejecting_mock_broker(
+            ["G1", "G2"], {"G1": "rejected", "G2": "active"},
+        )
+
+        result = apply_plan_live(plan, broker, parent_order_id=1)
+
+        assert result.gtt_ids == ["G2"]
+        assert plan.gtts[0].placed_id is None   # TP, rejected
+        assert plan.gtts[1].placed_id == "G2"   # SL, accepted
+        assert result.sibling_pairs == [], (
+            "a rejected leg must never be wired as an OCO sibling"
+        )
+        assert any("TP" in e and "G1" in e for e in result.errors)
+
+    def test_accepted_two_singles_happy_path_sibling_pairing_unchanged(self):
+        """Regression guard — both accepted → sibling pairing unchanged."""
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _two_singles_plan()
+        broker = _rejecting_mock_broker(
+            ["G1", "G2"], {"G1": "active", "G2": "active"},
+        )
+
+        result = apply_plan_live(plan, broker, parent_order_id=1)
+
+        assert result.gtt_ids == ["G1", "G2"]
+        assert result.sibling_pairs == [("G1", "G2")]
+        assert result.errors == []
+
+    def test_rejection_alert_still_fires(self):
+        """Regression check against the prior audit's claim that the
+        `gtt_not_accepted` alert log already fires correctly — must still
+        fire after the reorder."""
+        import logging
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _one_shot_oco_plan()
+        broker = _rejecting_mock_broker(["G1"], {"G1": "rejected"})
+
+        records: list = []
+
+        class _CollectHandler(logging.Handler):
+            def emit(self, record):
+                records.append(record)
+
+        target_logger = logging.getLogger("backend.api.algo.template_attach")
+        handler = _CollectHandler()
+        target_logger.addHandler(handler)
+        try:
+            apply_plan_live(plan, broker, parent_order_id=1)
+        finally:
+            target_logger.removeHandler(handler)
+
+        alert_records = [
+            r for r in records
+            if getattr(r, "alert_event", None) == "gtt_not_accepted"
+        ]
+        assert alert_records, "expected a gtt_not_accepted alert log record"
+        assert alert_records[0].gtt_id == "G1"
+
+    @pytest.mark.asyncio
+    async def test_durable_event_write_fires_on_rejection_without_depending_on_gtt_ids(self):
+        """`apply_template_to_order`'s wrapper writes `template_attach_failed`
+        off `result.errors` alone (see its own docstring) — confirm that
+        still holds for a rejection-only AttachResult where `gtt_ids` is
+        empty, i.e. the durable event-write path does NOT depend on the
+        rejected id being present in gtt_ids."""
+        from backend.api.algo.template_attach import (
+            AttachResult, apply_template_to_order,
+        )
+
+        plan = _one_shot_oco_plan()
+        fake_result = AttachResult(plan=plan)
+        fake_result.errors.append(
+            "GTT TP+SL (id=G1) not accepted at broker: broker status rejected"
+        )
+        # gtt_ids deliberately left empty — the exact shape a rejection
+        # produces after this fix.
+        assert fake_result.gtt_ids == []
+
+        with patch(
+            "backend.api.algo.template_attach._apply_template_to_order_impl",
+            new=AsyncMock(return_value=fake_result),
+        ), patch(
+            "backend.api.algo.order_events.write_event",
+            new_callable=AsyncMock,
+        ) as mock_we:
+            result = await apply_template_to_order(
+                template_id=1,
+                template_slug="t",
+                overrides={},
+                parent_account="ZG0790",
+                parent_symbol="RELIANCE",
+                parent_side="BUY",
+                parent_qty=10,
+                parent_exchange="NSE",
+                parent_fill_price=1000.0,
+                parent_order_id=42,
+                apply_path="live",
+            )
+
+        assert result is fake_result
+        kinds = [c.args[1] for c in mock_we.call_args_list]
+        assert kinds == ["template_attach_started", "template_attach_failed"]
+        failed_call = mock_we.call_args_list[1]
+        assert failed_call.args[3]["errors"] == fake_result.errors
+        assert failed_call.args[3]["gtt_ids"] == []
+
+
+class TestRejectedGttNeverReachesAttachedGttsJson:
+    """Integration-level check through the two real downstream consumers
+    of an AttachResult — never just the result.gtt_ids unit check."""
+
+    def _rejected_result(self):
+        from backend.api.algo.template_attach import apply_plan_live
+
+        plan = _two_singles_plan()
+        broker = _rejecting_mock_broker(
+            ["G1", "G2"], {"G1": "rejected", "G2": "active"},
+        )
+        return apply_plan_live(plan, broker, parent_order_id=1)
+
+    def test_opp_build_attach_entries_skips_rejected_gtt(self):
+        from backend.api.routes.orders_place import _opp_build_attach_entries
+
+        result = self._rejected_result()
+        attached = _opp_build_attach_entries(
+            result, fill_price=1000.0, parent_side="BUY", parent_product="CNC",
+        )
+
+        assert len(attached) == 1
+        assert attached[0]["id"] == "G2"
+        assert attached[0]["label"] == "SL"
+        assert not any(e.get("id") == "G1" for e in attached)
+
+    def test_retry_build_attached_payload_skips_rejected_gtt(self):
+        """Regression guard for the positional-zip hazard: before this
+        fix, `_retry_build_attached_payload` zipped `plan.gtts` with
+        `result.gtt_ids` positionally — with the rejected TP dropped from
+        gtt_ids, the zip would have paired the accepted SL's id onto the
+        TP spec (wrong label/trigger values), rather than cleanly
+        omitting the rejected leg."""
+        from backend.api.routes.orders import _retry_build_attached_payload
+
+        result = self._rejected_result()
+        payload = _retry_build_attached_payload(result, product="CNC")
+
+        assert len(payload) == 1
+        assert payload[0]["id"] == "G2"
+        assert payload[0]["label"] == "SL"
+        assert not any(e.get("id") == "G1" for e in payload)
+
+
+# ── Retry on ambiguous "not present" read-after-write gap ────────────
+#
+# `_verify_gtt_accepted` treats "the id is absent from the broker's GTT
+# list at all" as ambiguous — a brief read-after-write lag, e.g. Groww's
+# `get_gtts()` server-side filters to status=ACTIVE (`get_smart_order_list
+# (status="ACTIVE", ...)`), so a GTT the broker has genuinely accepted but
+# which is still briefly PENDING at the instant of this check won't show
+# up on the very next read — and retries that outcome a short bounded
+# number of times before giving up. A GTT that IS present but carries a
+# REJECTED/CANCELLED (or unrecognised) status is unambiguous and must
+# never be retried.
+
+class TestVerifyGttAcceptedRetryOnNotPresent:
+
+    def _patched_sleep(self, monkeypatch):
+        from backend.api.algo import template_attach as ta
+        mock_sleep = MagicMock()
+        monkeypatch.setattr(ta.time, "sleep", mock_sleep)
+        return mock_sleep
+
+    def test_late_appearing_gtt_is_accepted_within_retry_budget(self, monkeypatch):
+        """First read: empty (not present yet). A later read, still
+        within the retry budget, shows the GTT as active. Must end up
+        accepted — confirms the retry actually gives a late-appearing
+        GTT a chance instead of declaring it rejected on the first miss."""
+        from backend.api.algo.template_attach import _verify_gtt_accepted
+
+        mock_sleep = self._patched_sleep(monkeypatch)
+        broker = MagicMock()
+        broker.get_gtts.side_effect = [
+            [],                                    # attempt 1: not present yet
+            [{"id": "G1", "status": "active"}],    # attempt 2: now accepted
+        ]
+
+        reason = _verify_gtt_accepted(broker, "G1")
+
+        assert reason is None
+        assert broker.get_gtts.call_count == 2
+        assert mock_sleep.call_count == 1
+
+    def test_never_appearing_gtt_exhausts_retry_budget_and_reports_not_present(self, monkeypatch):
+        """Regression guard: the GTT never shows up across every retry
+        attempt — must still correctly report 'not present' after
+        exhausting the bounded budget, never retry forever."""
+        from backend.api.algo.template_attach import (
+            _verify_gtt_accepted, _GTT_VERIFY_RETRIES,
+        )
+
+        mock_sleep = self._patched_sleep(monkeypatch)
+        broker = MagicMock()
+        broker.get_gtts.return_value = []
+
+        reason = _verify_gtt_accepted(broker, "G1")
+
+        assert reason == "not present in the broker's GTT list"
+        assert broker.get_gtts.call_count == _GTT_VERIFY_RETRIES + 1
+        assert mock_sleep.call_count == _GTT_VERIFY_RETRIES
+
+    def test_rejected_status_returns_immediately_with_no_retry(self, monkeypatch):
+        """A GTT that IS present but REJECTED is unambiguous and immediate
+        — must return on the very first read with zero sleeps, confirming
+        the new retry logic never slows down (or second-guesses) a
+        genuine rejection."""
+        from backend.api.algo.template_attach import _verify_gtt_accepted
+
+        mock_sleep = self._patched_sleep(monkeypatch)
+        broker = MagicMock()
+        broker.get_gtts.return_value = [{"id": "G1", "status": "rejected"}]
+
+        reason = _verify_gtt_accepted(broker, "G1")
+
+        assert reason == "broker status rejected"
+        assert broker.get_gtts.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_status_read_exception_returns_immediately_with_no_retry(self, monkeypatch):
+        """A `get_gtts()` exception is a distinct failure mode from 'not
+        present' — must not be retried either (unchanged behaviour)."""
+        from backend.api.algo.template_attach import _verify_gtt_accepted
+
+        mock_sleep = self._patched_sleep(monkeypatch)
+        broker = MagicMock()
+        broker.get_gtts.side_effect = RuntimeError("down")
+
+        reason = _verify_gtt_accepted(broker, "G1")
+
+        assert "status read failed" in reason
+        assert broker.get_gtts.call_count == 1
+        mock_sleep.assert_not_called()
+
+    def test_groww_shaped_two_singles_plan_accepts_late_pending_gtts(self, monkeypatch):
+        """End-to-end via `apply_plan_live` with a Groww-shaped broker
+        mock: `get_gtts()` returns rows keyed by `gtt_id` (the exact shape
+        `GrowwBroker.get_gtts()`'s `_normalise_groww_gtt_row` produces),
+        and each leg's GTT is briefly absent from the list right after its
+        own `place_gtt` call before showing up on a later read — the
+        read-after-write gap this fix addresses. Confirms both legs end up
+        accepted and sibling-paired."""
+        from backend.api.algo.template_attach import apply_plan_live
+
+        mock_sleep = self._patched_sleep(monkeypatch)
+        broker = MagicMock()
+        broker.broker_id = "groww"
+        broker.capabilities.gtt_single = True
+        broker.validate_gtt_exchange.return_value = None
+        broker.translate_qty.side_effect = lambda exch, qty, ls: qty
+        broker.place_gtt.side_effect = ["G1", "G2"]
+
+        # Stateful fake (get_gtts() takes no args, called once per leg) —
+        # G1 becomes visible from its own 2nd read onward, G2 likewise
+        # from its own 2nd read onward.
+        calls = {"n": 0}
+
+        def _get_gtts():
+            calls["n"] += 1
+            rows = []
+            if calls["n"] >= 2:
+                rows.append({"gtt_id": "G1", "status": "active"})
+            if calls["n"] >= 4:
+                rows.append({"gtt_id": "G2", "status": "active"})
+            return rows
+
+        broker.get_gtts.side_effect = _get_gtts
+
+        plan = _two_singles_plan()
+        result = apply_plan_live(plan, broker, parent_order_id=1)
+
+        assert result.gtt_ids == ["G1", "G2"]
+        assert plan.gtts[0].placed_id == "G1"
+        assert plan.gtts[1].placed_id == "G2"
+        assert result.sibling_pairs == [("G1", "G2")]
+        assert result.errors == []
+        assert broker.get_gtts.call_count == 4
+        assert mock_sleep.call_count == 2
