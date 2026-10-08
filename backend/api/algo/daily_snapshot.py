@@ -1185,7 +1185,11 @@ async def fix_daily_book_prev_close(
       Both ltp and prev_close are set to close_price so that
       _override_stale_close_from_snapshot reads the correct settlement price,
       making day P&L ≈ 0 at session open.
-      Falls back to yesterday's daily_book.ltp when settlement_map is absent.
+      Falls back to yesterday's daily_book.ltp when settlement_map is absent
+      (empty/None, or the settlement_map UPDATE raised). In that fallback too,
+      both ltp and prev_close are set to the SAME reference value together —
+      matching the settlement_map path's invariant — so that LTP and P.Close
+      agree immediately after the 08:00 IST transition in both cases.
     """
     # Gate: do not run on non-trading days (weekends / holidays).
     # _is_market_day_today() reads from the DB-backed exchange_schedule cache,
@@ -1210,11 +1214,17 @@ async def fix_daily_book_prev_close(
         ref_cond = "prev_close IS NOT NULL AND prev_close > 0"
         epsilon = 0.005   # only fix rows where prev_close ≈ ltp (wrong)
         mode = "overnight"
+        ltp_set_clause = ""  # overnight: ltp is still live-ticking, must not be touched
     else:
         ref_col = "ltp"
         ref_cond = "ltp IS NOT NULL AND ltp > 0"
         epsilon = 999999.0  # unconditional — transition all today's rows
         mode = "new-session"
+        # New-session fallback (no settlement_map): both prev_close AND ltp must be
+        # set to the SAME reference value together, matching the primary
+        # (settlement_map-present) path's "both columns together" invariant —
+        # otherwise today's stale/live ltp disagrees with the freshly-fixed prev_close.
+        ltp_set_clause = ",\n                    ltp               = r.ref_close"
 
     # New-session mode with settlement_map: update rows using broker close_price directly.
     # This covers rows created between 00:30–07:59 IST (maintenance restart) where
@@ -1278,7 +1288,7 @@ async def fix_daily_book_prev_close(
                     ORDER BY kind, account, symbol, date DESC
                 )
                 UPDATE daily_book d
-                SET prev_close        = r.ref_close,
+                SET prev_close        = r.ref_close{ltp_set_clause},
                     prev_close_backup = COALESCE(d.prev_close_backup, d.prev_close)
                 FROM prev_ref r
                 WHERE d.kind = r.kind
