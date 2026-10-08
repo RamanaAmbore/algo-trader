@@ -380,7 +380,7 @@
     <!-- #26 — re-attach failure count chip (shown when >= 2 failed attempts) -->
     {#if _failCount >= 2}
       <span class="log-chip log-chip-reattach-fail"
-            title={`Re-attach has failed ${_failCount} time(s) for this order. Check bracket config or broker availability.`}>
+            title={`Re-attach has failed ${_failCount} time(s) for this order. Check Bracket config or broker availability.`}>
         ⟳ failed ×{_failCount}
       </span>
     {/if}

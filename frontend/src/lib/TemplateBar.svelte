@@ -226,7 +226,7 @@
     <button type="button"
             class="oes-tpl-expand-btn"
             class:oes-tpl-expand-open={_expanded}
-            title={_expanded ? 'Collapse bracket params' : 'Expand all bracket params'}
+            title={_expanded ? 'Collapse Bracket params' : 'Expand all Bracket params'}
             onclick={() => { _expanded = !_expanded; }}>
       <span class="oes-tpl-expand-icon" aria-hidden="true"></span>
     </button>
@@ -310,13 +310,13 @@
            dropdown built from `nonNoneTemplates` (Default/None rows
            dropped — those are the toggle itself now). -->
       {#if nonNoneTemplates.length > 0}
-        <label class="oes-tpl-pick-specific" title="Pick a specific named bracket instead of the side-aware default.">
-          <span class="oes-basket-tpl-param-label">Specific bracket</span>
+        <label class="oes-tpl-pick-specific" title="Pick a specific named Bracket instead of the side-aware default.">
+          <span class="oes-basket-tpl-param-label">Specific Bracket</span>
           <span class="oes-tpl-pick-specific-select">
             <Select
               value={selectedTemplate ? String(selectedTemplate.id) : ''}
               options={nonNoneTemplates.map(t => ({ value: String(t.id), label: t.name || t.slug || `#${t.id}` }))}
-              ariaLabel="Pick specific bracket"
+              ariaLabel="Pick specific Bracket"
               placeholder="Choose…"
               onValueChange={(v) => { if (v) onSelectTemplate?.(Number(v)); }} />
           </span>
@@ -356,8 +356,8 @@
       <!-- Reset link -->
       <button type="button" class="oes-tpl-reset-link"
               onclick={_resetToDefaults}
-              title="Reset all overrides to the bracket's default values">
-        Reset to bracket defaults
+              title="Reset all overrides to the Bracket's default values">
+        Reset to Bracket defaults
       </button>
     </div>
   {/if}

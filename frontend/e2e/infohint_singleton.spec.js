@@ -83,7 +83,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     // Pin A open via CLICK (open=true).
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
-    await expect(page.locator('[role="tooltip"]').first()).toContainText('Order templates');
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('Brackets are reusable');
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
 
     // Open B via KEYBOARD activation, not a mouse click. A's own
@@ -101,8 +101,8 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await page.keyboard.press('Enter');
     const tooltips = page.locator('[role="tooltip"]');
     await expect(tooltips).toHaveCount(1, { timeout: 2000 });
-    await expect(tooltips.first()).toContainText('is_default template');
-    await expect(tooltips.first()).not.toContainText('Order templates');
+    await expect(tooltips.first()).toContainText('is_default Bracket');
+    await expect(tooltips.first()).not.toContainText('Brackets are reusable');
 
     // A's own internal `open` state must have actually flipped to false
     // (not just be visually hidden some other way) — its own button
@@ -118,7 +118,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
 
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
-    await expect(page.locator('[role="tooltip"]').first()).toContainText('Order templates');
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('Brackets are reusable');
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
   });
 
@@ -131,7 +131,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
 
     await coverageBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
-    await expect(page.locator('[role="tooltip"]').first()).toContainText('is_default template');
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('is_default Bracket');
 
     // Same occlusion + mousedown-isolation reasoning as the first test —
     // B's own click-pinned popout can cover A's screen position, and a
@@ -141,7 +141,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await page.keyboard.press('Enter');
     const tooltips = page.locator('[role="tooltip"]');
     await expect(tooltips).toHaveCount(1, { timeout: 2000 });
-    await expect(tooltips.first()).toContainText('Order templates');
+    await expect(tooltips.first()).toContainText('Brackets are reusable');
     await expect(coverageBtn).toHaveAttribute('aria-expanded', 'false');
   });
 
@@ -175,7 +175,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     // Pin A open via a real click.
     await titleBtn.click();
     await expect(page.locator('[role="tooltip"]')).toHaveCount(1);
-    await expect(page.locator('[role="tooltip"]').first()).toContainText('Order templates');
+    await expect(page.locator('[role="tooltip"]').first()).toContainText('Brackets are reusable');
     await expect(titleBtn).toHaveAttribute('aria-expanded', 'true');
 
     // Hover B via a dispatched pointerenter rather than a real
@@ -194,7 +194,7 @@ test.describe('InfoHint — app-wide single-tooltip-at-a-time singleton (default
     await expect(titleBtn, 'A must stay pinned — a hover preview on B must never evict it').toHaveAttribute('aria-expanded', 'true');
     await expect(page.locator('[role="tooltip"]'), 'both A (pinned) and B (preview) may render at once').toHaveCount(2);
     const tooltipTexts = await page.locator('[role="tooltip"]').allTextContents();
-    expect(tooltipTexts.some((t) => t.includes('Order templates'))).toBe(true);
+    expect(tooltipTexts.some((t) => t.includes('Brackets are reusable'))).toBe(true);
 
     // Leaving B drops its preview; A is still pinned, untouched.
     await coverageBtn.dispatchEvent('pointerleave', { pointerType: 'mouse' });

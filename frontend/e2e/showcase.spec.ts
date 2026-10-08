@@ -27,7 +27,7 @@ test.describe('Showcase page — order ticket features', () => {
     await expect(page.getByText('ATM/ITM/OTM classification shown')).toBeVisible();
     await expect(page.getByText('Chase aggressiveness toggle')).toBeVisible();
     await expect(page.getByText('Exchange-closed badge in header')).toBeVisible();
-    await expect(page.getByText('Wing-leg warning when a template')).toBeVisible();
+    await expect(page.getByText('Wing-leg warning when a Bracket')).toBeVisible();
 
     // Verify the card links to /orders
     const richCardLink = page.locator('.show-card').filter({

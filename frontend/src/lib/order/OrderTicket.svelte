@@ -3047,7 +3047,7 @@
     <!-- #25 — warn when no default template exists for current scope -->
     {#if !_isUsingNone && templateId !== null && _defaultTemplate === null && _templates.length > 0}
       <div class="ot-tmpl-no-default-warn" role="note">
-        No default bracket for this scope
+        No default Bracket for this scope
       </div>
     {/if}
 
