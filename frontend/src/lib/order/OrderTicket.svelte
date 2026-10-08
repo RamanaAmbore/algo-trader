@@ -1610,7 +1610,11 @@
   // operator who clicks Submit the instant a new strike opens (before
   // the depth poll's first tick) got a confusing server-shaped "limit
   // price required" failure instead of a disabled button + clear reason.
-  const _depthPending = $derived(showLimit && !_lastQuote);
+  // Exempt action='modify': a resting order already has a real price
+  // (set at original placement), so there's no "waiting to know what
+  // price to submit" scenario — gating on depth here only produced a
+  // few seconds of needless grayed-out Submit on every modify-mode open.
+  const _depthPending = $derived(action !== 'modify' && showLimit && !_lastQuote);
   // DRAFT visibility — independent of modeChaseHidden (see CHASE/DRAFT row).
   const showDraftToggle = $derived(!isEquity && action !== 'modify' && !hideDraftToggle);
   const showTrigger = $derived(_type === 'SL' || _type === 'SL-M');

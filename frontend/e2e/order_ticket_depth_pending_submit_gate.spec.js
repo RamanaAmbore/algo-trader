@@ -17,10 +17,21 @@ const panelSrc = readFileSync(
 );
 
 test.describe('OrderTicket — depth-pending submit gate', () => {
-  test('_depthPending derived gates on showLimit + no quote yet', () => {
+  test('_depthPending derived gates on showLimit + no quote yet, exempting modify', () => {
     expect(ticketSrc).toMatch(
-      /const _depthPending = \$derived\(showLimit && !_lastQuote\);/
+      /const _depthPending = \$derived\(action !== 'modify' && showLimit && !_lastQuote\);/
     );
+  });
+
+  // Modifying an existing resting order already has a real price (set at
+  // original placement) — there's no "waiting for depth" scenario for it,
+  // so action='modify' is exempt. 'close' and 'repeat' are brand-new orders
+  // and MUST stay gated — lock the exact shape so a future "simplification"
+  // (e.g. to `action === 'open'`) can't silently drop the gate for them.
+  test('depth gate still covers close/repeat — only modify is exempt', () => {
+    const line = ticketSrc.match(/const _depthPending = \$derived\(([^)]*)\);/)[1];
+    expect(line).toContain("showLimit && !_lastQuote");
+    expect(line).not.toMatch(/action === /);
   });
 
   test('_lastQuote resets to null on strike/symbol change', () => {
