@@ -31,6 +31,7 @@ modes, state machines, validation, and F&O lot convention.
 15. [Edge Cases](#15-edge-cases)
 16. [Audit Cases](#16-audit-cases)
 17. [Test Coverage Map](#17-test-coverage-map)
+18. [Held Orders](#18-held-orders)
 
 ---
 
@@ -1307,6 +1308,35 @@ order_id=...&status=COMPLETE&...
 
 **Auth**: Admin-only (403 for non-admin); demo-blocked (403)
 
+### POST /api/orders/held/{order_id}/cancel
+
+**Purpose**: Abandon a held order (any category) without releasing it.
+
+**Request**: URL-only; no body.
+
+**Response**:
+
+```json
+{
+  "ok": true,
+  "reason": "cancelled",
+  "status": "CANCELLED"
+}
+```
+
+**Status field notes**:
+- For HELD orders (expiry_close, agent_order): returns `"CANCELLED"`
+- For template_exit holds on FILLED orders: returns the unchanged parent
+  status (e.g. `"FILLED"`)
+
+**Error codes**:
+- 403 Forbidden — not admin
+- 409 Conflict — order not found, or not a held order (e.g. wrong status)
+  (Note: "not found" returns 409, not 404, to distinguish from routing
+  errors)
+
+**Auth**: Admin-only (403 for non-admin)
+
 ---
 
 ## 15. Edge Cases
@@ -1543,10 +1573,121 @@ List concrete things to verify in an audit:
 
 ---
 
+## 18. Held Orders
+
+Automated orders that require operator review before placement or release.
+Three hold categories exist, each triggered by a distinct condition; see
+[BROKER_SPEC.md](../BROKER_SPEC.md#85-orders-fetching-resilience--chase-timeouts)
+for repeated-rejection hold triggering logic.
+
+### Hold Categories
+
+| Category | Trigger | Status | Release action |
+|---|---|---|---|
+| `expiry_close` | Position expires at settlement; scheduled close attempt | `HELD` | Place expiry close order |
+| `agent_order` | Chase paused after 2 consecutive price-shaped rejections | `HELD` | Resume chase |
+| `template_exit` | GTT exit attach blocked (template hold gate) | `FILLED` | Place template exit GTTs |
+
+**Status distinction**: `expiry_close` and `agent_order` set `status =
+"HELD"` at hold-time. `template_exit` never changes status — the parent
+order remains `status = "FILLED"` while exit-attach is pending in
+`hold_json`.
+
+### List Endpoint
+
+```
+GET /api/orders/held/
+```
+
+Selects rows matching: `(status = "HELD") OR (hold_json IS NOT NULL)`.
+Returns:
+
+```json
+{
+  "held": [
+    {
+      "id": 1234,
+      "account": "ZG0790",
+      "symbol": "NIFTY25APR22000CE",
+      "exchange": "NFO",
+      "side": "BUY",
+      "qty": 2,
+      "product": "MIS",
+      "hold": "{\"category\": \"agent_order\", ...}"
+    }
+  ]
+}
+```
+
+This predicate is why a FILLED parent-order row with pending template exits
+appears on the held-orders card despite its `status = "FILLED"`.
+
+### Release vs Cancel
+
+**Release** (existing): Resumes the held workflow per category:
+- `expiry_close` / `agent_order`: Fires the pending action
+  (`release_held_order` / `release_repeated_rejection_hold`)
+- `template_exit`: Places exit GTTs
+  (`release_template_exit`)
+
+**Cancel** (new, commit 475b07e2): Abandons the held order without
+releasing. Pure DB state transition — no broker call is made (held orders
+have no live resting broker order by design).
+
+### Cancel State Transitions
+
+| Scenario | Transition | `hold_json` | Event |
+|---|---|---|---|
+| HELD order (expiry_close/agent_order) | `status: "HELD" → "CANCELLED"` | cleared | `"cancelled"` event |
+| FILLED order with template_exit pending | `status: "FILLED" → "FILLED"` (unchanged) | cleared | `"cancelled"` event |
+| Any other row or state | rejected with 409 | no change | none |
+
+**Why not unify on category?** `template_exit` holds never touch status,
+so checking `status == "HELD"` alone would always reject them (they read
+as FILLED). Branching on row state instead allows all three categories to
+be cancelled.
+
+**Never overwrite FILLED to CANCELLED**: A template_exit hold marks a
+genuinely-filled parent order. Cancelling the exit-attach must not
+misstate that fill in order history or break reconciliation logic.
+
+### Frontend UI
+
+**ConfirmModal danger styling** (`HeldOrdersCard.svelte`):
+- `danger: true` (red styling)
+- `confirmLabel: 'Cancel order'`, `cancelLabel: 'Keep held'`
+- Message: "(side) (qty) (symbol) will be cancelled, not sent to the
+  broker."
+
+Default labels would read backwards for a destructive cancel (e.g. "OK"
+confirming the destructive action), so explicit labels are required.
+
+**Category display** (`kindOf` function):
+- `agent_order` → "Repeated rejection" (fixed 2026-10 commit 475b07e2;
+  previously defaulted to "Expiry close")
+- `template_exit` → "Template exit"
+- (other / missing) → "Expiry close"
+
+**Frontend never inspects returned status**: The cancel call returns
+`{ok, reason, status}`, but the UI only checks `ok` before refreshing
+the held-orders list. The per-row status value (CANCELLED vs parent
+status) is informational.
+
+### Details Audit Trail
+
+Both release and cancel append to the order's `detail` text field and
+write an `order_events` record:
+
+- Release: event kind `"released"`, message shows action + actor
+- Cancel: event kind `"cancelled"`, message shows actor + symbol/qty
+
+---
+
 ## Change log
 
 | Date | Change |
 |---|---|
+| 2026-10 | v2.4 Documented cancel-held-order feature (commit `475b07e2`): new `POST /api/orders/held/{id}/cancel` endpoint; state-based branching (HELD→CANCELLED vs template_exit→keep status); `kindOf` recognizes `agent_order` as "Repeated rejection" — see §14 §18 |
 | 2026-10 | v2.3 Documented six fixes to depth-gating, chase-wing recording, and error handling (commits `8723beac` `a23e067e` `fcbeeb75` `7843cbf8` `4ae6a231` `0aedf13f`): modify mode no longer gated on depth (§4, §6); depth-pending button gray color (§6); chain-tab per-leg `quoteArrived` latch + futures limit-only gate (§9); chase-routed wings recorded in `attached_gtts_json` with `wing_chased` flag + `parent_order_id` (§13); chase-wing failures surface via alert + UNFILLED status instead of silently failing (§13); UI label "Bracket" replaces "O.Template" everywhere operator-visible — see §6 §9 §13 |
 | 2026-10 | v2.2 Documented depth-pending pre-submission gate (commit `daee65d2`): `_depthPending` derived + `_lastQuote` reset on strike change in `frontend/src/lib/order/OrderTicket.svelte`; mirrored shared-button gate (`_ticketDepthPending`) in `frontend/src/lib/SymbolPanel.svelte` — see §6 Price (Limit / SL Price) |
 | 2026-09-30 | v2.1 Updated Status Histogram Filter: merged Rejected/Cancelled chip, added GTT chip (standalone broker GTTs), documented default-first-non-zero-chip behavior (reactive), kept exclusive-filter selection mode |

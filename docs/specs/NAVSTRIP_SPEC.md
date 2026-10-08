@@ -412,6 +412,24 @@ live derived values. Reset does not apply.
 Frozen values persist all evening and weekend so the operator sees their end-of-session
 P&L continuously.
 
+### 08:00 IST Transition: Settlement Price Alignment
+
+At 08:00 IST session open, `fix_daily_book_prev_close()` (called from `backend/api/background.py:_task_fix_daily_book`)
+updates today's `daily_book` rows with settlement prices to ensure day P&L displays correctly. The function 
+maintains a critical invariant: **both `ltp` and `prev_close` are set to the identical settlement close price 
+at the same moment.**
+
+**Primary path** (when broker settlement data available): Sets both `ltp` and `prev_close` to `close_price` in one UPDATE.
+
+**Fallback path** (when settlement fetch unavailable, fixed commit 8b7dca73): Previously only updated `prev_close`, 
+leaving `ltp` stale — causing a small LTP/P.Close mismatch right after 08:00. Now corrected to also set `ltp` 
+in new-session mode via conditional `ltp_set_clause` (backend/api/algo/daily_snapshot.py:1227), so both columns 
+are updated together in both paths.
+
+This ensures day P&L = `(ltp − prev_close) × qty` computes correctly when both values reference the same 
+settlement moment, avoiding the "price divergence bug" that produced ~0.5–2 bps visible mismatch during the 
+first few minutes after 08:00 IST.
+
 ### Freeze sequence at market close
 
 On `<exch>:close` event (NSE 15:30, MCX 23:30 IST):
@@ -786,6 +804,7 @@ after close (snapshot path). See [DESIGN_GUIDE.md §21.5.5](DESIGN_GUIDE.md) for
 
 | Date | Change |
 |---|---|
+| 2026-10-07 | fix(nav): 08:00 fallback path now sets ltp and prev_close together (commit 8b7dca73) — `fix_daily_book_prev_close()` fallback (when settlement_map unavailable) now sets `ltp` alongside `prev_close` in new-session mode (≥08:00 IST). Previously only `prev_close` was set in fallback, causing stale ltp and ~0.5–2 bps visible mismatch between LTP and P.Close immediately after 08:00 transition. See §4 "Snapshot Freeze and Reset" subsection "08:00 IST Transition: Settlement Price Alignment." File: `backend/api/algo/daily_snapshot.py` (line 1227). |
 | 2026-07-11 | v1.0 initial spec from codebase implementation |
 | 2026-07-13 | EXP Slot spec: documented closed-leg (qty=0) handler; partial-close realized P&L (`leg.realised`) in open-leg formula |
 | 2026-07-18 | Color coding: per-pill label accents (P=amber, M=violet, C=sky, H=cyan); slot bright/dim differentiation for M, C, H pills; mobile trailing-clip padding note |

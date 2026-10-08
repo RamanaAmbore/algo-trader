@@ -227,6 +227,27 @@ day_pnl = (ltp - reference_price) × qty
 
 Apply the stale-close guard: when `reference_price <= 0`, return 0.
 
+### 08:00 IST Session-Open Invariant: Both Columns Together
+
+`fix_daily_book_prev_close()` in `backend/api/algo/daily_snapshot.py` (called at 08:00 IST transition)
+maintains a critical invariant: **at session open, both `ltp` and `prev_close` must be set to the 
+identical settlement close price at the same moment, via the same SQL UPDATE.**
+
+**Primary path** (when broker settlement data is available at 08:00 IST):
+- Sets both `ltp = close_price` and `prev_close = close_price` in one UPDATE (lines 1241–1242)
+- Ensures LTP and P.Close values match exactly immediately after 08:00
+
+**Fallback path** (when settlement fetch is empty/unavailable or the primary UPDATE raises, fixed commit 8b7dca73):
+- Previously only set `prev_close`, leaving `ltp` stale/untouched
+- **Now corrected**: also sets `ltp = r.ref_close` in new-session mode (≥08:00 IST) via `ltp_set_clause` (line 1227)
+- Both columns are set together in this path too (line 1291), maintaining the same invariant
+- Overnight mode (before 08:00 IST) still leaves `ltp` untouched (still live-ticking), only updating `prev_close`
+
+**Why this matters**: Day P&L computation reads `daily_book.ltp` at 08:00 and later reads `daily_book.prev_close` 
+when computing `(ltp − prev_close) × qty`. If these two values reference different settlement times (one 
+from a live tick, one from a prior session), day P&L diverges and shows small but real mismatch (~0.5–2 bps) 
+immediately after the 08:00 transition. The "both columns together" invariant prevents this.
+
 ---
 
 ## 7. Test Coverage Map
@@ -262,4 +283,5 @@ Apply the stale-close guard: when `reference_price <= 0`, return 0.
 
 | Date | Change |
 |---|---|
+| 2026-10-07 | fix(nav): 08:00 fallback path now sets ltp and prev_close together (commit 8b7dca73) — `fix_daily_book_prev_close()` fallback (when settlement_map is absent/unavailable) now also sets `ltp = r.ref_close` in new-session mode (≥08:00 IST), maintaining the "both columns together" invariant. Previously only `prev_close` was set in the fallback, leaving `ltp` stale and causing LTP/P.Close mismatch immediately after the 08:00 transition. File: `backend/api/algo/daily_snapshot.py` (lines 1227, 1291). |
 | 2026-07-11 | v1.0 initial spec from codebase audit |
