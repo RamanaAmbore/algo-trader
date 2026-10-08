@@ -1911,6 +1911,135 @@ def _ta_live_place_one_gtt(
     return pair_first_id
 
 
+def _chase_wing_alert_create_failed(
+    plan: TemplatePlan, parent_order_id: Optional[int], exc: Exception,
+) -> None:
+    """The wing's own AlgoOrder row never got created (DB insert/commit
+    raised) — nothing to clean up (it never existed), but the wing itself
+    was never placed or tracked anywhere, so an operator must be told.
+    Matches chase.py's own `send_order_failure_alert` call convention
+    (see e.g. `_ch_poll_handle_rejected`)."""
+    logger.critical(
+        "[WING-CHASE] failed to create AlgoOrder row for wing %s "
+        "(template_id=%s parent_order_id=%s) — wing was NEVER placed or "
+        "tracked: %s",
+        getattr(plan.wing, "tradingsymbol", "?"),
+        getattr(plan, "template_id", None), parent_order_id, exc,
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=plan.parent_account, symbol=plan.wing.tradingsymbol,
+            exchange=plan.wing.exchange, side=plan.wing.transaction_type,
+            qty=int(plan.wing.quantity), mode="live", source="template_wing_chase",
+            error=(
+                f"wing AlgoOrder row creation failed: {exc} "
+                f"(parent_order_id={parent_order_id}) — wing was NEVER "
+                f"placed; parent position may now be unhedged"
+            ),
+        )
+    except Exception as _alert_exc:
+        logger.warning(
+            "[WING-CHASE] create-failure alert itself failed: %s", _alert_exc,
+        )
+
+
+def _chase_wing_alert_chase_failed(
+    plan: TemplatePlan, parent_order_id: Optional[int],
+    algo_order_id: Optional[int], broker_order_id: Optional[str],
+    exc: Exception,
+) -> None:
+    """`chase_order()` itself raised before reaching its own terminal
+    handling (which already alerts via chase.py's own call sites) — the
+    AlgoOrder row exists but chase never ran to completion for it.
+
+    `broker_order_id` (resolved by the caller via
+    `_chase_wing_mark_row_unfilled`'s return value) is surfaced in the
+    alert when present, since `chase_order()` may have already placed
+    and synced a real broker order onto the row before raising — the
+    operator needs the actual order id to reconcile, not just the
+    internal AlgoOrder row id.
+    """
+    logger.critical(
+        "[WING-CHASE] chase_order() raised for wing AlgoOrder #%s "
+        "(symbol=%s template_id=%s parent_order_id=%s broker_order_id=%s): %s",
+        algo_order_id, getattr(plan.wing, "tradingsymbol", "?"),
+        getattr(plan, "template_id", None), parent_order_id, broker_order_id, exc,
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        _broker_note = (
+            f"may be live at broker as order {broker_order_id}; reconcile manually"
+            if broker_order_id else
+            f"AlgoOrder #{algo_order_id} may be untracked/stuck, verify at broker"
+        )
+        send_order_failure_alert(
+            account=plan.parent_account, symbol=plan.wing.tradingsymbol,
+            exchange=plan.wing.exchange, side=plan.wing.transaction_type,
+            qty=int(plan.wing.quantity), mode="live", source="template_wing_chase",
+            error=(
+                f"wing chase_order() raised: {exc} "
+                f"(parent_order_id={parent_order_id}) — {_broker_note}"
+            ),
+        )
+    except Exception as _alert_exc:
+        logger.warning(
+            "[WING-CHASE] chase-failure alert itself failed: %s", _alert_exc,
+        )
+
+
+async def _chase_wing_mark_row_unfilled(
+    algo_order_id: Optional[int], exc: Exception,
+) -> Optional[str]:
+    """Mark an already-committed wing AlgoOrder row terminal when
+    `chase_order()` raised before it could run to its own completion —
+    otherwise the row sits forever at its initial OPEN status and looks
+    like an active/resting order to anything that lists AlgoOrder rows.
+
+    UNFILLED (not REJECTED) deliberately: `chase_order()` may have
+    already placed a real broker order before raising, so a later
+    genuine postback/sync FILLED must still be allowed to land. REJECTED
+    is in `ALGO_ORDER_FINAL_STATUSES` (models.py) and would permanently
+    block that late FILLED; UNFILLED is terminal but not final, matching
+    the same guard every other status-writer in this codebase respects.
+
+    Returns the row's `broker_order_id` (whether or not this call
+    actually mutated the row — a row already finalized by a racing
+    postback still has one worth surfacing to the caller's alert), or
+    `None` when the row can't be found/read.
+    """
+    if algo_order_id is None:
+        return None
+    from backend.api.database import async_session
+    from backend.api.models import AlgoOrder, ALGO_ORDER_TERMINAL_STATUSES
+    from sqlalchemy import select
+    try:
+        async with async_session() as s:
+            row = (await s.execute(
+                select(AlgoOrder)
+                .where(AlgoOrder.id == int(algo_order_id))
+                .with_for_update()
+            )).scalar_one_or_none()
+            if row is None:
+                return None
+            if row.status in ALGO_ORDER_TERMINAL_STATUSES:
+                # Chase's own terminal write (or a racing postback)
+                # already finalized this row — never downgrade a final
+                # status, but still hand back whatever broker_order_id
+                # it already carries so the alert can name it.
+                return getattr(row, "broker_order_id", None)
+            row.status = "UNFILLED"
+            row.detail = f"wing chase_order() raised: {exc}"[:240]
+            await s.commit()
+            return row.broker_order_id
+    except Exception as _mark_exc:
+        logger.error(
+            "[WING-CHASE] failed to mark AlgoOrder #%s UNFILLED after "
+            "chase_order() raised: %s", algo_order_id, _mark_exc,
+        )
+        return None
+
+
 async def _chase_wing(
     plan: TemplatePlan,
     parent_order_id: Optional[int] = None,
@@ -1930,31 +2059,60 @@ async def _chase_wing(
     which key off `template_id IS NOT NULL AND parent_order_id IS NULL`.
     Stamping both together, never `template_id` alone, keeps the wing row
     unambiguously a CHILD.
+
+    This coroutine is scheduled fire-and-forget via
+    `asyncio.run_coroutine_threadsafe` (see `_start_wing_chase`), whose
+    returned `concurrent.futures.Future` was previously discarded with no
+    `add_done_callback`. An exception raised here is NOT merely swallowed
+    with a buried log line — `run_coroutine_threadsafe` internally calls
+    `.exception()` on the inner asyncio Task to copy its state onto that
+    Future (see `asyncio.futures._chain_future`/`_set_concurrent_future_
+    state`), which marks the Task's exception as retrieved, suppressing
+    even asyncio's own "Task exception was never retrieved" warning.
+    `concurrent.futures.Future` has no destructor-based warning either.
+    Pre-fix, a failure here was completely silent: nothing in any log,
+    anywhere. Both the row-creation step and the `chase_order()` call are
+    therefore wrapped in their own try/except, each alerting via
+    `send_order_failure_alert` on failure (see the two
+    `_chase_wing_alert_*_failed` helpers above).
     """
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
-    async with async_session() as s:
-        row = AlgoOrder(
-            account=plan.parent_account, symbol=plan.wing.tradingsymbol,
-            exchange=plan.wing.exchange, transaction_type=plan.wing.transaction_type,
-            quantity=int(plan.wing.quantity), status="OPEN", engine="live", mode="live",
-            product=plan.wing.product, source="template_wing",
-            initial_price=(float(plan.wing.limit_price) if plan.wing.limit_price else None),
-            parent_order_id=parent_order_id,
-            template_id=(plan.template_id if parent_order_id is not None else None),
+
+    try:
+        async with async_session() as s:
+            row = AlgoOrder(
+                account=plan.parent_account, symbol=plan.wing.tradingsymbol,
+                exchange=plan.wing.exchange, transaction_type=plan.wing.transaction_type,
+                quantity=int(plan.wing.quantity), status="OPEN", engine="live", mode="live",
+                product=plan.wing.product, source="template_wing",
+                initial_price=(float(plan.wing.limit_price) if plan.wing.limit_price else None),
+                parent_order_id=parent_order_id,
+                template_id=(plan.template_id if parent_order_id is not None else None),
+            )
+            s.add(row)
+            await s.commit()
+            algo_order_id = row.id
+    except Exception as e:
+        _chase_wing_alert_create_failed(plan, parent_order_id, e)
+        return
+
+    try:
+        return await chase_order(
+            account=plan.parent_account,
+            symbol=plan.wing.tradingsymbol,
+            transaction_type=plan.wing.transaction_type,
+            quantity=int(plan.wing.quantity),
+            cfg=ChaseConfig(exchange=plan.wing.exchange),
+            algo_order_id=algo_order_id,
         )
-        s.add(row)
-        await s.commit()
-        algo_order_id = row.id
-    return await chase_order(
-        account=plan.parent_account,
-        symbol=plan.wing.tradingsymbol,
-        transaction_type=plan.wing.transaction_type,
-        quantity=int(plan.wing.quantity),
-        cfg=ChaseConfig(exchange=plan.wing.exchange),
-        algo_order_id=algo_order_id,
-    )
+    except Exception as e:
+        _broker_order_id = await _chase_wing_mark_row_unfilled(algo_order_id, e)
+        _chase_wing_alert_chase_failed(
+            plan, parent_order_id, algo_order_id, _broker_order_id, e,
+        )
+        return
 
 
 def _start_wing_chase(
@@ -1972,8 +2130,33 @@ def _start_wing_chase(
     loop = write_queue.get_main_loop()
     if loop is None or not loop.is_running():
         return False
-    asyncio.run_coroutine_threadsafe(_chase_wing(plan, parent_order_id), loop)
+    fut = asyncio.run_coroutine_threadsafe(_chase_wing(plan, parent_order_id), loop)
+    # `_chase_wing` itself catches every exception it can anticipate (DB
+    # insert failure, `chase_order()` raising) and alerts via
+    # `send_order_failure_alert` — see its own docstring, including why a
+    # failure here was previously 100% silent (no log line anywhere, not
+    # even a "Task/Future exception was never retrieved" warning). This
+    # callback is a defensive backstop only, for anything that slips past
+    # that internal handling (e.g. a bug in it, or a BaseException
+    # subclass) — it logs the Future's result so nothing can ever go
+    # unnoticed again, without blocking `_start_wing_chase`'s own caller
+    # on the chase actually completing.
+    fut.add_done_callback(_chase_wing_future_done)
     return True
+
+
+def _chase_wing_future_done(fut) -> None:
+    """Log-only backstop for `_start_wing_chase`'s fire-and-forget Future.
+    See `_start_wing_chase` for why this exists alongside `_chase_wing`'s
+    own internal try/except handling."""
+    if fut.cancelled():
+        return
+    exc = fut.exception()
+    if exc is not None:
+        logger.critical(
+            "[WING-CHASE] unexpected exception escaped _chase_wing's own "
+            "handling: %s", exc,
+        )
 
 
 def _ta_live_place_wing(

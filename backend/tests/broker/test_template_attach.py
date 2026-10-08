@@ -1047,3 +1047,363 @@ async def test_chase_wing_row_links_back_to_parent_and_template(monkeypatch):
     await ta._chase_wing(plan, parent_order_id=999)
     assert saved[0].parent_order_id == 999
     assert saved[0].template_id == 11
+
+
+# ── _chase_wing error-handling (asyncio.run_coroutine_threadsafe swallows
+#    unhandled exceptions — see `_start_wing_chase`'s docstring) ───────────
+
+def _wing_test_plan():
+    from types import SimpleNamespace
+    return SimpleNamespace(
+        parent_account="ZG0790",
+        template_id=11,
+        wing=SimpleNamespace(tradingsymbol="NIFTY26OCT25000PE", exchange="NFO",
+                             transaction_type="BUY", quantity=75, product="NRML",
+                             limit_price=100.0, order_type="LIMIT"),
+    )
+
+
+async def _sqlite_algo_order_session_factory():
+    """Real in-process SQLite DB with just the columns `_chase_wing` /
+    `_chase_wing_mark_row_unfilled` actually touch. Returns
+    (engine, session_factory, model_cls) — caller is responsible for
+    `await engine.dispose()` once done."""
+    from sqlalchemy import Column, Integer, String, Text, Float
+    from sqlalchemy.orm import DeclarativeBase
+    from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+    class _Base(DeclarativeBase):
+        pass
+
+    class _AlgoOrder(_Base):
+        __tablename__ = "algo_orders"
+        id               = Column(Integer, primary_key=True, autoincrement=True)
+        account          = Column(String(32), nullable=False)
+        symbol           = Column(String(64), nullable=False)
+        exchange         = Column(String(8),  nullable=False, default="NFO")
+        transaction_type = Column(String(4),  nullable=False)
+        quantity         = Column(Integer,    nullable=False)
+        initial_price    = Column(Float,      nullable=True)
+        status           = Column(String(16), nullable=False, default="OPEN")
+        engine           = Column(String(16), nullable=False, default="manual")
+        mode             = Column(String(8),  nullable=False, default="live")
+        product          = Column(String(16), nullable=True)
+        source           = Column(String(32), nullable=True)
+        parent_order_id  = Column(Integer,    nullable=True)
+        template_id      = Column(Integer,    nullable=True)
+        detail           = Column(Text,       nullable=True)
+        broker_order_id  = Column(String(32), nullable=True)
+
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(_Base.metadata.create_all)
+    factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+    return engine, factory, _AlgoOrder
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_db_insert_failure_alerts_and_does_not_raise(monkeypatch):
+    """A DB insert/commit failure while creating the wing's AlgoOrder row
+    must be caught inside `_chase_wing` (pre-fix, this was swallowed
+    completely silently — not even a "never retrieved" warning, see
+    `_chase_wing`'s own docstring) and must fire an operator-visible
+    `send_order_failure_alert` naming the parent order, since nothing
+    else will ever know the wing was never placed or tracked."""
+    import backend.api.algo.chase as ch
+    import backend.api.database as db
+    import backend.api.algo.template_attach as ta
+
+    class _RaisingSess:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        def add(self, row):
+            pass
+
+        async def commit(self):
+            raise RuntimeError("db commit failed")
+
+    chased = []
+
+    async def fake_chase(**kwargs):
+        chased.append(kwargs)
+        return None
+
+    alerts = []
+
+    def fake_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(db, "async_session", lambda: _RaisingSess())
+    monkeypatch.setattr(ch, "chase_order", fake_chase)
+    monkeypatch.setattr(
+        "backend.shared.helpers.alert_utils.send_order_failure_alert", fake_alert,
+    )
+
+    plan = _wing_test_plan()
+
+    # Must not raise — this is exactly what asyncio.run_coroutine_threadsafe's
+    # discarded Future would otherwise swallow silently.
+    await ta._chase_wing(plan, parent_order_id=555)
+
+    assert chased == []  # chase_order() must never be reached
+    assert len(alerts) == 1
+    assert alerts[0]["symbol"] == "NIFTY26OCT25000PE"
+    assert alerts[0]["account"] == "ZG0790"
+    assert "555" in alerts[0]["error"]  # parent_order_id surfaced
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_chase_order_failure_alerts_and_marks_row_unfilled(monkeypatch):
+    """`chase_order()` raising (after the wing's AlgoOrder row was
+    already committed, and after it synced a real `broker_order_id`
+    onto that row) must: (1) not escape `_chase_wing` unhandled,
+    (2) fire an operator-visible alert that names BOTH the parent order
+    and the specific broker order that may now be resting untracked,
+    and (3) move the already-committed row to a terminal failure status
+    so it doesn't sit forever at OPEN looking like an active/resting
+    order."""
+    import backend.api.algo.chase as ch
+    import backend.api.database as db
+    import backend.api.models as models
+    import backend.api.algo.template_attach as ta
+    from sqlalchemy import select as _select
+
+    engine, factory, TestAlgoOrder = await _sqlite_algo_order_session_factory()
+    monkeypatch.setattr(db, "async_session", factory)
+    monkeypatch.setattr(models, "AlgoOrder", TestAlgoOrder)
+
+    async def raising_chase(**kwargs):
+        # Mirror chase.py syncing a real broker order id onto the row
+        # before it eventually raises — the already-resting order is
+        # exactly why the failure mark uses UNFILLED, not REJECTED.
+        async with factory() as s:
+            row = (await s.execute(
+                _select(TestAlgoOrder).where(TestAlgoOrder.id == kwargs["algo_order_id"])
+            )).scalar_one_or_none()
+            row.broker_order_id = "BRK123"
+            await s.commit()
+        raise RuntimeError("chase_order blew up")
+
+    alerts = []
+
+    def fake_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(ch, "chase_order", raising_chase)
+    monkeypatch.setattr(
+        "backend.shared.helpers.alert_utils.send_order_failure_alert", fake_alert,
+    )
+
+    plan = _wing_test_plan()
+
+    try:
+        await ta._chase_wing(plan, parent_order_id=555)  # must not raise
+
+        assert len(alerts) == 1
+        assert "chase_order() raised" in alerts[0]["error"]
+        assert "555" in alerts[0]["error"]       # parent_order_id surfaced
+        assert "BRK123" in alerts[0]["error"]    # broker_order_id surfaced
+
+        async with factory() as s:
+            row = (await s.execute(
+                _select(TestAlgoOrder).where(TestAlgoOrder.status == "UNFILLED")
+            )).scalar_one_or_none()
+            assert row is not None
+            assert row.symbol == "NIFTY26OCT25000PE"
+            assert row.broker_order_id == "BRK123"
+            assert "chase_order() raised" in (row.detail or "")
+            assert "chase_order blew up" in (row.detail or "")
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_chase_order_failure_still_alerts_when_mark_also_fails(monkeypatch):
+    """`chase_order()` raises AND the subsequent attempt to mark the row
+    UNFILLED also fails (e.g. a second DB problem on the same connection)
+    — `_chase_wing_mark_row_unfilled`'s own except branch must swallow
+    that second failure and return `None`, and the alert must still fire
+    (with the `_broker_note` fallback wording, since no broker_order_id
+    could be resolved) rather than let the second failure propagate and
+    mask the original one."""
+    import backend.api.algo.chase as ch
+    import backend.api.algo.template_attach as ta
+
+    # `_wing_chase_fixture`'s fake session has no `execute` — any call to
+    # it (as `_chase_wing_mark_row_unfilled` makes) raises AttributeError,
+    # exercising that helper's own except branch.
+    plan, saved, chased = _wing_chase_fixture(monkeypatch)
+
+    async def raising_chase(**kwargs):
+        raise RuntimeError("chase_order blew up")
+
+    alerts = []
+
+    def fake_alert(**kwargs):
+        alerts.append(kwargs)
+
+    monkeypatch.setattr(ch, "chase_order", raising_chase)
+    monkeypatch.setattr(
+        "backend.shared.helpers.alert_utils.send_order_failure_alert", fake_alert,
+    )
+
+    await ta._chase_wing(plan, parent_order_id=7)  # must not raise
+
+    assert saved[0].id == 42
+    assert len(alerts) == 1
+    assert "#42" in alerts[0]["error"]
+    assert "untracked" in alerts[0]["error"]
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_mark_unfilled_does_not_override_final_status(monkeypatch):
+    """If chase's own terminal handling already finalized the row (e.g. a
+    racing postback moved it to FILLED) before `chase_order()` raised
+    back up to `_chase_wing`, the failure-marking helper must NOT
+    downgrade that terminal status to UNFILLED."""
+    import backend.api.database as db
+    import backend.api.models as models
+    import backend.api.algo.template_attach as ta
+    from sqlalchemy import select as _select
+
+    engine, factory, TestAlgoOrder = await _sqlite_algo_order_session_factory()
+    monkeypatch.setattr(db, "async_session", factory)
+    monkeypatch.setattr(models, "AlgoOrder", TestAlgoOrder)
+
+    async with factory() as s:
+        row = TestAlgoOrder(
+            account="ZG0790", symbol="NIFTY26OCT25000PE", exchange="NFO",
+            transaction_type="BUY", quantity=75, status="FILLED",
+            engine="live", mode="live", product="NRML", source="template_wing",
+        )
+        s.add(row)
+        await s.commit()
+        algo_order_id = row.id
+
+    try:
+        await ta._chase_wing_mark_row_unfilled(algo_order_id, RuntimeError("late failure"))
+
+        async with factory() as s:
+            refetched = (await s.execute(
+                _select(TestAlgoOrder).where(TestAlgoOrder.id == algo_order_id)
+            )).scalar_one_or_none()
+            assert refetched.status == "FILLED"
+    finally:
+        await engine.dispose()
+
+
+@pytest.mark.asyncio
+async def test_chase_wing_happy_path_still_works_after_error_handling_added(monkeypatch):
+    """Regression guard: the no-exception path must behave exactly as it
+    did before the try/except wrapping was added — same row fields, same
+    chase_order kwargs, no alert fired."""
+    import backend.api.algo.chase as ch
+
+    alerts = []
+    monkeypatch.setattr(
+        "backend.shared.helpers.alert_utils.send_order_failure_alert",
+        lambda **kwargs: alerts.append(kwargs),
+    )
+    import backend.api.algo.template_attach as ta
+    plan, saved, chased = _wing_chase_fixture(monkeypatch)
+    await ta._chase_wing(plan)
+    assert saved[0].source == "template_wing" and saved[0].status == "OPEN"
+    assert chased[0]["algo_order_id"] == 42
+    assert chased[0]["quantity"] == 75
+    assert alerts == []
+
+
+# ── `_chase_wing_future_done` — done-callback backstop on
+#    `_start_wing_chase`'s fire-and-forget Future ──────────────────────────
+
+def test_chase_wing_future_done_logs_critical_on_exception(monkeypatch):
+    """A Future that completed with an exception must be logged CRITICAL
+    (and must never itself raise — this runs inside asyncio's own
+    done-callback dispatch)."""
+    import concurrent.futures
+    import backend.api.algo.template_attach as ta
+
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ta, "logger", mock_logger)
+
+    fut = concurrent.futures.Future()
+    fut.set_exception(RuntimeError("boom"))
+
+    ta._chase_wing_future_done(fut)
+
+    assert mock_logger.critical.called
+
+
+def test_chase_wing_future_done_noop_on_cancelled(monkeypatch):
+    """A cancelled Future must short-circuit on `.cancelled()` BEFORE
+    calling `.exception()` — `.exception()` raises `CancelledError` on a
+    cancelled future, so the order of the two checks matters."""
+    import concurrent.futures
+    import backend.api.algo.template_attach as ta
+
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ta, "logger", mock_logger)
+
+    fut = concurrent.futures.Future()
+    assert fut.cancel() is True
+
+    # Must not raise.
+    ta._chase_wing_future_done(fut)
+
+    mock_logger.critical.assert_not_called()
+
+
+def test_chase_wing_future_done_noop_on_success(monkeypatch):
+    """A Future that completed normally must log nothing."""
+    import concurrent.futures
+    import backend.api.algo.template_attach as ta
+
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ta, "logger", mock_logger)
+
+    fut = concurrent.futures.Future()
+    fut.set_result(None)
+
+    ta._chase_wing_future_done(fut)
+
+    mock_logger.critical.assert_not_called()
+
+
+# ── `_start_wing_chase` — the done-callback is actually wired up ──────────
+
+@pytest.mark.asyncio
+async def test_start_wing_chase_backstop_fires_when_chase_wing_escapes(monkeypatch):
+    """Even though `_chase_wing` itself swallows every exception it can
+    anticipate, `_start_wing_chase`'s `add_done_callback` wiring must
+    still catch anything that escapes it regardless — this is the
+    structural guarantee the fix adds (previously no callback was ever
+    registered on the returned Future at all)."""
+    import asyncio
+    import backend.api.algo.template_attach as ta
+    from backend.api.persistence import write_queue
+
+    monkeypatch.setattr(write_queue, "get_main_loop", lambda: asyncio.get_running_loop())
+
+    async def _raising_chase_wing(plan, parent_order_id=None):
+        raise RuntimeError("escaped _chase_wing's own handling")
+
+    monkeypatch.setattr(ta, "_chase_wing", _raising_chase_wing)
+    mock_logger = MagicMock()
+    monkeypatch.setattr(ta, "logger", mock_logger)
+
+    plan = _wing_test_plan()
+    started = ta._start_wing_chase(plan)
+    assert started is True
+
+    # Let the scheduled coroutine (and its done-callback) actually run on
+    # this same event loop.
+    for _ in range(200):
+        if mock_logger.critical.called:
+            break
+        await asyncio.sleep(0)
+
+    assert mock_logger.critical.called
