@@ -819,7 +819,16 @@ async def test_chase_terminal_update_db_ledger_write_actually_invoked():
 async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
     """Behavioral check that list_active_chases' ledger-write call
     actually fires for rows _rco_reconcile_active_rows flips to FILLED —
-    not just a source grep."""
+    not just a source grep.
+
+    2026-10 fix (lock-scoping): list_active_chases now calls
+    _rco_reconcile_active_rows TWICE — once in dry_run=True mode over
+    an unlocked read (to find which ids need a lock), once for real
+    over a locked re-read of just that subset. The fake here
+    distinguishes the two calls via the dry_run kwarg: the dry run
+    reports row #77 as needing a lock (mutate_ids={77}); the real pass
+    (over the "locked" rows — still the same mocked session, so no
+    real DB involved) actually reconciles it to FILLED."""
     from backend.api.routes.orders import OrdersController
     from backend.api.routes import orders_postback as pb_mod
 
@@ -839,13 +848,18 @@ async def test_admin_reconcile_writes_ledger_for_reconciled_fills():
 
     controller = OrdersController.__new__(OrdersController)
 
+    def _fake_reconcile(rows, paper_open_ids, broker_status_by_id, dry_run=False):
+        if dry_run:
+            return ([], [], True, {77})
+        return ([mock_filled_row], [mock_filled_row], True, {77})
+
     with patch("backend.api.database.async_session", return_value=mock_session), \
          patch("backend.api.routes.orders._chase_snapshot_paper_open_ids",
                return_value=set()), \
          patch("backend.api.routes.orders._chase_snapshot_broker_status_by_id",
                new=AsyncMock(return_value={})), \
          patch("backend.api.routes.orders._rco_reconcile_active_rows",
-               return_value=([], [mock_filled_row], True)), \
+               side_effect=_fake_reconcile), \
          patch("backend.api.routes.orders._fetch_child_order_ids",
                new=AsyncMock(return_value={})), \
          patch("backend.api.routes.orders._maybe_fire_template_attach_for_reconcile"), \

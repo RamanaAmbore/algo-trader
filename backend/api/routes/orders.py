@@ -185,18 +185,24 @@ async def _chase_snapshot_broker_status_by_id() -> dict[str, dict]:
     return out
 
 
-def _chase_process_paper_row(r, _paper_open_ids: set) -> tuple[bool, int]:
+def _chase_process_paper_row(r, _paper_open_ids: set, dry_run: bool = False) -> tuple[bool, int]:
     """Handle one paper-mode row. Returns `(drop, dropped_paper_delta)`.
     Only counts as `dropped_paper` when this call actually flipped the
     row from OPEN → UNFILLED (concurrent step() may have raced us to a
     terminal state — do NOT overcount those).
+
+    `dry_run=True` computes the SAME decision without mutating `r` —
+    used by `list_active_chases`'s unlocked classification pass so it
+    can determine which rows need a row lock without writing to any
+    row that hasn't been locked yet.
     """
     if r.id in _paper_open_ids:
         return False, 0
     if r.status == "OPEN":
-        r.status = "UNFILLED"
-        r.detail = ((r.detail or "")[:200]
-                    + " · paper engine no longer tracking")
+        if not dry_run:
+            r.status = "UNFILLED"
+            r.detail = ((r.detail or "")[:200]
+                        + " · paper engine no longer tracking")
         return True, 1
     return True, 0
 
@@ -226,11 +232,17 @@ def _chase_process_live_row(
     r,
     _broker_status_by_id: dict[str, dict],
     _reconciled_filled: list,
+    dry_run: bool = False,
 ) -> tuple[bool, int, int]:
     """Handle one live-mode row. Returns
     `(drop, dropped_live_delta, reconciled_live_delta)`. Appends to
     `_reconciled_filled` when a row flips to FILLED so the caller can
     fire template-attach post-commit.
+
+    `dry_run=True` computes the SAME decision without mutating `r` or
+    appending to `_reconciled_filled` — used by `list_active_chases`'s
+    unlocked classification pass (see `_chase_process_paper_row` for
+    the identical rationale).
 
     2026-10 fix — same active-chase withhold rule as the postback
     handlers (`orders_postback.py:_pb_should_withhold_status`): this
@@ -253,9 +265,10 @@ def _chase_process_live_row(
     if not (r.broker_order_id or "").strip():
         if _chase_is_active:
             return False, 0, 0
-        r.status = "REJECTED"
-        r.detail = ((r.detail or "")[:200]
-                    + " · live placement never returned broker_order_id")
+        if not dry_run:
+            r.status = "REJECTED"
+            r.detail = ((r.detail or "")[:200]
+                        + " · live placement never returned broker_order_id")
         return True, 1, 0
 
     _bo = _broker_status_by_id.get(str(r.broker_order_id))
@@ -266,6 +279,8 @@ def _chase_process_live_row(
     if new_status != "FILLED" and _chase_is_active:
         return False, 0, 0
     if r.status != new_status:
+        if dry_run:
+            return True, 0, 1
         r.status = new_status
         if new_status == "FILLED":
             _rco_apply_fill_price(r, _bo)
@@ -680,52 +695,71 @@ async def _positions_refresh_after_fill(
 ) -> None:
     """Fire-and-forget: poll broker positions for up to 5 s after a fill,
     then invalidate the raw cache + broadcast positions_refreshed once the
-    symbol shows up (or qty changes).  The initial cache bust in
+    fill is reflected (or qty changes). The initial cache bust in
     _rco_invalidate_terminal_caches() clears stale data immediately; this
     task handles the broker-propagation lag so the UI eventually sees the
     new position without waiting for the 5-min performance poll.
+
+    Scoped to `account` — `fetch_positions(account=..., force_refresh=True)`
+    falls straight through to `_fetch_positions_local` for just that one
+    account (no `@for_all_accounts` fan-out), so a multi-leg/multi-account
+    fill doesn't force every OTHER account's broker session on every poll
+    attempt. That single-account branch also sits entirely outside the
+    30s-TTL SSOT cache that wraps the zero-arg all-accounts entry — every
+    read here is already a direct, uncached broker round-trip, so
+    `force_refresh=True` has no additional effect on this call shape; it's
+    kept for signature parity/documentation with the all-accounts call. A
+    genuinely empty `account` (Groww's postback carries none at all — see
+    `order_postback_groww` below) falls back to the all-accounts scan via
+    the SAME `@for_all_accounts` falsy-account check every other
+    single-account caller in this codebase relies on — not a crash, just
+    the pre-existing (less targeted) behaviour, preserved for that broker.
     """
     try:
         import asyncio as _aio
         from backend.brokers.broker_apis import fetch_positions, _raw_cache_invalidate
-        initial_qty: int | None = None
-        # Give the broker 2 s to propagate the fill before the first poll so
-        # that (a) we don't read pre-fill data and set initial_qty incorrectly,
-        # and (b) a fully-closed position (rows=[]) is not confused with "no
-        # position ever existed".
+
+        async def _read_qty() -> int:
+            dfs = await _aio.to_thread(
+                fetch_positions, account=account, force_refresh=True,
+            )
+            rows = [
+                r for df in (dfs or [])
+                for r in df.to_dict(orient="records")
+                if r.get("tradingsymbol") == tradingsymbol
+            ]
+            return sum(int(r.get("quantity", 0)) for r in rows)
+
+        # Baseline reading BEFORE the propagation sleep — the OLD bug:
+        # this read used to happen at t+3s (after the sleep below), by
+        # which point the broker had USUALLY ALREADY applied the fill, so
+        # `cur_qty` could never differ from that late "baseline" on any
+        # later poll and the loop reliably timed out with
+        # positions_refreshed essentially never firing in practice.
+        # Reading now (t+0, genuinely pre-fill) and comparing against the
+        # algebraically EXPECTED post-fill quantity (baseline + qty_delta —
+        # the parameter the old comparison never used) makes every later
+        # poll attempt a real test instead of a guaranteed no-op.
+        try:
+            initial_qty = await _read_qty()
+        except Exception as _base_err:
+            logger.debug("[FILL-POLL] baseline read failed: %s", _base_err)
+            initial_qty = 0
+        expected_qty = initial_qty + qty_delta
+
+        # Give the broker 2 s to propagate the fill before the first poll.
         await _aio.sleep(2)
         for _attempt in range(5):
             await _aio.sleep(1)
             try:
-                # 2026-09 council audit fix (perf + architect lenses,
-                # independently): fetch_positions() is memoized behind a
-                # 30s-TTL cache. _rco_invalidate_terminal_caches() busts it
-                # once, synchronously, right before this task is scheduled —
-                # so only the FIRST read in this 5-attempt loop was ever a
-                # real broker round-trip; every subsequent read (t+3..t+7s)
-                # silently re-read that same first result. cur_qty could
-                # never differ from initial_qty under normal conditions, so
-                # this loop reliably timed out and positions_refreshed
-                # essentially never fired — directly undermining the
-                # operator's "call position APIs immediately" requirement.
-                # force_refresh=True makes every attempt a genuine broker
-                # call, not just the first.
-                dfs = await _aio.to_thread(fetch_positions, force_refresh=True)
-                rows = [
-                    r for df in (dfs or [])
-                    for r in df.to_dict(orient="records")
-                    if r.get("tradingsymbol") == tradingsymbol
-                ]
-                if initial_qty is None:
-                    initial_qty = sum(int(r.get("quantity", 0)) for r in rows)
-
-                cur_qty = sum(int(r.get("quantity", 0)) for r in rows)
-                # Fire only when quantity has actually changed, or when the
-                # position disappeared entirely (close fill → empty rows) after
-                # we already had a non-empty baseline.  The old
-                # `qty_delta > 0 and cur_qty > 0` arm fired on the very first
-                # poll for any existing BUY position, sending pre-fill data.
-                changed = (cur_qty != initial_qty) or (not rows and initial_qty is not None and initial_qty > 0)
+                cur_qty = await _read_qty()
+                # Fire once quantity hits the algebraically expected
+                # post-fill value, OR on any other change from the
+                # (now-genuinely-pre-fill) baseline — the latter is a
+                # robustness fallback for lot-size rounding or a
+                # concurrent second leg moving the same symbol further
+                # than this call's own delta.
+                changed = (cur_qty == expected_qty) or (cur_qty != initial_qty)
                 if changed:
                     _raw_cache_invalidate("positions")
                     # Bug fix (2026-09-30): only the raw broker-DataFrame
@@ -848,13 +882,22 @@ def _postback_broadcast_fanout(
             # under/over-count by lot_size. See _mcx_postback_qty_to_contracts.
             _qty_contracts = _mcx_postback_qty_to_contracts(exchange, symbol, qty, broker)
             _rco_broadcast_position_filled(masked, exchange, symbol, txn, _qty_contracts, price, order_id)
-            try:
-                _side_sign = 1 if (txn or "").upper() == "BUY" else -1
-                asyncio.create_task(
-                    _positions_refresh_after_fill(account, symbol, _qty_contracts * _side_sign)
-                )
-            except Exception:
-                pass
+            # 2026-10 fix: paper/sim/replay fills never touch a real
+            # broker position — all three modes share PaperTradeEngine
+            # and fan out through this SAME helper with the one literal
+            # broker="paper" (see paper.py:_paper_fanout_terminal) — so
+            # polling the real broker for up to 5 attempts on every
+            # simulated fill was pure waste, contending with live
+            # chase/postback traffic for the same shared conn-service
+            # broker session.
+            if broker != "paper":
+                try:
+                    _side_sign = 1 if (txn or "").upper() == "BUY" else -1
+                    asyncio.create_task(
+                        _positions_refresh_after_fill(account, symbol, _qty_contracts * _side_sign)
+                    )
+                except Exception:
+                    pass
 
         if _terminal:
             broadcast(json.dumps({
@@ -921,32 +964,60 @@ def _rco_reconcile_active_rows(
     rows: list,
     paper_open_ids: "set | None",
     broker_status_by_id: dict,
-) -> "tuple[list, list, bool]":
+    dry_run: bool = False,
+) -> "tuple[list, list, bool, set]":
     """Scan OPEN/CANCEL_FAILED rows and inline-reconcile paper + live modes.
 
-    Returns (kept, reconciled_filled, needs_commit).
+    Returns (kept, reconciled_filled, needs_commit, mutate_ids).
     `reconciled_filled` is the list of rows that just transitioned to FILLED
     so the caller can fire template-attach after the DB commit.
+    `mutate_ids` is the set of row ids that required a field change
+    (dropped-via-mutation, e.g. UNFILLED/REJECTED, or reconciled to a
+    new status) — computed identically whether or not `dry_run` is set,
+    so a caller can run this once over an UNLOCKED read (`dry_run=True`,
+    no row touched) purely to learn which ids need a row lock, then run
+    it again for real (`dry_run=False`) over just that locked subset.
+    Row ids dropped WITHOUT any field change (e.g. a paper row already
+    terminal, or a live row whose broker status already matches) are
+    excluded from `mutate_ids` — no write, no lock needed for those.
     """
     kept: list = []
     reconciled_filled: list = []
+    mutate_ids: set = set()
     dropped_paper = dropped_live = reconciled_live = 0
     for r in rows:
         mode = (r.mode or "").lower()
         if mode == "paper" and paper_open_ids is not None:
-            drop, d_delta = _chase_process_paper_row(r, paper_open_ids)
+            drop, d_delta = _chase_process_paper_row(r, paper_open_ids, dry_run=dry_run)
             dropped_paper += d_delta
+            if d_delta:
+                mutate_ids.add(r.id)
             if drop:
                 continue
         elif mode == "live":
-            drop, d_delta, r_delta = _chase_process_live_row(r, broker_status_by_id, reconciled_filled)
+            drop, d_delta, r_delta = _chase_process_live_row(
+                r, broker_status_by_id, reconciled_filled, dry_run=dry_run,
+            )
             dropped_live += d_delta
             reconciled_live += r_delta
+            if d_delta or r_delta:
+                mutate_ids.add(r.id)
             if drop:
                 continue
         kept.append(r)
     needs_commit = bool(dropped_paper or dropped_live or reconciled_live)
-    return kept, reconciled_filled, needs_commit
+    return kept, reconciled_filled, needs_commit, mutate_ids
+
+
+def _rco_merge_kept_rows(dry_kept: list, locked_kept: list) -> list:
+    """Merge the untouched-rows subset from `list_active_chases`'s
+    unlocked classification pass with the freshly-reconciled subset
+    from its locked re-read, then re-sort newest-first — `locked_kept`
+    came from an unordered `id IN (...)` query so the combined list
+    isn't naturally sorted."""
+    merged = list(dry_kept) + list(locked_kept)
+    merged.sort(key=lambda r: r.id, reverse=True)
+    return merged
 
 
 _PREVIEW_FO_EXCHANGES = frozenset({"NFO", "MCX", "CDS", "BFO", "BCD", "NCO"})
@@ -1609,6 +1680,19 @@ class OrdersController(Controller):
         legitimately in-flight; the operator-triggered reconcile
         endpoint does the broker round-trip when they want a
         thorough sweep.
+
+        2026-10 fix — this panel is polled every ~3s from several
+        simultaneously-mounted UI components (`/orders`, `SymbolPanel`,
+        `ActivityLogModal`), and used to take a `.with_for_update()` row
+        lock across up to 500 rows on EVERY poll, even when nothing
+        actually needed reconciling — contending with the chase engine's
+        own per-attempt locking and with postback writers for no reason.
+        Fixed with a two-pass read: an UNLOCKED select classifies which
+        rows (if any) actually need a field change (`dry_run=True`, no
+        row touched); only if that set is non-empty does a SECOND,
+        narrowly-scoped select re-fetch JUST those ids with the row lock
+        and perform the real mutation. The common case (nothing to
+        reconcile) now takes zero locks.
         """
         from sqlalchemy import desc, select as sql_select
         from backend.api.database import async_session
@@ -1637,12 +1721,6 @@ class OrdersController(Controller):
             # (status != OPEN) and the operator had no surface short of
             # browsing /orders. The order is still LIVE at the broker;
             # recovery is via Reconcile or another Kill attempt.
-            # 2026-09-27 audit fix: FOR UPDATE so this bulk reconcile scan
-            # can't race a postback/chase terminal update landing on the
-            # SAME row concurrently. Deliberately NOT given the FINAL-status
-            # write-refuse guard the postback/chase paths have — reconcile
-            # is the repair path that corrects stuck rows from broker
-            # truth, so it must be able to write any status.
             # 2026-10 fix — exclude mode='draft'. _rco_reconcile_active_rows
             # below only special-cases mode in ("paper", "live"); every
             # other mode (draft included) falls through to
@@ -1650,7 +1728,14 @@ class OrdersController(Controller):
             # by construction, never cleaned up by a chase/postback since
             # it never reaches a broker) would otherwise sit in this
             # "in-flight chase" panel forever.
-            rows = (await s.execute(
+            #
+            # UNLOCKED read — no `.with_for_update()` here. Deliberately
+            # NOT given the FINAL-status write-refuse guard the
+            # postback/chase paths have — reconcile is the repair path
+            # that corrects stuck rows from broker truth, so it must be
+            # able to write any status (enforced by the locked re-read
+            # below, not here).
+            unlocked_rows = (await s.execute(
                 sql_select(AlgoOrder)
                 .where(
                     AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]),
@@ -1658,13 +1743,41 @@ class OrdersController(Controller):
                 )
                 .order_by(desc(AlgoOrder.id))
                 .limit(500)
-                .with_for_update()
             )).scalars().all()
 
-            kept, _reconciled_filled, _needs_commit = _rco_reconcile_active_rows(
-                rows, _paper_open_ids, _broker_status_by_id,
+            # Classification pass — dry_run=True guarantees no row here
+            # is mutated, so this is safe to run without a lock.
+            _dry_kept, _, _, _mutate_ids = _rco_reconcile_active_rows(
+                unlocked_rows, _paper_open_ids, _broker_status_by_id,
+                dry_run=True,
             )
-            if _needs_commit:
+
+            _reconciled_filled: list = []
+            if not _mutate_ids:
+                # Nothing to reconcile — zero row locks taken this poll.
+                kept = list(_dry_kept)
+            else:
+                # Lock ONLY the specific rows the dry run found need a
+                # write. The status filter here also protects against a
+                # postback/chase write that finalized one of these rows
+                # to a non-OPEN/CANCEL_FAILED status in between the two
+                # reads — such a row simply won't come back here and is
+                # correctly dropped from the response (it's no longer
+                # an active chase).
+                locked_rows = (await s.execute(
+                    sql_select(AlgoOrder)
+                    .where(
+                        AlgoOrder.id.in_(_mutate_ids),
+                        AlgoOrder.status.in_(["OPEN", "CANCEL_FAILED"]),
+                        AlgoOrder.mode != "draft",
+                    )
+                    .with_for_update()
+                    .execution_options(populate_existing=True)
+                )).scalars().all()
+
+                _locked_kept, _reconciled_filled, _, _ = _rco_reconcile_active_rows(
+                    locked_rows, _paper_open_ids, _broker_status_by_id,
+                )
                 await s.commit()
                 if _reconciled_filled:
                     # 2026-09-27 audit fix (finding #4): admin reconcile
@@ -1677,6 +1790,9 @@ class OrdersController(Controller):
                     await s.commit()
                 for _filled_row in _reconciled_filled:
                     _maybe_fire_template_attach_for_reconcile(_filled_row)
+
+                kept = _rco_merge_kept_rows(_dry_kept, _locked_kept)
+
             child_map = await _fetch_child_order_ids(s, [r.id for r in kept])
 
         do_mask = not is_admin_request(request)
