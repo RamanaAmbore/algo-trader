@@ -69,6 +69,57 @@ def _find_net_qty(positions: dict, symbol: str, exchange: str) -> int | None:
     return 0
 
 
+def _positions_net_rows_from_dfs(dfs) -> list[dict]:
+    """Convert `broker_apis.fetch_positions()`'s `list[DataFrame]` result —
+    already normalised to CONTRACTS via `_annotate_lot_size` (Kite ships
+    MCX/NCO intraday `quantity` in LOTS; NFO/equity in contracts already) —
+    into the same `{"net": [...]}` row-dict shape `_find_net_qty` expects
+    from a raw `broker.positions()` call.
+
+    This is the C1/MCX fix: `release_held_order` used to compare
+    `row.quantity` (already contracts, since it was recorded via
+    `ExpiryEngine._fetch_option_positions` → `broker_apis.fetch_positions()`)
+    against a RAW `broker.positions()` call, where Kite reports MCX
+    quantity in LOTS. Routing through the same normalised fetch here puts
+    both sides of `position_matches` in the SAME unit (contracts) — see
+    CLAUDE.md's "Option qty vs lot_size" guard.
+    """
+    rows: list[dict] = []
+    for df in (dfs or []):
+        if df is None or getattr(df, "empty", True):
+            continue
+        for rec in df.to_dict("records"):
+            rows.append({
+                "tradingsymbol": rec.get("tradingsymbol", ""),
+                "exchange": rec.get("exchange", ""),
+                "quantity": rec.get("quantity", 0),
+            })
+    return rows
+
+
+def _positions_data_unreliable(dfs) -> bool:
+    """True when any per-account frame returned by
+    `broker_apis.fetch_positions()` is a degraded/stale substitute
+    (circuit-breaker open, Dhan interval-skip throttle, or a genuine
+    fetch failure) rather than a fresh broker read.
+
+    Release must fail closed on a degraded read — comparing a held
+    order's quantity against a last-known-good (possibly minutes-old)
+    substitute frame instead of the live broker position would defeat
+    the whole point of the position-match check.
+    """
+    if dfs is None:
+        return True
+    for df in dfs:
+        if df is None:
+            continue
+        attrs = getattr(df, "attrs", {}) or {}
+        if attrs.get("stale") or attrs.get("fetch_failed") \
+                or attrs.get("circuit_open") or attrs.get("interval_skipped"):
+            return True
+    return False
+
+
 async def release_held_order(order_id: int, actor: str) -> dict:
     """Return {'ok': bool, 'reason': str, 'status': str}. Sends and chases only when all checks pass."""
     from backend.api.database import async_session
@@ -88,7 +139,19 @@ async def release_held_order(order_id: int, actor: str) -> dict:
 
         try:
             broker = get_broker(row.account)
-            positions = await asyncio.get_running_loop().run_in_executor(None, broker.positions)
+            # Normalised fetch (contracts, not raw Kite lots for MCX/NCO) —
+            # see `_positions_net_rows_from_dfs`'s docstring for why a raw
+            # `broker.positions()` call must never feed this comparison.
+            from backend.brokers import broker_apis
+            pos_dfs = await asyncio.get_running_loop().run_in_executor(
+                None, lambda: broker_apis.fetch_positions(account=row.account))
+            if _positions_data_unreliable(pos_dfs):
+                return {
+                    "ok": False,
+                    "reason": "position check failed: positions data stale or unavailable",
+                    "status": "HELD",
+                }
+            positions = {"net": _positions_net_rows_from_dfs(pos_dfs)}
             net = _find_net_qty(positions, row.symbol, row.exchange)
             ok, why = position_matches(row.transaction_type, int(row.quantity), net or 0)
             if not ok:
