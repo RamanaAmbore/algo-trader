@@ -1325,8 +1325,19 @@ BUILTIN_AGENTS.extend(_LOSS_AGENTS)
 #
 # Run side-by-side with ExpiryEngine for one expiry week before
 # considering retirement of the bg task. The bg task fires at 09:20;
-# these agents fire at 14:30 (NFO) / 23:00 (MCX) — different times,
+# these agents fire at 15:15 (NFO) / 23:00 (MCX) — different times,
 # no collision.
+#
+# fire_at_time MUST equal order_hold_gate.cutoff_for(exchange) — the
+# scan-and-close action (_action_live_expiry_auto_close) gates on
+# before_cutoff(exchange), which is True (deferred) until
+# `close - lead_minutes`. NFO: 15:30 close - lead_minutes_nfo(15) =
+# 15:15. MCX: 23:30 close - lead_minutes_mcx(30) = 23:00. Fixed 2026-10
+# (Sprint 1a): the NFO seed previously used 15:00, 15 minutes BEFORE
+# its own cutoff, so every cycle inside its 6-minute firing window
+# logged "before cut-off; scan deferred" and the action never actually
+# ran. The MCX sibling happened to work only because 23:00 already
+# equals its own cutoff.
 _EXPIRY_AGENTS = [
     dict(slug="expiry-day-positions-alert",
          long_name="when:positions.expiring_today.days<=1.5   alert:high/tg+email+log   do:notify-only",
@@ -1352,18 +1363,20 @@ _EXPIRY_AGENTS = [
          ),
 
     dict(slug="expiry-day-equity-itm-auto-close",
-         long_name="when:positions.expiring_today.nfo.is_itm==1 @15:00   alert:critical/tg+email+log   do:expiry-auto-close(NFO)",
+         long_name="when:positions.expiring_today.nfo.is_itm==1 @15:15   alert:critical/tg+email+log   do:expiry-auto-close(NFO)",
          tier="critical",
          topic="expiry_warning",
-         name="Auto-close ITM equity options on expiry day (T-30min)",
+         name="Auto-close ITM equity options on expiry day (T-15min)",
          description=(
-             "At 15:00 IST (30 min before NSE 15:30 close) on expiry "
-             "day, chase-close EVERY ITM equity option (NFO). Equity "
-             "rules: hedged or not, every ITM contract must be "
-             "closed before expiry — Zerodha does not net-settle "
-             "NFO option pairs and physical settlement / STT on ITM "
-             "longs is the trap. Wraps the ExpiryEngine scan+close, "
-             "restricted to NFO. Ships INACTIVE (destructive)."
+             "At 15:15 IST (15 min before NSE 15:30 close — matches "
+             "order_hold_gate.cutoff_for('NFO')'s default "
+             "lead_minutes_nfo=15) on expiry day, chase-close EVERY "
+             "ITM equity option (NFO). Equity rules: hedged or not, "
+             "every ITM contract must be closed before expiry — "
+             "Zerodha does not net-settle NFO option pairs and "
+             "physical settlement / STT on ITM longs is the trap. "
+             "Wraps the ExpiryEngine scan+close, restricted to NFO. "
+             "Ships INACTIVE (destructive)."
          ),
          conditions={"all": [
              {"metric": "is_itm",
@@ -1372,7 +1385,7 @@ _EXPIRY_AGENTS = [
          ]},
          scope="total",
          schedule="market_hours",
-         fire_at_time="15:00",
+         fire_at_time="15:15",
          cooldown_minutes=60,
          status="inactive",
          actions=[
