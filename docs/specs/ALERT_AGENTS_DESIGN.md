@@ -84,6 +84,26 @@ Stored rows: `ts`, `process` (`api` or `conn`), `level`, `logger`,
 `message`, `tags`, `extra`. Retention and minimum level are settings
 (`log.retention_days`, `log.db_min_level`).
 
+### 3.2a Order-failure alert origin labels (2026-10)
+
+Order-failure alerts (`order_failure` records) include an origin label in
+Telegram body, ntfy text, email subject, and email HTML Origin row. Label
+is determined by `_classify_order_origin_label(source, agent_id)` at record
+time and survives log→event-agent replay via `agent_id` in `extra` dict.
+
+| Condition | Label | Meaning |
+|---|---|---|
+| `agent_id is None` + `source not in {"template_wing", "template_wing_chase"}` | Manual | Operator-placed order (no agent) |
+| `agent_id is None` + `source in {"template_wing", "template_wing_chase"}` | Manual Bracket | Template/Bracket exit on operator-placed parent |
+| `agent_id is not None` + `source not in {"template_wing", "template_wing_chase"}` | Agent | Agent-fired order |
+| `agent_id is not None` + `source in {"template_wing", "template_wing_chase"}` | Agent Bracket | Bracket exit on agent-fired parent |
+
+**Threading**: `agent_id` parameter passes through `send_order_failure_alert()`
+kwarg (call sites: chase.py, template_attach.py, order_hold_gate.py,
+ExpiryEngine, background.py recovery sweep) and reaches the renderer via
+`event_agents._render_order_failure()` reading it back from the replayed
+record's `extra` dict.
+
 ### 3.3 Event agents (seeded)
 
 Defined as constants in `event_agents.py` and upserted at API startup.
