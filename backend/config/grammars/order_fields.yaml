@@ -1,0 +1,125 @@
+# Shared order-field catalog — Phase 2 of the order/agent grammar unification.
+#
+# Phase 1 (commit a938340c) externalized backend/api/algo/grammar.py's
+# SYSTEM_TOKENS / LOG_TAG_TOKENS into agent_grammar.yaml. Phase 2 (this file)
+# factors out the field-level vocabulary that is GENUINELY THE SAME concept
+# at both grammar layers:
+#   - the frontend CLI's `buy`/`sell` verb tokens
+#     (frontend/src/lib/command/grammars/orders.js, loaded from
+#     backend/config/grammars/orders.yaml — a *symlinked* file, not a copy)
+#   - the agent grammar's `place_order` action token's params_schema
+#     (backend/config/grammars/agent_grammar.yaml)
+#
+# This file holds TYPE-LEVEL METADATA ONLY (type, enum, description) for
+# each shared concept. Context-local properties — required-ness, default
+# value, token_ref_ok — vary per consuming schema (e.g. `qty` is required
+# on place_order but the CLI's `qty` token has its own independent
+# required/parse rules) and are deliberately NOT part of this catalog; they
+# stay declared locally at each call site.
+#
+# Consumption differs by runtime because of how each file is loaded:
+#
+#   Python side (agent_grammar.yaml → place_order.params_schema):
+#     backend/api/algo/grammar.py loads this file at import time and
+#     resolves any params_schema field spec written as `$ref: <key>` by
+#     merging this catalog's type/enum/description with the field spec's
+#     own local keys (required/default/token_ref_ok/description-override).
+#     This is REAL single-sourcing — the merged result is what
+#     SYSTEM_TOKENS / grammar_tokens actually serve.
+#
+#   JS side (orders.yaml buy/sell/modify tokens):
+#     orders.yaml is loaded in the browser via a Vite `?raw` import + a
+#     single js-yaml parse of ONE file — there is no cross-file YAML
+#     include mechanism available without editing orders.js itself (out of
+#     scope for this phase; frontend logic is explicitly untouched). So
+#     orders.yaml's token `values:` lists stay literal/self-contained for
+#     the JS loader to keep working identically, annotated with a
+#     `# catalog: order_fields.<key>` comment (inert — ignored by both
+#     PyYAML and js-yaml) pointing at the corresponding entry here. SSOT is
+#     enforced by a pytest drift-guard (test_order_fields_catalog.py) that
+#     fails if orders.yaml's literal values ever diverge from this file's
+#     enums, rather than by the YAML itself preventing divergence. A real
+#     single-sourced load on the JS side would require a follow-up change
+#     to orders.js itself (flagged in the Phase 2 brief — see
+#     .claude/PLAN.md — not made this phase: frontend logic is explicitly
+#     out of scope here).
+#
+# Enum VALUE ORDER is preserved independently per layer where it already
+# differs (confirmed cosmetic — enums are used as membership/allow-lists,
+# never positionally, in either consumer):
+#   - order_type: place_order's params_schema uses [MARKET, LIMIT, SL, SL-M]
+#     (canonical here, since only the Python side resolves $ref); the CLI's
+#     orderType token keeps its own [LIMIT, SL, SL-M, MARKET] display order
+#     in orders.yaml, which drives the CommandBar suggester's popup order.
+#   - product: agent params_schema uses [MIS, CNC, NRML] (canonical here);
+#     the CLI's `product` kwarg keeps its own [MIS, NRML, CNC] order.
+#   Both are verified set-equal (not order-equal) to this file by the
+#   drift-guard test.
+
+fields:
+  qty:
+    type: number
+    description: Number of lots × lot size. Must be positive.
+
+  order_type:
+    type: enum
+    enum: [MARKET, LIMIT, SL, SL-M]
+    # No `description` here deliberately — place_order's pre-Phase-2 schema
+    # carried none for this field and this catalog must not introduce a
+    # new key into that already-shipped schema (see parity test).
+
+  price:
+    type: number
+    description: Required for LIMIT / SL.
+
+  trigger_price:
+    type: number
+    description: Required for SL / SL-M.
+
+  product:
+    type: enum
+    enum: [MIS, CNC, NRML]
+    # No `description` — same reasoning as order_type above.
+
+  variety:
+    type: enum
+    enum: [regular, amo, co, iceberg, auction]
+    # No `description` — same reasoning as order_type above. Note: the CLI
+    # grammar does not expose `variety` as a token at all today — orders.js
+    # hardcodes `variety: 'regular'` in buildOrderPayload(). This catalog
+    # entry exists for place_order's (and cancel_order's) own SSOT; there
+    # is no orders.yaml token to cross-check it against.
+
+  tag:
+    type: string
+    description: Free-form tag propagated into the broker order id and AlgoOrder row.
+
+  chase_level:
+    type: enum
+    enum: [LOW, MED, HIGH]
+    description: >-
+      Chase aggressiveness for the live adaptive limit-order chase engine —
+      LOW (patient, long interval, small step, more attempts), MED
+      (balanced, used when omitted), HIGH (urgent, short interval, big
+      step, fewer attempts, crosses the spread fast). Threads into the
+      same backend.api.routes.orders_helpers._live_chase_config() mapping
+      every manual-ticket chase already uses.
+
+# ─────────────────────────────────────────────────────────────────────────
+# CLI-only reference mirror — NOT the live chase engine's config.
+#
+# orders.yaml's own `chase_levels:` block (band_ticks / retry_seconds) is a
+# DIFFERENT, unrelated chase config from `_live_chase_config()`'s
+# interval_seconds / aggression_step / max_attempts tiers used by
+# place_order's new `chase_level` param above — same LOW/MED/HIGH naming
+# convention, different mechanics, different consumer (CLI command-bar
+# preview vs. the live agent chase engine). Do NOT wire one into the other.
+#
+# This mirror exists so the catalog documents the CLI's own LOW/MED/HIGH
+# table in one place too; it is cross-checked byte-for-byte against
+# orders.yaml's `chase_levels:` block by the drift-guard test, since the JS
+# loader cannot actually read this file (see header note above).
+chase_levels_cli_reference:
+  LOW: { band_ticks: 8, retry_seconds: 60 }
+  MED: { band_ticks: 4, retry_seconds: 30 }
+  HIGH: { band_ticks: 1, retry_seconds: 10 }

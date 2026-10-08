@@ -9,6 +9,22 @@
 #   → qty → orderType → price(non-MARKET) → chase(non-MARKET)
 #
 # The resolved Kite tradingsymbol is shown in brackets at the end as a preview.
+#
+# ── Shared field catalog (Phase 2 of order/agent grammar unification) ──
+# This file is a SYMLINK (frontend/src/lib/command/grammars/orders.yaml →
+# this file) loaded client-side ONLY, via a Vite `?raw` import + a single
+# js-yaml parse (frontend/src/lib/command/grammars/orders.js). There is no
+# Python reader of this file and no cross-file YAML include mechanism
+# available to a `?raw` import, so the `qty` / `orderType` / `price` /
+# `chase` tokens and the `product` kwarg below stay fully self-contained —
+# their `values:` lists cannot literally reference
+# backend/config/grammars/order_fields.yaml the way place_order's
+# params_schema does. Each is annotated below with an inert `# catalog:`
+# comment (ignored by both js-yaml and PyYAML) naming the corresponding
+# order_fields.yaml entry; backend/tests/test_order_fields_catalog.py
+# drift-guards that the two never silently diverge. A real single load
+# would require a follow-up change to orders.js itself (out of scope —
+# frontend logic explicitly untouched this phase).
 
 verbs:
   buy:
@@ -35,28 +51,28 @@ verbs:
         kind: expiry
         required: "if:instType==CALL|PUT|FUT"
         hint: "expiry date"
-      - role: qty
+      - role: qty                         # catalog: order_fields.qty
         kind: qty
         required: true
         parse: int
         hint: "quantity (lots × lot_size for F&O)"
-      - role: orderType
+      - role: orderType                   # catalog: order_fields.order_type
         values: [LIMIT, SL, SL-M, MARKET]
         required: true
         parse: upper
         hint: "LIMIT | SL | SL-M | MARKET"
-      - role: price
+      - role: price                       # catalog: order_fields.price (+ trigger_price, split in buildOrderPayload)
         kind: price
         required: "if:orderType!=MARKET"
         parse: float
         hint: "limit/trigger price"
-      - role: chase
+      - role: chase                       # catalog: order_fields.chase_level
         values: [LOW, MED, HIGH]
         required: false
         parse: upper
         hint: "chase aggressiveness (non-MARKET only)"
     kwargs:
-      product:
+      product:                            # catalog: order_fields.product
         values: [MIS, NRML, CNC]
 
   sell:
@@ -83,28 +99,28 @@ verbs:
         kind: expiry
         required: "if:instType==CALL|PUT|FUT"
         hint: "expiry date"
-      - role: qty
+      - role: qty                         # catalog: order_fields.qty
         kind: qty
         required: true
         parse: int
         hint: "quantity (lots × lot_size for F&O)"
-      - role: orderType
+      - role: orderType                   # catalog: order_fields.order_type
         values: [LIMIT, SL, SL-M, MARKET]
         required: true
         parse: upper
         hint: "LIMIT | SL | SL-M | MARKET"
-      - role: price
+      - role: price                       # catalog: order_fields.price (+ trigger_price, split in buildOrderPayload)
         kind: price
         required: "if:orderType!=MARKET"
         parse: float
         hint: "limit/trigger price"
-      - role: chase
+      - role: chase                       # catalog: order_fields.chase_level
         values: [LOW, MED, HIGH]
         required: false
         parse: upper
         hint: "chase aggressiveness (non-MARKET only)"
     kwargs:
-      product:
+      product:                            # catalog: order_fields.product
         values: [MIS, NRML, CNC]
 
   cancel:
@@ -121,15 +137,20 @@ verbs:
         kind: order_id
         required: true
     kwargs:
-      price:
+      price:                              # catalog: order_fields.price
         parse: float
-      qty:
+      qty:                                # catalog: order_fields.qty
         parse: int
-      chase:
+      chase:                              # catalog: order_fields.chase_level
         values: [LOW, MED, HIGH]
         parse: upper
 
-# Chase level → engine config
+# Chase level → engine config. NOTE: this is the CLI's own band_ticks/
+# retry_seconds table — a DIFFERENT, unrelated chase config from the live
+# agent chase engine's `_live_chase_config()` interval_seconds/aggression_
+# step/max_attempts tiers (same LOW/MED/HIGH naming convention, different
+# mechanics — see order_fields.yaml's `chase_levels_cli_reference` for the
+# mirrored copy + the drift-guard test that keeps the two byte-identical).
 chase_levels:
   LOW:  { band_ticks: 8, retry_seconds: 60 }
   MED:  { band_ticks: 4, retry_seconds: 30 }

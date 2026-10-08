@@ -298,14 +298,19 @@ async def _action_place_order(agent, context: dict, params: dict):
       3. Call chase_order(); on failure run basket_margin diagnosis and re-raise
          so execute() writes an action_failed event.
 
-    `params.chase_aggressiveness` ('low'|'med'|'high') threads through to the
-    same `_live_chase_config()` mapping every manual-ticket chase already
-    uses (backend/api/routes/orders_helpers.py), instead of building a bare
+    `params.chase_level` ('LOW'|'MED'|'HIGH', case-insensitive — the
+    canonical place_order params_schema field as of Phase 2 of the
+    order/agent grammar unification, backend/config/grammars/
+    order_fields.yaml) threads through to the same `_live_chase_config()`
+    mapping every manual-ticket chase already uses
+    (backend/api/routes/orders_helpers.py), instead of building a bare
     `ChaseConfig(exchange=exchange, product=product)` with no aggressiveness
-    knob at all. Defaults to 'med' when absent — `ChaseConfig`'s own
-    dataclass defaults (interval_seconds=20, aggression_step=0.10,
-    max_attempts=20) are byte-identical to the 'med' tier, so an existing
-    agent with no `chase_aggressiveness` key keeps its exact prior chase
+    knob at all. Falls back to the pre-Phase-2 undocumented
+    `params.chase_aggressiveness` ('low'|'med'|'high') for any agent action
+    JSON authored before `chase_level` existed, then to 'med' when neither
+    is set. `ChaseConfig`'s own dataclass defaults (interval_seconds=20,
+    aggression_step=0.10, max_attempts=20) are byte-identical to the 'med'
+    tier, so an existing agent with neither key keeps its exact prior chase
     cadence. ('low' is NOT byte-identical here — it's the slower/patient
     tier, interval=30/step=0.05/attempts=30 — so it is intentionally not
     used as the silent default.)
@@ -348,7 +353,9 @@ async def _action_place_order(agent, context: dict, params: dict):
         product=product, template_id=template_id,
     )
 
-    aggressiveness = str(params.get("chase_aggressiveness") or "med")
+    aggressiveness = str(
+        params.get("chase_level") or params.get("chase_aggressiveness") or "med"
+    ).lower()
     cfg = _live_chase_config(aggressiveness, product=product)
     cfg.exchange = exchange or "NFO"
     try:

@@ -689,6 +689,16 @@
           "required": false,
           "description": "Free-form tag propagated into the broker order id and AlgoOrder row."
         },
+        "chase_level": {
+          "type": "enum",
+          "enum": [
+            "LOW",
+            "MED",
+            "HIGH"
+          ],
+          "required": false,
+          "description": "Chase aggressiveness for the live adaptive limit-order chase engine — LOW (patient, long interval, small step, more attempts), MED (balanced, used when omitted), HIGH (urgent, short interval, big step, fewer attempts, crosses the spread fast). Threads into the same backend.api.routes.orders_helpers._live_chase_config() mapping every manual-ticket chase already uses."
+        },
         "template_id": {
           "type": "number",
           "required": false,

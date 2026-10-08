@@ -292,6 +292,110 @@ async def test_action_place_order_no_aggressiveness_key_matches_prior_bare_chase
 
 
 # ---------------------------------------------------------------------------
+# chase_level threading (Phase 2 of order/agent grammar unification) —
+# place_order's new canonical params_schema field. Mirrors the
+# chase_aggressiveness tests above; chase_level is the new preferred key,
+# chase_aggressiveness remains a working fallback for pre-Phase-2 agents.
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_place_order_chase_level_high_threads_through():
+    """params.chase_level='HIGH' (new canonical name, uppercase per the
+    params_schema enum) builds the same ChaseConfig as
+    chase_aggressiveness='high' did before Phase 2."""
+    from backend.api.algo.actions import _action_place_order
+    from backend.api.routes.orders_helpers import _live_chase_config
+
+    broker = _make_broker_stub(ltp_value=5800.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "CRUDEOIL25OCTFUT",
+        "exchange": "MCX",
+        "transaction_type": "SELL",
+        "quantity": 100,
+        "product":  "NRML",
+        "price":    5800.0,
+        "chase_level": "HIGH",
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    expected = _live_chase_config("high", product="NRML")
+    assert cfg.interval_seconds == expected.interval_seconds == 10
+    assert cfg.aggression_step == expected.aggression_step == 0.25
+    assert cfg.max_attempts == expected.max_attempts == 10
+
+
+@pytest.mark.asyncio
+async def test_action_place_order_chase_level_wins_over_legacy_chase_aggressiveness():
+    """When both keys are set (shouldn't normally happen, but an agent's
+    action JSON is operator-editable), the new chase_level param takes
+    priority over the legacy chase_aggressiveness key."""
+    from backend.api.algo.actions import _action_place_order
+    from backend.api.routes.orders_helpers import _live_chase_config
+
+    broker = _make_broker_stub(ltp_value=23500.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "NIFTY25JULFUT",
+        "exchange": "NFO",
+        "transaction_type": "SELL",
+        "quantity": 50,
+        "chase_level": "HIGH",
+        "chase_aggressiveness": "low",
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    cfg = mock_chase.call_args.kwargs["cfg"]
+    expected = _live_chase_config("high", product="NRML")
+    assert cfg.interval_seconds == expected.interval_seconds == 10
+    assert cfg.aggression_step == expected.aggression_step == 0.25
+    assert cfg.max_attempts == expected.max_attempts == 10
+
+
+# ---------------------------------------------------------------------------
 # Integration smoke — _action_live_close_position
 # ---------------------------------------------------------------------------
 

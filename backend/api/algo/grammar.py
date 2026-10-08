@@ -71,6 +71,88 @@ _GRAMMAR_CATALOG: dict = _load_grammar_catalog()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  SHARED ORDER-FIELD CATALOG (Phase 2 of order/agent grammar unification)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# backend/config/grammars/order_fields.yaml defines type/enum/description
+# ONCE for the field-level concepts place_order's params_schema shares with
+# the frontend CLI's buy/sell grammar (qty, order_type, price,
+# trigger_price, product, variety, tag, chase_level). A params_schema field
+# spec in agent_grammar.yaml may reference one of these by writing
+# `$ref: <key>` instead of hand-typing type/enum/description; any OTHER
+# keys on that same spec (required, default, token_ref_ok, or a
+# description override) are context-local and merged in on top.
+#
+# Resolution happens once, here, at import time — the result is what
+# SYSTEM_TOKENS / grammar_tokens actually serve downstream. Non-$ref specs
+# (the majority — account, symbol, exchange, side, template_* fields, every
+# other action's params_schema) pass through completely untouched.
+# ───────────────────────────────────────────────────────────────────────────
+
+_ORDER_FIELDS_YAML_PATH = Path(__file__).resolve().parents[2] / "config" / "grammars" / "order_fields.yaml"
+
+
+def _load_order_fields_catalog() -> dict:
+    with open(_ORDER_FIELDS_YAML_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f)
+
+
+_ORDER_FIELDS_CATALOG: dict = _load_order_fields_catalog()
+_ORDER_FIELDS: dict = _ORDER_FIELDS_CATALOG.get("fields", {})
+
+# Canonical key emission order for a resolved params_schema field spec.
+# Matches the order every hand-typed field already used pre-Phase-2
+# (type, [enum], required, [token_ref_ok], [default], [description]) so
+# resolving a $ref never reorders — and therefore never changes the JSON
+# serialization of — a field that happens to carry the exact same keys it
+# always did.
+_PARAM_SPEC_KEY_ORDER = ("type", "enum", "required", "token_ref_ok", "default", "description")
+
+
+def _resolve_param_spec(spec):
+    """Resolve one params_schema field spec. Specs without `$ref` pass
+    through unchanged (identity, not a copy) — zero behavior change for
+    every field that doesn't opt into the shared catalog."""
+    if not isinstance(spec, dict) or "$ref" not in spec:
+        return spec
+    ref_key = spec["$ref"]
+    base = _ORDER_FIELDS.get(ref_key)
+    if base is None:
+        raise KeyError(
+            f"agent_grammar.yaml params_schema references order_fields.yaml "
+            f"field {ref_key!r}, which does not exist"
+        )
+    merged = dict(base)
+    for k, v in spec.items():
+        if k == "$ref":
+            continue
+        merged[k] = v  # local override/addition wins (required/default/token_ref_ok/description)
+    ordered = {k: merged[k] for k in _PARAM_SPEC_KEY_ORDER if k in merged}
+    for k, v in merged.items():  # future-proofing: any key outside the canonical set still survives
+        if k not in ordered:
+            ordered[k] = v
+    return ordered
+
+
+def _resolve_params_schema(params_schema):
+    if not params_schema:
+        return params_schema
+    return {name: _resolve_param_spec(field_spec) for name, field_spec in params_schema.items()}
+
+
+def _build_system_tokens(catalog: dict) -> list:
+    """Reconstruct SYSTEM_TOKENS from the raw loaded catalog, resolving any
+    `$ref` markers inside each action token's params_schema along the way."""
+    tokens = []
+    for spec in catalog["system_tokens"]:
+        if spec.get("params_schema"):
+            spec = dict(spec)
+            spec["params_schema"] = _resolve_params_schema(spec["params_schema"])
+        tokens.append(spec)
+    return tokens
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  CONDITION GRAMMAR — resolvers
 # ═══════════════════════════════════════════════════════════════════════════
 #
@@ -668,7 +750,7 @@ OPERATORS = {
 # table.
 # ───────────────────────────────────────────────────────────────────────────
 
-SYSTEM_TOKENS: list[dict] = list(_GRAMMAR_CATALOG["system_tokens"])
+SYSTEM_TOKENS: list[dict] = _build_system_tokens(_GRAMMAR_CATALOG)
 
 
 # ═══════════════════════════════════════════════════════════════════════════

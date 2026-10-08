@@ -595,52 +595,51 @@ system_tokens:
       - SELL
       required: true
       description: BUY opens long / covers short; SELL opens short / closes long.
+    # qty/order_type/price/trigger_price/product/variety/tag: type/enum/
+    # description now sourced from backend/config/grammars/order_fields.yaml
+    # (Phase 2 of the order/agent grammar unification — the shared catalog
+    # the frontend CLI's buy/sell grammar also draws these concepts from).
+    # required/default/token_ref_ok stay local — they're place_order's own
+    # context, not part of the shared concept. Resolved at import time by
+    # backend/api/algo/grammar.py's `_resolve_param_spec()`.
     qty:
-      type: number
+      $ref: qty
       required: true
       token_ref_ok: true
-      description: Number of lots × lot size. Must be positive.
     order_type:
-      type: enum
-      enum:
-      - MARKET
-      - LIMIT
-      - SL
-      - SL-M
+      $ref: order_type
       required: false
       default: MARKET
     price:
-      type: number
+      $ref: price
       required: false
       token_ref_ok: true
-      description: Required for LIMIT / SL.
     trigger_price:
-      type: number
+      $ref: trigger_price
       required: false
       token_ref_ok: true
-      description: Required for SL / SL-M.
     product:
-      type: enum
-      enum:
-      - MIS
-      - CNC
-      - NRML
+      $ref: product
       required: false
       default: MIS
     variety:
-      type: enum
-      enum:
-      - regular
-      - amo
-      - co
-      - iceberg
-      - auction
+      $ref: variety
       required: false
       default: regular
     tag:
-      type: string
+      $ref: tag
       required: false
-      description: Free-form tag propagated into the broker order id and AlgoOrder row.
+    # Chase aggressiveness for the live chase engine (Phase 2 addition —
+    # place_order had no documented way to set this before; the live
+    # handler already threaded an undocumented `chase_aggressiveness`
+    # param through to `_live_chase_config()` — see
+    # backend/api/algo/actions_live.py:_action_place_order). `chase_level`
+    # is the new canonical param name; absent, it still falls back to
+    # `chase_aggressiveness` for any pre-existing agent, then to "med" —
+    # zero behavior change for every agent that doesn't set either.
+    chase_level:
+      $ref: chase_level
+      required: false
     # ── Template attachment (v2.1+) ─────────────────────────────
     # When set, the unified template-attach pipeline runs after
     # the parent order persists. TP / SL → broker GTT (or sim
