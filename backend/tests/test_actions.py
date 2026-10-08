@@ -396,6 +396,100 @@ async def test_action_place_order_chase_level_wins_over_legacy_chase_aggressiven
 
 
 # ---------------------------------------------------------------------------
+# qty/quantity dual-key fallback in _al_place_resolve_params (actions_live.py)
+#
+# place_order's params_schema documents the quantity field as `qty`
+# (backend/config/grammars/order_fields.yaml), but the executor has always
+# read `params.get("quantity")`. The Automation page's "+ place_order"
+# quick-add skeleton ships `qty` with no structured field to correct it, so
+# an operator using that control unmodified fired a live order whose
+# quantity silently resolved to 0. Fixed by adding a `qty` fallback,
+# mirroring the already-shipped dual-key read in
+# `_al_close_resolve_params` (close_position).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_place_order_qty_key_fallback_when_quantity_absent():
+    """params={"qty": 50} with no 'quantity' key resolves to quantity=50,
+    not 0 — the bug an operator hit via the Automation quick-add skeleton."""
+    from backend.api.algo.actions import _action_place_order
+
+    broker = _make_broker_stub(ltp_value=23500.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "NIFTY25JULFUT",
+        "exchange": "NFO",
+        "transaction_type": "SELL",
+        "qty": 50,
+        # no 'quantity' key — matches the Automation quick-add skeleton
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    assert mock_chase.call_args.kwargs["quantity"] == 50
+
+
+@pytest.mark.asyncio
+async def test_action_place_order_quantity_key_wins_over_qty():
+    """When both keys are present, 'quantity' takes priority over 'qty'."""
+    from backend.api.algo.actions import _action_place_order
+
+    broker = _make_broker_stub(ltp_value=23500.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "NIFTY25JULFUT",
+        "exchange": "NFO",
+        "transaction_type": "SELL",
+        "quantity": 75,
+        "qty": 50,
+    }
+
+    mock_chase = AsyncMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=75)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=42)), \
+         patch("backend.api.algo.actions_live._place_order_set_product_template",
+               new=AsyncMock()), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        await _action_place_order(agent, context, params)
+
+    mock_chase.assert_called_once()
+    assert mock_chase.call_args.kwargs["quantity"] == 75
+
+
+# ---------------------------------------------------------------------------
 # Integration smoke — _action_live_close_position
 # ---------------------------------------------------------------------------
 

@@ -214,6 +214,16 @@ def _al_place_resolve_params(
     `agent_id=getattr(agent, "id", None)` therefore always wrote NULL
     for every live agent-placed order. Fixed 2026-10 (Sprint 1a).
 
+    Quantity accepts either `quantity` or `qty` (checked in that order) —
+    `quantity` is what the params_schema's resolved field name has always
+    been read as here, but the Automation page's "+ place_order" quick-add
+    skeleton (`frontend/.../automation/+page.svelte`) ships `qty` with no
+    structured quantity field to correct it, so an operator using that UI
+    unmodified fired a live order with quantity silently resolved to 0
+    before this fallback was added. Mirrors `_al_close_resolve_params`'s
+    already-shipped `quantity`/`qty` dual-key read for close_position.
+    Fixed 2026-10.
+
     Returns (shim, account, symbol, exchange, side, qty, price, product,
     template_id).
     """
@@ -227,7 +237,7 @@ def _al_place_resolve_params(
         str(params.get("symbol") or ""),
         str(params.get("exchange") or "NFO"),
         str(params.get("transaction_type") or params.get("side") or "SELL"),
-        int(params.get("quantity") or 0),
+        int(params.get("quantity") or params.get("qty") or 0),
         params.get("price"),
         str(params.get("product") or "NRML"),
         params.get("template_id"),

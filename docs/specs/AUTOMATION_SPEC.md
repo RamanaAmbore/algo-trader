@@ -161,10 +161,14 @@ inactive ──(activate)──> active ──(fire)──> triggered ──(coo
   `place_order` params_schema and frontend CLI's order tokens (resolved via `$ref:` markers). 
   New `chase_level` parameter added (enum: LOW, MED, HIGH) — routes to the live adaptive 
   chase engine's corresponding tier in `_live_chase_config()`. Takes priority over legacy 
-  `chase_aggressiveness` key when both present. Known gap (queued for separate fix): schema 
-  field is named `qty`, but the executor reads `params.get("quantity")` — no immediate impact 
-  since agent authors always specify the same value under whichever key the executor happens 
-  to read, but a future agent grammar PATCH will unify the naming.
+  `chase_aggressiveness` key when both present.
+- **Fixed 2026-10**: the executor (`_al_place_resolve_params` in `actions_live.py`) read only 
+  `params.get("quantity")`, while the schema documents the field as `qty` and the Automation 
+  page's "+ place_order" quick-add skeleton ships `qty` with no structured quantity field to 
+  correct it — a real live bug, not a cosmetic docs mismatch: an operator using that quick-add 
+  control unmodified fired a place_order agent action whose quantity silently resolved to `0`. 
+  Fixed by accepting either key (`quantity` checked first, falling back to `qty`), mirroring 
+  the already-shipped dual-key read in the sibling `_al_close_resolve_params` (close_position).
 
 **Dispatch flow**:
 1. Condition evaluates true
