@@ -164,7 +164,11 @@ async def test_action_place_order_ltp_fetched_via_helper():
     # chase_order called — LTP fetch succeeded and preflight didn't block.
     mock_chase.assert_called_once()
     # product/template_id follow-up write was attempted for the intent row.
-    mock_set_pt.assert_called_once_with(42, "NRML", None)
+    # (2026-10 fix: _place_order_set_product_template now also takes
+    # template_slug= / overrides= kwargs — this params dict has neither.)
+    mock_set_pt.assert_called_once_with(
+        42, "NRML", None, template_slug=None, overrides=None,
+    )
 
 
 # ---------------------------------------------------------------------------

@@ -174,16 +174,18 @@ async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
                                     side: str, qty: int, price,
                                     product: str = "NRML",
-                                    template_id=None) -> "int | None":
+                                    template_id=None,
+                                    template_slug=None,
+                                    overrides: "dict | None" = None) -> "int | None":
     """Write OPEN AlgoOrder row and fire preflight_ok event (best-effort).
 
     Returns the AlgoOrder row id so callers can pass algo_order_id to chase_order.
 
-    `product`/`template_id` are applied via `_place_order_set_product_template`
-    AFTER `_write_live_order` returns — that shared constructor (used by
-    close_position/chase_close_positions too) is never touched. The helper
-    swallows its own exceptions, so a failure there can never turn a real
-    `intent_id` into None here.
+    `product`/`template_id`/`template_slug`/`overrides` are applied via
+    `_place_order_set_product_template` AFTER `_write_live_order` returns —
+    that shared constructor (used by close_position/chase_close_positions
+    too) is never touched. The helper swallows its own exceptions, so a
+    failure there can never turn a real `intent_id` into None here.
     """
     from backend.api.algo.actions import _write_live_order
 
@@ -195,7 +197,10 @@ async def _place_order_write_intent(agent_shim, pf: dict,
             status="OPEN",
         )
         if intent_id:
-            await _place_order_set_product_template(intent_id, product, template_id)
+            await _place_order_set_product_template(
+                intent_id, product, template_id,
+                template_slug=template_slug, overrides=overrides,
+            )
             from backend.api.algo.order_events import write_event as _write_ev_ok
             import asyncio as _aio
             _aio.create_task(_write_ev_ok(
@@ -243,7 +248,7 @@ async def _place_order_on_failure(
 
 def _al_place_resolve_params(
     agent, context: dict, params: dict
-) -> "tuple[object, str, str, str, str, int, object, str, object]":
+) -> "tuple[object, str, str, str, str, int, object, str, object, object]":
     """Resolve _action_place_order params and build the _AgentShim sentinel.
 
     `agent` is the real Agent DB row the caller (`_dispatch_live_action`)
@@ -266,8 +271,17 @@ def _al_place_resolve_params(
     already-shipped `quantity`/`qty` dual-key read for close_position.
     Fixed 2026-10.
 
+    `template_slug` is read alongside `template_id` (2026-10 fix) — the
+    place_order params_schema (agent_grammar.yaml) documents both as
+    mutually exclusive, and the Automation page's Bracket picker writes
+    `template_slug`, not `template_id`. Prior to this fix only
+    `template_id` was ever read here, so an agent configured via
+    `template_slug` silently got a naked live entry with zero exits.
+    `template_id` still wins when both are set (matches
+    `load_template_for_slug_or_id`'s own id-over-slug priority).
+
     Returns (shim, account, symbol, exchange, side, qty, price, product,
-    template_id).
+    template_id, template_slug).
     """
     class _AgentShim:
         slug = getattr(agent, "slug", None) or context.get("agent_slug", "place_order")
@@ -283,13 +297,73 @@ def _al_place_resolve_params(
         params.get("price"),
         str(params.get("product") or "NRML"),
         params.get("template_id"),
+        params.get("template_slug"),
     )
+
+
+async def _place_order_resolve_template_slug(template_slug: str) -> "int | None":
+    """Resolve a `template_slug` to its `OrderTemplate.id`.
+
+    Reuses `template_attach.load_template_for_slug_or_id` — the SAME
+    resolver every other template-attach path (OrderTicket, basket, the
+    sim-mode agent action via `_maybe_attach_template_from_action`)
+    already relies on for id-over-slug priority + the `OrderTemplate.slug
+    == slug` DB lookup. The live place_order path needs its own call
+    site for this (rather than passing `template_slug` straight through
+    like the sim path does) because `AlgoOrder.template_id` is a plain
+    int FK column with no slug column — resolution has to happen before
+    persist, not at fill time inside `apply_template_to_order`.
+
+    Returns None (and logs a warning) when the slug does not resolve to
+    any OrderTemplate row, or when the lookup itself fails — callers
+    treat None the same as "no template requested" rather than guessing.
+    """
+    from backend.api.algo.template_attach import load_template_for_slug_or_id
+
+    try:
+        tmpl = await load_template_for_slug_or_id(
+            template_id=None, template_slug=str(template_slug)
+        )
+    except Exception as e:
+        logger.warning(
+            f"[LIVE] place_order: template_slug={template_slug!r} lookup failed: {e}"
+        )
+        return None
+    if tmpl is None:
+        logger.warning(
+            f"[LIVE] place_order: template_slug={template_slug!r} did not resolve "
+            f"to any OrderTemplate — no template will be attached on fill"
+        )
+        return None
+    return int(tmpl["id"])
+
+
+def _place_order_overrides_json(overrides: "dict | None") -> "str | None":
+    """Serialize place_order per-leg template overrides to a JSON string
+    for `AlgoOrder.template_overrides_json`.
+
+    Keys/shape mirror `orders_helpers._build_overrides_json` exactly
+    (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) — the same
+    shape `_opp_load_row_for_attach` (orders_place.py) parses back out of
+    this column and feeds to `apply_template_to_order` at fill time.
+    Returns None when `overrides` is empty/None or every value is None,
+    so the DB column is left NULL rather than storing an empty object.
+    """
+    if not overrides:
+        return None
+    payload = {k: v for k, v in overrides.items() if v is not None}
+    if not payload:
+        return None
+    import json
+    return json.dumps(payload)
 
 
 async def _place_order_set_product_template(
     row_id: int, product: str, template_id,
+    template_slug=None, overrides: "dict | None" = None,
 ) -> None:
-    """Set product/template_id on a freshly-written place_order AlgoOrder row.
+    """Set product/template_id/template_overrides_json on a freshly-written
+    place_order AlgoOrder row.
 
     Sprint 1a (docs/proposals/ORDER_LIFECYCLE_DATA_MODEL.md §2.2): the
     shared `_write_live_order` constructor (actions.py) is also used by
@@ -306,12 +380,24 @@ async def _place_order_set_product_template(
     `place_order` action can carry a non-NULL `template_id` through to
     its AlgoOrder row — until now that auto-attach path only ever fired
     for OrderTicket/basket-submitted orders. An agent action that
-    specifies `params.template_id` will now have real exit GTTs (and
-    possibly a wing order) armed on fill, exactly like a manually
-    ticketed templated order. Swallows all exceptions (logs + returns)
-    so a failure here can never take down the caller's `intent_id`.
+    specifies `params.template_id` (OR `params.template_slug` — resolved
+    here via `_place_order_resolve_template_slug`, 2026-10 fix) will now
+    have real exit GTTs (and possibly a wing order) armed on fill, exactly
+    like a manually ticketed templated order. The four `*_override`
+    params (tp_pct / sl_pct / wing_premium_pct / wing_strike_offset) are
+    now persisted too, via `template_overrides_json` — the SAME column
+    `_opp_load_row_for_attach` already reads back for OrderTicket/basket
+    fills, so no change was needed on the fill-time consumer side.
+    Swallows all exceptions (logs + returns) so a failure here can never
+    take down the caller's `intent_id`.
     """
-    if not product and template_id is None:
+    resolved_template_id = template_id
+    if resolved_template_id is None and template_slug:
+        resolved_template_id = await _place_order_resolve_template_slug(template_slug)
+
+    overrides_json = _place_order_overrides_json(overrides)
+
+    if not product and resolved_template_id is None and overrides_json is None:
         return
     from backend.api.database import async_session
     from backend.api.models import AlgoOrder
@@ -320,11 +406,16 @@ async def _place_order_set_product_template(
     values: dict = {}
     if product:
         values["product"] = str(product)
-    if template_id is not None:
+    if resolved_template_id is not None:
         try:
-            values["template_id"] = int(template_id)
+            values["template_id"] = int(resolved_template_id)
         except (TypeError, ValueError):
-            logger.warning(f"[LIVE] place_order ignoring non-numeric template_id={template_id!r}")
+            logger.warning(
+                f"[LIVE] place_order ignoring non-numeric "
+                f"template_id={resolved_template_id!r}"
+            )
+    if overrides_json is not None:
+        values["template_overrides_json"] = overrides_json
     if not values:
         return
     try:
@@ -337,6 +428,27 @@ async def _place_order_set_product_template(
         logger.warning(
             f"[LIVE] place_order product/template_id update failed for row {row_id}: {e}"
         )
+
+
+def _al_place_build_overrides(params: dict) -> "dict | None":
+    """Build the template-override dict from a live place_order action's
+    params, for persisting onto `AlgoOrder.template_overrides_json`.
+
+    Reuses `actions._build_template_overrides` (lazy import to avoid a
+    circular import — `actions.py` imports from this module too) — the
+    EXACT same override-resolution function the sim-mode path already
+    calls via `_maybe_attach_template_from_action`, including its
+    legacy `target_pct` → `tp_pct` back-compat mapping. Returns None
+    (rather than a dict of all-None values) when none of the four
+    `*_override` params (or `target_pct`) were supplied, so
+    `_place_order_set_product_template` can tell "no overrides" apart
+    from "overrides explicitly set to null".
+    """
+    from backend.api.algo.actions import _build_template_overrides
+
+    overrides = _build_template_overrides(params)
+    overrides = {k: v for k, v in overrides.items() if v is not None}
+    return overrides or None
 
 
 async def _action_place_order(agent, context: dict, params: dict):
@@ -372,7 +484,7 @@ async def _action_place_order(agent, context: dict, params: dict):
     from backend.api.routes.orders_helpers import _live_chase_config
     from backend.brokers import get_broker
 
-    _shim, account, symbol, exchange, side, qty, price, product, template_id = (
+    _shim, account, symbol, exchange, side, qty, price, product, template_id, template_slug = (
         _al_place_resolve_params(agent, context, params)
     )
 
@@ -402,7 +514,8 @@ async def _action_place_order(agent, context: dict, params: dict):
     # Emit preflight_ok event (fire-and-forget); capture row id for chase.
     _oid = await _place_order_write_intent(
         _shim, pf, account, symbol, exchange, side, qty, price,
-        product=product, template_id=template_id,
+        product=product, template_id=template_id, template_slug=template_slug,
+        overrides=_al_place_build_overrides(params),
     )
     if _oid is None:
         # AlgoOrder pre-persist failed (DB exception) — fail closed.
