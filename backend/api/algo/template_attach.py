@@ -54,6 +54,14 @@ class GttSpec:
     # `sl_trail_pct` (% distance) flows through to attached_gtts_json
     # so the poller can resume across restarts. None on TP-only legs.
     sl_trail_pct:   Optional[float] = None
+    # Set True when `_ta_live_place_one_gtt` could not confirm this GTT
+    # was accepted by the broker (ambiguous `_verify_gtt_accepted` outcome
+    # — "not present" / "status read failed") AND a follow-up
+    # `broker.cancel_gtt` attempt also failed to confirm cleanup. The id
+    # is still tracked (`placed_id` set, included in `attached_gtts_json`
+    # via the normal plumbing) because it may genuinely be live at the
+    # broker — see the P0 fix comment in `_ta_live_place_one_gtt`.
+    unverified:     bool = False
 
 
 @dataclass
@@ -1902,6 +1910,21 @@ def _verify_gtt_accepted(broker, gtt_id) -> str | None:
     return _GTT_NOT_PRESENT_REASON
 
 
+def _gtt_verify_reason_is_ambiguous(reason: str) -> bool:
+    """True when a non-None `_verify_gtt_accepted` *reason* is NOT a
+    confirmed broker rejection — i.e. the id was simply absent from the
+    broker's GTT list (`_GTT_NOT_PRESENT_REASON`, a documented
+    read-after-write gap for brokers like Groww whose `get_gtts()` is
+    server-side filtered to ACTIVE only) or the status read itself
+    raised ("status read failed: ..."). In both cases the GTT may
+    genuinely be live at the broker even though this process could not
+    confirm it. A listed REJECTED/CANCELLED/unrecognised-status GTT is,
+    by contrast, an unambiguous verdict straight from the broker and is
+    NOT ambiguous — see `_classify_listed_gtt`'s own docstring.
+    """
+    return reason == _GTT_NOT_PRESENT_REASON or reason.startswith("status read failed")
+
+
 def _ta_live_place_one_gtt(
     broker,
     plan: TemplatePlan,
@@ -1931,27 +1954,82 @@ def _ta_live_place_one_gtt(
             trigger_values=list(spec.trigger_values),
             tag=f"tpl-{plan.template_id}-{spec.label}",
         )
-        # Verify acceptance BEFORE recording the id anywhere. A rejected
-        # GTT must never look like live protection: `spec.placed_id` stays
-        # None and the id is never appended to `result.gtt_ids`, so neither
-        # `_opp_build_attach_entries` (orders_place.py — keys off
-        # `spec.placed_id`) nor `_retry_build_attached_payload` (orders.py —
-        # iterates specs keyed off `spec.placed_id` too) can ever surface a
-        # rejected GTT in `attached_gtts_json`. This mirrors the existing
-        # except-branches below, which already never set placed_id/gtt_ids
-        # on a failed placement.
+        # Verify acceptance BEFORE recording the id anywhere. A CONFIRMED
+        # rejection (broker lists the id as REJECTED/CANCELLED/an
+        # unrecognised status) must never look like live protection:
+        # `spec.placed_id` stays None and the id is never appended to
+        # `result.gtt_ids`, so neither `_opp_build_attach_entries`
+        # (orders_place.py — keys off `spec.placed_id`) nor
+        # `_retry_build_attached_payload` (orders.py — iterates specs
+        # keyed off `spec.placed_id` too) can ever surface a rejected GTT
+        # in `attached_gtts_json`. This mirrors the existing except-branches
+        # below, which already never set placed_id/gtt_ids on a failed
+        # placement.
+        #
+        # P0 fix (2026-10): an AMBIGUOUS outcome ("not present" / "status
+        # read failed" — see `_gtt_verify_reason_is_ambiguous`) is NOT a
+        # confirmed rejection — the GTT may genuinely be live at the
+        # broker right now (e.g. Groww's get_gtts() only lists ACTIVE
+        # GTTs, so a still-PENDING-but-accepted GTT reads as "not
+        # present"). Silently dropping the id here (never calling
+        # cancel_gtt, never recording it anywhere) used to leave a
+        # possibly-live GTT completely untracked: `attached_gtts_json`
+        # could stay NULL, so the idempotency guard in
+        # `_opp_load_row_for_attach` never trips and a later retrigger
+        # (chase/postback race, redelivered postback, admin reconcile,
+        # manual Retry-attach) places ANOTHER live GTT for the same leg.
+        # Fix: try to cancel the id first so it's cleanly gone; only if
+        # that cancel itself cannot be confirmed either do we fall
+        # through and track the id via the same placed_id/gtt_ids
+        # plumbing a normally-accepted GTT uses — guaranteeing a non-NULL
+        # `attached_gtts_json` and a CRITICAL log trail instead of a
+        # silent vanish.
         _gtt_reason = _verify_gtt_accepted(broker, gtt_id)
         if _gtt_reason:
+            if not _gtt_verify_reason_is_ambiguous(_gtt_reason):
+                result.errors.append(
+                    f"GTT {spec.label} (id={gtt_id}) not accepted at broker: {_gtt_reason}"
+                )
+                logger.error(
+                    "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
+                    extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+                           "symbol": plan.parent_symbol, "label": spec.label,
+                           "gtt_id": str(gtt_id), "reason": _gtt_reason},
+                )
+                return pair_first_id
+            _cancel_exc_msg: Optional[str] = None
+            try:
+                broker.cancel_gtt(gtt_id, exchange=plan.parent_exchange)
+            except Exception as _cancel_exc:  # noqa: BLE001
+                _cancel_exc_msg = str(_cancel_exc)
+            if _cancel_exc_msg is None:
+                result.errors.append(
+                    f"GTT {spec.label} (id={gtt_id}) not accepted at broker: "
+                    f"{_gtt_reason} — cancelled"
+                )
+                logger.error(
+                    "GTT %s for %s not accepted: %s (cancelled)", spec.label,
+                    plan.parent_symbol, _gtt_reason,
+                    extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+                           "symbol": plan.parent_symbol, "label": spec.label,
+                           "gtt_id": str(gtt_id), "reason": _gtt_reason},
+                )
+                return pair_first_id
+            spec.unverified = True
             result.errors.append(
-                f"GTT {spec.label} (id={gtt_id}) not accepted at broker: {_gtt_reason}"
+                f"GTT {spec.label} (id={gtt_id}) UNVERIFIED at broker ({_gtt_reason}) "
+                f"and cancel_gtt also failed ({_cancel_exc_msg}) — tracking id as "
+                f"possibly-live to block a duplicate re-attach"
             )
-            logger.error(
-                "GTT %s for %s not accepted: %s", spec.label, plan.parent_symbol, _gtt_reason,
-                extra={"tags": ["orders", "gtt"], "alert_event": "gtt_not_accepted",
+            logger.critical(
+                "[GTT-UNVERIFIED] %s for %s: verify failed (%s) AND cancel_gtt failed "
+                "(%s) — id=%s may be LIVE at broker; tracked as unverified to prevent "
+                "a duplicate placement on retrigger",
+                spec.label, plan.parent_symbol, _gtt_reason, _cancel_exc_msg, gtt_id,
+                extra={"tags": ["orders", "gtt"], "alert_event": "gtt_unverified_tracked",
                        "symbol": plan.parent_symbol, "label": spec.label,
                        "gtt_id": str(gtt_id), "reason": _gtt_reason},
             )
-            return pair_first_id
         spec.placed_id = str(gtt_id)
         result.gtt_ids.append(spec.placed_id)
         if pair_two_singles and idx == 0:
