@@ -231,8 +231,28 @@ def _chase_process_live_row(
     `(drop, dropped_live_delta, reconciled_live_delta)`. Appends to
     `_reconciled_filled` when a row flips to FILLED so the caller can
     fire template-attach post-commit.
+
+    2026-10 fix — same active-chase withhold rule as the postback
+    handlers (`orders_postback.py:_pb_should_withhold_status`): this
+    sweep backs the `/chases/active` panel, polled every ~3s, and reads
+    the SAME cached live broker order book a postback would. A row
+    mid-retry (chase just rejected on a price-shaped reason and is
+    about to place a repriced order) can have its just-rejected
+    broker_order_id's cached status read here and get finalized to a
+    non-FILLED terminal status before the retry's own
+    `_sync_algo_order_id` writes the new broker_order_id — tripping the
+    exact same false-CRITICAL-alert collision via a different writer.
+    Only non-FILLED outcomes are withheld; a genuine fill always applies.
     """
+    try:
+        from backend.api.algo.chase import is_chase_active
+        _chase_is_active = is_chase_active(getattr(r, "id", None))
+    except Exception:
+        _chase_is_active = False
+
     if not (r.broker_order_id or "").strip():
+        if _chase_is_active:
+            return False, 0, 0
         r.status = "REJECTED"
         r.detail = ((r.detail or "")[:200]
                     + " · live placement never returned broker_order_id")
@@ -243,6 +263,8 @@ def _chase_process_live_row(
         return False, 0, 0
 
     new_status = _CHASE_KITE_TO_ALGO[_bo["status"]]
+    if new_status != "FILLED" and _chase_is_active:
+        return False, 0, 0
     if r.status != new_status:
         r.status = new_status
         if new_status == "FILLED":
@@ -315,12 +337,23 @@ def _retry_build_attached_payload(result, product: str) -> list:
     """Build the full `attached_gtts_json` list from an attach result.
     One dict per GTT (via `_retry_build_gtt_entry`) plus a `wing`
     entry when the plan issued a wing order.
+
+    Keyed off each spec's own `placed_id` (mirrors
+    `_opp_build_attach_entries` in orders_place.py) rather than
+    positionally zipping `plan.gtts` with `result.gtt_ids` — a GTT
+    that `_ta_live_place_one_gtt` placed but the broker rejected (or
+    one that raised before `gtt_ids` was appended) never gets
+    `placed_id` set, so it's skipped here too, instead of letting the
+    positional zip silently pair a *different* spec's id/trigger/label
+    onto this one.
     """
     payload: list = []
-    if result.plan and result.gtt_ids:
-        for _spec, _gid in zip(result.plan.gtts, result.gtt_ids):
+    if result.plan:
+        for _spec in result.plan.gtts:
+            if not _spec.placed_id:
+                continue
             payload.append(_retry_build_gtt_entry(
-                _spec, _gid, result.plan, product,
+                _spec, _spec.placed_id, result.plan, product,
             ))
     if result.wing_order_id:
         # Mirror orders_place.py:_opp_build_attach_entries field-for-field —

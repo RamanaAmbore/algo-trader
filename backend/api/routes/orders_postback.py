@@ -78,6 +78,48 @@ def _pb_audit_category(status: str) -> str:
     return _STATUS_AUDIT_CATEGORY.get(str(status or "").upper(), "order")
 
 
+# 2026-10 fix — a postback must never finalize AlgoOrder.status to a
+# non-FILLED terminal value for a row that either (a) is currently
+# inside an active `chase_order()` retry loop in this process, or (b)
+# is already HELD (operator-review state, see `order_hold.py`). FILLED/
+# COMPLETE is NEVER withheld — a fill is never ambiguous either way.
+#
+# (a) Confirmed operator timing fact: Kite's rejection postback for an
+# order arrives within a few seconds of the rejection — reliably, not a
+# rare race. `_ch_poll_handle_rejected`'s own price-shaped-rejection
+# retry almost always loses that race against the postback, so without
+# this guard a routine price-rejected-retry (the common case, not an
+# edge case) would get finalized to REJECTED by the postback mid-retry,
+# tripping `_sync_algo_order_id`'s separate (and still-correct)
+# final-status guard and aborting the chase with a false CRITICAL alert.
+# See `chase.py`'s `is_chase_active` for the full rationale.
+#
+# (b) A row already HELD can still carry a stale `broker_order_id`
+# pointing at the order whose repeated rejection caused the hold. A
+# late/duplicate postback for that SAME broker_order_id (delivered
+# after the hold already landed, once this process is no longer
+# "actively chasing" that row) must not silently flip the row back to
+# REJECTED/CANCELLED/UNFILLED — only a genuine release (which clears
+# `hold_json` and sets status back to OPEN before resuming chase) may
+# move it on from HELD.
+_PB_NONFILL_TERMINAL_STATUSES = frozenset({"REJECTED", "CANCELLED", "UNFILLED"})
+
+
+def _pb_should_withhold_status(_r, new_status: "str | None") -> bool:
+    """True when a postback-driven non-fill terminal status write must
+    be withheld for this row (see module-level note above).
+    """
+    if new_status not in _PB_NONFILL_TERMINAL_STATUSES:
+        return False
+    if str(getattr(_r, "status", "") or "") == "HELD":
+        return True
+    try:
+        from backend.api.algo.chase import is_chase_active
+        return is_chase_active(getattr(_r, "id", None))
+    except Exception:
+        return False
+
+
 async def _create_postback_orphan_row(
     s,
     *,
@@ -156,6 +198,13 @@ def _sync_apply_row_status(
     """
     from backend.api.models import ALGO_ORDER_FINAL_STATUSES
     if not new_status or _r.status == new_status:
+        return False
+    if _pb_should_withhold_status(_r, new_status):
+        logger.info(
+            "[%s-POSTBACK] AlgoOrder #%s withholding %s status write — "
+            "row is HELD or under an active chase retry; status stays "
+            "%s.", broker_id.upper(), getattr(_r, "id", "?"), new_status, _r.status,
+        )
         return False
     if _r.status in ALGO_ORDER_FINAL_STATUSES:
         logger.warning(
@@ -487,6 +536,13 @@ def _pb_apply_status_to_row(_r, *, new_status: str | None, price) -> bool:
     """
     from backend.api.models import ALGO_ORDER_FINAL_STATUSES
     if not new_status or _r.status == new_status:
+        return False
+    if _pb_should_withhold_status(_r, new_status):
+        logger.info(
+            "[KITE-POSTBACK] AlgoOrder #%s withholding %s status write — "
+            "row is HELD or under an active chase retry; status stays %s.",
+            getattr(_r, "id", "?"), new_status, _r.status,
+        )
         return False
     if _r.status in ALGO_ORDER_FINAL_STATUSES:
         logger.warning(

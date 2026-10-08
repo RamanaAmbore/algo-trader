@@ -621,6 +621,75 @@ def is_killed(broker_order_id: str) -> bool:
         return str(broker_order_id) in _KILLED_ORDER_IDS
 
 
+# ── In-process "is this row currently being chased" signal ─────────────
+# 2026-10 fix — AlgoOrder.status conflates two different questions: (a)
+# what is the live status of the CURRENTLY-resting broker order (which a
+# postback correctly and immediately reflects), and (b) has the overall
+# chase INTENT given up (which only the chase loop itself can decide,
+# since only it knows whether it plans to retry). A postback has no way
+# to predict chase's future retry decision — and shouldn't have to.
+#
+# Confirmed operator timing fact: Kite's rejection postback for an order
+# arrives within a few seconds of the rejection — reliably, not a rare
+# race. `_ch_poll_handle_rejected`'s own price-shaped-rejection retry
+# ("rejected_continue") almost always loses that race against the
+# postback, so a postback handler must withhold REJECTED/CANCELLED/
+# UNFILLED status writes for a row it can see is still under an active
+# chase retry loop — only chase's own terminal handler
+# (`_chase_terminal_update_db`) may finalize such a row. A genuine
+# FILLED/COMPLETE is never withheld — a fill is never ambiguous.
+#
+# Keyed by `dict[int, int]` (refcount), not a `set`, mirroring the
+# reasoning but NOT the shape of `_KILLED_ORDER_IDS` above: a manual
+# `/held/{id}/release` re-chase and a service-restart recovery chase can
+# both legitimately target the SAME algo_order_id in overlapping windows
+# (rare, but possible), and a plain set would let the first one to exit
+# clear the marker out from under the other still-running one.
+_ACTIVE_CHASE_REFCOUNT: dict[int, int] = {}
+_ACTIVE_CHASE_LOCK = __import__("threading").Lock()
+
+
+def _ch_mark_chase_active(algo_order_id: int | None) -> None:
+    """Increment the active-chase refcount for `algo_order_id`. No-op
+    for None (untracked/legacy callers — `is_chase_active(None)` always
+    reports False anyway)."""
+    if algo_order_id is None:
+        return
+    with _ACTIVE_CHASE_LOCK:
+        _ACTIVE_CHASE_REFCOUNT[int(algo_order_id)] = (
+            _ACTIVE_CHASE_REFCOUNT.get(int(algo_order_id), 0) + 1
+        )
+
+
+def _ch_mark_chase_inactive(algo_order_id: int | None) -> None:
+    """Decrement (and prune at zero) the active-chase refcount for
+    `algo_order_id`. Always called from the `chase_order()` wrapper's
+    `finally` block, so it runs on every return/exception path."""
+    if algo_order_id is None:
+        return
+    with _ACTIVE_CHASE_LOCK:
+        key = int(algo_order_id)
+        if key not in _ACTIVE_CHASE_REFCOUNT:
+            return
+        _ACTIVE_CHASE_REFCOUNT[key] -= 1
+        if _ACTIVE_CHASE_REFCOUNT[key] <= 0:
+            _ACTIVE_CHASE_REFCOUNT.pop(key, None)
+
+
+def is_chase_active(algo_order_id: "int | None") -> bool:
+    """True when `algo_order_id` is CURRENTLY inside an active
+    `chase_order()` retry loop in THIS process.
+
+    Used by the postback handlers (`orders_postback.py`) and the
+    `/chases/active` reconcile sweep (`orders.py`) to withhold a
+    non-FILLED terminal status write for a row chase may still retry.
+    """
+    if algo_order_id is None:
+        return False
+    with _ACTIVE_CHASE_LOCK:
+        return int(algo_order_id) in _ACTIVE_CHASE_REFCOUNT
+
+
 class ChaseStatus(str, Enum):
     PENDING   = "pending"
     CHASING   = "chasing"
@@ -628,6 +697,7 @@ class ChaseStatus(str, Enum):
     PARTIAL   = "partial"
     FAILED    = "failed"
     CANCELLED = "cancelled"
+    HELD      = "held"
 
 
 @dataclass
@@ -1526,25 +1596,136 @@ async def _chase_abort_on_consecutive_errors(
 
 # ── chase_order inner-loop helpers (extracted to reduce CC) ─────────────
 
+async def _ch_hold_on_repeated_rejection(
+    result: "ChaseResult",
+    account: str, symbol: str, transaction_type: str, quantity: int,
+    current_order_id: "str | None",
+    cfg: "ChaseConfig",
+    algo_order_id: "int | None",
+    emit: Callable,
+) -> "ChaseResult":
+    """Operator instruction (2026-10): a SECOND consecutive price-shaped
+    REJECTED outcome for the SAME chase must stop auto-retrying and hand
+    the row to the operator instead of placing a third attempt.
+
+    Reuses the EXISTING held-order mechanism verbatim — `AlgoOrder.status
+    == "HELD"` + `hold_json` (`order_hold.py`), the same fields
+    `order_hold_gate.py:record_held_close` already writes for expiry-
+    close holds, surfaced today by `GET /api/orders/held` and released
+    via `POST /api/orders/held/{id}/release` — no new status, column, or
+    UI surface. Category `AGENT_ORDER` (defined in `order_hold.py`,
+    unused until now) tags the reason without touching the
+    `EXPIRY_CLOSE`/`TEMPLATE_EXIT` release-path semantics.
+
+    Fires the same `send_order_failure_alert` convention every other
+    chase abort path in this module uses, writes a `held` timeline
+    event, and pops `_CH_PRE_FILL_NET_QTY` so this chase's pre-fill
+    snapshot never leaks (mirrors every other terminal path).
+    """
+    from backend.api.algo.order_hold import HoldCategory, hold_record
+
+    reason = (
+        "repeated price rejection — two consecutive price-shaped REJECTED "
+        "outcomes while chasing; held for operator review"
+    )
+    result.status = ChaseStatus.HELD
+    result.order_id = current_order_id or ""
+    result.detail = reason
+    emit("chase_held", {"reason": reason, "order_id": current_order_id})
+    logger.warning(
+        "Chase %s: held after two consecutive price-shaped REJECTED "
+        "outcomes — awaiting operator review (no further auto-retry).",
+        symbol,
+    )
+
+    if algo_order_id is not None:
+        _CH_PRE_FILL_NET_QTY.pop(algo_order_id, None)
+        try:
+            from backend.api.models import ALGO_ORDER_FINAL_STATUSES
+            async with _async_session() as _s:
+                row = (await _s.execute(
+                    _sql_select(_AlgoOrder).where(_AlgoOrder.id == int(algo_order_id))
+                    .with_for_update()
+                )).scalar_one_or_none()
+                if row is not None and row.status not in ALGO_ORDER_FINAL_STATUSES:
+                    held_at = datetime.now(timezone.utc)
+                    row.status = "HELD"
+                    row.hold_json = hold_record(
+                        HoldCategory.AGENT_ORDER, reason, "n/a", None, held_at,
+                    )
+                    row.detail = (row.detail or "")[:200] + f" · {reason}"
+                    await _s.commit()
+        except Exception as _e:
+            logger.warning(f"[CHASE] hold-on-repeated-rejection DB write failed: {_e}")
+        try:
+            await _ch_write_order_event(
+                algo_order_id, "held", reason, {"order_id": current_order_id},
+            )
+        except Exception:
+            pass
+
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        send_order_failure_alert(
+            account=account, symbol=symbol, exchange=cfg.exchange,
+            side=transaction_type, qty=quantity, mode="live", source="chase",
+            error=f"{reason}. No further auto-retry will be attempted.",
+        )
+    except Exception:
+        pass
+    return result
+
+
 async def _ch_handle_poll_signal(
     signal: "str | None",
     current_order_id: "str | None",
     cfg: "ChaseConfig",
     symbol: str,
-) -> "tuple[bool, str | None]":
-    """Interpret the poll signal and apply the cancelled_continue backoff if needed.
+    *,
+    consecutive_price_rejections: int = 0,
+    account: str = "",
+    transaction_type: str = "",
+    quantity: int = 0,
+    algo_order_id: "int | None" = None,
+    result: "ChaseResult | None" = None,
+    emit: "Callable | None" = None,
+) -> "tuple[bool, str | None, int]":
+    """Interpret the poll signal, apply the cancelled/rejected-continue
+    backoff, and track consecutive price-shaped rejections.
 
-    Returns (done, new_current_order_id).
-    done=True means the caller should immediately return result (terminal outcome).
+    Operator instruction (2026-10): a repeated price-shaped REJECTED
+    (signal == 'rejected_continue' while `consecutive_price_rejections`
+    is already >= 1 — i.e. this is the SECOND one in a row) stops
+    auto-retry and transitions the row to HELD instead of placing a
+    third attempt (see `_ch_hold_on_repeated_rejection`). A broker/
+    external cancel (`cancelled_continue`) or any other non-reject
+    signal resets the counter — only BACK-TO-BACK price rejections
+    count as "consecutive".
+
+    Returns (done, new_current_order_id, new_consecutive_price_rejections).
+    done=True means the caller should immediately return `result`
+    (terminal outcome — `result` has already been mutated by this call
+    when the hold path fired).
     """
     if signal in ("filled", "killed", "rejected"):
-        return True, current_order_id
-    if signal in ("cancelled_continue", "rejected_continue"):
+        return True, current_order_id, 0
+    if signal == "rejected_continue":
+        if consecutive_price_rejections >= 1 and result is not None:
+            await _ch_hold_on_repeated_rejection(
+                result, account, symbol, transaction_type, quantity,
+                current_order_id, cfg, algo_order_id, emit or (lambda *a, **k: None),
+            )
+            return True, current_order_id, 0
         backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
         logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
         await asyncio.sleep(backoff)
-        return False, None   # reset current_order_id
-    return False, current_order_id
+        return False, None, consecutive_price_rejections + 1
+    if signal == "cancelled_continue":
+        backoff = cfg.rejection_backoff_seconds or cfg.interval_seconds
+        logger.info(f"Chase {symbol}: backing off {backoff}s before next place_order")
+        await asyncio.sleep(backoff)
+        return False, None, 0   # reset current_order_id; not a rejection chain
+    return False, current_order_id, 0
 
 
 async def _ch_handle_attempt_error(
@@ -2191,6 +2372,41 @@ async def chase_order(
     already_filled: int = 0,
     already_filled_price: float = 0.0,
 ) -> ChaseResult:
+    """Chase a limit order until filled — public entry point.
+
+    Thin wrapper around `_chase_order_impl` (the actual loop, unchanged
+    below) that marks `algo_order_id` as "actively chasing" in this
+    process for the duration of the call (`is_chase_active()`), so the
+    postback handlers (`orders_postback.py`) and the `/chases/active`
+    reconcile sweep (`orders.py`) know to withhold a non-FILLED terminal
+    status write for this row while it's still in here. See the
+    `_ACTIVE_CHASE_REFCOUNT` module-level docstring above for the full
+    rationale (2026-10 fix). The `finally` guarantees the marker clears
+    on every return/exception path, including every early-return branch
+    inside `_chase_order_impl`.
+    """
+    _ch_mark_chase_active(algo_order_id)
+    try:
+        return await _chase_order_impl(
+            account, symbol, transaction_type, quantity,
+            cfg=cfg, on_event=on_event, algo_order_id=algo_order_id,
+            already_filled=already_filled, already_filled_price=already_filled_price,
+        )
+    finally:
+        _ch_mark_chase_inactive(algo_order_id)
+
+
+async def _chase_order_impl(
+    account: str,
+    symbol: str,
+    transaction_type: str,
+    quantity: int,
+    cfg: ChaseConfig | None = None,
+    on_event: Callable | None = None,
+    algo_order_id: int | None = None,
+    already_filled: int = 0,
+    already_filled_price: float = 0.0,
+) -> ChaseResult:
     """
     Chase a limit order until filled.
 
@@ -2296,6 +2512,11 @@ async def chase_order(
     emit = _ch_make_emit(on_event, account, symbol, transaction_type, quantity)
     current_order_id = None
     consecutive_errors = 0        # reset on any successful broker call
+    # Operator instruction (2026-10): count BACK-TO-BACK price-shaped
+    # REJECTED outcomes — a second one in a row holds the row instead of
+    # placing a third attempt. Reset on any non-reject poll signal (see
+    # `_ch_handle_poll_signal`).
+    consecutive_price_rejections = 0
     last_placed_price: float = 0.0  # enforces minimum 1-tick movement per attempt
 
     # C2/C4 — cumulative_filled is the chase-WIDE running total across
@@ -2428,8 +2649,11 @@ async def chase_order(
                 quantity, result, attempt, remaining_qty, algo_order_id, emit,
                 cumulative_filled, current_order_filled,
             )
-            done, current_order_id = await _ch_handle_poll_signal(
+            done, current_order_id, consecutive_price_rejections = await _ch_handle_poll_signal(
                 signal, current_order_id, cfg, symbol,
+                consecutive_price_rejections=consecutive_price_rejections,
+                account=account, transaction_type=transaction_type, quantity=quantity,
+                algo_order_id=algo_order_id, result=result, emit=emit,
             )
             if done:
                 return result
