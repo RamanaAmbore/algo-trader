@@ -250,6 +250,12 @@ async def test_set_product_template_unresolvable_slug_leaves_template_id_null():
 # slug-resolution + DB-persist path runs end to end.)
 # ---------------------------------------------------------------------------
 
+def _make_conns_stub(account: str) -> MagicMock:
+    c = MagicMock()
+    c.conn = {account: object()}
+    return c
+
+
 def _make_broker_stub(*, ltp_value: float = 23500.0) -> MagicMock:
     broker = MagicMock()
     broker.profile.return_value = {"exchanges": ["NSE", "NFO", "MCX", "BSE", "CDS"]}
@@ -269,6 +275,7 @@ async def test_action_place_order_with_template_slug_only_resolves_and_attaches(
     from backend.api.algo.actions import _action_place_order
 
     broker = _make_broker_stub()
+    conns = _make_conns_stub("ZG0790")
     agent = MagicMock()
     agent.slug = "test-agent"
     agent.id = 7
@@ -287,7 +294,8 @@ async def test_action_place_order_with_template_slug_only_resolves_and_attaches(
     session, captured = _mock_session_capturing_execute()
     mock_loader = AsyncMock(return_value={"id": 11, "slug": "default-bull"})
 
-    with patch("backend.brokers.registry.get_broker",     return_value=broker), \
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
          patch("backend.brokers.adapters.kite.get_lot_size",
                new=AsyncMock(return_value=50)), \
          patch("backend.api.algo.chase.chase_order",      new=mock_chase), \

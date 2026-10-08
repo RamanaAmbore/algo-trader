@@ -289,7 +289,7 @@ def test_al_place_resolve_params_carries_real_agent_id_and_slug():
     agent.id = 42
     agent.slug = "loss-funds-negative"
 
-    shim, account, symbol, exchange, side, qty, price, product, template_id = (
+    shim, account, symbol, exchange, side, qty, price, product, template_id, template_slug = (
         _al_place_resolve_params(agent, {}, {
             "account": "ZG0790", "symbol": "NIFTY25OCTFUT", "exchange": "NFO",
             "transaction_type": "SELL", "quantity": 50, "product": "MIS",
@@ -301,6 +301,7 @@ def test_al_place_resolve_params_carries_real_agent_id_and_slug():
     assert shim.slug == "loss-funds-negative"
     assert product == "MIS"
     assert template_id == 9
+    assert template_slug is None
 
 
 def test_al_place_resolve_params_falls_back_when_agent_has_no_id():
