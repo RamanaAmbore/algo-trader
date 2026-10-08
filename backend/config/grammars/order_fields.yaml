@@ -1,4 +1,4 @@
-# Shared order-field catalog — Phase 2 of the order/agent grammar unification.
+# Shared order-field catalog — Phase 2 (+4) of the order/agent grammar unification.
 #
 # Phase 1 (commit a938340c) externalized backend/api/algo/grammar.py's
 # SYSTEM_TOKENS / LOG_TAG_TOKENS into agent_grammar.yaml. Phase 2 (this file)
@@ -28,33 +28,44 @@
 #     SYSTEM_TOKENS / grammar_tokens actually serve.
 #
 #   JS side (orders.yaml buy/sell/modify tokens):
-#     orders.yaml is loaded in the browser via a Vite `?raw` import + a
-#     single js-yaml parse of ONE file — there is no cross-file YAML
-#     include mechanism available without editing orders.js itself (out of
-#     scope for this phase; frontend logic is explicitly untouched). So
-#     orders.yaml's token `values:` lists stay literal/self-contained for
-#     the JS loader to keep working identically, annotated with a
-#     `# catalog: order_fields.<key>` comment (inert — ignored by both
-#     PyYAML and js-yaml) pointing at the corresponding entry here. SSOT is
-#     enforced by a pytest drift-guard (test_order_fields_catalog.py) that
-#     fails if orders.yaml's literal values ever diverge from this file's
-#     enums, rather than by the YAML itself preventing divergence. A real
-#     single-sourced load on the JS side would require a follow-up change
-#     to orders.js itself (flagged in the Phase 2 brief — see
-#     .claude/PLAN.md — not made this phase: frontend logic is explicitly
-#     out of scope here).
+#     Phase 4 of this unification (see .claude/PLAN.md) made this a REAL
+#     single-sourced load, not just a drift-guarded one. orders.js now adds
+#     a second Vite `?raw` import — of THIS file, via a sibling symlink
+#     (frontend/src/lib/command/grammars/order_fields.yaml) — and resolves
+#     each token/kwarg spec carrying a `$ref: <key>` marker against this
+#     catalog before handing specs to `_wireTokens`/`_wireKwargs`. The
+#     `qty` / `orderType` / `price` / `chase` tokens and the `product`
+#     kwarg in orders.yaml all carry `$ref` now.
+#
+#     orders.yaml's own `values:` lists stay in place alongside `$ref`
+#     (not replaced) because `order_type` and `product`'s CLI display
+#     order deliberately differs from this catalog's enum order (see the
+#     "Enum VALUE ORDER is preserved independently per layer" note below) —
+#     the CLI's order drives the CommandBar suggester's popup order, and
+#     overwriting it with the catalog's order would be a real behavior
+#     change. orders.js's resolver treats the catalog as authoritative for
+#     set MEMBERSHIP only: when a spec has both `$ref` and a local
+#     `values:`, it asserts set-equality and throws if they ever diverge,
+#     but always emits the local list (preserving the CLI's own order) once
+#     they agree; a spec with `$ref` and no local `values:` is populated
+#     straight from the catalog's `enum`. The pytest drift-guard
+#     (test_order_fields_catalog.py) still runs as an independent
+#     (Python-side) cross-check of the same invariant.
 #
 # Enum VALUE ORDER is preserved independently per layer where it already
 # differs (confirmed cosmetic — enums are used as membership/allow-lists,
 # never positionally, in either consumer):
 #   - order_type: place_order's params_schema uses [MARKET, LIMIT, SL, SL-M]
-#     (canonical here, since only the Python side resolves $ref); the CLI's
-#     orderType token keeps its own [LIMIT, SL, SL-M, MARKET] display order
-#     in orders.yaml, which drives the CommandBar suggester's popup order.
-#   - product: agent params_schema uses [MIS, CNC, NRML] (canonical here);
-#     the CLI's `product` kwarg keeps its own [MIS, NRML, CNC] order.
-#   Both are verified set-equal (not order-equal) to this file by the
-#   drift-guard test.
+#     (canonical membership here); the CLI's orderType token keeps its own
+#     [LIMIT, SL, SL-M, MARKET] display order in orders.yaml, which drives
+#     the CommandBar suggester's popup order — orders.js's $ref resolver
+#     preserves this local order on every resolve (see JS-side note above).
+#   - product: agent params_schema uses [MIS, CNC, NRML] (canonical
+#     membership here); the CLI's `product` kwarg keeps its own
+#     [MIS, NRML, CNC] order, preserved the same way.
+#   Both are verified set-equal (not order-equal) to this file — by
+#   orders.js's own `$ref` resolver at runtime (throws on divergence) AND,
+#   independently, by the Python-side drift-guard test.
 
 fields:
   qty:
@@ -117,8 +128,13 @@ fields:
 #
 # This mirror exists so the catalog documents the CLI's own LOW/MED/HIGH
 # table in one place too; it is cross-checked byte-for-byte against
-# orders.yaml's `chase_levels:` block by the drift-guard test, since the JS
-# loader cannot actually read this file (see header note above).
+# orders.yaml's `chase_levels:` block by the drift-guard test. NOTE: unlike
+# the `fields:` entries above, this mirror is deliberately NOT wired into
+# orders.js's `$ref` resolver — `chase_levels:` (band_ticks/retry_seconds)
+# is a different, CLI-only config from the live chase engine's
+# `chase_level` enum (see the block comment below), so there is no
+# `$ref`-style per-token resolution to do here; the drift-guard test
+# remains the sole cross-check for this specific mirror.
 chase_levels_cli_reference:
   LOW: { band_ticks: 8, retry_seconds: 60 }
   MED: { band_ticks: 4, retry_seconds: 30 }

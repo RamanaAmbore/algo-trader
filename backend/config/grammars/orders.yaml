@@ -10,21 +10,35 @@
 #
 # The resolved Kite tradingsymbol is shown in brackets at the end as a preview.
 #
-# ── Shared field catalog (Phase 2 of order/agent grammar unification) ──
+# ── Shared field catalog (Phase 2+4 of order/agent grammar unification) ──
 # This file is a SYMLINK (frontend/src/lib/command/grammars/orders.yaml →
 # this file) loaded client-side ONLY, via a Vite `?raw` import + a single
 # js-yaml parse (frontend/src/lib/command/grammars/orders.js). There is no
-# Python reader of this file and no cross-file YAML include mechanism
-# available to a `?raw` import, so the `qty` / `orderType` / `price` /
-# `chase` tokens and the `product` kwarg below stay fully self-contained —
-# their `values:` lists cannot literally reference
-# backend/config/grammars/order_fields.yaml the way place_order's
-# params_schema does. Each is annotated below with an inert `# catalog:`
-# comment (ignored by both js-yaml and PyYAML) naming the corresponding
-# order_fields.yaml entry; backend/tests/test_order_fields_catalog.py
-# drift-guards that the two never silently diverge. A real single load
-# would require a follow-up change to orders.js itself (out of scope —
-# frontend logic explicitly untouched this phase).
+# Python reader of this file.
+#
+# Phase 4 added a second SYMLINK + `?raw` import, for
+# backend/config/grammars/order_fields.yaml (the shared catalog), and a
+# genuine JS-side `$ref` resolver in orders.js — mirroring (in spirit, not
+# code) backend/api/algo/grammar.py's `_resolve_param_spec()`. The `qty` /
+# `orderType` / `price` / `chase` tokens below and the `product` kwarg
+# carry a `$ref: <key>` marker (first key under each spec, matching
+# agent_grammar.yaml's convention) pointing at the corresponding
+# order_fields.yaml entry.
+#
+# The local `values:` lists are DELIBERATELY KEPT alongside `$ref` rather
+# than removed — `order_type` and `product`'s catalog enum ORDER differs
+# from this file's CLI display order (see order_fields.yaml's header,
+# "Enum VALUE ORDER is preserved independently per layer"), and the CLI's
+# own order drives the CommandBar suggester's popup order; replacing it
+# with the catalog's order would be a real behavior change. orders.js's
+# resolver therefore treats the catalog as authoritative for MEMBERSHIP
+# only: when a spec has both `$ref` and local `values`, it asserts
+# set-equality and throws a loud error if they ever diverge, but always
+# emits the local `values` (preserving this file's own order) when they
+# agree. A spec with `$ref` and no local `values` (none exist today, but
+# future additions may) is populated straight from the catalog's `enum`.
+# backend/tests/test_order_fields_catalog.py's drift-guard tests still
+# apply as an independent (Python-side) cross-check of the same invariant.
 
 verbs:
   buy:
@@ -51,28 +65,33 @@ verbs:
         kind: expiry
         required: "if:instType==CALL|PUT|FUT"
         hint: "expiry date"
-      - role: qty                         # catalog: order_fields.qty
+      - role: qty
+        $ref: qty
         kind: qty
         required: true
         parse: int
         hint: "quantity (lots × lot_size for F&O)"
-      - role: orderType                   # catalog: order_fields.order_type
+      - role: orderType
+        $ref: order_type
         values: [LIMIT, SL, SL-M, MARKET]
         required: true
         parse: upper
         hint: "LIMIT | SL | SL-M | MARKET"
-      - role: price                       # catalog: order_fields.price (+ trigger_price, split in buildOrderPayload)
+      - role: price                       # (+ trigger_price, split in buildOrderPayload)
+        $ref: price
         kind: price
         required: "if:orderType!=MARKET"
         parse: float
         hint: "limit/trigger price"
-      - role: chase                       # catalog: order_fields.chase_level
+      - role: chase
+        $ref: chase_level
         values: [LOW, MED, HIGH]
         required: false
         parse: upper
         hint: "chase aggressiveness (non-MARKET only)"
     kwargs:
-      product:                            # catalog: order_fields.product
+      product:
+        $ref: product
         values: [MIS, NRML, CNC]
 
   sell:
@@ -99,28 +118,33 @@ verbs:
         kind: expiry
         required: "if:instType==CALL|PUT|FUT"
         hint: "expiry date"
-      - role: qty                         # catalog: order_fields.qty
+      - role: qty
+        $ref: qty
         kind: qty
         required: true
         parse: int
         hint: "quantity (lots × lot_size for F&O)"
-      - role: orderType                   # catalog: order_fields.order_type
+      - role: orderType
+        $ref: order_type
         values: [LIMIT, SL, SL-M, MARKET]
         required: true
         parse: upper
         hint: "LIMIT | SL | SL-M | MARKET"
-      - role: price                       # catalog: order_fields.price (+ trigger_price, split in buildOrderPayload)
+      - role: price                       # (+ trigger_price, split in buildOrderPayload)
+        $ref: price
         kind: price
         required: "if:orderType!=MARKET"
         parse: float
         hint: "limit/trigger price"
-      - role: chase                       # catalog: order_fields.chase_level
+      - role: chase
+        $ref: chase_level
         values: [LOW, MED, HIGH]
         required: false
         parse: upper
         hint: "chase aggressiveness (non-MARKET only)"
     kwargs:
-      product:                            # catalog: order_fields.product
+      product:
+        $ref: product
         values: [MIS, NRML, CNC]
 
   cancel:
@@ -137,11 +161,14 @@ verbs:
         kind: order_id
         required: true
     kwargs:
-      price:                              # catalog: order_fields.price
+      price:
+        $ref: price
         parse: float
-      qty:                                # catalog: order_fields.qty
+      qty:
+        $ref: qty
         parse: int
-      chase:                              # catalog: order_fields.chase_level
+      chase:
+        $ref: chase_level
         values: [LOW, MED, HIGH]
         parse: upper
 

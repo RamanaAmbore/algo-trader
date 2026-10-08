@@ -11,6 +11,7 @@
 //   setQuoteLoadedCallback(fn)— register callback for async quote completion
 
 import yamlText from './orders.yaml?raw';
+import orderFieldsYamlText from './order_fields.yaml?raw';
 import yaml from 'js-yaml';
 
 import {
@@ -21,6 +22,16 @@ import {
 import { suggestAccounts } from '$lib/data/accounts';
 
 const GRAMMAR_DOC = /** @type {any} */ (yaml.load(yamlText));
+
+// Shared order-field catalog (Phase 4 of the order/agent grammar
+// unification — see backend/config/grammars/order_fields.yaml's header).
+// Loaded via a sibling symlink + a second `?raw` import, mirroring the
+// orders.yaml pattern above. Resolved against any `$ref` marker on a
+// orders.yaml token/kwarg spec by `_resolveOrderFieldRef` below, BEFORE
+// `_wireTokens`/`_wireKwargs` build their output.
+const ORDER_FIELDS_DOC = /** @type {any} */ (yaml.load(orderFieldsYamlText));
+const ORDER_FIELDS = (ORDER_FIELDS_DOC && ORDER_FIELDS_DOC.fields) || {};
+
 const INST_TYPE_MAP = { CALL: 'CE', PUT: 'PE', FUT: 'FUT', EQ: 'EQ' };
 const INST_TYPE_REVERSE = { CE: 'CALL', PE: 'PUT', FUT: 'FUT', EQ: 'EQ' };
 
@@ -366,6 +377,85 @@ const _PARSE_MAP = {
   str: String,
 };
 
+// ---------------------------------------------------------------------------
+// order_fields.yaml `$ref` resolution (Phase 4) — runs BEFORE _wireTokens/
+// _wireKwargs build their output. Mirrors backend/api/algo/grammar.py's
+// `_resolve_param_spec()` in spirit: a spec without `$ref` passes through
+// untouched; a spec WITH `$ref` is resolved against the catalog.
+//
+// Unlike the Python side (whose specs never carry their own `enum` — the
+// catalog is the only source), orders.yaml's `orderType`/`chase`/`product`
+// specs already carry a local `values:` list, and for `orderType`/
+// `product` that list's ORDER deliberately differs from the catalog's
+// `enum` order (CLI popup display order vs. catalog canonical order — see
+// order_fields.yaml's header). So this resolver treats the catalog as
+// authoritative for set MEMBERSHIP only:
+//   - local `values` present  → assert set-equality against catalog.enum;
+//     throw a loud error on divergence; otherwise keep the LOCAL array
+//     (and its order) untouched.
+//   - local `values` absent, catalog has an `enum` → populate `values`
+//     straight from catalog.enum (no local order to preserve).
+//   - catalog field has no `enum` (e.g. qty/price are type: number) →
+//     nothing to merge into `values`; spec passes through otherwise
+//     unchanged.
+// An unknown `$ref` key throws immediately (mirrors Python's KeyError),
+// at module load time since `_wiredVerbs` below is also built eagerly.
+// ---------------------------------------------------------------------------
+
+function _valuesSetEqual(a, b) {
+  if (a.length !== b.length) return false;
+  const sa = new Set(a.map(v => String(v).toUpperCase()));
+  const sb = new Set(b.map(v => String(v).toUpperCase()));
+  if (sa.size !== sb.size) return false;
+  for (const v of sa) if (!sb.has(v)) return false;
+  return true;
+}
+
+/** Resolve one orders.yaml token/kwarg spec against order_fields.yaml.
+ *  Returns a NEW object (never mutates the parsed GRAMMAR_DOC); specs
+ *  without `$ref` pass through by identity (zero behavior change). */
+function _resolveOrderFieldRef(spec) {
+  if (!spec || typeof spec !== 'object' || !spec.$ref) return spec;
+  const refKey = spec.$ref;
+  const catalogEntry = ORDER_FIELDS[refKey];
+  if (!catalogEntry) {
+    throw new Error(
+      `orders.yaml references order_fields.yaml field "${refKey}", which does not exist`
+    );
+  }
+  const resolved = { ...spec };
+  if (catalogEntry.type === 'enum' && Array.isArray(catalogEntry.enum)) {
+    if (Array.isArray(resolved.values)) {
+      if (!_valuesSetEqual(resolved.values, catalogEntry.enum)) {
+        throw new Error(
+          `orders.yaml $ref:${refKey} values [${resolved.values}] diverged from ` +
+          `order_fields.yaml's "${refKey}" enum [${catalogEntry.enum}] — update one to match the other`
+        );
+      }
+      // Local order wins (CLI popup display order) — membership already
+      // verified equal above.
+    } else {
+      resolved.values = catalogEntry.enum;
+    }
+  }
+  return resolved;
+}
+
+/** Resolve every spec in a tokens array ahead of `_wireTokens`. */
+function _resolveTokenSpecs(tokenSpecs) {
+  return (tokenSpecs || []).map(_resolveOrderFieldRef);
+}
+
+/** Resolve every spec in a kwargs map ahead of `_wireKwargs`. */
+function _resolveKwargSpecs(kwargSpecs) {
+  if (!kwargSpecs) return kwargSpecs;
+  const out = {};
+  for (const [key, spec] of Object.entries(kwargSpecs)) {
+    out[key] = _resolveOrderFieldRef(spec);
+  }
+  return out;
+}
+
 function _wireTokens(tokenSpecs) {
   return (tokenSpecs || []).map(spec => ({
     role: spec.role,
@@ -395,8 +485,8 @@ function _wireKwargs(kwargSpecs) {
 const _wiredVerbs = {};
 for (const [name, def] of Object.entries(GRAMMAR_DOC.verbs)) {
   _wiredVerbs[name] = {
-    tokens: _wireTokens(def.tokens),
-    kwargs: _wireKwargs(def.kwargs),
+    tokens: _wireTokens(_resolveTokenSpecs(def.tokens)),
+    kwargs: _wireKwargs(_resolveKwargSpecs(def.kwargs)),
   };
 }
 

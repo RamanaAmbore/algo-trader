@@ -368,10 +368,43 @@ class TestOrdersYamlDriftGuard:
         """orders.yaml's own `chase_levels:` (band_ticks/retry_seconds) —
         a DIFFERENT config from the live chase engine's chase_level tiers
         — must stay byte-identical to order_fields.yaml's
-        `chase_levels_cli_reference` mirror, since the JS loader can't
-        actually read the shared file."""
+        `chase_levels_cli_reference` mirror. This mirror is deliberately
+        NOT wired into orders.js's `$ref` resolver (see order_fields.yaml's
+        header) — the drift-guard test remains its sole cross-check."""
         doc = _load_orders_yaml()
         assert doc["chase_levels"] == grammar._ORDER_FIELDS_CATALOG["chase_levels_cli_reference"]
+
+    def test_orders_yaml_actually_uses_ref_for_shared_fields(self):
+        """Phase 4 — guards against someone reverting orders.yaml's buy/
+        sell/modify entries back to bare literals (dropping the `$ref`
+        marker) while leaving this test suite's `values:`-based drift
+        guards otherwise green — mirrors
+        test_agent_grammar_yaml_actually_uses_ref_for_shared_fields above,
+        for the frontend CLI grammar's own entries. orders.js's runtime
+        resolver (frontend/src/lib/command/grammars/orders.js) is not
+        executed by pytest; this only proves the raw YAML still carries
+        the marker it depends on."""
+        doc = _load_orders_yaml()
+        for verb in ("buy", "sell"):
+            tokens = {t["role"]: t for t in doc["verbs"][verb]["tokens"]}
+            assert tokens["qty"].get("$ref") == "qty"
+            assert tokens["orderType"].get("$ref") == "order_type"
+            assert tokens["price"].get("$ref") == "price"
+            assert tokens["chase"].get("$ref") == "chase_level"
+            assert doc["verbs"][verb]["kwargs"]["product"].get("$ref") == "product"
+            # Fields with no catalog equivalent stay local-only — no $ref.
+            for role in ("account", "instType", "symbol", "strike", "expiry"):
+                assert "$ref" not in tokens[role]
+
+        modify_kwargs = doc["verbs"]["modify"]["kwargs"]
+        assert modify_kwargs["price"].get("$ref") == "price"
+        assert modify_kwargs["qty"].get("$ref") == "qty"
+        assert modify_kwargs["chase"].get("$ref") == "chase_level"
+
+        cancel_tokens = {t["role"]: t for t in doc["verbs"]["cancel"]["tokens"]}
+        modify_tokens = {t["role"]: t for t in doc["verbs"]["modify"]["tokens"]}
+        assert "$ref" not in cancel_tokens["order_id"]
+        assert "$ref" not in modify_tokens["order_id"]
 
 
 # Frozen inline projection of orders.yaml's wired shape (the exact subset
