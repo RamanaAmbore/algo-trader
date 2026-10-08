@@ -88,7 +88,9 @@
   // concept. Setting paper_trading_mode=True server-side also clears
   // execution.shadow_mode (mirrors the navbar execution-mode combobox's
   // own paper-target semantics), so this panel can't desync the two.
-  /** @type {{paper_trading_mode:boolean, default_agent_trade_mode:string}|null} */
+  /** @type {{paper_trading_mode:boolean, default_agent_trade_mode:string,
+   *          expiry_close_hold_enabled:boolean, template_exit_hold_enabled:boolean,
+   *          expiry_close_lead_minutes_mcx:number, expiry_close_lead_minutes_nfo:number}|null} */
   let globalSwitches = $state(null);
   async function loadGlobalSwitches() {
     try { globalSwitches = await fetchGlobalSwitches(); } catch (_) { /* keep last-known */ }
@@ -129,6 +131,104 @@
       globalSwitches = updated;
       toast.success(`paper_trading_mode → ${next}`);
     } catch (e) { toast.error(`Update failed: ${e.message}`); }
+  }
+
+  /** expiry_close_hold_enabled / template_exit_hold_enabled are review-hold
+   *  gates (default true = safe). Turning either OFF lets automated orders
+   *  fire/attach with zero operator review — a real-money-risk action, so
+   *  it gets the same danger-confirm treatment as paper_trading_mode.
+   *  Turning a hold back ON is the safe direction and needs no confirm. */
+  async function toggleExpiryCloseHold() {
+    if (!globalSwitches) return;
+    const next = !globalSwitches.expiry_close_hold_enabled;
+    if (!next) {
+      const ok = await _globalSwitchConfirmRef?.ask({
+        title: 'Disable expiry-close hold?',
+        message: '⚠ Expiry closes will fire automatically with no review.',
+        danger: true,
+        confirmLabel: 'Disable hold',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+    }
+    try {
+      const updated = await updateGlobalSwitches({ expiry_close_hold_enabled: next });
+      globalSwitches = updated;
+      toast.success(`expiry_close_hold_enabled → ${next}`);
+      // The generic settings catalog below shows the same underlying
+      // flag under its storage key (hold.expiry_close_released, inverted
+      // polarity) — refresh it so the two displays never diverge.
+      await load();
+    } catch (e) { toast.error(`Update failed: ${e.message}`); }
+  }
+
+  async function toggleTemplateExitHold() {
+    if (!globalSwitches) return;
+    const next = !globalSwitches.template_exit_hold_enabled;
+    if (!next) {
+      const ok = await _globalSwitchConfirmRef?.ask({
+        title: 'Disable template exit hold?',
+        message: '⚠ Template exits will attach automatically with no review.',
+        danger: true,
+        confirmLabel: 'Disable hold',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+    }
+    try {
+      const updated = await updateGlobalSwitches({ template_exit_hold_enabled: next });
+      globalSwitches = updated;
+      toast.success(`template_exit_hold_enabled → ${next}`);
+      // Same generic-catalog sync as toggleExpiryCloseHold above.
+      await load();
+    } catch (e) { toast.error(`Update failed: ${e.message}`); }
+  }
+
+  /** Clamps + validates a lead-time field, resetting the DOM input back to
+   *  the last-known-good value on any rejection (empty string, non-integer,
+   *  or out-of-range) — `Number('')` is 0, which would otherwise silently
+   *  PATCH a zero lead time on this real-money hold gate. */
+  function _validLeadMinutes(/** @type {string} */ raw, /** @type {number} */ max) {
+    if (raw === '' || raw == null) return null;
+    const n = Number(raw);
+    if (!Number.isInteger(n) || n < 0 || n > max) return null;
+    return n;
+  }
+
+  async function saveExpiryCloseLeadMcx(/** @type {HTMLInputElement} */ el) {
+    const n = _validLeadMinutes(el.value, 180);
+    if (n == null) {
+      toast.error('Lead must be 0–180 min');
+      el.value = String(globalSwitches?.expiry_close_lead_minutes_mcx ?? 30);
+      return;
+    }
+    try {
+      const updated = await updateGlobalSwitches({ expiry_close_lead_minutes_mcx: n });
+      globalSwitches = updated;
+      toast.success(`expiry_close_lead_minutes_mcx → ${n}`);
+      await load();
+    } catch (e) {
+      toast.error(`Update failed: ${e.message}`);
+      el.value = String(globalSwitches?.expiry_close_lead_minutes_mcx ?? 30);
+    }
+  }
+
+  async function saveExpiryCloseLeadNfo(/** @type {HTMLInputElement} */ el) {
+    const n = _validLeadMinutes(el.value, 120);
+    if (n == null) {
+      toast.error('Lead must be 0–120 min');
+      el.value = String(globalSwitches?.expiry_close_lead_minutes_nfo ?? 15);
+      return;
+    }
+    try {
+      const updated = await updateGlobalSwitches({ expiry_close_lead_minutes_nfo: n });
+      globalSwitches = updated;
+      toast.success(`expiry_close_lead_minutes_nfo → ${n}`);
+      await load();
+    } catch (e) {
+      toast.error(`Update failed: ${e.message}`);
+      el.value = String(globalSwitches?.expiry_close_lead_minutes_nfo ?? 15);
+    }
   }
 
   // ── Hedge proxy CRUD (pair-only) ───────────────────────────────────
@@ -463,7 +563,7 @@
   <div class="settings-row py-1.5">
     <div class="flex items-center justify-between gap-2 flex-wrap">
       <div>
-        <span class="font-mono text-[#7dd3fc]">paper_trading_mode</span>
+        <span class="font-mono text-[var(--algo-sky)]">paper_trading_mode</span>
         <div class="text-[length:var(--fs-xs)] text-red-300 font-semibold mt-0.5">
           ⚠ Affects every account, prod-wide — flips real-money execution.
         </div>
@@ -471,7 +571,7 @@
       <div class="flex items-center gap-2">
         <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
           {globalSwitches == null ? 'opacity-50'
-            : globalSwitches.paper_trading_mode ? 'bg-emerald-500/15 text-emerald-300' : 'bg-red-500/20 text-red-300'}">
+            : globalSwitches.paper_trading_mode ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
           {globalSwitches == null ? '…' : (globalSwitches.paper_trading_mode ? 'PAPER' : 'LIVE')}
         </span>
         <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
@@ -488,7 +588,7 @@
   </div>
   <div class="settings-row py-1.5">
     <div class="flex items-center justify-between gap-2 flex-wrap">
-      <span class="font-mono text-[#7dd3fc]">default_agent_trade_mode</span>
+      <span class="font-mono text-[var(--algo-sky)]">default_agent_trade_mode</span>
       <div class="flex items-center gap-2 w-40">
         <Select ariaLabel="default_agent_trade_mode" value={globalSwitches?.default_agent_trade_mode || 'paper'}
           onValueChange={(v) => saveDefaultAgentTradeMode(String(v))}
@@ -500,6 +600,84 @@
       trade_mode (on /automation) is unaffected. Also mirrored below under the
       <span class="font-mono">execution</span> category (same key, generic settings editor).
     </p>
+  </div>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 flex-wrap">
+        <span>Hold expiry-close orders for review</span>
+        <InfoHint popup panel title="expiry_close_hold_enabled" text="ON (default) holds automated expiry-close orders in the Held Orders card until you click Release. OFF lets them fire automatically with no review." />
+        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">expiry_close_hold_enabled</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
+          {globalSwitches == null ? 'opacity-50'
+            : globalSwitches.expiry_close_hold_enabled ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
+          {globalSwitches == null ? '…' : (globalSwitches.expiry_close_hold_enabled ? 'HELD' : 'AUTO')}
+        </span>
+        <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
+          disabled={globalSwitches == null}
+          onclick={toggleExpiryCloseHold}>
+          Flip to {globalSwitches?.expiry_close_hold_enabled ? 'AUTO' : 'HELD'}
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 flex-wrap">
+        <span>Hold template exit GTTs after fill</span>
+        <InfoHint popup panel title="template_exit_hold_enabled" text="ON (default) holds Bracket/template exit GTTs after the parent fills, until you click Release. OFF lets them attach automatically with no review." />
+        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">template_exit_hold_enabled</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
+          {globalSwitches == null ? 'opacity-50'
+            : globalSwitches.template_exit_hold_enabled ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
+          {globalSwitches == null ? '…' : (globalSwitches.template_exit_hold_enabled ? 'HELD' : 'AUTO')}
+        </span>
+        <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
+          disabled={globalSwitches == null}
+          onclick={toggleTemplateExitHold}>
+          Flip to {globalSwitches?.template_exit_hold_enabled ? 'AUTO' : 'HELD'}
+        </button>
+      </div>
+    </div>
+  </div>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 flex-wrap">
+        <span>MCX expiry-close lead time (minutes)</span>
+        <InfoHint popup panel title="expiry_close_lead_minutes_mcx" text="Minutes before MCX close that an expiry-close hold is created. Range 0–180, default 30." />
+        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">expiry_close_lead_minutes_mcx</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <input type="number" aria-label="MCX expiry-close lead time (minutes)"
+               class="field-input w-20 py-0.5"
+               value={globalSwitches?.expiry_close_lead_minutes_mcx ?? 30}
+               min={0} max={180} step={1}
+               disabled={globalSwitches == null}
+               onchange={(e) => saveExpiryCloseLeadMcx(e.currentTarget)} />
+        <span class="text-[length:var(--fs-xs)] text-[var(--c-muted)]">min</span>
+      </div>
+    </div>
+  </div>
+  <div class="settings-row py-1.5">
+    <div class="flex items-center justify-between gap-2 flex-wrap">
+      <div class="flex items-baseline gap-2 flex-wrap">
+        <span>NFO expiry-close lead time (minutes)</span>
+        <InfoHint popup panel title="expiry_close_lead_minutes_nfo" text="Minutes before NFO close that an expiry-close hold is created. Range 0–120, default 15." />
+        <span class="font-mono text-[length:var(--fs-2xs)] opacity-50">expiry_close_lead_minutes_nfo</span>
+      </div>
+      <div class="flex items-center gap-2">
+        <input type="number" aria-label="NFO expiry-close lead time (minutes)"
+               class="field-input w-20 py-0.5"
+               value={globalSwitches?.expiry_close_lead_minutes_nfo ?? 15}
+               min={0} max={120} step={1}
+               disabled={globalSwitches == null}
+               onchange={(e) => saveExpiryCloseLeadNfo(e.currentTarget)} />
+        <span class="text-[length:var(--fs-xs)] text-[var(--c-muted)]">min</span>
+      </div>
+    </div>
   </div>
 </section>
 
