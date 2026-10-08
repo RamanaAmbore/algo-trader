@@ -143,7 +143,10 @@ test.describe('OrderBook — FILLED predicate + mobile status-bar overflow', () 
   });
 
   for (const vw of [320, 375]) {
-    test(`status-bar 5 chips fit without horizontal page overflow at ${vw}px width`, async ({ page }) => {
+    // 6, not 5 (audit fix, 2026-10) — the "Held/Attn" chip (HELD /
+    // CANCEL_FAILED) was added to .ob-status-bar; see
+    // order_book_held_attention_chip.spec.js for the chip's own coverage.
+    test(`status-bar 6 chips fit without horizontal page overflow at ${vw}px width`, async ({ page }) => {
       await page.setViewportSize({ width: vw, height: 720 });
       await authOnce(page);
       await page.clock.setFixedTime(new Date(_NOW_ISO));
@@ -155,7 +158,7 @@ test.describe('OrderBook — FILLED predicate + mobile status-bar overflow', () 
       await page.waitForTimeout(600);
 
       const chips = page.locator('.ob-status-bar .ob-sc');
-      await expect(chips).toHaveCount(5);
+      await expect(chips).toHaveCount(6);
 
       // The document must not scroll horizontally past the viewport —
       // a plain `1fr` track previously forced the grid wider than the
@@ -169,7 +172,7 @@ test.describe('OrderBook — FILLED predicate + mobile status-bar overflow', () 
       // confirms the chips shrank to fit rather than merely being clipped
       // by an ancestor's overflow:hidden.
       const barBox = await page.locator('.ob-status-bar').boundingBox();
-      for (let i = 0; i < 5; i++) {
+      for (let i = 0; i < 6; i++) {
         const box = await chips.nth(i).boundingBox();
         expect(box.x + box.width).toBeLessThanOrEqual(barBox.x + barBox.width + 1);
       }

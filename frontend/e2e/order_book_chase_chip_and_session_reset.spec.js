@@ -178,8 +178,10 @@ test.describe('OrderBook — Chase chip + session-boundary reset', () => {
     // Let the initial _loadOrders() resolve.
     await page.waitForTimeout(600);
 
+    // 6, not 5 (audit fix, 2026-10) — the "Held/Attn" chip (HELD /
+    // CANCEL_FAILED) was added; see order_book_held_attention_chip.spec.js.
     const chips = page.locator('.ob-status-bar .ob-sc');
-    await expect(chips).toHaveCount(5);
+    await expect(chips).toHaveCount(6);
 
     // No "All" chip anywhere in the strip.
     await expect(page.locator('.ob-status-bar .ob-sc-l', { hasText: /^All$/ })).toHaveCount(0);
