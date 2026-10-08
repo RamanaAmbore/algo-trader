@@ -17,6 +17,9 @@ Module layout (split from the original 2580-line file):
 """
 
 import asyncio
+import importlib
+import sys
+from typing import NamedTuple
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -161,69 +164,102 @@ def _exchange_gate_passes(action_type: str, params: dict, context: dict) -> tupl
     )
 
 
-async def _dispatch_live_action(agent, action_type: str, params: dict, context: dict) -> None:
-    """Route a live-mode action to its broker handler.
+class _HandlerRef(NamedTuple):
+    """Deferred (module, attr) reference to an action handler.
 
-    All imports are lazy (inside function body) to preserve the existing
-    circular-import avoidance pattern from the original execute() body.
-    Exceptions bubble to the caller (execute's outer try/except).
+    Registries store NAMES, not function objects, and `_resolve_handler`
+    re-resolves the attribute off the live module on every single call
+    (never cached). This is deliberate: every existing dispatch test
+    patches a handler via `unittest.mock.patch("<module>.<attr>", ...)`
+    — the same pattern the original per-call
+    `from <module> import <attr>` lazy-import satisfied. Binding the
+    function object into the registry once at build time would capture
+    a stale pre-patch reference that `patch()` could no longer reach,
+    silently breaking those tests (and any future one written the same
+    way). `swallow_errors` is only meaningful for `_NOOP_ACTION_HANDLERS`
+    entries — see `_al_run_noop_handler`.
     """
-    from backend.api.algo.actions_live import (
-        _action_place_order, _action_live_close_position,
-        _action_live_modify_order, _action_live_cancel_order,
-        _action_live_cancel_all_orders, _action_live_chase_close_positions,
-        _action_live_expiry_auto_close,
-    )
-    if action_type in ("chase_close", "chase_close_positions"):
-        await _action_live_chase_close_positions(agent, context, params)
-    elif action_type == "place_order":
-        await _action_place_order(agent, context, params)
-    elif action_type == "close_position":
-        await _action_live_close_position(agent, context, params)
-    elif action_type == "modify_order":
-        await _action_live_modify_order(agent, context, params)
-    elif action_type == "cancel_order":
-        await _action_live_cancel_order(agent, context, params)
-    elif action_type == "cancel_all_orders":
-        await _action_live_cancel_all_orders(agent, context, params)
-    elif action_type == "expiry_auto_close":
-        await _action_live_expiry_auto_close(agent, context, params)
-    else:
+    module: str
+    attr: str
+    swallow_errors: bool = False
+
+
+def _resolve_handler(ref: _HandlerRef):
+    """Resolve a `_HandlerRef` to its current callable, read fresh each call."""
+    mod = sys.modules.get(ref.module) or importlib.import_module(ref.module)
+    return getattr(mod, ref.attr)
+
+
+# action_type → live (mode-3) broker handler. `chase_close` and
+# `chase_close_positions` are a deliberate alias — both route to the
+# same positions-sweep handler.
+_LIVE_ACTION_HANDLERS: dict[str, _HandlerRef] = {
+    "place_order":           _HandlerRef("backend.api.algo.actions_live", "_action_place_order"),
+    "close_position":        _HandlerRef("backend.api.algo.actions_live", "_action_live_close_position"),
+    "modify_order":          _HandlerRef("backend.api.algo.actions_live", "_action_live_modify_order"),
+    "cancel_order":          _HandlerRef("backend.api.algo.actions_live", "_action_live_cancel_order"),
+    "cancel_all_orders":     _HandlerRef("backend.api.algo.actions_live", "_action_live_cancel_all_orders"),
+    "chase_close":           _HandlerRef("backend.api.algo.actions_live", "_action_live_chase_close_positions"),
+    "chase_close_positions": _HandlerRef("backend.api.algo.actions_live", "_action_live_chase_close_positions"),
+    "expiry_auto_close":     _HandlerRef("backend.api.algo.actions_live", "_action_live_expiry_auto_close"),
+}
+
+
+# action_type → noop (non-broker) handler. `swallow_errors=False` for
+# `send_summary` / `chase_close` preserves their EXISTING un-wrapped
+# behavior (an exception propagates out of `_al_run_noop_handler` to
+# `execute()`'s outer try/except → `_al_action_failed_audit`).
+# `swallow_errors=True` for the other four preserves their existing
+# wrapped behavior (exception is logged + swallowed, handler returns
+# False, `execute()` continues without logging success or failure).
+_NOOP_ACTION_HANDLERS: dict[str, _HandlerRef] = {
+    "send_summary":     _HandlerRef("backend.api.algo.actions_live", "_action_send_summary", False),
+    # Safety net — chase_close is in BROKER_ACTIONS; reaching here means
+    # BROKER_ACTIONS is misconfigured.
+    "chase_close":      _HandlerRef("backend.api.algo.actions_live", "_action_chase_close", False),
+    "monitor_order":    _HandlerRef(__name__, "monitor_order", True),
+    "deactivate_agent": _HandlerRef(__name__, "deactivate_agent", True),
+    "set_flag":         _HandlerRef(__name__, "set_flag", True),
+    "emit_log":         _HandlerRef(__name__, "emit_log", True),
+}
+
+
+async def _dispatch_live_action(agent, action_type: str, params: dict, context: dict) -> None:
+    """Route a live-mode action to its broker handler via `_LIVE_ACTION_HANDLERS`.
+
+    Handler names are resolved fresh off their module on every call (see
+    `_resolve_handler`), preserving the original lazy-import-per-call
+    semantics. Exceptions bubble to the caller (execute's outer
+    try/except).
+    """
+    ref = _LIVE_ACTION_HANDLERS.get(action_type)
+    if ref is None:
         logger.warning(f"Agent [{agent.slug}]: live action '{action_type}' has no wired handler")
+        return
+    handler = _resolve_handler(ref)
+    await handler(agent, context, params)
 
 
 async def _al_run_noop_handler(
     agent, action_type: str, params: dict, context: dict,
 ) -> bool:
-    """Execute a single noop (non-broker) action handler.
+    """Execute a single noop (non-broker) action handler via `_NOOP_ACTION_HANDLERS`.
 
-    Returns True on success, False on failure.  Swallows exceptions and
-    logs them so the outer execute() loop can `continue` on False.
+    Returns True on success, False on failure. `send_summary`/`chase_close`
+    (ref.swallow_errors=False) are NOT wrapped — an exception propagates
+    to the caller, matching their original un-wrapped behavior. The
+    remaining handlers (swallow_errors=True) wrap individually, logging
+    and returning False on failure, so the outer execute() loop can
+    `continue`.
     """
-    from backend.api.algo.actions_live import (
-        _action_send_summary, _action_chase_close,
-    )
-    # Non-raising handlers
-    if action_type == "send_summary":
-        await _action_send_summary(context, params)
-        return True
-    if action_type == "chase_close":
-        # Safety net — chase_close is in BROKER_ACTIONS; reaching here
-        # means BROKER_ACTIONS is misconfigured.
-        await _action_chase_close(context, params)
-        return True
-
-    # Handlers that may raise — wrap individually
-    _raising: dict[str, object] = {
-        "monitor_order":    monitor_order,
-        "deactivate_agent": deactivate_agent,
-        "set_flag":         set_flag,
-        "emit_log":         emit_log,
-    }
-    handler = _raising.get(action_type)
-    if handler is None:
+    ref = _NOOP_ACTION_HANDLERS.get(action_type)
+    if ref is None:
         logger.warning(f"Agent [{agent.slug}]: unknown action type '{action_type}'")
         return False
+    handler = _resolve_handler(ref)
+    if not ref.swallow_errors:
+        await handler(context, params)
+        return True
     try:
         await handler(context, params)
         return True

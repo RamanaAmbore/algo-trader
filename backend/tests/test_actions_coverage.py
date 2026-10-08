@@ -615,3 +615,306 @@ async def test_emit_log_with_level():
     result = await emit_log({}, {"level": "warning", "message": "test warning"})
     assert result["level"] == "warning"
     assert result["message"] == "test warning"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3 — registry-driven dispatch (_LIVE_ACTION_HANDLERS / _NOOP_ACTION_HANDLERS)
+#
+# These tests prove the dict-lookup registries added in actions.py route to
+# the IDENTICAL handler, with IDENTICAL error-handling semantics, as the
+# hardcoded if/elif chains they replaced.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _mk_agent(slug="test-agent", id_=1):
+    agent = MagicMock()
+    agent.slug = slug
+    agent.id = id_
+    return agent
+
+
+# ── Live dispatch — every registered action_type reaches its handler ──────
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_place_order():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_place_order", new=mock):
+        await _dispatch_live_action(agent, "place_order", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_close_position():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_close_position", new=mock):
+        await _dispatch_live_action(agent, "close_position", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_modify_order():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_modify_order", new=mock):
+        await _dispatch_live_action(agent, "modify_order", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_cancel_order():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_cancel_order", new=mock):
+        await _dispatch_live_action(agent, "cancel_order", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_cancel_all_orders():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_cancel_all_orders", new=mock):
+        await _dispatch_live_action(agent, "cancel_all_orders", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_expiry_auto_close():
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_expiry_auto_close", new=mock):
+        await _dispatch_live_action(agent, "expiry_auto_close", {"a": 1}, {"c": 2})
+    mock.assert_called_once_with(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_chase_close_alias():
+    """chase_close and chase_close_positions both route to the SAME handler."""
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_live_chase_close_positions", new=mock):
+        await _dispatch_live_action(agent, "chase_close", {"a": 1}, {"c": 2})
+        await _dispatch_live_action(agent, "chase_close_positions", {"a": 1}, {"c": 2})
+    assert mock.await_count == 2
+    mock.assert_any_call(agent, {"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_dispatch_live_action_unregistered_type_warns_no_handler_call():
+    """Unregistered action_type: no handler invoked, warning logged, no raise."""
+    from backend.api.algo.actions import _dispatch_live_action
+
+    agent = _mk_agent(slug="warn-agent")
+    with patch("backend.api.algo.actions.logger") as mock_logger:
+        await _dispatch_live_action(agent, "totally_bogus_type", {}, {})
+    mock_logger.warning.assert_called_once_with(
+        "Agent [warn-agent]: live action 'totally_bogus_type' has no wired handler"
+    )
+
+
+# ── Noop dispatch — every registered action_type reaches its handler ──────
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_monitor_order():
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions.monitor_order", new=mock):
+        ok = await _al_run_noop_handler(agent, "monitor_order", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_deactivate_agent():
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions.deactivate_agent", new=mock):
+        ok = await _al_run_noop_handler(agent, "deactivate_agent", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_set_flag():
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions.set_flag", new=mock):
+        ok = await _al_run_noop_handler(agent, "set_flag", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_emit_log():
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions.emit_log", new=mock):
+        ok = await _al_run_noop_handler(agent, "emit_log", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_send_summary():
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_send_summary", new=mock):
+        ok = await _al_run_noop_handler(agent, "send_summary", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_chase_close():
+    """chase_close is a safety-net noop entry (BROKER_ACTIONS normally
+    routes it to live/paper/sim/replay first) — must still dispatch to
+    _action_chase_close when reached as a noop."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    mock = AsyncMock()
+    with patch("backend.api.algo.actions_live._action_chase_close", new=mock):
+        ok = await _al_run_noop_handler(agent, "chase_close", {"a": 1}, {"c": 2})
+    assert ok is True
+    mock.assert_called_once_with({"c": 2}, {"a": 1})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_unregistered_type_warns_and_returns_false():
+    """Unregistered action_type: no handler invoked, warning logged, returns False."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent(slug="warn-agent")
+    with patch("backend.api.algo.actions.logger") as mock_logger:
+        ok = await _al_run_noop_handler(agent, "totally_bogus_type", {}, {})
+    assert ok is False
+    mock_logger.warning.assert_called_once_with(
+        "Agent [warn-agent]: unknown action type 'totally_bogus_type'"
+    )
+
+
+# ── Asymmetric exception-handling: send_summary/chase_close NEVER wrapped,
+#    the other four handlers always are ──────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_send_summary_exception_propagates():
+    """send_summary raising must propagate (NOT be swallowed) — matches
+    the original un-wrapped early-return behavior."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    boom = RuntimeError("summary boom")
+    with patch("backend.api.algo.actions_live._action_send_summary",
+               new=AsyncMock(side_effect=boom)):
+        with pytest.raises(RuntimeError, match="summary boom"):
+            await _al_run_noop_handler(agent, "send_summary", {}, {})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_chase_close_exception_propagates():
+    """chase_close (noop safety-net path) raising must propagate, not be
+    swallowed — matches the original un-wrapped early-return behavior."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    boom = RuntimeError("chase boom")
+    with patch("backend.api.algo.actions_live._action_chase_close",
+               new=AsyncMock(side_effect=boom)):
+        with pytest.raises(RuntimeError, match="chase boom"):
+            await _al_run_noop_handler(agent, "chase_close", {}, {})
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_emit_log_exception_swallowed():
+    """emit_log (a `_raising`-dict handler) raising must be swallowed and
+    logged, returning False — matches the original wrapped try/except."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    boom = RuntimeError("emit_log boom")
+    with patch("backend.api.algo.actions.emit_log", new=AsyncMock(side_effect=boom)):
+        ok = await _al_run_noop_handler(agent, "emit_log", {}, {})
+    assert ok is False
+
+
+@pytest.mark.asyncio
+async def test_al_run_noop_handler_monitor_order_exception_swallowed():
+    """monitor_order raising must be swallowed and logged, returning False."""
+    from backend.api.algo.actions import _al_run_noop_handler
+
+    agent = _mk_agent()
+    boom = RuntimeError("monitor boom")
+    with patch("backend.api.algo.actions.monitor_order", new=AsyncMock(side_effect=boom)):
+        ok = await _al_run_noop_handler(agent, "monitor_order", {}, {})
+    assert ok is False
+
+
+# ── End-to-end through execute(): the asymmetry is visible to the caller ──
+
+@pytest.mark.asyncio
+async def test_execute_send_summary_failure_triggers_action_failed_audit():
+    """Through execute(): a send_summary exception must bubble all the way
+    out to the outer try/except → _al_action_failed_audit (NOT swallowed
+    inside the noop handler, unlike emit_log/monitor_order/etc.)."""
+    from backend.api.algo.actions import execute
+
+    agent = _mk_agent()
+    actions = [{"type": "send_summary", "params": {}}]
+    context = {}
+
+    with patch("backend.api.algo.actions._resolve_mode", return_value="noop"), \
+         patch("backend.api.algo.actions_live._action_send_summary",
+               new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()) as mock_success, \
+         patch("backend.api.algo.actions._al_action_failed_audit", new=AsyncMock()) as mock_audit:
+        await execute(agent, actions, context)
+
+    mock_audit.assert_called_once()
+    mock_success.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_execute_emit_log_failure_does_not_trigger_action_failed_audit():
+    """Through execute(): an emit_log exception is swallowed inside the
+    noop handler (returns False) — execute() `continue`s without calling
+    _log_action_success OR _al_action_failed_audit."""
+    from backend.api.algo.actions import execute
+
+    agent = _mk_agent()
+    actions = [{"type": "emit_log", "params": {"message": "x"}}]
+    context = {}
+
+    with patch("backend.api.algo.actions._resolve_mode", return_value="noop"), \
+         patch("backend.api.algo.actions.emit_log",
+               new=AsyncMock(side_effect=RuntimeError("boom"))), \
+         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()) as mock_success, \
+         patch("backend.api.algo.actions._al_action_failed_audit", new=AsyncMock()) as mock_audit:
+        await execute(agent, actions, context)
+
+    mock_success.assert_not_called()
+    mock_audit.assert_not_called()
