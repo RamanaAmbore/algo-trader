@@ -572,15 +572,19 @@ class TestExpiryAutoCloseAgentBuiltins:
         )
 
     def test_expiry_day_equity_itm_auto_close_has_fire_at_time(self):
-        """expiry-day-equity-itm-auto-close has fire_at_time='15:00'."""
+        """expiry-day-equity-itm-auto-close has fire_at_time='15:15'
+        (matches order_hold_gate.cutoff_for('NFO')'s default
+        lead_minutes_nfo=15: 15:30 close - 15 = 15:15). Fixed 2026-10
+        (Sprint 1a) — was '15:00', which is BEFORE its own cutoff, so
+        the action's before_cutoff() gate deferred every cycle."""
         from backend.api.algo.agent_engine import BUILTIN_AGENTS
         agent = next(
             (a for a in BUILTIN_AGENTS if a.get('slug') == 'expiry-day-equity-itm-auto-close'),
             None,
         )
         assert agent is not None
-        assert agent.get('fire_at_time') == '15:00', (
-            f"Expected fire_at_time='15:00', got {agent.get('fire_at_time')!r}"
+        assert agent.get('fire_at_time') == '15:15', (
+            f"Expected fire_at_time='15:15', got {agent.get('fire_at_time')!r}"
         )
 
     def test_expiry_day_commodity_itm_auto_close_is_critical_tier(self):

@@ -281,8 +281,12 @@ def test_expiry_agents_seeded_with_correct_shape():
     equity = by_slug["expiry-day-equity-itm-auto-close"]
     commodity = by_slug["expiry-day-commodity-itm-auto-close"]
 
-    # Equity: fires at 15:00 IST against NFO scope, action exchange=NFO
-    assert equity["fire_at_time"] == "15:00"
+    # Equity: fires at 15:15 IST (matches order_hold_gate.cutoff_for("NFO")'s
+    # default lead_minutes_nfo=15: 15:30 close - 15 = 15:15) against NFO
+    # scope, action exchange=NFO. Fixed 2026-10 (Sprint 1a) — was "15:00",
+    # 15 min BEFORE its own cutoff, so the action's before_cutoff() gate
+    # deferred every cycle and never actually scanned/closed anything.
+    assert equity["fire_at_time"] == "15:15"
     leaf = equity["conditions"]["all"][0]
     assert leaf["scope"] == "positions.expiring_today.nfo"
     assert equity["actions"][0]["type"] == "expiry_auto_close"

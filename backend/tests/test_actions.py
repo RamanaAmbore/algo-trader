@@ -532,3 +532,202 @@ async def test_action_live_close_position_ltp_fetched_via_helper():
 
     # chase_order reached — LTP fetch succeeded and preflight didn't block.
     mock_chase.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# Fix: fail closed when the AlgoOrder DB write fails (never place an
+# untracked live order) — same incident class as AlgoOrder #1088, fixed
+# for the manual-ticket path (orders_place.py) but previously missing on
+# the agent-action path (_action_place_order / _action_live_close_position /
+# _action_live_chase_close_positions).
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_action_place_order_db_write_failure_never_calls_chase():
+    """_write_live_order returning None (DB write failed) must abort
+    before chase_order is ever called, and must raise so execute() logs
+    action_failed instead of a false action_success."""
+    from backend.api.algo.actions import _action_place_order
+
+    broker = _make_broker_stub(ltp_value=23500.0)
+    conns  = _make_conns_stub("ZG0790")
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 7
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "NIFTY25JULFUT",
+        "exchange": "NFO",
+        "transaction_type": "SELL",
+        "quantity": 50,
+    }
+
+    mock_chase = AsyncMock()
+    mock_alert = MagicMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=50)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+               new=mock_alert), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        with pytest.raises(RuntimeError):
+            await _action_place_order(agent, context, params)
+
+    mock_chase.assert_not_called()
+    mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_action_live_close_position_db_write_failure_never_calls_chase():
+    """Same fail-closed guard on the close_position path."""
+    from backend.api.algo.actions import _action_live_close_position
+
+    broker = _make_broker_stub(ltp_value=7300.0)
+    broker.ltp.return_value = {"MCX:CRUDEOILAUG25FUT": {"last_price": 7300.0}}
+    conns  = _make_conns_stub("ZG0790")
+    agent  = MagicMock()
+    agent.slug = "test-close"
+    context: dict = {}
+    params = {
+        "account":  "ZG0790",
+        "symbol":   "CRUDEOILAUG25FUT",
+        "exchange": "MCX",
+        "quantity": 100,
+        "side":     "SELL",
+    }
+
+    mock_chase = AsyncMock()
+    mock_alert = MagicMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+               new=mock_alert), \
+         patch("backend.brokers.get_broker",              return_value=broker), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        with pytest.raises(RuntimeError):
+            await _action_live_close_position(agent, context, params)
+
+    mock_chase.assert_not_called()
+    mock_alert.assert_called_once()
+
+
+def _make_positions_df(rows: list[dict]):
+    """Build a minimal pandas DataFrame mirroring df_positions shape."""
+    import pandas as pd
+    return pd.DataFrame(rows)
+
+
+@pytest.mark.asyncio
+async def test_chase_close_positions_db_write_failure_skips_only_that_position():
+    """Two positions; the first position's AlgoOrder write fails (DB
+    down), the second succeeds. chase_order must be called exactly once
+    — only for the position with a real tracking row — and the action
+    must still raise (partial failure) so the agent cycle records it,
+    without the already-queued second chase being orphaned."""
+    from backend.api.algo.actions import _action_live_chase_close_positions
+
+    agent  = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    conns  = _make_conns_stub("ZG0790")
+    broker = _make_broker_stub()
+    df = _make_positions_df([
+        {
+            "account":       "ZG0790",
+            "tradingsymbol": "CRUDEOILAUG25FUT",
+            "exchange":      "MCX",
+            "quantity":      300,
+            "last_price":    7500.0,
+            "close_price":   7450.0,
+        },
+        {
+            "account":       "ZG0790",
+            "tradingsymbol": "GOLDAUG25FUT",
+            "exchange":      "MCX",
+            "quantity":      100,
+            "last_price":    72000.0,
+            "close_price":   71900.0,
+        },
+    ])
+    context = {"df_positions": df}
+    params  = {}
+
+    mock_chase = AsyncMock()
+    mock_alert = MagicMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(side_effect=[None, 42])), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+               new=mock_alert), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        with pytest.raises(RuntimeError):
+            await _action_live_chase_close_positions(agent, context, params)
+
+    assert mock_chase.call_count == 1, (
+        f"expected exactly 1 chase call (second position only), got {mock_chase.call_count}"
+    )
+    mock_alert.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_chase_close_positions_all_db_write_failures_raises_no_chase():
+    """Single position whose AlgoOrder write fails — chase_order must
+    never be called, and the action must raise."""
+    from backend.api.algo.actions import _action_live_chase_close_positions
+
+    agent  = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    conns  = _make_conns_stub("ZG0790")
+    broker = _make_broker_stub()
+    df = _make_positions_df([{
+        "account":       "ZG0790",
+        "tradingsymbol": "CRUDEOILAUG25FUT",
+        "exchange":      "MCX",
+        "quantity":      300,
+        "last_price":    7500.0,
+        "close_price":   7450.0,
+    }])
+    context = {"df_positions": df}
+    params  = {}
+
+    mock_chase = AsyncMock()
+    mock_alert = MagicMock()
+
+    with patch("backend.brokers.connections.Connections", return_value=conns), \
+         patch("backend.brokers.registry.get_broker",     return_value=broker), \
+         patch("backend.brokers.adapters.kite.get_lot_size",
+               new=AsyncMock(return_value=100)), \
+         patch("backend.api.algo.chase.chase_order",      new=mock_chase), \
+         patch("backend.api.algo.actions._write_live_order",
+               new=AsyncMock(return_value=None)), \
+         patch("backend.shared.helpers.alert_utils.send_order_failure_alert",
+               new=mock_alert), \
+         patch("backend.brokers.client.is_cutover_on",    return_value=False):
+
+        with pytest.raises(RuntimeError):
+            await _action_live_chase_close_positions(agent, context, params)
+
+    mock_chase.assert_not_called()
+    mock_alert.assert_called_once()

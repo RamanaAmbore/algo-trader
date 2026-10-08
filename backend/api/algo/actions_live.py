@@ -128,6 +128,48 @@ async def _place_order_preflight_block(
         logger.warning(f"Preflight-block notification failed: {_e}")
 
 
+async def _on_algo_order_write_failure(
+    agent_shim, action_type: str,
+    account: str, symbol: str, exchange: str, side: str, qty: int, price,
+) -> None:
+    """Fail closed when the AlgoOrder row write failed (DB exception).
+
+    `_write_live_order` / `_place_order_write_intent` return None on any DB
+    exception (constraint violation, rollback, timeout). Proceeding to call
+    `chase_order()` in that case would place a REAL broker order with no
+    AlgoOrder row behind it — no reconcile, no template attach, the
+    repeated-rejection hold can never fire, and the operator has zero
+    visibility into it. This is the exact same incident class as AlgoOrder
+    #1088 (a live order placed, chased for ~12 minutes, never visible,
+    never reconciled) — already fixed for the manual-ticket path
+    (`orders_place.py:ticket_order_handler` returns HTTP 503 on this exact
+    DB failure) but never fixed for the agent-action path until now.
+
+    Callers MUST NOT call `chase_order()` after this returns — log + alert
+    only; the caller decides whether to `raise` (single-position actions,
+    so `execute()` logs `action_failed` instead of a false
+    `action_success`) or `continue` to the next position (the
+    multi-position chase_close_positions loop, matching the existing
+    preflight-blocked-skip-this-position pattern in the same loop).
+    """
+    logger.error(
+        f"[LIVE] {action_type} ABORTED for {account} {exchange}/{symbol} "
+        f"{side} {qty}: AlgoOrder row write failed — refusing to place an "
+        f"untracked live order"
+    )
+    try:
+        from backend.shared.helpers.alert_utils import send_order_failure_alert
+        await asyncio.to_thread(
+            send_order_failure_alert,
+            account=account, symbol=symbol, exchange=exchange,
+            side=side, qty=qty, mode="live",
+            source=f"agent:{getattr(agent_shim, 'slug', action_type)}",
+            error="AlgoOrder DB write failed — order NOT placed (fail-closed)",
+        )
+    except Exception as _e:
+        logger.warning(f"AlgoOrder-write-failure notification failed: {_e}")
+
+
 async def _place_order_write_intent(agent_shim, pf: dict,
                                     account: str, symbol: str, exchange: str,
                                     side: str, qty: int, price,
@@ -362,6 +404,17 @@ async def _action_place_order(agent, context: dict, params: dict):
         _shim, pf, account, symbol, exchange, side, qty, price,
         product=product, template_id=template_id,
     )
+    if _oid is None:
+        # AlgoOrder pre-persist failed (DB exception) — fail closed.
+        # Never call chase_order() without a tracking row behind it.
+        await _on_algo_order_write_failure(
+            _shim, "place_order", account, symbol, exchange, side, qty, price,
+        )
+        raise RuntimeError(
+            f"place_order: AlgoOrder pre-persist failed for {account} "
+            f"{exchange}/{symbol} {side} {qty} — refusing to place an "
+            f"untracked live order"
+        )
 
     aggressiveness = str(
         params.get("chase_level") or params.get("chase_aggressiveness") or "med"
@@ -530,6 +583,17 @@ async def _action_live_close_position(agent, context: dict, params: dict):
         "account": account, "symbol": symbol, "exchange": exchange,
         "side": side, "qty": qty, "price": price,
     }, status="OPEN")
+    if _oid is None:
+        # AlgoOrder pre-persist failed (DB exception) — fail closed.
+        # Never call chase_order() without a tracking row behind it.
+        await _on_algo_order_write_failure(
+            agent, "close_position", account, symbol, exchange, side, qty, price,
+        )
+        raise RuntimeError(
+            f"close_position: AlgoOrder pre-persist failed for {account} "
+            f"{exchange}/{symbol} {side} {qty} — refusing to place an "
+            f"untracked live order"
+        )
 
     cfg = ChaseConfig(exchange=exchange, product=product, intent="close")
     try:
@@ -860,21 +924,32 @@ async def _al_chase_handle_blocked(
 
 async def _chase_build_tasks(
     agent, rows: list[dict]
-) -> "tuple[list, list[dict]]":
+) -> "tuple[list, list[dict], list[dict]]":
     """Run preflight for each position row; build chase task list.
 
     For each row:
       - Run run_preflight; on failure write REJECTED AlgoOrder + alert + skip.
-      - On success write OPEN AlgoOrder + append chase_order task.
+      - On success, persist the OPEN AlgoOrder row. If that write fails
+        (DB exception, returns None), log + alert + skip this position —
+        never call chase_order() without a tracking row behind it. This
+        mirrors the preflight-blocked-skip-this-position pattern
+        immediately above: one position's failure never aborts the
+        others already queued in the same loop.
+      - Otherwise append the chase_order task.
 
-    Returns (chase_tasks, task_rows) where task_rows[i] matches chase_tasks[i].
+    Returns (chase_tasks, task_rows, refused_rows) where task_rows[i]
+    matches chase_tasks[i]. `refused_rows` lets the caller raise after
+    `gather()` so the agent cycle still records action_failed for
+    visibility, without orphaning the asyncio.Tasks already created for
+    other positions in this same loop.
     """
     import asyncio
     from backend.api.algo.chase import chase_order, ChaseConfig
     from backend.api.algo.actions import _write_live_order
 
-    chase_tasks: list = []
-    task_rows:   list[dict] = []
+    chase_tasks:  list = []
+    task_rows:    list[dict] = []
+    refused_rows: list[dict] = []
 
     for p in rows:
         acct     = str(p.get("account", ""))
@@ -907,6 +982,14 @@ async def _chase_build_tasks(
             "account": acct, "symbol": symbol, "exchange": exchange,
             "side": side, "qty": qty, "price": price,
         }, status="OPEN")
+        if _oid is None:
+            # AlgoOrder pre-persist failed (DB exception) — fail closed.
+            # Never call chase_order() without a tracking row behind it.
+            await _on_algo_order_write_failure(
+                agent, "chase_close_positions", acct, symbol, exchange, side, qty, price,
+            )
+            refused_rows.append(p)
+            continue  # skip this position; other positions in the loop proceed
 
         cfg = ChaseConfig(exchange=exchange, product="NRML", intent="close")
         chase_tasks.append(
@@ -919,7 +1002,7 @@ async def _chase_build_tasks(
         task_rows.append(p)
         logger.info(f"[LIVE] chase_close_positions: queued {side} {qty} {symbol} [{acct}]")
 
-    return chase_tasks, task_rows
+    return chase_tasks, task_rows, refused_rows
 
 
 def _al_parse_failure_row(
@@ -1022,13 +1105,32 @@ async def _action_live_chase_close_positions(agent, context: dict, params: dict)
                        f"(agent={agent.slug}, scope={scope})")
         return
 
-    chase_tasks, task_rows = await _chase_build_tasks(agent, rows)
+    chase_tasks, task_rows, refused_rows = await _chase_build_tasks(agent, rows)
     if not chase_tasks:
+        if refused_rows:
+            # Every position was refused (AlgoOrder pre-persist failed) —
+            # no chase_order() calls were made at all. Raise so execute()
+            # logs action_failed instead of silently doing nothing.
+            raise RuntimeError(
+                f"chase_close_positions: all {len(refused_rows)} position(s) "
+                f"refused — AlgoOrder write failed for every position"
+            )
         return
 
     # Await all chase tasks concurrently — each manages its own retry loop.
     results = await asyncio.gather(*chase_tasks, return_exceptions=True)
     await _chase_handle_results(results, task_rows, agent)
+
+    if refused_rows:
+        # Some (not all) positions were refused — the others above still
+        # proceeded to chase_order(). Raise AFTER gather/handle_results so
+        # the already-created tasks are never orphaned, but the agent
+        # cycle still records action_failed for operator visibility.
+        raise RuntimeError(
+            f"chase_close_positions: {len(refused_rows)} position(s) refused "
+            f"— AlgoOrder write failed; {len(chase_tasks)} other position(s) "
+            f"still proceeded"
+        )
 
 
 async def _action_live_expiry_auto_close(agent, context: dict, params: dict):
