@@ -239,7 +239,22 @@ def _hydrate_latch_from_rows(rows, today) -> None:
     real sim runs), so the SQL-level `AgentEvent.sim_mode.is_(False)`
     hydration query filter alone does not exclude them; this is the
     Python-side backstop that does (see `_v2_build_evalresult` /
-    `_ae_dispatch_suppressed_entry`, which stamp the marker at write time)."""
+    `_ae_dispatch_suppressed_entry`, which stamp the marker at write time).
+
+    Hydrates from `detail['latched_matches']`, NOT `detail['matches']`
+    (2026-10 fix). `matches` is the full raw breaching list for a tick —
+    it can include leaves that were still gated by
+    `_v2_apply_escalation_gate` (cooldown not elapsed / not escalated
+    enough) on a tick that nonetheless dispatched because some OTHER
+    leaf on the same agent passed the gate. Hydrating from the raw list
+    would latch a gated leaf's worse, not-yet-actioned value/timestamp
+    instead of its true last-fired one, delaying or masking real
+    re-alerts after a restart. `latched_matches` carries only the
+    subset that actually updated `_V2_LATCH` on the live path that
+    tick, so replaying it in ascending timestamp order reconstructs the
+    exact same latch state the live engine would have. Falls back to
+    `matches` for rows written before this fix (no `latched_matches`
+    key present)."""
     import json as _json
     from zoneinfo import ZoneInfo
     _ist = ZoneInfo("Asia/Kolkata")
@@ -254,7 +269,10 @@ def _hydrate_latch_from_rows(rows, today) -> None:
             continue
         if detail.get('replay_mode'):
             continue
-        for m in (detail.get('matches') or []):
+        latched = detail.get('latched_matches')
+        if latched is None:
+            latched = detail.get('matches') or []
+        for m in latched:
             if m.get('value') is None:
                 continue
             _V2_LATCH[_latch_key(slug, m)] = {'ts': ts, 'val': m.get('value')}
@@ -661,7 +679,8 @@ def _v2_baseline_live(alert_state, now, offset_min: float) -> bool:
     return (now - start) >= timedelta(minutes=offset_min)
 
 
-def _v2_build_evalresult(matches, agent_name: str, *, replay_mode: bool = False) -> EvalResult:
+def _v2_build_evalresult(matches, agent_name: str, *, replay_mode: bool = False,
+                         latched_matches: list | None = None) -> EvalResult:
     """
     Wrap v2 matches into an EvalResult so the existing dispatch() function
     (which renders the Telegram/email body) can consume them unchanged.
@@ -676,6 +695,27 @@ def _v2_build_evalresult(matches, agent_name: str, *, replay_mode: bool = False)
     rather than changing what `sim_mode` means for dispatch()/actions —
     that would also flip replay's alert-banner/action-execution
     behavior, a materially larger and separate change than this fix.
+
+    `latched_matches` — fix for the "hydration latches raw matches,
+    not just the escalation-gated ones" bug (2026-10). `matches` is the
+    FULL raw breaching list (used for `condition_text` / the alert body
+    — operators must still see every currently-breaching leaf, gated or
+    not). But a single tick can contain a MIX of leaves: some that just
+    passed `_v2_apply_escalation_gate` (and thus updated `_V2_LATCH`
+    this tick) and others on the SAME agent that are still gated
+    (cooldown not elapsed / not escalated enough) — only possible
+    because a non-empty `effective` subset lets the whole tick dispatch
+    even though other leaves in `matches` didn't individually pass the
+    gate. Storing the full raw `matches` list as the hydration source
+    (old behavior) meant a gated leaf's WORSE, NOT-YET-ACTIONED value
+    got latched on restart instead of its true last-fired value,
+    delaying/missing real re-alerts post-deploy. `latched_matches`
+    carries ONLY the subset that actually updated `_V2_LATCH` this tick
+    (the caller's `effective` list) — `_hydrate_latch_from_rows` reads
+    this field (falling back to `matches` for rows written before this
+    fix). Defaults to `matches` when the caller has no escalation-gated
+    subset to report (e.g. `bypass_suppression` sim runs, where
+    effective == matches by construction).
     """
     # Compact one-liner per match: "scope metric=value (threshold)"
     lines = []
@@ -692,7 +732,11 @@ def _v2_build_evalresult(matches, agent_name: str, *, replay_mode: bool = False)
     if len(matches) > 10:
         lines.append(f"... +{len(matches) - 10} more")
     condition_text = " | ".join(lines) or agent_name
-    detail: dict = {'matches': matches, 'grammar': 'v2'}
+    detail: dict = {
+        'matches': matches,
+        'latched_matches': matches if latched_matches is None else latched_matches,
+        'grammar': 'v2',
+    }
     if replay_mode:
         detail['replay_mode'] = True
     return EvalResult(
@@ -2081,7 +2125,9 @@ def _cycle_maybe_buffer_fire(
     if not effective:
         return False
 
-    result = _v2_build_evalresult(matches, agent.name, replay_mode=replay_mode)
+    result = _v2_build_evalresult(
+        matches, agent.name, replay_mode=replay_mode, latched_matches=effective,
+    )
     # Only cosmetic-/notify-only tiers get the "Scheduled — HH:MM IST" label.
     # Critical/high/medium fire_at_time agents (e.g. expiry-day auto-close) emit
     # their real condition text so operators know what condition actually fired.
@@ -2096,6 +2142,7 @@ def _cycle_maybe_buffer_fire(
     pending_dispatches.append({
         'agent':           agent,
         'matches':         matches,
+        'latched_matches': effective,
         'result':          result,
         'sim_mode':        sim_mode,
         'replay_mode':     replay_mode,
@@ -2489,12 +2536,20 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
     sim_mode_p   = entry['sim_mode']
     replay_mode_p = entry.get('replay_mode', False)
     matches_     = entry.get('matches') or []
+    # Fix (2026-10): hydration must latch only the escalation-gated subset,
+    # not every raw breaching match — see _v2_build_evalresult's docstring.
+    # Falls back to matches_ when the caller (e.g. a test building this
+    # entry directly) didn't thread 'latched_matches' through.
+    latched_     = entry.get('latched_matches')
+    if latched_ is None:
+        latched_ = matches_
     supp_by      = suppressed_ids[agent.id]
     topic        = getattr(agent, 'topic', 'general')
     detail_text = (
         f"Suppressed by higher-tier agent '{supp_by}' in topic '{topic}'."
     )
     detail: dict = {'matches': matches_,
+                    'latched_matches': latched_,
                     'suppressed_by': supp_by,
                     'topic': topic,
                     'tier':  getattr(agent, 'tier', 'medium')}
@@ -2508,9 +2563,9 @@ async def _ae_dispatch_suppressed_entry(entry: dict, suppressed_ids: dict,
         await log_event(
             agent, 'triggered_suppressed',
             f"{result.condition_text} — {detail_text}",
-            # 'matches' is required here for the SAME reason the
+            # 'latched_matches' is required here for the SAME reason the
             # 'triggered' path (_v2_build_evalresult) writes it:
-            # _hydrate_latch_from_rows reads detail['matches'] to
+            # _hydrate_latch_from_rows reads detail['latched_matches'] to
             # reconstruct _V2_LATCH on process restart. Without it every
             # suppressed fire hydrates as an empty latch — a standing
             # breach that was suppressed (not silenced by recovery) would
@@ -2614,9 +2669,17 @@ async def _cycle_dispatch_survivors(
             # never silently drops a row the operator would otherwise see.
             entry = dict(entry)
             entry['matches'] = list(entry['matches']) + extra
+            # 2026-10 fix: stamp ONLY the winner's own escalation-gated
+            # subset as latched_matches, not the merged (display-only)
+            # list. The merged `extra` rows belong to DIFFERENT agents
+            # (different latch slugs) — their own latches were already
+            # written correctly at their own _cycle_maybe_buffer_fire
+            # call. Re-latching them here under the WINNER's slug would
+            # corrupt a sibling agent's re-alert timing on hydration.
             entry['result'] = _v2_build_evalresult(
                 entry['matches'], agent.name,
                 replay_mode=entry.get('replay_mode', False),
+                latched_matches=entry.get('latched_matches'),
             )
         await _ae_dispatch_survivor_entry(entry, now, context, broadcast_fn)
 
