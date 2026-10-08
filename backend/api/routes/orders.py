@@ -1221,20 +1221,29 @@ async def _rco_run_template_attach(row) -> "tuple | None":
 
     apply_path = "sim" if (row.mode or "").lower() == "sim" else "live"
     _retry_overrides = _retry_parse_overrides(row.template_overrides_json)
-    result = await apply_template_to_order(
-        template_id=row.template_id,
-        template_slug=None,
-        overrides=_retry_overrides,
-        parent_account=row.account or "",
-        parent_symbol=row.symbol or "",
-        parent_side=row.transaction_type or "BUY",
-        parent_qty=await _retry_effective_parent_qty(row),
-        parent_exchange=row.exchange or "NFO",
-        parent_fill_price=float(row.fill_price or row.initial_price or 0),
-        parent_product=row.product or "NRML",
-        parent_order_id=row.id,
-        apply_path=apply_path,
-    )
+    # Same per-row lock the fill-triggered path (_fire_template_attach_on_fill)
+    # uses, now that the live apply_plan_live chain runs off the event loop
+    # (asyncio.to_thread) and can genuinely interleave with a concurrent
+    # fill-triggered attach on the same row — without this, an operator
+    # Retry-attach racing a late postback/chase-terminal attach could place
+    # a duplicate live GTT instead of being accidentally serialised by the
+    # old loop-blocking behaviour.
+    _row_lock = await _get_template_attach_lock(row.id)
+    async with _row_lock:
+        result = await apply_template_to_order(
+            template_id=row.template_id,
+            template_slug=None,
+            overrides=_retry_overrides,
+            parent_account=row.account or "",
+            parent_symbol=row.symbol or "",
+            parent_side=row.transaction_type or "BUY",
+            parent_qty=await _retry_effective_parent_qty(row),
+            parent_exchange=row.exchange or "NFO",
+            parent_fill_price=float(row.fill_price or row.initial_price or 0),
+            parent_product=row.product or "NRML",
+            parent_order_id=row.id,
+            apply_path=apply_path,
+        )
     return result
 
 

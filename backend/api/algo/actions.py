@@ -452,20 +452,29 @@ async def _al_apply_template(
     """Call apply_template_to_order and return the result dict (or None on error)."""
     try:
         from backend.api.algo.template_attach import apply_template_to_order
-        result = await apply_template_to_order(
-            template_id=int(template_id) if template_id is not None else None,
-            template_slug=str(template_slug) if template_slug else None,
-            overrides=overrides,
-            parent_account=parent_account,
-            parent_symbol=parent_symbol,
-            parent_side=parent_side,
-            parent_qty=parent_qty,
-            parent_exchange=parent_exchange,
-            parent_fill_price=parent_price,
-            parent_product=str(params.get("product") or "NRML"),
-            parent_order_id=algo_order_id,
-            apply_path=apply_path,
-        )
+        from backend.api.routes.orders_place import _get_template_attach_lock
+        # Same per-row lock _fire_template_attach_on_fill uses — now that
+        # the live apply_plan_live chain runs off the event loop
+        # (asyncio.to_thread), an agent-fired place_order's own template
+        # attach can genuinely interleave with a concurrent postback/chase-
+        # terminal attach on the same row and place a duplicate live GTT
+        # without this.
+        _row_lock = await _get_template_attach_lock(algo_order_id)
+        async with _row_lock:
+            result = await apply_template_to_order(
+                template_id=int(template_id) if template_id is not None else None,
+                template_slug=str(template_slug) if template_slug else None,
+                overrides=overrides,
+                parent_account=parent_account,
+                parent_symbol=parent_symbol,
+                parent_side=parent_side,
+                parent_qty=parent_qty,
+                parent_exchange=parent_exchange,
+                parent_fill_price=parent_price,
+                parent_product=str(params.get("product") or "NRML"),
+                parent_order_id=algo_order_id,
+                apply_path=apply_path,
+            )
     except Exception as e:
         logger.error(
             f"[ACTION-TEMPLATE] attach failed for agent={agent.slug} "
