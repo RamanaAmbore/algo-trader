@@ -3,16 +3,15 @@
 The record carries the mode, so the agent (not this module) decides which fills alert.
 Delivery lives in event_agents.
 """
-from datetime import datetime
-from zoneinfo import ZoneInfo
+from datetime import datetime, timezone
 
 from backend.shared.helpers.ramboq_logger import get_logger
 
 logger = get_logger(__name__)
-_IST = ZoneInfo("Asia/Kolkata")
 
 
 def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
+    from backend.shared.helpers.date_time_utils import format_dual_tz
     side = str(row.transaction_type or "").upper() or "ORDER"
     qty = int(row.quantity or 0)
     symbol = str(row.symbol or "")
@@ -22,7 +21,7 @@ def format_fill_message(row, when: datetime | None = None) -> tuple[str, str]:
         f"{side} {qty} {symbol} ({row.exchange or '-'}) @ {float(row.fill_price or 0):.2f}",
         f"Product: {row.product or '-'}",
         f"Order id: {row.id}",
-        f"Time: {(when or datetime.now(_IST)).astimezone(_IST):%H:%M:%S} IST",
+        f"Time: {format_dual_tz(when or datetime.now(timezone.utc))}",
     ])
     return title, body
 

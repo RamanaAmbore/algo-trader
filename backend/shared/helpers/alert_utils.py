@@ -426,8 +426,15 @@ def _email_message(
     *, email_prefix_full: str, branch_tag: str, mode_tag: str,
     subject_detail: str, sim_mode: bool, branch: str,
     tg_prefix_full: str, ist_display: str, email_table_html: str,
+    agent_line: str = '',
 ) -> tuple[str, str]:
-    """Subject and HTML body of an agent or summary email. Pure."""
+    """Subject and HTML body of an agent or summary email. Pure.
+
+    `agent_line` — the real firing agent's "Agent: {name} (#{id})" label,
+    shown as an additional paragraph right below the existing dual-tz
+    `ist_display` header line. Empty string (the default) when the alert
+    has no single originating agent (summaries) — never put into the
+    subject, which must stay single-line."""
     subj_pfx = f"{email_prefix_full}{branch_tag}{(' ' + mode_tag) if mode_tag else ''}"
     subject = (
         f"{subj_pfx}{subject_detail}"
@@ -435,6 +442,11 @@ def _email_message(
         else f"{email_prefix_full}{subject_detail}"
     )
     banners = _build_email_banners(sim_mode, branch)
+    agent_line_html = (
+        f"<p style='font-size:13px;color:{_EMAIL_TEXT_MUTED};margin:0 0 10px 0'>"
+        f"{html.escape(agent_line)}</p>"
+        if agent_line else ''
+    )
     html_body = (
         f"<html><body style='font-family:sans-serif;background-color:{_EMAIL_BG};"
         f"color:{_EMAIL_TEXT};margin:0;padding:18px'>"
@@ -443,6 +455,7 @@ def _email_message(
         f"<p style='font-size:14px;color:{_EMAIL_AMBER};letter-spacing:0.04em;"
         f"margin:0 0 14px 0'>"
         f"<b>{tg_prefix_full}{branch_tag} — {ist_display}</b></p>"
+        f"{agent_line_html}"
         f"{email_table_html}"
         f"</div>"
         f"</body></html>"
@@ -482,9 +495,47 @@ def _build_email_banners(sim_mode: bool, branch: str) -> str:
     return banners
 
 
+def format_notification_header(
+    agent_name: "str | None", agent_id: "int | None", *, ist_display: "str | None" = None,
+) -> str:
+    """Single source of truth for the "who fired this + when" header shown
+    at the top of every notification body (Telegram/email/ntfy).
+
+    Returns ``"Agent: {name} (#{id})\\n{dual-tz timestamp}"`` when BOTH
+    `agent_name` and `agent_id` are truthy — a real Agent row genuinely
+    originated this alert. Otherwise returns just the dual-tz timestamp
+    alone — the agent-less case (system/order/broker-level event with no
+    agent concept, or a caller that only has a bare id with no name).
+
+    `ist_display` lets a caller that already computed this request's
+    dual-tz string (so Telegram/email/ntfy all share one timestamp
+    instead of each re-reading the clock a moment apart) pass it through
+    instead of triggering a fresh `timestamp_display()` call.
+
+    Callers embedding this into something that must stay single-line
+    (an email Subject header or an ntfy Title HTTP header — a literal
+    newline breaks both) should take only the first line, e.g.
+    ``format_notification_header(name, id).splitlines()[0]``.
+    """
+    from backend.shared.helpers.date_time_utils import timestamp_display
+    ts = ist_display if ist_display is not None else timestamp_display()
+    if agent_name and agent_id is not None:
+        return f"Agent: {agent_name} (#{agent_id})\n{ts}"
+    return ts
+
+
 def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table_html: str,
-                     subject_detail: str, sim_mode: bool = False, mode_tag: str = '') -> dict:
-    """Telegram message, title, route key and email for one alert. Pure; no sending."""
+                     subject_detail: str, sim_mode: bool = False, mode_tag: str = '',
+                     agent_name: "str | None" = None, agent_id: "int | None" = None) -> dict:
+    """Telegram message, title, route key and email for one alert. Pure; no sending.
+
+    `agent_name`/`agent_id` — when both are given, the real firing agent's
+    identity is shown as an additional line in the Telegram/email BODY
+    (never the title/subject, which must stay single-line). Omitted
+    entirely for alert types with no single originating agent (open/close
+    summaries) — the dual-tz `ist_display` already shown in the header
+    line is not duplicated.
+    """
     tg_prefix, email_prefix = _MSG_TYPES[msg_type]
     tg_prefix_full    = f"SIMULATOR {tg_prefix}"    if sim_mode else tg_prefix
     email_prefix_full = f"SIMULATOR {email_prefix}" if sim_mode else email_prefix
@@ -493,9 +544,18 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
     branch_tag = f" [{branch}]" if branch != 'main' else ''
     mode_pfx = f"{mode_tag} " if mode_tag else ''
 
+    # Agent-identity line only — the dual-tz timestamp already appears in
+    # the bold header line below, so only the first line of
+    # format_notification_header's output is used here to avoid showing
+    # the same timestamp twice.
+    agent_line = ''
+    if agent_name and agent_id is not None:
+        agent_line = format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()[0]
+
     warning_block = _build_tg_warning_block(sim_mode, branch)
+    agent_line_tg = f"\n{html.escape(agent_line)}" if agent_line else ''
     telegram_msg = (
-        f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}\n\n"
+        f"<b>{tg_prefix_full}{branch_tag} {mode_pfx}— {ist_display}</b>{warning_block}{agent_line_tg}\n\n"
         f"<code>{html.escape(tg_table)}</code>"
     )
     event_key = 'market_open' if msg_type == 'open' else (
@@ -504,7 +564,7 @@ def dispatch_payload(msg_type: str, ist_display: str, tg_table: str, email_table
         email_prefix_full=email_prefix_full, branch_tag=branch_tag, mode_tag=mode_tag,
         subject_detail=subject_detail, sim_mode=sim_mode, branch=branch,
         tg_prefix_full=tg_prefix_full, ist_display=ist_display,
-        email_table_html=email_table_html,
+        email_table_html=email_table_html, agent_line=agent_line,
     )
     return {
         "event_key": event_key,
@@ -891,8 +951,20 @@ def order_failure_messages(
     # this correctly (2026-09-27 council audit, Bug 2).
     error_short_html = html.escape(error_short)
 
+    # No agent NAME reaches this call site (callers only carry the bare
+    # `agent_id` int off an AlgoOrder row — resolving the name would need
+    # a DB round-trip per alert across every chase/template_attach/
+    # orders_place call site). `format_notification_header` already
+    # degrades gracefully: passing agent_name=None returns just the
+    # dual-tz timestamp with no "Agent: ..." line, which is exactly what
+    # we want here — the existing [Manual]/[Agent]/[Agent Bracket]
+    # `origin_label` above already distinguishes agent-fired from
+    # manually-placed orders without needing the real name.
+    header_line = format_notification_header(None, agent_id, ist_display=ist_disp)
+
     tg_body = (
         f"<b>&#10060; Order rejected</b>  [{origin_label}]  {mode_tag}{sup_note}\n"
+        f"{header_line}\n"
         f"{masked}  {side}  {qty}  {symbol}  ({exchange})\n"
         f"source: {source}\n"
         f"<code>{error_short_html}</code>"
@@ -1044,6 +1116,24 @@ def send_order_failure_alert(
         )
     except Exception as _top_e:
         logger.error(f"send_order_failure_alert internal error: {_top_e}")
+
+
+# Tier -> ntfy priority. Mirrors Agent.tier's vocabulary exactly
+# (models.py, NOT NULL default "medium") so a caller that has a real
+# firing Agent row in scope can derive a severity-driven ntfy priority
+# instead of relying on send_ntfy_alert's clock-based day/night default.
+# An explicit per-channel priority (operator-configured) always wins
+# over this; this is only ever a fallback default. `.get()` with no
+# second argument deliberately returns None for an unmapped/unknown tier
+# (e.g. the scheduling-only "info" pseudo-tier some agents use) so the
+# caller can omit the kwarg entirely and let send_ntfy_alert's own
+# clock-based logic apply, rather than silently coercing to "default".
+_TIER_TO_NTFY_PRIORITY = {
+    "critical": "urgent",
+    "high":     "high",
+    "medium":   "default",
+    "low":      "low",
+}
 
 
 def send_ntfy_alert(title: str, message: str, priority: str | None = None) -> None:

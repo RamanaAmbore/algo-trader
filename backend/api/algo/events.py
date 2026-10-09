@@ -48,6 +48,7 @@ class EvalResult:
 
 def _build_dispatch_email_body(
     agent_name: str,
+    agent_id: "int | None",
     sim_tag: str,
     branch: str,
     branch_tag: str,
@@ -56,6 +57,8 @@ def _build_dispatch_email_body(
     sim_mode: bool,
 ) -> str:
     """Build the HTML email body for an agent dispatch notification."""
+    import html as _html
+    from backend.shared.helpers.alert_utils import format_notification_header
     sim_banner = (
         "<p style='padding:8px;background:#fde4e4;border:1px solid #dc3545;"
         "border-radius:4px;color:#721c24'>🚨 <b>SIMULATOR RUN</b> — fabricated "
@@ -67,11 +70,19 @@ def _build_dispatch_email_body(
         f"border-radius:4px'>⚠ <b>Branch: {branch}</b></p>"
         if branch != "main" else ""
     )
+    # format_notification_header's output replaces the bare ist_display
+    # paragraph — it carries both the new "Agent: {name} (#{id})" line
+    # AND the same dual-tz timestamp that used to be the only content
+    # here, so nothing is lost and the timestamp isn't shown twice.
+    header_html = "<br>".join(
+        _html.escape(line)
+        for line in format_notification_header(agent_name, agent_id, ist_display=ist_display).splitlines()
+    )
     return (
         f"<html><body style='font-family:sans-serif'>"
         f"{sim_banner}{branch_banner}"
         f"<p><b>{sim_tag}Alert{branch_tag} — {agent_name}</b></p>"
-        f"<p style='color:#666'>{ist_display}</p>"
+        f"<p style='color:#666'>{header_html}</p>"
         f"<p><b>Condition:</b> {condition_text}</p>"
         f"</body></html>"
     )
@@ -100,6 +111,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         return
 
     from backend.shared.helpers.date_time_utils import timestamp_display
+    from backend.shared.helpers.alert_utils import format_notification_header
 
     branch = config.get("deploy_branch", "main")
     branch_tag = f" [{branch}]" if branch != "main" else ""
@@ -107,10 +119,15 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     ist_display = timestamp_display()
     condition_text = eval_result.condition_text or ""
 
-    # Single unified content shown across all channels
+    # Single unified content shown across all channels. The old "When:"
+    # line is replaced by format_notification_header's output — it still
+    # carries the same dual-tz ist_display (reused via the ist_display=
+    # kwarg so this and the email body below share one timestamp
+    # instead of each calling timestamp_display() a moment apart) PLUS
+    # the new "Agent: {name} (#{id})" identity line.
     body_lines = [
         f"{sim_tag}Alert{branch_tag} — {agent.name}",
-        f"When: {ist_display}",
+        format_notification_header(agent.name, agent.id, ist_display=ist_display),
         f"Condition: {condition_text}",
     ]
     telegram_body = "\n".join(body_lines)
@@ -127,7 +144,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     ntfy_body = "\n".join(body_lines)
     email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
     email_body = _build_dispatch_email_body(
-        agent.name, sim_tag, branch, branch_tag, ist_display, condition_text, sim_mode
+        agent.name, agent.id, sim_tag, branch, branch_tag, ist_display, condition_text, sim_mode
     )
 
     # Resolve any `{"$ref": "<notify-fragment>"}` entries against the
@@ -148,8 +165,21 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
             continue
         if ch.get("channel") in _RECORDED_CHANNELS:
             if _tags_match(ch, eval_result):
-                recorded_channels.append({k: v for k, v in ch.items() if k in ("channel", "priority", "tags")}
-                                         | {"enabled": True, "gate": True})
+                rec_ch = {k: v for k, v in ch.items() if k in ("channel", "priority", "tags")}
+                # Tier-driven ntfy priority default — only when the
+                # operator hasn't hand-configured an explicit priority
+                # for this channel, and only for ntfy (telegram/email
+                # sends don't accept a priority kwarg; injecting one
+                # there would make every send silently fail). `agent`
+                # here is the REAL firing Agent row (not a dispatching
+                # meta-agent), so `.tier` genuinely reflects this
+                # alert's severity.
+                if rec_ch.get("channel") == "ntfy" and not rec_ch.get("priority"):
+                    from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+                    tier_priority = _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
+                    if tier_priority:
+                        rec_ch["priority"] = tier_priority
+                recorded_channels.append(rec_ch | {"enabled": True, "gate": True})
             continue
         try:
             await _dispatch_channel(
@@ -165,7 +195,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
             f"ALERT recorded [{agent.slug}]{branch_tag}: {agent.name}",
             extra={
                 "tags": ["agent"], "alert_event": "breach", "agent_slug": agent.slug,
-                "agent_name": agent.name, "condition_text": condition_text,
+                "agent_name": agent.name, "agent_id": agent.id, "condition_text": condition_text,
                 "channels": recorded_channels, "telegram_body": telegram_body,
                 "ntfy_body": ntfy_body, "email_subject": email_subject,
                 "email_body": email_body, "sim_mode": bool(sim_mode),
@@ -212,13 +242,18 @@ def _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_displ
 
 
 async def _send_ntfy_channel(ch: dict, agent, telegram_body: str, ntfy_body: str | None) -> None:
-    from backend.shared.helpers.alert_utils import send_ntfy_alert
+    from backend.shared.helpers.alert_utils import send_ntfy_alert, _TIER_TO_NTFY_PRIORITY
     import asyncio
     loop = asyncio.get_running_loop()
     # ntfy_body is kept independent of telegram_body so an HTML-styled telegram body can
     # never leak literal tags into ntfy. Legacy direct-call sites fall back to telegram_body.
     _ntfy_msg = ntfy_body if ntfy_body is not None else telegram_body
-    priority = ch.get("priority")
+    # Explicit per-channel priority wins; otherwise fall back to this
+    # agent's own tier (critical/high/medium/low -> urgent/high/default/
+    # low). `agent` here is the real firing Agent row. Neither set ->
+    # priority stays None, same as before this change, and
+    # send_ntfy_alert's own clock-based day/night default applies.
+    priority = ch.get("priority") or _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
     await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=priority))
 
 

@@ -1107,7 +1107,13 @@ def _res_agent_action_labels(action: str) -> tuple[str, str]:
 
 
 def _mcp_ping(tg_html: str) -> None:
-    """Record an MCP audit ping. The event agent sends it to Telegram."""
+    """Record an MCP audit ping. The event agent sends it to Telegram.
+
+    Appends the dual-tz timestamp once here — the single chokepoint all
+    6 MCP ping call sites funnel through — rather than at each call site
+    individually. No agent concept exists for MCP tool calls."""
+    from backend.shared.helpers.date_time_utils import timestamp_display
+    tg_html = f"{tg_html}\n<i>{timestamp_display()}</i>"
     logger.info("MCP ping", extra={"tags": ["mcp"], "alert_event": "mcp_ping", "tg": tg_html})
 
 

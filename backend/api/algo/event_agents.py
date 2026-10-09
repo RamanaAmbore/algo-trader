@@ -53,46 +53,52 @@ def _get_gate():
 def _render_chase_cancel(rec: dict) -> tuple[str, str]:
     """Chase cancel-and-replace could not confirm the cancel landed."""
     from backend.shared.helpers.utils import mask_account_in_text
+    from backend.shared.helpers.date_time_utils import timestamp_display
     x = rec.get("extra") or {}
     body = (
         f"{x.get('transaction_type')} {x.get('symbol')} — cancel of order {x.get('order_id')} "
         f"on {x.get('account')} could not be confirmed after attempt "
         f"{x.get('attempt')}/{x.get('quantity', 0) - x.get('remaining_qty', 0)} filled. "
         f"The chase has been ABORTED without placing a replacement order. "
-        f"Manually verify the broker's order book — the old order may still be live."
+        f"Manually verify the broker's order book — the old order may still be live.\n"
+        f"{timestamp_display()}"
     )
     return "Chase cancel unconfirmed — possible resting duplicate order", mask_account_in_text(body)
 
 
 def _render_partial_gtt(rec: dict) -> tuple[str, str]:
     """Only some of a parent order's planned GTTs were placed."""
+    from backend.shared.helpers.date_time_utils import timestamp_display
     x = rec.get("extra") or {}
     body = (
         f"parent #{x.get('parent_row_id')} {x.get('parent_symbol')}: "
         f"{x.get('placed')}/{x.get('planned')} GTTs placed. "
-        f"Errors: {'; '.join(x.get('errors') or [])}"
+        f"Errors: {'; '.join(x.get('errors') or [])}\n"
+        f"{timestamp_display()}"
     )
     return "Partial GTT placement", body
 
 
 def _render_template_attach(rec: dict) -> tuple[str, str]:
     """Template exit attach outcome — unprotected position, wing skip/reject."""
+    from backend.shared.helpers.date_time_utils import timestamp_display
     x = rec.get("extra") or {}
     ev = x.get("alert_event")
+    ts = timestamp_display()
     if ev == "wing_unprotected":
         return ("Unprotected SELL position",
                 f"GTTs placed (ids: {x['gtt_ids_text']}) but wing failed: {x['reason']} | "
-                f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
+                f"order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
     if ev == "wing_hard_reject":
         return ("Wing scan hard-rejected",
-                f"{x['reason']} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}")
+                f"{x['reason']} | {x['symbol']} {x['exchange']} target ₹{x['target_premium']:.2f}\n{ts}")
     if ev == "wing_skip":
         return ("Wing attach skipped",
-                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
+                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
     if ev == "wing_offset_skip":
         return ("Wing offset attach skipped",
-                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}")
-    return "Template attach", str(x)
+                f"{x['reason']} | order #{x['parent_order_id']} {x['symbol']} {x['exchange']}\n{ts}")
+    return "Template attach", f"{x}\n{ts}"
 
 
 def _render_order_failure(rec: dict) -> tuple:
@@ -150,7 +156,8 @@ def _render_rich_alert(rec: dict) -> tuple:
     x = rec.get("extra") or {}
     p = dispatch_payload("alert", x["ist_display"], x["tg_table"], x["email_table_html"],
                          x["subject_detail"], sim_mode=bool(x.get("sim_mode")),
-                         mode_tag=x.get("mode_tag") or "")
+                         mode_tag=x.get("mode_tag") or "",
+                         agent_name=x.get("agent_name"), agent_id=x.get("agent_id"))
     return p["title"], _html_to_plain(p["telegram_msg"]), p["telegram_msg"], (p["email_subject"], p["email_html"])
 
 
@@ -172,21 +179,25 @@ def _render_breach(rec: dict) -> tuple:
 
 def _render_gtt_not_accepted(rec: dict) -> tuple[str, str]:
     """A placed GTT was not accepted by the broker (status mismatch)."""
+    from backend.shared.helpers.date_time_utils import timestamp_display
     x = rec.get("extra") or {}
     return ("GTT not accepted at broker",
-            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}")
+            f"{x.get('symbol')} {x.get('label')} GTT {x.get('gtt_id')}: {x.get('reason')}\n"
+            f"{timestamp_display()}")
 
 
 def _render_error(rec: dict) -> tuple[str, str, str]:
     """An ERROR+ log line was written somewhere in the app."""
     from backend.shared.helpers.utils import mask_account_in_text
+    from backend.shared.helpers.date_time_utils import timestamp_display
     name = rec.get("logger") or ""
     msg = clean_message(mask_account_in_text(rec.get("message") or "") or "")
     repeats = rec.get("repeats") or 0
     suffix = f" (+{repeats} repeats)" if repeats else ""
+    ts = timestamp_display()
     tg = (f"<b>RamboQuant error</b>\n<code>{html.escape(name)}</code>\n"
-          f"{html.escape(msg)}{html.escape(suffix)}")
-    return "RamboQuant error", f"{name}\n{msg}{suffix}", tg
+          f"{html.escape(msg)}{html.escape(suffix)}\n{html.escape(ts)}")
+    return "RamboQuant error", f"{name}\n{msg}{suffix}\n{ts}", tg
 
 
 def register_renderer(name: str):
@@ -298,7 +309,25 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
         return False
     title, body = out[0], out[1]
     tg = out[2] if len(out) > 2 else None
-    kwargs = {"priority": ch["priority"]} if ch.get("priority") else {}
+    priority = ch.get("priority")
+    # Tier-driven default — ntfy ONLY. `_send_telegram_html`/
+    # `_send_telegram_info_html` take no `priority` parameter at all (a
+    # bare positional-only signature, no **kwargs) — passing one would
+    # raise TypeError and silently break every telegram send for any
+    # agent with a tier (i.e. every real agent, since Agent.tier is
+    # NOT NULL default "medium"). `_send_email_channel` happens to
+    # tolerate it via **_kw, but scoping to ntfy explicitly is the
+    # correct fix regardless, matching priority's actual meaning (ntfy
+    # notification sound/urgency — meaningless for telegram/email).
+    # Explicit per-channel priority still wins; `agent` is the real
+    # Agent row configured to render this log-tag type, so `.tier` is
+    # always present for this path. Neither set -> omit the kwarg
+    # entirely so send_ntfy_alert's own clock-based day/night default
+    # applies (unchanged from before this change).
+    if not priority and ch.get("channel") == "ntfy":
+        from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+        priority = _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
+    kwargs = {"priority": priority} if priority else {}
     if ch.get("channel") == "email":
         kwargs["email"] = out[3] if len(out) > 3 else None
         kwargs["recipients"] = ch.get("recipients")

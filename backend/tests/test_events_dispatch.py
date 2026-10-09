@@ -143,7 +143,7 @@ async def test_dispatch_includes_branch_tag():
     from backend.api.algo.events import _build_dispatch_email_body
 
     html = _build_dispatch_email_body(
-        agent_name="TestAgent",
+        agent_name="TestAgent", agent_id=1,
         sim_tag="",
         branch="dev",
         branch_tag=" [dev]",
@@ -160,7 +160,7 @@ async def test_dispatch_includes_simulator_banner():
     from backend.api.algo.events import _build_dispatch_email_body
 
     html = _build_dispatch_email_body(
-        agent_name="TestAgent",
+        agent_name="TestAgent", agent_id=1,
         sim_tag="SIMULATOR ",
         branch="main",
         branch_tag="",
@@ -219,7 +219,7 @@ async def test_build_dispatch_email_body_main_branch():
     from backend.api.algo.events import _build_dispatch_email_body
 
     html = _build_dispatch_email_body(
-        agent_name="MyAgent",
+        agent_name="MyAgent", agent_id=1,
         sim_tag="",
         branch="main",
         branch_tag="",
@@ -238,7 +238,7 @@ async def test_build_dispatch_email_body_dev_branch():
     from backend.api.algo.events import _build_dispatch_email_body
 
     html = _build_dispatch_email_body(
-        agent_name="MyAgent",
+        agent_name="MyAgent", agent_id=1,
         sim_tag="",
         branch="dev",
         branch_tag=" [dev]",

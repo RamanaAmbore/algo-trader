@@ -257,13 +257,12 @@ def _fire_guard_alert(*, template_slug: str, applies_to: str,
     """
     import asyncio as _asyncio
     import html as _html
-    from datetime import datetime, timezone, timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_display
 
-    # Format IST timestamp inline (no dependency on the heavier
-    # alert_utils.timestamp_display).
-    now_utc = datetime.now(timezone.utc)
-    ist = now_utc + timedelta(hours=5, minutes=30)
-    ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
+    # Dual-tz (IST + ET) timestamp — same SSOT as every other alert
+    # channel in the app. 2026-10: upgraded from a bare hand-built
+    # IST-only strftime.
+    ist_label = timestamp_display()
 
     summary = (
         f"Refused to attach template '{template_slug}' "
@@ -415,11 +414,12 @@ def _fire_attach_fail_alert(
     """
     import asyncio as _asyncio
     import html as _html
-    from datetime import datetime, timezone, timedelta
+    from backend.shared.helpers.date_time_utils import timestamp_display
 
-    now_utc = datetime.now(timezone.utc)
-    ist = now_utc + timedelta(hours=5, minutes=30)
-    ist_label = ist.strftime("%a, %b %d %Y, %H:%M IST")
+    # Dual-tz (IST + ET) timestamp — same SSOT as every other alert
+    # channel in the app. 2026-10: upgraded from a bare hand-built
+    # IST-only strftime.
+    ist_label = timestamp_display()
 
     err_summary = "; ".join((str(e) for e in errors[:2]))
     tg_msg = template_attach_fail_message(

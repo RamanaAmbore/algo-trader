@@ -58,11 +58,19 @@ async def test_a_bad_row_does_not_stop_the_others(monkeypatch, logged):
 
 
 def test_format_uses_the_given_time_in_ist():
+    # 2026-10: upgraded from a bare IST-only stamp to the dual-tz (IST + ET)
+    # format shared with every other alert channel (format_dual_tz) — same
+    # SSOT as timestamp_display(), just fed the caller's own `when` instead
+    # of the clock. Seconds are dropped by that formatter; assert on the
+    # IST wall-clock minute (unambiguous from the UTC input) and that an ET
+    # zone abbreviation is present, rather than a brittle exact string.
     from datetime import datetime, timezone
     title, body = fill_notify.format_fill_message(
         _row(), when=datetime(2026, 10, 6, 4, 45, 30, tzinfo=timezone.utc))
     assert title == "Order filled: BUY 75 NIFTY26OCT25000CE"
-    assert "Time: 10:15:30 IST" in body
+    assert "Time: " in body
+    assert "10:15 IST" in body
+    assert ("EDT" in body) or ("EST" in body)
 
 
 def test_fill_message_shows_full_account():

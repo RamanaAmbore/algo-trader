@@ -6806,7 +6806,8 @@ async def _task_deploy_sync_check() -> None:
                             f"HEAD {remote_head[:8]} for longer than "
                             f"{_DEPLOY_SYNC_GRACE_SECONDS // 60} min — webhook "
                             f"delivery may have been missed. Manual fallback: "
-                            f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}"
+                            f"sudo -u www-data /etc/webhook/dispatch.sh refs/heads/{branch}\n"
+                            f"{timestamp_display()}"
                         )
                         logger.warning(
                             f"[DEPLOY-SYNC] {message}",

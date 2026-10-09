@@ -14,6 +14,26 @@ class _FixedDatetime(_dt.datetime):
         return cls(2026, 10, 6, 10, 15, 30, tzinfo=tz)
 
 
+# Fixed dual-tz string every agent-less renderer's new timestamp line
+# resolves to in this module — same instant (2026-10-06 04:45:30 UTC)
+# used by _error_rec and the other fixed-`ts` records below, via
+# format_dual_tz, so it's not an arbitrary guessed value.
+_FIXED_TS = "Tue 06 Oct 10:15 IST | Tue 06 Oct 00:45 EDT"
+
+
+@pytest.fixture(autouse=True)
+def _freeze_timestamp_display(monkeypatch):
+    """Freeze `timestamp_display()` to `_FIXED_TS` for every test in this
+    module. Every new call site added for the 2026-10 notification-header
+    work does `from backend.shared.helpers.date_time_utils import
+    timestamp_display` lazily inside its own function body (never a
+    top-level import — see alert_utils.py docstring on
+    format_notification_header), so patching the attribute on the
+    date_time_utils module here is picked up by all of them."""
+    from backend.shared.helpers import date_time_utils
+    monkeypatch.setattr(date_time_utils, "timestamp_display", lambda: _FIXED_TS)
+
+
 @pytest.fixture
 def sent(monkeypatch):
     import backend.shared.helpers.utils as u
@@ -43,15 +63,15 @@ def error_agent(monkeypatch):
 async def test_error_alert_golden_text(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom: bad value")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", "backend.x\nboom: bad value")]
-    assert sent["tg"] == ["<b>RamboQuant error</b>\n<code>backend.x</code>\nboom: bad value"]
+    assert sent["ntfy"] == [("RamboQuant error", f"backend.x\nboom: bad value\n{_FIXED_TS}")]
+    assert sent["tg"] == [f"<b>RamboQuant error</b>\n<code>backend.x</code>\nboom: bad value\n{_FIXED_TS}"]
 
 
 @pytest.mark.asyncio
 async def test_error_alert_strips_html_like_fragments_as_before(sent, error_agent):
     from backend.api.algo import event_agents
     await event_agents.dispatch([_error_rec("boom <bad>")], [error_agent])
-    assert sent["ntfy"] == [("RamboQuant error", "backend.x\nboom")]
+    assert sent["ntfy"] == [("RamboQuant error", f"backend.x\nboom\n{_FIXED_TS}")]
 
 
 @pytest.mark.asyncio
@@ -64,8 +84,10 @@ async def test_error_alert_repeat_suffix_after_cooldown(monkeypatch, sent, error
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
     clock["t"] = error_alerts.COOLDOWN_S + 1
     await event_agents.dispatch([_error_rec("down", alert_now=True)], [error_agent])
-    assert [b for _, b in sent["ntfy"]] == ["backend.x\ndown", "backend.x\ndown (+1 repeats)"]
-    assert sent["tg"][1] == "<b>RamboQuant error</b>\n<code>backend.x</code>\ndown (+1 repeats)"
+    assert [b for _, b in sent["ntfy"]] == [
+        f"backend.x\ndown\n{_FIXED_TS}", f"backend.x\ndown (+1 repeats)\n{_FIXED_TS}",
+    ]
+    assert sent["tg"][1] == f"<b>RamboQuant error</b>\n<code>backend.x</code>\ndown (+1 repeats)\n{_FIXED_TS}"
 
 
 @pytest.mark.asyncio
@@ -87,7 +109,7 @@ def test_fill_format_golden():
         "BUY 75 NIFTY26OCT25000CE (NFO) @ 112.50",
         "Product: NRML",
         "Order id: 101",
-        "Time: 10:15:30 IST",
+        f"Time: {_FIXED_TS}",
     ])
 
 
@@ -111,9 +133,9 @@ async def test_fill_delivery_golden_via_event_agent(monkeypatch):
     agent = SimpleNamespace(slug=event_agents.FILL_AGENT["slug"], **{k: event_agents.FILL_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent["ntfy"] == [("Order filled: SELL 1 CRUDEOIL26OCTFUT",
-                             "Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: 10:15:30 IST")]
+                             f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: {_FIXED_TS}")]
     assert sent["tg"] == ["<b>Order filled: SELL 1 CRUDEOIL26OCTFUT</b>\n"
-                          "Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: 10:15:30 IST"]
+                          f"Account: ZG0790\nSELL 1 CRUDEOIL26OCTFUT (MCX) @ 8750.00\nProduct: NRML\nOrder id: 7\nTime: {_FIXED_TS}"]
 
 
 def _chase_rec():
@@ -140,7 +162,8 @@ async def test_chase_cancel_golden_text_and_urgent_priority(monkeypatch):
         "Chase cancel unconfirmed — possible resting duplicate order",
         "BUY NIFTY26OCTFUT — cancel of order O1 on ZG#### could not be confirmed after attempt 2/40 filled. "
         "The chase has been ABORTED without placing a replacement order. "
-        "Manually verify the broker's order book — the old order may still be live.",
+        "Manually verify the broker's order book — the old order may still be live.\n"
+        f"{_FIXED_TS}",
         "urgent",
     )]
 
@@ -163,7 +186,7 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
                             **{k: event_agents.PARTIAL_GTT_AGENT[k] for k in ("conditions", "events", "actions")})
     await event_agents.dispatch([rec], [agent])
     assert sent == [("Partial GTT placement",
-                     "parent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price",
+                     f"parent #1088 CRUDEOIL26OCTFUT: 1/3 GTTs placed. Errors: rate limit; invalid price\n{_FIXED_TS}",
                      "urgent")]
 
 
@@ -173,16 +196,16 @@ async def test_partial_gtt_golden_text_and_urgent_priority(monkeypatch):
      {"gtt_ids_text": "['G1', 'G2']", "reason": "no candidate", "parent_order_id": 7,
       "symbol": "NIFTY", "exchange": "NFO"},
      ("Unprotected SELL position",
-      "GTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO", "urgent")),
+      f"GTTs placed (ids: ['G1', 'G2']) but wing failed: no candidate | order #7 NIFTY NFO\n{_FIXED_TS}", "urgent")),
     ("TEMPLATE_ATTACH_URGENT_AGENT", "wing_hard_reject", "CRITICAL",
      {"reason": "premium too high", "symbol": "NIFTY", "exchange": "NFO", "target_premium": 12.5},
-     ("Wing scan hard-rejected", "premium too high | NIFTY NFO target ₹12.50", "urgent")),
+     ("Wing scan hard-rejected", f"premium too high | NIFTY NFO target ₹12.50\n{_FIXED_TS}", "urgent")),
     ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_skip", "WARNING",
      {"reason": "no candidate", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
-     ("Wing attach skipped", "no candidate | order #9 BANKNIFTY NFO", "high")),
+     ("Wing attach skipped", f"no candidate | order #9 BANKNIFTY NFO\n{_FIXED_TS}", "high")),
     ("TEMPLATE_ATTACH_HIGH_AGENT", "wing_offset_skip", "WARNING",
      {"reason": "offset outside band", "parent_order_id": 9, "symbol": "BANKNIFTY", "exchange": "NFO"},
-     ("Wing offset attach skipped", "offset outside band | order #9 BANKNIFTY NFO", "high")),
+     ("Wing offset attach skipped", f"offset outside band | order #9 BANKNIFTY NFO\n{_FIXED_TS}", "high")),
 ])
 async def test_template_attach_golden_text_and_priority(monkeypatch, agent_key, event, level, extra, expected):
     from datetime import timezone as _tz
@@ -232,9 +255,14 @@ async def test_order_failure_golden_text_channels_and_html(monkeypatch):
     # the mode tag — this record's `extra` has no "agent_id" key (the
     # shape persisted logs had before that fix), so it correctly
     # defaults to "Manual" (see alert_utils._classify_order_origin_label).
-    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
+    # The dual-tz header line is "10:15:30 IST" unchanged (not _FIXED_TS)
+    # because this test's `ist_disp` is passed straight through
+    # format_notification_header's `ist_display=` kwarg — no agent name
+    # is available at this call site (see alert_utils.order_failure_messages),
+    # so no "Agent: ..." line is added, only the reused timestamp string.
+    assert sent["tg"] == ['<b>&#10060; Order rejected</b>  [Manual]  [LIVE]  (+2 suppressed)\n10:15:30 IST\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\n<code>Insufficient funds &lt;x&gt;</code>']
     assert sent["ntfy"] == [("Order Rejected: NIFTY26OCTFUT BUY",
-                             "❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
+                             "❌ Order rejected  [Manual]  [LIVE]  (+2 suppressed)\n10:15:30 IST\nZG####  BUY  75  NIFTY26OCTFUT  (NFO)\nsource: ticket\nInsufficient funds <x>",
                              "urgent")]
     assert len(sent["mail"]) == 1
     _, addr, subj, body = sent["mail"][0]

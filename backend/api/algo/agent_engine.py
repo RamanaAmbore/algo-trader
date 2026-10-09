@@ -1066,13 +1066,21 @@ async def _v2_send_rich_alert(agent, matches, now, sim_mode: bool = False,
     else:
         tg_body    = _tg_alert_body(rows)
         email_html = _email_alert_body(rows)
-    subject    = f"Agent {agent.slug}"
+    # Single-line agent tag for the email subject (via subject_detail) —
+    # format_notification_header's full output carries an embedded
+    # newline (agent line + dual-tz timestamp) which must never reach an
+    # email Subject header or ntfy Title HTTP header; take only its
+    # first line here. The dispatch_payload layer (alert_utils.py) is
+    # where the full header (both lines) lands in the message BODY.
+    from backend.shared.helpers.alert_utils import format_notification_header
+    subject    = format_notification_header(agent.name, agent.id).splitlines()[0]
     mode_tag   = '' if sim_mode else _agent_execution_mode_tag(agent)
     try:
         logger.info(
             f"Agent [{agent.slug}] alert recorded",
             extra={
                 "tags": ["agent"], "alert_event": "rich_alert", "agent_slug": agent.slug,
+                "agent_name": agent.name, "agent_id": agent.id,
                 "ist_display": timestamp_display(), "tg_table": tg_body,
                 "email_table_html": email_html, "subject_detail": subject,
                 "sim_mode": bool(sim_mode), "mode_tag": mode_tag,
