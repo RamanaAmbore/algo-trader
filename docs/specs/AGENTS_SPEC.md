@@ -306,6 +306,23 @@ threshold-agent path. On `PATCH`, the MERGED spec (existing row + supplied
 fields) is re-validated, so partial updates still get full validation. 
 Validation failure returns 422 with the error list.
 
+**Threshold/cycle-agent condition validation** (2026-10, Sprint 3) — `POST` 
+and `PATCH` requests for EVERY kind (not just `event`) now also validate 
+`conditions` via `_age_validate_threshold_conditions()`, a kind-agnostic 
+companion that calls the same `agent_evaluator.validate()` the optional 
+`/validate-condition` pre-check endpoint already used — an unknown or 
+malformed `metric`/`scope`/`op` token returns 422 with the error list. On 
+`PATCH`, the MERGED `agent.conditions` is re-validated (same merged-spec 
+rule as the event-kind path above). A `conditions` value that isn't yet 
+grammar-tree-shaped (e.g. an empty `{}` placeholder — checked via 
+`agent_engine.is_grammar_tree()`) is left unvalidated, matching 
+`/validate-condition`'s own leniency — only a tree that looks like a real 
+condition attempt gets its tokens checked. Before this, only `/validate-
+condition` and the `/interpret ai create` CLI path ever ran this check; an 
+operator saving a threshold agent through the ordinary form (or the AI-
+draft flow, which only shows validation errors advisorily) could persist a 
+typo'd token with 200/201 and the agent would silently never fire.
+
 ---
 
 ## 9. Grammar Tokens and Registry
@@ -327,6 +344,26 @@ editing a custom token to apply changes to live evaluations.
 v2 grammar evaluator (`agent_evaluator.py`) consumes JSON condition trees and
 tokens table to resolve free-form condition strings into structured leaves
 (`metric`, `scope`, `op`, `value`).
+
+### Parameterized call-syntax metric tokens (2026-10, Sprint 2+3)
+
+Rolling-window metrics also accept function-call syntax for an arbitrary
+window in minutes, e.g. `mean_pnl(45)`, `max_drawdown_pnl(90)`,
+`stdev_pnl(120)`, `range_pnl(15)`, `mean_day(20)`, `max_drawdown_day(180)`,
+`max_drawdown_pnl_pct(30)` — in addition to the fixed tokens
+(`mean_pnl_30m`, `mean_pnl_1h`, etc.), which remain permanent shortcuts for
+the common windows. `GrammarRegistry.metric()`/`.scope()`/`.channel()`/
+`.fmt()` fall back to parsing an unresolved token as a single
+`ast.parse(..., mode="eval")` Call expression; on an exact base-name +
+arg-count match against a `params_schema`-bearing factory row, the bound
+result is cached forever under the literal call string. Only a single bare
+positive numeric literal argument is accepted per declared param — no
+expressions, names, strings, booleans, keyword args, or non-positive
+values (a window of 0 or less would resolve to a real callable that then
+always silently evaluates to `None`, so it's rejected at parse time
+instead). Any mismatch resolves to `None`, identical to an unknown token —
+surfaced by `agent_evaluator.validate()` as `"unknown metric token
+'<token>'"`.
 
 ---
 
@@ -473,6 +510,8 @@ current value by name every call.
 
 | Date | Change |
 |---|---|
+| 2026-10-09 | c0f260b9: Sprint 3 — `_age_validate_threshold_conditions()` closes the save-time validation gap for threshold/cycle agents (create/update now reject unknown/malformed `metric`/`scope`/`op` tokens with 422, same as the long-standing event-kind path). `_parse_call_token` rejects non-positive call-syntax windows (`mean_pnl(0)`). `_summarise_token()` generalizes `params_schema` surfacing beyond `action_type` to metric/scope/channel/format call-syntax tokens. |
+| 2026-10-09 | 1b80b7d8: Sprint 2 — parameterized function-call metric tokens (`mean_pnl(30)` etc.) added to `GrammarRegistry`, documented in §9 above. |
 | 2026-10-08 | (pre-existing corrections): Fixed incorrect statement about `expiry_close` being "held until expiry cutoff" — clarified that cutoff controls creation timing only, not release (operator must click Release to remove hold indefinitely). Fixed incorrect statement that "every held order" has `status="HELD"` — `template_exit` holds leave the parent at original status (e.g. FILLED) with only `hold_json` set. |
 | 2026-10-08 | c5e8814b: Expiry-close agents seeded as inactive with `_ae_guard_seed_status()` — validates that seed dicts with "Ships INACTIVE" in description are never seeded active, wired into both insert and sync paths, logs ERROR and force-corrects on mismatch. |
 | 2026-10-08 | a87db772: Generalized hold/release into a reusable registry — `record_held_order()` replaces category-hardcoded functions, `held_for()` generic check, `get_release_handler()` dispatches via `_RELEASE_HANDLERS` dict. Adding a new hold category is a 4-step registration, not a route edit. |
