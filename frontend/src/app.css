@@ -2795,7 +2795,10 @@
   min-width: 0;
   padding: 0.55rem 0.65rem 0.6rem 0.8rem;
   background: var(--card-bg-elevated);
-  border: 1.5px solid rgba(255, 255, 255, 0.10);
+  /* Tokenized (2026-10 card-chrome audit) — was a raw literal equal to
+     --algo-card-border; now the single source other .bucket-card-family
+     wrappers (mp-bucket-wrap, nav-bd-wrap) converge on. */
+  border: 1.5px solid var(--algo-card-border);
   border-radius: 6px;
   box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
               inset 0 1px 0 rgba(255, 255, 255, 0.06);

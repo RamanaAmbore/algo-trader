@@ -1088,7 +1088,10 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    /* Tokenized (2026-10 card-chrome audit) — was a raw 0.35-alpha
+       literal; --algo-red-border-soft is 0.30, a 0.05 alpha shift
+       imperceptible on a 1px hairline. */
+    border: 1px solid var(--algo-red-border-soft);
     border-radius: 3px;
     color: var(--c-short);
     font-size: var(--fs-xl);
@@ -1118,10 +1121,17 @@
        surfaces). This panel only ever renders inside .algo-viewport
        .card-theme-dark (never the cream theme), so the theme-agnostic
        --card-bg indirection was unnecessary and left room for the two
-       popups to drift if either's DOM nesting ever changed. */
+       popups to drift if either's DOM nesting ever changed.
+       Border/radius actually converged onto .algo-modal's real values
+       (2026-10 card-chrome audit) — the prior `var(--border-color, …)`
+       referenced a token defined nowhere in app.css, so this rule always
+       rendered its fallback (a near-invisible white hairline), never the
+       amber halo the comment above claimed. Not using the .algo-modal
+       class itself: its `overflow: hidden` + `display: flex` would break
+       this panel's own `overflow-y: auto` scroll. */
     background: var(--card-bg-gradient);
-    border: 1px solid var(--border-color, rgba(255,255,255,0.08));
-    border-radius: 4px;
+    border: 1px solid rgba(251, 191, 36, 0.55);
+    border-radius: 6px;
     box-shadow: 0 8px 32px rgba(0,0,0,0.5);
     z-index: var(--z-drawer);
     /* No padding — NavBreakdown header provides its own internal spacing. */

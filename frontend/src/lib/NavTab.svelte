@@ -277,13 +277,18 @@
 </div>
 
 <style>
-  /* Wrapper is the positioning context for the overlay chip. */
+  /* Wrapper is the positioning context for the overlay chip (position:
+     relative anchors .nav-chip-overlay's `left: calc(7.9% + 0.4rem)`) and
+     supplies this tab's own content inset (sibling Intraday/Performance
+     tabs get theirs from .eq-legend / PnlAnalysis internals, not from a
+     shared .card-body padding). The border + background "frame" that used
+     to live here was removed (2026-10 card-chrome audit) — it was the ONLY
+     one of the three chart-card tabs with its own card chrome, so flipping
+     tabs visibly jumped the card's border/radius. Keep position/padding;
+     do not reintroduce border/background here. */
   .nav-tab-wrap {
     position: relative;
     width: 100%;
-    background: var(--card-bg-gradient);
-    border: 1px solid rgba(251, 191, 36, 0.18);
-    border-radius: 4px;
     padding: 6px 8px 8px;
     box-sizing: border-box;
   }

@@ -632,12 +632,15 @@
     flex-direction: column;
     gap: 0;
     padding: 0;
-    /* Same rounded-corner + border as ag-theme-algo wrapper. */
-    border-radius: 4px;
+    /* Converged (2026-10 card-chrome audit) onto the canonical
+       .bucket-card recipe (app.css) — was 4px radius + a raw border
+       literal + a heavier shadow, drifting from the mp-bucket-wrap /
+       bucket-card family this wrapper should read as. */
+    border-radius: 6px;
     overflow: hidden;
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    border: 1.5px solid var(--algo-card-border);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
     /* Defensive background seal — prevents parent bleed if wrapper
        ever gains padding or a gap between child rows. Uses the
        elevated token so it matches algo-grid-chrome / ag-root-wrapper

@@ -5133,21 +5133,23 @@
        box-sizing: border-box so padding doesn't push the card over
        the column width.
 
-       Outer chrome matches .algo-grid-chrome (Legs, Snapshot, History,
-       strategies) — 1.5px slate border + 4px radius + navy inset
-       shadow + gradient bg. Gives each bucket a sharp card boundary
-       instead of relying only on the inner ag-Grid theme border,
-       which reads softer against the dark surface. Operator:
-       "have sharp border to pulse ag grids like legs ag grid." */
+       Outer chrome gives each bucket a sharp card boundary instead of
+       relying only on the inner ag-Grid theme border, which reads
+       softer against the dark surface. Operator: "have sharp border
+       to pulse ag grids like legs ag grid." Border/radius/shadow
+       converged (2026-10 card-chrome audit) onto the canonical
+       .bucket-card recipe (app.css) — NOT .algo-grid-chrome, whose
+       4px radius + 0.45/0.08 shadow is a separate, intentionally
+       distinct family for ag-Grid wrappers. */
     width: 100%;
     box-sizing: border-box;
     display: flex;
     flex-direction: column;
     min-width: 0;
-    border: 1.5px solid rgba(255, 255, 255, 0.10);
+    border: 1.5px solid var(--algo-card-border);
     border-radius: 6px;
-    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.45),
-                inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35),
+                inset 0 1px 0 rgba(255, 255, 255, 0.06);
     background: var(--card-bg-elevated);
     overflow: hidden;
     /* Header gets padding via --ch-padding; grid fills flush to the card
@@ -5457,14 +5459,18 @@
      .st-src, .st-chip, .st-val, .st-pos, .st-neg, .st-sym, .st-sep)
      dropped per audit. */
 
-  /* Context menu (item 2) */
+  /* Context menu (item 2). Border-alpha + radius converged onto
+     .algo-modal's canonical popup recipe (2026-10 card-chrome audit);
+     background stays its own darker literal — a context menu is a
+     different interaction pattern than a modal and doesn't need an
+     identical surface. */
   :global(.ctx-menu) {
     position: fixed;
     z-index: var(--z-tooltip);
     min-width: 10rem;
     background: rgba(10,22,40,0.97);
-    border: 1px solid rgba(251,191,36,0.2);
-    border-radius: 5px;
+    border: 1px solid rgba(251,191,36,0.55);
+    border-radius: 6px;
     box-shadow: 0 4px 20px rgba(0,0,0,0.55);
     padding: 0.25rem 0;
     font-size: var(--fs-md);
@@ -5608,10 +5614,12 @@
     margin: 0.85rem 0 0.6rem;
   }
 
+  /* Converged onto the canonical .algo-modal recipe (2026-10
+     card-chrome audit) — was a bespoke darker gradient + 0.35 border. */
   :global(.search-modal) {
     width: min(28rem, 92vw);
-    background: linear-gradient(180deg, #0c1830 0%, #0a1628 100%);
-    border: 1px solid rgba(251, 191, 36, 0.35);
+    background: var(--card-bg-gradient);
+    border: 1px solid rgba(251, 191, 36, 0.55);
     border-radius: 6px;
     box-shadow: 0 16px 40px rgba(0, 0, 0, 0.6);
     overflow: hidden;
@@ -5637,7 +5645,10 @@
     justify-content: center;
     width: 1.4rem;
     height: 1.4rem;
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    /* Tokenized (2026-10 card-chrome audit) — was a raw 0.35-alpha
+       literal; --algo-red-border-soft is 0.30, a 0.05 alpha shift
+       imperceptible on a 1px hairline. */
+    border: 1px solid var(--algo-red-border-soft);
     border-radius: 3px;
     color: var(--c-short);
     font-size: var(--fs-xl);
