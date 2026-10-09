@@ -951,7 +951,7 @@
     <h1 class="page-title-chip">
       Automation
       {#if simActive}
-        <span class="ml-2 align-middle text-[length:var(--fs-sm)] px-1.5 py-0.5 rounded bg-[var(--c-long)]/20 text-[var(--c-long)] border border-[var(--c-long)]/40 font-mono">
+        <span class="ml-2 align-middle text-[length:var(--fs-sm)] px-1.5 py-0.5 rounded bg-[var(--c-long-22)] text-[var(--c-long)] border border-[var(--algo-green-border)] font-mono">
           SIMULATOR EVENTS
         </span>
       {/if}

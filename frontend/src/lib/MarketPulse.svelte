@@ -4708,19 +4708,19 @@
               options={optionPickerExpiries.map(exp => ({ value: exp, label: exp }))} />
           </div>
           <!-- CE / PE toggle -->
-          <span class="flex rounded overflow-hidden border border-[var(--c-action)]/25">
+          <span class="flex rounded overflow-hidden border border-[var(--algo-amber-border-soft)]">
             <button type="button"
               onclick={() => optionPickerSide = 'CE'}
               class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
                      {optionPickerSide === 'CE'
                        ? 'bg-[var(--c-action)] text-[#0a1628]'
-                       : 'text-[var(--c-muted)] hover:bg-[var(--c-action)]/10'}">CE</button>
+                       : 'text-[var(--c-muted)] hover:bg-[var(--algo-amber-bg-soft)]'}">CE</button>
             <button type="button"
               onclick={() => optionPickerSide = 'PE'}
               class="text-[0.65rem] font-bold px-2.5 py-0.5 transition-colors
                      {optionPickerSide === 'PE'
                        ? 'bg-[var(--c-action)] text-[#0a1628]'
-                       : 'text-[var(--c-muted)] hover:bg-[var(--c-action)]/10'}">PE</button>
+                       : 'text-[var(--c-muted)] hover:bg-[var(--algo-amber-bg-soft)]'}">PE</button>
           </span>
           <!-- Strike dropdown -->
           <div class="w-28">
