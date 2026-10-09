@@ -588,26 +588,6 @@ async def test_execute_action_failure_audit_logged():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_place_order_grammar_handler():
-    """place_order grammar handler invokes log."""
-    from backend.api.algo.actions import place_order
-
-    result = await place_order({}, {"symbol": "NIFTY25JULFUT"})
-    assert result["action"] == "place_order"
-    assert result["status"] == "logged"
-
-
-@pytest.mark.asyncio
-async def test_close_position_grammar_handler():
-    """close_position grammar handler invokes log."""
-    from backend.api.algo.actions import close_position
-
-    result = await close_position({}, {"symbol": "NIFTY25JULFUT"})
-    assert result["action"] == "close_position"
-    assert result["status"] == "logged"
-
-
-@pytest.mark.asyncio
 async def test_emit_log_with_level():
     """emit_log handler respects log level."""
     from backend.api.algo.actions import emit_log

@@ -567,7 +567,7 @@ system_tokens:
   token: place_order
   value_type: void
   description: Place a new broker order with the supplied parameters.
-  resolver: backend.api.algo.actions.place_order
+  resolver: null
   params_schema:
     account:
       type: string
@@ -675,7 +675,7 @@ system_tokens:
   token: modify_order
   value_type: void
   description: Modify an existing open broker order by broker_order_id.
-  resolver: backend.api.algo.actions.modify_order
+  resolver: null
   params_schema:
     account:
       type: string
@@ -700,7 +700,7 @@ system_tokens:
   token: cancel_order
   value_type: void
   description: Cancel a specific open broker order by broker_order_id.
-  resolver: backend.api.algo.actions.cancel_order
+  resolver: null
   params_schema:
     account:
       type: string
@@ -723,7 +723,7 @@ system_tokens:
   token: cancel_all_orders
   value_type: void
   description: Cancel every pending/open order matching the scope filter.
-  resolver: backend.api.algo.actions.cancel_all_orders
+  resolver: null
   params_schema:
     scope:
       type: enum
@@ -750,7 +750,7 @@ system_tokens:
   token: chase_close_positions
   value_type: void
   description: Close every open position in scope using the adaptive limit-order chase engine.
-  resolver: backend.api.algo.actions.chase_close_positions
+  resolver: null
   params_schema:
     scope:
       type: enum
@@ -783,7 +783,7 @@ system_tokens:
   description: Run ExpiryEngine scan + close, restricted to ONE exchange. NFO closes all ITM/NTM; MCX
     closes only unhedged ITM/NTM (CE/PE pairs that net to zero are skipped). Used by the expiry-day auto-close
     agents.
-  resolver: backend.api.algo.actions.expiry_auto_close
+  resolver: null
   params_schema:
     exchange:
       type: enum
@@ -806,7 +806,7 @@ system_tokens:
   value_type: void
   description: Close a single open position with a LIMIT order at current LTP. In sim mode, records a
     paper AlgoOrder with the sim's current LTP so the trade price is visible in order logs.
-  resolver: backend.api.algo.actions.close_position
+  resolver: null
   params_schema:
     account:
       type: string

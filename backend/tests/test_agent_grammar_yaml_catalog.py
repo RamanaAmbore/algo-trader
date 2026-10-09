@@ -16,6 +16,18 @@ It is a static fixture — never regenerated from the live module — so this
 test cannot silently degrade into a no-op comparing the module against
 itself after the refactor is committed.
 
+Amendment (2026-10-08): the 7 dead action-stub `resolver` fields
+(place_order/modify_order/cancel_order/cancel_all_orders/
+chase_close_positions/expiry_auto_close/close_position) were set to
+`null` (not deleted — an absent key would be preserved as the STALE old
+dotted-path by `seed_grammar_tokens()`'s upsert on an already-seeded DB,
+since it only overwrites a key the spec still carries) in both
+`agent_grammar.yaml` and this baseline fixture when those stub functions
+were deleted from `actions.py` — see CLAUDE.md's "Agent action-dispatch
+SSOT" note. The baseline is no longer byte-identical to the
+pre-YAML-externalization Python literal for those 7 entries; it now
+reflects the current, intentional post-dead-code-removal shape.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

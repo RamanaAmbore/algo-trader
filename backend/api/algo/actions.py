@@ -590,60 +590,25 @@ async def _write_live_order(agent, action_type: str, resolved: dict,
 
 
 # ═══════════════════════════════════════════════════════════════════════════
-#  Grammar-token action handlers (dotted-path resolvers from grammar.py)
+#  Non-broker noop action handlers (monitor_order / deactivate_agent /
+#  set_flag / emit_log)
 #
-#  These are the public entry points that GrammarRegistry resolves via
-#  dotted path.  They delegate to the _action_* helpers above for live
-#  mode; paper/sim/shadow routing is done upstream in execute().
+#  These are genuinely dispatched via _NOOP_ACTION_HANDLERS in
+#  _al_run_noop_handler() above, AND are the registry resolver targets for
+#  these 4 tokens in agent_grammar.yaml (GrammarRegistry.actions[token]["fn"]
+#  resolves to these same functions — harmless duplication, not a competing
+#  path, since nothing calls REGISTRY.action()).
+#  (2026-10-08: the 7 dead broker-action grammar-resolver stubs that used
+#  to live here — place_order/modify_order/cancel_order/cancel_all_orders/
+#  chase_close_positions/expiry_auto_close/close_position — were deleted;
+#  real broker dispatch has always run through _LIVE_ACTION_HANDLERS /
+#  _dispatch_live_action() above, not through this section. See CLAUDE.md
+#  "Agent action-dispatch SSOT" note.)
 # ═══════════════════════════════════════════════════════════════════════════
 
 def _log_invoke(action: str, params: dict) -> dict:
     logger.info(f"Agent action invoked: {action} params={params}")
     return {"action": action, "status": "logged", "params": params}
-
-
-async def place_order(ctx, params: dict) -> dict:
-    """Place a new broker order."""
-    return _log_invoke("place_order", params)
-
-
-async def modify_order(ctx, params: dict) -> dict:
-    return _log_invoke("modify_order", params)
-
-
-async def cancel_order(ctx, params: dict) -> dict:
-    return _log_invoke("cancel_order", params)
-
-
-async def cancel_all_orders(ctx, params: dict) -> dict:
-    return _log_invoke("cancel_all_orders", params)
-
-
-async def chase_close_positions(ctx, params: dict) -> dict:
-    """Close every open position in scope via the adaptive chase engine."""
-    return _log_invoke("chase_close_positions", params)
-
-
-async def expiry_auto_close(ctx, params: dict) -> dict:
-    """Run ExpiryEngine scan + close restricted to one exchange.
-
-    Grammar-token stub — the real wiring lives in
-    `_action_live_expiry_auto_close` (live path) and the paper/sim
-    paths in `_paper_trade` / `_sim_paper_trade`. execute() dispatches
-    by mode before reaching this resolver.
-    """
-    return _log_invoke("expiry_auto_close", params)
-
-
-async def close_position(ctx, params: dict) -> dict:
-    """
-    One-shot close of a single position with a LIMIT order at current LTP.
-
-    Sim / paper / shadow modes are dispatched upstream by execute() before
-    this function is reached.  This grammar-token resolver is the LIVE path
-    only — actual broker wiring lives in _action_live_close_position above.
-    """
-    return _log_invoke("close_position", params)
 
 
 async def monitor_order(ctx, params: dict) -> dict:

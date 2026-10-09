@@ -300,6 +300,28 @@ the cross-account aggregate or causes a false 0.
 via `visibleInterval`). State: green (last_good < 5min), amber (stale), red (last_fail > last_ok). 
 Worst state drives color. Click opens per-account modal.
 
+**Agent action-dispatch SSOT (2026-10-08)** — `_LIVE_ACTION_HANDLERS`/`_NOOP_ACTION_HANDLERS`
+in `backend/api/algo/actions.py` are the explicit, sole action-dispatch tables — real broker
+actions route through `_dispatch_live_action()` to `_action_live_*` functions in
+`actions_live.py`; non-broker noops (`monitor_order`/`deactivate_agent`/`set_flag`/`emit_log`)
+route through `_al_run_noop_handler()`. `GrammarRegistry`'s `actions` table
+(`grammar_registry.py`) is catalog metadata only — token name + `params_schema` — and is never
+live-dispatched (`REGISTRY.action()` has zero callers); `routes/grammar.py` only reads
+`len(REGISTRY.actions)` for an admin stats count. The `grammar_tokens` DB rows' own
+`params_schema`/`description` columns (distinct from the in-memory `REGISTRY.actions` dict)
+are what `agent_ai.py`'s Lab-chat agent-builder is designed to read via `_grammar_snapshot()`
+to describe available actions to the operator. The 7 dead `_log_invoke()`-only
+grammar-resolver stub functions that used to seed this table's `resolver` field
+(`place_order`/`modify_order`/`cancel_order`/`cancel_all_orders`/`chase_close_positions`/
+`expiry_auto_close`/`close_position`) were deleted from `actions.py`, and the matching
+`resolver:` lines in `backend/config/grammars/agent_grammar.yaml` set to explicit `resolver:
+null` (NOT deleted — an absent key leaves `seed_grammar_tokens()`'s upsert, which does
+`spec.get('resolver', row.resolver)`, preserving an already-deployed DB row's stale dotted-path
+string forever; an explicit `null` makes the upsert overwrite it with `None`). `_load_action`
+degrades gracefully to `fn: None` when `resolver` is falsy, so `REGISTRY.actions` for these 7
+tokens is `{token: {"fn": None, "params_schema": {...}}}` on both fresh and already-seeded
+databases.
+
 **Alert evaluation and latching** (2026-09, fixes 11 confirmed loss/rate-of-change condition bugs) —
 Agent condition evaluation enforces three critical invariants via the alert engine 
 ([`backend/api/algo/agent_engine.py`](backend/api/algo/agent_engine.py)):
