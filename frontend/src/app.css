@@ -2138,6 +2138,15 @@
     letter-spacing: 0.05em;
     margin-bottom: 0.2rem;
   }
+  /* P0 typography-floor fix (2026-10): 0.65rem (10.4px) sits under the
+     cream theme's 0.7rem/11.2px B2 floor. Scoped to .card-theme-cream
+     only (signin/auth/contact forms) so the dark algo-theme pages that
+     also use the shared .field-label class (admin/*, automation,
+     Replay/SimulatorPanel) are untouched — same cream-only scoping
+     discipline as every other token in this theme. */
+  .card-theme-cream .field-label {
+    font-size: 0.7rem;
+  }
   .field-input {
     width: 100%;
     padding: 0.3rem 0.5rem;

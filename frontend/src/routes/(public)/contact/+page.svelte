@@ -124,16 +124,19 @@
     font-weight: 700;
     padding: 0.55rem 1.1rem;
     border-radius: 0.375rem;
-    background: #d4920c;
+    /* P0 contrast fix: raw #d4920c measured 2.65:1 (fails AA) — same
+       problem /about's .cta-btn-primary already fixed. Reuse the same
+       AA-safe darker amber token + hover value. */
+    background: var(--card-accent-text, #8f6000);
     color: #fff;
-    border: 1px solid #d4920c;
+    border: 1px solid var(--card-accent-text, #8f6000);
     cursor: pointer;
     transition: background 0.12s, border-color 0.12s;
     letter-spacing: 0.01em;
   }
   .contact-send-btn:hover:not(:disabled) {
-    background: #b87a0a;
-    border-color: #b87a0a;
+    background: #5a4010;
+    border-color: #5a4010;
   }
 
   /* Direct contact fallback below the form — operator: forms fail

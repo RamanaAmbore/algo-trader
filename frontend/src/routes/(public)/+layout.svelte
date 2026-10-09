@@ -710,7 +710,14 @@
      not another tab. Symmetric with the dark-side mobile menu's
      amber-pill investor-site link. */
   .pub-mobile-algo {
-    color: #b27908;
+    /* P0 contrast fix: #b27908 measured ~3.1-4.1:1 across the dropdown's
+       gradient background (fails AA at the lighter top stop). #f0d070
+       is the shade already used for every other mobile-menu emphasis
+       state (.pub-mobile-item:hover/.pub-mobile-active, lines above) —
+       used here too rather than the desktop button's own #e8c03a, for
+       consistency with this menu's established gold convention. Clears
+       ~7.7-10.1:1 across the same gradient range. */
+    color: #f0d070;
     font-weight: 500;
     letter-spacing: 0.02em;
     background: rgba(200,168,75,0.10);

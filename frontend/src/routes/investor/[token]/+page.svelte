@@ -525,7 +525,10 @@
   .ip-statement-btn {
     display: inline-block;
     padding: 0.45rem 1.1rem;
-    background: #d4920c;
+    /* P0 contrast fix: raw #d4920c measured 2.65:1 (fails AA) — same
+       problem /about's .cta-btn-primary already fixed. Reuse the same
+       AA-safe darker amber token + hover value. */
+    background: var(--card-accent-text, #8f6000);
     color: #ffffff;
     border-radius: 4px;
     text-decoration: none;
@@ -534,7 +537,7 @@
     letter-spacing: 0.02em;
     transition: background 120ms;
   }
-  .ip-statement-btn:hover { background: #b87b09; }
+  .ip-statement-btn:hover { background: #5a4010; }
   .ip-statement-btn.disabled {
     background: #e7e0cf; color: var(--card-as-of-text, #7a6650); pointer-events: none;
   }

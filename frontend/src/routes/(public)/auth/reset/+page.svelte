@@ -99,7 +99,10 @@
   .pw-toggle {
     position: absolute; right: 0.5rem; top: 50%; transform: translateY(-50%);
     font-size: 0.65rem; font-weight: 600; letter-spacing: 0.03em;
-    color: #6b7a8c; background: transparent; border: none; cursor: pointer;
+    /* P0 contrast fix: #6b7a8c measured 4.39:1 at this small size (just
+       under the 4.5:1 AA floor) — swapped to the cream theme's muted
+       color, matching /signin's identical control. */
+    color: #5a7090; background: transparent; border: none; cursor: pointer;
     padding: 0.15rem 0.35rem;
   }
   .pw-toggle:hover { color: #1e3050; }

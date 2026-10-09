@@ -14,6 +14,15 @@
 // .pub-brand-name (fixed-size brand wordmark), signin's .pw-toggle
 // (show/hide password control).
 //
+// P0 contrast audit follow-up (2026-10): /signin and /market had no
+// floor guard at all, which is why a sub-floor regression on those two
+// pages (text-[0.65rem]/text-[0.62rem] labels, since raised to 0.7rem)
+// went unnoticed. Extended PAGES below to cover both; .pw-toggle (color
+// already fixed for AA contrast separately, size deliberately unchanged
+// per the exemption above) is added to the sweep's class exemption list
+// so this extension doesn't regress the pre-existing, deliberate size
+// exemption.
+//
 // Five quality dimensions (feedback_test_dimensions.md):
 //   1. SSOT    — live DOM computed-style sweep against the actual pages,
 //                not a hardcoded list of selectors (a sweep test is
@@ -28,7 +37,7 @@
 
 import { test, expect } from '@playwright/test';
 
-const PAGES = ['/', '/about', '/faq'];
+const PAGES = ['/', '/about', '/faq', '/signin', '/market'];
 const FLOOR_PX = 11.2; // 0.7rem at the default 16px root font-size
 
 /**
@@ -51,7 +60,7 @@ async function sweepSmallText(page, floorPx) {
       // stylized logotype, not a data/credibility label — same
       // reasoning as the file header comment) and the role-chip badge.
       const cls = typeof el.className === 'string' ? el.className : '';
-      if (/\b(pub-brand-name|pub-brand-sub|pub-user-role)\b/.test(cls)) continue;
+      if (/\b(pub-brand-name|pub-brand-sub|pub-user-role|pw-toggle)\b/.test(cls)) continue;
       const style = getComputedStyle(el);
       if (style.display === 'none' || style.visibility === 'hidden') continue;
       // getComputedStyle only reports the ELEMENT'S OWN display/visibility —
@@ -86,6 +95,29 @@ for (const path of PAGES) {
     expect(offenders, `sub-floor text found on ${path}: ${JSON.stringify(offenders, null, 2)}`).toEqual([]);
   });
 }
+
+// /signin's "Forgot password?" and "Register" tabs render a DIFFERENT
+// sub-tree than the default sign-in tab the generic sweep above covers
+// (tab is local component $state, not a route) — without these, the
+// 0.65rem/0.62rem labels fixed on those tabs (2026-10 P0 audit) would
+// have no sweep coverage at all.
+test('no visible text under 11.2px on /signin forgot-password tab (desktop)', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/signin', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('button', { name: 'Forgot password?' }).click();
+  await page.waitForTimeout(200);
+  const offenders = await sweepSmallText(page, FLOOR_PX);
+  expect(offenders, `sub-floor text found on /signin (forgot tab): ${JSON.stringify(offenders, null, 2)}`).toEqual([]);
+});
+
+test('no visible text under 11.2px on /signin register tab (desktop)', async ({ page }) => {
+  await page.setViewportSize({ width: 1400, height: 900 });
+  await page.goto('/signin', { waitUntil: 'domcontentloaded' });
+  await page.getByRole('tab', { name: 'Register' }).click();
+  await page.waitForTimeout(200);
+  const offenders = await sweepSmallText(page, FLOOR_PX);
+  expect(offenders, `sub-floor text found on /signin (register tab): ${JSON.stringify(offenders, null, 2)}`).toEqual([]);
+});
 
 test('mobile (360px) — brand tagline bump does not cause horizontal overflow', async ({ page }) => {
   await page.setViewportSize({ width: 360, height: 800 });

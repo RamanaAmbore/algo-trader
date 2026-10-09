@@ -188,7 +188,7 @@
           >{loading ? 'Signing in…' : 'Sign In'}</button>
           <div class="flex justify-end">
             <button type="button"
-              class="text-[0.65rem] text-primary hover:underline"
+              class="text-[0.7rem] text-primary hover:underline"
               style="min-height: 2.75rem; padding: 0.5rem; display: inline-flex; align-items: center;"
               onclick={() => { tab = 'forgot'; error = ''; info = ''; }}>Forgot password?</button>
           </div>
@@ -212,7 +212,7 @@
             class="btn-primary w-full disabled:opacity-50 mt-1"
           >{loading ? 'Sending…' : 'Send reset link'}</button>
           <div class="flex justify-start">
-            <button type="button" class="text-[0.65rem] text-primary hover:underline"
+            <button type="button" class="text-[0.7rem] text-primary hover:underline"
               style="min-height: 2.75rem; padding: 0.5rem; display: inline-flex; align-items: center;"
               onclick={() => { tab = 'signin'; error = ''; info = ''; }}>← Back to sign in</button>
           </div>
@@ -262,7 +262,7 @@
             </div>
           </div>
 
-          <p class="pub-banner-info text-[0.62rem] mt-2 px-2 py-1 rounded">
+          <p class="pub-banner-info text-[0.7rem] mt-2 px-2 py-1 rounded">
             Verify your email after registering, then wait for admin approval before signing in.
           </p>
 
@@ -301,7 +301,10 @@
     font-size: 0.65rem;
     font-weight: 600;
     letter-spacing: 0.03em;
-    color: #6b7a8c;
+    /* P0 contrast fix: #6b7a8c measured 4.39:1 at this small size (just
+       under the 4.5:1 AA floor) — swapped to the cream theme's muted
+       color, same token used for text-muted elsewhere on this page. */
+    color: #5a7090;
     background: transparent;
     border: none;
     cursor: pointer;

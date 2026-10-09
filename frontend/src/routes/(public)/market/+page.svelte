@@ -189,9 +189,9 @@
        the dual-timezone string stays on a single line; the page card
        has horizontal padding to absorb the overflow. -->
   {#if tab === 'summary' && lastRefresh}
-    <div class="text-[0.65rem] text-muted perf-ts market-refresh-line">Refreshed at {lastRefresh}</div>
+    <div class="text-[0.7rem] text-muted perf-ts market-refresh-line">Refreshed at {lastRefresh}</div>
   {:else if tab === 'news' && newsRefresh}
-    <div class="text-[0.65rem] text-muted perf-ts market-refresh-line">Refreshed at {newsRefresh}</div>
+    <div class="text-[0.7rem] text-muted perf-ts market-refresh-line">Refreshed at {newsRefresh}</div>
   {/if}
 
   {#if tab === 'summary'}
@@ -200,7 +200,7 @@
       <div class="pub-banner-error p-3 rounded text-sm mb-4" role="alert" aria-live="assertive">{error}</div>
     {/if}
     {#if !content && loading}
-      <div class="text-center text-text/40 text-sm animate-pulse py-8">
+      <div class="text-center text-muted text-sm animate-pulse py-8">
         Loading market report…
       </div>
     {:else if content && content.startsWith('Market report is temporarily')}
@@ -221,7 +221,7 @@
         {@html renderMarkdown(content)}
       </div>
     {:else if !loading}
-      <p class="text-text/40 text-sm">No market update available.</p>
+      <p class="text-muted text-sm">No market update available.</p>
     {/if}
     </div>
   {:else}
@@ -246,7 +246,7 @@
         {/each}
       </ul>
     {:else if !newsLoading}
-      <p class="text-text/40 text-sm">No headlines available right now.</p>
+      <p class="text-muted text-sm">No headlines available right now.</p>
     {/if}
     </div>
   {/if}
