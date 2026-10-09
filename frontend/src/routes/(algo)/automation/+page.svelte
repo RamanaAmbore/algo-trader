@@ -1400,12 +1400,12 @@
               </div>
 
               {#if validationErrors.length}
-                <div class="mt-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
+                <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
                   <div class="font-semibold mb-1">Condition validation failed:</div>
                   <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
                 </div>
               {:else if validationGrammar}
-                <div class="mt-3 p-2 rounded bg-emerald-500/10 text-emerald-300 text-[length:var(--fs-sm)] border border-emerald-500/30">
+                <div class="mt-3 p-2 rounded bg-[var(--algo-green-bg)] text-[var(--algo-green-text)] text-[length:var(--fs-sm)] border border-[var(--algo-green-border-soft)]">
                   Validated — ready to save.
                 </div>
               {/if}
@@ -1549,7 +1549,7 @@
                 </div>
               </div>
               {#if validationErrors.length}
-                <div class="mt-2 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
+                <div class="mt-2 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
                   <ul class="list-disc ml-4">{#each validationErrors as err}<li>{err}</li>{/each}</ul>
                 </div>
               {/if}
@@ -1589,7 +1589,7 @@
       <InfoHint popup panel title="Renderer" text="The server-side template that formats this event into a message. Fetched live from the alert pipeline — never hardcoded in the frontend." />
     </span>
     {#if renderersError && !renderers.length}
-      <div class="text-[length:var(--fs-sm)] text-red-300">
+      <div class="text-[length:var(--fs-sm)] text-[var(--algo-red-text-bright)]">
         {renderersError} <button type="button" class="underline" onclick={loadRenderers}>Retry</button>
       </div>
     {:else}
@@ -1661,7 +1661,7 @@
   </div>
 
   {#if eventCreateErrors.length}
-    <div class="mt-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-sm)] border border-red-500/40">
+    <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
       <ul class="list-disc ml-4">{#each eventCreateErrors as err}<li>{err}</li>{/each}</ul>
     </div>
   {/if}
@@ -1726,14 +1726,14 @@
             class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-bold border flex-shrink-0
               {(agent.trade_mode || 'paper') === 'live'
                 ? 'bg-red-500/15 text-red-400 border-red-500/40'
-                : 'bg-sky-500/15 text-sky-400 border-sky-500/40'}">
+                : 'bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] border-sky-500/40'}">
             {(agent.trade_mode || 'paper') === 'live' ? 'L' : 'P'}
           </button>
           <button type="button"
             onclick={(e) => { e.stopPropagation(); toggle(agent); }}
             class="text-[length:var(--fs-xs)] px-1.5 py-0 rounded font-medium border flex-shrink-0
               {agent.status !== 'inactive'
-                ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
                 : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
             {agent.status !== 'inactive' ? 'ON' : 'OFF'}
           </button>

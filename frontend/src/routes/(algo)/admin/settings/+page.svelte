@@ -551,7 +551,7 @@
 {:else}
 
 {#if _canView}
-{#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-[length:var(--fs-md)] border border-red-500/40">{error}</div>{/if}
+{#if error}<div class="mb-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-md)] border border-red-500/40">{error}</div>{/if}
 
 <!-- Global Switches — audit-logged master toggles via PATCH
      /api/admin/global-switches. paper_trading_mode is a real risk
@@ -564,7 +564,7 @@
     <div class="flex items-center justify-between gap-2 flex-wrap">
       <div>
         <span class="font-mono text-[var(--algo-sky)]">paper_trading_mode</span>
-        <div class="text-[length:var(--fs-xs)] text-red-300 font-semibold mt-0.5">
+        <div class="text-[length:var(--fs-xs)] text-[var(--algo-red-text-bright)] font-semibold mt-0.5">
           ⚠ Affects every account, prod-wide — flips real-money execution.
         </div>
       </div>
@@ -684,8 +684,8 @@
 {#if execRows.length}
   <div class="mb-3 p-2 rounded text-[length:var(--fs-md)] border
               {liveCount === 0
-                ? 'bg-emerald-500/10 text-emerald-300 border-emerald-500/40'
-                : 'bg-red-500/15 text-red-300 border-red-500/50'}">
+                ? 'bg-[var(--algo-green-bg)] text-[var(--algo-green-text)] border-emerald-500/40'
+                : 'bg-red-500/15 text-[var(--algo-red-text-bright)] border-red-500/50'}">
     <b>Execution mode:</b>
     {#if liveCount === 0}
       Every broker action is in <b>PAPER</b> mode — no real orders will hit
@@ -845,7 +845,7 @@
       hedge fit: high R² + low σ = tight hedge; low R² = noisy.
     </p>
     {#if proxiesErr}
-      <div class="text-[length:var(--fs-md)] text-red-300 mb-1">{proxiesErr}</div>
+      <div class="text-[length:var(--fs-md)] text-[var(--algo-red-text-bright)] mb-1">{proxiesErr}</div>
     {/if}
     {#if proxies.length}
       <div class="overflow-x-auto mb-2">
@@ -919,7 +919,7 @@
       {#if scheduleLoading}<span class="text-[length:var(--fs-xs)] opacity-60 ml-1">loading…</span>{/if}
     </div>
     {#if scheduleErr}
-      <div class="mb-2 text-[length:var(--fs-md)] text-red-300">{scheduleErr}</div>
+      <div class="mb-2 text-[length:var(--fs-md)] text-[var(--algo-red-text-bright)]">{scheduleErr}</div>
     {/if}
 
     <!-- Defaults table -->
@@ -1009,8 +1009,7 @@
                 <td class="p-1 font-mono text-[length:var(--fs-md)]">{row.date}</td>
                 <td class="p-1 text-[length:var(--fs-md)]">{row.session_name}</td>
                 <td class="p-1 text-[length:var(--fs-xs)] opacity-70">{(row.exchanges || []).join(', ')}</td>
-                <td class="p-1 text-[length:var(--fs-md)]"
-                    class:text-green-400={row.is_open}
+                <td class="p-1 text-[length:var(--fs-md)] {row.is_open ? 'text-[var(--algo-green)]' : ''}"
                     class:text-red-400={!row.is_open}>
                   {row.is_open ? 'Open' : 'Closed'}
                 </td>

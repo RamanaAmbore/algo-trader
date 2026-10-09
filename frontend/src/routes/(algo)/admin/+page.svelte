@@ -580,7 +580,7 @@
        (only Refresh + Order + Chart + Activity + Collapse + Fullscreen
        + Default-size icons sit RIGHT of the ml-auto spacer). -->
   <button onclick={() => showCreate = !showCreate}
-    class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+    class="text-[0.65rem] py-1 px-3 rounded border border-[var(--algo-green-border)] bg-[var(--algo-green-bg-mid)] text-[var(--algo-green-text)] hover:bg-[var(--algo-green-bg-strong)] font-semibold">
     {showCreate ? 'Cancel' : '+ Create User'}
   </button>
   <span class="ml-auto"></span>
@@ -593,10 +593,10 @@
 <div class="algo-card" data-status="inactive">
 
   {#if success}
-    <div class="mb-3 p-2 rounded bg-green-500/15 text-green-400 text-xs border border-green-500/40">{success}</div>
+    <div class="mb-3 p-2 rounded bg-green-500/15 text-[var(--algo-green)] text-xs border border-green-500/40">{success}</div>
   {/if}
   {#if error}
-    <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+    <div class="mb-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-xs border border-red-500/40">{error}</div>
   {/if}
 
   <!-- Create User Form -->
@@ -664,18 +664,18 @@
               <span class="font-semibold text-xs text-[var(--c-action)]">{user.display_name}</span>
               <span class="text-xs text-white/70">@{user.username}</span>
               {#if isSelf}
-                <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40">You</span>
+                <span class="px-1.5 py-0.5 rounded bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] text-[0.6rem] font-semibold uppercase border border-sky-500/40">You</span>
               {/if}
               <span class="text-[0.6rem] text-[var(--c-muted)] font-mono">{user.account_id}</span>
               <span class="px-1.5 py-0.5 rounded text-[0.6rem] font-semibold uppercase border
                 {user.role === 'designated'
-                  ? 'bg-violet-500/15 text-[#c084fc] border-violet-500/40'
+                  ? 'bg-[var(--algo-violet-bg)] text-[#c084fc] border-violet-500/40'
                   : user.role === 'admin'
-                    ? 'bg-amber-500/15 text-amber-400 border-amber-500/40'
+                    ? 'bg-[var(--algo-amber-bg)] text-[var(--algo-amber)] border-amber-500/40'
                     : user.role === 'trader'
                       ? 'bg-green-500/15 text-[var(--c-long)] border-green-500/40'
                       : user.role === 'risk'
-                        ? 'bg-amber-500/15 text-amber-400/75 border-amber-500/30'
+                        ? 'bg-[var(--algo-amber-bg)] text-amber-400/75 border-[var(--algo-amber-border-soft)]'
                         : user.role === 'partner'
                           ? 'bg-green-500/10 text-[var(--algo-green-text-dim)] border-green-500/25'
                           : 'bg-slate-500/15 text-slate-400 border-slate-500/40'}">
@@ -684,17 +684,17 @@
               {#if user.terminated_at}
                 <span class="px-1.5 py-0.5 rounded bg-zinc-500/20 text-zinc-300 text-[0.6rem] font-semibold uppercase border border-zinc-500/50">Terminated</span>
               {:else if user.suspended_at}
-                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Suspended</span>
+                <span class="px-1.5 py-0.5 rounded bg-[var(--algo-amber-bg)] text-[var(--algo-amber)] text-[0.6rem] font-semibold uppercase border border-amber-500/40">Suspended</span>
               {:else if !user.is_approved}
-                <span class="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
+                <span class="px-1.5 py-0.5 rounded bg-[var(--algo-amber-bg)] text-[var(--algo-amber)] text-[0.6rem] font-semibold uppercase border border-amber-500/40">Pending</span>
               {:else if !user.is_active}
-                <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-red-300 text-[0.6rem] font-semibold uppercase border border-red-500/40">Inactive</span>
+                <span class="px-1.5 py-0.5 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[0.6rem] font-semibold uppercase border border-red-500/40">Inactive</span>
               {/if}
               {#if user.email_verified}
-                <span class="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 text-[0.6rem] font-semibold uppercase border border-sky-500/40" title="Email verified">✉ Verified</span>
+                <span class="px-1.5 py-0.5 rounded bg-[var(--algo-sky-bg)] text-[var(--algo-sky)] text-[0.6rem] font-semibold uppercase border border-sky-500/40" title="Email verified">✉ Verified</span>
               {/if}
               {#if user.kyc_verified}
-                <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-green-400 text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
+                <span class="px-1.5 py-0.5 rounded bg-green-500/15 text-[var(--algo-green)] text-[0.6rem] font-semibold uppercase border border-green-500/40">KYC</span>
               {/if}
               {#if user.role === 'designated' || (user.role === 'admin' && user.receive_alerts)}
                 <span class="px-1.5 py-0.5 rounded bg-yellow-500/15 text-yellow-300 text-[0.6rem] font-semibold uppercase border border-yellow-500/40" title="Receives platform alerts (loss / agent / summary)">🔔 Alerts</span>
@@ -983,7 +983,7 @@
           {#each emailEvents as ev}
             {@const hasFail = (ev.failed_count ?? 0) > 0}
             <div class="font-mono text-[0.6rem] flex flex-wrap gap-x-2 gap-y-0.5 leading-relaxed
-              {hasFail ? 'text-red-300' : 'text-white/80'}">
+              {hasFail ? 'text-[var(--algo-red-text-bright)]' : 'text-white/80'}">
               <span class="tabular-nums opacity-70">{_relTime(ev.created_at)}</span>
               <span>·</span>
               <span class="text-[var(--c-action)]">{ev.actor ?? '—'}</span>
@@ -1076,9 +1076,9 @@
   <!-- Result strip -->
   {#if emailResult}
     <div class="mt-3 p-2 rounded text-xs border font-mono tabular-nums
-      {emailResult.kind === 'ok'      ? 'bg-green-500/15 text-green-400 border-green-500/40' :
-       emailResult.kind === 'partial' ? 'bg-amber-500/15 text-amber-400 border-amber-500/40' :
-                                        'bg-red-500/15 text-red-300 border-red-500/40'}">
+      {emailResult.kind === 'ok'      ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40' :
+       emailResult.kind === 'partial' ? 'bg-[var(--algo-amber-bg)] text-[var(--algo-amber)] border-amber-500/40' :
+                                        'bg-red-500/15 text-[var(--algo-red-text-bright)] border-red-500/40'}">
       {emailResult.kind === 'ok' ? '✓' : emailResult.kind === 'partial' ? '⚠' : '✗'} {emailResult.msg}
     </div>
   {/if}
@@ -1209,7 +1209,7 @@
                     <td class="ip-modal-note" title={t.note || ''}>{t.note || '—'}</td>
                     <td class="td-actions">
                       {#if t.is_active}
-                        <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-red-300"
+                        <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-[var(--algo-red-text-bright)]"
                                 onclick={() => revokePortal(t.id)}>Revoke</button>
                       {/if}
                     </td>
@@ -1236,7 +1236,7 @@
             <input type="number" min="1" max="12" step="1"
                    bind:value={stmtMonth} class="field-input ip-modal-yr"/>
           </label>
-          <button class="btn-secondary text-[0.7rem] py-1.5 px-3 border-cyan-400/50 text-cyan-300"
+          <button class="btn-secondary text-[0.7rem] py-1.5 px-3 border-cyan-400/50 text-[var(--algo-cyan-text)]"
                   disabled={stmtBusy}
                   onclick={previewStatement}>
             {stmtBusy ? 'Generating…' : 'Preview PDF'}
@@ -1356,7 +1356,7 @@
                     <td class="td-num td-mono">{e.units_delta.toFixed(4)}</td>
                     <td class="ip-modal-note" title={e.note || ''}>{e.note || '—'}</td>
                     <td class="td-actions">
-                      <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-red-300"
+                      <button class="btn-secondary text-[0.6rem] py-0.5 px-1.5 border-red-400/50 text-[var(--algo-red-text-bright)]"
                               onclick={() => removeEvent(e.id)}>Delete</button>
                     </td>
                   </tr>

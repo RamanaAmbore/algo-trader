@@ -220,7 +220,7 @@
        + Default-size icons sit RIGHT of the ml-auto spacer). -->
   {#if !isDemo}
     <button onclick={openCreate}
-      class="text-[0.65rem] py-1 px-3 rounded border border-emerald-500/50 bg-emerald-500/15 text-emerald-300 hover:bg-emerald-500/25 font-semibold">
+      class="text-[0.65rem] py-1 px-3 rounded border border-[var(--algo-green-border)] bg-[var(--algo-green-bg-mid)] text-[var(--algo-green-text)] hover:bg-[var(--algo-green-bg-strong)] font-semibold">
       + New token
     </button>
   {/if}
@@ -250,7 +250,7 @@
 {/if}
 
 {#if error}
-  <div class="mb-3 p-2 rounded bg-red-500/15 text-red-300 text-xs border border-red-500/40">{error}</div>
+  <div class="mb-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-xs border border-red-500/40">{error}</div>
 {/if}
 
 <!-- Create / edit form (shown when showForm is true) -->
@@ -264,7 +264,7 @@
     </div>
 
     {#if formError}
-      <div class="mb-2 p-1.5 rounded bg-red-500/15 text-red-300 text-[0.65rem] border border-red-500/40">{formError}</div>
+      <div class="mb-2 p-1.5 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[0.65rem] border border-red-500/40">{formError}</div>
     {/if}
 
     <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
@@ -356,7 +356,7 @@
 
     <div class="flex gap-2 mt-2">
       <button onclick={submitForm} disabled={submitting}
-        class="text-[0.65rem] py-1 px-4 rounded border border-emerald-500/50 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/30 font-semibold disabled:opacity-50">
+        class="text-[0.65rem] py-1 px-4 rounded border border-[var(--algo-green-border)] bg-[var(--algo-green-bg-strong)] text-[var(--algo-green-text)] hover:bg-emerald-500/30 font-semibold disabled:opacity-50">
         {submitting ? 'Saving…' : (editingId == null ? 'Create' : 'Save')}
       </button>
     </div>
@@ -413,7 +413,7 @@
               {#if t.is_system}
                 <span class="px-1.5 py-0.5 rounded bg-slate-500/20 text-slate-300 text-[0.55rem] font-semibold uppercase border border-slate-500/40">System</span>
               {:else}
-                <span class="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-300 text-[0.55rem] font-semibold uppercase border border-emerald-500/40">Custom</span>
+                <span class="px-1.5 py-0.5 rounded bg-[var(--algo-green-bg-mid)] text-[var(--algo-green-text)] text-[0.55rem] font-semibold uppercase border border-emerald-500/40">Custom</span>
               {/if}
             </td>
             <td class="py-1.5 px-2" onclick={(e) => e.stopPropagation()}>
@@ -429,7 +429,7 @@
                 <button onclick={() => toggle(t.id, t.is_active)}
                   class="text-[0.6rem] px-2 py-0.5 rounded font-medium border
                     {t.is_active
-                      ? 'bg-green-500/15 text-green-400 border-green-500/40'
+                      ? 'bg-green-500/15 text-[var(--algo-green)] border-green-500/40'
                       : 'bg-slate-700/40 text-slate-400 border-slate-500/30'}">
                   {t.is_active ? 'ON' : 'OFF'}
                 </button>
@@ -469,7 +469,7 @@
                       <button onclick={() => openEdit(t)}
                         class="text-[0.6rem] px-2 py-0.5 rounded border border-[var(--algo-amber-border)] text-[var(--c-action)] hover:bg-[var(--c-action-14)]">Edit</button>
                       <button onclick={() => doDelete(t)}
-                        class="text-[0.6rem] px-2 py-0.5 rounded border border-red-500/50 text-red-300 hover:bg-red-500/15">Delete</button>
+                        class="text-[0.6rem] px-2 py-0.5 rounded border border-red-500/50 text-[var(--algo-red-text-bright)] hover:bg-red-500/15">Delete</button>
                     {/if}
                   </div>
                 </div>
