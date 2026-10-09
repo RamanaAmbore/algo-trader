@@ -121,104 +121,128 @@ def _check_paren_depth(expr: str) -> None:
             depth -= 1
 
 
+def _eval_constant(node: ast.Constant) -> Any:
+    # Explicit type-check rejection (not catching a later error) — only
+    # int/float/bool literals are allowed. str/bytes/complex/None/Ellipsis
+    # constants are all rejected here.
+    if type(node.value) not in (int, float, bool):
+        raise ExprError(f"disallowed constant type: {type(node.value).__name__}")
+    if isinstance(node.value, float) and not math.isfinite(node.value):
+        raise ExprError("expression contains a non-finite constant")
+    return node.value
+
+
+def _eval_name(node: ast.Name, namespace: dict) -> Any:
+    try:
+        return namespace[node.id]
+    except KeyError:
+        raise ExprError(f"undefined name: {node.id}") from None
+
+
+def _eval_unaryop(node: ast.UnaryOp, namespace: dict, depth: int) -> Any:
+    op_fn = _UNARYOPS.get(type(node.op))
+    if op_fn is None:
+        raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
+    operand = _eval_node(node.operand, namespace, depth + 1)
+    result = op_fn(operand)
+    _check_finite(result)
+    return result
+
+
+def _check_pow_magnitude(left: Any, right: Any) -> None:
+    # Static magnitude guard — rejected BEFORE evaluating, so a
+    # 10**10**10 / 2**1000-style CPU/memory bomb never actually gets
+    # computed (not caught via a timeout after the fact).
+    try:
+        exponent_ok = abs(right) <= _MAX_POW_EXPONENT
+        base_ok = abs(left) <= _MAX_POW_BASE
+    except TypeError as e:
+        raise ExprError(f"invalid operand for **: {e}") from e
+    if not exponent_ok or not base_ok:
+        raise ExprError(
+            "exponent/base too large for ** (guard: "
+            f"|exponent|<={_MAX_POW_EXPONENT}, |base|<={_MAX_POW_BASE})"
+        )
+
+
+def _eval_binop(node: ast.BinOp, namespace: dict, depth: int) -> Any:
+    op_fn = _BINOPS.get(type(node.op))
+    if op_fn is None:
+        raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
+    left = _eval_node(node.left, namespace, depth + 1)
+    right = _eval_node(node.right, namespace, depth + 1)
+    if isinstance(node.op, ast.Pow):
+        _check_pow_magnitude(left, right)
+    try:
+        result = op_fn(left, right)
+    except ZeroDivisionError as e:
+        raise ExprError("division by zero") from e
+    if type(result) not in (int, float):
+        # e.g. (-8) ** 0.5 → complex. Not a modelled result type —
+        # reject explicitly rather than let a complex leak out.
+        raise ExprError(
+            f"expression produced an unsupported result type: {type(result).__name__}"
+        )
+    _check_finite(result)
+    return result
+
+
+def _eval_boolop(node: ast.BoolOp, namespace: dict, depth: int) -> Any:
+    if type(node.op) not in (ast.And, ast.Or):
+        raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
+    # Evaluate ALL operands (no short-circuit) and coerce the FINAL
+    # result via explicit all()/any() — never return a raw operand
+    # value. This prevents value-leakage: Python's native `0 or 5`
+    # evaluates to `5` (the operand itself); here it must become
+    # `True`, a strict bool, every time.
+    values = [_eval_node(v, namespace, depth + 1) for v in node.values]
+    if isinstance(node.op, ast.And):
+        return all(bool(v) for v in values)
+    return any(bool(v) for v in values)
+
+
+def _eval_compare(node: ast.Compare, namespace: dict, depth: int) -> Any:
+    # Chained comparisons (a < b < c) are NOT supported — Python's ast
+    # represents them as one Compare node with multiple ops/comparators;
+    # reject outright rather than silently evaluating only part of the
+    # chain.
+    if len(node.ops) != 1 or len(node.comparators) != 1:
+        raise ExprError("chained comparisons not supported")
+    op_fn = _COMPARES.get(type(node.ops[0]))
+    if op_fn is None:
+        raise ExprError(f"disallowed syntax: {type(node.ops[0]).__name__}")
+    left = _eval_node(node.left, namespace, depth + 1)
+    right = _eval_node(node.comparators[0], namespace, depth + 1)
+    # Deliberate fail-CLOSED divergence from grammar.py:OPERATORS — see
+    # the _COMPARES table comment above for the full rationale.
+    if left is None or right is None:
+        raise ExprError("comparison against undefined value")
+    return bool(op_fn(left, right))
+
+
+# Node type -> evaluator. Checked via isinstance in _eval_node (not a
+# straight dict-by-type lookup) so ast.Expression's recursive unwrap stays
+# inline; every OTHER node type dispatches through this table, keeping
+# _eval_node itself a flat, low-complexity dispatcher — all the real
+# per-node-type branching lives in the extracted functions above.
 def _eval_node(node: ast.AST, namespace: dict, depth: int) -> Any:
     if depth > _MAX_DEPTH:
         raise ExprError(f"expression nesting too deep (> {_MAX_DEPTH})")
 
     if isinstance(node, ast.Expression):
         return _eval_node(node.body, namespace, depth + 1)
-
     if isinstance(node, ast.Constant):
-        # Explicit type-check rejection (not catching a later error) —
-        # only int/float/bool literals are allowed. str/bytes/complex/
-        # None/Ellipsis constants are all rejected here.
-        if type(node.value) not in (int, float, bool):
-            raise ExprError(
-                f"disallowed constant type: {type(node.value).__name__}"
-            )
-        if isinstance(node.value, float) and not math.isfinite(node.value):
-            raise ExprError("expression contains a non-finite constant")
-        return node.value
-
+        return _eval_constant(node)
     if isinstance(node, ast.Name):
-        try:
-            return namespace[node.id]
-        except KeyError:
-            raise ExprError(f"undefined name: {node.id}") from None
-
+        return _eval_name(node, namespace)
     if isinstance(node, ast.UnaryOp):
-        op_fn = _UNARYOPS.get(type(node.op))
-        if op_fn is None:
-            raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
-        operand = _eval_node(node.operand, namespace, depth + 1)
-        result = op_fn(operand)
-        _check_finite(result)
-        return result
-
+        return _eval_unaryop(node, namespace, depth)
     if isinstance(node, ast.BinOp):
-        op_fn = _BINOPS.get(type(node.op))
-        if op_fn is None:
-            raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
-        left = _eval_node(node.left, namespace, depth + 1)
-        right = _eval_node(node.right, namespace, depth + 1)
-        if isinstance(node.op, ast.Pow):
-            # Static magnitude guard — rejected BEFORE evaluating, so a
-            # 10**10**10 / 2**1000-style CPU/memory bomb never actually
-            # gets computed (not caught via a timeout after the fact).
-            try:
-                exponent_ok = abs(right) <= _MAX_POW_EXPONENT
-                base_ok = abs(left) <= _MAX_POW_BASE
-            except TypeError as e:
-                raise ExprError(f"invalid operand for **: {e}") from e
-            if not exponent_ok or not base_ok:
-                raise ExprError(
-                    "exponent/base too large for ** (guard: "
-                    f"|exponent|<={_MAX_POW_EXPONENT}, |base|<={_MAX_POW_BASE})"
-                )
-        try:
-            result = op_fn(left, right)
-        except ZeroDivisionError as e:
-            raise ExprError("division by zero") from e
-        if type(result) not in (int, float):
-            # e.g. (-8) ** 0.5 → complex. Not a modelled result type —
-            # reject explicitly rather than let a complex leak out.
-            raise ExprError(
-                "expression produced an unsupported result type: "
-                f"{type(result).__name__}"
-            )
-        _check_finite(result)
-        return result
-
+        return _eval_binop(node, namespace, depth)
     if isinstance(node, ast.BoolOp):
-        if type(node.op) not in (ast.And, ast.Or):
-            raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
-        # Evaluate ALL operands (no short-circuit) and coerce the FINAL
-        # result via explicit all()/any() — never return a raw operand
-        # value. This prevents value-leakage: Python's native `0 or 5`
-        # evaluates to `5` (the operand itself); here it must become
-        # `True`, a strict bool, every time.
-        values = [_eval_node(v, namespace, depth + 1) for v in node.values]
-        if isinstance(node.op, ast.And):
-            return all(bool(v) for v in values)
-        return any(bool(v) for v in values)
-
+        return _eval_boolop(node, namespace, depth)
     if isinstance(node, ast.Compare):
-        # Chained comparisons (a < b < c) are NOT supported — Python's
-        # ast represents them as one Compare node with multiple ops/
-        # comparators; reject outright rather than silently evaluating
-        # only part of the chain.
-        if len(node.ops) != 1 or len(node.comparators) != 1:
-            raise ExprError("chained comparisons not supported")
-        op_fn = _COMPARES.get(type(node.ops[0]))
-        if op_fn is None:
-            raise ExprError(f"disallowed syntax: {type(node.ops[0]).__name__}")
-        left = _eval_node(node.left, namespace, depth + 1)
-        right = _eval_node(node.comparators[0], namespace, depth + 1)
-        # Deliberate fail-CLOSED divergence from grammar.py:OPERATORS —
-        # see the _COMPARES table comment above for the full rationale.
-        if left is None or right is None:
-            raise ExprError("comparison against undefined value")
-        return bool(op_fn(left, right))
+        return _eval_compare(node, namespace, depth)
 
     # Everything else is explicitly rejected: Call, Attribute, Subscript,
     # Lambda, ListComp/SetComp/DictComp/GeneratorExp, IfExp, NamedExpr

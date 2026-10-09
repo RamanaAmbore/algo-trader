@@ -19,7 +19,7 @@ Module layout (split from the original 2580-line file):
 import asyncio
 import importlib
 import sys
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from backend.shared.helpers.ramboq_logger import get_logger
 from backend.api.algo.expr_eval import eval_expr, ExprError
@@ -427,58 +427,77 @@ def resolve_action_params(action_type: str, params: dict, context: dict) -> dict
 
     resolved = dict(params)
     for key, spec in schema.items():
-        if not isinstance(spec, dict) or not spec.get("token_ref_ok"):
+        if not _is_expr_eligible_param(spec, params.get(key)):
             continue
-        field_type = spec.get("type")
-        if field_type not in ("number", "boolean"):
-            continue
-        value = params.get(key)
-        if not isinstance(value, str):
-            continue  # native JSON number/bool (or absent) — untouched
-
-        namespace = {
-            k: v for k, v in params.items()
-            if k != key and isinstance(v, (int, float, bool))
-        }
-        try:
-            result = eval_expr(value, namespace)
-        except ExprError:
-            raise
-        except Exception as e:  # defense in depth — eval_expr itself only
-            # ever raises ExprError, but never let anything else escape.
-            raise ExprError(f"error resolving {action_type}.{key}: {e}") from e
-
-        # `bool` is an `int` subclass in Python — check it BEFORE the
-        # numeric check so a relational/logical expression (`"a==b"`)
-        # landing on a numeric field never silently becomes qty=1/qty=0.
-        if field_type == "boolean":
-            if not isinstance(result, bool):
-                raise ExprError(
-                    f"{action_type}.{key}: expression must evaluate to a "
-                    f"boolean, got {type(result).__name__}"
-                )
-        else:  # field_type == "number"
-            if isinstance(result, bool):
-                raise ExprError(
-                    f"{action_type}.{key}: expression evaluated to a "
-                    f"boolean, not a number — refusing to coerce to 0/1"
-                )
-            if not isinstance(result, (int, float)):
-                raise ExprError(
-                    f"{action_type}.{key}: expression must evaluate to a "
-                    f"number, got {type(result).__name__}"
-                )
-            if key in _INTEGER_ONLY_PARAM_KEYS and isinstance(result, float):
-                if not result.is_integer():
-                    raise ExprError(
-                        f"{action_type}.{key}: expression must evaluate to "
-                        f"a whole number, got {result}"
-                    )
-                result = int(result)
-
-        resolved[key] = result
+        resolved[key] = _resolve_one_expr_param(action_type, key, spec, params)
 
     return resolved
+
+
+def _is_expr_eligible_param(spec: Any, value: Any) -> bool:
+    """The 3-part activation rule from `resolve_action_params`'s own
+    docstring, split out as its own predicate: schema entry opts in via
+    `token_ref_ok`, is typed number/boolean, and the actual value is a
+    `str` (a native JSON number/bool is left untouched)."""
+    if not isinstance(spec, dict) or not spec.get("token_ref_ok"):
+        return False
+    if spec.get("type") not in ("number", "boolean"):
+        return False
+    return isinstance(value, str)
+
+
+def _resolve_one_expr_param(action_type: str, key: str, spec: dict, params: dict) -> Any:
+    """Evaluate `params[key]`'s expression string and coerce it to match
+    `spec['type']`. Raises `ExprError` on any failure — malformed
+    expression, wrong result type, or (for the integer-only keys) a
+    non-whole-number result."""
+    value = params[key]
+    namespace = {
+        k: v for k, v in params.items()
+        if k != key and isinstance(v, (int, float, bool))
+    }
+    try:
+        result = eval_expr(value, namespace)
+    except ExprError:
+        raise
+    except Exception as e:  # defense in depth — eval_expr itself only
+        # ever raises ExprError, but never let anything else escape.
+        raise ExprError(f"error resolving {action_type}.{key}: {e}") from e
+
+    return _coerce_expr_result(action_type, key, spec.get("type"), result)
+
+
+def _coerce_expr_result(action_type: str, key: str, field_type: str, result: Any) -> Any:
+    # `bool` is an `int` subclass in Python — check it BEFORE the numeric
+    # check so a relational/logical expression ("a==b") landing on a
+    # numeric field never silently becomes qty=1/qty=0.
+    if field_type == "boolean":
+        if not isinstance(result, bool):
+            raise ExprError(
+                f"{action_type}.{key}: expression must evaluate to a "
+                f"boolean, got {type(result).__name__}"
+            )
+        return result
+
+    # field_type == "number"
+    if isinstance(result, bool):
+        raise ExprError(
+            f"{action_type}.{key}: expression evaluated to a "
+            f"boolean, not a number — refusing to coerce to 0/1"
+        )
+    if not isinstance(result, (int, float)):
+        raise ExprError(
+            f"{action_type}.{key}: expression must evaluate to a "
+            f"number, got {type(result).__name__}"
+        )
+    if key in _INTEGER_ONLY_PARAM_KEYS and isinstance(result, float):
+        if not result.is_integer():
+            raise ExprError(
+                f"{action_type}.{key}: expression must evaluate to "
+                f"a whole number, got {result}"
+            )
+        return int(result)
+    return result
 
 
 async def execute(agent, actions: list, context: dict):
