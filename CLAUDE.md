@@ -642,6 +642,17 @@ stop ratchet, and order modify paths; all patches deployed together. Key invaria
   explicitly before returning `raw_qty` unchanged — same refusal semantics
   as Kite/Dhan, without adopting their lots conversion (which would be
   wrong for Groww's actual wire convention).
+- **Admin manual modify-order route had the same unconverted-qty bug (2026-10)**
+  — `OrdersController.modify_order` (`backend/api/routes/orders.py`, the
+  admin PUT `/{order_id}` route) sent `data.quantity` straight to
+  `broker.modify_order()` unconverted, with a comment claiming this was
+  deliberate because `ModifyOrderRequest` carries no exchange/tradingsymbol.
+  Same trap as the agent `modify_order` action path above. Fix: resolve the
+  order's own exchange/symbol from its `AlgoOrder` row
+  (`actions_live.py:_al_modify_fetch_order_meta`) and reuse the exact same
+  G1 lot-multiple check + `broker.translate_qty()` call
+  (`actions_live.py:_al_modify_resolve_qty`) instead of duplicating it —
+  fails closed (400, broker never called) on resolution failure.
 
 **Template attach mode gate — paper/sim/replay fills never place real broker 
 orders (2026-09-30, commit 05c6f708)** — `_fire_template_attach_on_fill` in 
