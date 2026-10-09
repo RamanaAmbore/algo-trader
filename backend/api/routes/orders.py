@@ -2423,11 +2423,17 @@ class OrdersController(Controller):
                 detail="Admin access required to modify orders.")
         broker = _broker_for(data.account)
         masked = mask_account(data.account)
-        # Note: MCX qty translation (to_kite_qty) is NOT applied here because
-        # ModifyOrderRequest carries no exchange/tradingsymbol — the operator is
-        # modifying an existing Kite order and should supply the quantity already
-        # in Kite's convention (lots for MCX). This endpoint is legacy / rarely
-        # used; the primary order path (/ticket + chase.py) handles the translation.
+        # 2026-10 fix: ModifyOrderRequest carries no exchange/tradingsymbol,
+        # so this used to send `quantity` straight to broker.modify_order()
+        # unconverted — the same "qty vs lot_size" trap as the agent
+        # modify_order path (see actions_live.py:_al_modify_resolve_qty's
+        # docstring). Resolve the order's own exchange/symbol from its
+        # AlgoOrder row and reuse the exact same G1 lot-multiple check +
+        # broker.translate_qty() call the agent path already uses, instead
+        # of duplicating that logic here.
+        from backend.api.algo.actions_live import (
+            _al_modify_fetch_order_meta, _al_modify_resolve_qty,
+        )
         kwargs = {k: v for k, v in {
             "quantity":      data.quantity,
             "price":         data.price,
@@ -2436,6 +2442,11 @@ class OrdersController(Controller):
             "validity":      data.validity,
         }.items() if v is not None}
         try:
+            if "quantity" in kwargs:
+                row_exchange, row_symbol = await _al_modify_fetch_order_meta(order_id)
+                kwargs["quantity"] = await _al_modify_resolve_qty(
+                    broker, int(kwargs["quantity"]), row_exchange, row_symbol,
+                )
             broker.modify_order(order_id, variety=data.variety, **kwargs)
             invalidate("orders")
             logger.info(f"Order modified: {order_id} [{masked}]")
