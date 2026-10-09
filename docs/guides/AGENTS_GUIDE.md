@@ -149,6 +149,8 @@ spikes.
 
 **Rolling-window aggregates** (Phase 24) — `mean_pnl_30m / _1h`, `mean_day_30m / _1h`, `max_drawdown_pnl_30m / _1h / _4h`, `max_drawdown_pnl_pct_30m / _1h`, `max_drawdown_day_1h`, `stdev_pnl_30m / _1h`, `range_pnl_30m / _1h`.
 
+**Parameterized call syntax** (Phase 26) — any rolling-window metric above can also be written as a function call with an arbitrary window in minutes, e.g. `mean_pnl(45)`, `max_drawdown_pnl(90)`, `stdev_pnl(120)`, `range_pnl(15)`, `mean_day(20)`, `max_drawdown_day(180)`, `max_drawdown_pnl_pct(30)`. Only a single, bare numeric literal argument is accepted — no expressions, names, or keyword args. The fixed tokens (`mean_pnl_30m` etc.) remain as permanent shortcuts for the common windows and are unaffected.
+
 **Time** — `minutes_since_open`, `minutes_until_close`.
 
 **Expiry-aware** (Phase 25) — `days_until_expiry`, `is_itm`, `is_ntm`.
