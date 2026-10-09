@@ -197,6 +197,62 @@ test.describe('algo consistency — SSOT stale-code guard', () => {
     ).toEqual([]);
   });
 
+  /* ── A3b (2026-10 P1 audit) — near-miss pale-blue literal ratchet ──────
+   * A3 above only matches the exact rgba(200,216,240,α) family. A P1
+   * consistency audit found ~20 near-miss variants hand-written in the
+   * order-surface files (180,200,230 / 220,230,245 / 160,185,220 /
+   * 210,225,255) that the A3 regex never caught. The 10 order-surface
+   * files targeted by that audit (OrderCard, SymbolPanel, LogPanel,
+   * OrderTimelineDrawer, OrderBook, HeldOrdersCard, ChaseCard, OrderTicket,
+   * OptionChainTab, OrderPairModal) were fully swept to var(--text-med) /
+   * var(--text-lo) / var(--text-muted) (text roles) or
+   * color-mix(in srgb, var(--text-med) <alpha>%, transparent) (border/
+   * background roles, alpha preserved per-site) and must stay at zero.
+   *
+   * Every OTHER file in collectSvelteFiles() scope that already had one
+   * of these near-miss literals before this sweep is intentionally NOT
+   * touched (out of this audit's scope) and is allowlisted below so this
+   * ratchet doesn't block on pre-existing, unrelated literals. Same
+   * shrink-only contract as A3 — an allowlist entry that's already clean
+   * must be removed. A SEPARATE allowlist from A3_MUTED_LITERAL_ALLOWLIST
+   * on purpose: A3's own allowlist is fully swept (empty) and must stay
+   * that way; sharing one list would silently re-open that fence. */
+  const A3B_NEAR_MISS_LITERAL_ALLOWLIST = /** @type {string[]} */ ([
+    'src/lib/Select.svelte',
+    'src/lib/MultiSelect.svelte',
+    'src/lib/MarketPulse.svelte',
+    'src/lib/execution/RecordingsPanel.svelte',
+    'src/routes/(algo)/+layout.svelte',
+    'src/routes/(algo)/admin/derivatives/+page.svelte',
+    'src/routes/(algo)/automation/+page.svelte',
+    'src/routes/(algo)/automation/templates/+page.svelte',
+    'src/routes/(algo)/automation/agent-templates/+page.svelte',
+  ]);
+
+  test('A3b ratchet — near-miss pale-blue literals only in the allowlisted (not-yet-swept) files', () => {
+    const files = collectSvelteFiles();
+    const rx = /rgba\(\s*180\s*,\s*200\s*,\s*230\s*,|rgba\(\s*220\s*,\s*230\s*,\s*245\s*,|rgba\(\s*160\s*,\s*185\s*,\s*220\s*,|rgba\(\s*210\s*,\s*225\s*,\s*255\s*,/i;
+    const offenders = [];
+    for (const f of files) {
+      const rel = path.relative(process.cwd(), f).split(path.sep).join('/');
+      let src = fs.readFileSync(f, 'utf-8');
+      src = src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/<!--[\s\S]*?-->/g, '').replace(/\/\/[^\n]*/g, '');
+      if (rx.test(src)) offenders.push(rel);
+    }
+
+    const allowSet = new Set(A3B_NEAR_MISS_LITERAL_ALLOWLIST);
+    const newOffenders = offenders.filter(f => !allowSet.has(f));
+    expect(newOffenders, `New near-miss pale-blue literal sites outside the A3b allowlist ` +
+      `(must migrate to var(--text-med)/var(--text-lo)/var(--text-muted) or ` +
+      `color-mix(...var(--text-med)...)):\n${newOffenders.join('\n')}`
+    ).toEqual([]);
+
+    const staleAllowlistEntries = A3B_NEAR_MISS_LITERAL_ALLOWLIST.filter(f => !offenders.includes(f));
+    expect(staleAllowlistEntries, `These allowlist entries are already clean — remove them from ` +
+      `A3B_NEAR_MISS_LITERAL_ALLOWLIST (ratchet must shrink, never carry dead entries):\n${staleAllowlistEntries.join('\n')}`
+    ).toEqual([]);
+  });
+
   test('.cell-muted derives from var(--algo-slate-muted) (computed-style, not source-grep)', async ({ page }) => {
     // Guards against a hardcoded literal that happens to render the same
     // colour as the CURRENT --algo-slate-muted value (which would pass a
@@ -402,6 +458,11 @@ const PHASE2_FILES = [
   path.join('src/lib/order', 'ChaseCard.svelte'),
   path.join('src/lib/order', 'CommandLineTab.svelte'),
   path.join('src/lib/order', 'OrderTimelineDrawer.svelte'),
+  // 2026-10 P1 audit fix — were missing from this array, so any raw-hex
+  // regression in these 3 files was invisible to the guard below.
+  path.join('src/lib/order', 'OrderCard.svelte'),
+  path.join('src/lib/order', 'OrderPairModal.svelte'),
+  path.join('src/lib', 'HeldOrdersCard.svelte'),
 ];
 
 /** Minimum var(--c-*) usage floors for Phase-2 files (~90% of actual). */

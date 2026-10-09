@@ -47,8 +47,8 @@
     reject:           'var(--c-short)',   // red
     preflight_ok:     '#6b7280',   // grey
     preflight_block:  'var(--c-short)',   // red
-    cancel:           '#94a3b8',   // slate
-    postback:         '#a78bfa',   // violet
+    cancel:           'var(--algo-dim)',   // slate — matches app.css's shared cancelled block
+    postback:         'var(--algo-ai)',   // violet
   };
   const KIND_BG = {
     placed:           'rgba(56,189,248,0.15)',
@@ -200,7 +200,7 @@
                 <div class="otd-event-row">
                   <span class="otd-ev-time">{shortTime(ev.ts)}</span>
                   <span class="otd-ev-kind"
-                        style="color:{KIND_COLOR[ev.kind] ?? '#94a3b8'};background:{KIND_BG[ev.kind] ?? 'rgba(148,163,184,0.1)'}"
+                        style="color:{KIND_COLOR[ev.kind] ?? 'var(--algo-dim)'};background:{KIND_BG[ev.kind] ?? 'rgba(148,163,184,0.1)'}"
                   >{ev.kind ?? ''}</span>
                   {#if ev.price != null}
                     <span class="otd-ev-price">₹{priceFmt(ev.price)}</span>
@@ -275,7 +275,7 @@
     background: var(--close-btn-neutral-bg);
     border: none;
     cursor: pointer;
-    color: rgba(180, 200, 230, 0.7);
+    color: var(--text-lo);
     padding: 0.15rem;
     border-radius: 3px;
     display: flex;
@@ -308,14 +308,14 @@
     border: 1px solid;
   }
   .otd-chip-link {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     background: rgba(125, 211, 252, 0.12);
     border-color: rgba(125, 211, 252, 0.4);
     cursor: pointer;
   }
   .otd-chip-link:hover { background: rgba(125, 211, 252, 0.22); }
   .otd-chip-basket {
-    color: #a78bfa;
+    color: var(--algo-ai);
     background: rgba(167, 139, 250, 0.12);
     border-color: rgba(167, 139, 250, 0.4);
     cursor: default;
@@ -333,7 +333,7 @@
   .otd-empty {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
-    color: rgba(180, 200, 230, 0.45);
+    color: var(--text-muted);
     text-align: center;
     padding: 2rem 1rem;
   }
@@ -412,7 +412,7 @@
   .otd-ev-time {
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
-    color: rgba(180, 200, 230, 0.5);
+    color: var(--text-muted);
     flex-shrink: 0;
     width: 5.5rem;
     font-variant-numeric: tabular-nums;
@@ -437,7 +437,7 @@
   /* Side colors — matches ChaseCard .cc-side-buy / .cc-side-sell */
   .otd-side-buy     { color: var(--algo-green, var(--c-long)); }
   .otd-side-sell    { color: var(--algo-red,   var(--c-short)); }
-  .otd-side-unknown { color: rgba(180, 200, 230, 0.5); }
+  .otd-side-unknown { color: var(--text-muted); }
 
   /* Mode pill colors — matches the navbar MODE_COLOR (canonical map in
      +layout.svelte), LogPanel's .mode-pill-*, and ChaseCard's .cc-mode-*.
@@ -452,5 +452,5 @@
   /* DRAFT — never placed, no broker round-trip. Dashed + muted, distinct
      from otd-mode-unknown's solid slate so the two don't read the same. */
   .otd-mode-draft   { color: var(--algo-muted); background: rgba(126,151,184,0.10); border-color: rgba(126,151,184,0.45); border-style: dashed; }
-  .otd-mode-unknown { color: #94a3b8; background: rgba(148,163,184,0.15); border-color: #94a3b8; }
+  .otd-mode-unknown { color: var(--algo-dim); background: rgba(148,163,184,0.15); border-color: var(--algo-dim); }
 </style>

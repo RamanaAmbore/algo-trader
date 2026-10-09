@@ -193,13 +193,13 @@
     display: flex; align-items: center; justify-content: center;
   }
   .opm-card {
-    background: #0f1b2e; border: 1px solid rgba(160,185,220,0.2);
+    background: #0f1b2e; border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
     border-radius: 8px; padding: 1.25rem 1.5rem;
     min-width: 320px; max-width: 480px; width: 100%;
     display: flex; flex-direction: column; gap: 0.75rem;
   }
   .opm-title-row { display: flex; align-items: center; justify-content: space-between; }
-  .opm-title { font-size: var(--fs-xl); font-weight: 600; color: rgba(210,225,255,0.9); }
+  .opm-title { font-size: var(--fs-xl); font-weight: 600; color: var(--text-med); }
   .opm-close {
     display: inline-flex; align-items: center; justify-content: center;
     width: 1.4rem; height: 1.4rem;
@@ -214,12 +214,12 @@
      label-to-control gap while the card's own 0.75rem gap still
      separates the two field groups from each other. */
   .opm-field { display: flex; flex-direction: column; gap: 0.25rem; }
-  .opm-label { font-size: var(--fs-lg); color: rgba(160,185,220,0.7); }
+  .opm-label { font-size: var(--fs-lg); color: var(--text-lo); }
   .opm-actions { display: flex; justify-content: flex-end; gap: 0.5rem; margin-top: 0.25rem; }
   .opm-cancel {
     font-size: var(--fs-lg); padding: 0.25rem 0.75rem; border-radius: 4px;
-    border: 1px solid rgba(160,185,220,0.3); background: transparent;
-    color: rgba(160,185,220,0.7); cursor: pointer;
+    border: 1px solid color-mix(in srgb, var(--text-med) 30%, transparent); background: transparent;
+    color: var(--text-lo); cursor: pointer;
   }
   .opm-submit {
     font-size: var(--fs-lg); padding: 0.25rem 0.75rem; border-radius: 4px;
@@ -232,8 +232,8 @@
 
   /* Position preview panel */
   .opm-preview {
-    background: rgba(160,185,220,0.05);
-    border: 1px solid rgba(160,185,220,0.15);
+    background: color-mix(in srgb, var(--text-med) 5%, transparent);
+    border: 1px solid color-mix(in srgb, var(--text-med) 15%, transparent);
     border-radius: 5px;
     padding: 0.55rem 0.7rem;
     display: flex; flex-direction: column; gap: 0.3rem;
@@ -241,35 +241,35 @@
   }
   .opm-preview-title {
     font-size: var(--fs-md); font-weight: 600; text-transform: uppercase;
-    letter-spacing: 0.06em; color: rgba(160,185,220,0.6);
+    letter-spacing: 0.06em; color: var(--text-lo);
     margin-bottom: 0.15rem;
   }
   .opm-preview-leg {
     display: flex; align-items: center; gap: 0.5rem;
-    color: rgba(210,225,255,0.8);
+    color: var(--text-med);
   }
   .opm-preview-label {
-    font-size: var(--fs-md); font-weight: 600; color: rgba(160,185,220,0.55);
+    font-size: var(--fs-md); font-weight: 600; color: var(--text-muted);
     min-width: 2.8rem; text-transform: uppercase; letter-spacing: 0.04em;
   }
   .opm-preview-acct {
     font-family: monospace; font-size: var(--fs-md);
-    color: rgba(160,185,220,0.6); min-width: 2.6rem;
+    color: var(--text-lo); min-width: 2.6rem;
   }
   .opm-preview-sym {
     font-family: monospace; font-size: var(--fs-md);
-    color: rgba(210,225,255,0.85); flex: 1; overflow: hidden;
+    color: var(--text-med); flex: 1; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
   }
   .opm-preview-qty {
     font-family: monospace; font-size: var(--fs-md);
-    color: rgba(210,225,255,0.8); white-space: nowrap;
+    color: var(--text-med); white-space: nowrap;
   }
   .opm-preview-row {
     display: flex; align-items: center; gap: 0.5rem;
     padding: 0.15rem 0.35rem; border-radius: 3px;
     background: rgba(34,211,238,0.10);
-    color: #22d3ee;
+    color: var(--c-info);
   }
   .opm-preview-qty-val {
     font-family: monospace; font-size: var(--fs-md); font-weight: 600;
@@ -277,6 +277,6 @@
   }
   .opm-orphan {
     background: rgba(251,191,36,0.12);
-    color: #fbbf24;
+    color: var(--c-action);
   }
 </style>

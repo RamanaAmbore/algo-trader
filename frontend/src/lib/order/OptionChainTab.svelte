@@ -1656,7 +1656,7 @@
   .oct-tpl-demo-note {
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
-    color: rgba(180, 200, 230, 0.65);
+    color: var(--text-lo);
     font-style: italic;
     /* Audit fix (2026-09-30) — flex-shrink: 0 removed. Verified via an
        isolated render (this rule's exact flex siblings + values) that
@@ -1778,7 +1778,7 @@
     font-family: monospace;
     font-size: var(--fs-md);
     font-weight: 700;
-    color: #7dd3fc;
+    color: var(--algo-sky);
     display: inline-flex;
     align-items: baseline;
     gap: 0.3rem;
@@ -2335,7 +2335,7 @@
     width: 100%;
   }
   .chain-tpl-note-arrow {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-weight: 700;
   }
   .chain-tpl-note-label {
@@ -2346,7 +2346,7 @@
     font-weight: 700;
   }
   .chain-tpl-note-name {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-weight: 700;
   }
   .chain-tpl-note-desc {

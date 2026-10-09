@@ -393,10 +393,15 @@
              title="Click to modify or cancel this order"
              onclick={() => onPendingModify?.(o)}
              onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onPendingModify?.(o); } }}>
-          <!-- Status chip: OPEN (green) or PENDING (amber) -->
+          <!-- Status chip: OPEN or PENDING — both amber (2026-10 P1 audit
+               fix; OPEN was previously green, disagreeing with SymbolPanel's
+               .oes-status-open and OrderBook's amber "Open" bucket, which
+               already group OPEN + TRIGGER_PENDING as the same resting-order
+               semantic state). The two chips now share one color but keep
+               distinct text labels/classes so the state is still legible. -->
           <span class="cc-col cc-col-acct cc-pending-acct" title={o.account || ''}>
             {#if o.status === 'OPEN'}
-              <span class="cc-pending-chip cc-pending-chip-open" aria-label="Open order">OPEN</span>
+              <span class="cc-pending-chip cc-pending-chip-pending" aria-label="Open order">OPEN</span>
             {:else}
               <span class="cc-pending-chip cc-pending-chip-pending" aria-label="Trigger pending">PENDING</span>
             {/if}
@@ -546,7 +551,7 @@
     border-radius: 3px;
     border: 1px solid rgba(125, 211, 252, 0.45);
     background: transparent;
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-family: monospace;
     font-size: var(--fs-xs);
     font-weight: 700;
@@ -556,7 +561,7 @@
   }
   .cc-reconcile:hover:not(:disabled) {
     background: var(--algo-sky-bg);
-    color: #bae6fd;
+    color: var(--algo-sky-text);
   }
   .cc-reconcile:disabled { opacity: 0.45; cursor: progress; }
   .cc-grid {
@@ -645,7 +650,7 @@
      "this is leg-iteration N's price, not the entry". */
   .cc-limit-moved {
     margin-left: 0.18rem;
-    color: rgba(180, 200, 230, 0.5);
+    color: var(--text-muted);
     font-size: var(--fs-xs);
     font-weight: 600;
   }
@@ -670,12 +675,16 @@
   .cc-mode-sim    { color: var(--c-long); }
   .cc-mode-replay { color: var(--c-long); }
   .cc-col-actions { text-align: right; }
+  /* Destructive-button recipe unified to the shared --btn-sell-* family
+     (2026-10 P1 audit fix) — matches HeldOrdersCard's .held-cancel exactly
+     (border + resting color from the token, hover swaps only the
+     background). Was a hand-rolled rgba(248,113,113,…) recipe. */
   .cc-kill {
     padding: 0.18rem 0.5rem;
     border-radius: 3px;
-    border: 1px solid rgba(248, 113, 113, 0.45);
+    border: 1px solid var(--btn-sell-border);
     background: transparent;
-    color: rgba(248, 113, 113, 0.9);
+    color: var(--btn-sell);
     font-family: monospace;
     font-size: var(--fs-xs);
     font-weight: 800;
@@ -683,14 +692,11 @@
     cursor: pointer;
     text-transform: uppercase;
   }
-  .cc-kill:hover:not(:disabled) {
-    background: rgba(248, 113, 113, 0.12);
-    color: var(--c-short);
-  }
-  .cc-kill:disabled { opacity: 0.45; cursor: progress; }
+  .cc-kill:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
+  .cc-kill:disabled { opacity: var(--btn-disabled-opacity); cursor: progress; }
   .cc-countdown {
     font-size: var(--fs-2xs);
-    color: rgba(180, 200, 230, 0.85);
+    color: var(--text-med);
     font-variant-numeric: tabular-nums;
   }
   .cc-countdown.cc-requoting {
@@ -799,7 +805,8 @@
   .cc-pending-row:hover {
     background: rgba(125, 211, 252, 0.10);
   }
-  /* Status chips: OPEN = green, PENDING = amber */
+  /* Status chip: OPEN and PENDING both amber (2026-10 P1 audit fix —
+     see the template comment above for the "why", was green for OPEN). */
   .cc-pending-chip {
     display: inline-block;
     font-size: var(--fs-xs);
@@ -809,11 +816,6 @@
     letter-spacing: 0.06em;
     text-transform: uppercase;
     white-space: nowrap;
-  }
-  .cc-pending-chip-open {
-    border: 1px solid rgba(74, 222, 128, 0.50);
-    background: rgba(74, 222, 128, 0.12);
-    color: var(--c-long);
   }
   .cc-pending-chip-pending {
     border: 1px solid rgba(251, 191, 36, 0.50);
@@ -827,7 +829,7 @@
   }
   /* PENDING mode label — sky palette (info) */
   .cc-mode-pending {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     border-color: rgba(125, 211, 252, 0.45);
   }
   /* Visual separator between chase rows and pending rows */

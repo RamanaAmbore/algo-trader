@@ -440,16 +440,16 @@
   /* Slippage chip — neutral slate arrow glyph (↑/↓). Side-relative
      coloring was dropped: ↑ is good for SELL, bad for BUY, so
      green/red was misleading for one side. Arrow alone reads correctly. */
-  :global(.log-chip-slip) { color: #94a3b8; }
+  :global(.log-chip-slip) { color: var(--algo-dim); }
 
   /* Tag colour-coding — manual ticket = sky-blue, agent-fired = amber. */
-  :global(.tag-manual)       { color: #67e8f9; background: var(--c-info-14); }
+  :global(.tag-manual)       { color: var(--algo-cyan-text); background: var(--c-info-14); }
   :global(.tag-agent)        { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
   /* TP / parent / basket linkage chips */
   :global(.log-chip-tp)      { color: var(--c-long); background: var(--algo-green-bg); }
-  :global(.log-chip-template) { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
-  :global(.log-chip-parent)  { color: #7dd3fc; background: rgba(125, 211, 252, 0.10); }
-  :global(.log-chip-child)   { color: #c084fc; background: rgba(192, 132, 252, 0.12); }
+  :global(.log-chip-template) { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
+  :global(.log-chip-parent)  { color: var(--algo-sky); background: rgba(125, 211, 252, 0.10); }
+  :global(.log-chip-child)   { color: var(--algo-violet); background: rgba(192, 132, 252, 0.12); }
   :global(.log-chip-basket)  { color: var(--c-action); background: rgba(251, 191, 36, 0.10); }
 
   /* Re-attach button — same chip shape as the rest of the row so it
@@ -480,13 +480,13 @@
      Matches the CANCEL_FAILED orange pill to signal "this row needs
      operator attention" without competing visually with the status pill. */
   :global(.log-chip-partial-fill) {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     background: rgba(125, 211, 252, 0.12);
     border: 1px solid rgba(125, 211, 252, 0.40);
   }
   /* #17/#18 partial-attach chip — red border signals missing legs */
   :global(.log-chip-template-partial) {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.35);
   }
@@ -504,7 +504,7 @@
   }
   /* #26 — re-attach failure count chip (red) */
   :global(.log-chip-reattach-fail) {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.32);
   }

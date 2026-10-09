@@ -2141,7 +2141,7 @@
     /* Matches .newslist-time (0.62rem) — same scan-fodder
        proportion as the news tab. */
     font-size: var(--fs-sm);
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-variant-numeric: tabular-nums;
     letter-spacing: -0.02em;
     line-height: 1.1;
@@ -2222,11 +2222,11 @@
   :global(.log-panel.log-rows .log-row.log-agent-success) { color: var(--c-long); }
   :global(.log-panel.log-rows .log-row.log-agent-failed)  { color: var(--c-short); }
   :global(.log-panel.log-rows .log-row.log-agent-alert)   { color: var(--c-action); }
-  :global(.log-panel.log-rows .log-row.log-agent-triggered) { color: #fb923c; }
-  :global(.log-panel.log-rows .log-row.log-agent-cooldown)  { color: #94a3b8; }
+  :global(.log-panel.log-rows .log-row.log-agent-triggered) { color: var(--algo-orange); }
+  :global(.log-panel.log-rows .log-row.log-agent-cooldown)  { color: var(--algo-dim); }
   :global(.log-panel.log-rows .log-row.log-error)   { color: var(--c-short); }
   :global(.log-panel.log-rows .log-row.log-warning) { color: var(--c-action); }
-  :global(.log-panel.log-rows .log-row.log-debug)   { color: #94a3b8; font-style: italic; }
+  :global(.log-panel.log-rows .log-row.log-debug)   { color: var(--algo-dim); font-style: italic; }
 
   /* Orders-tab card grid — mirrors /orders' .oc-book-grid so the
      Activity-modal Orders tab and the dedicated /orders page lay out
@@ -2294,9 +2294,9 @@
      placed=amber (running), fill=green (active), cancel=orange, reject=red */
   .lp-order-scroll .log-row-ok    { color: var(--c-long); }
   .lp-order-scroll .log-row-info  { color: var(--c-action); }
-  .lp-order-scroll .log-row-warn  { color: #fb923c; }
+  .lp-order-scroll .log-row-warn  { color: var(--algo-orange); }
   .lp-order-scroll .log-row-error { color: var(--c-short); }
-  .lp-order-scroll .log-row-debug { color: #94a3b8; }
+  .lp-order-scroll .log-row-debug { color: var(--algo-dim); }
 
   /* Unified-log container inside the LogPanel — matches the <pre>
      visual context (same background, same overflow) but is a <div>
@@ -2372,24 +2372,28 @@
      Violet, distinct from every mode above so it's ready when introduced. */
   :global(.mode-pill-armed) {
     background: rgba(167,139,250,0.14);
-    color: #a78bfa;
+    color: var(--algo-ai);
     border-color: rgba(167,139,250,0.45);
   }
   /* UNKNOWN — any mode value this function doesn't recognize. Neutral
      slate, matching OrderTimelineDrawer's otd-mode-unknown palette. */
   :global(.mode-pill-unknown) {
     background: rgba(148,163,184,0.15);
-    color: #94a3b8;
+    color: var(--algo-dim);
     border-color: rgba(148,163,184,0.45);
   }
 
   /* Order-status row classes — supplement the existing log-agent-* set.
-     CANCELLED: muted slate — the order is gone but not an error.
+     CANCELLED: muted slate — the order is gone but not an error. Uses
+     --algo-dim (#94a3b8/148,163,184 family), matching the shared
+     .algo-status-card[data-status="cancelled"] block in app.css and
+     OrderTimelineDrawer's cancel kind color — was var(--algo-muted)
+     (#7e97b8), a different gray family (2026-10 P1 audit fix).
      REJECTED: stronger red than UNFILLED — broker hard-rejected.
      SHADOW_OK: orange — matches the SHADOW mode pill, not a fill. */
-  :global(.log-order-cancelled) { color: var(--algo-muted); }
+  :global(.log-order-cancelled) { color: var(--algo-dim); }
   :global(.log-order-rejected)  { color: var(--c-short); }
-  :global(.log-order-shadow-ok) { color: #fb923c; }
+  :global(.log-order-shadow-ok) { color: var(--algo-orange); }
 
   /* Order-tab mode subnav — [All / Paper / Live / Sim] chip strip.
      Colours mirror the .mode-pill-* tokens so the subnav reads as the
@@ -2490,7 +2494,7 @@
   :global(.log-chart-btn:hover) {
     background: var(--algo-cyan-bg-strong);
     border-color: rgba(103, 232, 249, 0.65);
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
   }
   :global(.log-chart-btn svg) { pointer-events: none; }
 
@@ -2502,7 +2506,7 @@
     transition: color 0.1s;
   }
   :global(.log-sym-cell:hover) {
-    color: #7dd3fc;
+    color: var(--algo-sky);
     text-decoration: underline;
   }
 
@@ -2552,30 +2556,29 @@
   .lp-oc-modify:hover:not(:disabled) {
     background: var(--c-info-14);
     border-color: rgba(103,232,249,0.65);
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
   }
-  /* Cancel — red-400 palette (matches order rejection / kill affordances) */
+  /* Cancel — destructive --btn-sell-* family (2026-10 P1 audit fix),
+     unified with HeldOrdersCard's .held-cancel + ChaseCard's .cc-kill
+     recipe: border + resting color from the token, hover swaps only
+     the background. Was a hand-rolled rgba(248,113,113,…) recipe. */
   .lp-oc-cancel {
-    border: 1px solid rgba(248,113,113,0.45);
+    border: 1px solid var(--btn-sell-border);
     color: var(--c-short);
   }
-  .lp-oc-cancel:hover:not(:disabled) {
-    background: rgba(248,113,113,0.14);
-    border-color: rgba(252,165,165,0.65);
-    color: #fca5a5;
-  }
+  .lp-oc-cancel:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
   /* Reconcile — sky-400 palette ("sync / refresh", distinct from
      destructive red and edit cyan). Matches the /orders standalone
      reconcile button so the affordance reads identically on both
      surfaces. */
   .lp-oc-reconcile {
     border: 1px solid rgba(125,211,252,0.55);
-    color: #7dd3fc;
+    color: var(--algo-sky);
   }
   .lp-oc-reconcile:hover:not(:disabled) {
     background: rgba(125,211,252,0.18);
     border-color: rgba(186,230,253,0.85);
-    color: #bae6fd;
+    color: var(--algo-sky-text);
   }
 
 

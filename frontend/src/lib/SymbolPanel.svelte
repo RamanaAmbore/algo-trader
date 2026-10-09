@@ -2225,7 +2225,7 @@
     ...t,
     ...(t.id === 'chain'   ? { dot: 'var(--c-long)', activeTxt: 'var(--c-long)', activeBorder: 'var(--c-long)', activeBg: 'rgba(74,222,128,0.14)'  } :
         t.id === 'ticket'  ? { dot: 'var(--c-action)', activeTxt: 'var(--c-action)', activeBorder: 'var(--c-action)', activeBg: 'var(--c-action-14)'  } :
-                             { dot: '#7dd3fc', activeTxt: '#7dd3fc', activeBorder: '#7dd3fc', activeBg: 'rgba(125,211,252,0.14)' }),
+                             { dot: 'var(--algo-sky)', activeTxt: 'var(--algo-sky)', activeBorder: 'var(--algo-sky)', activeBg: 'rgba(125,211,252,0.14)' }),
   }));
 
   // Effective OrderTicket props — shell-level props forwarded to the ticket.
@@ -3658,7 +3658,7 @@
   }
   .oes-chart-btn:hover:not(:disabled) {
     background: var(--c-info-14);
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     border-color: rgba(103, 232, 249, 0.65);
   }
 .oes-chart-btn:disabled {
@@ -3878,7 +3878,7 @@
     outline-offset: 1px;
   }
   .oes-tpl-preview-label {
-    color: rgba(180, 200, 230, 0.85);
+    color: var(--text-med);
     font-weight: 600;
     margin-right: 0.15rem;
     font-family: var(--font-numeric);
@@ -3888,9 +3888,9 @@
     border-radius: 3px;
     font-family: var(--font-numeric);
     font-weight: 600;
-    color: rgba(220, 230, 245, 0.92);
+    color: var(--text-med);
     background: rgba(255, 255, 255, 0.04);
-    border: 1px solid rgba(180, 200, 230, 0.20);
+    border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
   }
   .oes-tpl-preview-chip.tp {
     color: var(--c-long);
@@ -3908,7 +3908,7 @@
     border-color: rgba(251, 191, 36, 0.40);
   }
   .oes-tpl-preview-chip.oes-tpl-preview-wing {
-    color: #c084fc;
+    color: var(--algo-violet);
     background: rgba(192, 132, 252, 0.10);
     border-color: rgba(192, 132, 252, 0.40);
   }
@@ -3935,13 +3935,13 @@
     margin-right: 0.1rem;
   }
   .oes-tpl-preview-note {
-    color: rgba(180, 200, 230, 0.6);
+    color: var(--text-lo);
     font-style: italic;
   }
   .oes-tpl-preview-loading {
     flex-basis: 100%;
     font-size: var(--fs-sm);
-    color: rgba(180, 200, 230, 0.55);
+    color: var(--text-muted);
     font-family: var(--font-numeric);
     padding-left: 0.45rem;
     margin-top: 0.25rem;
@@ -3949,7 +3949,7 @@
   .oes-tpl-preview-err {
     flex-basis: 100%;
     font-size: var(--fs-sm);
-    color: #fca5a5;
+    color: var(--algo-red-text-bright);
     padding: 0.25rem 0.4rem;
     margin-top: 0.25rem;
     background: rgba(248, 113, 113, 0.08);
@@ -3968,8 +3968,8 @@
     font-size: var(--fs-xs);
     color: var(--algo-slate);
   }
-  .oes-basket-tpl-note-arrow { color: #7dd3fc; font-weight: 700; }
-  .oes-basket-tpl-note-name  { color: #7dd3fc; font-weight: 700; }
+  .oes-basket-tpl-note-arrow { color: var(--algo-sky); font-weight: 700; }
+  .oes-basket-tpl-note-name  { color: var(--algo-sky); font-weight: 700; }
   /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
   .oes-basket-tpl-note-desc  { color: color-mix(in srgb, var(--algo-slate) 60%, transparent); }
 
@@ -4151,7 +4151,7 @@
   }
   .oes-basket-pill-acct-static {
     margin-left: 0.35rem;
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-size: var(--fs-xs);
     font-family: var(--font-numeric);
     opacity: 0.85;
@@ -4183,7 +4183,7 @@
     background: rgba(192, 132, 252, 0.14);
     border: 1px solid rgba(192, 132, 252, 0.45);
     border-radius: 3px;
-    color: #c084fc;
+    color: var(--algo-violet);
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 600;
@@ -4210,7 +4210,7 @@
     background: rgba(192, 132, 252, 0.18);
     border: 1px solid rgba(192, 132, 252, 0.55);
     border-radius: 2px;
-    color: #c084fc;
+    color: var(--algo-violet);
     font-size: var(--fs-2xs);
     font-weight: 800;
     letter-spacing: 0.08em;
@@ -4254,7 +4254,7 @@
   .oes-basket-pill-tpl-chip.has-override {
     background: rgba(34, 211, 238, 0.16);
     border-color: rgba(34, 211, 238, 0.55);
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
   }
   .oes-basket-pill-tpl-chip.has-override:hover:not(:disabled) {
     background: rgba(34, 211, 238, 0.26);
@@ -4595,7 +4595,7 @@
     border-radius: 999px;
     background: rgba(192,132,252,0.2);
     border: 1px solid rgba(192,132,252,0.5);
-    color: #c084fc;
+    color: var(--algo-violet);
     font-size: var(--fs-xs);
     font-weight: 800;
     font-variant-numeric: tabular-nums;
@@ -4643,17 +4643,17 @@
   .oes-event-kind-fill            { color: var(--c-long); }
   .oes-event-kind-unfill          { color: var(--c-short); }
   .oes-event-kind-reject          { color: var(--c-short); }
-  .oes-event-kind-preflight_ok    { color: #94a3b8; }
+  .oes-event-kind-preflight_ok    { color: var(--algo-dim); }
   .oes-event-kind-preflight_block { color: var(--c-short); }
-  .oes-event-kind-cancel          { color: #94a3b8; }
-  .oes-event-kind-postback        { color: #c084fc; }
+  .oes-event-kind-cancel          { color: var(--algo-dim); }
+  .oes-event-kind-postback        { color: var(--algo-violet); }
   /* Agent-sourced event kinds — violet/pink palette so "rule fired"
      is instantly distinguishable from "manual order" events.         */
   .oes-event-kind-agent_fire          { color: #e879f9; }
   .oes-event-kind-agent_match         { color: #d946ef; }
   .oes-event-kind-agent_action_success { color: #a855f7; }
   .oes-event-kind-agent_action_error  { color: #f472b6; }
-  .oes-event-kind-agent_skipped       { color: #94a3b8; }
+  .oes-event-kind-agent_skipped       { color: var(--algo-dim); }
   .oes-event-kind-agent_paused        { color: var(--algo-muted); }
   .oes-event-msg { color: var(--algo-slate); }
 
@@ -4702,7 +4702,7 @@
   .oes-status-filled              { background: rgba(74,222,128,0.12);  color: var(--c-long); border: 1px solid rgba(74,222,128,0.4); }
   .oes-status-unfilled,
   .oes-status-rejected            { background: rgba(248,113,113,0.12);  color: var(--c-short); border: 1px solid rgba(248,113,113,0.4); }
-  .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: #94a3b8; border: 1px solid rgba(148,163,184,0.3); }
+  .oes-status-cancelled           { background: rgba(148,163,184,0.1); color: var(--algo-dim); border: 1px solid rgba(148,163,184,0.3); }
   /* LOCAL chip — marks algo_order rows that never reached Kite (preflight blocks). */
   .oes-local-chip {
     font-size: var(--fs-2xs);
@@ -4792,11 +4792,11 @@
     height: var(--ctl-h, 1.7rem);
     padding: 0 0.7rem;
     border-radius: 3px;
-    border: 1px solid rgba(180, 200, 230, 0.22);
+    border: 1px solid color-mix(in srgb, var(--text-med) 22%, transparent);
     background: rgba(15, 25, 45, 0.45);
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
-    color: rgba(180, 200, 230, 0.65);
+    color: var(--text-lo);
     font-style: italic;
     letter-spacing: 0.02em;
     box-sizing: border-box;
@@ -5025,7 +5025,7 @@
     padding: 0 0.3rem;
     border-radius: 2px;
     background: rgba(192, 132, 252, 0.18);
-    color: #c084fc;
+    color: var(--algo-violet);
     font-size: var(--fs-xs);
     font-weight: 600;
     font-family: monospace;
@@ -5072,7 +5072,7 @@
     cursor: pointer;
     background: transparent;
     border: 1px solid rgba(125, 211, 252, 0.45);
-    color: #7dd3fc;
+    color: var(--algo-sky);
     transition: background 0.12s, border-color 0.12s, color 0.12s;
   }
   /* Compact Submit label when basket is active — short "Submit (N)"

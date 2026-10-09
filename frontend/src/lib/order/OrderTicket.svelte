@@ -3685,7 +3685,7 @@
     border-radius: 2px;
     border: 1px solid rgba(125,211,252,0.55);
     background: rgba(125,211,252,0.10);
-    color: #7dd3fc;
+    color: var(--algo-sky);
     font-size: var(--fs-sm);
     font-weight: 700;
     cursor: pointer;
@@ -3937,7 +3937,7 @@
     padding: 0;
     background: transparent;
     border: 0;
-    color: #94a3b8;
+    color: var(--algo-dim);
     font-family: var(--font-numeric);
     font-size: var(--ctl-fs, var(--fs-sm));
     font-weight: 800;
@@ -3988,7 +3988,7 @@
     align-items: center;
     gap: 0.3rem;
     font-size: var(--fs-sm);
-    color: rgba(180,200,230,0.7);
+    color: var(--text-lo);
     font-family: var(--font-numeric);
     letter-spacing: 0.04em;
   }
@@ -3997,13 +3997,13 @@
     border-radius: 3px;
     font-weight: 700;
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(180,200,230,0.20);
+    border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
   }
-  .ot-mode-hint-paper  { color: #7dd3fc; border-color: rgba(125,211,252,0.50); background: rgba(125,211,252,0.10); }
+  .ot-mode-hint-paper  { color: var(--algo-sky); border-color: rgba(125,211,252,0.50); background: rgba(125,211,252,0.10); }
   .ot-mode-hint-live   { color: var(--c-short); border-color: rgba(248,113,113,0.55); background: var(--c-short-10); }
-  .ot-mode-hint-draft  { color: #c084fc; border-color: rgba(192,132,252,0.50); background: rgba(192,132,252,0.10); }
-  .ot-mode-hint-shadow { color: #fb923c; border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
-  .ot-mode-hint-src    { color: rgba(180,200,230,0.45); font-size: var(--fs-xs); }
+  .ot-mode-hint-draft  { color: var(--algo-violet); border-color: rgba(192,132,252,0.50); background: rgba(192,132,252,0.10); }
+  .ot-mode-hint-shadow { color: var(--algo-orange); border-color: rgba(251,146,60,0.50);  background: rgba(251,146,60,0.10); }
+  .ot-mode-hint-src    { color: var(--text-muted); font-size: var(--fs-xs); }
 
   /* Chase toggle — left-aligned per the site-wide alignment rule
      (2026-09 audit): only header-group / expand-collapse / full-
@@ -4029,7 +4029,7 @@
     user-select: none;
   }
   .ot-draft-toggle input[type="checkbox"] {
-    accent-color: #c084fc;
+    accent-color: var(--algo-violet);
     width: 0.85rem;
     height: 0.85rem;
     cursor: pointer;
@@ -4048,13 +4048,13 @@
   .ot-draft-label.on {
     background: rgba(192,132,252,0.18);
     border-color: rgba(192,132,252,0.55);
-    color: #c084fc;
+    color: var(--algo-violet);
   }
   /* Draft-mode submit button — magenta/violet instead of green/red. */
   .ot-submit.ot-submit-draft {
     background: rgba(192,132,252,0.22);
     border-color: rgba(192,132,252,0.55);
-    color: #c084fc;
+    color: var(--algo-violet);
   }
   .ot-submit.ot-submit-draft:hover:not(:disabled) {
     background: rgba(192,132,252,0.35);
@@ -4352,9 +4352,11 @@
   .ot-close:disabled { opacity: 0.35; cursor: not-allowed; }
   .ot-submit-basket-mode:disabled { opacity: 0.45; cursor: not-allowed; }
   /* Cancel Order — red danger secondary, shown only in modify mode to the
-     left of the Modify Order submit. Matches the project's `--c-short`
-     palette (#f87171). Outlined so it reads as destructive-secondary, not
-     as the primary action button. */
+     left of the Modify Order submit. Unified to the shared --btn-sell-*
+     family (2026-10 P1 audit fix), matching HeldOrdersCard's .held-cancel
+     + ChaseCard's .cc-kill + LogPanel's .lp-oc-cancel: border + resting
+     color from the token, transparent at rest, hover swaps only the
+     background. Was a hand-rolled rgba(248,113,113,…) recipe. */
   .ot-btn-cancel-order {
     padding: 0.45rem 1rem;
     border-radius: 3px;
@@ -4362,15 +4364,11 @@
     font-weight: 700;
     cursor: pointer;
     flex-shrink: 0;
-    border: 1px solid rgba(248, 113, 113, 0.60);
-    background: rgba(248, 113, 113, 0.10);
+    border: 1px solid var(--btn-sell-border);
+    background: transparent;
     color: var(--c-short);
   }
-  .ot-btn-cancel-order:hover:not(:disabled) {
-    background: rgba(248, 113, 113, 0.20);
-    border-color: rgba(248, 113, 113, 0.90);
-    color: #fca5a5;
-  }
+  .ot-btn-cancel-order:hover:not(:disabled) { background: var(--btn-sell-bg-hi); }
   .ot-btn-cancel-order:disabled { opacity: 0.45; cursor: not-allowed; }
 
   /* `.ot-label-sub` kept — used by the Template card "(exit rules)"
@@ -4428,7 +4426,7 @@
     line-height: 1.35;
   }
   .ot-tpl-preview-label {
-    color: rgba(180,200,230,0.85);
+    color: var(--text-med);
     font-weight: 600;
     margin-right: 0.15rem;
     font-family: var(--font-numeric);
@@ -4438,9 +4436,9 @@
     border-radius: 3px;
     font-family: var(--font-numeric);
     font-weight: 600;
-    color: rgba(220,230,245,0.92);
+    color: var(--text-med);
     background: rgba(255,255,255,0.04);
-    border: 1px solid rgba(180,200,230,0.20);
+    border: 1px solid color-mix(in srgb, var(--text-med) 20%, transparent);
   }
   .ot-tpl-preview-chip.tp {
     color: var(--c-long);
@@ -4458,7 +4456,7 @@
     border-color: rgba(251,191,36,0.40);
   }
   .ot-tpl-preview-chip.wing {
-    color: #c084fc;
+    color: var(--algo-violet);
     background: rgba(192,132,252,0.10);
     border-color: rgba(192,132,252,0.40);
   }
@@ -4471,18 +4469,18 @@
     font-weight: 500;
   }
   .ot-tpl-preview-note {
-    color: rgba(180,200,230,0.6);
+    color: var(--text-lo);
     font-style: italic;
   }
   .ot-tpl-preview-loading {
     font-size: var(--fs-sm);
-    color: rgba(180,200,230,0.55);
+    color: var(--text-muted);
     font-family: var(--font-numeric);
     padding-left: 0.45rem;
   }
   .ot-tpl-preview-err {
     font-size: var(--fs-sm);
-    color: #fca5a5;
+    color: var(--algo-red-text-bright);
     padding: 0.25rem 0.4rem;
     background: rgba(248,113,113,0.08);
     border: 1px solid rgba(248,113,113,0.30);
@@ -4508,7 +4506,7 @@
     position: absolute; top: 0.55rem; right: 0.7rem;
     width: 1.5rem; height: 1.5rem;
     border: none; background: var(--close-btn-neutral-bg);
-    color: #94a3b8; font-size: 1.2rem; cursor: pointer; line-height: 1;
+    color: var(--algo-dim); font-size: 1.2rem; cursor: pointer; line-height: 1;
     border-radius: 3px;
     transition: background 0.1s, color 0.1s;
   }
@@ -4530,7 +4528,7 @@
     border: 1px solid rgba(34, 211, 238, 0.30);
     border-radius: 3px;
     padding: 0 0.25rem;
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     font-size: var(--fs-md);
   }
   .ot-demo-cta {
@@ -4553,7 +4551,7 @@
   .ot-demo-btn-secondary {
     background: var(--c-info-14);
     border: 1px solid rgba(34, 211, 238, 0.45);
-    color: #67e8f9;
+    color: var(--algo-cyan-text);
     display: inline-flex; align-items: center;
   }
   .ot-demo-btn-secondary:hover {
