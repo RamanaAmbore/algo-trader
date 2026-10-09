@@ -112,6 +112,11 @@ class GrammarRegistry:
         self.actions:    dict[str, dict]     = {}   # {token: {"fn": callable, "params_schema": {...}}}
         # log
         self.log_tags:   dict[str, dict]     = {}   # {tag: source descriptor}
+        # raw GrammarToken rows keyed by id — kept ONLY so agent_ai.py's
+        # _grammar_snapshot() can render full per-token metadata (description/
+        # value_type/params_schema) that the processed per-kind dispatch
+        # tables above don't uniformly carry; never used for dispatch itself.
+        self.tokens:     dict[int, Any]      = {}
 
     # ── Accessors ──────────────────────────────────────────────────────────
     def metric(self, token: str) -> Optional[Callable]:
@@ -180,6 +185,8 @@ class GrammarRegistry:
                 select(GrammarToken).where(GrammarToken.is_active == True)  # noqa: E712
             )).scalars().all()
 
+        tokens_by_id = {r.id: r for r in rows}
+
         loaded = skipped = 0
         for r in rows:
             try:
@@ -202,6 +209,7 @@ class GrammarRegistry:
             self.templates = tables['templates']
             self.actions   = tables['actions']
             self.log_tags = tables['log_tags']
+            self.tokens    = tokens_by_id
 
         logger.info(
             f"Grammar registry reloaded — "
