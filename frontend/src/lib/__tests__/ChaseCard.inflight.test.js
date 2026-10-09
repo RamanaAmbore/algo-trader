@@ -216,9 +216,12 @@ describe('ChaseCard Age column (_age)', () => {
 // _modeCls already fell back safely for an unrecognized mode (bare
 // 'cc-mode', accurate uppercased text in the DOM — never mislabeled as
 // live). This is a polish/consistency pass: draft now gets its own
-// explicit branch reusing the existing .cc-mode-draft rule (amber),
-// already used elsewhere in this component for the hardcoded draft-rows
-// section, instead of falling into the generic bare class.
+// explicit branch reusing the existing .cc-mode-draft rule (muted/dashed,
+// unified off the old amber treatment — mode-pill color consistency
+// audit), already used elsewhere in this component for the hardcoded
+// draft-rows section, instead of falling into the generic bare class.
+// sim/replay branches added in the same audit — previously had no class
+// (and no CSS) at all, falling to the bare unstyled 'cc-mode'.
 //
 // Mirrors the fixed ChaseCard.svelte `_modeCls` function.
 /** @param {string} m */
@@ -227,6 +230,8 @@ function _modeCls(m) {
   if (k === 'live')   return 'cc-mode cc-mode-live';
   if (k === 'paper')  return 'cc-mode cc-mode-paper';
   if (k === 'shadow') return 'cc-mode cc-mode-shadow';
+  if (k === 'sim')    return 'cc-mode cc-mode-sim';
+  if (k === 'replay') return 'cc-mode cc-mode-replay';
   if (k === 'draft')  return 'cc-mode cc-mode-draft';
   return 'cc-mode';
 }
@@ -236,6 +241,8 @@ describe('ChaseCard mode class (_modeCls)', () => {
     expect(_modeCls('live')).toBe('cc-mode cc-mode-live');
     expect(_modeCls('paper')).toBe('cc-mode cc-mode-paper');
     expect(_modeCls('shadow')).toBe('cc-mode cc-mode-shadow');
+    expect(_modeCls('sim')).toBe('cc-mode cc-mode-sim');
+    expect(_modeCls('replay')).toBe('cc-mode cc-mode-replay');
   });
 
   it('draft gets its own explicit class, reusing the existing .cc-mode-draft rule', () => {

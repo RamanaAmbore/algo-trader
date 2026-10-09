@@ -247,8 +247,11 @@
     if (k === 'live')   return 'cc-mode cc-mode-live';
     if (k === 'paper')  return 'cc-mode cc-mode-paper';
     if (k === 'shadow') return 'cc-mode cc-mode-shadow';
-    // Reuses the existing .cc-mode-draft rule (amber) already used by the
-    // hardcoded draft-rows section below — same visual meaning, same class.
+    if (k === 'sim')    return 'cc-mode cc-mode-sim';
+    if (k === 'replay') return 'cc-mode cc-mode-replay';
+    // Reuses the existing .cc-mode-draft rule (muted/dashed) already used
+    // by the hardcoded draft-rows section below — same visual meaning,
+    // same class.
     if (k === 'draft')  return 'cc-mode cc-mode-draft';
     return 'cc-mode';
   }
@@ -656,9 +659,16 @@
     text-align: center;
     border: 1px solid currentColor;
   }
-  .cc-mode-live   { color: var(--c-long); }
-  .cc-mode-paper  { color: #7dd3fc; }
-  .cc-mode-shadow { color: var(--c-action); }
+  /* LIVE — red, matching the navbar MODE_COLOR (the canonical mode→color
+     map, see +layout.svelte) and LogPanel's .mode-pill-live. LIVE is the
+     only mode that moves real money; a green LIVE pill here used to read
+     as "safe", the same footgun the navbar comment already calls out. */
+  .cc-mode-live   { color: var(--c-short); }
+  .cc-mode-paper  { color: var(--algo-sky); }
+  .cc-mode-shadow { color: var(--algo-orange); }
+  /* SIM / REPLAY — green, matching the navbar (both sandbox/safe modes). */
+  .cc-mode-sim    { color: var(--c-long); }
+  .cc-mode-replay { color: var(--c-long); }
   .cc-col-actions { text-align: right; }
   .cc-kill {
     padding: 0.18rem 0.5rem;
@@ -742,10 +752,19 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  /* DRAFT mode label in the mode column */
+  /* DRAFT mode label in the mode column — muted/dashed, matching
+     LogPanel's .mode-pill-draft and OrderTimelineDrawer's .otd-mode-draft.
+     Unified off the old amber treatment so DRAFT (never placed, no
+     broker round-trip) reads as a quieter state than SHADOW's orange,
+     consistent with the other two mode-pill surfaces. Scoped to this
+     one mode-column pill only — the surrounding draft-row chrome
+     (.cc-draft-chip / .cc-draft-remove / .cc-row-draft / .cc-draft-divider)
+     is a separate amber visual language for the whole draft row, not a
+     mode pill, and is intentionally left unchanged. */
   .cc-mode-draft {
-    color: var(--c-action);
-    border-color: rgba(251, 191, 36, 0.45);
+    color: var(--algo-muted);
+    border-color: rgba(126, 151, 184, 0.45);
+    border-style: dashed;
   }
   /* Visual separator between real chases and draft rows */
   .cc-draft-divider {

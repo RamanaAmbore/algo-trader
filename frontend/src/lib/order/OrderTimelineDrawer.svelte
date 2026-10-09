@@ -66,10 +66,12 @@
    *  palette. No `'paper'` fallback — an order with no resolved context
    *  (yet) renders as explicitly unknown, never silently mislabeled. */
   function modeCls(/** @type {string} */ mode) {
-    if (mode === 'sim')   return 'otd-mode-sim';
-    if (mode === 'paper') return 'otd-mode-paper';
-    if (mode === 'live')  return 'otd-mode-live';
-    if (mode === 'draft') return 'otd-mode-draft';
+    if (mode === 'sim')    return 'otd-mode-sim';
+    if (mode === 'paper')  return 'otd-mode-paper';
+    if (mode === 'live')   return 'otd-mode-live';
+    if (mode === 'shadow') return 'otd-mode-shadow';
+    if (mode === 'replay') return 'otd-mode-replay';
+    if (mode === 'draft')  return 'otd-mode-draft';
     return 'otd-mode-unknown';
   }
 
@@ -283,7 +285,8 @@
   }
   .otd-close:hover { color: var(--c-short); background: var(--close-btn-neutral-bg-hover); }
 
-  /* Linked-orders chip strip — same pill shape as .otd-mode-pill,
+  /* Linked-orders chip strip — its own fully-rounded pill shape
+     (independent of .otd-mode-pill, which uses a sharp 2px radius);
      clickable chips get the sky "info" treatment (CLAUDE.md palette),
      basket tag (non-clickable) gets the violet "postback" treatment
      already used for the postback event kind above. */
@@ -379,13 +382,16 @@
     /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
   }
+  /* Radius unified to 2px (audit fix) — matches LogPanel's .mode-pill
+     and ChaseCard's .cc-mode (2 of 3 mode-pill surfaces already agreed
+     on a sharp-cornered pill; this was the sole fully-rounded outlier). */
   .otd-mode-pill {
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
     font-weight: 700;
-    letter-spacing: 0.06em;
-    padding: 0.1rem 0.35rem;
-    border-radius: 9999px;
+    letter-spacing: 0.05em;
+    padding: 0 0.3rem;
+    border-radius: 2px;
     border: 1px solid;
     flex-shrink: 0;
   }
@@ -433,10 +439,16 @@
   .otd-side-sell    { color: var(--algo-red,   var(--c-short)); }
   .otd-side-unknown { color: rgba(180, 200, 230, 0.5); }
 
-  /* Mode pill colors — matches LogPanel + CLAUDE.md palette */
-  .otd-mode-sim     { color: var(--c-action); background: rgba(251,191,36,0.15);  border-color: var(--c-action); }
-  .otd-mode-paper   { color: #38bdf8; background: rgba(56,189,248,0.15);  border-color: #38bdf8; }
-  .otd-mode-live    { color: var(--c-long); background: rgba(74,222,128,0.15);  border-color: var(--c-long); }
+  /* Mode pill colors — matches the navbar MODE_COLOR (canonical map in
+     +layout.svelte), LogPanel's .mode-pill-*, and ChaseCard's .cc-mode-*.
+     SIM/REPLAY green (sandbox/safe), PAPER sky, SHADOW orange, LIVE red —
+     LIVE is the only mode that moves real money; it was previously green
+     here, the exact footgun the navbar's own comment calls out. */
+  .otd-mode-sim     { color: var(--c-long); background: rgba(74,222,128,0.15);  border-color: var(--c-long); }
+  .otd-mode-replay  { color: var(--c-long); background: rgba(74,222,128,0.15);  border-color: var(--c-long); }
+  .otd-mode-paper   { color: var(--algo-sky); background: var(--algo-sky-bg);  border-color: var(--algo-sky-border); }
+  .otd-mode-shadow  { color: var(--algo-orange); background: rgba(251,146,60,0.15);  border-color: var(--algo-orange); }
+  .otd-mode-live    { color: var(--c-short); background: rgba(248,113,113,0.15);  border-color: var(--c-short); }
   /* DRAFT — never placed, no broker round-trip. Dashed + muted, distinct
      from otd-mode-unknown's solid slate so the two don't read the same. */
   .otd-mode-draft   { color: var(--algo-muted); background: rgba(126,151,184,0.10); border-color: rgba(126,151,184,0.45); border-style: dashed; }

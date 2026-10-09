@@ -41,11 +41,16 @@ function modeClsOld(mode) {
 }
 
 // Replicated from OrderTimelineDrawer.svelte's fixed modeCls — keep in sync.
+// Audit fix (mode-pill color consistency): shadow/replay branches added —
+// previously both fell through to otd-mode-unknown (no CSS existed for
+// them at all).
 function modeCls(mode) {
-  if (mode === 'sim')   return 'otd-mode-sim';
-  if (mode === 'paper') return 'otd-mode-paper';
-  if (mode === 'live')  return 'otd-mode-live';
-  if (mode === 'draft') return 'otd-mode-draft';
+  if (mode === 'sim')    return 'otd-mode-sim';
+  if (mode === 'paper')  return 'otd-mode-paper';
+  if (mode === 'live')   return 'otd-mode-live';
+  if (mode === 'shadow') return 'otd-mode-shadow';
+  if (mode === 'replay') return 'otd-mode-replay';
+  if (mode === 'draft')  return 'otd-mode-draft';
   return 'otd-mode-unknown';
 }
 
@@ -61,6 +66,8 @@ describe('OrderTimelineDrawer modeCls — fixed behaviour', () => {
     expect(modeCls('sim')).toBe('otd-mode-sim');
     expect(modeCls('paper')).toBe('otd-mode-paper');
     expect(modeCls('live')).toBe('otd-mode-live');
+    expect(modeCls('shadow')).toBe('otd-mode-shadow');
+    expect(modeCls('replay')).toBe('otd-mode-replay');
   });
 
   it('draft gets its own explicit class, distinct from both live and unknown', () => {

@@ -2305,9 +2305,11 @@
     padding: 0.3rem 0.5rem !important;
   }
 
-  /* Mode pills — amber SIM / emerald LIVE. Consistent across Simulator
-     and Order tabs; replaces the prior pink-on-pink SIM styling that
-     dominated the Order log. */
+  /* Mode pills — green SIM/REPLAY, sky PAPER, orange SHADOW, red LIVE.
+     Matches the navbar MODE_COLOR (canonical map, +layout.svelte) and
+     mirrored by ChaseCard's .cc-mode-* and OrderTimelineDrawer's
+     .otd-mode-*. Consistent across Simulator and Order tabs; replaces
+     the prior pink-on-pink SIM styling that dominated the Order log. */
   :global(.mode-pill) {
     display: inline-block;
     padding: 0 0.3rem;
@@ -2320,27 +2322,31 @@
     border: 1px solid;
     vertical-align: baseline;
   }
+  /* SIM — green, matching the navbar SIM badge and REPLAY below (both
+     sandbox/safe modes, grouped on the same hue by design). */
   :global(.mode-pill-sim) {
-    background: var(--c-action-14);
-    color: var(--c-action);
-    border-color: rgba(251,191,36,0.45);
+    background: rgba(74,222,128,0.14);
+    color: var(--c-long);
+    border-color: rgba(74,222,128,0.45);
   }
   /* LIVE pill — red to match the navbar LIVE badge + LIVE banner.
      Reads as "this row hit the real broker" at a glance. Earlier
      palette put LIVE on emerald which collided with REPLAY (also
      emerald), making the two indistinguishable on a quick scan. */
   :global(.mode-pill-live) {
-    background: rgba(248,113,113,0.14);
+    background: var(--c-short-14);
     color: var(--c-short);
     border-color: rgba(248,113,113,0.45);
   }
-  /* Mode-2 paper rows — sky-blue tint, distinct from amber sim and
-     emerald live so the operator never confuses a paper fill with a
-     real one. */
+  /* Mode-2 paper rows — sky-blue tint, distinct from green sim and
+     red live so the operator never confuses a paper fill with a real
+     one. Uses the --algo-sky family throughout (was previously a
+     mismatched darker blue, #38bdf8/rgba(56,189,248,...), on the bg
+     and border while the text already correctly used --algo-sky). */
   :global(.mode-pill-paper) {
-    background: rgba(56,189,248,0.14);
-    color: #7dd3fc;
-    border-color: rgba(56,189,248,0.45);
+    background: var(--algo-sky-bg);
+    color: var(--algo-sky);
+    border-color: var(--algo-sky-border);
   }
   /* Mode-4 replay — green, matching the navbar REPLAY badge. */
   :global(.mode-pill-replay) {
@@ -2351,7 +2357,7 @@
   /* Mode-5 shadow — orange, matching the navbar SHADOW badge. */
   :global(.mode-pill-shadow) {
     background: rgba(251,146,60,0.14);
-    color: #fb923c;
+    color: var(--algo-orange);
     border-color: rgba(251,146,60,0.45);
   }
   /* DRAFT — never placed, no broker round-trip. Dashed + muted so it
@@ -2428,15 +2434,18 @@
   .om-chip:last-child  { border-right-width: 1px; border-top-right-radius: 3px; border-bottom-right-radius: 3px; }
   .om-chip:hover { color: var(--algo-slate); }
   .om-chip.om-on.om-chip-all    { background: var(--c-action-14); color: var(--c-action); border-color: rgba(251,191,36,0.45); }
-  .om-chip.om-on.om-chip-paper  { background: rgba(56,189,248,0.14); color: #7dd3fc; border-color: rgba(56,189,248,0.45); }
-  /* Canonical green (var(--c-long)) for live — replaces off-palette emerald #10b981 */
+  /* Paper — sky, matching .mode-pill-paper (uses the --algo-sky family
+     throughout; was previously a mismatched darker blue literal). */
+  .om-chip.om-on.om-chip-paper  { background: var(--algo-sky-bg); color: var(--algo-sky); border-color: var(--algo-sky-border); }
   /* LIVE chip on the Order-tab mode filter — red to match LIVE pill
      + LIVE banner. Operator selects "Live" → red glow signals "I'm
      about to look at real-broker orders". */
-  .om-chip.om-on.om-chip-live   { background: rgba(248,113,113,0.14); color: var(--c-short); border-color: rgba(248,113,113,0.45); }
-  .om-chip.om-on.om-chip-sim    { background: var(--c-action-14); color: var(--c-action); border-color: rgba(251,191,36,0.45); }
-  /* Shadow — orange #fb923c, matching the mode pill palette */
-  .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: #fb923c; border-color: rgba(251,146,60,0.45); }
+  .om-chip.om-on.om-chip-live   { background: var(--c-short-14); color: var(--c-short); border-color: rgba(248,113,113,0.45); }
+  /* Sim — canonical green var(--c-long), grouped with Replay below
+     (both sandbox/safe modes), matching .mode-pill-sim. */
+  .om-chip.om-on.om-chip-sim    { background: rgba(74,222,128,0.14); color: var(--c-long); border-color: rgba(74,222,128,0.45); }
+  /* Shadow — orange, matching the mode pill palette */
+  .om-chip.om-on.om-chip-shadow { background: rgba(251,146,60,0.14); color: var(--algo-orange); border-color: rgba(251,146,60,0.45); }
   /* Replay — canonical green var(--c-long) */
   .om-chip.om-on.om-chip-replay { background: rgba(74,222,128,0.14); color: var(--c-long); border-color: rgba(74,222,128,0.45); }
 
