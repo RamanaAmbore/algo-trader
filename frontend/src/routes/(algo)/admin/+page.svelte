@@ -677,7 +677,7 @@
                       : user.role === 'risk'
                         ? 'bg-amber-500/15 text-amber-400/75 border-amber-500/30'
                         : user.role === 'partner'
-                          ? 'bg-green-500/10 text-[var(--c-long)]/60 border-green-500/25'
+                          ? 'bg-green-500/10 text-[var(--algo-green-text-dim)] border-green-500/25'
                           : 'bg-slate-500/15 text-slate-400 border-slate-500/40'}">
                 {user.role}
               </span>
@@ -710,7 +710,7 @@
                    on partners only, never self. -->
               {#if !user.terminated_at && !isSelf && (iAmDesignated || targetIsPartner)}
                 {#if user.suspended_at}
-                  <button onclick={() => reinstate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-400">Reinstate</button>
+                  <button onclick={() => reinstate(user.username)} class="btn-secondary btn-tone-amber text-[0.65rem] py-1 px-2">Reinstate</button>
                 {:else}
                   <button onclick={() => suspend(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2">Suspend</button>
                 {/if}
@@ -721,19 +721,19 @@
               {/if}
               <!-- Resend verify — only for unverified rows; same gate as Reset PW. -->
               {#if !user.terminated_at && !isSelf && !user.email_verified && user.email && (iAmDesignated || targetIsPartner)}
-                <button onclick={() => resendVerify(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-sky-400/50 text-sky-300">Resend Verify</button>
+                <button onclick={() => resendVerify(user.username)} class="btn-secondary btn-tone-sky text-[0.65rem] py-1 px-2">Resend Verify</button>
               {/if}
               <!-- Mark verified directly — designated only, no email. -->
               {#if iAmDesignated && !user.terminated_at && !isSelf && !user.email_verified}
-                <button onclick={() => markVerifiedNow(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-emerald-400/50 text-emerald-300">Mark Verified</button>
+                <button onclick={() => markVerifiedNow(user.username)} class="btn-secondary btn-tone-green text-[0.65rem] py-1 px-2">Mark Verified</button>
               {/if}
               <!-- Terminate — designated only, never self, target must not already be designated. -->
               {#if iAmDesignated && user.role !== 'designated' && !user.terminated_at && !isSelf}
-                <button onclick={() => terminate(user.username)} class="btn-secondary text-[0.65rem] py-1 px-2 border-red-400/50 text-red-300">Terminate</button>
+                <button onclick={() => terminate(user.username)} class="btn-secondary btn-tone-red text-[0.65rem] py-1 px-2">Terminate</button>
               {/if}
               <!-- Promote / Demote between admin and designated — designated only, never self, never partner. -->
               {#if iAmDesignated && !isSelf && user.role !== 'partner'}
-                <button onclick={() => flipDesignated(user)} class="btn-secondary text-[0.65rem] py-1 px-2 border-violet-400/50 text-[#c084fc]">
+                <button onclick={() => flipDesignated(user)} class="btn-secondary btn-tone-violet text-[0.65rem] py-1 px-2">
                   {user.role === 'designated' ? 'Demote' : 'Promote'}
                 </button>
               {/if}
@@ -751,7 +751,7 @@
               {#if iAmDesignated && !user.terminated_at && !isSelf}
                 <button
                   onclick={() => openPortal(user)}
-                  class="btn-secondary text-[0.65rem] py-1 px-2 border-cyan-400/50 text-cyan-300"
+                  class="btn-secondary btn-tone-cyan text-[0.65rem] py-1 px-2"
                   title="Mint or revoke this LP's investor-portal URL"
                 >Portal</button>
               {/if}
@@ -765,7 +765,7 @@
                    && (iAmDesignated || (iAmAdmin && targetIsPartner))}
                 <button
                   onclick={() => viewAs(user)}
-                  class="btn-secondary text-[0.65rem] py-1 px-2 border-amber-400/50 text-amber-400"
+                  class="btn-secondary btn-tone-amber text-[0.65rem] py-1 px-2"
                   title="Start a 30-min support session as {user.username} — view the platform exactly as they do"
                 >View as</button>
               {/if}
@@ -986,7 +986,7 @@
               {hasFail ? 'text-red-300' : 'text-white/80'}">
               <span class="tabular-nums opacity-70">{_relTime(ev.created_at)}</span>
               <span>·</span>
-              <span class="text-[var(--c-action)]/80">{ev.actor ?? '—'}</span>
+              <span class="text-[var(--c-action)]">{ev.actor ?? '—'}</span>
               <span>→</span>
               <span>{ev.recipients_label ?? ev.recipients ?? '—'}</span>
               <span>·</span>
@@ -1099,7 +1099,7 @@
   ariaLabel="Investor Portal"
   zIndex={200}
 >
-  <div class="ip-modal" onclick={(e) => e.stopPropagation()}>
+  <div class="ip-modal card-theme-dark" onclick={(e) => e.stopPropagation()}>
       <header class="ip-modal-head">
         <div>
           <div class="ip-modal-title">Investor portal</div>

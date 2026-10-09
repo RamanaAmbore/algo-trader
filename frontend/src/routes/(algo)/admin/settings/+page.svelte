@@ -571,7 +571,7 @@
       <div class="flex items-center gap-2">
         <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
           {globalSwitches == null ? 'opacity-50'
-            : globalSwitches.paper_trading_mode ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
+            : globalSwitches.paper_trading_mode ? 'bg-[var(--algo-green-bg-mid)] text-[var(--algo-green)]' : 'bg-[var(--algo-red-bg-strong)] text-[var(--algo-red)]'}">
           {globalSwitches == null ? '…' : (globalSwitches.paper_trading_mode ? 'PAPER' : 'LIVE')}
         </span>
         <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
@@ -611,7 +611,7 @@
       <div class="flex items-center gap-2">
         <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
           {globalSwitches == null ? 'opacity-50'
-            : globalSwitches.expiry_close_hold_enabled ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
+            : globalSwitches.expiry_close_hold_enabled ? 'bg-[var(--algo-green-bg-mid)] text-[var(--algo-green)]' : 'bg-[var(--algo-red-bg-strong)] text-[var(--algo-red)]'}">
           {globalSwitches == null ? '…' : (globalSwitches.expiry_close_hold_enabled ? 'HELD' : 'AUTO')}
         </span>
         <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
@@ -632,7 +632,7 @@
       <div class="flex items-center gap-2">
         <span class="text-[length:var(--fs-sm)] font-bold px-1.5 py-0.5 rounded
           {globalSwitches == null ? 'opacity-50'
-            : globalSwitches.template_exit_hold_enabled ? 'bg-[var(--algo-green)]/15 text-[var(--algo-green)]' : 'bg-[var(--algo-red)]/20 text-[var(--algo-red)]'}">
+            : globalSwitches.template_exit_hold_enabled ? 'bg-[var(--algo-green-bg-mid)] text-[var(--algo-green)]' : 'bg-[var(--algo-red-bg-strong)] text-[var(--algo-red)]'}">
           {globalSwitches == null ? '…' : (globalSwitches.template_exit_hold_enabled ? 'HELD' : 'AUTO')}
         </span>
         <button type="button" class="btn-secondary text-[length:var(--fs-sm)] py-0.5 px-2"
@@ -741,7 +741,7 @@
               <div class="flex items-baseline gap-2 flex-wrap">
                 <span class="font-mono text-[#7dd3fc] break-all">{s.key}</span>
                 {#if isModified(s)}
-                  <span class="px-1 rounded bg-[var(--c-action)]/15 text-[var(--c-action)] border border-[var(--c-action)]/30 text-[length:var(--fs-xs)] shrink-0">mod</span>
+                  <span class="px-1 rounded bg-[var(--c-action-14)] text-[var(--c-action)] border border-[var(--algo-amber-border-soft)] text-[length:var(--fs-xs)] shrink-0">mod</span>
                 {/if}
               </div>
 

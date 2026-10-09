@@ -2125,6 +2125,31 @@
   .btn-tertiary:focus-visible { outline: 2px solid #d4920c; outline-offset: 2px; }
   .btn-tertiary:hover { background-color: rgba(12,24,48,0.07); }
   .btn-tertiary.active { color: #0c1830; font-weight: 700; background-color: rgba(12,24,48,0.10); }
+
+  /* ── Semantic tone escape-hatch for .btn-secondary variants ──────────────
+     (algo)/+layout.svelte's `:global(.algo-content .btn-secondary)` rule
+     (two class selectors) is more specific than a single Tailwind color
+     utility (e.g. `border-red-400/50 text-red-300`) applied directly to a
+     `.btn-secondary` button, so the utility silently loses the cascade and
+     every "colored" secondary button renders plain white — masking
+     irreversible actions (Terminate) as visually identical to harmless
+     ones (Edit). `!important` is the proven escape hatch (originally
+     admin/brokers/+page.svelte's local `.destructive`, since consolidated
+     here as one shared family so admin/strategies/brokers don't each
+     hand-roll their own copy). Apply alongside `.btn-secondary`, e.g.
+     class="btn-secondary btn-tone-red". */
+  .btn-tone-red     { color: var(--c-short)       !important; border-color: var(--algo-red-border)     !important; }
+  .btn-tone-amber   { color: var(--algo-amber)     !important; border-color: var(--algo-amber-border)   !important; }
+  .btn-tone-sky     { color: var(--algo-sky)       !important; border-color: var(--algo-sky-border)     !important; }
+  .btn-tone-cyan    { color: var(--c-info)         !important; border-color: var(--algo-cyan-border)    !important; }
+  .btn-tone-green   { color: var(--algo-green-text)!important; border-color: var(--algo-green-border)   !important; }
+  .btn-tone-violet  { color: var(--algo-violet)    !important; border-color: var(--algo-violet-border)  !important; }
+  .btn-tone-red:hover:not(:disabled)    { background: var(--c-short-10)          !important; }
+  .btn-tone-amber:hover:not(:disabled)  { background: var(--algo-amber-bg)       !important; }
+  .btn-tone-sky:hover:not(:disabled)    { background: var(--algo-sky-bg)         !important; }
+  .btn-tone-cyan:hover:not(:disabled)   { background: var(--algo-cyan-bg)       !important; }
+  .btn-tone-green:hover:not(:disabled)  { background: var(--algo-green-bg)       !important; }
+  .btn-tone-violet:hover:not(:disabled) { background: var(--algo-violet-bg)      !important; }
 }
 
 /* ── Shared form field styles ─────────────────────────────────────────────── */

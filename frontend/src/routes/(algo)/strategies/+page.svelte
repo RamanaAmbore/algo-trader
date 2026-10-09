@@ -266,7 +266,7 @@
             {#if canEdit}
               <td class="td-actions">
                 <button class="btn-secondary btn-sm" onclick={() => startEdit(r)}>Edit</button>
-                <button class="btn-secondary btn-sm btn-danger" onclick={() => doDelete(r)}>×</button>
+                <button class="btn-secondary btn-sm btn-tone-red" onclick={() => doDelete(r)}>×</button>
               </td>
             {/if}
           </tr>
@@ -370,8 +370,9 @@
                    text-transform: uppercase; font-family: var(--font-numeric); }
 
   .btn-sm { font-size: var(--fs-sm); padding: 0.2rem 0.55rem; }
-  .btn-danger { color: var(--c-short); border-color: rgba(248,113,113,0.40); }
-  .btn-danger:hover { background: rgba(248,113,113,0.15); }
+  /* Destructive tone now comes from the shared .btn-tone-red escape
+     hatch in app.css (consolidated — was a local hand-rolled copy that
+     also lost to .algo-content .btn-secondary's higher specificity). */
 
   .field-input-sm { font-size: var(--fs-lg); padding: 0.18rem 0.4rem; }
   .field-input-num { text-align: right; font-variant-numeric: tabular-nums;

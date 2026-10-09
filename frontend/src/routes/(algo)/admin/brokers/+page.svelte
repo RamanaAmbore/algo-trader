@@ -761,7 +761,7 @@
             <td class="action-cell">
               <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2"
                       onclick={() => startEdit(row)}>Edit</button>
-              <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2 destructive"
+              <button type="button" class="btn-secondary text-[0.55rem] py-0.5 px-2 btn-tone-red"
                       onclick={() => destroy(row)}>Del</button>
             </td>
           </tr>
@@ -1100,13 +1100,10 @@
   .test-result.ok   { color: var(--c-long); }
   .test-result.fail { color: var(--c-short); }
 
-  :global(.brokers-table .destructive) {
-    border-color: rgba(248,113,113,0.45) !important;
-    color: var(--c-short) !important;
-  }
-  :global(.brokers-table .destructive:hover:not(:disabled)) {
-    background: var(--c-short-10) !important;
-  }
+  /* Destructive tone now comes from the shared .btn-tone-red escape
+     hatch in app.css (consolidated — this was the original local
+     .destructive copy of the same !important pattern, now shared by
+     admin/+page.svelte and strategies/+page.svelte too). */
 
   /* ── Poll priority chip + dropdown ─────────────────────────────── */
   .priority-cell { vertical-align: middle; }

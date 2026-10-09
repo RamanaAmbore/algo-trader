@@ -467,7 +467,7 @@
                       <span class="text-[var(--c-muted)] text-[0.55rem] italic">System tokens edit only via the toggle above.</span>
                     {:else}
                       <button onclick={() => openEdit(t)}
-                        class="text-[0.6rem] px-2 py-0.5 rounded border border-[var(--c-action)]/50 text-[var(--c-action)] hover:bg-[var(--c-action)]/15">Edit</button>
+                        class="text-[0.6rem] px-2 py-0.5 rounded border border-[var(--algo-amber-border)] text-[var(--c-action)] hover:bg-[var(--c-action-14)]">Edit</button>
                       <button onclick={() => doDelete(t)}
                         class="text-[0.6rem] px-2 py-0.5 rounded border border-red-500/50 text-red-300 hover:bg-red-500/15">Delete</button>
                     {/if}
