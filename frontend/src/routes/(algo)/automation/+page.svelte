@@ -1294,7 +1294,10 @@
 
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
-                  <span class="field-label">Conditions (JSON)</span>
+                  <span class="field-label">
+                    Conditions (JSON)
+                    <InfoHint popup panel title="Conditions (JSON)" text="A leaf is <code>&#123;metric, scope, op, value&#125;</code>, e.g. <b>&#123;&quot;metric&quot;:&quot;pnl&quot;,&quot;scope&quot;:&quot;positions.total&quot;,&quot;op&quot;:&quot;&lt;=&quot;,&quot;value&quot;:-50000&#125;</code>. Rolling-window metrics like <b>mean_pnl_30m</b> also accept call syntax for ANY window in minutes — <b>mean_pnl(45)</b>, <b>max_drawdown_pnl(90)</b>, <b>stdev_pnl(120)</b> — instead of being limited to the fixed _30m/_1h/_4h tokens. Combine leaves with <code>&#123;all:[...]&#125;</code> / <code>&#123;any:[...]&#125;</code> / <code>&#123;not:...&#125;</code>." />
+                  </span>
                   <textarea bind:value={editForm.conditions} class="field-input font-mono text-[length:var(--fs-sm)]" rows="5"></textarea>
                 </div>
                 <div>
