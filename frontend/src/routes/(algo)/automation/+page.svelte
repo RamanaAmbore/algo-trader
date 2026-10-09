@@ -1855,6 +1855,22 @@
     max-width: 100%;
   }
 
+  /* ── Agent row card chrome — matches agent-templates' .frag-row look
+     (same literal gradient/border/radius) for visual parity across the
+     two automation sub-pages. Scoped to this component only — the shared
+     global .algo-status-card in app.css (used on 9+ other pages) is
+     untouched; [data-status="..."] variants there only set --st-fg/
+     --st-bg/--st-border for the nested .algo-status-pill badge, never
+     the card container's own background/border, so no conflict. */
+  .algo-status-card {
+    background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
+    border: 1px solid rgba(126,151,184,0.10);
+    border-radius: 0.3rem;
+    overflow: hidden;
+    transition: border-color 0.08s;
+  }
+  .algo-status-card:hover { border-color: rgba(251,191,36,0.25); }
+
   /* ── Ask-AI form ─────────────────────────────────────────────────── */
   .ai-pill {
     font-family: var(--font-numeric);
