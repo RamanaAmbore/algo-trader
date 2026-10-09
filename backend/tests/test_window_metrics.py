@@ -105,3 +105,63 @@ def test_empty_history_returns_none():
     assert ctx.window_stdev(('positions', 'ZG####'), 60) is None
     assert ctx.window_range(('positions', 'ZG####'), 60) is None
     assert ctx.window_drawdown(('positions', 'ZG####'), 60) is None
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Phase 26 (Sprint 2) — _metric_factory_* resolvers must compute the exact
+#  same value as the pre-existing fixed-window metric functions. These
+#  resolvers are what GrammarRegistry.metric("mean_pnl(30)") ultimately
+#  returns (see test_grammar_registry.py for the registry-level call-shape
+#  parsing); this file proves the underlying math, on real pnl_history, is
+#  unchanged — the fixed tokens are now one-line bindings to these same
+#  factories, not a separate implementation that happens to agree.
+# ═══════════════════════════════════════════════════════════════════════════
+
+def test_mean_pnl_factory_matches_fixed_30m_resolver():
+    from backend.api.algo import grammar
+    ctx = _ctx_with_history([(100, None), (200, None), (300, None)])
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_mean_pnl(30)(ctx, row) == grammar._metric_mean_pnl_30m(ctx, row)
+    assert grammar._metric_factory_mean_pnl(30)(ctx, row) == 200.0
+
+
+def test_mean_day_factory_matches_fixed_30m_resolver():
+    from backend.api.algo import grammar
+    now = datetime.now(timezone.utc).replace(microsecond=0)
+    history = [(now - timedelta(minutes=2), 10, None), (now - timedelta(minutes=1), 20, None), (now, 30, None)]
+    ctx = Context(alert_state={'pnl_history': {('holdings', 'ZG####'): history}}, now=now)
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_mean_day(30)(ctx, row) == grammar._metric_mean_day_30m(ctx, row)
+    assert grammar._metric_factory_mean_day(30)(ctx, row) == 20.0
+
+
+def test_max_drawdown_pnl_factory_matches_fixed_1h_resolver():
+    from backend.api.algo import grammar
+    ctx = _ctx_with_history([(0, None), (100, None), (200, None), (50, None), (-50, None)])
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_max_drawdown_pnl(60)(ctx, row) == grammar._metric_max_drawdown_pnl_1h(ctx, row)
+    assert grammar._metric_factory_max_drawdown_pnl(60)(ctx, row) == -250.0
+
+
+def test_max_drawdown_pnl_pct_factory_matches_fixed_30m_resolver():
+    from backend.api.algo import grammar
+    ctx = _ctx_with_history([(0, 0.0), (0, 10.0), (0, 20.0), (0, 5.0), (0, -5.0)])
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_max_drawdown_pnl_pct(30)(ctx, row) == \
+        grammar._metric_max_drawdown_pnl_pct_30m(ctx, row)
+    assert grammar._metric_factory_max_drawdown_pnl_pct(30)(ctx, row) == -25.0
+
+
+def test_stdev_pnl_factory_matches_fixed_30m_resolver():
+    from backend.api.algo import grammar
+    ctx = _ctx_with_history([(0, None), (10, None), (20, None)])
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_stdev_pnl(30)(ctx, row) == grammar._metric_stdev_pnl_30m(ctx, row)
+
+
+def test_range_pnl_factory_matches_fixed_30m_resolver():
+    from backend.api.algo import grammar
+    ctx = _ctx_with_history([(50, None), (-30, None), (10, None), (100, None)])
+    row = {'account': 'ZG####'}
+    assert grammar._metric_factory_range_pnl(30)(ctx, row) == grammar._metric_range_pnl_30m(ctx, row)
+    assert grammar._metric_factory_range_pnl(30)(ctx, row) == 130.0

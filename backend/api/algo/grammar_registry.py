@@ -21,6 +21,7 @@ The registry holds no business logic — it is a pure name → callable map.
 
 from __future__ import annotations
 
+import ast
 import importlib
 import threading
 from typing import Any, Callable, Optional
@@ -43,7 +44,16 @@ def _import_dotted(path: str) -> Any:
 def _load_resolved(table: str, allow_bare: bool):
     def load(r, tables) -> bool:
         if r.resolver:
-            tables[table][r.token] = _import_dotted(r.resolver)
+            fn = _import_dotted(r.resolver)
+            # A row carrying params_schema is a FACTORY — it takes the
+            # call's positional args (not (ctx, row)) and RETURNS the
+            # (ctx, row) -> value callable. Keep it out of the plain
+            # exact-match table so an un-called base token (e.g. bare
+            # "mean_pnl") never resolves as if it were itself a metric.
+            if r.params_schema:
+                tables['factories'][table][r.token] = (fn, r.params_schema)
+            else:
+                tables[table][r.token] = fn
         elif allow_bare:
             tables[table][r.token] = None
         return True
@@ -54,7 +64,11 @@ def _load_required_resolver(table: str):
     def load(r, tables) -> bool:
         if not r.resolver:
             return False
-        tables[table][r.token] = _import_dotted(r.resolver)
+        fn = _import_dotted(r.resolver)
+        if r.params_schema:
+            tables['factories'][table][r.token] = (fn, r.params_schema)
+        else:
+            tables[table][r.token] = fn
         return True
     return load
 
@@ -112,6 +126,24 @@ class GrammarRegistry:
         self.actions:    dict[str, dict]     = {}   # {token: {"fn": callable, "params_schema": {...}}}
         # log
         self.log_tags:   dict[str, dict]     = {}   # {tag: source descriptor}
+        # Phase 26 (Sprint 2) — parameterized function-call tokens, e.g.
+        # mean_pnl(30). {base_token: (factory_callable, params_schema)}.
+        # metric/scope/channel/format resolvers used by .metric()/.scope()/
+        # .channel()/.fmt() for a cache-miss call-shape fallback (see
+        # _resolve_call_token below). Populated by _load_resolved /
+        # _load_required_resolver whenever a row carries params_schema.
+        self.metric_factories:  dict[str, tuple] = {}
+        self.scope_factories:   dict[str, tuple] = {}
+        self.channel_factories: dict[str, tuple] = {}
+        self.format_factories:  dict[str, tuple] = {}
+        # Per-literal-string cache for resolved call tokens — "mean_pnl(30)"
+        # is parsed + bound to its factory once, then served from here on
+        # every subsequent lookup for the life of the process (cleared on
+        # reload() since factories may have changed).
+        self._metric_call_cache:  dict[str, Optional[Callable]] = {}
+        self._scope_call_cache:   dict[str, Optional[Callable]] = {}
+        self._channel_call_cache: dict[str, Optional[Callable]] = {}
+        self._format_call_cache:  dict[str, Optional[Callable]] = {}
         # raw GrammarToken rows keyed by id — kept ONLY so agent_ai.py's
         # _grammar_snapshot() can render full per-token metadata (description/
         # value_type/params_schema) that the processed per-kind dispatch
@@ -120,28 +152,90 @@ class GrammarRegistry:
 
     # ── Accessors ──────────────────────────────────────────────────────────
     def metric(self, token: str) -> Optional[Callable]:
-        return self.metrics.get(token)
+        fn = self.metrics.get(token)
+        if fn is not None:
+            return fn
+        return self._resolve_call_token(token, self.metric_factories, self._metric_call_cache)
 
     def log_tag(self, token: str) -> Optional[dict]:
         return self.log_tags.get(token)
 
     def scope(self, token: str) -> Optional[Callable]:
-        return self.scopes.get(token)
+        fn = self.scopes.get(token)
+        if fn is not None:
+            return fn
+        return self._resolve_call_token(token, self.scope_factories, self._scope_call_cache)
 
     def op(self, token: str) -> Optional[Callable]:
         return self.operators.get(token)
 
     def channel(self, token: str) -> Optional[Callable]:
-        return self.channels.get(token)
+        fn = self.channels.get(token)
+        if fn is not None:
+            return fn
+        return self._resolve_call_token(token, self.channel_factories, self._channel_call_cache)
 
     def fmt(self, token: str) -> Optional[Callable]:
-        return self.formats.get(token)
+        fn = self.formats.get(token)
+        if fn is not None:
+            return fn
+        return self._resolve_call_token(token, self.format_factories, self._format_call_cache)
 
     def template(self, token: str) -> Optional[str]:
         return self.templates.get(token)
 
     def action(self, token: str) -> Optional[dict]:
         return self.actions.get(token)
+
+    # ── Parameterized function-call tokens (Phase 26 / Sprint 2) ───────────
+    def _resolve_call_token(self, token: str, factories: dict, cache: dict) -> Optional[Callable]:
+        """Cache-miss fallback for a token the exact-match table didn't
+        have. Parses `token` as a single call expression (e.g.
+        "mean_pnl(30)"); on success, caches the bound callable under the
+        literal string forever (including a None result for a token that
+        parses but doesn't resolve, so a bad token isn't re-parsed every
+        tick). Never raises — any parse/shape/lookup failure is just a
+        None (unknown token), same contract as a plain dict miss."""
+        if token in cache:
+            return cache[token]
+        result = self._parse_call_token(token, factories)
+        with self._lock:
+            cache[token] = result
+        return result
+
+    @staticmethod
+    def _parse_call_token(token: str, factories: dict) -> Optional[Callable]:
+        try:
+            tree = ast.parse(token, mode="eval")
+        except (SyntaxError, ValueError):
+            return None
+        node = tree.body
+        if not isinstance(node, ast.Call) or node.keywords:
+            return None
+        if not isinstance(node.func, ast.Name):
+            return None
+        entry = factories.get(node.func.id)
+        if entry is None:
+            return None
+        factory, params_schema = entry
+        param_count = len(params_schema or {})
+        if len(node.args) != param_count:
+            return None
+        args = []
+        for arg_node in node.args:
+            # Only plain numeric literals — no names, no arithmetic, no
+            # strings/bools. Matches this registry's narrow purpose
+            # (window sizes etc.); the whitelist AST evaluator in
+            # expr_eval.py is the place for general expressions.
+            if not isinstance(arg_node, ast.Constant) or isinstance(arg_node.value, bool) \
+               or not isinstance(arg_node.value, (int, float)):
+                return None
+            args.append(arg_node.value)
+        try:
+            return factory(*args)
+        except Exception as e:
+            logger.warning(f"Grammar registry: parameterized token '{token}' factory raised: {e}")
+            return None
 
     # ── Loader ─────────────────────────────────────────────────────────────
 
@@ -178,6 +272,7 @@ class GrammarRegistry:
             'templates': {},
             'actions':   {},
             'log_tags':  {},
+            'factories': {'metrics': {}, 'scopes': {}, 'channels': {}, 'formats': {}},
         }
 
         async with async_session() as s:
@@ -210,6 +305,16 @@ class GrammarRegistry:
             self.actions   = tables['actions']
             self.log_tags = tables['log_tags']
             self.tokens    = tokens_by_id
+            self.metric_factories  = tables['factories']['metrics']
+            self.scope_factories   = tables['factories']['scopes']
+            self.channel_factories = tables['factories']['channels']
+            self.format_factories  = tables['factories']['formats']
+            # Factories may have changed shape (or disappeared) on this
+            # reload — a stale cached call-token result must not survive it.
+            self._metric_call_cache  = {}
+            self._scope_call_cache   = {}
+            self._channel_call_cache = {}
+            self._format_call_cache  = {}
 
         logger.info(
             f"Grammar registry reloaded — "

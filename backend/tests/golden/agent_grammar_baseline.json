@@ -264,6 +264,104 @@
     {
       "grammar_kind": "condition",
       "token_kind": "metric",
+      "token": "mean_pnl",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Average positions P&L over the last N minutes. Call syntax, e.g. mean_pnl(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_mean_pnl",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "mean_day",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Average holdings day-change value over the last N minutes. Call syntax, e.g. mean_day(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_mean_day",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "max_drawdown_pnl",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Worst peak-to-trough drop in positions P&L over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_pnl",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "max_drawdown_day",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Worst peak-to-trough drop in holdings day-change over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_day(60).",
+      "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_day",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "max_drawdown_pnl_pct",
+      "value_type": "number",
+      "units": "%",
+      "description": "Worst peak-to-trough drop in positions P&L percentage over the last N minutes (always ≤ 0). Call syntax, e.g. max_drawdown_pnl_pct(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_max_drawdown_pnl_pct",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "stdev_pnl",
+      "value_type": "number",
+      "units": "₹",
+      "description": "Standard deviation of positions P&L over the last N minutes (volatility proxy). Call syntax, e.g. stdev_pnl(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_stdev_pnl",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
+      "token": "range_pnl",
+      "value_type": "number",
+      "units": "₹",
+      "description": "max(P&L) − min(P&L) over the last N minutes (swing magnitude). Call syntax, e.g. range_pnl(30).",
+      "resolver": "backend.api.algo.grammar._metric_factory_range_pnl",
+      "params_schema": {
+        "minutes": {
+          "type": "number"
+        }
+      }
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "metric",
       "token": "days_until_expiry",
       "value_type": "number",
       "units": "days",
