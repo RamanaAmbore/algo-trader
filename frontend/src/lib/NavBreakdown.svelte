@@ -656,7 +656,7 @@
     align-items: center;
     gap: 0.5rem;
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     color: var(--algo-muted);
     letter-spacing: 0.04em;
     padding: 0.25rem 0.5rem;
@@ -675,7 +675,7 @@
     text-align: center;
     color: rgba(155, 176, 208, 0.55);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     background: var(--card-bg-gradient);
     display: flex;
     flex-wrap: wrap;
@@ -704,7 +704,7 @@
   }
 
   .nav-bd-status-icon {
-    font-size: 0.9rem;
+    font-size: var(--fs-xl);
     flex-shrink: 0;
   }
 
@@ -732,7 +732,7 @@
     background: var(--c-info-14);
     color: var(--c-info);
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;

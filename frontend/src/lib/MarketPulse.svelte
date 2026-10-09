@@ -5314,7 +5314,7 @@
        treatment on PerformancePage and the audit canonical spec. */
     text-transform: uppercase;
     letter-spacing: 0.05em;
-    color: #fbbf24;
+    color: var(--c-action);
     /* Stronger amber stratum so TOTAL stands out over data-row
        directional tints + (incoming) LTP heat cells. Operator:
        "total row should have a different background color scheme."

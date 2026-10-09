@@ -7123,12 +7123,12 @@
   .cand-open-chip {
     background: rgba(74, 222, 128, 0.15);
     border: 1px solid rgba(74, 222, 128, 0.4);
-    color: var(--c-long, #4ade80);
+    color: var(--c-long);
   }
   .cand-closed-chip {
     background: rgba(126, 151, 184, 0.12);
     border: 1px solid rgba(126, 151, 184, 0.3);
-    color: var(--c-muted, #7e97b8);
+    color: var(--c-muted);
   }
 
   /* LTP heat encoding for .cand-grid rows moved to CandidateLegRow.svelte. */
@@ -7494,7 +7494,7 @@
      Solid amber pill with a darker background; the separator
      below pushes the tabs visually apart. */
   .legs-underlying-chip {
-    color: var(--c-action, #fbbf24);
+    color: var(--c-action);
     font-size: var(--fs-sm, 0.6rem);
     font-weight: 700;
     letter-spacing: 0.04em;

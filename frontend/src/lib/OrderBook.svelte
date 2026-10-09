@@ -1082,6 +1082,6 @@
      overflow:hidden + ellipsis to degrade instead of wrapping/overflowing. */
   @media (max-width: 600px) {
     .ob-sc { padding: 0.35rem 0.2rem; }
-    .ob-sc-l { font-size: 0.55rem; letter-spacing: 0.03em; }
+    .ob-sc-l { font-size: var(--fs-xs); letter-spacing: 0.03em; }
   }
 </style>

@@ -1741,11 +1741,11 @@
     background: rgba(248,113,113,0.10); border: 1px solid rgba(248,113,113,0.35);
     border-radius: 4px;
   }
-  .oct-instruments-error-msg { font-size: var(--fs-sm); color: var(--c-short, #f87171); }
+  .oct-instruments-error-msg { font-size: var(--fs-sm); color: var(--c-short); }
   .oct-instruments-retry {
     font-size: var(--fs-sm); font-weight: 600; padding: 0.15rem 0.5rem;
     border: 1px solid rgba(251,191,36,0.55); border-radius: 3px;
-    background: rgba(251,191,36,0.10); color: var(--c-action, #fbbf24);
+    background: rgba(251,191,36,0.10); color: var(--c-action);
     cursor: pointer; white-space: nowrap;
   }
   .oct-instruments-retry:hover { background: rgba(251,191,36,0.20); }
@@ -2248,7 +2248,7 @@
   .chain-btn:disabled { opacity: 0.3; cursor: not-allowed; }
   .chain-btn:disabled:hover { background: transparent; border-color: var(--c-long); }
   .chain-btn-sell:disabled:hover { border-color: var(--c-short); }
-  .chain-cell-spread-warn { font-size: 0.55rem; color: var(--algo-amber, #fbbf24); margin-left: 0.12rem; cursor: default; vertical-align: super; }
+  .chain-cell-spread-warn { font-size: var(--fs-xs); color: var(--algo-amber); margin-left: 0.12rem; cursor: default; vertical-align: super; }
   .chain-quick-toast {
     display: inline-block; padding: 2px 8px; border-radius: 2px;
     background: rgba(74,222,128,0.18); color: var(--c-long);

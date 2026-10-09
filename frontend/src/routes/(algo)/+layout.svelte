@@ -2764,11 +2764,11 @@
     --ch-title-font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
     --ch-title-size: 0.6rem;
     --ch-title-weight: 700;
-    --ch-title-color: #fbbf24;
+    --ch-title-color: var(--c-action);
     --ch-title-letter-spacing: 0.04em;
     --ch-title-transform: uppercase;
     --ch-ts-size: 0.65rem;
-    --ch-ts-color: #7e97b8;
+    --ch-ts-color: var(--c-muted);
   }
 
   /* Demo banner — between ImpersonationBanner and <main>, outside algo-content.

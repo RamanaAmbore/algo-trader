@@ -615,7 +615,7 @@
     background: rgba(251,113,133,0.18);
     color: #fb7185;
     border: 1px solid rgba(251,113,133,0.4);
-    font-size: 0.65rem;
+    font-size: var(--fs-md);
     padding: 0 0.3rem;
     border-radius: 3px;
     font-weight: 600;
@@ -700,8 +700,8 @@
     0%, 100% { opacity: 1; }
     50%       { opacity: 0.2; }
   }
-  .cc-pulse-buy  { background: var(--c-pos, #4ade80); }
-  .cc-pulse-sell { background: var(--c-neg, #f87171); }
+  .cc-pulse-buy  { background: var(--c-long); }
+  .cc-pulse-sell { background: var(--c-short); }
 
   /* Draft order rows — amber palette, visually distinct from live chases.
      Row is clickable (opens order ticket pre-filled); cursor:pointer. */
@@ -715,7 +715,7 @@
   /* "D" chip — amber, same pill shape as algo-status-pill */
   .cc-draft-chip {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     padding: 0.18rem 0.42rem;
     border-radius: 3px;
     font-weight: 700;
@@ -723,7 +723,7 @@
     text-transform: uppercase;
     border: 1px solid rgba(251, 191, 36, 0.50);
     background: rgba(251, 191, 36, 0.14);
-    color: #fbbf24;
+    color: var(--c-action);
     white-space: nowrap;
   }
   .cc-draft-acct {
@@ -735,7 +735,7 @@
   /* Account text next to the "D" chip when a draft has one assigned —
      same muted tone as the real-row account column, kept compact. */
   .cc-draft-acct-text {
-    font-size: 0.68rem;
+    font-size: var(--fs-md);
     color: var(--c-muted, #94a3b8);
     font-variant-numeric: tabular-nums;
     overflow: hidden;
@@ -744,7 +744,7 @@
   }
   /* DRAFT mode label in the mode column */
   .cc-mode-draft {
-    color: #fbbf24;
+    color: var(--c-action);
     border-color: rgba(251, 191, 36, 0.45);
   }
   /* Visual separator between real chases and draft rows */
@@ -767,7 +767,7 @@
   }
   .cc-draft-remove:hover {
     background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
+    color: var(--c-action);
     border-color: rgba(251, 191, 36, 0.75);
   }
 
@@ -783,7 +783,7 @@
   /* Status chips: OPEN = green, PENDING = amber */
   .cc-pending-chip {
     display: inline-block;
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     padding: 0.18rem 0.42rem;
     border-radius: 3px;
     font-weight: 700;
@@ -799,7 +799,7 @@
   .cc-pending-chip-pending {
     border: 1px solid rgba(251, 191, 36, 0.50);
     background: rgba(251, 191, 36, 0.12);
-    color: #fbbf24;
+    color: var(--c-action);
   }
   .cc-pending-acct {
     display: flex;

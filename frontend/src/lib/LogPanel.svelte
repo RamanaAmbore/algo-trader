@@ -1994,11 +1994,11 @@
     background: var(--algo-cyan-bg, rgba(34,211,238,0.08));
     border: 1px solid var(--algo-cyan-border, rgba(34,211,238,0.30));
     border-radius: 3px;
-    color: var(--c-info, #22d3ee);
+    color: var(--c-info);
     cursor: pointer;
     flex-shrink: 0;
     transition: background 0.08s, border-color 0.08s, color 0.08s;
-    font-size: 0.85rem;
+    font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
   }
@@ -2292,10 +2292,10 @@
   }
   /* Order log text colors match the OrderBook status card palette:
      placed=amber (running), fill=green (active), cancel=orange, reject=red */
-  .lp-order-scroll .log-row-ok    { color: var(--c-long,   #4ade80); }
-  .lp-order-scroll .log-row-info  { color: var(--c-action, #fbbf24); }
+  .lp-order-scroll .log-row-ok    { color: var(--c-long); }
+  .lp-order-scroll .log-row-info  { color: var(--c-action); }
   .lp-order-scroll .log-row-warn  { color: #fb923c; }
-  .lp-order-scroll .log-row-error { color: var(--c-short,  #f87171); }
+  .lp-order-scroll .log-row-error { color: var(--c-short); }
   .lp-order-scroll .log-row-debug { color: #94a3b8; }
 
   /* Unified-log container inside the LogPanel — matches the <pre>

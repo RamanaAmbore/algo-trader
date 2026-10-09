@@ -368,7 +368,7 @@
     border: 1px solid rgba(34, 211, 238, 0.55);
     background: var(--c-info-14);
     color: var(--c-info);
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     font-weight: 700;
     letter-spacing: 0.05em;
     cursor: pointer;

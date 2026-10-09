@@ -78,7 +78,7 @@
     .ats-group {
       cursor: pointer;
       pointer-events: auto;
-      font-size: 0.6rem;
+      font-size: var(--fs-sm);
     }
     .ats-slot { display: grid; }
     .ats-now, .ats-refresh { grid-area: 1 / 1; }

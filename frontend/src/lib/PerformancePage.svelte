@@ -727,7 +727,7 @@
         if (!d || d._isTotal) return {};
         if (d.has_gtt)        return { background: 'var(--algo-green-badge)', color: 'var(--algo-green)' };
         if (d.pair_group_key) return { background: 'rgba(34,211,238,0.18)', color: '#67e8f9' };
-        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: '#fbbf24' };
+        if (d.is_orphan)      return { background: 'rgba(251,191,36,0.15)', color: 'var(--c-action)' };
         return {};
       },
       cellRenderer: (p) => {

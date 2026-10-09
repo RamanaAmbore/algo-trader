@@ -3734,7 +3734,7 @@
        2026-09-29 margin-left:auto that right-anchored this + CHASE.
        See .oes-common-chase-label below for the matching change. */
     padding: 0 0.4rem;
-    font-size: 0.7rem;
+    font-size: var(--fs-lg);
     font-variant-numeric: tabular-nums;
     /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
@@ -3752,7 +3752,7 @@
     box-sizing: border-box;
   }
   .oes-tab-ltp-label {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     text-transform: uppercase;
     letter-spacing: 0.07em;
     color: var(--c-action);
@@ -5223,7 +5223,7 @@
   .oes-chart-placeholder {
     margin: auto;
     color: var(--algo-slate-dim);
-    font-size: 0.8rem;
+    font-size: var(--fs-xl);
     letter-spacing: 0.02em;
   }
 </style>

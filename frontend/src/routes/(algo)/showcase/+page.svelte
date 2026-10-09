@@ -481,7 +481,7 @@
     border-radius: 0.375rem;
     background: color-mix(in srgb, #7dd3fc 14%, transparent);
     border: 1px solid color-mix(in srgb, #7dd3fc 45%, transparent);
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     color: #7dd3fc;
     line-height: 1.5;
   }
@@ -502,7 +502,7 @@
     flex-wrap: wrap;
     align-items: baseline;
     gap: 0 0.1rem;
-    font-size: 0.75rem;
+    font-size: var(--fs-lg);
     color: rgba(203, 213, 225, 0.80);
   }
 
@@ -525,7 +525,7 @@
        Verified this page is a narrative "tour" page, not a colour-
        swatch/documentation sample — safe to convert like real UI. */
     color: var(--algo-slate);
-    font-size: 0.72rem;
+    font-size: var(--fs-lg);
     font-weight: 500;
     letter-spacing: 0.02em;
     text-decoration: none;

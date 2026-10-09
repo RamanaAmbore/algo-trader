@@ -323,7 +323,7 @@
   :global(.bh-acct-spare)    { color: var(--algo-slate); }
 
   :global(.bh-circuit-chip) {
-    font-size: 0.6rem;
+    font-size: var(--fs-sm);
     font-weight: 700;
     letter-spacing: 0.06em;
     padding: 0.05rem 0.3rem;

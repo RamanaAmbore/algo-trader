@@ -416,7 +416,7 @@
   .held-exit-warn { font-size: var(--fs-sm); color: var(--c-action); padding: 2px 0; }
 
   :global(.algo-status-pill) {
-    font-size: 0.55rem;
+    font-size: var(--fs-xs);
     padding: 0.18rem 0.5rem;
     border-radius: 3px;
     font-weight: 600;

@@ -3516,12 +3516,12 @@
     border-radius: 3px;
   }
   .ot-preview-tp {
-    color: #4ade80;
+    color: var(--c-long);
     background: rgba(74, 222, 128, 0.10);
     border: 1px solid rgba(74, 222, 128, 0.30);
   }
   .ot-preview-sl {
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.30);
   }
@@ -3536,7 +3536,7 @@
   .ot-preview-err-chip {
     font-family: var(--font-numeric);
     font-size: var(--fs-xs);
-    color: #f87171;
+    color: var(--c-short);
     background: rgba(248, 113, 113, 0.10);
     border: 1px solid rgba(248, 113, 113, 0.32);
     padding: 0.12rem 0.4rem;
@@ -3549,10 +3549,10 @@
     display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--close-btn-danger-bg);
-    border: 1px solid rgba(248, 113, 113, 0.35);
+    background: var(--close-btn-info-bg);
+    border: 1px solid rgba(34, 211, 238, 0.35);
     border-radius: 3px;
-    color: var(--c-short);
+    color: var(--c-info);
     font-size: var(--fs-xl);
     line-height: 1;
     padding: 0;
@@ -3561,7 +3561,7 @@
     transition: background 0.08s, border-color 0.08s;
   }
   .ot-close:hover {
-    background: var(--close-btn-danger-bg-hover);
+    background: var(--close-btn-info-bg-hover);
   }
 
   .ot-row {
@@ -4103,7 +4103,7 @@
   .ot-warn-draft-missing {
     background: rgba(251,191,36,0.12);
     border: 1px solid rgba(251,191,36,0.4);
-    color: #fbbf24;
+    color: var(--c-action);
     padding: 0.35rem 0.55rem;
     border-radius: 3px;
     font-size: var(--fs-sm);
