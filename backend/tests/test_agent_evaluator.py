@@ -239,3 +239,57 @@ class TestRateWindowSampleSpanGuard:
         assert result is not None and result < 0, (
             f"Expected a negative (worsening) rate from the quintile path, got {result}"
         )
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 3 (2026-10) — validate() leaf checks, including the new
+#  parameterized call-syntax tokens. This closes the end-to-end loop:
+#  grammar_registry.py rejects a bad call-shape/non-positive-window
+#  token as "unknown"; validate() (consumed by both the optional
+#  /validate-condition pre-check AND, as of Sprint 3,
+#  agents.py's create_agent/update_agent save path) surfaces that as a
+#  real, human-readable error.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestValidateCallSyntaxTokens:
+    """REGISTRY is a process-wide singleton other test files' reload()
+    calls mutate — wire exactly the real resolvers these tests need via
+    monkeypatch (auto-restored after each test), same pattern as
+    TestAllJoinsSameAccount._wire_registry above, instead of depending
+    on ambient state left over from whichever test ran previously."""
+
+    @pytest.fixture(autouse=True)
+    def _wire_registry(self, monkeypatch):
+        from backend.api.algo.grammar_registry import REGISTRY
+        from backend.api.algo.grammar import (
+            _metric_factory_mean_pnl, _scope_positions_total, OPERATORS,
+        )
+        monkeypatch.setattr(REGISTRY, 'metric_factories',
+                             {'mean_pnl': (_metric_factory_mean_pnl, {'minutes': {'type': 'number'}})})
+        monkeypatch.setattr(REGISTRY, 'scopes', {'positions.total': _scope_positions_total})
+        monkeypatch.setattr(REGISTRY, 'operators', {'<=': OPERATORS['<=']})
+        monkeypatch.setattr(REGISTRY, '_metric_call_cache', {})
+
+    def test_valid_call_syntax_leaf_has_no_errors(self):
+        from backend.api.algo.agent_evaluator import validate
+        cond = {"metric": "mean_pnl(30)", "scope": "positions.total", "op": "<=", "value": -50000}
+        assert validate(cond) == []
+
+    def test_malformed_call_syntax_window_is_an_unknown_metric_error(self):
+        """mean_pnl(0) resolves to a real callable at the registry level
+        (not caught there) but is now rejected by the new non-positive-
+        window guard in grammar_registry.py's _parse_call_token, so it
+        surfaces here identically to any other unknown token."""
+        from backend.api.algo.agent_evaluator import validate
+        cond = {"metric": "mean_pnl(0)", "scope": "positions.total", "op": "<=", "value": -50000}
+        errors = validate(cond)
+        assert len(errors) == 1
+        assert "unknown metric token" in errors[0]
+        assert "mean_pnl(0)" in errors[0]
+
+    def test_unknown_plain_metric_token_still_reports_as_before(self):
+        from backend.api.algo.agent_evaluator import validate
+        cond = {"metric": "nope_xyz", "scope": "positions.total", "op": "<=", "value": 0}
+        errors = validate(cond)
+        assert len(errors) == 1
+        assert "unknown metric token" in errors[0]

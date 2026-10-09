@@ -114,6 +114,31 @@ def test_summarise_token_action_type_with_params_schema():
     assert "price" in result    # optional
 
 
+def test_summarise_token_metric_with_params_schema_shows_call_syntax():
+    """Sprint 3 (2026-10) — a metric token's params_schema is a flat
+    {param_name: spec} shape (NOT the action tokens' JSON-Schema
+    {required, properties} shape above), so it needs its own rendering:
+    a structurally-generated call-syntax hint, not dependent on the
+    token's `description` happening to mention it by hand."""
+    @dataclass
+    class Token:
+        token: str = "mean_pnl"
+        value_type: str = "number"
+        units: str = "₹"
+        enum_values: list = None
+        description: str = "Average positions P&L over the last N minutes."
+        params_schema: dict = None
+
+        def __post_init__(self):
+            if self.params_schema is None:
+                self.params_schema = {"minutes": {"type": "number"}}
+
+    tok = Token()
+    result = _summarise_token(tok, "metric")
+    assert "mean_pnl" in result
+    assert "call syntax: mean_pnl(minutes)" in result
+
+
 def test_summarise_token_minimal():
     """Token with no extras → just name."""
     @dataclass

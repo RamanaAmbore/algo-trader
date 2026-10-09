@@ -226,9 +226,18 @@ class GrammarRegistry:
             # Only plain numeric literals — no names, no arithmetic, no
             # strings/bools. Matches this registry's narrow purpose
             # (window sizes etc.); the whitelist AST evaluator in
-            # expr_eval.py is the place for general expressions.
+            # expr_eval.py is the place for general expressions. A
+            # non-positive value (0 or negative) is rejected too — every
+            # current params_schema is a window-in-minutes, and a
+            # zero/negative window always resolves to a real callable
+            # that then silently returns None forever at evaluation time
+            # (the window cutoff is >= now, so <2 samples ever fall
+            # inside it). Negative literals already failed by accident
+            # (ast parses "-5" as UnaryOp(USub, Constant(5)), not
+            # Constant(-5)) — this makes that rejection intentional and
+            # also catches the 0 case the accident didn't cover.
             if not isinstance(arg_node, ast.Constant) or isinstance(arg_node.value, bool) \
-               or not isinstance(arg_node.value, (int, float)):
+               or not isinstance(arg_node.value, (int, float)) or arg_node.value <= 0:
                 return None
             args.append(arg_node.value)
         try:

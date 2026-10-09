@@ -78,6 +78,17 @@ def _summarise_token(token, kind: str) -> str:
         keys = [(f"{k}*" if k in req else k) for k in props.keys()]
         if keys:
             bits.append("params: {" + ", ".join(keys) + "}")
+    elif token.params_schema:
+        # Parameterized call-syntax tokens (metric/scope/channel/format —
+        # e.g. mean_pnl's {"minutes": {"type": "number"}}) use a flat
+        # {param_name: spec} shape, not action tokens' JSON-Schema
+        # {required, properties} shape above — so this needs its own
+        # rendering. Generated structurally from the schema rather than
+        # depending solely on a token's hand-written `description` text
+        # happening to mention the call syntax.
+        keys = list((token.params_schema or {}).keys())
+        if keys:
+            bits.append(f"call syntax: {token.token}({', '.join(keys)})")
     suffix = f" — {' · '.join(bits)}" if bits else ""
     desc = (token.description or "").strip()
     if desc:

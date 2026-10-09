@@ -617,6 +617,31 @@ def _age_validate_event_spec(slug: str, conditions: dict, events: list, actions:
             detail="; ".join(errors), extra={"errors": errors})
 
 
+def _age_validate_threshold_conditions(conditions: dict) -> None:
+    """Reject unknown/malformed metric-scope-op leaf tokens at save time —
+    kind-agnostic companion to `_age_validate_event_spec` above. Runs for
+    EVERY agent (event-kind included), since `conditions` leaves aren't
+    event-specific. Before this, the only place `agent_evaluator.validate()`
+    ran was the optional `/validate-condition` pre-check endpoint and the
+    `/interpret ai create` CLI path — an operator (or the AI-draft UI)
+    could otherwise save a typo'd or malformed call-syntax token (e.g.
+    `mean_pnl(0)`) with 200/201 and it would silently never fire.
+
+    Mirrors `/validate-condition`'s own leniency: an empty/placeholder `{}`
+    conditions value (not yet a real grammar tree) is left alone — only a
+    tree that actually looks like a condition attempt gets its tokens
+    checked, so this never retroactively tightens behaviour for agents
+    that never had real conditions to begin with."""
+    from backend.api.algo.agent_evaluator import validate as v2_validate
+    from backend.api.algo.agent_engine import is_grammar_tree
+    if not is_grammar_tree(conditions):
+        return
+    errors = v2_validate(conditions)
+    if errors:
+        raise HTTPException(status_code=422,
+            detail="; ".join(errors), extra={"errors": errors})
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -736,6 +761,7 @@ class AgentController(Controller):
             kind = _age_normalize_kind(data.kind)
             if kind == "event":
                 _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
+            _age_validate_threshold_conditions(data.conditions)
             tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
                 slug=data.slug, name=data.name,
@@ -832,6 +858,7 @@ class AgentController(Controller):
             if agent.kind == "event":
                 _age_validate_event_spec(agent.slug, agent.conditions,
                                           agent.events, agent.actions)
+            _age_validate_threshold_conditions(agent.conditions)
             await session.commit()
         if agent.kind == "event":
             from backend.api.algo import event_agents as _ea

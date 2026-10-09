@@ -407,10 +407,18 @@ async def test_update_agent_event_kind_accepts_valid_merged_spec():
 
 
 @pytest.mark.asyncio
-async def test_update_agent_cycle_kind_is_not_spec_validated():
+async def test_update_agent_cycle_kind_is_not_event_spec_validated():
     """Ordinary threshold ('cycle') agents must keep their existing
-    (lack of) save-time validation path — this fix only adds a
-    PARALLEL branch for kind='event', it must not touch the cycle path."""
+    (lack of) EVENT-spec validation path (validate_seed_spec, which
+    checks log tags/renderers/channels — nonsensical for a cycle agent)
+    — this fix only adds a PARALLEL branch for kind='event', it must
+    not touch the cycle path. NOTE: `{"still": "anything goes"}` is not
+    metric/scope-shaped, so `_age_validate_threshold_conditions`'s own
+    (newer, Sprint 3) `is_grammar_tree()` leniency gate skips it too —
+    this test's save-still-succeeds assertion predates that gate and
+    remains true for an unrelated reason now. See
+    `test_update_agent_cycle_kind_rejects_unknown_metric_token` below
+    for the behaviour that DID change in Sprint 3."""
     agent = _FakeAgentRow(kind="cycle", conditions={"anything": "goes"}, events=[], actions=[])
     session_factory, session = _mock_session(existing=agent)
     controller = AgentController.__new__(AgentController)
@@ -423,3 +431,149 @@ async def test_update_agent_cycle_kind_is_not_spec_validated():
 
     assert result == {"detail": "Agent 't-agent' updated"}
     session.commit.assert_awaited_once()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sprint 3 (2026-10) — _age_validate_threshold_conditions: kind-agnostic
+# metric/scope/op token validation, closing the gap the tests above
+# documented (a typo'd or malformed call-syntax token on an ordinary
+# cycle agent used to save with 200/201 and silently never fire).
+# ═══════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_rejects_unknown_metric_token():
+    session_factory, _ = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="thr-2", name="Threshold agent", events=[],
+        conditions={"metric": "totally_unknown_metric_xyz", "scope": "positions.total",
+                    "op": "<=", "value": -50000},
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert exc_info.value.status_code == 422
+    assert "unknown metric token" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_rejects_malformed_call_syntax_token():
+    """A non-positive call-syntax window (mean_pnl(0)) used to resolve to
+    a real callable that silently always returned None — now rejected
+    at save time, same as any other unknown token."""
+    session_factory, _ = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="thr-3", name="Threshold agent", events=[],
+        conditions={"metric": "mean_pnl(0)", "scope": "positions.total",
+                    "op": "<=", "value": -50000},
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert exc_info.value.status_code == 422
+    assert "unknown metric token" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_accepts_valid_call_syntax_token(monkeypatch):
+    """A well-formed call-syntax token (mean_pnl(30)) must NOT be
+    rejected as a false positive — regression guard for the new gate.
+    REGISTRY is a process-wide singleton other test files' reload()
+    calls mutate — wire exactly the real resolvers needed here via
+    monkeypatch (auto-restored after the test) instead of depending on
+    ambient state left over from whichever test ran previously."""
+    from backend.api.algo.grammar_registry import REGISTRY
+    from backend.api.algo.grammar import (
+        _metric_factory_mean_pnl, _scope_positions_total, OPERATORS,
+    )
+    monkeypatch.setattr(REGISTRY, 'metric_factories',
+                         {'mean_pnl': (_metric_factory_mean_pnl, {'minutes': {'type': 'number'}})})
+    monkeypatch.setattr(REGISTRY, 'scopes', {'positions.total': _scope_positions_total})
+    monkeypatch.setattr(REGISTRY, 'operators', {'<=': OPERATORS['<=']})
+    monkeypatch.setattr(REGISTRY, '_metric_call_cache', {})
+
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="thr-4", name="Threshold agent", events=[],
+        conditions={"metric": "mean_pnl(30)", "scope": "positions.total",
+                    "op": "<=", "value": -50000},
+    )
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert result == {"detail": "Agent 'thr-4' created"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_empty_placeholder_conditions_still_saves():
+    """{} is not grammar-tree-shaped — is_grammar_tree() leniency gate
+    means it's left alone, exactly like before this fix (no regression
+    for an agent saved before its conditions are filled in)."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(slug="thr-5", name="Placeholder agent", conditions={}, events=[])
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert result == {"detail": "Agent 'thr-5' created"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_rejects_unknown_metric_token():
+    """The behaviour `test_update_agent_cycle_kind_is_not_event_spec_
+    validated` documents is unchanged (event-spec validation still
+    skips cycle agents) — but a REAL grammar-tree-shaped leaf with a
+    bad token IS now rejected, which is the actual Sprint 3 fix."""
+    agent = _FakeAgentRow(kind="cycle", conditions={}, events=[], actions=[])
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(
+        conditions={"metric": "nope_xyz", "scope": "positions.total", "op": "<=", "value": 0}
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert exc_info.value.status_code == 422
+    assert "unknown metric token" in exc_info.value.detail
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_re_validates_merged_conditions_when_untouched():
+    """Mirrors the event-kind merged-spec test above: a cycle agent's
+    PREVIOUSLY-saved conditions must still be caught even when this
+    particular update doesn't touch `conditions` at all — since the
+    gate now always re-checks `agent.conditions` (merged value), not
+    just a freshly-supplied `data.conditions`."""
+    agent = _FakeAgentRow(
+        kind="cycle",
+        conditions={"metric": "already_bad_before_this_fix_shipped",
+                    "scope": "positions.total", "op": "<=", "value": 0},
+        events=[], actions=[],
+    )
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert exc_info.value.status_code == 422
+    session.commit.assert_not_awaited()

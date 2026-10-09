@@ -260,6 +260,26 @@ class TestParameterizedCallTokens:
 
     def test_syntactically_invalid_token_returns_none_not_raise(self):
         assert self.REGISTRY.metric("mean_pnl(") is None
+
+    def test_non_positive_window_argument_returns_none(self):
+        """A window of 0 (or negative) would otherwise resolve to a REAL
+        callable that silently always returns None at evaluation time
+        (the window cutoff collapses to >= now, so <2 samples ever fall
+        inside it) — explicitly rejected at the SAME place other bad
+        call-shapes are rejected, not left to fail silently downstream.
+        Negative literals already failed by accident before this guard
+        (ast parses "-5" as UnaryOp(USub, Constant(5)), not
+        Constant(-5)) — covered here too so the behaviour is pinned
+        regardless of which mechanism causes it."""
+        assert self.REGISTRY.metric("mean_pnl(0)") is None
+        assert self.REGISTRY.metric("mean_pnl(0.0)") is None
+        assert self.REGISTRY.metric("mean_pnl(-5)") is None
+        assert self.REGISTRY.metric("mean_pnl(-5.0)") is None
+
+    def test_positive_fractional_window_still_resolves(self):
+        """A small-but-positive window is legitimate — only non-positive
+        values are rejected."""
+        assert self.REGISTRY.metric("mean_pnl(0.5)") is not None
         assert self.REGISTRY.metric("") is None
 
     def test_scope_channel_format_accessors_share_the_same_mechanism(self):
