@@ -32,11 +32,17 @@ test.describe('automation agent rows — card chrome matches agent-templates .fr
     expect(styleBlock).toMatch(/\.algo-status-card\s*\{/);
   });
 
-  test('the scoped rule matches agent-templates .frag-row gradient + border exactly', () => {
+  test('the scoped rule matches agent-templates .frag-row gradient, with a deliberately bumped border alpha', () => {
+    // 2026-10 follow-up: .frag-row's own 0.10 border read as near-
+    // invisible against this dark gradient (operator: "rows ... can have
+    // a subtle border around them") — bumped to var(--card-divider)
+    // (0.20) for actual visibility. Gradient/radius/overflow still match
+    // .frag-row exactly; only the border alpha is an intentional
+    // divergence from the original "match exactly" goal.
     const styleBlock = pageSrc.match(/<style>([\s\S]*)<\/style>/)?.[1] ?? '';
     const rule = styleBlock.match(/\.algo-status-card\s*\{[^}]*\}/)?.[0] ?? '';
     expect(rule).toMatch(/linear-gradient\(180deg,\s*#0f1729 0%,\s*#0a1020 100%\)/);
-    expect(rule).toMatch(/rgba\(126,\s*151,\s*184,\s*0\.10\)/);
+    expect(rule).toMatch(/border:\s*1px solid var\(--card-divider\)/);
     expect(rule).toMatch(/border-radius:\s*0\.3rem/);
     expect(rule).toMatch(/overflow:\s*hidden/);
   });

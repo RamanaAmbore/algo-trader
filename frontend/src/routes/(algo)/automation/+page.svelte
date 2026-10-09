@@ -1898,7 +1898,10 @@
      the card container's own background/border, so no conflict. */
   .algo-status-card {
     background: linear-gradient(180deg, #0f1729 0%, #0a1020 100%);
-    border: 1px solid rgba(126,151,184,0.10);
+    /* 0.10 (matching agent-templates' .frag-row) read as near-invisible
+       against this dark gradient — bumped to --card-divider's 0.20 so
+       each row's edge is actually perceptible while staying subtle. */
+    border: 1px solid var(--card-divider);
     border-radius: 0.3rem;
     overflow: hidden;
     transition: border-color 0.08s;
