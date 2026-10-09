@@ -28,6 +28,13 @@ frontend/.svelte-kit/
 test-results/
 htmlcov/
 .pytest_cache/
+.coverage
+
+# Stray top-level node_modules (project's real one is frontend/node_modules/)
+/node_modules/
+
+# Scratch commit-message drafts
+.git-commit-message
 
 # Pandoc mermaid-filter error log (generated on every PDF build)
 mermaid-filter.err
