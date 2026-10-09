@@ -821,3 +821,35 @@ LOG_TAG_TOKENS: list[dict] = [
     for t in _GRAMMAR_CATALOG["log_tags"]["tags"]
 ]
 SYSTEM_TOKENS.extend(LOG_TAG_TOKENS)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ACTION PARAMS-SCHEMA LOOKUP (action-param expression evaluator, Sprint 1)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Built from SYSTEM_TOKENS — the code-reviewed, YAML-sourced catalog —
+# rather than the DB-backed `GrammarRegistry`. Two reasons: (1) the
+# registry is only populated by an async `reload()` against the live
+# `grammar_tokens` table, so it is empty in-process until the first
+# `seed_grammar_tokens()`/`reload()` runs (and empty in any unit test that
+# doesn't stand up a DB session) — `resolve_action_params()` in
+# `actions.py` must work with no DB involved at all. (2) Deciding which
+# params are allowed to carry an expression string is a TRUST decision —
+# the code-reviewed YAML catalog is the right boundary for that, not an
+# operator-editable DB row (an operator flipping `token_ref_ok` on a
+# custom action via the admin UI should not silently grant expression
+# evaluation on a field never vetted for it).
+_ACTION_PARAMS_SCHEMAS: dict[str, dict] = {
+    tok["token"]: tok.get("params_schema") or {}
+    for tok in SYSTEM_TOKENS
+    if tok.get("grammar_kind") == "action" and tok.get("token_kind") == "action_type"
+}
+
+
+def get_action_params_schema(action_type: str) -> dict:
+    """Return the resolved params_schema dict for a system action token
+    (any `$ref` markers already merged — see `_resolve_param_spec`), or
+    `{}` if `action_type` is unknown. Used by
+    `actions.py:resolve_action_params()` to decide which params may carry
+    an expression string."""
+    return _ACTION_PARAMS_SCHEMAS.get(action_type, {})

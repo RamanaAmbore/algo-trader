@@ -22,6 +22,8 @@ import sys
 from typing import NamedTuple
 
 from backend.shared.helpers.ramboq_logger import get_logger
+from backend.api.algo.expr_eval import eval_expr, ExprError
+from backend.api.algo.grammar import get_action_params_schema
 
 logger = get_logger(__name__)
 
@@ -374,6 +376,111 @@ async def _al_dispatch_by_mode(
     return True
 
 
+# Fields that represent a COUNT (lots/contracts), not a continuous price or
+# percentage. `order_fields.yaml`'s shared catalog types every numeric
+# field identically as plain `"number"` — `qty` and `price` share the
+# exact same shape — so this int-vs-float distinction cannot be read off
+# the schema itself. Hand-maintained here instead: these are the two field
+# names (across place_order/modify_order's params_schema) that represent a
+# literal order quantity. A non-integer expression result landing on one
+# of these is a real defect (half a lot/contract is meaningless), so it is
+# rejected rather than silently truncated — see `resolve_action_params`.
+_INTEGER_ONLY_PARAM_KEYS = frozenset({"qty", "new_qty"})
+
+
+def resolve_action_params(action_type: str, params: dict, context: dict) -> dict:
+    """
+    Resolve any expression-string param values for this action into real
+    numbers/booleans via `expr_eval.eval_expr`, before the action is
+    dispatched to its sim/paper/live/noop handler.
+
+    Activation rule (zero-sigil, zero behavior change for every existing
+    agent): a param is expression-evaluated **iff all three** hold:
+      (a) the action's params_schema entry for that key has
+          `token_ref_ok: true`
+      (b) that entry's `type` is `"number"` or `"boolean"` (never
+          `"string"`/`"enum"` — keeps fields like `account`/`symbol` safe
+          even if one of them ever carries a stale `token_ref_ok` flag)
+      (c) the actual value in `params` for that key is a Python `str`
+
+    Any value that is already a native JSON number/bool is left
+    COMPLETELY UNTOUCHED — every currently-seeded agent stores native JSON
+    numbers/bools, never expression strings, so this is a true no-op for
+    all existing agents.
+
+    Namespace scope (deliberately narrow): only sibling keys already
+    present as literal `int`/`float`/`bool` values in the SAME action's
+    own `params` dict, in the dict's natural iteration order.
+    Cross-action / condition-match-value binding is explicitly out of
+    scope for this phase.
+
+    Returns a NEW dict (`dict(params)` with only the resolved keys
+    overwritten) — never mutates `params` in place, since it may be the
+    same object backing the agent's ORM row.
+    """
+    if not isinstance(params, dict) or not params:
+        return params
+
+    schema = get_action_params_schema(action_type)
+    if not schema:
+        return params
+
+    resolved = dict(params)
+    for key, spec in schema.items():
+        if not isinstance(spec, dict) or not spec.get("token_ref_ok"):
+            continue
+        field_type = spec.get("type")
+        if field_type not in ("number", "boolean"):
+            continue
+        value = params.get(key)
+        if not isinstance(value, str):
+            continue  # native JSON number/bool (or absent) — untouched
+
+        namespace = {
+            k: v for k, v in params.items()
+            if k != key and isinstance(v, (int, float, bool))
+        }
+        try:
+            result = eval_expr(value, namespace)
+        except ExprError:
+            raise
+        except Exception as e:  # defense in depth — eval_expr itself only
+            # ever raises ExprError, but never let anything else escape.
+            raise ExprError(f"error resolving {action_type}.{key}: {e}") from e
+
+        # `bool` is an `int` subclass in Python — check it BEFORE the
+        # numeric check so a relational/logical expression (`"a==b"`)
+        # landing on a numeric field never silently becomes qty=1/qty=0.
+        if field_type == "boolean":
+            if not isinstance(result, bool):
+                raise ExprError(
+                    f"{action_type}.{key}: expression must evaluate to a "
+                    f"boolean, got {type(result).__name__}"
+                )
+        else:  # field_type == "number"
+            if isinstance(result, bool):
+                raise ExprError(
+                    f"{action_type}.{key}: expression evaluated to a "
+                    f"boolean, not a number — refusing to coerce to 0/1"
+                )
+            if not isinstance(result, (int, float)):
+                raise ExprError(
+                    f"{action_type}.{key}: expression must evaluate to a "
+                    f"number, got {type(result).__name__}"
+                )
+            if key in _INTEGER_ONLY_PARAM_KEYS and isinstance(result, float):
+                if not result.is_integer():
+                    raise ExprError(
+                        f"{action_type}.{key}: expression must evaluate to "
+                        f"a whole number, got {result}"
+                    )
+                result = int(result)
+
+        resolved[key] = result
+
+    return resolved
+
+
 async def execute(agent, actions: list, context: dict):
     """
     Execute action chain sequentially. Every broker-hitting action
@@ -420,6 +527,7 @@ async def execute(agent, actions: list, context: dict):
             continue
 
         try:
+            params = resolve_action_params(action_type, params, context)
             ok = await _al_dispatch_by_mode(agent, mode, action_type, params, context)
             if not ok:
                 continue

@@ -750,3 +750,74 @@ async def test_chase_close_positions_all_db_write_failures_raises_no_chase():
 
     mock_chase.assert_not_called()
     mock_alert.assert_called_once()
+
+
+# ---------------------------------------------------------------------------
+# execute() — action-param expression resolution failure isolation
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_execute_expression_param_failure_skips_only_that_action():
+    """
+    2-action chain: action 1 (place_order) carries a malformed expression
+    param (an undefined sibling name). `resolve_action_params` raises
+    ExprError as the FIRST statement inside execute()'s existing
+    try/except — routed through the existing `_al_action_failed_audit`
+    path with zero new control flow. Action 2 (a second place_order,
+    fully literal) must still run. The broker-dispatch path
+    (`_al_dispatch_by_mode`) must NEVER be invoked for action 1 — only
+    for action 2.
+    """
+    from backend.api.algo.actions import execute
+
+    agent = MagicMock()
+    agent.slug = "test-agent"
+    agent.id = 1
+    agent.trade_mode = "paper"
+
+    actions = [
+        {
+            "type": "place_order",
+            "params": {
+                "account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL",
+                # undefined sibling name → ExprError inside resolve_action_params
+                "qty": "undefined_lots * 2",
+            },
+        },
+        {
+            "type": "place_order",
+            "params": {
+                "account": "ZG0790", "symbol": "NIFTY25JULFUT", "side": "SELL",
+                "qty": 50,
+            },
+        },
+    ]
+    context: dict = {}
+
+    mock_dispatch = AsyncMock(return_value=True)
+    mock_audit = AsyncMock()
+
+    with patch("backend.api.algo.actions._resolve_mode", return_value="paper"), \
+         patch("backend.api.algo.actions._exchange_gate_passes", return_value=(True, "")), \
+         patch("backend.api.algo.actions._al_dispatch_by_mode", new=mock_dispatch), \
+         patch("backend.api.algo.actions._al_action_failed_audit", new=mock_audit), \
+         patch("backend.api.algo.actions._log_action_success", new=AsyncMock()):
+        await execute(agent, actions, context)
+
+    # Action 1's expression failure routed to the audit path exactly once,
+    # carrying the UNRESOLVED raw params (resolution never completed) and
+    # the real ExprError instance.
+    mock_audit.assert_called_once()
+    audit_call = mock_audit.call_args
+    assert audit_call.args[1] == "place_order"
+    assert audit_call.args[2]["qty"] == "undefined_lots * 2"
+    from backend.api.algo.expr_eval import ExprError
+    assert isinstance(audit_call.args[5], ExprError)
+
+    # Broker-dispatch path (the gateway to any live/paper broker call)
+    # invoked exactly once — for action 2's RESOLVED params — never for
+    # action 1's.
+    mock_dispatch.assert_called_once()
+    dispatch_call = mock_dispatch.call_args
+    assert dispatch_call.args[2] == "place_order"
+    assert dispatch_call.args[3]["qty"] == 50

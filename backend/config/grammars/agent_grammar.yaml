@@ -891,6 +891,7 @@ system_tokens:
     value:
       type: boolean
       required: true
+      token_ref_ok: true
 - grammar_kind: action
   token_kind: action_type
   token: emit_log
