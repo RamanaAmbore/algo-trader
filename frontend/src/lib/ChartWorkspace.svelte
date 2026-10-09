@@ -2935,7 +2935,11 @@
   .cw-info-meta { color: var(--algo-muted); }
   .cw-meta-text { color: var(--algo-muted); font-size: var(--fs-xs); font-family: monospace; }
   .cw-info-root {
-    color: #4a5a7a;
+    /* P0 audit fix (2026-10) — #4a5a7a measured ~2.07:1 against this
+       strip's #1d2a44 background, near-unreadable. var(--algo-muted)
+       (~4.78:1) matches the sibling .cw-info-meta / .cw-meta-text
+       de-emphasized annotations in this same info strip. */
+    color: var(--algo-muted);
     font-size: var(--fs-xs);
     font-family: monospace;
   }

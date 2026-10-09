@@ -419,7 +419,20 @@ export function mkAcctColTrailing({ RA }) {
       name.style.cssText = 'overflow:hidden;text-overflow:ellipsis;';
       const badge = document.createElement('span');
       badge.textContent = `STALE@${since.replace(' IST', '')}`;
-      badge.style.cssText = 'font-size:var(--fs-xs);color:rgba(148,163,184,0.75);flex-shrink:0;';
+      // P0 audit fix (2026-10) — this badge renders inside a
+      // `.row-account-stale` row, which applies `opacity: 0.62` to the
+      // whole row (app.css ~line 1069). CSS opacity compounds with the
+      // badge's own alpha multiplicatively against the row's backdrop,
+      // so the OLD rgba(148,163,184,0.75) landed at an effective alpha
+      // of 0.75*0.62≈0.47 — measured ~2.3:1 against the grid's
+      // #1d2a44 background (ag-theme-algo), far under WCAG AA.
+      // var(--text-med) (#b8c5d9) was the first candidate tried, but it
+      // only clears 0.62*1.0=0.62 effective alpha post-compounding,
+      // which still measures ~4.10:1 (verified numerically) — short of
+      // 4.5:1. var(--text-hi) (white, same neutral/slate family, not a
+      // new hue) clears ~6.43:1 post-compounding, comfortably past the
+      // bar while staying in the existing slate/gray treatment.
+      badge.style.cssText = 'font-size:var(--fs-xs);color:var(--text-hi);flex-shrink:0;';
       badge.title = `Last live data: ${since}`;
       el.appendChild(name);
       el.appendChild(badge);

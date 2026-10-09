@@ -1,5 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { mkSymColLeft, mkSymColRight } from '../../data/pulseColumns.js';
+// @ts-ignore -- node:fs types are not installed for svelte-check; vitest resolves it at runtime.
+import { readFileSync } from 'node:fs';
 
 // 2026-09-27 audit fix: pulseColumns.js no longer imports
 // positionsDerivedStore.svelte.js / holdingsDayPnlStore.svelte.js directly
@@ -935,5 +937,32 @@ describe('mkAcctColTrailing', () => {
   it('has no cellStyle — no --acct-color custom property is injected', () => {
     const col = makeCol();
     expect(col.cellStyle).toBeUndefined();
+  });
+
+  // 2026-10 P0 audit fix — the STALE@HH:MM badge rendered by this
+  // column's cellRenderer used `color: rgba(148,163,184,0.75)`. That
+  // badge sits inside a `.row-account-stale` row, which applies
+  // `opacity: 0.62` to the whole row — CSS opacity compounds
+  // multiplicatively with the badge's own alpha, so the rendered badge
+  // measured an effective alpha of ~0.75*0.62≈0.47 (~2.3:1 contrast
+  // against the ag-theme-algo grid background #1d2a44), nearly
+  // invisible on exactly the signal meant to warn the operator. Fixed
+  // to `var(--text-hi)` (solid, opaque) — even after the same 0.62
+  // row-dim compounds on top, the effective rendered contrast measures
+  // ~6.4:1, comfortably clearing WCAG AA. `var(--text-med)` was tried
+  // first per the literal audit suggestion but measures only ~4.1:1
+  // post-compounding — verified insufficient, hence the escalation to
+  // `--text-hi` rather than a blind token swap. This is a source-level
+  // regression guard — `cellRenderer` calls `document.createElement`,
+  // which isn't available under this suite's `environment: 'node'`
+  // Vitest config, so a DOM render of the renderer isn't exercised
+  // here; see e2e/ for any future Playwright-level visual check.
+  it('STALE badge no longer uses the old low-contrast rgba(148,163,184,0.75)', () => {
+    const src = readFileSync(
+      new URL('../../data/pulseColumns.js', import.meta.url),
+      'utf8'
+    );
+    expect(src).not.toContain('color:rgba(148,163,184,0.75)');
+    expect(src).toContain('color:var(--text-hi)');
   });
 });

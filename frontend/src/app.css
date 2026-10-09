@@ -2704,6 +2704,13 @@
 .algo-status-card[data-status="cancelled"] { --st-fg: #94a3b8; --st-bg: rgba(148,163,184,0.10); --st-border: rgba(148,163,184,0.30); }
 .algo-status-card[data-status="inactive"]  { --st-fg: var(--text-muted); --st-bg: rgba(126,151,184,0.08); --st-border: rgba(126,151,184,0.25); }
 .algo-status-card[data-status="triggered"] { --st-fg: #38bdf8; --st-bg: rgba(56,189,248,0.12);  --st-border: rgba(56,189,248,0.40); }
+/* "held" — operator-review hold (order_hold_gate.py). Violet, matching
+   OrderBook.svelte's "Held/Attn" chip color (--algo-violet). Moved here
+   (2026-10 P0 audit fix) from OrderCard.svelte's local :global() block,
+   which duplicated this whole block with different literal values and
+   leaked app-wide onto every .algo-status-card (e.g. /automation agent
+   cards) — OrderCard.svelte is the only current consumer of "held". */
+.algo-status-card[data-status="held"]      { --st-fg: #c084fc; --st-bg: rgba(192,132,252,0.12); --st-border: rgba(192,132,252,0.38); }
 
 /* Shared status pill — inherits color from parent .algo-status-card[data-status] */
 .algo-status-pill {

@@ -408,25 +408,16 @@
 </div>
 
 <style>
-  /* algo-status-pill — reads --st-fg / --st-bg / --st-border set by
-     the parent .algo-status-card[data-status="…"] so every new status
-     variant only needs a CSS var block here, not a conditional class.
-     Falls back to amber (running/default) when no data-status matches. */
+  /* algo-status-pill base look + --st-fg / --st-bg / --st-border per-status
+     variants are the SHARED SSOT in app.css (.algo-status-pill +
+     .algo-status-card[data-status="…"]) — DO NOT redeclare them here.
+     A local :global() copy previously repainted every .algo-status-card
+     app-wide (e.g. the /automation agent cards), with different literal
+     values than app.css, causing visible mismatches (P0 audit fix,
+     2026-10). The only genuinely OrderCard-local status is "held",
+     added to app.css's shared block instead of kept here. */
   .held-badge { color: var(--c-action); border-color: var(--c-action); }
   .held-exit-warn { font-size: var(--fs-sm); color: var(--c-action); padding: 2px 0; }
-
-  :global(.algo-status-pill) {
-    font-size: var(--fs-xs);
-    padding: 0.18rem 0.5rem;
-    border-radius: 3px;
-    font-weight: 600;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-    white-space: nowrap;
-    border: 1px solid var(--st-border, rgba(251,191,36,0.40));
-    background: var(--st-bg, rgba(251,191,36,0.12));
-    color: var(--st-fg, #fbbf24);
-  }
   /* Account identity — STRIPE (not text colour, A2 2026-09 audit fix).
      Inline card header has far less horizontal room than a grid cell
      (LogPanel mounts at ≤360px), so this is a thinner 2px stripe + tight
@@ -441,48 +432,10 @@
     color: var(--algo-slate);
     font-weight: 600;
   }
-  /* Per-status CSS var blocks — parent .algo-status-card carries
-     data-status; child .algo-status-pill inherits via cascade. */
-  :global(.algo-status-card[data-status="complete"])  {
-    --st-fg:     #4ade80;
-    --st-bg:     rgba(74,222,128,0.12);
-    --st-border: rgba(74,222,128,0.38);
-  }
-  :global(.algo-status-card[data-status="rejected"])  {
-    --st-fg:     #f87171;
-    --st-bg:     rgba(248,113,113,0.12);
-    --st-border: rgba(248,113,113,0.38);
-  }
-  :global(.algo-status-card[data-status="cancelled"]) {
-    --st-fg:     #94a3b8;
-    --st-bg:     rgba(100,116,139,0.15);
-    --st-border: rgba(100,116,139,0.38);
-  }
-  /* Audit fix (2026-10) — HELD rows (operator-review hold) get their own
-     violet treatment, matching OrderBook.svelte's "Held/Attn" chip color
-     (--algo-violet). Distinct from `.held-badge` below, which is an
-     ADDITIONAL small pill keyed off `hold_json` presence regardless of
-     base status — this block colors the row's main status card/pill. */
-  :global(.algo-status-card[data-status="held"])     {
-    --st-fg:     #c084fc;
-    --st-bg:     rgba(192,132,252,0.12);
-    --st-border: rgba(192,132,252,0.38);
-  }
-  :global(.algo-status-card[data-status="running"])   {
-    --st-fg:     #fbbf24;
-    --st-bg:     rgba(251,191,36,0.12);
-    --st-border: rgba(251,191,36,0.40);
-  }
-  :global(.algo-status-card[data-status="error"])     {
-    --st-fg:     #fb923c;
-    --st-bg:     rgba(220,38,38,0.18);
-    --st-border: rgba(220,38,38,0.55);
-  }
-  :global(.algo-status-card[data-status="inactive"])  {
-    --st-fg:     #94a3b8;
-    --st-bg:     rgba(100,116,139,0.12);
-    --st-border: rgba(100,116,139,0.28);
-  }
+  /* complete / rejected / cancelled / running / error / inactive / held
+     status colors all come from app.css's shared
+     .algo-status-card[data-status="…"] block now — see comment above
+     the .held-badge rule. */
 
   /* Slippage chip — neutral slate arrow glyph (↑/↓). Side-relative
      coloring was dropped: ↑ is good for SELL, bad for BUY, so
