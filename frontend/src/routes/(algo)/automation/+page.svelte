@@ -792,23 +792,57 @@
   }
 
   // ── Category grouping ────────────────────────────────────────────────────
-  // Derive category from slug prefix so new agents bucket automatically
-  // without needing a DB field. If the catalog grows unwieldy, promote
-  // this to an Agent column later.
-  function categoryFor(/** @type {string} */ slug) {
-    if (!slug) return 'Other';
-    if (slug.startsWith('loss-')) return 'Loss & Risk';
-    if (slug.includes('summary')) return 'Summaries';
-    if (slug.includes('expiry') || slug.includes('close') || slug.includes('order')) return 'Automation';
-    return 'Other';
+  // Classify by consequence ("can this agent act on its own") using real
+  // AgentInfo fields (actions / conditions / fire_at_time / is_system)
+  // instead of slug-text guessing. Motivating bug: expiry-day-positions-alert
+  // is notify-only (no broker-verb action) and must land in Risk Alerts, not
+  // Automated Actions, even though its slug contains "expiry".
+  //
+  // Action types that place/modify/cancel/close a real broker order — every
+  // type EXCEPT the pure-notification ones (monitor_order, deactivate_agent,
+  // set_flag, emit_log). Confirmed exhaustive against the full action_type
+  // catalog in backend/config/grammars/agent_grammar.yaml (11 tokens total:
+  // these 7 + those 4 notify-only ones).
+  const AUTOMATED_ACTION_TYPES = new Set([
+    'place_order', 'modify_order', 'cancel_order', 'cancel_all_orders',
+    'close_position', 'chase_close_positions', 'expiry_auto_close',
+  ]);
+
+  // Built-in schedule-only pings (market-open-nse, market-preclose-mcx) hand-
+  // author an "always-true" sentinel condition (e.g. avail_margin >= -999999999)
+  // to gate a fire_at_time schedule rather than carrying a real condition —
+  // same backend convention agent_engine.py's _v2_format_threshold guards
+  // against (abs(threshold) >= 1e8 renders as "n/a"). `conditions` is `null`
+  // only for the excluded 'manual' pseudo-agent; defensively also treat an
+  // empty `{}` as schedule-only, rather than assuming `null` per the
+  // AgentInfo schema (`conditions: dict`, not `dict | None`).
+  function _isScheduleOnlySentinel(/** @type {any} */ conditions) {
+    if (!conditions) return true;
+    if (typeof conditions === 'object' && Object.keys(conditions).length === 0) return true;
+    const v = conditions.value;
+    return typeof v === 'number' && Math.abs(v) >= 1e8;
   }
 
-  const CATEGORY_ORDER = ['Loss & Risk', 'Summaries', 'Automation', 'Other'];
+  function categoryFor(/** @type {any} */ agent) {
+    if (!agent?.slug) return 'Custom';
+    if (agent.slug === 'manual') return null;
+    if (Array.isArray(agent.actions) && agent.actions.some(a => AUTOMATED_ACTION_TYPES.has(a?.type))) {
+      return 'Automated Actions';
+    }
+    if (_isScheduleOnlySentinel(agent.conditions) && agent.fire_at_time) {
+      return 'Scheduled Info';
+    }
+    if (agent.is_system) return 'Risk Alerts';
+    return 'Custom';
+  }
+
+  const CATEGORY_ORDER = ['Automated Actions', 'Risk Alerts', 'Scheduled Info', 'Custom'];
 
   function groupedAgents() {
     const out = {};
     for (const a of agents) {
-      const cat = categoryFor(a.slug);
+      const cat = categoryFor(a);
+      if (!cat) continue;
       (out[cat] = out[cat] || []).push(a);
     }
     for (const cat of Object.keys(out)) {
