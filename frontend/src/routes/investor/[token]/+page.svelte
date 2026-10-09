@@ -530,7 +530,11 @@
        AA-safe darker amber token + hover value. */
     background: var(--card-accent-text, #8f6000);
     color: #ffffff;
-    border-radius: 4px;
+    /* Pill radius — matches /about's .cta-btn-primary shape so the
+       champagne-CTA family reads as one visual language across public
+       pages. (P0 fix already aligned the color/contrast side; this is
+       the remaining shape convergence.) */
+    border-radius: 9999px;
     text-decoration: none;
     font-weight: 700;
     font-size: 0.78rem;

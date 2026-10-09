@@ -2345,8 +2345,14 @@
   .pub-form-panel {
     border-radius: 6px;
     overflow: hidden;
-    border: 1px solid #b4c0bc;
-    box-shadow: 0 4px 20px rgba(22, 53, 53, 0.12);
+    /* Border/shadow previously carried #b4c0bc (sage grey) + a teal-tinted
+       shadow (rgba(22,53,53,...)) left over from the retired teal theme —
+       matches nothing else on the cream public pages. Border now reuses
+       the same surface-border token as .pub-card / .pub-form-panel-body
+       (#ddd8ce); shadow keeps its original shape but drops the teal tint
+       for a neutral tone, consistent with /about's .pub-card shadow. */
+    border: 1px solid var(--card-surface-border, #ddd8ce);
+    box-shadow: 0 4px 20px rgba(0, 0, 0, 0.12);
   }
   .pub-form-panel-header {
     background: #0c1830;

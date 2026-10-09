@@ -55,11 +55,11 @@
 </svelte:head>
 
 <div class="max-w-sm mx-auto mt-4">
-  <div class="signin-panel">
-    <div class="signin-header">
-      <div class="signin-header-title">Set New Password</div>
+  <div class="pub-form-panel">
+    <div class="pub-form-panel-header">
+      <div class="pub-form-panel-title">Set New Password</div>
     </div>
-    <div class="signin-body">
+    <div class="pub-form-panel-body">
       {#if error}
         <div class="pub-banner-error mb-3 p-2 rounded text-xs">{error}</div>
       {/if}
@@ -104,13 +104,9 @@
 </div>
 
 <style>
-  .signin-panel { border-radius: 6px; overflow: hidden; border: 1px solid #b4c0bc;
-    box-shadow: 0 4px 20px rgba(22,53,53,0.12); }
-  .signin-header { background: #0c1830; padding: 1.5rem 1.5rem 1.25rem;
-    border-bottom: 2px solid #c8a84b; }
-  .signin-header-title { font-size: 1rem; font-weight: 800; color: #fff;
-    letter-spacing: 0.05em; text-transform: uppercase; }
-  .signin-body { background: #fffdf8; padding: 1.25rem 1.5rem 1.5rem; }
+  /* .signin-panel / .signin-header / .signin-header-title / .signin-body
+     retired — chrome promoted to the shared .pub-form-panel family in
+     app.css so this page stays consistent with /signin and /contact. */
   .pw-wrap { position: relative; }
   .pw-input { padding-right: 3.2rem; }
   .pw-toggle {

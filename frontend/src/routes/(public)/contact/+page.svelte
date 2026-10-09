@@ -123,7 +123,11 @@
     font-size: 0.9rem;
     font-weight: 700;
     padding: 0.55rem 1.1rem;
-    border-radius: 0.375rem;
+    /* Pill radius — matches /about's .cta-btn-primary shape so the
+       champagne-CTA family reads as one visual language across public
+       pages. (P0 fix already aligned the color/contrast side; this is
+       the remaining shape convergence.) */
+    border-radius: 9999px;
     /* P0 contrast fix: raw #d4920c measured 2.65:1 (fails AA) — same
        problem /about's .cta-btn-primary already fixed. Reuse the same
        AA-safe darker amber token + hover value. */
