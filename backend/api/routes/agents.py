@@ -221,19 +221,6 @@ class RendererInfo(msgspec.Struct):
     description: str
 
 
-class AIDraftRequest(msgspec.Struct):
-    prompt: str
-
-
-class AIDraftResponse(msgspec.Struct):
-    draft:        dict
-    errors:       list[str]
-    warnings:     list[str]
-    why_summary:  str
-    prompt:       str = ""    # original NL prompt — echoed for the UI
-    success: bool = True
-
-
 # Legacy field/operator metadata (CONDITION_FIELDS, CONDITION_OPERATORS,
 # ACTION_TYPES, EVENT_CHANNELS) is retired. The frontend now reads the full
 # grammar from GET /api/admin/grammar/tokens — metrics, scopes, operators,
@@ -728,29 +715,6 @@ class AgentController(Controller):
             agents = result.scalars().all()
         return [_agent_to_info(a) for a in agents]
 
-    @post("/ai-draft", guards=[cap_guard("manage_own_agents")])
-    async def ai_draft(self, data: AIDraftRequest) -> AIDraftResponse:
-        """
-        Convert a natural-language prompt into an agent JSON draft.
-
-        Operator describes what they want; Gemini produces a candidate
-        agent definition that's been validated against the live grammar
-        registry and clamped to safe defaults (paper, inactive,
-        one_shot lifespan). Operator reviews and saves via POST /.
-
-        Failure modes return non-empty `errors`; soft risks land in
-        `warnings`. Both render in the UI; operator decides.
-        """
-        from backend.api.algo.agent_ai import draft_agent_from_prompt
-        d = draft_agent_from_prompt(data.prompt or "")
-        return AIDraftResponse(
-            draft=d.draft,
-            errors=d.errors,
-            warnings=d.warnings,
-            why_summary=d.why_summary,
-            prompt=d.prompt,
-        )
-
     @post("/validate-condition", guards=[cap_guard("manage_own_agents")])
     async def validate_condition(self, data: dict) -> dict:
         """
@@ -1145,7 +1109,10 @@ class AgentController(Controller):
     # 2026-09-27 audit fix (critical): this endpoint's class-level guard
     # is `view_agents_catalog`, which demo/anonymous sessions hold — every
     # OTHER mutating route on this controller (create/update/activate/
-    # deactivate/delete/ai-draft) overrides that with `manage_own_agents`.
+    # deactivate/delete) overrides that with `manage_own_agents`. (The
+    # `/ai-draft` route this comment originally also listed was removed
+    # in Sprint 9 — /automation's Ask AI UI was retired; `agent ai
+    # create`/`agent ai refine` below still exist via /interpret.)
     # /interpret is a single free-text endpoint dispatching to BOTH
     # read-only sub-commands (list/status/events/help — fine for demo,
     # matches the class-level guard's intent) and mutating ones (config/

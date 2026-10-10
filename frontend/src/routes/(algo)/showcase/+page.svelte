@@ -158,7 +158,7 @@
       color: '#fcd34d',
       body: 'Brackets pre-define the TP / SL / wing GTTs that arm the moment a parent fills. Pick once on OrderTicket or basket; the backend applies per leg through one unified apply_template_to_order pipeline. Brackets now work on Kite, Dhan, AND Groww — Groww\'s no-native-OCO case is emulated via two single-trigger GTTs with a background pair-watcher that cancels the survivor when one side fires.',
       bullets: [
-        'Catalog at /automation/templates — TP %, SL %, optional wing GTTs, scale-out ladders, trailing stops',
+        'Catalog at /automation (Brackets tab) — TP %, SL %, optional wing GTTs, scale-out ladders, trailing stops',
         'OrderTicket Default/None toggle below the side pills; basket bar carries one above the legs list',
         'Backend fires apply_template_to_order at every fill site — postback handler, chase terminal, reconcile path, paper-engine fill — same idempotency guard everywhere via per-row asyncio.Lock',
         'Brackets respect the parent\'s side (BUY parent → SELL TP, SELL parent → BUY TP at fill ± bracket %)',
@@ -166,7 +166,7 @@
         'Inline warning chip on OrderTicket flags the broker gaps at SUBMIT time ("Groww OCO emulated — 15s race window", "MCX not on Dhan"), not at fill time',
         'Trailing stops now correctly modify both legs on Dhan OCO; Sprint A fix to the silent ENTRY_LEG-only modify_forever bug',
       ],
-      link: { href: '/automation/templates', label: 'Open Brackets' },
+      link: { href: '/automation?tab=brackets', label: 'Open Brackets' },
     },
     {
       title: 'Rich order entry context',

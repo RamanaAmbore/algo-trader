@@ -47,10 +47,13 @@ test.describe('automation — per-card global-default override display', () => {
   });
 
   test('event agents do not get an invented "global channel default" — the per-channel toggle IS the override', () => {
-    const eventBody = src.slice(
-      src.indexOf("{#snippet eventEditorBody("),
-      src.indexOf("{#snippet eventCreateBuilder(")
-    );
+    // Sprint 9 removed eventCreateBuilder (no creation entry point
+    // survives on this page) — eventEditorBody is now the last snippet
+    // in the file, so its own {/snippet} close is the correct end
+    // boundary instead of the deleted sibling snippet's start.
+    const startIdx = src.indexOf("{#snippet eventEditorBody(");
+    const endIdx = src.indexOf("{/snippet}", startIdx);
+    const eventBody = src.slice(startIdx, endIdx);
     expect(eventBody).not.toMatch(/Global default/);
     // The per-channel enabled checkbox already reuses the generic helper —
     // no second, parallel override control was added for event agents.
@@ -73,8 +76,16 @@ test.describe('automation — per-card global-default override display', () => {
     expect(fn).toMatch(/topic:\s*editForm\.topic\s*\|\|\s*'general',/);
   });
 
-  test('create path also sends kind alongside the same _buildEditPayload fields (tier/topic included)', () => {
+  // The former "create path also sends kind..." test asserted on
+  // saveEdit()'s `isCreate` branch (`createAgent({ kind: 'threshold',
+  // ..._buildEditPayload(...) })`). Sprint 9 removed that branch
+  // entirely — no creation entry point survives on /automation, so
+  // saveEdit() now always PATCHes an existing agent via updateAgent().
+  // Agent creation (including tier/topic) now happens at /console,
+  // covered by that surface's own spec.
+  test('saveEdit always updates an existing agent — no creation branch remains', () => {
     const fn = src.slice(src.indexOf('async function saveEdit('), src.indexOf('function connectWS('));
-    expect(fn).toMatch(/kind: 'threshold',\s*\n\s*\.\.\._buildEditPayload\(tagsList, bwResult\.value\),/);
+    expect(fn).toMatch(/await updateAgent\(editing, _buildEditPayload\(tagsList, bwResult\.value\)\);/);
+    expect(fn).not.toMatch(/createAgent\(/);
   });
 });

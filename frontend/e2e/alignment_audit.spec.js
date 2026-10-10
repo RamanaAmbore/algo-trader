@@ -49,8 +49,6 @@ const PAGES = [
   '/admin/execution',
   '/admin',
   '/automation/activity',
-  '/automation/templates',
-  '/automation/agent-templates',
 ];
 
 test.describe('alignment audit (canonical page-header rule)', () => {
@@ -165,25 +163,6 @@ test.describe('drift fixes — left-aligned content', () => {
     expect(bb.x + bb.width / 2,
       '/admin/tokens New token must sit on LEFT half')
       .toBeLessThan(headerBox.x + headerBox.width / 2);
-  });
-
-  test('/automation Ask AI on LEFT', async ({ page }) => {
-    await page.goto('/automation', { waitUntil: 'domcontentloaded' });
-    await page.waitForTimeout(1500);
-    const header = page.locator('.page-header').first();
-    const headerBox = await header.boundingBox();
-    if (!headerBox) return;
-    const headerMidX = headerBox.x + headerBox.width / 2;
-
-    const aiBtn = header.locator('button.ai-pill').first();
-    if (await aiBtn.count()) {
-      const ab = await aiBtn.boundingBox();
-      if (ab) {
-        expect(ab.x + ab.width / 2,
-          '/automation Ask AI must sit on LEFT half')
-          .toBeLessThan(headerMidX);
-      }
-    }
   });
 
 });

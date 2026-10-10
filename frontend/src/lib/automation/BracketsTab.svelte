@@ -1,39 +1,30 @@
 <!--
-  /automation/templates — Order Template management.
+  BracketsTab — Order Template (Bracket) browse/manage surface, folded
+  into /automation as a tab (Sprint 9). Ported from the former
+  /automation/templates route, which is now deleted outright.
 
-  Templates are the per-order exit-rule presets the operator picks at
-  OrderTicket submit time. Each row carries a TP %, SL %, and Wing
-  config (premium % OR strike offset) that translate to a broker-native
-  GTT + spread basket leg at submit.
+  Pure browse/manage: list + filter + expand + edit + toggle + delete.
+  NO creation entry point — Sprint 9's /automation goal is "no creation
+  entry point of any kind survives on this page." Bracket creation now
+  happens via the CLI `bracket(...)` statement at /console.
 
   Operator workflow:
-    - Browse system + custom templates
+    - Browse system + custom Brackets
     - Filter by applies_to scope (Buy / Sell-Option / Both)
     - Click a row to expand → numeric fields + description
     - Edit any field → Save → next OrderTicket pick uses the new values
     - Toggle is_default per scope so OrderTicket pre-selects it
-    - Custom templates have full delete; system templates are toggle-only
-
-  Industry analogue: NinjaTrader ATM Strategy library, MetaTrader trade
-  templates, ThinkOrSwim Order Templates.
+    - Custom Brackets have full delete; system Brackets are toggle-only
 -->
 <script>
   import { onMount } from 'svelte';
   import { authStore } from '$lib/stores';
-  import AlgoTimestamp from '$lib/AlgoTimestamp.svelte';
-  import PageHeaderActions from '$lib/PageHeaderActions.svelte';
-  import RefreshButton from '$lib/RefreshButton.svelte';
   import CardHeader from '$lib/CardHeader.svelte';
-  import AutomationTabs from '$lib/AutomationTabs.svelte';
   import InfoHint from '$lib/InfoHint.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import Select from '$lib/Select.svelte';
-  import {
-    createOrderTemplate,
-    patchOrderTemplate,
-    deleteOrderTemplate,
-  } from '$lib/api';
+  import { patchOrderTemplate, deleteOrderTemplate } from '$lib/api';
   import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import { fmtPctScaled } from '$lib/format';
@@ -46,7 +37,7 @@
   let filterScope = $state('all');
   let expandedId = $state(/** @type {number | null} */ (null));
 
-  // Inline edit form state (separate from create form so they don't fight)
+  // Inline edit form state.
   let editingId = $state(/** @type {number | null} */ (null));
   let formName = $state('');
   let formDescription = $state('');
@@ -57,10 +48,8 @@
   let formWingStrikeOffset = $state('');
   let formTpOrderType = $state(/** @type {'LIMIT'|'MARKET'} */ ('LIMIT'));
   let formTpScalesJson = $state('');
-  // #8 — enhanced scale-out ladder validation:
-  // - each entry: at_pct > 0, 0 < close_pct <= 100
-  // - sum of close_pct <= 100
-  // Returns '' on valid, error string on first problem.
+  // Scale-out ladder validation — each entry: at_pct > 0, 0 < close_pct <= 100;
+  // sum of close_pct <= 100. Returns '' on valid, error string on first problem.
   const _scalesParseErr = $derived.by(() => {
     if (!formTpScalesJson?.trim()) return '';
     /** @type {any[]} */
@@ -83,8 +72,6 @@
   let formError = $state('');
   let busy = $state(false);
 
-  // Create-new toggle
-  let creatingNew = $state(false);
   let _colTemplates = $state(false);
   let _fsTemplates  = $state(false);
 
@@ -93,21 +80,26 @@
 
   const isDemo = $derived(!$authStore.user);
 
-  async function load() {
+  export async function load() {
     loading = true; error = '';
     try {
-      // First open uses the module-level cache; the explicit reload
-      // after a CRUD mutation re-hits the API + broadcasts to other
-      // open modals via the store.
       templates = await loadOrderTemplates();
     } catch (e) {
-      error = e.message || 'failed to load templates';
+      error = e.message || 'failed to load Brackets';
     } finally {
       loading = false;
     }
   }
 
   onMount(load);
+
+  /** Called from the parent page's Bracket group-grid card click — jumps
+   *  straight to this template's expanded row (editor closed; operator
+   *  clicks Edit explicitly) after switching tabs here. */
+  export function focusTemplate(/** @type {number} */ id) {
+    expandedId = id;
+    editingId = null;
+  }
 
   const visible = $derived(
     filterScope === 'all'
@@ -126,7 +118,6 @@
 
   function resetForm() {
     editingId = null;
-    creatingNew = false;
     formName = '';
     formDescription = '';
     formAppliesTo = 'both';
@@ -145,7 +136,6 @@
   function startEdit(/** @type {any} */ t) {
     expandedId = t.id;
     editingId = t.id;
-    creatingNew = false;
     formName = t.name;
     formDescription = t.description || '';
     formAppliesTo = t.applies_to;
@@ -159,17 +149,6 @@
     formIsDefault = !!t.is_default;
     formIsActive = !!t.is_active;
     formError = '';
-  }
-
-  function startCreate() {
-    resetForm();
-    creatingNew = true;
-    expandedId = null;
-    setTimeout(() => {
-      document.getElementById('tpl-create-form')?.scrollIntoView({
-        behavior: 'smooth', block: 'center',
-      });
-    }, 30);
   }
 
   function _parseNumOrNull(/** @type {string} */ s) {
@@ -214,25 +193,6 @@
     }
   }
 
-  async function saveCreate() {
-    if (busy) return;
-    if (!formName.trim()) { formError = 'name required'; return; }
-    busy = true; formError = '';
-    try {
-      const payload = _payloadFromForm();
-      // tp_pct + sl_pct + wing_* default to null when blank — that's fine
-      await createOrderTemplate(payload);
-      templates = await reloadOrderTemplates();
-      toast.success(`Bracket created: ${formName}`);
-      resetForm();
-    } catch (e) {
-      formError = e.message || 'create failed';
-      toast.error(`Create failed: ${e.message || 'unknown error'}`);
-    } finally {
-      busy = false;
-    }
-  }
-
   async function confirmDelete(/** @type {any} */ t) {
     if (!_confirmRef) return;
     const ok = await _confirmRef.ask({
@@ -265,12 +225,9 @@
     if (v === 'sell_option') return 'SELL OPT';
     return 'BOTH';
   }
-  // The 4 side-aware default scopes. Used by the filter chips, the
-  // form selects, and the "defaults matrix" header card so the page's
-  // scope vocabulary is one canonical list. `both` is intentionally
-  // NOT in this list — it's a write-time choice (a custom template
-  // that targets every direction), not a Default slot the platform
-  // resolves to.
+  // The 4 side-aware default scopes. `both` is intentionally NOT in this
+  // list — it's a write-time choice (a custom template that targets every
+  // direction), not a Default slot the platform resolves to.
   const _SCOPES = [
     { value: 'buy_any',     label: 'BUY EQ/FUT' },
     { value: 'buy_option',  label: 'BUY OPT' },
@@ -278,8 +235,7 @@
     { value: 'sell_option', label: 'SELL OPT' },
   ];
   // For each scope, the active is_default template (or null when no
-  // seed claims that slot). Drives the matrix card above the list so
-  // the operator sees at a glance which scopes are covered.
+  // seed claims that slot). Drives the matrix card above the list.
   const _defaultByScope = $derived.by(() => {
     const out = /** @type {Record<string, any>} */ ({});
     for (const s of _SCOPES) {
@@ -290,50 +246,29 @@
     return out;
   });
 
-  // #27 — active 'both'-scope default template (applies to all 4 scopes
-  // as a fallback when no scope-specific default is seeded).
+  // Active 'both'-scope default template (applies to all 4 scopes as a
+  // fallback when no scope-specific default is seeded).
   const _bothDefault = $derived(
     templates.find(t => t.is_default && t.is_active && t.applies_to === 'both') || null
   );
 </script>
 
-<svelte:head><title>Brackets | RamboQuant Analytics</title></svelte:head>
-
-<div class="page-header">
-  <span class="algo-title-group">
-    <h1 class="page-title-chip">Brackets</h1>
-    <InfoHint popup panel title="Brackets" align="right" text="<b>Brackets</b> are reusable exit-rule presets you pick at order entry — TP %, SL %, and (for SELL options) a protective wing leg. The selected Bracket translates to a broker-native GTT for TP/SL and a paired basket order for the wing. Edit a Bracket here and every future order using it inherits the new values; bulk-apply lets you push the change to open positions too." />
-  </span>
-  <AlgoTimestamp />
-  <span class="ml-auto"></span>
-  <span class="page-header-actions">
-    <RefreshButton onClick={load} loading={loading} label="Brackets" />
-    <PageHeaderActions />
-  </span>
-</div>
-
-<AutomationTabs />
-
 {#if isDemo}
   <div class="algo-card mb-3">
     <p class="text-xs text-slate-300">
-      Demo mode — system Brackets visible (read-only); create / edit / delete require sign-in.
+      Demo mode — system Brackets visible (read-only); edit requires sign-in.
     </p>
   </div>
 {/if}
 
 <!-- Defaults matrix — at-a-glance view of which of the 4 side-scopes
-     have an is_default template seeded. The Default pill in the order
-     modal resolves to one of these per (side × instrument-type) combo.
-     Click a cell to filter the list to that scope below + jump to the
-     active row when one exists. -->
+     have an is_default template seeded. -->
 <section class="bucket-card p-3">
   <div class="tpl-matrix-head">
     <span class="mp-section-label">Side-default coverage</span>
     <InfoHint popup={true} panel title="Side-default coverage" align="right"
       text="Each (BUY/SELL) × (EQ-FUT / OPTION) combo resolves to one is_default Bracket. The order modal's <b>Default</b> pill picks the right one per leg automatically. ✓ = scope covered; — = unclaimed (Default falls back to None on that scope)." />
   </div>
-  <!-- #27 — info chip when a 'both' template covers all scopes -->
   {#if _bothDefault}
     <div class="tpl-matrix-both-info">
       <span class="tpl-matrix-both-chip">
@@ -344,7 +279,6 @@
   <div class="tpl-matrix">
     {#each _SCOPES as s}
       {@const def = _defaultByScope[s.value]}
-      <!-- #27: when no scope-specific default, show the 'both' fallback with lighter style -->
       {@const bothFallback = !def && _bothDefault ? _bothDefault : null}
       <button class="tpl-matrix-cell {def ? 'tpl-matrix-cell-on' : ''} {bothFallback ? 'tpl-matrix-cell-both' : ''}"
               onclick={() => {
@@ -368,7 +302,7 @@
   </div>
 </section>
 
-<!-- Filter strip + create button -->
+<!-- Filter strip -->
 <section class="bucket-card p-3"
   class:fs-card-on={_fsTemplates}
   class:is-collapsed={_colTemplates}>
@@ -396,11 +330,6 @@
         <button class="tpl-chip {filterScope === 'both' ? 'tpl-chip-on' : ''}"
                 onclick={() => { filterScope = 'both'; }} type="button"
                 title="Custom Brackets that target every direction">Both</button>
-        {#if !isDemo}
-          <button class="tpl-create-btn" onclick={startCreate} type="button">
-            + Create custom Bracket
-          </button>
-        {/if}
       </div>
     {/snippet}
   </CardHeader>
@@ -438,6 +367,9 @@
           {/if}
           {#if !t.is_active}
             <span class="tpl-badge tpl-badge-inactive">INACTIVE</span>
+          {/if}
+          {#if t.group}
+            <span class="tpl-badge tpl-badge-group">{t.group}</span>
           {/if}
 
           <span class="tpl-applies">{appliesLabel(t.applies_to)}</span>
@@ -591,78 +523,9 @@
   </div>
 </section>
 
-<!-- Create-new form (separate from edit so they don't fight over state) -->
-{#if creatingNew}
-  <section id="tpl-create-form" class="bucket-card p-3 mt-3">
-    <h2 class="mp-section-label mb-2">Create custom Bracket</h2>
-    <div class="tpl-form">
-      <label class="tpl-field">
-        <span>Name</span>
-        <input type="text" bind:value={formName} class="tpl-input"
-               placeholder="e.g. Tight Scalp" />
-      </label>
-      <label class="tpl-field">
-        <span>Applies to</span>
-        <Select
-          options={[
-            { value: 'buy_any',     label: 'BUY EQ / FUT' },
-            { value: 'buy_option',  label: 'BUY Option (CE / PE)' },
-            { value: 'sell_any',    label: 'SELL EQ / FUT' },
-            { value: 'sell_option', label: 'SELL Option (CE / PE)' },
-            { value: 'both',        label: 'Both (every direction)' },
-          ]}
-          bind:value={formAppliesTo}
-        />
-      </label>
-      <label class="tpl-field tpl-field-full">
-        <span>Description</span>
-        <textarea bind:value={formDescription} rows="2" class="tpl-input"></textarea>
-      </label>
-      <label class="tpl-field">
-        <span>TP % (blank = none)</span>
-        <input type="number" step="0.5" bind:value={formTpPct} class="tpl-input" />
-      </label>
-      <label class="tpl-field">
-        <span>SL % (blank = none)</span>
-        <input type="number" step="0.5" bind:value={formSlPct} class="tpl-input" />
-      </label>
-      <label class="tpl-field">
-        <span>Wing premium %</span>
-        <input type="number" step="0.5" bind:value={formWingPremPct} class="tpl-input" />
-      </label>
-      <label class="tpl-field">
-        <span>Wing strike offset</span>
-        <input type="number" step="50" bind:value={formWingStrikeOffset} class="tpl-input" />
-      </label>
-      <label class="tpl-checkbox">
-        <input type="checkbox" bind:checked={formIsDefault} />
-        <span>Default for this scope</span>
-      </label>
-
-      {#if formError}
-        <div class="tpl-form-err">{formError}</div>
-      {/if}
-
-      <div class="tpl-form-actions">
-        <button class="tpl-btn tpl-btn-primary"
-                disabled={busy || !!_scalesParseErr}
-                onclick={saveCreate} type="button">
-          {busy ? 'Creating…' : 'Create Bracket'}
-        </button>
-        <button class="tpl-btn" onclick={resetForm} type="button">Cancel</button>
-      </div>
-    </div>
-  </section>
-{/if}
-
 <ConfirmModal bind:this={_confirmRef} />
 
 <style>
-  /* Defaults coverage matrix — at-a-glance grid of the 4 side-default
-     slots. Each cell renders the slot's scope (BUY EQ/FUT, SELL OPT,
-     etc.) and the seeded template name, with a ✓/— mark. Cells light
-     up amber when the slot is covered; muted when unclaimed. Click
-     filters the list + auto-expands the active template's row. */
   .tpl-matrix-head {
     display: flex;
     align-items: center;
@@ -696,27 +559,21 @@
       rgba(20, 30, 55, 0.65);
     border-color: rgba(251, 191, 36, 0.55);
   }
-  .tpl-matrix-cell-on:hover {
-    border-color: rgba(251, 191, 36, 0.80);
-  }
+  .tpl-matrix-cell-on:hover { border-color: rgba(251, 191, 36, 0.80); }
   .tpl-matrix-scope {
     font-family: var(--font-numeric);
     font-size: var(--fs-sm);
     font-weight: 800;
     letter-spacing: 0.05em;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 70%, transparent);
     text-transform: uppercase;
   }
-  .tpl-matrix-cell-on .tpl-matrix-scope {
-    color: var(--algo-amber, var(--c-action));
-  }
+  .tpl-matrix-cell-on .tpl-matrix-scope { color: var(--algo-amber, var(--c-action)); }
   .tpl-matrix-tpl {
     grid-column: 1 / -1;
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
     font-weight: 600;
-    /* A3 (2026-09 audit) — was flat hex #f8fafc; now var(--algo-slate). */
     color: var(--algo-slate);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -736,32 +593,16 @@
     color: rgba(148, 163, 184, 0.40);
     line-height: 1;
   }
-  .tpl-matrix-cell-on .tpl-matrix-mark {
-    color: var(--algo-green, var(--c-long));
-  }
-
-  /* #27 — 'both'-scope fallback cell (lighter than on, warmer than unclaimed) */
+  .tpl-matrix-cell-on .tpl-matrix-mark { color: var(--algo-green, var(--c-long)); }
   .tpl-matrix-cell-both {
     background: rgba(251, 191, 36, 0.04);
     border: 1px dashed rgba(251, 191, 36, 0.28);
   }
   .tpl-matrix-cell-both:hover { background: rgba(251, 191, 36, 0.08); }
-  .tpl-matrix-cell-both .tpl-matrix-mark {
-    color: rgba(251, 191, 36, 0.65);
-  }
-  .tpl-matrix-cell-both .tpl-matrix-scope {
-    color: rgba(251, 191, 36, 0.75);
-  }
-  .tpl-matrix-cell-both .tpl-matrix-tpl {
-    /* A3 (2026-09 audit) — was rgba(200,216,240,0.55); same alpha as
-       the .cell-muted token, so reused directly. */
-    color: var(--algo-slate-muted);
-    font-style: italic;
-  }
-  /* #27 — info chip row above the matrix */
-  .tpl-matrix-both-info {
-    margin-bottom: 0.4rem;
-  }
+  .tpl-matrix-cell-both .tpl-matrix-mark { color: rgba(251, 191, 36, 0.65); }
+  .tpl-matrix-cell-both .tpl-matrix-scope { color: rgba(251, 191, 36, 0.75); }
+  .tpl-matrix-cell-both .tpl-matrix-tpl { color: var(--algo-slate-muted); font-style: italic; }
+  .tpl-matrix-both-info { margin-bottom: 0.4rem; }
   .tpl-matrix-both-chip {
     font-family: monospace;
     font-size: var(--fs-xs);
@@ -772,7 +613,6 @@
     border-radius: 3px;
   }
 
-  /* Filter chips */
   .tpl-chip {
     font-size: var(--fs-sm);
     border-radius: 3px;
@@ -792,37 +632,14 @@
     font-weight: 700;
   }
 
-  .tpl-create-btn {
-    padding: 0.30rem 0.8rem;
-    font-size: var(--fs-lg);
-    font-weight: 600;
-    color: var(--c-action);
-    background: rgba(251,191,36,0.10);
-    border: 1px solid rgba(251,191,36,0.50);
-    border-radius: 4px;
-    cursor: pointer;
-    transition: background 0.06s, border-color 0.06s;
-  }
-  .tpl-create-btn:hover {
-    background: rgba(251,191,36,0.18);
-    border-color: rgba(251,191,36,0.75);
-  }
-
-  /* Row list */
-  .tpl-list {
-    display: flex;
-    flex-direction: column;
-    gap: 0.4rem;
-  }
+  .tpl-list { display: flex; flex-direction: column; gap: 0.4rem; }
   .tpl-row {
     background: linear-gradient(180deg, rgba(20,30,55,0.65) 0%, rgba(12,18,38,0.65) 100%);
     border: 1px solid rgba(180,200,230,0.10);
     border-radius: 6px;
     overflow: hidden;
   }
-  .tpl-row-default {
-    border-color: rgba(251,191,36,0.35);
-  }
+  .tpl-row-default { border-color: rgba(251,191,36,0.35); }
   .tpl-row-head {
     width: 100%;
     display: flex;
@@ -863,6 +680,12 @@
     background: rgba(148,163,184,0.10);
     border: 1px solid rgba(148,163,184,0.30);
   }
+  .tpl-badge-group {
+    color: var(--algo-slate-muted);
+    background: rgba(126,151,184,0.10);
+    border: 1px solid rgba(255,255,255,0.12);
+    text-transform: none;
+  }
 
   .tpl-applies {
     font-size: var(--fs-md);
@@ -875,12 +698,7 @@
     flex-shrink: 0;
   }
 
-  .tpl-numerics {
-    display: flex;
-    gap: 0.35rem;
-    margin-left: auto;
-    flex-wrap: wrap;
-  }
+  .tpl-numerics { display: flex; gap: 0.35rem; margin-left: auto; flex-wrap: wrap; }
   .tpl-num {
     font-family: var(--font-numeric);
     font-size: var(--fs-md);
@@ -888,66 +706,24 @@
     padding: 0.10rem 0.45rem;
     border-radius: 3px;
   }
-  .tpl-num-tp {
-    color: var(--c-long);
-    background: rgba(74,222,128,0.08);
-    border: 1px solid rgba(74,222,128,0.30);
-  }
-  .tpl-num-sl {
-    color: var(--c-short);
-    background: rgba(248,113,113,0.08);
-    border: 1px solid rgba(248,113,113,0.30);
-  }
-  .tpl-num-wing {
-    color: #c084fc;
-    background: rgba(192,132,252,0.08);
-    border: 1px solid rgba(192,132,252,0.30);
-  }
+  .tpl-num-tp { color: var(--c-long); background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.30); }
+  .tpl-num-sl { color: var(--c-short); background: rgba(248,113,113,0.08); border: 1px solid rgba(248,113,113,0.30); }
+  .tpl-num-wing { color: #c084fc; background: rgba(192,132,252,0.08); border: 1px solid rgba(192,132,252,0.30); }
 
-  /* Expanded body */
-  .tpl-body {
-    padding: 0.6rem 0.9rem 0.85rem 1.6rem;
-    border-top: 1px solid rgba(180,200,230,0.08);
-  }
+  .tpl-body { padding: 0.6rem 0.9rem 0.85rem 1.6rem; border-top: 1px solid rgba(180,200,230,0.08); }
   .tpl-desc {
     font-size: var(--fs-lg);
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 80%, transparent);
     line-height: 1.45;
     margin-bottom: 0.6rem;
   }
 
-  /* Edit form */
-  .tpl-form {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 0.55rem 0.9rem;
-    margin-top: 0.4rem;
-  }
-  .tpl-field {
-    display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-    font-size: var(--fs-lg);
-    color: rgba(180,200,230,0.85);
-  }
-  .tpl-field span {
-    font-weight: 600;
-    font-family: var(--font-numeric);
-    letter-spacing: 0.02em;
-  }
-  .tpl-field-full {
-    grid-column: 1 / -1;
-  }
-  .tpl-field-wide {
-    grid-column: span 2;
-  }
-  .tpl-input-mono {
-    font-family: var(--font-numeric);
-    line-height: 1.4;
-    resize: vertical;
-    min-height: 2.6rem;
-  }
+  .tpl-form { display: grid; grid-template-columns: 1fr 1fr; gap: 0.55rem 0.9rem; margin-top: 0.4rem; }
+  .tpl-field { display: flex; flex-direction: column; gap: 0.25rem; font-size: var(--fs-lg); color: rgba(180,200,230,0.85); }
+  .tpl-field span { font-weight: 600; font-family: var(--font-numeric); letter-spacing: 0.02em; }
+  .tpl-field-full { grid-column: 1 / -1; }
+  .tpl-field-wide { grid-column: span 2; }
+  .tpl-input-mono { font-family: var(--font-numeric); line-height: 1.4; resize: vertical; min-height: 2.6rem; }
   .tpl-input {
     padding: 0.32rem 0.55rem;
     font-size: var(--fs-lg);
@@ -957,80 +733,29 @@
     border-radius: 4px;
     font-family: var(--font-numeric);
   }
-  .tpl-input:focus {
-    outline: none;
-    border-color: rgba(251,191,36,0.55);
-    background: rgba(15,23,41,0.85);
-  }
-  .tpl-input:disabled {
-    color: rgba(180,200,230,0.55);
-    background: rgba(15,23,41,0.4);
-    cursor: not-allowed;
-  }
-  .tpl-checkbox {
-    display: flex;
-    align-items: center;
-    gap: 0.45rem;
-    font-size: var(--fs-lg);
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
-    color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
-    cursor: pointer;
-  }
+  .tpl-input:focus { outline: none; border-color: rgba(251,191,36,0.55); background: rgba(15,23,41,0.85); }
+  .tpl-input:disabled { color: rgba(180,200,230,0.55); background: rgba(15,23,41,0.4); cursor: not-allowed; }
+  .tpl-checkbox { display: flex; align-items: center; gap: 0.45rem; font-size: var(--fs-lg); color: color-mix(in srgb, var(--algo-slate) 85%, transparent); cursor: pointer; }
 
-  .tpl-form-err {
-    grid-column: 1 / -1;
-    color: #fca5a5;
-    font-size: var(--fs-lg);
-    font-family: var(--font-numeric);
-  }
-  .tpl-json-err {
-    display: block;
-    margin-top: 0.2rem;
-    color: var(--c-short);
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
-  }
-  .tpl-form-actions {
-    grid-column: 1 / -1;
-    display: flex;
-    gap: 0.45rem;
-    margin-top: 0.4rem;
-  }
+  .tpl-form-err { grid-column: 1 / -1; color: #fca5a5; font-size: var(--fs-lg); font-family: var(--font-numeric); }
+  .tpl-json-err { display: block; margin-top: 0.2rem; color: var(--c-short); font-size: var(--fs-sm); font-family: var(--font-numeric); }
+  .tpl-form-actions { grid-column: 1 / -1; display: flex; gap: 0.45rem; margin-top: 0.4rem; }
   .tpl-btn {
     font-size: var(--fs-sm);
     font-weight: 600;
     border-radius: 3px;
     padding: 0.25rem 0.7rem;
-    /* A3 (2026-09 audit) — stale rgba(200,216,240,α); alpha preserved. */
     color: color-mix(in srgb, var(--algo-slate) 85%, transparent);
     background: rgba(255,255,255,0.04);
     border: 1px solid rgba(180,200,230,0.2);
     cursor: pointer;
   }
-  .tpl-btn:hover {
-    color: var(--c-action);
-    background: rgba(251,191,36,0.10);
-    border-color: rgba(251,191,36,0.40);
-  }
+  .tpl-btn:hover { color: var(--c-action); background: rgba(251,191,36,0.10); border-color: rgba(251,191,36,0.40); }
   .tpl-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-  .tpl-btn-primary {
-    color: var(--c-action);
-    background: rgba(251,191,36,0.15);
-    border-color: rgba(251,191,36,0.5);
-    font-weight: 700;
-  }
-  .tpl-btn-primary:hover {
-    background: rgba(251,191,36,0.25);
-  }
-  .tpl-btn-danger {
-    color: var(--c-short);
-    background: var(--c-short-10, rgba(248,113,113,0.10));
-    border-color: rgba(248,113,113,0.45);
-  }
-  .tpl-btn-danger:hover {
-    background: rgba(248,113,113,0.18);
-    color: #fca5a5;
-  }
+  .tpl-btn-primary { color: var(--c-action); background: rgba(251,191,36,0.15); border-color: rgba(251,191,36,0.5); font-weight: 700; }
+  .tpl-btn-primary:hover { background: rgba(251,191,36,0.25); }
+  .tpl-btn-danger { color: var(--c-short); background: var(--c-short-10, rgba(248,113,113,0.10)); border-color: rgba(248,113,113,0.45); }
+  .tpl-btn-danger:hover { background: rgba(248,113,113,0.18); color: #fca5a5; }
 
   @media (max-width: 720px) {
     .tpl-form { grid-template-columns: 1fr; }

@@ -25,10 +25,12 @@
     buildOrderPayload,
     getLtpForContext,
   } from '$lib/command/grammars/orders';
+  import { classifyConsoleStatement } from '$lib/command/consoleDispatch';
 
   /** @type {{
    *   onParsedOrder?: (props: any) => void,
    *   onAddToBasket?: (leg: any) => void,
+   *   onAgentStatement?: (raw: string) => void,
    *   standalone?: boolean,
    *   prefillSide?: string, prefillAccount?: string, prefillSymbol?: string,
    *   prefillQty?: number,  prefillPrice?: number,  prefillOrderType?: string,
@@ -36,6 +38,18 @@
   let {
     onParsedOrder = /** @type {((props: any) => void) | undefined} */ (undefined),
     onAddToBasket = /** @type {((leg: any) => void) | undefined} */ (undefined),
+    // Sprint 9 (console dispatch layer) — opt-in hand-off. When provided
+    // AND the raw typed line classifies as agent-family syntax (WHEN/
+    // ALERT/DO, bare order(...)/place_order(...)/bracket(...)), `runRaw`
+    // hands the raw text to this callback INSTEAD OF falling through to
+    // the `agent ...` interpreter / shell-exec branches below — a WHEN/
+    // order(/bracket( statement typed into this positional-grammar bar
+    // would otherwise reach POST /api/admin/exec as a "shell command",
+    // which is exactly the hazard this intercept exists to close. No
+    // other current caller passes this prop, so omitting it is a
+    // complete no-op (default undefined preserves the exact prior
+    // behaviour for every other mount).
+    onAgentStatement = /** @type {((raw: string) => void) | undefined} */ (undefined),
     standalone    = false,
     // When the parent (OrderEntryShell) already knows context tokens,
     // we pre-fill the command bar with them so the operator only fills
@@ -213,6 +227,16 @@
 
     // Order verbs are handled by onsubmit (runParsed) — skip here.
     if (verb === 'buy' || verb === 'sell' || verb === 'cancel' || verb === 'modify') return;
+
+    // Sprint 9 console dispatch — agent-family syntax (WHEN/ALERT/DO,
+    // bare order(...)/place_order(...)/bracket(...)) must never reach
+    // the shell-exec fallback below. Checked BEFORE `running` flips so a
+    // hand-off never shows a spurious "running" state in this bar.
+    if (onAgentStatement && classifyConsoleStatement(raw) === 'agents') {
+      onAgentStatement(raw);
+      cmdBar?.clear(); cmdVerb = '';
+      return;
+    }
 
     running = true;
     try {

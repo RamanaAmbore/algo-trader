@@ -8,22 +8,23 @@
   import StaleBanner from '$lib/StaleBanner.svelte';
   import { toast } from '$lib/data/toastStore.svelte.js';
   import {
-    fetchAgents, activateAgent, deactivateAgent, updateAgent, createAgent,
+    fetchAgents, activateAgent, deactivateAgent, updateAgent,
     fetchSimStatus,
-    startSimForAgent, aiDraftAgent, fetchGrammarTokens,
+    startSimForAgent, fetchGrammarTokens,
     fetchAgentRenderers, fetchSetting,
-    placeTicketOrder, placeBasket,
+    patchOrderTemplate,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select   from '$lib/Select.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
-  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import ChaseAggPicker from '$lib/order/ChaseAggPicker.svelte';
-  import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
-  import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
-  import { fetchAgentCatalog, decompileAgent, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
+  import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import BracketsTab from '$lib/automation/BracketsTab.svelte';
+  import TokensTab from '$lib/automation/TokensTab.svelte';
+  import { goto } from '$app/navigation';
+  import { page } from '$app/state';
 
   let agents      = $state([]);
   let loading     = $state(true);
@@ -32,57 +33,26 @@
   const algoStatus = getContext('algoStatus');
   const isDemo = $derived(algoStatus.isDemo);
 
-  // ── Ask AI form ────────────────────────────────────────────────────
-  let aiOpen     = $state(false);
-  let aiPrompt   = $state('');
-  let aiBusy     = $state(false);
-  let aiDraft    = $state(/** @type {any} */ (null));
-  let aiErrors   = $state(/** @type {string[]} */ ([]));
-  let aiWarnings = $state(/** @type {string[]} */ ([]));
-  let aiWhy      = $state('');
-  let aiSlug     = $state('');
-
-  async function runAIDraft() {
-    if (!aiPrompt.trim()) return;
-    aiBusy = true; aiErrors = []; aiWarnings = []; aiDraft = null; aiWhy = '';
-    try {
-      const r = await aiDraftAgent(aiPrompt.trim());
-      aiDraft    = r?.draft || null;
-      aiErrors   = r?.errors || [];
-      aiWarnings = r?.warnings || [];
-      aiWhy      = r?.why_summary || '';
-    } catch (e) {
-      aiErrors = [e.message || 'AI draft failed'];
-    } finally { aiBusy = false; }
+  // ── Tab state (Sprint 9 — Agents / Brackets / Tokens folded onto one
+  //    page). Seeded from ?tab= on mount; written back via replaceState
+  //    so a reload / bookmark preserves the tab without adding a history
+  //    entry per click. */
+  let activeTab = $state(/** @type {'agents'|'brackets'|'tokens'} */ ('agents'));
+  function setActiveTab(/** @type {string} */ id) {
+    activeTab = /** @type {any} */ (id);
+    const url = new URL(window.location.href);
+    url.searchParams.set('tab', id);
+    goto(url.pathname + '?' + url.searchParams.toString(), { replaceState: true, noScroll: true, keepFocus: true });
   }
-
-  /** Save the AI draft as a new agent — paper, inactive, one_shot. */
-  async function saveAIDraft() {
-    if (!aiDraft || aiErrors.length) return;
-    aiBusy = true;
-    try {
-      const slug = (aiSlug.trim()) || (aiDraft.name || 'ai-agent')
-        .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-      await createAgent({
-        slug,
-        name: aiDraft.name || 'AI agent',
-        description: aiDraft.description || aiWhy,
-        conditions: aiDraft.conditions || {},
-        events: aiDraft.events || ['telegram', 'email'],
-        actions: aiDraft.actions || [],
-        scope: aiDraft.scope || 'total',
-        schedule: aiDraft.schedule || 'market_hours',
-        cooldown_minutes: Number(aiDraft.cooldown_minutes ?? 30),
-        lifespan_type: aiDraft.lifespan_type || 'one_shot',
-        trade_mode: 'paper',
-      });
-      // Reset + reload.
-      aiOpen = false; aiPrompt = ''; aiDraft = null; aiSlug = '';
-      aiErrors = []; aiWarnings = []; aiWhy = '';
-      await loadAgents();
-    } catch (e) {
-      aiErrors = [e.message || 'Save failed'];
-    } finally { aiBusy = false; }
+  /** @type {{ focusTemplate: (id: number) => void } | null} */
+  let _bracketsTabRef = $state(null);
+  /** Clicking a Bracket mini-card in the Agents-tab group grids jumps to
+   *  the Brackets tab and expands that row for editing. */
+  function focusBracket(/** @type {number} */ id) {
+    setActiveTab('brackets');
+    // The Brackets tab mounts fresh on tab switch — tick once so its
+    // onMount/load() has run before we reach into it.
+    setTimeout(() => _bracketsTabRef?.focusTemplate(id), 50);
   }
   // Global simulator status — when active, the Agent-events panel swaps to
   // the simulator's event stream so operators only see sim results in the
@@ -100,7 +70,7 @@
     lifespan_expires_at: string,
     tier: string, topic: string,
     trade_mode: string, debounce_minutes: number,
-    tags: string, blackout_windows: string, cliText: string,
+    tags: string, blackout_windows: string,
   }} */ ({
     name: '', long_name: '', description: '',
     conditions: '{}', events: '[]', actions: '[]',
@@ -109,143 +79,8 @@
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
     tier: 'medium', topic: 'general',
     trade_mode: 'paper', debounce_minutes: 0,
-    tags: '', blackout_windows: '[]', cliText: '',
+    tags: '', blackout_windows: '[]',
   }));
-
-  // ── CLI editor (Sprint 4) — Structured↔CLI toggle for the threshold-
-  //    agent editor. `agentCliCatalog` is fetched ONCE via
-  //    `ensureAgentCliCatalog()` (cached promise, never a per-render
-  //    refetch) the first time either a new-agent panel or an edit panel
-  //    actually needs it — never on page mount. `cliDisabled` is set
-  //    per-edit-session when `decompileAgent()` can't produce an exact
-  //    CLI form (e.g. a `$ref` fragment, Sprint 3's documented non-goal).
-  let editorMode    = $state(/** @type {'structured'|'cli'} */ ('structured'));
-  let agentCliCatalog = $state(/** @type {any} */ (null));
-  let cliDisabled      = $state(false);
-  let cliDisabledReason = $state('');
-  /** @type {Promise<any>|null} */
-  let _cliCatalogPromise = null;
-  async function ensureAgentCliCatalog() {
-    if (agentCliCatalog) return agentCliCatalog;
-    if (!_cliCatalogPromise) {
-      _cliCatalogPromise = fetchAgentCatalog();
-    }
-    try {
-      const cat = await _cliCatalogPromise;
-      agentCliCatalog = cat;
-      return cat;
-    } catch (e) {
-      // Never cache a failure — templates.js cache-poisoning invariant.
-      _cliCatalogPromise = null;
-      toast.error(`CLI catalog load failed`);
-      return null;
-    }
-  }
-  // Snapshot of the three JSON strings at the moment they last matched
-  // `editForm.cliText` exactly (set on a successful decompile-on-edit-open
-  // AND on every successful CLI→JSON compile-write). Used by
-  // `setEditorMode` to detect "operator edited the Structured JSON tab
-  // directly since the last CLI sync" on a Structured→CLI switch, so the
-  // visible cliText never silently goes stale relative to what's about to
-  // be saved.
-  /** @type {{conditions:string, events:string, actions:string}|null} */
-  let _cliJsonSnapshot = $state(null);
-  function _cliJsonMatchesSnapshot() {
-    return !!_cliJsonSnapshot
-      && editForm.conditions === _cliJsonSnapshot.conditions
-      && editForm.events === _cliJsonSnapshot.events
-      && editForm.actions === _cliJsonSnapshot.actions;
-  }
-  async function setEditorMode(/** @type {string} */ m) {
-    if (m === 'cli' && !_cliJsonMatchesSnapshot()) {
-      // Structured JSON diverged from the last known-synced cliText (either
-      // the operator edited it directly, or this is the first switch for a
-      // brand-new agent) — re-decompile the CURRENT JSON once, on switch,
-      // never per keystroke.
-      const cat = await ensureAgentCliCatalog();
-      if (!cat) { cliDisabled = true; cliDisabledReason = 'CLI catalog unavailable'; return; }
-      let parsed;
-      try {
-        parsed = {
-          conditions: JSON.parse(editForm.conditions),
-          events: JSON.parse(editForm.events),
-          actions: JSON.parse(editForm.actions),
-        };
-      } catch (e) {
-        cliDisabled = true; cliDisabledReason = 'Structured JSON is invalid — fix it before switching to CLI';
-        return; // stay on Structured
-      }
-      let decomp;
-      try { decomp = decompileAgent(parsed, cat); }
-      catch (e) { decomp = { text: null, errors: [{ message: e?.message || 'decompile failed' }] }; }
-      if (decomp.errors.length === 0 && decomp.text) {
-        editForm.cliText = decomp.text;
-        _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
-        cliDisabled = false; cliDisabledReason = '';
-      } else {
-        cliDisabled = true; cliDisabledReason = 'This agent has no exact CLI form';
-        return; // stay on Structured
-      }
-    }
-    editorMode = /** @type {'structured'|'cli'} */ (m);
-  }
-  const editorModeTabs = $derived([
-    { id: 'structured', label: 'Structured' },
-    { id: 'cli', label: 'CLI', disabled: cliDisabled,
-      disabledTitle: cliDisabledReason || 'No exact CLI form for this agent' },
-  ]);
-  /** Fired by AgentCliEditor on every successful, operator-driven compile.
-   *  A bare order statement (`kind:'order'`) must never touch the
-   *  conditions/events/actions fields — only a `kind:'agent'` result does. */
-  function onCliAgentCompile(/** @type {any} */ result) {
-    if (!result?.ok || result.kind !== 'agent' || !result.agent) return;
-    editForm.conditions = JSON.stringify(result.agent.conditions, null, 2);
-    editForm.events     = JSON.stringify(result.agent.events, null, 2);
-    editForm.actions    = JSON.stringify(result.agent.actions, null, 2);
-    // JSON and cliText are back in sync — keep the snapshot current so a
-    // later Structured→CLI switch doesn't needlessly re-decompile.
-    _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
-  }
-  /** Fired by AgentCliEditor when the operator clicks "Place order" for a
-   *  bare `kind:'order'` CLI statement — single-leg goes through the
-   *  ticket endpoint, multi-leg through basket. LIVE mode confirms first
-   *  (same guard as toggleTradeMode's paper→live flip) since this is a
-   *  free-text box placing a real broker order, not the structured
-   *  OrderTicket. */
-  async function onCliOrderSubmit(/** @type {any} */ result) {
-    // `BasketOrderRequest`/`BasketLeg` (backend/api/schemas.py) carry NO
-    // client-settable mode field at all — a basket's effective mode is
-    // resolved entirely SERVER-SIDE from the global
-    // `execution.paper_trading_mode`/`execution.shadow_mode` settings
-    // (backend/api/routes/orders_basket.py:~247-257), so the frontend
-    // genuinely cannot know in advance whether a basket submit will
-    // resolve to paper/shadow/live. Always confirm before a basket submit
-    // from this free-text box — the single-leg ticket path DOES carry a
-    // real client-requested `mode` (gated server-side against the same
-    // kill-switch), so that one only confirms when actually 'live'.
-    const isLive = result.ticket?.mode === 'live' || !!result.basket;
-    if (isLive) {
-      const ok = await _liveAgentConfirmRef?.ask({
-        title: 'Place LIVE order?',
-        message: 'This CLI statement will place a real order against the broker.',
-        danger: true,
-        confirmLabel: 'Place LIVE order',
-        cancelLabel: 'Cancel',
-      });
-      if (!ok) return;
-    }
-    try {
-      if (result.basket) {
-        await placeBasket(result.basket.groups);
-        toast.success('Basket order placed');
-      } else if (result.ticket) {
-        await placeTicketOrder(result.ticket);
-        toast.success('Order placed');
-      }
-    } catch (e) {
-      toast.error(`Order failed: ${e.message}`);
-    }
-  }
 
   // Tier order matters — UI segmented control lists them critical → low
   // so the eye reads them as severity descending.
@@ -375,46 +210,11 @@
       // Blackout windows: list of {start: "HH:MM", end: "HH:MM"} as JSON.
       tags:                 Array.isArray(agent.tags) ? agent.tags.join(', ') : '',
       blackout_windows:     JSON.stringify(agent.blackout_windows || [], null, 2),
-      cliText:              '',
     };
-    // Default to Structured until a one-time decompile attempt proves the
-    // agent HAS an exact CLI form — never retried per keystroke, only here
-    // at edit-open time (Sprint 4 brief).
-    editorMode = 'structured';
-    cliDisabled = false;
-    cliDisabledReason = '';
-    const cat = await ensureAgentCliCatalog();
-    // Stale-resolve guard — a quick A→B edit-click switch must not let A's
-    // slower catalog/decompile resolution land on B's editForm.
-    if (editing !== agent.slug) return;
-    if (!cat) {
-      cliDisabled = true;
-      cliDisabledReason = 'CLI catalog unavailable';
-      return;
-    }
-    let decomp;
-    try {
-      decomp = decompileAgent({ conditions: agent.conditions, events: agent.events, actions: agent.actions }, cat);
-    } catch (e) {
-      decomp = { text: null, errors: [{ message: e?.message || 'decompile failed' }] };
-    }
-    if (editing !== agent.slug) return;
-    if (decomp.errors.length === 0 && decomp.text) {
-      editForm.cliText = decomp.text;
-      editorMode = 'cli';
-      cliDisabled = false;
-      cliDisabledReason = '';
-      // JSON ↔ cliText are in sync right now — snapshot it so switching
-      // tabs without touching either side never triggers a needless
-      // re-decompile.
-      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
-    } else {
-      editForm.cliText = '';
-      editorMode = 'structured';
-      cliDisabled = true;
-      cliDisabledReason = 'This agent has no exact CLI form';
-      _cliJsonSnapshot = null;
-    }
+    // Event-kind agents show the fixed Renderer field via rendererLabel() —
+    // lazy-load the renderer catalog here (not on page mount) the first
+    // time an event agent is actually opened for edit.
+    if (agent.kind === 'event' && !renderers.length) loadRenderers();
   }
 
   let validationErrors = $state(/** @type {string[]} */([]));
@@ -463,18 +263,6 @@
   // Independent of the Ask-AI flow above. null = closed, 'pick' = kind
   // selector shown, 'threshold' = reuses the inline editor (editForm,
   // editing='__new__'), 'event' = the dedicated event-agent builder.
-  let creatingKind  = $state(/** @type {'pick'|'threshold'|'event'|null} */ (null));
-  let newAgentSlug  = $state('');
-
-  function toggleNewAgentPanel() {
-    if (creatingKind) {
-      creatingKind = null;
-      if (editing === '__new__') editing = null;
-    } else {
-      creatingKind = 'pick';
-    }
-  }
-
   /** @type {{key:string, label:string, description?:string}[]} */
   let renderers      = $state([]);
   let renderersError = $state('');
@@ -499,104 +287,6 @@
       const s = await fetchSetting('execution.default_agent_trade_mode');
       globalDefaultTradeMode = s?.value || 'paper';
     } catch (_) { /* keep last-known value */ }
-  }
-
-  /** @type {{slug:string, name:string, description:string, renderer:string,
-   *          tag:string, minLevel:string, whereKey:string, whereValue:string,
-   *          channels: Record<string,boolean>, ntfyPriority:string,
-   *          gateBypass: Record<string,boolean>}} */
-  let eventCreateForm = $state({
-    slug: '', name: '', description: '', renderer: '',
-    tag: '', minLevel: 'INFO', whereKey: '', whereValue: '',
-    channels:   { ntfy: false, telegram: false, telegram_info: false, email: false },
-    ntfyPriority: 'normal',
-    gateBypass: { ntfy: false, telegram: false, telegram_info: false, email: false },
-  });
-  let eventCreateErrors = $state(/** @type {string[]} */ ([]));
-  let eventCreateBusy   = $state(false);
-
-  /** Reset state and open either the threshold editor (blank editForm)
-   *  or the event-agent builder (blank eventCreateForm). */
-  function startCreate(/** @type {'threshold'|'event'} */ kind) {
-    creatingKind = kind;
-    validationErrors = []; validationGrammar = '';
-    if (kind === 'threshold') {
-      editing = '__new__';
-      expandedSlug = null;
-      newAgentSlug = '';
-      editForm = {
-        name: '', long_name: '', description: '',
-        conditions: '{}', events: '[]', actions: '[]',
-        cooldown_minutes: 30, scope: 'total', schedule: 'market_hours',
-        fire_at_time: '',
-        lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
-        tier: 'medium', topic: 'general',
-        trade_mode: 'paper', debounce_minutes: 0,
-        tags: '', blackout_windows: '[]', cliText: '',
-      };
-      // Nothing to decompile for a brand-new agent — Structured by
-      // default, CLI tab enabled (operator may author from scratch).
-      // Snapshot the blank defaults so the first Structured→CLI switch
-      // doesn't attempt (and fail) a decompile of an empty agent.
-      editorMode = 'structured';
-      cliDisabled = false;
-      cliDisabledReason = '';
-      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
-    } else {
-      editing = null;
-      eventCreateErrors = [];
-      eventCreateForm = {
-        slug: '', name: '', description: '', renderer: '',
-        tag: '', minLevel: 'INFO', whereKey: '', whereValue: '',
-        channels:   { ntfy: false, telegram: false, telegram_info: false, email: false },
-        ntfyPriority: 'normal',
-        gateBypass: { ntfy: false, telegram: false, telegram_info: false, email: false },
-      };
-      if (!renderers.length) loadRenderers();
-    }
-  }
-
-  /** Build the create payload for a new event agent and POST it.
-   *  Full backend validation errors surface inline (eventCreateErrors). */
-  async function saveEventCreate() {
-    eventCreateErrors = [];
-    const f = eventCreateForm;
-    const slug = (f.slug.trim() || f.name.trim())
-      .toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '');
-    if (!slug)            { eventCreateErrors = ['Slug or name is required']; return; }
-    if (!f.renderer)      { eventCreateErrors = ['Pick a renderer']; return; }
-    if (!f.tag.trim())    { eventCreateErrors = ['Log tag is required']; return; }
-    const enabledIds = EVENT_CHANNELS.filter((ch) => f.channels[ch.id]).map((ch) => ch.id);
-    if (!enabledIds.length) { eventCreateErrors = ['Pick at least one channel']; return; }
-    const events = enabledIds.map((id) => {
-      const row = /** @type {any} */ ({ channel: id, enabled: true });
-      if (id === 'ntfy' && f.ntfyPriority !== 'normal') row.priority = f.ntfyPriority;
-      if (f.gateBypass[id]) row.gate = false;
-      return row;
-    });
-    const conditions = {
-      log: {
-        tag: f.tag.trim(),
-        min_level: f.minLevel,
-        ...(f.whereKey.trim() ? { where: { [f.whereKey.trim()]: f.whereValue } } : {}),
-      },
-    };
-    eventCreateBusy = true;
-    try {
-      await createAgent({
-        slug, name: f.name.trim() || slug,
-        description: f.description || '',
-        kind: 'event',
-        conditions, events,
-        actions: [{ type: 'render', render: f.renderer }],
-      });
-      toast.success(`Agent created: ${slug}`);
-      creatingKind = null;
-      await loadAgents();
-    } catch (e) {
-      toast.error(`Create failed: ${e.message}`);
-      eventCreateErrors = [e.fullMessage || e.message];
-    } finally { eventCreateBusy = false; }
   }
 
   /** Read-only renderer key for an existing event agent (actions[0].render). */
@@ -778,9 +468,17 @@
   // /automation/templates) reads; loadOrderTemplates() below is a
   // cheap no-op if already warm.
   let _templateRows = $state(/** @type {any[]} */ ([]));
+  // Unfiltered — drives the Bracket group-grid below (every OrderTemplate
+  // row, same "show every row" contract the Agents grid already has for
+  // Agent rows). `_templateRows` above stays active-only for the
+  // place_order mini-form's Bracket dropdown.
+  let _allTemplates = $state(/** @type {any[]} */ ([]));
   $effect(() => {
     const rows = $orderTemplatesStore;
-    if (rows) _templateRows = rows.filter((t) => t.is_active);
+    if (rows) {
+      _templateRows = rows.filter((t) => t.is_active);
+      _allTemplates = rows;
+    }
   });
 
   /** Detect AI provenance in agent.description and split into chips.
@@ -874,43 +572,16 @@
       tags:              tagsList,
       blackout_windows:  bw,
       // `update_agent` treats `cli_source: None` as "leave unchanged" (same
-      // convention every other optional AgentUpdateRequest field follows),
-      // so a Structured-tab save must send '' (not null) to actually CLEAR
-      // a previously-saved CLI string — never leave a stale cli_source
-      // diverging from the conditions/events/actions just edited as JSON.
-      cli_source: editorMode === 'cli' ? (editForm.cliText || '') : '',
+      // convention every other optional AgentUpdateRequest field follows).
+      // This page has no CLI editor of its own (Sprint 9 — CLI authoring
+      // moved to /console) so a Structured-tab save always sends '' to
+      // clear any `cli_source` an agent may carry from being authored
+      // elsewhere — never leaves it stale against the JSON just edited.
+      cli_source: '',
     };
   }
 
   async function saveEdit() {
-    // CLI tab is the active editing surface — recompile the FINAL cliText
-    // synchronously right now (never trust the debounced AgentCliEditor
-    // preview, which may be up to 150ms stale, mid-invalid, or — for a
-    // bare `kind:'order'` statement — never meant to write these fields
-    // at all) so `editForm.conditions/events/actions` (and therefore
-    // `cli_source`) can never diverge from what's actually saved.
-    if (editorMode === 'cli') {
-      if (!agentCliCatalog) {
-        validationErrors = ['CLI catalog unavailable — cannot save from CLI tab'];
-        return;
-      }
-      const cliResult = compileAgentCliStatement(editForm.cliText, agentCliCatalog, {
-        mode: editForm.trade_mode === 'live' ? 'live' : 'paper',
-      });
-      if (!cliResult.ok) {
-        validationErrors = (cliResult.errors || []).map((e) => e.message);
-        if (!validationErrors.length) validationErrors = ['CLI text failed to compile'];
-        return;
-      }
-      if (cliResult.kind !== 'agent' || !cliResult.agent) {
-        validationErrors = ['CLI text is an order statement, not an agent — write a WHEN/ALERT/DO statement, or switch to Structured'];
-        return;
-      }
-      editForm.conditions = JSON.stringify(cliResult.agent.conditions, null, 2);
-      editForm.events     = JSON.stringify(cliResult.agent.events, null, 2);
-      editForm.actions    = JSON.stringify(cliResult.agent.actions, null, 2);
-      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
-    }
     // Server-side validation must pass for v2 trees before we touch the
     // agent row — v1 trees are accepted as-is.
     const ok = await runValidation();
@@ -923,24 +594,9 @@
     // "iron-condor, nifty, review-q3" — round-tripped to a list.
     const tagsList = String(editForm.tags || '')
       .split(',').map(t => t.trim()).filter(Boolean);
-    const isCreate = editing === '__new__';
-    if (isCreate && !newAgentSlug.trim()) {
-      validationErrors = ['Slug is required'];
-      return;
-    }
     try {
-      if (isCreate) {
-        await createAgent({
-          slug: newAgentSlug.trim(),
-          kind: 'threshold',
-          ..._buildEditPayload(tagsList, bwResult.value),
-        });
-        toast.success(`Agent created: ${editForm.name}`);
-        creatingKind = null;
-      } else {
-        await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
-        toast.success(`Agent saved: ${editForm.name}`);
-      }
+      await updateAgent(editing, _buildEditPayload(tagsList, bwResult.value));
+      toast.success(`Agent saved: ${editForm.name}`);
       editing = null;
       validationErrors = []; validationGrammar = '';
       await loadAgents();
@@ -1073,6 +729,96 @@
       .map(c => ({ name: c, agents: out[c] }));
   }
 
+  // ── Custom group grids (Sprint 9) ─────────────────────────────────────
+  // Any non-empty `group` value present on at least one Agent OR
+  // OrderTemplate (`group` API field ↔ `group_name` DB column on both)
+  // creates an ADDITIONAL grid mixing both types, filtered to that value.
+  // The default Agents grid (groupedAgents() above) and default Bracket
+  // grid (_allTemplates) keep showing EVERY row regardless of group —
+  // a grouped card intentionally appears in both its custom grid and its
+  // type's default grid. 'manual' pseudo-agent excluded, same as
+  // groupedAgents().
+  function _normGroup(/** @type {string|null|undefined} */ g) {
+    const t = (g || '').trim();
+    return t === '' ? null : t;
+  }
+  const customGroups = $derived.by(() => {
+    const names = new Set();
+    for (const a of agents) { if (a.slug === 'manual') continue; const g = _normGroup(a.group); if (g) names.add(g); }
+    for (const t of _allTemplates) { const g = _normGroup(t.group); if (g) names.add(g); }
+    return [...names].sort((a, b) => a.localeCompare(b)).map((name) => ({
+      name,
+      agents: agents.filter((a) => a.slug !== 'manual' && _normGroup(a.group) === name),
+      templates: _allTemplates.filter((t) => _normGroup(t.group) === name),
+    }));
+  });
+
+  /** Drag payload: `{kind: 'agent'|'bracket', id}`. id is agent.slug or
+   *  template.id. Used by both the mini drag-cards and the grid drop
+   *  targets below. */
+  function _dragStart(/** @type {DragEvent} */ e, /** @type {'agent'|'bracket'} */ kind, /** @type {string|number} */ id) {
+    e.dataTransfer?.setData('text/plain', JSON.stringify({ kind, id }));
+    e.dataTransfer.effectAllowed = 'move';
+  }
+  function _dragOver(/** @type {DragEvent} */ e) { e.preventDefault(); }
+
+  async function setAgentGroup(/** @type {any} */ agent, /** @type {string|null} */ newGroup) {
+    const prev = agent.group ?? null;
+    if (prev === newGroup) return;
+    agent.group = newGroup;
+    agents = [...agents];
+    try {
+      await updateAgent(agent.slug, { group: newGroup || '' });
+      toast.success(`${agent.name}: group → ${newGroup || '(none)'}`);
+      await loadAgents();
+    } catch (e) {
+      agent.group = prev;
+      agents = [...agents];
+      toast.error(`Group update failed: ${e.message}`);
+    }
+  }
+
+  async function setTemplateGroup(/** @type {any} */ tpl, /** @type {string|null} */ newGroup) {
+    const prev = tpl.group ?? null;
+    if (prev === newGroup) return;
+    tpl.group = newGroup;
+    _allTemplates = [..._allTemplates];
+    try {
+      await patchOrderTemplate(tpl.id, { group: newGroup || '' });
+      toast.success(`${tpl.name}: group → ${newGroup || '(none)'}`);
+      await reloadOrderTemplates();
+    } catch (e) {
+      tpl.group = prev;
+      _allTemplates = [..._allTemplates];
+      toast.error(`Group update failed: ${e.message}`);
+    }
+  }
+
+  /** Drop handler shared by every grid section. `acceptKind` restricts a
+   *  default grid to its own type (dropping a Bracket onto the Agents
+   *  grid, or vice-versa, is rejected) — a custom-group grid passes
+   *  `null` and accepts either type. `targetGroup` is the group name to
+   *  set (null/'' = ungroup, used by the default grids). */
+  function onGridDrop(/** @type {DragEvent} */ e, /** @type {'agent'|'bracket'|null} */ acceptKind, /** @type {string|null} */ targetGroup) {
+    e.preventDefault();
+    const raw = e.dataTransfer?.getData('text/plain');
+    if (!raw) return;
+    /** @type {{kind:'agent'|'bracket', id:any}} */
+    let payload;
+    try { payload = JSON.parse(raw); } catch { return; }
+    if (acceptKind && payload.kind !== acceptKind) {
+      toast.error(`Can't drop a ${payload.kind} here`);
+      return;
+    }
+    if (payload.kind === 'agent') {
+      const a = agents.find((x) => x.slug === payload.id);
+      if (a) setAgentGroup(a, targetGroup);
+    } else if (payload.kind === 'bracket') {
+      const t = _allTemplates.find((x) => x.id === payload.id);
+      if (t) setTemplateGroup(t, targetGroup);
+    }
+  }
+
   // Action-type skeletons used by the quick-add pills below the Actions
   // textarea. Each entry is a legal action dict the operator can tune after
   // it lands in the JSON. Keys match the seeded grammar_tokens action list.
@@ -1140,6 +886,10 @@
   }
 
   onMount(() => {
+    // Seed the active tab from ?tab= so a bookmark/reload lands back on
+    // Brackets or Tokens instead of always resetting to Agents.
+    const t = page.url.searchParams.get('tab');
+    if (t === 'brackets' || t === 'tokens') activeTab = t;
     loadAll();
     loadLogTags();
     loadGlobalDefaultTradeMode();
@@ -1148,7 +898,8 @@
     refreshTeardown   = visibleInterval(loadAll, 30000);
     simStatusTeardown = visibleInterval(pollSimStatus, 4000);
     // Warm the template catalog for the place_order structured controls'
-    // Template dropdown — idempotent, module-level cached.
+    // Template dropdown + the Bracket group-grid — idempotent,
+    // module-level cached.
     loadOrderTemplates().catch(() => { /* silent — store stays empty */ });
   });
 
@@ -1178,18 +929,6 @@
     </h1>
   </span>
   <AlgoTimestamp />
-  <!-- Ask AI toggle is LEFT-aligned per canonical header rule (only
-       Refresh + Order + Chart + Activity + Collapse + Fullscreen +
-       Default-size icons sit RIGHT of ml-auto). -->
-  <button class="ai-pill" onclick={() => aiOpen = !aiOpen}>
-    {aiOpen ? '× Close AI' : '✦ Ask AI'}
-  </button>
-  <!-- "+ New Agent" — independent of Ask-AI. Kind selector (Threshold
-       reuses the inline editor form; Notification opens the dedicated
-       event-agent builder). -->
-  <button class="ai-pill new-agent-pill" onclick={toggleNewAgentPanel}>
-    {creatingKind ? '× Close' : '+ New Agent'}
-  </button>
   <span class="ml-auto"></span>
   <span class="page-header-actions">
     <RefreshButton onClick={loadAll} loading={loading} label="agents" />
@@ -1197,94 +936,15 @@
   </span>
 </div>
 
-<AutomationTabs />
+<AutomationTabs value={activeTab} onChange={setActiveTab} />
+
+{#if activeTab === 'brackets'}
+  <BracketsTab bind:this={_bracketsTabRef} />
+{:else if activeTab === 'tokens'}
+  <TokensTab />
+{:else}
 
 <StaleBanner {error} hasData={agents.length > 0} label="Agents" />
-
-{#if aiOpen}
-  <!-- AI agent draft form — operator describes the rule in plain English,
-       Gemini produces a draft. Lands paper + inactive + one_shot by default. -->
-  <div class="ai-card">
-    <div class="ai-head">
-      <span class="ai-title">✦ Describe the agent</span>
-      <span class="ai-hint">Lands paper · inactive · one_shot — review before activating.</span>
-    </div>
-    <textarea
-      class="ai-prompt"
-      bind:value={aiPrompt}
-      placeholder='e.g. "Alert me when total positions P&L drops below -50000 — paper auto-close at -100000"'
-      rows="2"
-    ></textarea>
-    <div class="ai-actions">
-      <button class="ai-btn" onclick={runAIDraft} disabled={aiBusy || !aiPrompt.trim()}>
-        {aiBusy ? 'Drafting…' : 'Draft'}
-      </button>
-      {#if aiDraft && !aiErrors.length}
-        <input class="ai-slug" bind:value={aiSlug}
-               placeholder={(aiDraft.name || 'ai-agent').toLowerCase().replace(/[^a-z0-9]+/g, '-')} />
-        <button class="ai-btn ai-btn-save" onclick={saveAIDraft} disabled={aiBusy}>
-          Save (paper · inactive)
-        </button>
-      {/if}
-    </div>
-    {#if aiWhy}
-      <div class="ai-why">{aiWhy}</div>
-    {/if}
-    {#if aiWarnings.length}
-      <ul class="ai-warns">
-        {#each aiWarnings as w}<li>⚠ {w}</li>{/each}
-      </ul>
-    {/if}
-    {#if aiErrors.length}
-      <ul class="ai-errs">
-        {#each aiErrors as e}<li>✗ {e}</li>{/each}
-      </ul>
-    {/if}
-    {#if aiDraft}
-      <details class="ai-json">
-        <summary>Draft JSON</summary>
-        <pre>{JSON.stringify(aiDraft, null, 2)}</pre>
-      </details>
-    {/if}
-  </div>
-{/if}
-
-{#if creatingKind}
-  <!-- "+ New Agent" panel. 'pick' = kind selector only; 'threshold' reuses
-       thresholdEditorBody(null) below (the exact same inline-editor form
-       threshold agents already use, seeded blank); 'event' renders the
-       dedicated event-agent builder (eventCreateBuilder snippet). -->
-  <div class="ai-card new-agent-card">
-    {#if creatingKind === 'pick'}
-      <div class="ai-head">
-        <span class="ai-title" style="color: var(--c-long)">+ New Agent</span>
-        <span class="ai-hint">Pick a kind</span>
-      </div>
-      <div class="flex gap-2 mt-2">
-        <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-3"
-          onclick={() => startCreate('threshold')}>Threshold</button>
-        <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-3"
-          onclick={() => startCreate('event')}>Notification</button>
-      </div>
-      <p class="text-[length:var(--fs-xs)] opacity-60 mt-2">
-        Threshold — fires when a metric (P&amp;L, margin, etc.) crosses a value.
-        Notification — fires on a matching log event (renderer-driven, no metric).
-      </p>
-    {:else if creatingKind === 'threshold'}
-      <div class="ai-head">
-        <span class="ai-title" style="color: var(--c-long)">New Threshold Agent</span>
-        <span class="ai-hint">Lands using the same editor as an existing agent — review before activating.</span>
-      </div>
-      <div class="mt-2 mb-1 max-w-xs">
-        <span class="field-label">Slug</span>
-        <input class="field-input" bind:value={newAgentSlug} placeholder="my-new-agent" />
-      </div>
-      {@render thresholdEditorBody(null)}
-    {:else if creatingKind === 'event'}
-      {@render eventCreateBuilder()}
-    {/if}
-  </div>
-{/if}
 
 <!-- Recursive tree renderer used by both the normal expanded view and the
      inline editor. Grammar nodes are:
@@ -1512,21 +1172,6 @@
                 </div>
               </div>
 
-              <div class="mt-3">
-                <AlgoTabs tabs={editorModeTabs} value={editorMode} onChange={setEditorMode} compact />
-              </div>
-
-              {#if editorMode === 'cli'}
-                <div class="mt-3">
-                  <AgentCliEditor
-                    bind:value={editForm.cliText}
-                    catalog={agentCliCatalog}
-                    mode={editForm.trade_mode === 'live' ? 'live' : 'paper'}
-                    onCompile={onCliAgentCompile}
-                    onOrderSubmit={onCliOrderSubmit}
-                  />
-                </div>
-              {:else}
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
                   <span class="field-label">
@@ -1584,7 +1229,7 @@
                   <div class="flex items-center justify-between flex-wrap gap-1">
                     <span class="field-label">
                       Actions (JSON)
-                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>Bracket</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The Bracket runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation/templates' target='_blank'>Brackets</a>." />
+                      <InfoHint popup panel title="Actions (JSON)" text="The single <b>+ place_order</b> pill appends an entry + <code>template_slug=&quot;default-bull&quot;</code> skeleton (change the slug to <code>default-short-vol</code> for a SELL-side credit spread, or <code>none</code> to opt out of auto-attachments). Whenever this JSON parses to exactly ONE <code>place_order</code> action, a structured mini-form appears below the textarea — <b>Product</b> (NRML/MIS), <b>Chase</b> aggressiveness (L/M/H, maps to <code>chase_aggressiveness</code> — the same pacing a manual order ticket's chase uses; default <b>med</b> when unset), and <b>Bracket</b> (keyed by slug from the catalog, 'None' clears <code>template_slug</code>). Edits there re-serialize back into this textarea; editing the JSON directly updates the mini-form the same way. The Bracket runs on fill — sim path goes through SimGttBook; live path through broker GTT. Catalog at <a href='/automation?tab=brackets' target='_blank'>Brackets</a>." />
                     </span>
                     <!-- Quick-add pills — click appends a skeleton action
                          entry so operators don't have to remember the
@@ -1636,7 +1281,6 @@
                   {/if}
                 </div>
               </div>
-              {/if}
 
               {#if validationErrors.length}
                 <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
@@ -1655,8 +1299,8 @@
                   Validate
                 </button>
                 <button type="button" onclick={saveEdit}
-                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">{agent ? 'Save' : 'Create'}</button>
-                <button type="button" onclick={() => { editing = null; creatingKind = null; validationErrors = []; validationGrammar = ''; }}
+                  class="btn-primary text-[length:var(--fs-md)] py-1 px-4 disabled:opacity-40">Save</button>
+                <button type="button" onclick={() => { editing = null; validationErrors = []; validationGrammar = ''; }}
                   class="btn-secondary text-[length:var(--fs-md)] py-1 px-4">Cancel</button>
               </div>
 
@@ -1800,119 +1444,6 @@
               </div>
 {/snippet}
 
-<!-- New event-agent builder (kind='event' creation). Renderer fetched
-     live from GET /api/agents/renderers — never hardcoded. -->
-{#snippet eventCreateBuilder()}
-  <div class="ai-head">
-    <span class="ai-title" style="color: var(--c-long)">New Notification Agent</span>
-    <span class="ai-hint">Fires on a matching log event, not a threshold tick.</span>
-  </div>
-  <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mt-2">
-    <div>
-      <span class="field-label">Name</span>
-      <input class="field-input" bind:value={eventCreateForm.name} placeholder="My alert" />
-    </div>
-    <div>
-      <span class="field-label">Slug <span class="opacity-50">(auto from name if blank)</span></span>
-      <input class="field-input" bind:value={eventCreateForm.slug} placeholder="my-alert" />
-    </div>
-    <div class="md:col-span-2">
-      <span class="field-label">Description</span>
-      <input class="field-input" bind:value={eventCreateForm.description} />
-    </div>
-  </div>
-
-  <div class="mt-3">
-    <span class="field-label">
-      Renderer
-      <InfoHint popup panel title="Renderer" text="The server-side template that formats this event into a message. Fetched live from the alert pipeline — never hardcoded in the frontend." />
-    </span>
-    {#if renderersError && !renderers.length}
-      <div class="text-[length:var(--fs-sm)] text-[var(--algo-red-text-bright)]">
-        {renderersError} <button type="button" class="underline" onclick={loadRenderers}>Retry</button>
-      </div>
-    {:else}
-      <div class="flex flex-wrap gap-1">
-        {#each renderers as r}
-          <button type="button"
-            class="tag-chip" class:on={eventCreateForm.renderer === r.key}
-            title={r.description || ''}
-            onclick={() => eventCreateForm.renderer = r.key}>{r.label}</button>
-        {/each}
-        {#if !renderers.length}<span class="text-[length:var(--fs-sm)] opacity-60">loading…</span>{/if}
-      </div>
-    {/if}
-  </div>
-
-  <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
-    <div>
-      <span class="field-label">Log tag</span>
-      <select class="log-match-select w-full" bind:value={eventCreateForm.tag} aria-label="Log tag">
-        <option value="">Tag…</option>
-        {#each logTags as t}<option value={t}>{t}</option>{/each}
-      </select>
-    </div>
-    <div>
-      <span class="field-label">Min level</span>
-      <select class="log-match-select w-full" bind:value={eventCreateForm.minLevel} aria-label="Minimum level">
-        {#each EVENT_LOG_LEVELS as lv}<option value={lv}>{lv}</option>{/each}
-      </select>
-    </div>
-    <div>
-      <span class="field-label">Where <span class="opacity-50">(optional)</span></span>
-      <div class="flex gap-1">
-        <input class="field-input" placeholder="key (e.g. alert_event)" bind:value={eventCreateForm.whereKey} />
-        <input class="field-input" placeholder="value" bind:value={eventCreateForm.whereValue} />
-      </div>
-    </div>
-  </div>
-
-  <div class="mt-3">
-    <span class="field-label">Alert channels</span>
-    <div class="channel-grid">
-      {#each EVENT_CHANNELS as ch}
-        <label class="channel-row">
-          <input type="checkbox"
-                 class="channel-check"
-                 checked={eventCreateForm.channels[ch.id]}
-                 onchange={(e) => eventCreateForm.channels[ch.id] = /** @type {HTMLInputElement} */(e.target).checked} />
-          <span class="channel-label">{ch.label}</span>
-          <span class="channel-desc">{ch.desc}</span>
-        </label>
-        {#if eventCreateForm.channels[ch.id]}
-          <div style="padding-left: 1.4rem; display:flex; gap:0.6rem; align-items:center; flex-wrap:wrap;">
-            {#if ch.id === 'ntfy'}
-              <span class="text-[length:var(--fs-xs)] opacity-60">Priority</span>
-              <select class="log-match-select" bind:value={eventCreateForm.ntfyPriority} aria-label="Priority">
-                <option value="normal">normal</option>
-                <option value="high">high</option>
-                <option value="urgent">urgent</option>
-              </select>
-            {/if}
-            <label class="flex items-center gap-1 text-[length:var(--fs-xs)] opacity-70 cursor-pointer">
-              <input type="checkbox" bind:checked={eventCreateForm.gateBypass[ch.id]} />
-              Always send (bypass capability gate)
-            </label>
-          </div>
-        {/if}
-      {/each}
-    </div>
-  </div>
-
-  {#if eventCreateErrors.length}
-    <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">
-      <ul class="list-disc ml-4">{#each eventCreateErrors as err}<li>{err}</li>{/each}</ul>
-    </div>
-  {/if}
-
-  <div class="flex gap-2 mt-3">
-    <button type="button" class="btn-primary text-[length:var(--fs-md)] py-1 px-4" disabled={eventCreateBusy} onclick={saveEventCreate}>
-      {eventCreateBusy ? 'Creating…' : 'Create'}
-    </button>
-    <button type="button" class="btn-secondary text-[length:var(--fs-md)] py-1 px-4" onclick={() => creatingKind = null}>Cancel</button>
-  </div>
-{/snippet}
-
 <!-- Grouped agent list — compact rows, click to expand.
      Two-column magazine-flow on ≥1024 px (lg:columns-2): items
      fill column 1 top-to-bottom, then column 2 starts; expanding a
@@ -1924,11 +1455,16 @@
     {group.name}
     <span class="opacity-60 font-normal ml-1">({group.agents.length})</span>
   </h2>
-  <div class="page-grid agent-group-grid mb-3">
+  <div class="page-grid agent-group-grid mb-3" role="list"
+       ondragover={_dragOver}
+       ondrop={(e) => onGridDrop(e, 'agent', null)}>
     {#each group.agents as agent}
       {@const isOpen = expandedSlug === agent.slug}
       <div class="algo-status-card {agent.status === 'triggered' ? 'animate-pulse' : ''}"
            data-status={agent.status}
+           role="listitem"
+           draggable={editing !== agent.slug}
+           ondragstart={(e) => _dragStart(e, 'agent', agent.slug)}
            style="padding: 0">
         <!-- Compact row (always visible). Div + role="button" so the inner
              ON/OFF can stay a real <button> — nested buttons aren't valid. -->
@@ -2035,6 +1571,12 @@
                     {agent.topic}
                   </span>
                 {/if}
+                {#if agent.group}
+                  <span class="group-badge"
+                        title="Drag this card onto a group grid below to change, or back onto Agents to ungroup.">
+                    {agent.group}
+                  </span>
+                {/if}
               </div>
               <!-- Actions list — surface each action and its params so
                    close_position / place_order / chase_close_positions are
@@ -2106,6 +1648,71 @@
   </div>
 {/each}
 
+<!-- Bracket default grid — every OrderTemplate row (Sprint 9). Compact,
+     draggable mini-cards; click jumps to the Brackets tab for editing. -->
+<h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
+  Bracket
+  <span class="opacity-60 font-normal ml-1">({_allTemplates.length})</span>
+</h2>
+<div class="page-grid automation-mini-grid mb-3" role="list"
+     ondragover={_dragOver}
+     ondrop={(e) => onGridDrop(e, 'bracket', null)}>
+  {#each _allTemplates as tpl (tpl.id)}
+    <button type="button" class="algo-status-card automation-mini-card"
+            draggable={true}
+            ondragstart={(e) => _dragStart(e, 'bracket', tpl.id)}
+            onclick={() => focusBracket(tpl.id)}
+            title="Click to edit on the Brackets tab">
+      <span class="automation-mini-name">{tpl.name}</span>
+      <span class="automation-mini-sub">
+        {tpl.applies_to}
+        {#if tpl.tp_pct != null}· TP {tpl.tp_pct}%{/if}
+        {#if tpl.sl_pct != null}· SL {tpl.sl_pct}%{/if}
+        {#if tpl.group}· {tpl.group}{/if}
+      </span>
+    </button>
+  {/each}
+  {#if !_allTemplates.length}
+    <div class="text-[length:var(--fs-sm)] text-[var(--c-muted)] italic">No Brackets yet.</div>
+  {/if}
+</div>
+
+<!-- Custom group grids — any non-empty `group` on an agent or Bracket
+     creates one of these, mixing both types (Sprint 9). -->
+{#each customGroups as grp (grp.name)}
+  <h2 class="section-heading mt-3 mb-1.5 border-b border-white/10 pb-0.5">
+    {grp.name}
+    <span class="opacity-60 font-normal ml-1">({grp.agents.length + grp.templates.length})</span>
+  </h2>
+  <div class="page-grid automation-mini-grid mb-3" role="list"
+       ondragover={_dragOver}
+       ondrop={(e) => onGridDrop(e, null, grp.name)}>
+    {#each grp.agents as agent (agent.slug)}
+      <button type="button" class="algo-status-card automation-mini-card"
+              draggable={true}
+              ondragstart={(e) => _dragStart(e, 'agent', agent.slug)}
+              onclick={() => { expandedSlug = agent.slug; startEdit(agent); }}
+              title="Click to edit">
+        <span class="w-2 h-2 rounded-full {statusDot(agent.status)} flex-shrink-0"></span>
+        <span class="automation-mini-name">{agent.name}</span>
+        <span class="automation-mini-sub">Agent</span>
+      </button>
+    {/each}
+    {#each grp.templates as tpl (tpl.id)}
+      <button type="button" class="algo-status-card automation-mini-card"
+              draggable={true}
+              ondragstart={(e) => _dragStart(e, 'bracket', tpl.id)}
+              onclick={() => focusBracket(tpl.id)}
+              title="Click to edit on the Brackets tab">
+        <span class="automation-mini-name">{tpl.name}</span>
+        <span class="automation-mini-sub">Bracket</span>
+      </button>
+    {/each}
+  </div>
+{/each}
+
+{/if}
+
 <style>
   /* Mobile: the bare section heading sits directly in .algo-content
      (padding-left: 0 on mobile) — indent it to match the cards beside it. */
@@ -2128,6 +1735,58 @@
     max-width: 100%;
   }
 
+  /* ── Group-based grids (Sprint 9) — Bracket default grid + any custom
+     `group` grid mixing agents and Brackets. ONE shared scrollable-grid
+     class so neither new grid hand-rolls its own height-cap + overflow
+     rule. Auto-fill columns (unlike the fixed 2-col .agent-group-grid)
+     since mini-cards are much smaller than a full agent row. */
+  .automation-mini-grid {
+    grid-template-columns: repeat(auto-fill, minmax(11rem, 1fr));
+    max-height: 16rem;
+    overflow-y: auto;
+  }
+  .automation-mini-card {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.15rem;
+    padding: 0.4rem 0.55rem;
+    cursor: pointer;
+    text-align: left;
+    width: 100%;
+  }
+  .automation-mini-card:active { cursor: grabbing; }
+  .automation-mini-name {
+    font-size: var(--fs-md);
+    font-weight: 700;
+    color: var(--c-action);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .automation-mini-sub {
+    font-size: var(--fs-xs);
+    color: var(--c-muted);
+    font-family: var(--font-numeric);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+
+  /* Group badge — mirrors .topic-badge's low-key palette; shown on an
+     agent row when it carries a custom `group`. */
+  .group-badge {
+    font-size: var(--fs-xs);
+    font-family: var(--font-numeric);
+    padding: 0.05rem 0.35rem;
+    border-radius: 3px;
+    background: rgba(192,132,252,0.10);
+    color: #c084fc;
+    border: 1px solid rgba(192,132,252,0.30);
+  }
+
   /* ── Agent row card chrome — matches agent-templates' .frag-row look
      (same literal gradient/border/radius) for visual parity across the
      two automation sub-pages. Scoped to this component only — the shared
@@ -2147,31 +1806,6 @@
   }
   .algo-status-card:hover { border-color: rgba(251,191,36,0.25); }
 
-  /* ── Ask-AI form ─────────────────────────────────────────────────── */
-  .ai-pill {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-    padding: 0.18rem 0.55rem;
-    border-radius: 4px;
-    border: 1px solid rgba(167,139,250,0.45);
-    background: rgba(167,139,250,0.10);
-    color: var(--algo-ai);
-    cursor: pointer;
-    transition: background 0.1s;
-  }
-  .ai-pill:hover { background: rgba(167,139,250,0.20); }
-  /* "+ New Agent" pill — green-tinted variant of .ai-pill, same shape. */
-  .new-agent-pill {
-    border-color: rgba(74,222,128,0.45);
-    background: var(--c-long-10);
-    color: var(--c-long);
-  }
-  .new-agent-pill:hover { background: rgba(74,222,128,0.20); }
-  .new-agent-card { border-color: rgba(74,222,128,0.30); }
-
   /* Notify-channel icon strip on each agent row — sits between the
      name and the trade-mode / ON-OFF cluster on the right. Single
      consistent palette (sky-300 at low alpha) so all controller-style
@@ -2188,107 +1822,6 @@
     opacity: 0.85;
     filter: grayscale(0.4);
   }
-  .ai-card {
-    background: linear-gradient(180deg, #0a1020 0%, #131c33 100%);
-    border: 1px solid rgba(167,139,250,0.30);
-    border-radius: 5px;
-    padding: 0.6rem 0.75rem;
-    margin-bottom: 0.6rem;
-  }
-  .ai-head { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.4rem; flex-wrap: wrap; }
-  .ai-title {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    color: var(--algo-ai);
-    text-transform: uppercase;
-    letter-spacing: 0.06em;
-  }
-  .ai-hint { font-size: var(--fs-sm); color: var(--algo-muted); font-family: var(--font-numeric); }
-  .ai-prompt {
-    width: 100%;
-    background: rgba(0,0,0,0.30);
-    border: 1px solid rgba(167,139,250,0.20);
-    border-radius: 4px;
-    color: var(--algo-slate);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-lg);
-    padding: 0.4rem 0.55rem;
-    resize: vertical;
-  }
-  .ai-prompt:focus { outline: none; border-color: rgba(167,139,250,0.55); }
-  .ai-actions { display: flex; gap: 0.4rem; margin-top: 0.4rem; align-items: center; flex-wrap: wrap; }
-  .ai-btn {
-    font-family: var(--font-numeric);
-    font-size: var(--fs-sm);
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    padding: 0.22rem 0.65rem;
-    border-radius: 3px;
-    border: 1px solid rgba(167,139,250,0.45);
-    background: rgba(167,139,250,0.12);
-    color: var(--algo-ai);
-    cursor: pointer;
-  }
-  .ai-btn:hover:not(:disabled) { background: rgba(167,139,250,0.22); }
-  .ai-btn:disabled { opacity: 0.45; cursor: not-allowed; }
-  .ai-btn-save {
-    border-color: rgba(74,222,128,0.45);
-    background: var(--c-long-10);
-    color: var(--c-long);
-  }
-  .ai-btn-save:hover:not(:disabled) { background: rgba(74,222,128,0.20); }
-  .ai-slug {
-    background: rgba(0,0,0,0.30);
-    border: 1px solid rgba(255,255,255,0.10);
-    border-radius: 3px;
-    color: var(--algo-slate);
-    font-family: var(--font-numeric);
-    font-size: var(--fs-md);
-    padding: 0.18rem 0.45rem;
-    width: 12rem;
-  }
-  .ai-why {
-    margin-top: 0.45rem;
-    font-size: var(--fs-md);
-    color: var(--algo-slate-muted);
-    background: rgba(167,139,250,0.06);
-    border-left: 2px solid #a78bfa;
-    padding: 0.32rem 0.55rem;
-    font-family: var(--font-numeric);
-  }
-  .ai-warns, .ai-errs { margin: 0.4rem 0 0; padding-left: 0.4rem; list-style: none; }
-  .ai-warns li {
-    color: var(--c-action);
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
-    padding: 0.08rem 0;
-  }
-  .ai-errs li {
-    color: var(--c-short);
-    font-size: var(--fs-sm);
-    font-family: var(--font-numeric);
-    padding: 0.08rem 0;
-  }
-  .ai-json {
-    margin-top: 0.45rem;
-    font-size: var(--fs-sm);
-    color: var(--algo-muted);
-    font-family: var(--font-numeric);
-  }
-  .ai-json summary { cursor: pointer; }
-  .ai-json pre {
-    margin-top: 0.3rem;
-    background: rgba(0,0,0,0.30);
-    border: 1px solid rgba(255,255,255,0.06);
-    border-radius: 3px;
-    padding: 0.4rem 0.55rem;
-    color: var(--algo-slate-muted);
-    overflow: auto;
-    max-height: 18rem;
-  }
-
   /* AI-provenance meta box on the expanded agent row.
      Shows the violet "✦ AI" pill, the LLM's why_summary, and a
      foldable prompt details element. Mirrors the .ai-pill palette. */
