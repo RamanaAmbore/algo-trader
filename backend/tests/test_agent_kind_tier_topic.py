@@ -553,6 +553,195 @@ async def test_update_agent_cycle_kind_rejects_unknown_metric_token():
     session.commit.assert_not_awaited()
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# Sprint 1 (2026-10, CLI-grammar effort) — _age_validate_action_entries:
+# reject unknown action types / missing required params on cycle agents'
+# `actions` array at save time. Deliberately NOT applied to kind='event'
+# agents — their `actions` entries use the unrelated `{"type": "render",
+# "render": <key>}` shape already checked by _age_validate_event_spec.
+# ═══════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_rejects_unknown_action_type():
+    session_factory, _ = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="act-1", name="Action agent", conditions={}, events=[],
+        actions=[{"type": "totally_not_a_real_action", "params": {}}],
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert exc_info.value.status_code == 422
+    assert "unknown action type" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_rejects_action_missing_required_param():
+    """`set_flag` requires both `name` and `value` — omitting `value`
+    must be rejected."""
+    session_factory, _ = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="act-2", name="Action agent", conditions={}, events=[],
+        actions=[{"type": "set_flag", "params": {"name": "my_flag"}}],
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert exc_info.value.status_code == 422
+    assert "missing required param 'value'" in exc_info.value.detail
+
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_valid_actions_list_saves_fine():
+    """`deactivate_agent` has an EMPTY params_schema ({}) — a known
+    action type with zero required params must NOT be mistaken for an
+    unknown action type (empty schema dict is falsy in Python)."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="act-3", name="Action agent", conditions={}, events=[],
+        actions=[
+            {"type": "deactivate_agent", "params": {}},
+            {"type": "set_flag", "params": {"name": "f", "value": True}},
+        ],
+    )
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert result == {"detail": "Agent 'act-3' created"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_cycle_kind_empty_actions_list_saves_fine():
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="act-4", name="Alert-only agent", conditions={}, events=[], actions=[],
+    )
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert result == {"detail": "Agent 'act-4' created"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_create_agent_event_kind_not_subject_to_action_entries_validation():
+    """Event-kind actions ({"type": "render", "render": ...}) must NOT be
+    checked against the cycle-agent action-type catalog — 'render' isn't
+    a registered action_type token there, so an unconditional check would
+    reject every valid event agent."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(**_VALID_EVENT_CREATE_KW)
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.create_agent)(controller, data)
+
+    assert result == {"detail": "Agent 'evt-1' created"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_rejects_unknown_action_type():
+    agent = _FakeAgentRow(kind="cycle", conditions={}, events=[], actions=[])
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(
+        actions=[{"type": "nonexistent_action", "params": {}}],
+    )
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert exc_info.value.status_code == 422
+    assert "unknown action type" in exc_info.value.detail
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_re_validates_merged_actions_when_untouched():
+    """A save that only touches an unrelated field (e.g. `name`) must
+    still re-check the row's PREVIOUSLY-saved `actions` — mirrors the
+    existing merged-conditions re-validation test below."""
+    agent = _FakeAgentRow(
+        kind="cycle", conditions={}, events=[],
+        actions=[{"type": "set_flag", "params": {"name": "f"}}],  # missing 'value'
+    )
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    from litestar.exceptions import HTTPException
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        with pytest.raises(HTTPException) as exc_info:
+            await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert exc_info.value.status_code == 422
+    assert "missing required param 'value'" in exc_info.value.detail
+    session.commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_accepts_valid_merged_actions():
+    agent = _FakeAgentRow(
+        kind="cycle", conditions={}, events=[],
+        actions=[{"type": "set_flag", "params": {"name": "f", "value": True}}],
+    )
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_cycle_kind_empty_actions_list_saves_fine():
+    agent = _FakeAgentRow(kind="cycle", conditions={}, events=[], actions=[])
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    session.commit.assert_awaited_once()
+
+
+def test_age_validate_action_entries_unit_known_empty_schema_action_passes():
+    """Direct unit coverage of the empty-schema trap: deactivate_agent's
+    params_schema is {} (falsy) but IS a known action type — must not be
+    rejected as unknown."""
+    from backend.api.routes.agents import _age_validate_action_entries
+    _age_validate_action_entries([{"type": "deactivate_agent", "params": {}}])  # no raise
+
+
+def test_age_validate_action_entries_unit_non_dict_entry_rejected():
+    from backend.api.routes.agents import _age_validate_action_entries
+    from litestar.exceptions import HTTPException
+    with pytest.raises(HTTPException) as exc_info:
+        _age_validate_action_entries(["not-a-dict"])
+    assert exc_info.value.status_code == 422
+
+
 @pytest.mark.asyncio
 async def test_update_agent_cycle_kind_re_validates_merged_conditions_when_untouched():
     """Mirrors the event-kind merged-spec test above: a cycle agent's

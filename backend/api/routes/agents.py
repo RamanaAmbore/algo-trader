@@ -642,6 +642,53 @@ def _age_validate_threshold_conditions(conditions: dict) -> None:
             detail="; ".join(errors), extra={"errors": errors})
 
 
+def _age_validate_action_entries(actions: list) -> None:
+    """Reject unknown action types / missing required params on a cycle
+    agent's `actions` array at save time — kind-agnostic companion to
+    `_age_validate_threshold_conditions` above, but ONLY meaningful for
+    'cycle' agents: `actions` entries there are dispatchable action specs
+    (`{"type": <action_type>, "params": {...}}`) checked against the
+    code-reviewed `agent_grammar.yaml` action-token catalog via
+    `grammar.get_action_params_schema()` / `is_known_action_type()`.
+
+    Deliberately NOT run for kind='event' agents — their `actions` array
+    uses a completely different, already-validated shape
+    (`{"type": "render", "render": <renderer key>}`, checked against
+    `event_agents.RENDERS` by `_age_validate_event_spec()` above) that
+    has nothing to do with the dispatchable action-type catalog here.
+    Caller is responsible for the kind gate (see create_agent /
+    update_agent below).
+
+    An empty `[]` list is valid (alert-only agent) — left alone, no
+    errors, same leniency convention as `_age_validate_threshold_
+    conditions`'s empty/placeholder-conditions gate."""
+    if not actions:
+        return
+    from backend.api.algo.grammar import (
+        get_action_params_schema, is_known_action_type,
+    )
+    errors: list[str] = []
+    for entry in actions:
+        if not isinstance(entry, dict):
+            errors.append(f"action entry must be an object, got {type(entry).__name__}")
+            continue
+        action_type = entry.get("type")
+        if not action_type or not is_known_action_type(action_type):
+            errors.append(f"unknown action type '{action_type}'")
+            continue
+        schema = get_action_params_schema(action_type)
+        params = entry.get("params") or {}
+        if not isinstance(params, dict):
+            errors.append(f"{action_type}: params must be an object")
+            continue
+        for key, spec in schema.items():
+            if isinstance(spec, dict) and spec.get("required") and key not in params:
+                errors.append(f"{action_type}: missing required param '{key}'")
+    if errors:
+        raise HTTPException(status_code=422,
+            detail="; ".join(errors), extra={"errors": errors})
+
+
 # ---------------------------------------------------------------------------
 # Controller
 # ---------------------------------------------------------------------------
@@ -761,6 +808,8 @@ class AgentController(Controller):
             kind = _age_normalize_kind(data.kind)
             if kind == "event":
                 _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
+            else:
+                _age_validate_action_entries(data.actions)
             _age_validate_threshold_conditions(data.conditions)
             tm = _age_resolve_trade_mode(data.trade_mode)
             agent = Agent(
@@ -858,6 +907,8 @@ class AgentController(Controller):
             if agent.kind == "event":
                 _age_validate_event_spec(agent.slug, agent.conditions,
                                           agent.events, agent.actions)
+            else:
+                _age_validate_action_entries(agent.actions)
             _age_validate_threshold_conditions(agent.conditions)
             await session.commit()
         if agent.kind == "event":

@@ -92,8 +92,11 @@ class TestBannedNodeTypes:
     def test_starred_rejected(self):
         _assert_only_expr_error("*a,", {"a": 1})
 
-    def test_string_constant_rejected(self):
-        _assert_only_expr_error("'hello'")
+    # test_string_constant_rejected intentionally REMOVED/FLIPPED here —
+    # see TestStringSupport.test_string_constant_accepted below. `str`
+    # constants were disallowed pre-string-support-extension; they are
+    # now a deliberately supported, narrow addition (see expr_eval.py's
+    # module docstring). `bytes` stays rejected (next test, unchanged).
 
     def test_bytes_constant_rejected(self):
         _assert_only_expr_error("b'x'")
@@ -267,3 +270,110 @@ class TestMiscSafety:
         result = eval_expr("1 + 1", {})
         assert result is not None
         assert math.isfinite(result)
+
+
+# ─────────────────────────────────────────────────────────────────────────
+# String support (added — str constants + str + str concatenation)
+# ─────────────────────────────────────────────────────────────────────────
+
+from backend.api.algo.expr_eval import _MAX_STRING_LEN  # noqa: E402
+
+
+class TestStringSupport:
+    def test_string_constant_accepted(self):
+        """Pre-extension this raised ExprError (see the removed
+        test_string_constant_rejected note above in TestBannedNodeTypes).
+        A bare str constant is now a valid, narrow addition."""
+        result = eval_expr("'hello'", {})
+        assert result == "hello"
+        assert type(result) is str
+
+    def test_string_constant_within_length_guard_accepted(self):
+        s = "x" * _MAX_STRING_LEN
+        result = eval_expr(f"'{s}'", {})
+        assert result == s
+
+    def test_string_constant_exceeding_length_guard_rejected(self):
+        """_MAX_STRING_LEN is deliberately set below _MAX_EXPR_LEN (see
+        expr_eval.py comment) specifically so this case is caught by the
+        string-constant guard itself, not by the overall expression-
+        length guard tripping first."""
+        s = "x" * (_MAX_STRING_LEN + 1)
+        expr = f"'{s}'"
+        assert len(expr) <= 200, "test must stay under _MAX_EXPR_LEN to isolate the string guard"
+        _assert_only_expr_error(expr)
+
+    def test_namespace_string_exceeding_length_guard_rejected(self):
+        """A bare Name lookup returning an oversized namespace-supplied
+        string (no Constant, no BinOp) is caught by the centralized
+        backstop at the end of eval_expr."""
+        long_str = "x" * (_MAX_STRING_LEN + 1)
+        _assert_only_expr_error("a", {"a": long_str})
+
+    def test_string_plus_string_concatenation(self):
+        result = eval_expr("a + b", {"a": "NFO", "b": "-close"})
+        assert result == "NFO-close"
+        assert type(result) is str
+
+    def test_string_literal_plus_string_literal_concatenation(self):
+        result = eval_expr("'foo' + 'bar'", {})
+        assert result == "foobar"
+
+    def test_string_plus_number_rejected_as_type_error(self):
+        """str + number is a type error — never silently coerced via
+        str()."""
+        _assert_only_expr_error("a + b", {"a": "qty-", "b": 5})
+
+    def test_number_plus_string_rejected_as_type_error(self):
+        _assert_only_expr_error("a + b", {"a": 5, "b": "qty-"})
+
+    def test_string_minus_rejected(self):
+        """Every BinOp operator other than Add stays strictly
+        numeric-only — a string operand on Sub is rejected before the
+        operator is ever invoked."""
+        _assert_only_expr_error("a - b", {"a": "x", "b": "y"})
+
+    def test_string_mult_rejected_not_executed_as_repeat(self):
+        """'a' * 999999999 would be a memory-exhaustion bomb in raw
+        Python (str repetition) — must be rejected outright, not
+        executed and then caught after the fact."""
+        _assert_only_expr_error("a * b", {"a": "x", "b": 999999999})
+
+    def test_string_percent_rejected_not_executed_as_format(self):
+        """'%s' % x is printf-style string formatting in raw Python —
+        must be rejected outright, never executed."""
+        _assert_only_expr_error("a % b", {"a": "%s", "b": 5})
+
+    def test_string_pow_rejected(self):
+        _assert_only_expr_error("a ** b", {"a": "x", "b": 2})
+
+    def test_string_div_rejected(self):
+        _assert_only_expr_error("a / b", {"a": "x", "b": 2})
+
+    def test_concatenated_string_exceeding_length_guard_rejected(self):
+        a = "x" * _MAX_STRING_LEN
+        b = "y" * _MAX_STRING_LEN
+        _assert_only_expr_error("a + b", {"a": a, "b": b})
+
+    def test_string_result_flows_through_allowed_result_types(self):
+        """Top-level eval_expr result-type gate must accept a plain str
+        result end to end (not just inside _eval_binop/_eval_constant)."""
+        result = eval_expr("a", {"a": "hello"})
+        assert result == "hello"
+
+    def test_existing_numeric_behavior_unchanged_arithmetic(self):
+        """Regression guard: ordinary numeric arithmetic must behave
+        identically after the string-support extension."""
+        result = eval_expr("(lots * 2) + buffer", {"lots": 5, "buffer": 3})
+        assert result == 13
+
+    def test_existing_numeric_behavior_unchanged_boolean(self):
+        result = eval_expr("a and b", {"a": True, "b": True})
+        assert result is True
+
+    def test_bool_is_not_confused_with_string_operand(self):
+        """bool is an int subclass in Python — confirm the new
+        str-operand check never misfires on a bool operand."""
+        result = eval_expr("a + b", {"a": True, "b": 1})
+        assert result == 2
+        assert type(result) is int

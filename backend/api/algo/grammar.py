@@ -881,5 +881,20 @@ def get_action_params_schema(action_type: str) -> dict:
     (any `$ref` markers already merged — see `_resolve_param_spec`), or
     `{}` if `action_type` is unknown. Used by
     `actions.py:resolve_action_params()` to decide which params may carry
-    an expression string."""
+    an expression string.
+
+    NOTE: an empty dict is also the correct return for a KNOWN action type
+    that simply takes no params (e.g. `deactivate_agent`) — callers that
+    need to distinguish "known, no params" from "unknown action type"
+    must use `is_known_action_type()` below, not truthiness of this
+    return value."""
     return _ACTION_PARAMS_SCHEMAS.get(action_type, {})
+
+
+def is_known_action_type(action_type: str) -> bool:
+    """True iff `action_type` is a registered system action token —
+    independent of whether its params_schema is empty. Used by
+    `routes/agents.py:_age_validate_action_entries()` to reject an
+    unknown action type without also rejecting a real action (like
+    `deactivate_agent`) that legitimately has no params."""
+    return action_type in _ACTION_PARAMS_SCHEMAS

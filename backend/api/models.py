@@ -1014,6 +1014,11 @@ class Agent(Base):
     # every built-in agent.
     long_name: Mapped[Optional[str]] = mapped_column(String(256), nullable=True)
     description: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    # cli_source — the raw CLI/text-grammar source an operator authored this
+    # agent from, if any (Sprint 1 of the CLI-grammar-authoring effort).
+    # NULL for every agent created via the existing form/JSON UI path —
+    # purely additive, display-only provenance; nothing reads it yet.
+    cli_source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
     # Condition tree (AND/OR/NOT with account selection)
     conditions: Mapped[dict]     = mapped_column(JSONB, nullable=False, default=dict)

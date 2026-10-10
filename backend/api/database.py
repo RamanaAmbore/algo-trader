@@ -970,6 +970,23 @@ async def _migrate_algo_orders_mcp_request_id(conn) -> None:
     ))
 
 
+async def _migrate_agents_cli_source(conn) -> None:
+    """Additive migration — `agents.cli_source` (Sprint 1 of the CLI/text
+    grammar agent-authoring effort). Mirrors
+    `_migrate_algo_orders_mcp_request_id`'s exact pattern: runs inside
+    init_db's normal `engine.begin()` transaction, `SET LOCAL lock_timeout`
+    bounds how long this can wait behind any in-flight row lock on
+    `agents`, plain `ADD COLUMN IF NOT EXISTS` (nullable TEXT, no default,
+    no backfill) so it's a no-op on an already-migrated DB and safe on a
+    fresh one. No index — this column is provenance/display-only, never
+    queried by WHERE clause."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS cli_source TEXT"
+    ))
+
+
 # Sprint 1a — CREATE INDEX CONCURRENTLY statements for the three new
 # algo_orders columns. Index names deliberately match the names
 # SQLAlchemy's default `index=True` naming convention produces
@@ -1061,6 +1078,7 @@ async def init_db() -> None:
         await _migrate_order_templates_wing_max_spread_pct(conn)
         await _migrate_algo_orders_sprint1a_columns(conn)
         await _migrate_algo_orders_mcp_request_id(conn)
+        await _migrate_agents_cli_source(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the

@@ -10,12 +10,24 @@ REAL ORDER PLACEMENT — every design decision here is deliberately
 fail-closed, not fail-open.
 
 `eval_expr(expr, namespace)` supports arithmetic (`+ - * / % **`),
-relational (`< <= > >= == !=`), logical (`and or not`), and grouping
-parentheses over a closed, caller-supplied namespace. There is no
-`ast.Call` support of ANY kind, no dotted-path import, no attribute or
-subscript access — nothing in this module's design could ever be extended
-to call anything. If a construct isn't explicitly whitelisted below, it is
-rejected.
+relational (`< <= > >= == !=`), logical (`and or not`), grouping
+parentheses, and (since the string-support extension below) `str`
+constants + `str + str` concatenation, over a closed, caller-supplied
+namespace. There is no `ast.Call` support of ANY kind, no dotted-path
+import, no attribute or subscript access — nothing in this module's
+design could ever be extended to call anything. If a construct isn't
+explicitly whitelisted below, it is rejected.
+
+String support is intentionally narrow: a `str` operand is ONLY ever
+valid as a `Constant`, a `Name` lookup, or the `+` (concatenation)
+`BinOp` operand, and ONLY when BOTH sides of `+` are strings — `str +
+number` is a type error, never silently coerced via `str()`. Every
+other `BinOp` operator (`- * / % **`) stays strictly numeric-only: a
+string operand there is rejected outright, BEFORE the operator is ever
+invoked — not caught after the fact — because leaning on a catch-all
+would let `'a' * 999999999` through as a memory bomb (`Mult` has no
+magnitude guard the way `Pow` does) or `'%s' % x` through as printf-style
+formatting.
 
 This is a SEPARATE, physically distinct trust boundary from
 `backend/api/algo/grammar_registry.py`'s parameterized-token-call resolver
@@ -38,8 +50,19 @@ _MAX_EXPR_LEN = 200
 _MAX_DEPTH = 20
 _MAX_POW_EXPONENT = 12
 _MAX_POW_BASE = 1e6
+# String-support extension: caps BOTH a literal string constant in the
+# expression text AND the length of any string result (including one
+# produced by `+` concatenation of two namespace-supplied strings, which
+# wouldn't otherwise be bounded by _MAX_EXPR_LEN since namespace values
+# never pass through the parser at all). Deliberately set BELOW
+# _MAX_EXPR_LEN (not equal to it) — a literal string constant's quoted
+# source form is always at least 2 chars longer than its own content, so
+# if this cap were == _MAX_EXPR_LEN, the overall expression-length guard
+# would always fire first and this constant-specific guard could never
+# actually be exercised via a literal.
+_MAX_STRING_LEN = 150
 
-_ALLOWED_RESULT_TYPES = (int, float, bool)
+_ALLOWED_RESULT_TYPES = (int, float, bool, str)
 
 
 class ExprError(ValueError):
@@ -123,8 +146,18 @@ def _check_paren_depth(expr: str) -> None:
 
 def _eval_constant(node: ast.Constant) -> Any:
     # Explicit type-check rejection (not catching a later error) — only
-    # int/float/bool literals are allowed. str/bytes/complex/None/Ellipsis
-    # constants are all rejected here.
+    # int/float/bool/str literals are allowed. bytes/complex/None/Ellipsis
+    # constants are all rejected here. `str` is checked via `type() is str`
+    # (not `isinstance`) so a `bool`/`int` can never accidentally satisfy
+    # this branch — `type()` equality, not `isinstance`, is also what keeps
+    # the numeric branch below from ever matching a `str`.
+    if type(node.value) is str:
+        if len(node.value) > _MAX_STRING_LEN:
+            raise ExprError(
+                f"string constant too long ({len(node.value)} chars > "
+                f"{_MAX_STRING_LEN} cap)"
+            )
+        return node.value
     if type(node.value) not in (int, float, bool):
         raise ExprError(f"disallowed constant type: {type(node.value).__name__}")
     if isinstance(node.value, float) and not math.isfinite(node.value):
@@ -165,12 +198,47 @@ def _check_pow_magnitude(left: Any, right: Any) -> None:
         )
 
 
+def _check_no_string_operand(op_type: type, left: Any, right: Any) -> None:
+    """Reject a `str` operand on any BinOp operator OTHER than `Add` —
+    checked BEFORE the operator is ever invoked, not caught after the
+    fact. Catching after the fact isn't enough: `'a' * 999999999` is a
+    memory-exhaustion bomb (`Mult` has no magnitude guard the way `Pow`
+    does) and `'%s' % x` is printf-style string formatting — both would
+    actually execute and produce a result before any later type-check
+    could reject them."""
+    if type(left) is str or type(right) is str:
+        raise ExprError(
+            f"disallowed string operand for {op_type.__name__}"
+        )
+
+
+def _eval_string_add(left: Any, right: Any) -> str:
+    """`+` between two strings is concatenation — but ONLY when BOTH
+    operands are already strings. `str + number` is a type error here,
+    never silently coerced via `str()`."""
+    if type(left) is not str or type(right) is not str:
+        raise ExprError(
+            "'+' requires both operands to be strings (or both numeric) "
+            "— no implicit str/number coercion"
+        )
+    result = left + right
+    if len(result) > _MAX_STRING_LEN:
+        raise ExprError(
+            f"concatenated string too long ({len(result)} chars > "
+            f"{_MAX_STRING_LEN} cap)"
+        )
+    return result
+
+
 def _eval_binop(node: ast.BinOp, namespace: dict, depth: int) -> Any:
     op_fn = _BINOPS.get(type(node.op))
     if op_fn is None:
         raise ExprError(f"disallowed syntax: {type(node.op).__name__}")
     left = _eval_node(node.left, namespace, depth + 1)
     right = _eval_node(node.right, namespace, depth + 1)
+    if isinstance(node.op, ast.Add) and (type(left) is str or type(right) is str):
+        return _eval_string_add(left, right)
+    _check_no_string_operand(type(node.op), left, right)
     if isinstance(node.op, ast.Pow):
         _check_pow_magnitude(left, right)
     try:
@@ -253,16 +321,24 @@ def _eval_node(node: ast.AST, namespace: dict, depth: int) -> Any:
     raise ExprError(f"disallowed syntax: {type(node).__name__}")
 
 
-def eval_expr(expr: str, namespace: dict) -> int | float | bool:
+def eval_expr(expr: str, namespace: dict) -> int | float | bool | str:
     """
     Evaluate a whitelisted arithmetic/relational/logical expression string
-    against `namespace` and return an `int`, `float`, or `bool`.
+    against `namespace` and return an `int`, `float`, `bool`, or `str`.
 
     Raises `ExprError` on ANY failure — malformed syntax, a disallowed
-    construct, an undefined name, a runtime arithmetic failure, or a
-    non-finite/non-numeric result. Never returns `None`, never silently
-    degrades. This is the ONLY exception type `eval_expr` ever raises —
-    callers need catch nothing else.
+    construct, an undefined name, a runtime arithmetic failure, a
+    disallowed string operand (anything but `+` between two strings), or
+    a non-finite/non-numeric/oversized result. Never returns `None`,
+    never silently degrades. This is the ONLY exception type `eval_expr`
+    ever raises — callers need catch nothing else.
+
+    Callers resolving a NUMERIC action param (qty/price/etc — see
+    `actions.py:resolve_action_params()`) must still explicitly check the
+    returned type themselves: a `str`-typed expression (e.g. a `tag`
+    param) is a perfectly valid `eval_expr` result now, but would be
+    wrong flowing into a numeric field — this function's own contract
+    doesn't know which param slot called it.
     """
     if not isinstance(expr, str):
         raise ExprError(f"expression must be a string, got {type(expr).__name__}")
@@ -292,6 +368,18 @@ def eval_expr(expr: str, namespace: dict) -> int | float | bool:
     if type(result) not in _ALLOWED_RESULT_TYPES:
         raise ExprError(
             f"expression produced an unsupported result type: {type(result).__name__}"
+        )
+    # Centralized backstop — covers a bare `Name` lookup returning a
+    # namespace-supplied string directly (no Constant, no BinOp involved
+    # at all, so neither of the two length guards above would ever see
+    # it). Also redundantly re-covers the Constant/concatenation cases,
+    # which is fine — the guards above raise first with a more specific
+    # message; this is purely defense-in-depth for the one path they
+    # don't reach.
+    if type(result) is str and len(result) > _MAX_STRING_LEN:
+        raise ExprError(
+            f"string result too long ({len(result)} chars > "
+            f"{_MAX_STRING_LEN} cap)"
         )
     _check_finite(result)
     return result
