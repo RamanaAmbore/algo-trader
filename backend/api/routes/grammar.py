@@ -40,6 +40,90 @@ def _to_out(row: GrammarToken) -> GrammarTokenOut:
     )
 
 
+# Sprint 10 — merge active AgentTemplate ("Token") rows into the same
+# catalog shape fetchGrammarTokens('condition')/('notify') already
+# returns, so the frontend's existing buildCatalog() picks them up with
+# zero fetch-side changes. A condition-kind Template behaves like a
+# metric (it stands where a leaf would inside WHEN); a notify-kind
+# Template behaves like a channel (it stands where a channel would
+# inside ALERT). See GrammarTokenOut.is_fragment_ref for the marker a
+# caller uses to tell a merged Template row apart from a real token.
+_FRAGMENT_TOKEN_KIND = {"condition": "metric", "notify": "channel"}
+
+
+async def _fragment_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
+    """Active AgentTemplate rows for `grammar`, shaped as GrammarTokenOut.
+
+    Deliberately scoped to grammar in {"condition", "notify"} ONLY — the
+    exact two calls agents.js's fetchAgentCatalog makes. An unfiltered
+    call (grammar=None — what the admin Tokens CRUD page at /admin/tokens
+    always sends, filtering by tab client-side) never merges these in:
+    AgentTemplate rows live in a separate table (agent_fragments) with
+    their own id-space, and that admin page mutates rows by id
+    (toggle/patch/delete) straight against this same /tokens/{id} path.
+    Merging there would risk an operator action against a merged row
+    silently landing on an unrelated real grammar token that happens to
+    share the same numeric id. Returning [] for any other grammar value
+    (including "action", which AgentTemplate doesn't support) is correct.
+    """
+    if grammar not in _FRAGMENT_TOKEN_KIND:
+        return []
+    from backend.api.models import AgentTemplate
+
+    token_kind = _FRAGMENT_TOKEN_KIND[grammar]
+    async with async_session() as s:
+        rows = (await s.execute(
+            select(AgentTemplate).where(
+                AgentTemplate.kind == grammar,
+                AgentTemplate.is_active == True,  # noqa: E712
+            )
+        )).scalars().all()
+    return [
+        GrammarTokenOut(
+            # Negative id namespace: AgentTemplate.id lives in a distinct
+            # table (agent_fragments) and could otherwise numerically
+            # collide with a real GrammarToken.id. A negative id can never
+            # match a real (autoincrement, positive) GrammarToken row, so
+            # any stray PATCH/DELETE against it 404s instead of mutating
+            # an unrelated token.
+            id=-row.id,
+            grammar_kind=grammar,
+            token_kind=token_kind,
+            token=row.name,
+            description=row.description or "",
+            is_system=row.is_system,
+            is_active=True,
+            is_fragment_ref=True,
+        )
+        for row in rows
+    ]
+
+
+def _merge_fragment_rows(
+    base_rows: list[GrammarTokenOut], fragment_rows: list[GrammarTokenOut],
+) -> list[GrammarTokenOut]:
+    """Append `fragment_rows` to `base_rows`, skipping (and logging) any
+    Template whose name collides with an existing real token's name in
+    the same (grammar_kind, token_kind) bucket — buildCatalog() keys its
+    maps by lowercased token name, last-write-wins, so an unguarded
+    collision would let a Template silently shadow a real metric/channel."""
+    if not fragment_rows:
+        return base_rows
+    taken = {(r.token_kind, r.token.lower()) for r in base_rows}
+    for frow in fragment_rows:
+        key = (frow.token_kind, frow.token.lower())
+        if key in taken:
+            logger.warning(
+                f"grammar catalog: Token '{frow.token}' "
+                f"({frow.grammar_kind}/{frow.token_kind}) collides with an "
+                f"existing token of the same name — skipping merged row"
+            )
+            continue
+        base_rows.append(frow)
+        taken.add(key)
+    return base_rows
+
+
 async def _reload_registry():
     """Best-effort reload so an edit lights up the running engine."""
     try:
@@ -86,6 +170,12 @@ class GrammarTokenController(Controller):
         Return every token, optionally filtered by grammar_kind
         ("condition" / "notify" / "action"). Sorted system-first, then by
         token name so the list is stable across reloads.
+
+        When `grammar` is "condition" or "notify" — the exact two calls
+        the agent CLI's catalog fetcher makes — active AgentTemplate
+        ("Token") rows are merged in too, marked `is_fragment_ref=True`
+        (see `_fragment_catalog_rows`). An unfiltered call never merges
+        them (see that function's docstring for why).
         """
         async with async_session() as s:
             stmt = select(GrammarToken)
@@ -97,7 +187,9 @@ class GrammarTokenController(Controller):
                 GrammarToken.token.asc(),
             )
             rows = (await s.execute(stmt)).scalars().all()
-        return [_to_out(r) for r in rows]
+        out = [_to_out(r) for r in rows]
+        fragment_rows = await _fragment_catalog_rows(grammar)
+        return _merge_fragment_rows(out, fragment_rows)
 
     # ── Read one ───────────────────────────────────────────────────────────
     @get("/tokens/{token_id:int}", guards=[cap_guard("view_agents_catalog")])

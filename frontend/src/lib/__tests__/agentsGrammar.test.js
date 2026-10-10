@@ -95,6 +95,13 @@ const FIXTURE_ROWS = [
     },
   },
   { grammar_kind: 'action', token_kind: 'action_type', token: 'deactivate_agent', params_schema: {} },
+  // Sprint 10 — merged-in AgentTemplate ("Token") rows, hyphenated names
+  // (the real seeding convention — e.g. `notify-critical-trio`,
+  // `loss-positions-acct-default`). `is_fragment_ref: true` is the ONLY
+  // thing that distinguishes these from a real metric/channel row —
+  // everything else about their catalog shape is identical.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'loss-positions-default', is_fragment_ref: true, params_schema: null },
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'notify-critical-trio', is_fragment_ref: true, params_schema: null },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -593,6 +600,113 @@ describe('Sprint 8 — standalone bracket(...) statement', () => {
     const r = compile('WHEN always ALERT nop DO bracket(applies_to=buy_any)');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown action 'bracket'/.test(e.message))).toBe(true);
+  });
+});
+
+// ── Sprint 10 — Token ($ref) references ─────────────────────────────────
+
+describe('Sprint 10 — bare Token ($ref) reference', () => {
+  it('a bare Token reference in WHEN compiles to {"$ref": name}', () => {
+    const r = compile('WHEN loss-positions-default ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ '$ref': 'loss-positions-default' });
+  });
+
+  it('a bare Token reference in ALERT compiles to {"$ref": name}', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT notify-critical-trio DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ '$ref': 'notify-critical-trio' }]);
+  });
+
+  it('a Token reference combines with an ordinary leaf via "&"', () => {
+    const r = compile('WHEN loss-positions-default & pnl@positions.total < 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        { '$ref': 'loss-positions-default' },
+        { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
+      ],
+    });
+  });
+
+  it('a real metric missing its "@" still gets the original compile error (just at compile time, not parse time)', () => {
+    const r = compile('WHEN pnl ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /expected "@" after metric 'pnl'/.test(e.message))).toBe(true);
+  });
+
+  it('a Token reference carrying arguments is a compile error — it takes none', () => {
+    const r = compile('WHEN loss-positions-default(x=1) ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /Token reference and takes no arguments/.test(e.message))).toBe(true);
+  });
+
+  it('a Token reference with its own arguments in ALERT is likewise a compile error', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT notify-critical-trio(msg="hi") DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /Token reference and takes no arguments/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 10 — hyphenated NAME lexing (call/token-reference position only)', () => {
+  it('a hyphenated Token name lexes as ONE NAME token', () => {
+    const { tokens, errors } = lexAgentStatement('loss-positions-default');
+    expect(errors).toEqual([]);
+    expect(tokens.map(t => t.type)).toEqual(['NAME', 'EOF']);
+    expect(tokens[0].value).toBe('loss-positions-default');
+  });
+
+  it('a trailing hyphen (before whitespace/EOF) is NOT swallowed into the name', () => {
+    const { errors } = lexAgentStatement('loss-positions-default-');
+    // The dangling "-" (no digit, no word-char after it) has no legal
+    // production of its own — fails loud rather than silently being
+    // absorbed into the preceding name.
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it('a negative number in a kwarg value position inside a call still lexes correctly, unaffected by the hyphen widening', () => {
+    const { tokens, errors } = lexAgentStatement('mean_pnl(minutes=-50000)');
+    expect(errors).toEqual([]);
+    expect(tokens[0].args).toEqual([{ key: 'minutes', value: { type: 'number', value: -50000 } }]);
+  });
+
+  it('a kwarg KEY still cannot resolve as a known parameter even though it lexes with a hyphen (no regression — real keys use underscore)', () => {
+    const r = compile('WHEN mean_pnl(tp-pct=30)@positions.total < -1 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown parameter 'tp-pct'/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 10 — standalone token(...) statement', () => {
+  it('compiles to a POST /api/admin/fragments-shaped object', () => {
+    const r = compile('token(kind=notify) telegram, email #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.fragment).toEqual({
+      kind: 'notify',
+      name: 'x',
+      body: [
+        { channel: 'telegram', enabled: true },
+        { channel: 'email', enabled: true },
+      ],
+    });
+  });
+
+  it('kind=condition is a clear compile error — not supported from the CLI yet', () => {
+    const r = compile('token(kind=condition) telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /condition-kind Token creation isn't supported/.test(e.message))).toBe(true);
+  });
+
+  it('a missing #name= is a compile-time error', () => {
+    const r = compile('token(kind=notify) telegram, email');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /missing required meta tag '#name'/.test(e.message))).toBe(true);
+  });
+
+  it('token(...) used inside a DO clause is rejected the same way any other non-catalog action is ("unknown action")', () => {
+    const r = compile('WHEN always ALERT nop DO token(kind=notify)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown action 'token'/.test(e.message))).toBe(true);
   });
 });
 

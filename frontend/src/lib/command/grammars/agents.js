@@ -12,7 +12,50 @@
 // ─────────────────────────────────────────────────────────────────────────
 // EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
 // ─────────────────────────────────────────────────────────────────────────
-//   statement      := agent_stmt | order_stmt | bracket_stmt
+//   statement      := agent_stmt | order_stmt | bracket_stmt | token_stmt
+//   token_stmt     := call call_list meta_item*     (* Sprint 10 — `token(...)`
+//                                                       only, restricted to
+//                                                       standalone use,
+//                                                       EXACTLY mirroring
+//                                                       bracket_stmt's own
+//                                                       "only bracket(...)
+//                                                       can be used
+//                                                       standalone" rule/
+//                                                       error-message style,
+//                                                       naming "token"
+//                                                       instead. The HEAD
+//                                                       call (`token(kind=
+//                                                       notify|condition)`)
+//                                                       is immediately
+//                                                       followed by its BODY
+//                                                       call_list (no comma
+//                                                       between the head and
+//                                                       the first body call
+//                                                       — commas only join
+//                                                       the body's own
+//                                                       elements — e.g.
+//                                                       `token(kind=notify)
+//                                                       telegram, email,
+//                                                       log`). `kind=notify`
+//                                                       is the only
+//                                                       supported value this
+//                                                       sprint; the body is
+//                                                       a plain channel
+//                                                       call_list, compiled
+//                                                       via the EXACT SAME
+//                                                       path ALERT's own
+//                                                       call_list already
+//                                                       uses. `#name=` is
+//                                                       required (compile-
+//                                                       time error if
+//                                                       absent) since
+//                                                       `AgentTemplate.name`
+//                                                       is a required
+//                                                       field; `#tag=`/
+//                                                       `#group=` are
+//                                                       rejected — no such
+//                                                       columns exist on
+//                                                       `AgentTemplate`. *)
 //   bracket_stmt   := call meta_item*               (* `bracket(...)` only —
 //                                                       restricted to
 //                                                       standalone use,
@@ -113,12 +156,70 @@
 //   primary        := "(" or_expr ")" | leaf
 //   leaf           := metric_ref comparator value
 //                    | value comparator metric_ref comparator value   (* between *)
+//                    | call                           (* Sprint 10 — a BARE
+//                                                          call with no "@"
+//                                                          following is
+//                                                          syntactically a
+//                                                          Token ($ref)
+//                                                          reference — a
+//                                                          real metric
+//                                                          ALWAYS requires
+//                                                          "@ scope_ref", so
+//                                                          this is parsed
+//                                                          permissively here
+//                                                          and resolved at
+//                                                          COMPILE time
+//                                                          against the
+//                                                          catalog (same
+//                                                          split every other
+//                                                          semantic check in
+//                                                          this grammar
+//                                                          follows): a name
+//                                                          resolving to a
+//                                                          catalog entry
+//                                                          with
+//                                                          `isFragmentRef`
+//                                                          compiles to
+//                                                          `{"$ref": name}`;
+//                                                          a real metric
+//                                                          missing its "@"
+//                                                          still gets the
+//                                                          original "expected
+//                                                          '@' after metric"
+//                                                          error, just at
+//                                                          compile time
+//                                                          instead of parse
+//                                                          time. *)
 //   metric_ref     := call "@" scope_ref
 //   scope_ref      := call ("." call)*
 //   comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
 //   value          := NUMBER | STRING | NAME | list_literal
 //   list_literal   := "[" value ("," value)* "]"
-//   call           := NAME | NAME "(" arg_list ")"
+//   call           := NAME | NAME "(" arg_list ")"   (* a NAME in CALL/TOKEN-
+//                                                        REFERENCE position
+//                                                        (this production,
+//                                                        and the bare
+//                                                        metric/scope/
+//                                                        channel/action name
+//                                                        case generally) may
+//                                                        contain internal
+//                                                        hyphens, mid-word
+//                                                        only — Sprint 10,
+//                                                        see lexAgentStatement's
+//                                                        NAME-scanning branch
+//                                                        — so a real seeded
+//                                                        Token name like
+//                                                        `notify-critical-
+//                                                        trio` lexes as ONE
+//                                                        token. Does NOT
+//                                                        widen NAME
+//                                                        elsewhere (kwarg
+//                                                        KEYS are scanned by
+//                                                        a wholly separate
+//                                                        tokenizer,
+//                                                        `tokenizeCallStyle`
+//                                                        in engine.js, never
+//                                                        touched here). *)
 //   arg_list       := kw_arg ("," kw_arg)*          (* EVERY arg is keyword —
 //                                                       including the first;
 //                                                       no positional form
@@ -174,6 +275,10 @@
 //               | { kind:'order', calls: CallNode[], meta }
 //               | { kind:'bracket', call: CallNode, meta }   (* Sprint 8 —
 //                  exactly ONE call (never a list, unlike 'order') *)
+//               | { kind:'token', head: CallNode, bodyCalls: CallNode[], meta }
+//                  (* Sprint 10 — `head` is the `token(kind=...)` call;
+//                     `bodyCalls` is the channel call_list compiled via the
+//                     same path ALERT's own call_list uses. *)
 //   alertMsg   := ValueNode | null   (* the optional clause-level `msg=`
 //                  default — ALWAYS null when alertCalls is 'nop' or when
 //                  no ALERT clause was written at all; DO has no equivalent
@@ -194,6 +299,9 @@
 //               | { type:'between', value1: ValueNode, op1: string,
 //                   metric: CallNode, scope: ScopeNode, op2: string,
 //                   value2: ValueNode }
+//               | { type:'ref', call: CallNode }   (* Sprint 10 — a bare
+//                   call with no "@" following; resolved at COMPILE time —
+//                   see the `leaf` EBNF production's own comment above. *)
 //   CallNode   := { type:'call', name: string, args: ArgEntry[],
 //                   hasCall: boolean, start, end }
 //   ArgEntry   := { key: string, value: ValueNode }   (* key is NEVER null —
@@ -320,6 +428,10 @@ function _buildCatalogEntry(row) {
     valueType: row.value_type || null,
     paramsSchema: schema,
     paramKeys: Object.keys(schema), // declared order — keys[0] is positional-or-keyword
+    // Sprint 10 — true only for a merged-in AgentTemplate ("Token") row
+    // (backend's GrammarTokenOut.is_fragment_ref) — see the file-header
+    // EBNF's `leaf`/`call` production notes for how this flag is consumed.
+    isFragmentRef: row.is_fragment_ref === true,
   };
 }
 
@@ -766,8 +878,32 @@ export function lexAgentStatement(text) {
       }
 
       if (_isWordStart(ch)) {
+        // Sprint 10 — this is the ONE place a bare CALL/TOKEN-REFERENCE NAME
+        // is scanned (metric/scope/channel/action names, call names
+        // generally — everywhere `call := NAME | NAME "(" arg_list ")"` is
+        // used). Widened HERE ONLY (not the shared `_isWordChar` class
+        // itself, which kwarg KEYS and every other NAME use everywhere else
+        // in this file still rely on unchanged) to additionally accept a
+        // MID-WORD hyphen, so a real seeded Token name like
+        // `notify-critical-trio` lexes as ONE token. Never leading (a
+        // leading "-" never reaches this branch at all — `_isWordStart`
+        // doesn't match it, and the NUMBER branch above already claims
+        // "-" immediately followed by a digit, e.g. `value=-50000`, before
+        // this branch is ever reached) and never trailing (a "-" is only
+        // consumed when the character immediately after it is itself a
+        // word char — a trailing "-" before whitespace/EOF/punctuation is
+        // left unconsumed, so `notify-critical-trio-` lexes as the NAME
+        // `notify-critical-trio` followed by a bare `-`, not swallowed into
+        // the name). Kwarg KEYS are scanned entirely by a SEPARATE tokenizer
+        // (`tokenizeCallStyle` in engine.js, reached only from inside a
+        // call's own "(...)" via `_parseArgListFromInnerText`) — untouched
+        // by this widening, so a kwarg key still cannot contain a hyphen.
         let j = i;
-        while (j < n && _isWordChar(text[j])) j++;
+        while (j < n) {
+          if (_isWordChar(text[j])) { j++; continue; }
+          if (text[j] === '-' && _isWordChar(text[j + 1] || '')) { j++; continue; }
+          break;
+        }
         const nameRaw = text.slice(start, j);
         i = j;
         const lower = nameRaw.toLowerCase();
@@ -933,7 +1069,9 @@ function _isLiteralStart(tok) {
   return tok.type === 'NUMBER' || tok.type === 'STRING' || tok.type === 'LBRACKET';
 }
 
-/** `leaf := metric_ref comparator value | value comparator metric_ref comparator value` */
+/** `leaf := metric_ref comparator value | value comparator metric_ref comparator value | call`
+ *  (Sprint 10's bare-call/Token-reference alternative — see the file-header
+ *  EBNF's own comment on this production for the full rationale.) */
 export function parseLeaf(state) {
   const startTok = _peek(state);
   if (_isLiteralStart(startTok)) {
@@ -944,16 +1082,25 @@ export function parseLeaf(state) {
     const value2 = parseValue(state);
     return { type: 'between', value1, op1, metric, scope, op2, value2 };
   }
-  const { metric, scope } = parseMetricRef(state);
+  const metricCall = parseCall(state);
+  if (_peek(state).type !== 'AT') {
+    // No "@" follows — a real metric ALWAYS requires "@ scope_ref", so this
+    // can only be a bare Token ($ref) reference. Deferred to COMPILE time
+    // (see `compileRef`) — parse permissively, validate once the catalog is
+    // known, same split this grammar already uses everywhere else.
+    return { type: 'ref', call: metricCall };
+  }
+  _advance(state); // consume "@"
+  const scope = parseScopeRef(state);
   if (_isComparatorStart(_peek(state))) {
     const op = parseComparator(state);
     const value = parseValue(state);
-    return { type: 'leaf', metric, scope, op, value };
+    return { type: 'leaf', metric: metricCall, scope, op, value };
   }
   // Boolean-metric shorthand — syntactically accepted here; the semantic
   // check ("was this metric actually boolean?") happens at compile time,
   // once the token is resolved against the catalog (see design doc).
-  return { type: 'leaf', metric, scope, op: null, value: null };
+  return { type: 'leaf', metric: metricCall, scope, op: null, value: null };
 }
 
 /** `primary := "(" or_expr ")" | leaf` — `depth` increments EXACTLY ONCE
@@ -1230,9 +1377,31 @@ export function parseBracketStmt(state) {
   return { kind: 'bracket', call, meta };
 }
 
-/** `statement := agent_stmt | order_stmt | bracket_stmt` — top-level entry
- *  point. Returns `{ ast, errors }` — `ast` is `null` on any parse
- *  failure. */
+/** `token_stmt := call call_list meta_item*` — Sprint 10. A standalone
+ *  `token(kind=...)` HEAD call — restricted to standalone use, EXACTLY
+ *  mirroring `parseBracketStmt`'s own "only bracket(...) can be used
+ *  standalone" rule/error-message style above, naming "token" instead —
+ *  immediately followed by its BODY call_list (`telegram, email, log`,
+ *  reusing `parseCallList` unchanged — the SAME production ALERT's own
+ *  call_list uses). At least one body call is required (`parseCallList`
+ *  never returns an empty array) — a Token with zero channels has no
+ *  useful body. */
+export function parseTokenStmt(state) {
+  const head = parseCall(state);
+  if (head.name.toLowerCase() !== 'token') {
+    throw new _ParseError(
+      'only token(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      { start: head.start },
+    );
+  }
+  const bodyCalls = parseCallList(state);
+  const meta = parseMetaClause(state);
+  return { kind: 'token', head, bodyCalls, meta };
+}
+
+/** `statement := agent_stmt | order_stmt | bracket_stmt | token_stmt` —
+ *  top-level entry point. Returns `{ ast, errors }` — `ast` is `null` on
+ *  any parse failure. */
 export function parseStatement(text) {
   const { tokens, errors: lexErrors } = lexAgentStatement(text);
   if (lexErrors.length) return { ast: null, errors: lexErrors };
@@ -1241,15 +1410,20 @@ export function parseStatement(text) {
     // WHEN is optional (an agent_stmt may start directly with ALERT or DO —
     // see parseAgentStmt) — ALERT/DO are reserved words that can never be a
     // real order/place_order call name, so dispatching on them here is
-    // unambiguous, same as WHEN always was. "bracket" is likewise never a
-    // real metric/scope/channel/action name, so dispatching a leading
-    // `bracket(...)` call straight to `parseBracketStmt` (Sprint 8) is
-    // unambiguous too — mirrors how WHEN/ALERT/DO dispatch to agent_stmt.
+    // unambiguous, same as WHEN always was. "bracket"/"token" are likewise
+    // never real metric/scope/channel/action names, so dispatching a
+    // leading `bracket(...)` (Sprint 8) or `token(...)` (Sprint 10) call
+    // straight to its own standalone-statement parser is unambiguous too —
+    // mirrors how WHEN/ALERT/DO dispatch to agent_stmt.
     const first = _peek(state);
     const isAgentStmt = first.type === 'NAME' && !first.hasCall
       && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do'));
     const isBracketStmt = !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
-    const ast = isAgentStmt ? parseAgentStmt(state) : isBracketStmt ? parseBracketStmt(state) : parseOrderStmt(state);
+    const isTokenStmt = !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
+    const ast = isAgentStmt ? parseAgentStmt(state)
+      : isBracketStmt ? parseBracketStmt(state)
+      : isTokenStmt ? parseTokenStmt(state)
+      : parseOrderStmt(state);
     const trailing = _peek(state);
     if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input', trailing);
     return { ast, errors: [] };
@@ -1492,6 +1666,37 @@ function compileBetween(node, catalog) {
   return { conditions: { all: [leaf1, leaf2] }, errors: [] };
 }
 
+/** Compile a bare-call `{type:'ref', call}` leaf (Sprint 10) — the mirror of
+ *  `_decompileRef` below. A name resolving to a catalog METRIC entry with
+ *  `isFragmentRef` compiles to `{"$ref": <token>}`; a name resolving to a
+ *  REAL metric (missing its "@") gets the ORIGINAL `parseMetricRef` error
+ *  message, just surfaced at compile time instead of parse time (the "@" is
+ *  genuinely required for a real metric, so this is not a regression — see
+ *  the file-header EBNF's `leaf` production comment); anything else falls
+ *  through to the same "unknown metric" / kind-mismatch wording
+ *  `_resolveMetric` already uses. */
+function compileRef(node, catalog) {
+  const errors = [];
+  const name = node.call.name;
+  const metricEntry = catalog.metrics.get(name.toLowerCase());
+  if (metricEntry && metricEntry.isFragmentRef) {
+    if (node.call.args && node.call.args.length) {
+      errors.push(_err(`'${name}' is a Token reference and takes no arguments`));
+      return { conditions: null, errors };
+    }
+    return { conditions: { '$ref': metricEntry.token }, errors: [] };
+  }
+  if (metricEntry) {
+    errors.push(_err(`expected "@" after metric '${metricEntry.token}'`));
+    return { conditions: null, errors };
+  }
+  const other = _describeKind(name, catalog);
+  errors.push(_err(other
+    ? `'${name}' is ${other} — only metrics/Tokens are allowed in a WHEN condition`
+    : `unknown metric '${name}'`));
+  return { conditions: null, errors };
+}
+
 function compileCondNode(node, catalog) {
   if (node.type === 'and' || node.type === 'or') {
     const l = compileCondNode(node.left, catalog);
@@ -1507,6 +1712,7 @@ function compileCondNode(node, catalog) {
   }
   if (node.type === 'between') return compileBetween(node, catalog);
   if (node.type === 'leaf') return compileLeaf(node, catalog);
+  if (node.type === 'ref') return compileRef(node, catalog);
   return { conditions: null, errors: [_err('internal: unknown condition node type')] };
 }
 
@@ -1756,6 +1962,20 @@ function compileAlertClause(alertCalls, alertMsg, catalog) {
       errors.push(_err(other
         ? `'${call.name}' is ${other} — only channels are allowed in ALERT`
         : `unknown channel '${call.name}'`));
+      continue;
+    }
+
+    // Sprint 10 — a bare Token reference (`isFragmentRef`) compiles to
+    // `{"$ref": <token>}` directly, bypassing the own-message/params
+    // machinery below entirely — a Token reference expands into OTHER
+    // channels server-side (`template_registry.py:resolve_events`), so it
+    // can never carry its own params or its own `msg=`.
+    if (entry.isFragmentRef) {
+      if (call.args && call.args.length) {
+        errors.push(_err(`'${call.name}' is a Token reference and takes no arguments`));
+        continue;
+      }
+      events.push({ '$ref': entry.token });
       continue;
     }
 
@@ -2107,20 +2327,77 @@ function compileBracketStmt(ast, opts = {}) {
   return { errors: [], template };
 }
 
+const _TOKEN_KIND_SPEC = Object.freeze({ type: 'enum', enum: ['notify', 'condition'] });
+
+/** Compile a standalone `token(kind=...)` statement to a
+ *  `POST /api/admin/fragments`-shaped request object (Sprint 10) —
+ *  `{kind, name, body, description?}`. `kind=notify` is the ONLY
+ *  supported value this sprint — `kind=condition` is a clear compile
+ *  error (edit it via the Structured tab instead). The body call_list is
+ *  compiled via the EXACT SAME `compileAlertClause` path ALERT's own
+ *  call_list already uses (no clause-level `msg=` default — `null` —
+ *  since a Token body is a plain channel list, not an ALERT clause).
+ *  `#name=` is required (`AgentTemplate.name` is a required field, same
+ *  required-field style as `compileBracketStmt`'s own `#name=`
+ *  requirement); `#tag=`/`#group=` are rejected outright — `AgentTemplate`
+ *  has no such columns. */
+function compileTokenStmt(ast, catalog, opts = {}) {
+  const errors = [];
+  const head = ast.head;
+  if (!head || head.name.toLowerCase() !== 'token') {
+    errors.push(_err('only token(...) can be used standalone'));
+    return { errors, fragment: null };
+  }
+
+  const kindArgs = (head.args || []).filter(a => a.key && a.key.toLowerCase() === 'kind');
+  const otherArgs = (head.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'kind'));
+  for (const a of otherArgs) errors.push(_err(`token: unknown parameter '${a.key}'`));
+  if (kindArgs.length > 1) errors.push(_err("token: duplicate parameter 'kind'"));
+  if (kindArgs.length === 0) errors.push(_err("token: missing required param 'kind'"));
+
+  let kind = null;
+  if (kindArgs.length === 1) {
+    const r = _coerceValueForSpec(kindArgs[0].value, _TOKEN_KIND_SPEC, 'kind', 'token');
+    if (r.error) errors.push(r.error); else kind = r.value;
+  }
+  if (kind === 'condition') {
+    errors.push(_err("condition-kind Token creation isn't supported from the CLI yet — edit it via the Structured tab"));
+  }
+
+  const bodyResult = compileAlertClause(ast.bodyCalls, null, catalog);
+  errors.push(...bodyResult.errors);
+
+  const metaFields = compileMetaClause(ast.meta, errors);
+  if (metaFields.tags) errors.push(_err('token: #tag is not supported for a Token — AgentTemplate has no tags field'));
+  if (metaFields.group) errors.push(_err('token: #group is not supported for a Token — AgentTemplate has no group field'));
+  if (!metaFields.name) errors.push(_err("token: missing required meta tag '#name' — a saved Token must have a name"));
+
+  if (errors.length) return { errors, fragment: null };
+
+  const fragment = { kind, name: metaFields.name, body: bodyResult.events };
+  if (metaFields.description) fragment.description = metaFields.description;
+  return { errors: [], fragment };
+}
+
 /** Compile an already-parsed AST (from `parseStatement`) to its JSON
  *  request shape. Returns `{ kind, errors, agent, ticket, basket,
- *  template }` — non-empty `errors` means every payload field is `null`. */
+ *  template, fragment }` — non-empty `errors` means every payload field is
+ *  `null`. */
 export function compileStatement(ast, catalog, opts = {}) {
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
-    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null };
+    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
   }
   if (ast.kind === 'bracket') {
     const r = compileBracketStmt(ast, opts);
-    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template };
+    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null };
+  }
+  if (ast.kind === 'token') {
+    const r = compileTokenStmt(ast, catalog, opts);
+    return { kind: 'token', errors: r.errors, agent: null, ticket: null, basket: null, template: null, fragment: r.fragment };
   }
   const r = compileOrderStmt(ast, catalog, opts);
-  return { ...r, template: null };
+  return { ...r, template: null, fragment: null };
 }
 
 /** One-shot parse + compile — the main entry point for Sprint 4's UI and
@@ -2131,16 +2408,16 @@ export function compileStatement(ast, catalog, opts = {}) {
 export function compileAgentCliStatement(text, catalog, opts = {}) {
   const { ast, errors: parseErrors } = parseStatement(text);
   if (parseErrors.length) {
-    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null };
+    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
   }
   const result = compileStatement(ast, catalog, opts);
   if (result.errors && result.errors.length) {
-    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null };
+    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null, fragment: null };
   }
   return {
     ok: true, errors: [], kind: result.kind,
     agent: result.agent || null, ticket: result.ticket || null, basket: result.basket || null,
-    template: result.template || null,
+    template: result.template || null, fragment: result.fragment || null,
   };
 }
 
@@ -2522,28 +2799,42 @@ function decompileAllAny(node, opKey, catalog, errors) {
   return parts.join(` ${sym} `);
 }
 
+/** Decompile a `{"$ref": "<name>"}` condition-fragment node (Sprint 10) —
+ *  the mirror of `compileRef`. Renders as the bare Token name, resolved
+ *  against `catalog.metrics` (where a condition-kind Token is merged in —
+ *  see `_buildCatalogEntry`'s `isFragmentRef` flag) so a stale/unknown
+ *  reference fails loud rather than rendering an unresolvable name. */
+function _decompileRef(node, catalog, errors) {
+  const name = node['$ref'];
+  if (typeof name !== 'string' || !name) {
+    errors.push(_err(`'$ref' must be a non-empty string, got ${JSON.stringify(name)}`));
+    return null;
+  }
+  const entry = catalog.metrics.get(name.toLowerCase());
+  if (!entry || !entry.isFragmentRef) {
+    errors.push(_err(`unknown Token reference '${name}' referenced in stored conditions`));
+    return null;
+  }
+  return entry.token;
+}
+
 /** Recursive dispatcher — the mirror of `compileCondNode`. Dispatches on
  *  JSON SHAPE (not an AST node type — this operates directly on the
- *  stored `conditions` JSON): `all`/`any` composite, `not`, or a plain
- *  leaf (has `metric`+`scope` strings). Anything else — including a
- *  `$ref` fragment (checked here too, defense-in-depth, though
- *  `decompileCondition`'s own upfront whole-tree scan is the primary
- *  catch) — fails loud, never guesses. Does NOT special-case
- *  `ALWAYS_LEAF` here (that check lives ONLY in `decompileCondition`,
- *  the top-level entry point, below) — advisor-flagged: `always` is
- *  standalone-only in the grammar (a parse error if combined with
- *  `&`/`|`), so a NESTED occurrence of the exact sentinel shape (e.g.
- *  inside an `all`/`any` alongside another leaf) must render as an
- *  ordinary leaf, never as the bare word `always`. */
+ *  stored `conditions` JSON): a `$ref` fragment (Sprint 10 — see
+ *  `_decompileRef`), `all`/`any` composite, `not`, or a plain leaf (has
+ *  `metric`+`scope` strings). Anything else fails loud, never guesses.
+ *  Does NOT special-case `ALWAYS_LEAF` here (that check lives ONLY in
+ *  `decompileCondition`, the top-level entry point, below) — advisor-
+ *  flagged: `always` is standalone-only in the grammar (a parse error if
+ *  combined with `&`/`|`), so a NESTED occurrence of the exact sentinel
+ *  shape (e.g. inside an `all`/`any` alongside another leaf) must render
+ *  as an ordinary leaf, never as the bare word `always`. */
 function decompileCondNode(node, catalog, errors) {
   if (node == null || typeof node !== 'object' || Array.isArray(node)) {
     errors.push(_err(`unrecognized condition shape: ${JSON.stringify(node)}`));
     return null;
   }
-  if ('$ref' in node) {
-    errors.push(_err('cannot decompile — this agent uses a $ref fragment; edit it via the JSON textarea instead'));
-    return null;
-  }
+  if ('$ref' in node) return _decompileRef(node, catalog, errors);
   if (Array.isArray(node.all)) return decompileAllAny(node, 'all', catalog, errors);
   if (Array.isArray(node.any)) return decompileAllAny(node, 'any', catalog, errors);
   if ('not' in node) {
@@ -2579,27 +2870,13 @@ function _isAlwaysLeafExact(node) {
     && !('all' in node) && !('any' in node) && !('not' in node) && !('$ref' in node);
 }
 
-/** True iff a `$ref` fragment reference appears ANYWHERE in the
- *  conditions tree — the grammar has no CLI syntax for a template
- *  fragment reference at all (explicit non-goal per `.claude/PLAN.md`). */
-function _containsRef(node) {
-  if (node == null || typeof node !== 'object') return false;
-  if ('$ref' in node) return true;
-  if (Array.isArray(node.all)) return node.all.some(_containsRef);
-  if (Array.isArray(node.any)) return node.any.some(_containsRef);
-  if ('not' in node) return _containsRef(node.not);
-  return false;
-}
-
 /** Decompile a stored `conditions` JSON tree back to `WHEN`-clause CLI
- *  text. Public entry point — checks the two conditions that can ONLY be
- *  evaluated at the whole-tree root (a `$ref` anywhere, or the `always`
- *  sentinel AT THE TOP, never nested — see `_isAlwaysLeafExact`'s own
- *  comment) before delegating to the recursive dispatcher. */
+ *  text. Public entry point — checks the ONE condition that can only be
+ *  evaluated at the whole-tree root (the `always` sentinel AT THE TOP,
+ *  never nested — see `_isAlwaysLeafExact`'s own comment) before
+ *  delegating to the recursive dispatcher, which handles a top-level
+ *  `$ref` (Sprint 10 — see `_decompileRef`) the same as a nested one. */
 export function decompileCondition(conditions, catalog) {
-  if (_containsRef(conditions)) {
-    return { text: null, errors: [_err('cannot decompile — this agent uses a $ref fragment; edit it via the JSON textarea instead')] };
-  }
   if (conditions == null || typeof conditions !== 'object') {
     return { text: null, errors: [_err(`unrecognized condition shape: ${JSON.stringify(conditions)}`)] };
   }
@@ -2650,6 +2927,26 @@ export function decompileEvents(events, catalog) {
   const errors = [];
   const rendered = [];
   for (const ev of events) {
+    // Sprint 10 — a `{"$ref": "<name>"}` entry (a Token reference expanded
+    // by `template_registry.py:resolve_events`) renders as the bare Token
+    // name, same as `_decompileRef`'s condition-side mirror. Excluded from
+    // the message-hoisting bookkeeping below entirely — a reference can
+    // never carry params or its own `msg=` (see `compileAlertClause`'s
+    // `isFragmentRef` branch), so it's tracked separately via `ref: true`.
+    if (ev && typeof ev === 'object' && '$ref' in ev) {
+      const name = ev['$ref'];
+      if (typeof name !== 'string' || !name) {
+        errors.push(_err(`'$ref' must be a non-empty string, got ${JSON.stringify(name)}`));
+        continue;
+      }
+      const refEntry = catalog.channels.get(name.toLowerCase());
+      if (!refEntry || !refEntry.isFragmentRef) {
+        errors.push(_err(`unknown Token reference '${name}' referenced in stored events`));
+        continue;
+      }
+      rendered.push({ ref: true, text: refEntry.token });
+      continue;
+    }
     if (!ev || typeof ev !== 'object' || typeof ev.channel !== 'string') {
       errors.push(_err(`unrecognized event entry: ${JSON.stringify(ev)}`));
       continue;
@@ -2684,27 +2981,32 @@ export function decompileEvents(events, catalog) {
   }
   if (errors.length) return { text: null, errors };
 
-  const withMsg = rendered.filter(r => typeof r.message === 'string');
-  if (withMsg.length > 0 && withMsg.length < rendered.length) {
-    const missing = rendered.find(r => typeof r.message !== 'string');
+  // Message hoisting (Sprint 6) only ever considers PLAIN channel entries —
+  // a `ref: true` entry (Sprint 10) is excluded from both the numerator and
+  // denominator below, since it can never carry a `message` at all.
+  const plain = rendered.filter(r => !r.ref);
+  const withMsg = plain.filter(r => typeof r.message === 'string');
+  if (withMsg.length > 0 && withMsg.length < plain.length) {
+    const missing = plain.find(r => typeof r.message !== 'string');
     return {
       text: null,
       errors: [_err(`channel '${missing.entry.token}' has no message while other channels in this ALERT do — this shape has no CLI representation`)],
     };
   }
 
-  const uniform = withMsg.length === rendered.length && rendered.length > 0
-    && rendered.every(r => r.message === rendered[0].message);
+  const uniform = withMsg.length === plain.length && plain.length > 0
+    && plain.every(r => r.message === plain[0].message);
 
   let defaultPrefix = '';
   if (uniform) {
-    const q = _quoteString(rendered[0].message);
+    const q = _quoteString(plain[0].message);
     if (q.error) return { text: null, errors: [_err(q.message)] };
     defaultPrefix = `msg=${q.text}, `;
   }
 
   const parts = [];
   for (const r of rendered) {
+    if (r.ref) { parts.push(r.text); continue; }
     const argParts = [...r.argParts];
     if (!uniform && typeof r.message === 'string') {
       const q = _quoteString(r.message);

@@ -380,6 +380,15 @@ class GrammarTokenOut(msgspec.Struct):
     template_body: str | None = None
     is_system:     bool = False
     is_active:     bool = True
+    # Sprint 10 — set True only for a merged-in AgentTemplate ("Token" in
+    # operator-facing text) row representing a saved condition-subtree or
+    # notify-channel-list $ref. Lets a caller distinguish "this is a real
+    # metric/channel/action token" from "this is a reference to a saved
+    # fragment" once both are merged into the same catalog response — a
+    # bare use of this token should compile to {"$ref": <token>} rather
+    # than a normal leaf/channel object. Never True for a real GrammarToken
+    # row.
+    is_fragment_ref: bool = False
 
 
 class GrammarTokenCreate(msgspec.Struct):

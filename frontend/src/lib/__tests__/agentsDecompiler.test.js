@@ -119,6 +119,11 @@ const FIXTURE_ROWS = [
     grammar_kind: 'action', token_kind: 'action_type', token: 'expiry_auto_close',
     params_schema: { exchange: { type: 'enum', enum: ['NFO', 'MCX'], required: true } },
   },
+  // Sprint 10 — merged-in AgentTemplate ("Token") rows, hyphenated names
+  // (the real seeding convention). See agents.js's `_buildCatalogEntry`
+  // for the `isFragmentRef` flag these set.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'loss-positions-default', is_fragment_ref: true, params_schema: null },
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'notify-critical-trio', is_fragment_ref: true, params_schema: null },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -580,29 +585,68 @@ describe('hand-constructed shapes (JSON-textarea / AI-draft style authorship)', 
   });
 });
 
-// ── $ref non-goal ─────────────────────────────────────────────────────
+// ── $ref Token reference — round-trips (Sprint 10) ──────────────────────
 
-describe('$ref fragment — explicit non-goal', () => {
-  it('a top-level $ref fails loud with the documented message', () => {
-    const dec = decompileCondition({ $ref: 'some-fragment' }, CATALOG);
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\$ref fragment/.test(e.message))).toBe(true);
+describe('$ref Token reference decompiles and round-trips', () => {
+  it('a top-level $ref decompiles to the bare Token name', () => {
+    const dec = decompileCondition({ '$ref': 'loss-positions-default' }, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('loss-positions-default');
   });
 
-  it('a $ref nested inside an "all" array also fails loud, not a crash', () => {
-    const dec = decompileCondition({ all: [{ $ref: 'frag' }, { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 }] }, CATALOG);
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\$ref fragment/.test(e.message))).toBe(true);
+  it('a $ref nested inside an "all" array decompiles as an ordinary AND term', () => {
+    const dec = decompileCondition(
+      { all: [{ '$ref': 'loss-positions-default' }, { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 }] },
+      CATALOG,
+    );
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('(loss-positions-default) & (pnl@positions.total < 0)');
   });
 
-  it('decompileAgent surfaces the same structured error for a $ref-containing agent', () => {
-    const dec = decompile({
-      conditions: { $ref: 'frag' },
+  it('an unknown $ref name fails loud, not a crash', () => {
+    const dec = decompileCondition({ '$ref': 'nonexistent-fragment' }, CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /unknown Token reference/.test(e.message))).toBe(true);
+  });
+
+  it('decompileAgent round-trips a $ref-containing condition back to the identical JSON', () => {
+    const agentJson = {
+      conditions: { '$ref': 'loss-positions-default' },
       events: [{ channel: 'telegram', enabled: true }],
       actions: [],
-    });
-    expect(dec.text).toBeNull();
-    expect(dec.errors.some(e => /\$ref fragment/.test(e.message))).toBe(true);
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    expect(typeof dec.text).toBe('string');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual({ '$ref': 'loss-positions-default' });
+  });
+
+  it('decompileAgent round-trips a $ref-containing events array back to the identical JSON', () => {
+    const agentJson = {
+      conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
+      events: [{ '$ref': 'notify-critical-trio' }],
+      actions: [],
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.events).toEqual([{ '$ref': 'notify-critical-trio' }]);
+  });
+
+  it('a $ref channel entry mixed with a plain channel round-trips (the $ref is excluded from msg= hoisting)', () => {
+    const agentJson = {
+      conditions: { metric: 'pnl', scope: 'positions.total', op: '<', value: 0 },
+      events: [{ '$ref': 'notify-critical-trio' }, { channel: 'log', enabled: true }],
+      actions: [],
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
   });
 });
 
