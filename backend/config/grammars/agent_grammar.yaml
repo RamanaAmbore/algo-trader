@@ -703,10 +703,23 @@ system_tokens:
       $ref: price
       required: false
       token_ref_ok: true
+      # Sprint 17 — conditional requirement: real behavior is "required
+      # when order_type is LIMIT or SL", not unconditionally optional.
+      # Exact [LIMIT, SL] list confirmed from order_fields.yaml's own
+      # `price` description ("Required for LIMIT / SL"). Local to this
+      # token's params_schema per order_fields.yaml's own header comment
+      # (required/default/token_ref_ok — and by the same reasoning,
+      # conditional-requirement rules — are context-local, not shared
+      # catalog concepts).
+      required_if: {field: order_type, in: [LIMIT, SL]}
     trigger_price:
       $ref: trigger_price
       required: false
       token_ref_ok: true
+      # Sprint 17 — exact [SL, SL-M] list confirmed from order_fields.yaml's
+      # own `trigger_price` description ("Required for SL / SL-M"). See
+      # `price` field's comment above for why this stays local.
+      required_if: {field: order_type, in: [SL, SL-M]}
     product:
       $ref: product
       required: false
@@ -759,6 +772,15 @@ system_tokens:
       type: number
       required: false
       description: Per-action wing strike offset override (e.g. 500 → wing at +500 strike).
+  # Sprint 17 — token-level (sibling of params_schema, not a per-field key)
+  # declared mutual-exclusion. Served to the frontend from the in-memory
+  # SYSTEM_TOKENS catalog (backend/api/algo/grammar.py:get_action_mutex_groups),
+  # NOT round-tripped through the grammar_tokens DB table/GrammarToken model
+  # (which has no column for this) — same "code-reviewed YAML catalog is
+  # the trust boundary" pattern already used for params_schema's
+  # token_ref_ok (see grammar.py's _ACTION_PARAMS_SCHEMAS comment).
+  mutually_exclusive_groups:
+    - [wing_premium_pct_override, wing_strike_offset_override]
 - grammar_kind: action
   token_kind: action_type
   token: modify_order

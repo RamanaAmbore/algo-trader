@@ -771,13 +771,27 @@
           "type": "number",
           "required": false,
           "token_ref_ok": true,
-          "description": "Required for LIMIT / SL."
+          "description": "Required for LIMIT / SL.",
+          "required_if": {
+            "field": "order_type",
+            "in": [
+              "LIMIT",
+              "SL"
+            ]
+          }
         },
         "trigger_price": {
           "type": "number",
           "required": false,
           "token_ref_ok": true,
-          "description": "Required for SL / SL-M."
+          "description": "Required for SL / SL-M.",
+          "required_if": {
+            "field": "order_type",
+            "in": [
+              "SL",
+              "SL-M"
+            ]
+          }
         },
         "product": {
           "type": "enum",
@@ -846,7 +860,13 @@
           "required": false,
           "description": "Per-action wing strike offset override (e.g. 500 → wing at +500 strike)."
         }
-      }
+      },
+      "mutually_exclusive_groups": [
+        [
+          "wing_premium_pct_override",
+          "wing_strike_offset_override"
+        ]
+      ]
     },
     {
       "grammar_kind": "action",

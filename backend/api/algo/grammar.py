@@ -898,3 +898,34 @@ def is_known_action_type(action_type: str) -> bool:
     unknown action type without also rejecting a real action (like
     `deactivate_agent`) that legitimately has no params."""
     return action_type in _ACTION_PARAMS_SCHEMAS
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  ACTION MUTUAL-EXCLUSION GROUPS (Sprint 17)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# `mutually_exclusive_groups` is a TOKEN-level key (sibling of
+# params_schema, not nested inside it — see place_order's entry in
+# agent_grammar.yaml) declaring field-name groups where at most one member
+# may be present on a given call. Built from SYSTEM_TOKENS for the same
+# trust-boundary reason `_ACTION_PARAMS_SCHEMAS` above is: the DB-backed
+# `GrammarToken` model (grammar_tokens table) has no column for this key,
+# so a value here can ONLY ever come from the code-reviewed YAML catalog,
+# never from an operator-editable custom token row. `routes/grammar.py`'s
+# `_to_out()` reads this lookup by token name (for system action tokens
+# only) to populate `GrammarTokenOut.mutually_exclusive_groups` on the
+# wire — the YAML key itself is never persisted into the grammar_tokens
+# table by `seed_grammar_tokens()`.
+_ACTION_MUTEX_GROUPS: dict[str, list] = {
+    tok["token"]: tok["mutually_exclusive_groups"]
+    for tok in SYSTEM_TOKENS
+    if tok.get("grammar_kind") == "action" and tok.get("token_kind") == "action_type"
+    and tok.get("mutually_exclusive_groups")
+}
+
+
+def get_action_mutex_groups(action_type: str) -> list | None:
+    """Return the declared `mutually_exclusive_groups` list (list of
+    list[str] field-name groups) for a system action token, or `None` if
+    the action type is unknown or declares no mutex groups."""
+    return _ACTION_MUTEX_GROUPS.get(action_type)

@@ -380,6 +380,14 @@ class GrammarTokenOut(msgspec.Struct):
     template_body: str | None = None
     is_system:     bool = False
     is_active:     bool = True
+    # Sprint 17 — token-level (sibling of params_schema) declared
+    # mutual-exclusion groups, e.g. [["wing_premium_pct_override",
+    # "wing_strike_offset_override"]]. Populated only for system action
+    # tokens, sourced live from backend.api.algo.grammar.get_action_mutex_groups
+    # (the YAML catalog, not the grammar_tokens DB row — that table has no
+    # column for this key). None when the action declares no mutex groups
+    # or for any non-action/non-system token.
+    mutually_exclusive_groups: list | None = None
     # Sprint 10 — set True only for a merged-in AgentTemplate ("Token" in
     # operator-facing text) row representing a saved condition-subtree or
     # notify-channel-list $ref. Lets a caller distinguish "this is a real

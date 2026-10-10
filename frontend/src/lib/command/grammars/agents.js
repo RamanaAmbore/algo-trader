@@ -590,6 +590,13 @@ function _buildCatalogEntry(row) {
     // (backend's GrammarTokenOut.is_fragment_ref) — see the file-header
     // EBNF's `leaf`/`call` production notes for how this flag is consumed.
     isFragmentRef: row.is_fragment_ref === true,
+    // Sprint 17 — token-level (sibling of params_schema, NOT nested inside
+    // it — see backend/api/schemas.py:GrammarTokenOut) declared
+    // mutual-exclusion groups, e.g. [["wing_premium_pct_override",
+    // "wing_strike_offset_override"]]. `null` when the token declares
+    // none (every condition/notify/non-mutex action row) — never `[]`,
+    // so callers can use a plain truthy check.
+    mutuallyExclusiveGroups: Array.isArray(row.mutually_exclusive_groups) ? row.mutually_exclusive_groups : null,
   };
 }
 
@@ -1811,6 +1818,99 @@ function _coerceValueForSpec(valueNode, spec, key, label) {
   return { value: valueNode.value };
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 17 — three generic parameter-type mechanisms, each reading a
+// catalog-declared schema key instead of a hand-rolled, field-name-specific
+// check: per-key object-literal typing, conditional (`required_if`)
+// requirements, and declared (`mutuallyExclusiveGroups`) mutual-exclusion.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Per-key type schema for object-literal-valued call args, keyed by the
+ *  FIELD NAME the object-literal is assigned to. `tp_scales_json=[{...}]`'s
+ *  per-entry shape has a real fixed schema (both keys are plain numbers on
+ *  the backend's `[{at_pct, close_pct}]` JSON convention — see
+ *  `backend/api/schemas.py`'s `tp_scales_json` field comment). `where`
+ *  deliberately maps to `null` — it has no fixed schema at all (arbitrary
+ *  key/value pairs matching whatever real `log` `extra` fields exist),
+ *  so `_coerceObjectLiteralEntry` below treats a `null` schema as
+ *  "passthrough every key unwrapped, untyped" — not "reject everything". */
+const OBJECT_LITERAL_SCHEMAS = Object.freeze({
+  tp_scales_json: Object.freeze({ at_pct: { type: 'number' }, close_pct: { type: 'number' } }),
+  where: null,
+});
+
+/** Coerce ONE `{key=value}` object-literal entry node (the `{type:'object',
+ *  value: {...}}` ValueNode shape) against a per-key type `schema` —
+ *  reuses `_coerceValueForSpec` per key (same enum/number/boolean/string
+ *  branches every other param already goes through) rather than
+ *  reimplementing coercion rules. `schema == null` means "no fixed
+ *  schema" — every key passes through `_unwrapValueNode` untyped, exactly
+ *  matching this file's pre-Sprint-17 behavior for `where=`, so this is a
+ *  pure additive generalization for any field that DOES declare a schema.
+ *  An entry key absent from a non-null schema is a compile error (unknown
+ *  key), matching this file's existing unknown-kwarg-rejection convention
+ *  (`_mapCallArgsToKeys`). Never throws; returns `{ value, errors }`. */
+function _coerceObjectLiteralEntry(entryNode, schema, label) {
+  const errors = [];
+  const out = {};
+  for (const [key, valueNode] of Object.entries((entryNode && entryNode.value) || {})) {
+    if (!schema) { out[key] = _unwrapValueNode(valueNode); continue; }
+    const spec = schema[key];
+    if (!spec) { errors.push(_err(`${label}: unknown key '${key}' in object literal`)); continue; }
+    const coerced = _coerceValueForSpec(valueNode, spec, key, label);
+    if (coerced.error) errors.push(coerced.error); else out[key] = coerced.value;
+  }
+  return { value: out, errors };
+}
+
+/** Generic mutual-exclusion checker — given a token's catalog-declared
+ *  `mutuallyExclusiveGroups` (list of list[str] field-name groups) and a
+ *  Set of the field names actually PRESENT on this call (lowercased, in
+ *  whatever naming convention the caller's own group list already uses —
+ *  a caller bridging a shared short-kwarg vocabulary onto a differently-
+ *  suffixed catalog field-name convention normalizes BOTH sides to the
+ *  same convention before calling this), raises one error per group with
+ *  2+ members present, naming the first two offending fields — mirrors
+ *  this file's pre-existing "cannot specify both X and Y" wording (the
+ *  hand-rolled wing_premium_pct/wing_strike_offset check this generalizes).
+ *  Never throws. */
+function _checkMutexGroups(presentKeys, groups, label) {
+  const errors = [];
+  for (const group of groups || []) {
+    const present = (group || []).filter((f) => presentKeys.has(String(f).toLowerCase()));
+    if (present.length > 1) {
+      errors.push(_err(`${label}: cannot specify both ${present[0]} and ${present[1]}`));
+    }
+  }
+  return errors;
+}
+
+/** Generic conditional-requirement checker — for each key in `paramKeys`
+ *  whose own spec declares `required_if: {field, in}`, checks whether
+ *  `field`'s own RESOLVED value (via `resolvedGet(name)`, which must
+ *  return `undefined` for anything not explicitly resolved on this call —
+ *  never silently substitute a default inside this function) is a member
+ *  of `in` (case-insensitive); if so AND the dependent key itself has no
+ *  resolved value, pushes one "required when" error naming both the
+ *  dependent field and the triggering value. MUST be called only after
+ *  every other arg on the call has already been resolved — checking
+ *  `price`'s conditional requirement needs `order_type`'s own
+ *  already-resolved value, which can't exist mid per-key resolution loop.
+ *  Never throws. */
+function _checkRequiredIf(paramKeys, paramsSchema, resolvedGet, label) {
+  const errors = [];
+  for (const key of paramKeys) {
+    const spec = paramsSchema[key];
+    const reqIf = spec && spec.required_if;
+    if (!reqIf || resolvedGet(key) !== undefined) continue;
+    const refVal = resolvedGet(reqIf.field);
+    if (refVal === undefined) continue;
+    const inList = (reqIf.in || []).some((v) => String(v).toLowerCase() === String(refVal).toLowerCase());
+    if (inList) errors.push(_err(`${label}: ${key} is required when ${reqIf.field}=${refVal}`));
+  }
+  return errors;
+}
+
 /** Describe which OTHER bucket a name resolves to in the catalog, for a
  *  clearer kind-mismatch error (e.g. "'emit_log' is an action — only
  *  metrics are allowed in a WHEN condition") instead of a bare "unknown
@@ -2050,6 +2150,17 @@ function _compileGenericActionParams(call, entry) {
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
   }
   if (errors.length) return { params: null, errors };
+  // Sprint 17 — generic conditional-requirement + mutual-exclusion checks,
+  // driven by the catalog's own declared `required_if`/`mutuallyExclusiveGroups`
+  // (no action in today's catalog declares either through this generic
+  // path — place_order is handled by `_compileOrderActionParams` below —
+  // but any future action that does gets both checks for free).
+  errors.push(..._checkRequiredIf(entry.paramKeys, entry.paramsSchema, (k) => (k in params ? params[k] : undefined), entry.token));
+  if (entry.mutuallyExclusiveGroups) {
+    const presentKeys = new Set(Object.keys(params).map((k) => k.toLowerCase()));
+    errors.push(..._checkMutexGroups(presentKeys, entry.mutuallyExclusiveGroups, entry.token));
+  }
+  if (errors.length) return { params: null, errors };
   return { params, errors: [] };
 }
 
@@ -2127,14 +2238,29 @@ const _TPSLWING_NUMBER_SPEC = Object.freeze({ type: 'number' });
  *  'ticket'` → `${kwarg}_override`) and `bracket(...)` (`destKind:
  *  'template'` → plain `${kwarg}`) call into, per the module-header note
  *  above. `wing_premium_pct` and `wing_strike_offset` are mutually
- *  exclusive — mirrors `_compileOrderActionParams`'s/`_compileOrderCallToLeg`'s
- *  existing lots-vs-qty exclusivity check's exact message style.
+ *  exclusive — Sprint 17 generalizes this from a hand-rolled pair check to
+ *  a read of the catalog's own declared `mutexGroups` (the `place_order`
+ *  token's `mutuallyExclusiveGroups`, e.g.
+ *  `[["wing_premium_pct_override","wing_strike_offset_override"]]`):
+ *  since the shared short-kwarg vocabulary here (`wing_premium_pct`, no
+ *  suffix) is EXACTLY the catalog's `_override`-suffixed field name minus
+ *  that suffix (the same convention `outKey` below encodes the other
+ *  direction), each group's field names are normalized by stripping a
+ *  trailing `_override` before comparing against `byKey` — this keeps
+ *  `_checkMutexGroups` itself naming-convention-agnostic while still
+ *  working for BOTH `destKind`s (bracket's plain template names have no
+ *  catalog-side mutex declaration of their own, so this reuses
+ *  place_order's ticket-side group as the one shared business rule).
+ *  `mutexGroups` is optional — omitted/`null` means "no groups to check"
+ *  (never throws either way).
  *  `tp_scales_json` is a `str` (JSON-encoded) field on BOTH destinations —
- *  the parsed object-literal-list AST value is `JSON.stringify`'d here,
- *  never sent as a raw array/object. Returns `{ fields, errors }` —
- *  `fields` is a plain object meant to be spread into the caller's
- *  compiled leg/template object; never throws. */
-function _compileTpSlWingFields(tpSlWingArgs, destKind, label) {
+ *  each `{...}` entry is now per-key typed via `OBJECT_LITERAL_SCHEMAS`/
+ *  `_coerceObjectLiteralEntry` (Sprint 17) instead of a raw untyped
+ *  unwrap, so a typo'd value (e.g. a string where a number is required)
+ *  is a clear compile error naming the entry index and key. Returns
+ *  `{ fields, errors }` — `fields` is a plain object meant to be spread
+ *  into the caller's compiled leg/template object; never throws. */
+function _compileTpSlWingFields(tpSlWingArgs, destKind, label, mutexGroups) {
   const errors = [];
   const byKey = new Map();
   for (const a of tpSlWingArgs || []) {
@@ -2142,8 +2268,9 @@ function _compileTpSlWingFields(tpSlWingArgs, destKind, label) {
     if (byKey.has(k)) { errors.push(_err(`${label}: duplicate parameter '${k}'`)); continue; }
     byKey.set(k, a.value);
   }
-  if (byKey.has('wing_premium_pct') && byKey.has('wing_strike_offset')) {
-    errors.push(_err(`${label}: cannot specify both wing_premium_pct and wing_strike_offset`));
+  if (mutexGroups) {
+    const normalizedGroups = mutexGroups.map((g) => (g || []).map((f) => String(f).toLowerCase().replace(/_override$/, '')));
+    errors.push(..._checkMutexGroups(new Set(byKey.keys()), normalizedGroups, label));
   }
   if (errors.length) return { fields: null, errors };
 
@@ -2158,7 +2285,15 @@ function _compileTpSlWingFields(tpSlWingArgs, destKind, label) {
         errors.push(_err(`${label}: tp_scales_json must be a list of {...} entries, e.g. [{at_pct=30, close_pct=50}]`));
         continue;
       }
-      fields[outKey] = JSON.stringify(valueNode.value.map(_unwrapValueNode));
+      const schema = OBJECT_LITERAL_SCHEMAS.tp_scales_json;
+      const entries = [];
+      let hadEntryError = false;
+      valueNode.value.forEach((entryNode, i) => {
+        const r = _coerceObjectLiteralEntry(entryNode, schema, `${label}.tp_scales_json[${i}]`);
+        if (r.errors.length) { errors.push(...r.errors); hadEntryError = true; } else entries.push(r.value);
+      });
+      if (hadEntryError) continue;
+      fields[outKey] = JSON.stringify(entries);
       continue;
     }
     const spec = kwarg === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
@@ -2199,6 +2334,21 @@ function _compileOrderActionParams(call, entry, opts) {
     if (k === 'qty') continue;
     const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
     if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
+  }
+  if (errors.length) return { params: null, errors };
+
+  // Sprint 17 — generic conditional-requirement + mutual-exclusion checks
+  // against place_order's own real catalog schema (`price`/`trigger_price`'s
+  // `required_if`, the token-level `mutuallyExclusiveGroups`), driven
+  // directly by `entry.paramsSchema`/`entry.mutuallyExclusiveGroups` — no
+  // hand-checked field names. `DO place_order(...)`/`DO order(...)` has no
+  // short-kwarg TP/SL/Wing sugar (unlike bare `order(...)` below), so the
+  // operator types the real `_override`-suffixed field names directly;
+  // `params` already holds exactly those, unnormalized.
+  errors.push(..._checkRequiredIf(entry.paramKeys, entry.paramsSchema, (k) => (k in params ? params[k] : undefined), entry.token));
+  if (entry.mutuallyExclusiveGroups) {
+    const presentKeys = new Set(Object.keys(params).map((k) => k.toLowerCase()));
+    errors.push(..._checkMutexGroups(presentKeys, entry.mutuallyExclusiveGroups, entry.token));
   }
   if (errors.length) return { params: null, errors };
 
@@ -2571,7 +2721,7 @@ function _compileOrderCallToLeg(call, catalog, opts) {
     const r = _coerceValueForSpec(bracketArgs[0].value, { type: 'string' }, 'bracket', 'order');
     if (r.error) errors.push(r.error); else template_slug = r.value;
   }
-  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'ticket', 'order');
+  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'ticket', 'order', entry.mutuallyExclusiveGroups);
   errors.push(...tpSlWingResult.errors);
 
   const provided = _mapCallArgsToKeys(strippedCall, entry.paramKeys, _ALIAS_TO_REAL, errors, 'order');
@@ -2581,6 +2731,19 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   if (!provided.has('symbol')) errors.push(_err("order: missing required param 'symbol'"));
   if (!provided.has('side')) errors.push(_err("order: missing required param 'side'"));
   if (!provided.has('qty') && lotsArgs.length === 0) errors.push(_err("order: missing required param 'qty' (or lots=N for F&O)"));
+  // Sprint 17 — the shared TP/SL/Wing sugar above already catches a
+  // wing-pair conflict typed via the short names (wing_premium_pct=/
+  // wing_strike_offset=); this second check catches the MIXED case (one
+  // typed via the short sugar, the other typed directly as its real
+  // catalog `_override`-suffixed name) and the fully-direct case (both
+  // typed as `_override` names) — neither of which the short-name-only
+  // check above can see, since those bypass `_splitTpSlWingArgs` entirely
+  // and land in `provided` as ordinary place_order params instead.
+  if (entry.mutuallyExclusiveGroups) {
+    const presentKeys = new Set([...provided.keys()].map((k) => k.toLowerCase()));
+    for (const k of Object.keys(tpSlWingResult.fields || {})) presentKeys.add(k.toLowerCase());
+    errors.push(..._checkMutexGroups(presentKeys, entry.mutuallyExclusiveGroups, 'order'));
+  }
   if (errors.length) return { leg: null, errors };
 
   const coerce = (key, dflt) => {
@@ -2609,6 +2772,26 @@ function _compileOrderCallToLeg(call, catalog, opts) {
     const lvl = coerce('chase_level', null);
     if (lvl) { chase = true; chase_aggressiveness = String(lvl).toLowerCase(); }
   }
+  if (errors.length) return { leg: null, errors };
+
+  // Sprint 17 — generic conditional-requirement check (place_order's real
+  // catalog `price`/`trigger_price` `required_if` specs) against this
+  // call's EXPLICITLY-TYPED values only — `order_type`'s own LOCAL
+  // default above (`'LIMIT'`, used for every ticket's actually-compiled
+  // output) is deliberately NOT what's checked here when `order_type=`
+  // was omitted; the catalog's own declared default (`'MARKET'`, which
+  // never satisfies LIMIT/SL's `required_if.in`) is used instead, so a
+  // bare `order(...)` that never mentions `order_type=` at all keeps
+  // compiling exactly as it always has — this divergence between the
+  // compiled ticket's real default and the catalog's documented default
+  // is pre-existing and out of this sprint's scope (flagged, not fixed).
+  const resolvedForReqIf = (k) => {
+    if (k === 'order_type') return provided.has('order_type') ? order_type : (entry.paramsSchema.order_type && entry.paramsSchema.order_type.default);
+    if (k === 'price') return provided.has('price') ? price : undefined;
+    if (k === 'trigger_price') return provided.has('trigger_price') ? trigger_price : undefined;
+    return undefined;
+  };
+  errors.push(..._checkRequiredIf(['price', 'trigger_price'], entry.paramsSchema, resolvedForReqIf, 'order'));
   if (errors.length) return { leg: null, errors };
 
   let quantity;
@@ -2713,8 +2896,13 @@ const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any',
  *  / 'both'`). `#name=` is effectively required — `OrderTemplateCreate.name`
  *  is a required (non-Optional) `str` field — a missing `#name=` is a
  *  compile-time error, matching this file's existing required-field error
- *  style (`'<label>: missing required param '<key>''`). */
-function compileBracketStmt(ast, opts = {}) {
+ *  style (`'<label>: missing required param '<key>''`). `catalog` (Sprint
+ *  17) is threaded through purely so the shared wing-pair mutex check
+ *  below can read `place_order`'s declared `mutuallyExclusiveGroups` —
+ *  `OrderTemplateCreate` has no catalog token of its own; bracket's plain
+ *  template-side field names reuse place_order's ticket-side group as the
+ *  one shared business rule (see `_compileTpSlWingFields`'s own doc). */
+function compileBracketStmt(ast, catalog, opts = {}) {
   const errors = [];
   const call = ast.call;
   if (!call || call.name.toLowerCase() !== 'bracket') {
@@ -2728,7 +2916,8 @@ function compileBracketStmt(ast, opts = {}) {
   if (appliesToArgs.length > 1) errors.push(_err("bracket: duplicate parameter 'applies_to'"));
   for (const a of otherArgs) errors.push(_err(`bracket: unknown parameter '${a.key}'`));
 
-  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'template', 'bracket');
+  const placeOrderEntry = catalog && catalog.actions ? catalog.actions.get('place_order') : null;
+  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'template', 'bracket', placeOrderEntry && placeOrderEntry.mutuallyExclusiveGroups);
   errors.push(...tpSlWingResult.errors);
 
   let applies_to;
@@ -2818,7 +3007,7 @@ export function compileStatement(ast, catalog, opts = {}) {
     return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
   }
   if (ast.kind === 'bracket') {
-    const r = compileBracketStmt(ast, opts);
+    const r = compileBracketStmt(ast, catalog, opts);
     return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template, fragment: null };
   }
   if (ast.kind === 'token') {

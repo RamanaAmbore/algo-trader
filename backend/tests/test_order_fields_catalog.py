@@ -148,6 +148,13 @@ class TestRefResolver:
 # chase_level addition and before any field moved to $ref). This is a
 # STATIC fixture, not derived from the live module, so this test cannot
 # silently degrade into comparing the module against itself.
+#
+# Sprint 17 amendment: `price`/`trigger_price` now also carry a
+# deliberate, local `required_if` key (conditional-requirement — see
+# agent_grammar.yaml) — this golden fixture was updated on purpose to
+# include it, not loosened. See test_grammar_catalog_place_order_
+# constraints.py for the dedicated required_if/mutually_exclusive_groups
+# coverage.
 _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "account": {
         "type": "string", "required": True, "token_ref_ok": True,
@@ -176,10 +183,12 @@ _PRE_PHASE2_PLACE_ORDER_PARAMS_SCHEMA = {
     "price": {
         "type": "number", "required": False, "token_ref_ok": True,
         "description": "Required for LIMIT / SL.",
+        "required_if": {"field": "order_type", "in": ["LIMIT", "SL"]},
     },
     "trigger_price": {
         "type": "number", "required": False, "token_ref_ok": True,
         "description": "Required for SL / SL-M.",
+        "required_if": {"field": "order_type", "in": ["SL", "SL-M"]},
     },
     "product": {
         "type": "enum", "enum": ["MIS", "CNC", "NRML"],

@@ -74,8 +74,11 @@ const FIXTURE_ROWS = [
       side: { type: 'enum', enum: ['BUY', 'SELL'], required: true },
       qty: { type: 'number', required: true, token_ref_ok: true },
       order_type: { type: 'enum', enum: ['MARKET', 'LIMIT', 'SL', 'SL-M'], required: false, default: 'MARKET' },
-      price: { type: 'number', required: false, token_ref_ok: true },
-      trigger_price: { type: 'number', required: false, token_ref_ok: true },
+      // Sprint 17 — mirrors the REAL agent_grammar.yaml's confirmed
+      // `required_if` specs (price: "Required for LIMIT / SL", trigger_price:
+      // "Required for SL / SL-M" — see backend/tests/test_grammar_catalog_place_order_constraints.py).
+      price: { type: 'number', required: false, token_ref_ok: true, required_if: { field: 'order_type', in: ['LIMIT', 'SL'] } },
+      trigger_price: { type: 'number', required: false, token_ref_ok: true, required_if: { field: 'order_type', in: ['SL', 'SL-M'] } },
       product: { type: 'enum', enum: ['MIS', 'CNC', 'NRML'], required: false, default: 'MIS' },
       variety: { type: 'enum', enum: ['regular', 'amo', 'co', 'iceberg', 'auction'], required: false, default: 'regular' },
       tag: { type: 'string', required: false },
@@ -86,6 +89,9 @@ const FIXTURE_ROWS = [
       wing_premium_pct_override: { type: 'number', required: false },
       wing_strike_offset_override: { type: 'number', required: false },
     },
+    // Sprint 17 — token-level (sibling of params_schema), mirrors the real
+    // backend's declared place_order mutex group.
+    mutually_exclusive_groups: [['wing_premium_pct_override', 'wing_strike_offset_override']],
   },
   {
     grammar_kind: 'action', token_kind: 'action_type', token: 'emit_log',
@@ -120,6 +126,21 @@ describe('buildCatalog()', () => {
   it('buckets rows by grammar_kind/token_kind and preserves declared param order', () => {
     expect(CATALOG.metrics.has('mean_pnl')).toBe(true);
     expect(CATALOG.actions.get('place_order').paramKeys[0]).toBe('account');
+  });
+
+  // Sprint 17 — the row-level wire field (`mutually_exclusive_groups`,
+  // snake_case, exactly as `GrammarTokenOut` serializes it) must survive
+  // into the catalog entry's own `mutuallyExclusiveGroups` — this is the
+  // one link none of the compile-level tests below exercise directly
+  // (they all read it off `CATALOG` already built at module load).
+  it('surfaces the row-level mutually_exclusive_groups wire field on the catalog entry', () => {
+    expect(CATALOG.actions.get('place_order').mutuallyExclusiveGroups).toEqual([
+      ['wing_premium_pct_override', 'wing_strike_offset_override'],
+    ]);
+  });
+
+  it('a row with no mutually_exclusive_groups key gets null, not []', () => {
+    expect(CATALOG.actions.get('emit_log').mutuallyExclusiveGroups).toBeNull();
   });
 
   it('skips inactive rows', () => {
@@ -576,6 +597,123 @@ describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
     );
     expect(r.ok).toBe(true);
     expect(r.ticket.template_slug).toBe('default-bull');
+  });
+});
+
+// ── Sprint 17 — object-literal per-key typing, conditional (`required_if`)
+//    param requirements, and generalized (`mutuallyExclusiveGroups`)
+//    mutual-exclusion ─────────────────────────────────────────────────────
+
+describe('Sprint 17 — tp_scales_json per-key object-literal typing', () => {
+  it('a string value where a number is required ("thirty") is a compile error naming the key and expected type', () => {
+    const r = compile('bracket(tp_scales_json=[{at_pct="thirty", close_pct=50}]) #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /at_pct/.test(e.message) && /number/.test(e.message))).toBe(true);
+  });
+
+  it('a valid numeric entry still compiles fine (no regression)', () => {
+    const r = compile('bracket(tp_scales_json=[{at_pct=30, close_pct=50}]) #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.template.tp_scales_json).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
+  });
+});
+
+describe('Sprint 17 — where= stays untyped/passthrough (no fixed schema)', () => {
+  it('where={some_key="value"} still compiles untyped — no per-key schema regression', () => {
+    const r = compile('ALERT log_tag=error, render=error, where={some_key="value"}, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.log.where).toEqual({ some_key: 'value' });
+  });
+});
+
+describe('Sprint 17 — conditional (required_if) price/trigger_price requirements', () => {
+  it('order_type=LIMIT with no price= is a compile error', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=LIMIT)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /\bprice is required when order_type=LIMIT/.test(e.message))).toBe(true);
+  });
+
+  it('order_type=MARKET with no price= still compiles fine (no regression)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=MARKET)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.price).toBeNull();
+  });
+
+  it('order_type=SL with trigger_price= but no price= is ALSO a compile error (SL requires BOTH)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=SL, trigger_price=100)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /\bprice is required when order_type=SL/.test(e.message))).toBe(true);
+  });
+
+  it('order_type=SL with BOTH price= and trigger_price= compiles fine', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=SL, price=100, trigger_price=105)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.price).toBe(100);
+    expect(r.ticket.trigger_price).toBe(105);
+  });
+
+  it('DO place_order(...) with order_type=SL and no trigger_price= is also a compile error (generic path)', () => {
+    const r = compile(
+      'WHEN always ALERT nop DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, order_type=SL, price=100)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /trigger_price is required when order_type=SL/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 17 — generalized mutual-exclusion (declared mutuallyExclusiveGroups)', () => {
+  it('wing_premium_pct + wing_strike_offset together is STILL a compile error (regression guard on the generalized mechanism)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, wing_premium_pct=5, wing_strike_offset=100)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot specify both wing_premium_pct and wing_strike_offset/.test(e.message))).toBe(true);
+  });
+
+  it('the direct _override field names (no short-kwarg sugar) are also caught', () => {
+    const r = compile(
+      'WHEN always ALERT nop DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75, ' +
+      'wing_premium_pct_override=5, wing_strike_offset_override=100)'
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot specify both wing_premium_pct_override and wing_strike_offset_override/.test(e.message))).toBe(true);
+  });
+
+  it('a mix — one via short-kwarg sugar, one via the direct _override name — is also caught on order(...)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, wing_premium_pct=5, wing_strike_offset_override=100)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot specify both/.test(e.message))).toBe(true);
+  });
+
+  it('the wing-pair check still applies to standalone bracket(...) (catalog threaded through)', () => {
+    const r = compile('bracket(wing_premium_pct=5, wing_strike_offset=100) #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot specify both wing_premium_pct and wing_strike_offset/.test(e.message))).toBe(true);
+  });
+
+  it('only one of the pair still compiles fine (no regression)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, wing_premium_pct=5)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.wing_premium_pct_override).toBe(5);
   });
 });
 

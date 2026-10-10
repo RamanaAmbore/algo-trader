@@ -30,6 +30,15 @@ logger = get_logger(__name__)
 
 
 def _to_out(row: GrammarToken) -> GrammarTokenOut:
+    # Sprint 17 — `mutually_exclusive_groups` is never stored on the
+    # grammar_tokens row (no DB column for it, by design — see
+    # grammar.py's _ACTION_MUTEX_GROUPS comment); it's looked up live from
+    # the in-memory, code-reviewed YAML catalog, scoped to system action
+    # tokens only (a custom/operator-authored token can never carry one).
+    mutex_groups = None
+    if row.is_system and row.grammar_kind == "action":
+        from backend.api.algo.grammar import get_action_mutex_groups
+        mutex_groups = get_action_mutex_groups(row.token)
     return GrammarTokenOut(
         id=row.id, grammar_kind=row.grammar_kind, token_kind=row.token_kind,
         token=row.token, value_type=row.value_type, units=row.units,
@@ -37,6 +46,7 @@ def _to_out(row: GrammarToken) -> GrammarTokenOut:
         params_schema=row.params_schema, enum_values=row.enum_values,
         template_body=row.template_body,
         is_system=row.is_system, is_active=row.is_active,
+        mutually_exclusive_groups=mutex_groups,
     )
 
 
