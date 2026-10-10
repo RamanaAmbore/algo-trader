@@ -28,7 +28,7 @@
 // This is a pre-existing, shared limitation (the Lab/MCP path has the
 // identical gap) — flagged here, not patched here.
 
-import { fetchOrderTemplates, placeTicketOrder, placeBasket, createAgent, createOrderTemplate } from '$lib/api';
+import { fetchOrderTemplates, placeTicketOrder, placeBasket, createAgent, createOrderTemplate, createAgentFragment } from '$lib/api';
 import { reloadOrderTemplates } from '$lib/data/templates';
 
 // ─────────────────────────────────────────────────────────────────────────
@@ -41,11 +41,14 @@ const _ORDER_VERBS = new Set(['buy', 'sell', 'modify', 'cancel']);
 // because none of them can ever be a real order verb or a bare
 // order/place_order/bracket call name (agents.js's own _RESERVED set).
 const _AGENT_HEAD_RE = /^(when|alert|do)\b/i;
-// A bare `order(...)`/`place_order(...)`/`bracket(...)` call — matched on
-// just the "name(" prefix (not a balanced-paren scan) so a STILL-BEING-
-// TYPED statement like `order(acct=` classifies correctly before the
-// operator has finished typing the closing paren.
-const _AGENT_CALL_RE = /^(order|place_order|bracket)\s*\(/i;
+// A bare `order(...)`/`place_order(...)`/`bracket(...)`/`token(...)` call —
+// matched on just the "name(" prefix (not a balanced-paren scan) so a
+// STILL-BEING-TYPED statement like `order(acct=` classifies correctly
+// before the operator has finished typing the closing paren. `token(...)`
+// added Sprint 14 — without it, a `token(kind=notify) ...` statement typed
+// into the legacy CommandLineTab fell through to 'legacy' and got POSTed
+// to /api/admin/exec as a shell command.
+const _AGENT_CALL_RE = /^(order|place_order|bracket|token)\s*\(/i;
 
 /**
  * Classify a raw CLI statement by its head tokens alone — cheap regex
@@ -296,5 +299,25 @@ export async function submitConsoleBracket(compiledTemplate) {
     return { ok: true, response };
   } catch (e) {
     return { ok: false, error: e?.message || 'bracket create failed' };
+  }
+}
+
+/**
+ * Submit a compiled `kind:'token'` result (`compiled.fragment` —
+ * `{kind, name, body, description?}`, already `FragmentCreate`-shaped —
+ * see `compileTokenStmt` in agents.js) as a new Token via the existing
+ * `createAgentFragment` (`POST /api/admin/fragments`). Mirrors
+ * `submitConsoleBracket`'s pattern exactly; unlike `submitConsoleAgent`
+ * there's no slug to derive — `fragment.name` is sent as-is (the backend
+ * itself lowercases + validates it's alnum/hyphen-only).
+ * @param {any} compiledFragment — `compiled.fragment` from compileAgentCliStatement
+ */
+export async function submitConsoleToken(compiledFragment) {
+  if (!compiledFragment) return { ok: false, error: 'token requires a #name= tag' };
+  try {
+    const response = await createAgentFragment(compiledFragment);
+    return { ok: true, response };
+  } catch (e) {
+    return { ok: false, error: e?.message || 'token create failed' };
   }
 }

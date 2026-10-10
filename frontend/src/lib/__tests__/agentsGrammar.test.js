@@ -601,6 +601,15 @@ describe('Sprint 8 — standalone bracket(...) statement', () => {
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /unknown action 'bracket'/.test(e.message))).toBe(true);
   });
+
+  // Sprint 14 — `applies_to=sell_any` was missing from the CLI's enum
+  // list even though the real backend `_APPLIES_TO_CHOICES`
+  // (backend/api/routes/templates.py:39) has always allowed it.
+  it('accepts applies_to=sell_any, matching the real backend enum', () => {
+    const r = compile('bracket(applies_to=sell_any, tp_pct=20) #name="Default Short"');
+    expect(r.ok).toBe(true);
+    expect(r.template.applies_to).toBe('sell_any');
+  });
 });
 
 // ── Sprint 10 — Token ($ref) references ─────────────────────────────────
@@ -701,6 +710,21 @@ describe('Sprint 10 — standalone token(...) statement', () => {
     const r = compile('token(kind=notify) telegram, email');
     expect(r.ok).toBe(false);
     expect(r.errors.some(e => /missing required meta tag '#name'/.test(e.message))).toBe(true);
+  });
+
+  // Sprint 14 — these compile-error strings used to say "AgentTemplate has
+  // no tags/group field", a stale internal model name that reached
+  // operators verbatim in the CLI editor's error list. Reworded to "Token".
+  it('#tag= and #group= are rejected with operator-facing "Token" wording, not "AgentTemplate"', () => {
+    const rTag = compile('token(kind=notify) telegram #name="x" #tag=foo');
+    expect(rTag.ok).toBe(false);
+    expect(rTag.errors.some(e => /Token has no tags field/.test(e.message))).toBe(true);
+    expect(rTag.errors.some(e => /AgentTemplate/.test(e.message))).toBe(false);
+
+    const rGroup = compile('token(kind=notify) telegram #name="x" #group=foo');
+    expect(rGroup.ok).toBe(false);
+    expect(rGroup.errors.some(e => /Token has no group field/.test(e.message))).toBe(true);
+    expect(rGroup.errors.some(e => /AgentTemplate/.test(e.message))).toBe(false);
   });
 
   it('token(...) used inside a DO clause is rejected the same way any other non-catalog action is ("unknown action")', () => {

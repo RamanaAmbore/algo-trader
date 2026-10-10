@@ -804,11 +804,12 @@ def test_agent_update_request_cli_source_defaults_to_none():
 @pytest.mark.asyncio
 async def test_create_agent_with_cli_source_persists_it():
     """(a) Creating an agent with cli_source set persists it on the row.
-    GET isn't wired to surface cli_source yet (display-only provenance,
-    not read by any route handler), so read back via the object that
-    was actually passed to session.add() — the same technique
-    test_create_agent_threshold_kind_stores_cycle_literally uses for
-    kind."""
+    GET surfaces cli_source via _agent_to_info (Sprint 14 read-path
+    fix) — see test_create_agent_then_get_agent_round_trips_group_and_
+    cli_source below for the full round trip. This test still reads
+    back via the object actually passed to session.add() — the same
+    technique test_create_agent_threshold_kind_stores_cycle_literally
+    uses for kind — to isolate the create-path write behaviour alone."""
     session_factory, session = _mock_session(existing=None)
     controller = AgentController.__new__(AgentController)
     data = AgentCreateRequest(
@@ -918,10 +919,12 @@ async def test_create_agent_with_group_persists_it_as_group_name():
     """(a) Creating an agent with `group` set persists it onto the ORM
     row's `group_name` attribute (NOT a `group` attribute — `group` is
     a reserved SQL keyword, so the ORM column/attribute is deliberately
-    named differently from the request field). GET isn't wired to
-    surface `group` yet (same display-only provenance as cli_source,
-    not read by any route handler), so read back via the object that
-    was actually passed to session.add()."""
+    named differently from the request field). GET surfaces `group` via
+    _agent_to_info (Sprint 14 read-path fix) — see
+    test_create_agent_then_get_agent_round_trips_group_and_cli_source
+    below for the full round trip. This test still reads back via the
+    object actually passed to session.add() to isolate the create-path
+    write behaviour alone."""
     session_factory, session = _mock_session(existing=None)
     controller = AgentController.__new__(AgentController)
     data = AgentCreateRequest(
@@ -990,3 +993,130 @@ async def test_update_agent_without_group_leaves_group_name_unchanged():
     assert result == {"detail": "Agent 't-agent' updated"}
     assert agent.group_name == "old-group"
     assert agent.name == "renamed only"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sprint 14 (2026-10, post-Sprint-12 audit) — GET read-path round trip for
+# group/cli_source. Sprint 7's own tests above only ever asserted the
+# WRITE path (session.add.call_args / setattr onto the row); _agent_to_info
+# had no `group`/`cli_source` fields at all, so AgentInfo silently dropped
+# both on every list_agents()/get_agent() response — Sprint 9's group
+# grids read `a.group` (frontend) and always saw `undefined`, snapping a
+# freshly-grouped agent visibly back to "ungrouped" on reload. Fixed by
+# adding `group`/`cli_source` to AgentInfo and populating them in
+# _agent_to_info via getattr(a, "group_name", None) / getattr(a,
+# "cli_source", None) — mirrors templates.py:_to_out's existing
+# `group=getattr(row, "group_name", None)` pattern for OrderTemplate.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_agent_to_info_surfaces_group_and_cli_source():
+    """Direct unit check — _agent_to_info reads group_name/cli_source
+    off the row and surfaces them as `group`/`cli_source` on AgentInfo."""
+    agent = _FakeAgentRow(group_name="hedge-book", cli_source="when pnl < -5000 alert telegram")
+    info = _agent_to_info(agent)
+    assert info.group == "hedge-book"
+    assert info.cli_source == "when pnl < -5000 alert telegram"
+
+
+def test_agent_to_info_group_and_cli_source_default_to_none_when_missing_attrs():
+    """A legacy row created before group_name/cli_source existed — getattr
+    defaults must never crash and must surface as None (ungrouped /
+    no provenance), same convention as every other getattr-guarded field
+    in _agent_to_info."""
+    class _Bare:
+        pass
+    bare = _Bare()
+    for field, val in [
+        ("id", 1), ("slug", "s"), ("name", "n"), ("long_name", None),
+        ("description", None), ("conditions", {}), ("events", []),
+        ("actions", []), ("scope", "total"), ("schedule", "market_hours"),
+        ("cooldown_minutes", 30), ("fire_at_time", None), ("status", "inactive"),
+        ("last_triggered_at", None), ("trigger_count", 0), ("last_error", None),
+        ("is_system", False),
+    ]:
+        setattr(bare, field, val)
+    info = _agent_to_info(bare)
+    assert info.group is None
+    assert info.cli_source is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_then_get_agent_round_trips_group_and_cli_source():
+    """The exact gap the Sprint 14 audit found: create an agent with
+    `group="hedge-book"` + a `cli_source` set via the real
+    POST /api/agents/ handler, then fetch it back via the real
+    GET /api/agents/{slug} handler (not just the object handed to
+    session.add()) and assert the response carries both fields —
+    proving the full write -> read round trip, not just the write half
+    Sprint 7's own tests covered."""
+    create_session_factory, create_session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    create_data = AgentCreateRequest(
+        slug="rt-1", name="Round-trip agent", conditions={}, events=[],
+        group="hedge-book",
+        cli_source="when pnl < -5000 alert telegram",
+    )
+
+    with patch("backend.api.routes.agents.async_session", create_session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, create_data)
+
+    created_row = create_session.add.call_args[0][0]
+    assert created_row.group_name == "hedge-book"
+    assert created_row.cli_source == "when pnl < -5000 alert telegram"
+
+    # Now read it back via the real get_agent handler, feeding the exact
+    # row that was just created as the DB's "existing" row.
+    get_session_factory, _get_session = _mock_session(existing=created_row)
+    with patch("backend.api.routes.agents.async_session", get_session_factory):
+        info = await _handler_fn(AgentController.get_agent)(controller, "rt-1")
+
+    assert info.group == "hedge-book", (
+        "group must survive the create -> get round trip — this is "
+        "exactly the gap Sprint 7's write-only tests never covered."
+    )
+    assert info.cli_source is not None
+    assert info.cli_source == "when pnl < -5000 alert telegram"
+
+    # Also prove the wire key is `group` (what the frontend's group grids
+    # actually read), not the ORM attribute name `group_name`.
+    encoded = json.loads(msgspec.json.encode(info))
+    assert encoded["group"] == "hedge-book"
+    assert encoded["cli_source"] == "when pnl < -5000 alert telegram"
+
+
+@pytest.mark.asyncio
+async def test_list_agents_round_trips_group_and_cli_source():
+    """Same round trip via list_agents() (the .scalars().all() path
+    Sprint 9's group grids actually call via loadAgents()), not just
+    get_agent()."""
+    create_session_factory, create_session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    create_data = AgentCreateRequest(
+        slug="rt-2", name="List round-trip agent", conditions={}, events=[],
+        group="hedge-book",
+        cli_source="when pnl < -5000 alert telegram",
+    )
+
+    with patch("backend.api.routes.agents.async_session", create_session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, create_data)
+
+    created_row = create_session.add.call_args[0][0]
+
+    # list_agents() calls session.execute(...).scalars().all() — build
+    # that shape explicitly rather than reusing _mock_session's
+    # scalar_one_or_none() shape.
+    list_session = MagicMock()
+    list_result = MagicMock()
+    list_result.scalars.return_value.all.return_value = [created_row]
+    list_session.execute = AsyncMock(return_value=list_result)
+    cm = MagicMock()
+    cm.__aenter__ = AsyncMock(return_value=list_session)
+    cm.__aexit__ = AsyncMock(return_value=False)
+    list_session_factory = MagicMock(return_value=cm)
+
+    with patch("backend.api.routes.agents.async_session", list_session_factory):
+        rows = await _handler_fn(AgentController.list_agents)(controller)
+
+    assert len(rows) == 1
+    assert rows[0].group == "hedge-book"
+    assert rows[0].cli_source == "when pnl < -5000 alert telegram"

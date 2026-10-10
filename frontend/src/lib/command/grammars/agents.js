@@ -2699,7 +2699,11 @@ function compileOrderStmt(ast, catalog, opts = {}) {
   return { kind: 'order', errors: [], ticket: null, basket: { groups } };
 }
 
-const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'both'] });
+// Sprint 14 — added 'sell_any' to match the real backend
+// `_APPLIES_TO_CHOICES` set (`backend/api/routes/templates.py:39`:
+// {"buy_any", "sell_option", "sell_any", "both"}), which this enum had
+// silently drifted out of sync with.
+const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'sell_any', 'both'] });
 
 /** Compile a standalone `bracket(...)` call to an `OrderTemplateCreate`-
  *  shaped object (`backend/api/schemas.py`) — Sprint 8. `applies_to` is
@@ -2789,8 +2793,8 @@ function compileTokenStmt(ast, catalog, opts = {}) {
   errors.push(...bodyResult.errors);
 
   const metaFields = compileMetaClause(ast.meta, errors);
-  if (metaFields.tags) errors.push(_err('token: #tag is not supported for a Token — AgentTemplate has no tags field'));
-  if (metaFields.group) errors.push(_err('token: #group is not supported for a Token — AgentTemplate has no group field'));
+  if (metaFields.tags) errors.push(_err('token: #tag is not supported for a Token — Token has no tags field'));
+  if (metaFields.group) errors.push(_err('token: #group is not supported for a Token — Token has no group field'));
   if (!metaFields.name) errors.push(_err("token: missing required meta tag '#name' — a saved Token must have a name"));
 
   if (errors.length) return { errors, fragment: null };

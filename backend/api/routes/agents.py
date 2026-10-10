@@ -102,6 +102,16 @@ class AgentInfo(msgspec.Struct):
     # in backend/api/models.py for full semantics.
     tier:                  str        = "medium"
     topic:                 str        = "general"
+    # Sprint 7 "#group=" CLI directive — mirrors AgentCreateRequest.group /
+    # the ORM attribute `group_name` (`group` is reserved SQL). None =
+    # ungrouped. Read path was previously missing — same getattr-guarded
+    # convention as templates.py:_to_out's `group=getattr(row, "group_name",
+    # None)` for OrderTemplate (Sprint 14 audit fix).
+    group:                 str | None = None
+    # Sprint 4 (CLI grammar authoring) — raw CLI/text-grammar source the
+    # operator authored this agent with, if created via console/CLI.
+    # Display/audit-only. None for UI-created or legacy agents.
+    cli_source:            str | None = None
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -510,6 +520,8 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         kind=getattr(a, "kind", "cycle") or "cycle",
         tier=getattr(a, "tier", "medium") or "medium",
         topic=getattr(a, "topic", "general") or "general",
+        group=getattr(a, "group_name", None),
+        cli_source=getattr(a, "cli_source", None),
     )
 
 

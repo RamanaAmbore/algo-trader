@@ -86,15 +86,15 @@ def _validate_body_shape(kind: str, body) -> None:
     if kind == "notify":
         if not isinstance(body, list):
             raise HTTPException(status_code=400,
-                detail="notify fragment body must be a list of channel entries")
+                detail="notify token body must be a list of channel entries")
         for i, entry in enumerate(body):
             if not isinstance(entry, dict) or "channel" not in entry:
                 raise HTTPException(status_code=400,
-                    detail=f"notify fragment body[{i}] missing 'channel'")
+                    detail=f"notify token body[{i}] missing 'channel'")
     elif kind == "condition":
         if not isinstance(body, dict):
             raise HTTPException(status_code=400,
-                detail="condition fragment body must be a dict (leaf or composite)")
+                detail="condition token body must be a dict (leaf or composite)")
     else:
         raise HTTPException(status_code=400,
             detail=f"kind must be one of {sorted(_VALID_KINDS)}")
@@ -160,7 +160,7 @@ class AgentTemplateController(Controller):
             )).scalar_one_or_none()
         if not row:
             raise HTTPException(status_code=404,
-                detail=f"Fragment {frag_id} not found")
+                detail=f"Token {frag_id} not found")
         return _to_out(row)
 
     @post("/", guards=[cap_guard("manage_own_agents")])
@@ -183,7 +183,7 @@ class AgentTemplateController(Controller):
             )).scalar_one_or_none()
             if existing:
                 raise HTTPException(status_code=409,
-                    detail=f"Fragment {data.kind}/{name} already exists")
+                    detail=f"Token {data.kind}/{name} already exists")
             row = AgentTemplate(
                 kind=data.kind, name=name, body=data.body,
                 description=data.description or "",
@@ -203,13 +203,13 @@ class AgentTemplateController(Controller):
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(status_code=404,
-                    detail=f"Fragment {frag_id} not found")
-            # System fragments may only toggle is_active — body + description
+                    detail=f"Token {frag_id} not found")
+            # System tokens may only toggle is_active — body + description
             # are owned by code seeds.
             if row.is_system:
                 if data.body is not None or data.description is not None:
                     raise HTTPException(status_code=400,
-                        detail="System fragments can only toggle is_active; "
+                        detail="System tokens can only toggle is_active; "
                                "body + description are owned by code seeds.")
             if data.body is not None:
                 _validate_body_shape(row.kind, data.body)
@@ -228,7 +228,7 @@ class AgentTemplateController(Controller):
         from backend.api.algo.agent_evaluator import referencing_agents, fragments_reaching
         row = await _load_fragment(frag_id)
         if row is None:
-            raise HTTPException(status_code=404, detail=f"Fragment {frag_id} not found")
+            raise HTTPException(status_code=404, detail=f"Token {frag_id} not found")
         bodies = await _load_bodies(row.kind)
         agents = await _load_agents()
         return {
@@ -245,17 +245,17 @@ class AgentTemplateController(Controller):
             )).scalar_one_or_none()
             if not row:
                 raise HTTPException(status_code=404,
-                    detail=f"Fragment {frag_id} not found")
+                    detail=f"Token {frag_id} not found")
             if row.is_system:
                 raise HTTPException(status_code=400,
-                    detail="Cannot delete system fragments. Toggle is_active "
+                    detail="Cannot delete system tokens. Toggle is_active "
                            "off instead.")
             await s.delete(row)
             await s.commit()
         await _reload_registry()
-        return {"detail": f"Fragment {frag_id} deleted"}
+        return {"detail": f"Token {frag_id} deleted"}
 
     @post("/reload", guards=[cap_guard("manage_own_agents")], status_code=200)
     async def reload_fragments(self) -> dict:
         await _reload_registry()
-        return {"detail": "Fragment registry reloaded"}
+        return {"detail": "Token registry reloaded"}

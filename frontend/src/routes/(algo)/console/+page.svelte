@@ -22,7 +22,7 @@
   import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
   import { fetchAgentCatalog, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
   import {
-    submitConsoleAgent, submitConsoleBracket,
+    submitConsoleAgent, submitConsoleBracket, submitConsoleToken,
     resolveConsoleOrder, submitResolvedConsoleOrder,
   } from '$lib/command/consoleDispatch';
 
@@ -69,12 +69,12 @@
    *  /automation's `saveEdit` recompile pattern. */
   function _recompileAgentCli() {
     if (!_agentCliCatalog) {
-      return { ok: false, errors: [{ message: 'CLI catalog unavailable' }], kind: null, agent: null, ticket: null, basket: null, template: null };
+      return { ok: false, errors: [{ message: 'CLI catalog unavailable' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
     }
     try {
       return compileAgentCliStatement(_agentCliText, _agentCliCatalog, { mode: _execModeForCompile() });
     } catch (e) {
-      return { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null };
+      return { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
     }
   }
 
@@ -117,6 +117,12 @@
     }
   }
 
+  // Handles BOTH kind:'agent' (threshold) and kind:'event' (Sprint 12
+  // notification agent) compile results — `submitConsoleAgent` itself
+  // already branches on `result.agent.kind === 'event'` (stamped by
+  // `compileEventStmt`) vs the ordinary threshold shape, so no separate
+  // event-specific submit function is needed here (Sprint 14 fix: the
+  // button that calls this was previously only wired for kind:'agent').
   async function _submitAgentCliAgent(/** @type {any} */ result) {
     const r = await submitConsoleAgent(result.agent, _agentCliText);
     if (r.ok) { toast.success(`Agent created: ${r.slug}`); _agentCliText = ''; }
@@ -127,6 +133,14 @@
     const r = await submitConsoleBracket(result.template);
     if (r.ok) { toast.success(`Bracket saved: ${result.template?.name || ''}`); _agentCliText = ''; }
     else toast.error(`Bracket failed: ${_short(r.error)}`);
+  }
+
+  // Sprint 14 — `token(kind=notify) ...` had no submit path from this page
+  // at all (no button, no dispatch function) despite compiling cleanly.
+  async function _submitAgentCliToken(/** @type {any} */ result) {
+    const r = await submitConsoleToken(result.fragment);
+    if (r.ok) { toast.success(`Token created: ${result.fragment?.name || ''}`); _agentCliText = ''; }
+    else toast.error(`Token failed: ${_short(r.error)}`);
   }
 
   /** `kind:'order'` has its own submit button rendered BY AgentCliEditor —
@@ -221,7 +235,7 @@
         mode={_execModeForCompile()}
         onOrderSubmit={_onAgentCliOrderSubmit}
       />
-      {#if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'agent'}
+      {#if !isDemo && _agentCliCompiled?.ok && (_agentCliCompiled.kind === 'agent' || _agentCliCompiled.kind === 'event')}
         <button type="button" class="btn-primary console-agent-cli-btn"
           onclick={() => _submitAgentCliAgent(_agentCliCompiled)}>
           Create agent
@@ -230,6 +244,11 @@
         <button type="button" class="btn-primary console-agent-cli-btn"
           onclick={() => _submitAgentCliBracket(_agentCliCompiled)}>
           Save bracket
+        </button>
+      {:else if !isDemo && _agentCliCompiled?.ok && _agentCliCompiled.kind === 'token'}
+        <button type="button" class="btn-primary console-agent-cli-btn"
+          onclick={() => _submitAgentCliToken(_agentCliCompiled)}>
+          Create token
         </button>
       {/if}
     {/if}

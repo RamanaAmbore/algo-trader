@@ -27,6 +27,7 @@ const placeTicketOrder    = vi.fn();
 const placeBasket         = vi.fn();
 const createAgent         = vi.fn();
 const createOrderTemplate = vi.fn();
+const createAgentFragment = vi.fn();
 const reloadOrderTemplates = vi.fn();
 
 vi.mock('$lib/api', () => ({
@@ -35,6 +36,7 @@ vi.mock('$lib/api', () => ({
   placeBasket:         (...a) => placeBasket(...a),
   createAgent:         (...a) => createAgent(...a),
   createOrderTemplate: (...a) => createOrderTemplate(...a),
+  createAgentFragment: (...a) => createAgentFragment(...a),
 }));
 vi.mock('$lib/data/templates', () => ({
   reloadOrderTemplates: (...a) => reloadOrderTemplates(...a),
@@ -49,6 +51,7 @@ const {
   submitConsoleOrder,
   submitConsoleAgent,
   submitConsoleBracket,
+  submitConsoleToken,
   slugifyAgentName,
 } = await import('$lib/command/consoleDispatch.js');
 
@@ -58,6 +61,7 @@ beforeEach(() => {
   placeBasket.mockReset();
   createAgent.mockReset();
   createOrderTemplate.mockReset();
+  createAgentFragment.mockReset();
   reloadOrderTemplates.mockReset();
 });
 
@@ -77,15 +81,20 @@ describe('classifyConsoleStatement', () => {
     expect(classifyConsoleStatement('Do place_order(account="ZG0790")')).toBe('agents');
   });
 
-  it('routes a bare order(/place_order(/bracket( call to the agent-family grammar', () => {
+  it('routes a bare order(/place_order(/bracket(/token( call to the agent-family grammar', () => {
     expect(classifyConsoleStatement('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=5)')).toBe('agents');
     expect(classifyConsoleStatement('place_order(account="ZG0790")')).toBe('agents');
     expect(classifyConsoleStatement('bracket(tp_pct=20) #name=foo')).toBe('agents');
+    // Sprint 14 — without `token` in `_AGENT_CALL_RE`, this statement
+    // misclassified as 'legacy' and got POSTed to /api/admin/exec as a
+    // shell command instead of reaching the agents.js grammar.
+    expect(classifyConsoleStatement('token(kind=notify) telegram #name="x"')).toBe('agents');
   });
 
   it('classifies a still-being-typed partial call as agent-family', () => {
     expect(classifyConsoleStatement('order(acct=')).toBe('agents');
     expect(classifyConsoleStatement('bracket(')).toBe('agents');
+    expect(classifyConsoleStatement('token(kind=')).toBe('agents');
   });
 
   it('leaves unrelated text (agent interpret / shell) classified as legacy', () => {
@@ -355,5 +364,30 @@ describe('submitConsoleBracket', () => {
     const r = await submitConsoleBracket(null);
     expect(r.ok).toBe(false);
     expect(createOrderTemplate).not.toHaveBeenCalled();
+  });
+});
+
+// ── submitConsoleToken (Sprint 14) ──────────────────────────────────────
+
+describe('submitConsoleToken', () => {
+  it('creates the fragment via the existing createAgentFragment call', async () => {
+    createAgentFragment.mockResolvedValue({ id: 7, kind: 'notify', name: 'my-token' });
+    const fragment = { kind: 'notify', name: 'my-token', body: [{ channel: 'telegram', enabled: true }] };
+    const r = await submitConsoleToken(fragment);
+    expect(r.ok).toBe(true);
+    expect(createAgentFragment).toHaveBeenCalledWith(fragment);
+  });
+
+  it('surfaces a create failure (e.g. 409 name collision) as a structured error', async () => {
+    createAgentFragment.mockRejectedValue(new Error("Fragment notify/my-token already exists"));
+    const r = await submitConsoleToken({ kind: 'notify', name: 'my-token', body: [] });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/already exists/);
+  });
+
+  it('requires a compiled fragment — never calls createAgentFragment with nothing', async () => {
+    const r = await submitConsoleToken(null);
+    expect(r.ok).toBe(false);
+    expect(createAgentFragment).not.toHaveBeenCalled();
   });
 });

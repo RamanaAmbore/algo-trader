@@ -65,7 +65,7 @@
   // JSON fields before the operator has touched anything.
   let dirty = $state(false);
 
-  /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any}|null} */
+  /** @type {{ok:boolean, errors:any[], kind:string|null, agent:any, ticket:any, basket:any, template:any, fragment:any}|null} */
   let compiled = $state(null);
 
   $effect(() => {
@@ -79,7 +79,7 @@
       try {
         result = compileAgentCliStatement(text, cat, { mode: m, lotSizeOf });
       } catch (e) {
-        result = { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null };
+        result = { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
       }
       compiled = result;
       if (result.ok && wasDirty) onCompile?.(result);
@@ -129,10 +129,17 @@
     return i >= 0 ? (suggestResult.descriptions?.[i] || '') : '';
   });
 
+  // Sprint 14 — previously returned null for 'event'/'bracket'/'token',
+  // so the JSON preview silently stayed blank for those compile kinds
+  // even though they'd compiled successfully (only 'agent'/'order' had a
+  // preview). Now uniform across every compile kind this editor can
+  // produce.
   const previewPayload = $derived.by(() => {
     if (!compiled?.ok) return null;
-    if (compiled.kind === 'agent') return compiled.agent;
+    if (compiled.kind === 'agent' || compiled.kind === 'event') return compiled.agent;
     if (compiled.kind === 'order') return compiled.ticket || { groups: compiled.basket?.groups };
+    if (compiled.kind === 'bracket') return compiled.template;
+    if (compiled.kind === 'token') return compiled.fragment;
     return null;
   });
 </script>
