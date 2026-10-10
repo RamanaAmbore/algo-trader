@@ -255,9 +255,15 @@ export async function submitConsoleAgent(compiledAgent, rawText) {
     return { ok: false, error: 'agent requires a #name= tag' };
   }
   const slug = slugifyAgentName(compiledAgent.name);
+  // Sprint 12 — `compileEventStmt` (agents.js) stamps `kind: 'event'`
+  // directly on the compiled agent object for a notification (event_stmt)
+  // agent; the ordinary `compileAgentStmt` path never sets a `kind` field
+  // at all, so anything else (including `undefined`) means the existing
+  // `'threshold'` behavior — never a second hardcoded literal.
+  const kind = compiledAgent.kind === 'event' ? 'event' : 'threshold';
   const payload = {
     slug,
-    kind: 'threshold',
+    kind,
     name: compiledAgent.name,
     description: compiledAgent.description || '',
     conditions: compiledAgent.conditions,

@@ -286,6 +286,43 @@ describe('submitConsoleAgent', () => {
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/already exists/);
   });
+
+  // Sprint 12 — `compileEventStmt` (agents.js) stamps `kind: 'event'`
+  // directly on the compiled agent object for a notification (event_stmt)
+  // agent; submitConsoleAgent's payload `kind` must follow that, not the
+  // old hardcoded 'threshold' literal.
+  it("a kind:'event' compiled agent submits with kind:'event' on the payload", async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    const eventAgent = {
+      kind: 'event',
+      name: 'Error alert',
+      conditions: { log: { tag: 'error', min_level: 'ERROR' } },
+      events: [{ channel: 'telegram', enabled: true }],
+      actions: [{ type: 'render', render: 'error' }],
+    };
+    const r = await submitConsoleAgent(eventAgent, 'ALERT log_tag=error, min_level=ERROR, render=error, telegram #name="Error alert"');
+    expect(r.ok).toBe(true);
+    expect(createAgent).toHaveBeenCalledTimes(1);
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.kind).toBe('event');
+    expect(payload.conditions).toEqual({ log: { tag: 'error', min_level: 'ERROR' } });
+    expect(payload.actions).toEqual([{ type: 'render', render: 'error' }]);
+  });
+
+  // Regression guard — an ordinary (non-event) compiled agent has no
+  // `kind` field at all on the object `compileAgentStmt` produces (see
+  // agents.js), so this must still submit with the existing 'threshold'
+  // literal, byte-for-byte unchanged from before this sprint.
+  it("an ordinary non-event compiled agent still submits with kind:'threshold' (regression guard)", async () => {
+    createAgent.mockResolvedValue({ detail: 'ok' });
+    const ordinaryAgent = {
+      name: 'My Loss Guard', conditions: { type: 'always' }, events: [], actions: [{ type: 'emit_log' }],
+    };
+    const r = await submitConsoleAgent(ordinaryAgent, 'WHEN always DO emit_log() #name="My Loss Guard"');
+    expect(r.ok).toBe(true);
+    const payload = createAgent.mock.calls[0][0];
+    expect(payload.kind).toBe('threshold');
+  });
 });
 
 describe('slugifyAgentName', () => {

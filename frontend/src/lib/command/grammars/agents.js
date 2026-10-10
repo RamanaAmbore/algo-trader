@@ -12,7 +12,116 @@
 // ─────────────────────────────────────────────────────────────────────────
 // EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
 // ─────────────────────────────────────────────────────────────────────────
-//   statement      := agent_stmt | order_stmt | bracket_stmt | token_stmt
+//   statement      := agent_stmt | event_stmt | order_stmt | bracket_stmt
+//                    | token_stmt
+//   event_stmt     := "ALERT" event_meta call_list meta_item*
+//                                                   (* Sprint 12 — a bare
+//                                                       ALERT-only statement
+//                                                       for notification
+//                                                       (`kind='event'`)
+//                                                       agents — their
+//                                                       "condition" is a
+//                                                       log-stream
+//                                                       subscription filter
+//                                                       (tag/min_level/
+//                                                       optional where),
+//                                                       never a polled
+//                                                       metric condition,
+//                                                       and their action is
+//                                                       always exactly one
+//                                                       render hook, never a
+//                                                       trading action — so
+//                                                       this gets its own
+//                                                       statement shape
+//                                                       instead of being
+//                                                       forced through
+//                                                       agent_stmt's WHEN/
+//                                                       DO. Dispatched from
+//                                                       `parseStatement`
+//                                                       (see its own
+//                                                       dispatch comment)
+//                                                       specifically when a
+//                                                       bare leading ALERT
+//                                                       (no WHEN before it)
+//                                                       is immediately
+//                                                       followed by one of
+//                                                       event_meta's four
+//                                                       reserved keys —
+//                                                       never for an
+//                                                       ordinary bare-ALERT
+//                                                       agent_stmt (e.g.
+//                                                       `ALERT telegram DO
+//                                                       nop`). *)
+//   event_meta     := event_kw*                     (* log_tag=/min_level=/
+//                                                       render=/where= —
+//                                                       ANY ORDER, each at
+//                                                       most once; a
+//                                                       duplicate key is a
+//                                                       PARSE-time error
+//                                                       (not deferred to
+//                                                       compile time, per
+//                                                       the operator's
+//                                                       explicit
+//                                                       instruction). *)
+//   event_kw       := ("log_tag" "=" value ",")
+//                    | ("min_level" "=" value ",")
+//                    | ("render" "=" value ",")
+//                    | ("where" "=" object_literal ",")
+//                                                   (* `log_tag`/`render`
+//                                                       are REQUIRED
+//                                                       (compile-time error
+//                                                       if either missing).
+//                                                       `min_level` is
+//                                                       OPTIONAL, defaults
+//                                                       to `"INFO"`
+//                                                       (confirmed against
+//                                                       event_agents.py:
+//                                                       validate_seed_spec's
+//                                                       own default) and is
+//                                                       the ONE value here
+//                                                       that DOES get
+//                                                       case-normalized (to
+//                                                       UPPERCASE, matching
+//                                                       the DEBUG/INFO/
+//                                                       WARNING/ERROR/
+//                                                       CRITICAL enum) —
+//                                                       `log_tag`, `render`,
+//                                                       and every value
+//                                                       inside `where={...}`
+//                                                       are preserved
+//                                                       EXACTLY as typed,
+//                                                       bypassing this
+//                                                       grammar's normal
+//                                                       enum-casing
+//                                                       normalization
+//                                                       entirely (`where`
+//                                                       matches real
+//                                                       log-record `extra`
+//                                                       fields by exact
+//                                                       string equality
+//                                                       server-side — re-
+//                                                       casing it would
+//                                                       silently break
+//                                                       matches). `where`
+//                                                       is OPTIONAL. `msg=`
+//                                                       is explicitly
+//                                                       rejected anywhere
+//                                                       in an event_stmt
+//                                                       (clause-level
+//                                                       default OR a
+//                                                       per-channel own
+//                                                       kwarg) — `render=`
+//                                                       owns the message
+//                                                       for an event agent,
+//                                                       not `msg=`.
+//                                                       Combining any of
+//                                                       these four reserved
+//                                                       keys with WHEN/DO
+//                                                       is a compile-time
+//                                                       error (see
+//                                                       `parseAlertClauseBody`/
+//                                                       `parseEventStmt`'s
+//                                                       own comments). *)
 //   token_stmt     := call call_list meta_item*     (* Sprint 10 — `token(...)`
 //                                                       only, restricted to
 //                                                       standalone use,
@@ -228,14 +337,36 @@
 //   kw_arg         := NAME "=" value
 //   object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"   (* Sprint 8 — a
 //                                                       genuinely NEW value
-//                                                       shape, STRICTLY
-//                                                       scoped to the
+//                                                       shape. GENERALIZED
+//                                                       in Sprint 12 off its
+//                                                       original STRICT
+//                                                       scoping to the
 //                                                       tp_scales_json_value
-//                                                       production below;
+//                                                       production below —
+//                                                       `event_stmt`'s
+//                                                       `where=` (Sprint 12)
+//                                                       is a SECOND call
+//                                                       site reusing this
+//                                                       EXACT SAME
+//                                                       production/parser
+//                                                       function
+//                                                       (`parseObjectLiteral`)
+//                                                       directly against the
+//                                                       MAIN statement token
+//                                                       stream (once "{"/"}"
+//                                                       are lexed there too
+//                                                       — see `_PUNCT_SINGLE`)
+//                                                       rather than
+//                                                       `tp_scales_json`'s
+//                                                       own raw-substring
+//                                                       mini-lexer. Still
 //                                                       NOT a general
 //                                                       addition to `value`
 //                                                       anywhere else in
-//                                                       this grammar. Reuses
+//                                                       this grammar — only
+//                                                       these two named
+//                                                       call-sites ever
+//                                                       invoke it. Reuses
 //                                                       "=" as the key/value
 //                                                       separator — this
 //                                                       grammar's one and
@@ -272,6 +403,16 @@
 // live-preview — NOT the compiled JSON, see compile*() below for that)
 // ─────────────────────────────────────────────────────────────────────────
 //   Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls, meta }
+//               | { kind:'event', eventMeta, msgNode, calls: CallNode[], meta }
+//                  (* Sprint 12 — `eventMeta` is `{ log_tag?, min_level?,
+//                     render?, where? }`, each a ValueNode (object for
+//                     `where`); `msgNode` is the optional clause-level
+//                     `msg=` default CAPTURED only so `compileEventStmt`
+//                     can reject it with a clear message (mirrors
+//                     `alertMsg` above, but always an error here, never
+//                     accepted); `calls` is the channel call_list,
+//                     compiled via the same `compileAlertClause` path
+//                     ALERT's own call_list uses. *)
 //               | { kind:'order', calls: CallNode[], meta }
 //               | { kind:'bracket', call: CallNode, meta }   (* Sprint 8 —
 //                  exactly ONE call (never a list, unlike 'order') *)
@@ -369,6 +510,17 @@ const _MAX_DEPTH = 20;
 //    treated as a callable token name. ──────────────────────────────────
 const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'true', 'false']);
 export const RESERVED_WORDS = _RESERVED;
+
+// ── event_stmt reserved kwarg names (Sprint 12) — NOT in `_RESERVED`
+//    (same "contextual, not a reserved word" treatment Sprint 6's `msg=`
+//    already uses): recognized only by lookahead (a bare NAME spelled one
+//    of these four, immediately followed by a lone `EQ`), in
+//    `parseEventStmt`'s own event_meta loop AND (for the "combined with
+//    WHEN/DO" rejection) `parseAlertClauseBody`. A real channel/action
+//    token could in principle be named one of these — none are, in the
+//    live catalog, and the grammar's own contextual-lookahead style
+//    already accepts that same small risk for `msg=`. ───────────────────
+const _EVENT_META_KEYS = new Set(['log_tag', 'min_level', 'render', 'where']);
 
 // ── `always` sentinel leaf — the exact shape the real `market-open-nse` /
 //    `market-preclose-mcx` builtin agents use (agent_engine.py ~1578-1590).
@@ -488,6 +640,13 @@ class _ParseError extends Error {
 const _PUNCT_SINGLE = {
   '(': 'LPAREN', ')': 'RPAREN', '[': 'LBRACKET', ']': 'RBRACKET',
   ',': 'COMMA', '@': 'AT', '.': 'DOT', '&': 'AMP', '|': 'PIPE', '~': 'TILDE',
+  // Sprint 12 — `{`/`}` are lexed at the TOP level too (previously only
+  // ever produced by the SEPARATE tp_scales_json mini-lexer, `_lexObjScalesTok`
+  // below). Only `event_stmt`'s `where=` production actually consumes these
+  // tokens — no pre-Sprint-12 production in this grammar expected a bare
+  // `{`/`}` at the top level (it was a hard lex error before), so this is a
+  // no-op for every existing statement shape.
+  '{': 'LBRACE', '}': 'RBRACE',
 };
 
 function _isWordChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
@@ -548,17 +707,32 @@ function _parseArgSegment(segTokens, labelToken) {
   );
 }
 
-// ── tp_scales_json object-literal mini lexer/parser (Sprint 8) ─────────
-// STRICTLY scoped to one call-argument value shape (see the file-header
-// EBNF's `object_literal`/`tp_scales_json_value` note) — a dedicated,
-// self-contained lexer+parser, not routed through tokenizeCallStyle (no
-// `[`/`]`/`{`/`}` awareness at all) or the main `lexAgentStatement` token
-// stream (no `{`/`}` awareness either). Operates directly on the raw
-// bracket-span text (e.g. `[{at_pct=30, close_pct=50}]`), producing a
-// `{type:'list', value: ObjectValueNode[]}` ValueNode — the SAME shape
-// `parseListLiteral`/`parseValue` use elsewhere in this file, so every
-// downstream consumer (coercion, decompile) only ever sees one list/object
-// vocabulary.
+// ── object_literal production (Sprint 8, GENERALIZED Sprint 12) ────────
+// Sprint 8 introduced `object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"`
+// STRICTLY scoped to one call-argument value shape (`tp_scales_json=[...]`),
+// via a dedicated, self-contained mini lexer+parser (`_lexObjScalesTok` +
+// `parseObjectLiteral` below) operating on a RAW bracket-span substring
+// extracted from inside a call's `(...)` text — NOT routed through
+// `tokenizeCallStyle` (no `[`/`]`/`{`/`}` awareness at all) or the main
+// `lexAgentStatement` token stream.
+//
+// Sprint 12 GENERALIZES `parseObjectLiteral` (renamed from the original
+// `_parseObjectLiteral`, error wording genericized) into a reusable
+// production any call-site can invoke against ANY token array sharing this
+// file's `{type, value, start, end}` token shape — not just
+// `_lexObjScalesTok`'s mini stream. `event_stmt`'s `where=` (Sprint 12) is
+// the SECOND call-site: once `{`/`}` are lexed at the TOP level too (see
+// `_PUNCT_SINGLE` above), the MAIN `lexAgentStatement` token stream already
+// produces matching LBRACE/RBRACE/COMMA/EQ/NUMBER/STRING/NAME/EOF tokens,
+// so `parseObjectLiteral(state)` runs directly against the main parser's
+// `state` with ZERO changes — the exact same function, not a second
+// copy-pasted parser. Still produces a `{type:'list', value:
+// ObjectValueNode[]}` ValueNode for the `tp_scales_json_value` call-site
+// (list of objects) or a single `{type:'object', value}` ValueNode for the
+// `where=` call-site (one bare object, no enclosing list) — the SAME
+// `parseListLiteral`/`parseValue` ValueNode vocabulary used elsewhere in
+// this file either way, so every downstream consumer (coercion, decompile)
+// only ever sees one list/object vocabulary.
 
 function _lexObjScalesTok(text, baseStart) {
   const tokens = [];
@@ -605,12 +779,14 @@ function _lexObjScalesTok(text, baseStart) {
   return tokens;
 }
 
-/** `value` production, reused unmodified for an `obj_kwarg`'s RHS — a
- *  flat NUMBER/STRING/NAME only (a nested list_literal inside an object
- *  field is intentionally NOT supported — out of scope, no realistic
- *  tp_scales_json shape needs it; a nested object_literal is likewise not
- *  supported — object_literal does not recurse). */
-function _objScalesParseValue(state) {
+/** `value` production, reused for an `obj_kwarg`'s RHS — a flat
+ *  NUMBER/STRING/NAME only (a nested list_literal inside an object field is
+ *  intentionally NOT supported — out of scope, no realistic object_literal
+ *  call-site needs it; a nested object_literal is likewise not supported —
+ *  object_literal does not recurse). GENERIC (Sprint 12) — no
+ *  tp_scales_json-specific wording, since `where=` (event_stmt) shares this
+ *  exact function unchanged. */
+function _objLiteralParseValue(state) {
   const tok = state.tokens[state.pos];
   if (tok.type === 'NUMBER') { state.pos++; return { type: 'number', value: tok.value }; }
   if (tok.type === 'STRING') { state.pos++; return { type: 'string', value: tok.value }; }
@@ -618,10 +794,16 @@ function _objScalesParseValue(state) {
   throw new _ParseError('expected a value (number, string, or bare name) inside {...}', tok);
 }
 
-/** `object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"` */
-function _parseObjectLiteral(state) {
+/** `object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"` — GENERALIZED
+ *  (Sprint 12, see the section-header comment above) off its original
+ *  Sprint 8 tp_scales_json-only scoping. Exported so a future call-site
+ *  outside this file's own tp_scales_json/where= uses could reuse it too;
+ *  operates on ANY `{tokens, pos}` state sharing this file's token shape —
+ *  the mini `_lexObjScalesTok` stream (tp_scales_json) or the main
+ *  `lexAgentStatement` stream (event_stmt's `where=`), interchangeably. */
+export function parseObjectLiteral(state) {
   const open = state.tokens[state.pos];
-  if (open.type !== 'LBRACE') throw new _ParseError('expected "{" (tp_scales_json entries are {key=value, ...} objects)', open);
+  if (open.type !== 'LBRACE') throw new _ParseError('expected "{" (object literal entries are {key=value, ...})', open);
   state.pos++;
   const fields = {};
   if (state.tokens[state.pos].type !== 'RBRACE') {
@@ -632,7 +814,7 @@ function _parseObjectLiteral(state) {
       const eq = state.tokens[state.pos];
       if (eq.type !== 'EQ') throw new _ParseError(`expected "=" after key '${keyTok.value}' (object literal fields use "=", not ":")`, eq);
       state.pos++;
-      const value = _objScalesParseValue(state);
+      const value = _objLiteralParseValue(state);
       if (Object.prototype.hasOwnProperty.call(fields, keyTok.value)) {
         throw new _ParseError(`duplicate key '${keyTok.value}' in object literal`, keyTok);
       }
@@ -662,10 +844,10 @@ function _parseTpScalesJsonArg(rawBracketText, baseStart) {
   state.pos++;
   const items = [];
   if (state.tokens[state.pos].type !== 'RBRACKET') {
-    items.push(_parseObjectLiteral(state));
+    items.push(parseObjectLiteral(state));
     while (state.tokens[state.pos].type === 'COMMA') {
       state.pos++;
-      items.push(_parseObjectLiteral(state));
+      items.push(parseObjectLiteral(state));
     }
   }
   const close = state.tokens[state.pos];
@@ -1219,6 +1401,25 @@ function parseAlertClauseBody(state) {
     _advance(state);
     return { msgDefault: null, calls: 'nop' };
   }
+  // Sprint 12 — log_tag=/min_level=/render=/where= are event_stmt-ONLY
+  // reserved kwargs (see `_EVENT_META_KEYS`'s own comment). Hitting one
+  // here means the operator combined them with WHEN/DO (this function is
+  // only ever reached from the ordinary agent_stmt's ALERT clause, never
+  // from a bare event_stmt — see `parseEventStmt`) — reject with a clear,
+  // specific message instead of falling through to `parseCallList` (which
+  // would choke on the unconsumed trailing "=" with a confusing generic
+  // "unexpected trailing input" parse error) or, worse, silently parsing
+  // as a bare channel named e.g. "log_tag" and failing later with a
+  // confusing "unknown channel 'log_tag'" compile error.
+  if (tok.type === 'NAME' && !tok.hasCall && _EVENT_META_KEYS.has(tok.value.toLowerCase())) {
+    const evNext = state.tokens[state.pos + 1];
+    if (evNext && evNext.type === 'EQ') {
+      throw new _ParseError(
+        `'${tok.value.toLowerCase()}=' is only valid on a bare ALERT-only statement, not combined with WHEN/DO`,
+        tok,
+      );
+    }
+  }
   let msgDefault = null;
   if (tok.type === 'NAME' && !tok.hasCall && tok.value.toLowerCase() === 'msg') {
     const next = state.tokens[state.pos + 1];
@@ -1338,6 +1539,96 @@ export function parseAgentStmt(state) {
   return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta };
 }
 
+/** `event_stmt := "ALERT" event_meta call_list meta_item*` — Sprint 12,
+ *  notification (`kind='event'`) agents. Dispatched from `parseStatement`'s
+ *  own lookahead rule (see that function's dispatch comment) specifically
+ *  when a bare leading `ALERT` is immediately followed by one of the four
+ *  reserved event-meta kwargs (`log_tag=`/`min_level=`/`render=`/`where=`,
+ *  see `_EVENT_META_KEYS`) — never reached for an ordinary bare-ALERT
+ *  agent_stmt (e.g. `ALERT telegram DO nop`), which keeps going through
+ *  `parseAgentStmt`/`parseAlertClauseBody` exactly as before.
+ *
+ *  `event_meta := event_kw*` — each of the four keys at most once, ANY
+ *  ORDER (a plain loop, not four fixed positions); a duplicate key is a
+ *  PARSE-time error (not deferred to compile time, per the operator's
+ *  explicit instruction — unlike almost everything else in this grammar).
+ *  `where=` is the ONE key whose value is an `object_literal` (reusing
+ *  `parseObjectLiteral` directly against THIS function's own `state` — see
+ *  that function's own generalization comment); the other three use the
+ *  ordinary `value` production.
+ *
+ *  After `event_meta`, two guards run before the channel call_list:
+ *    1. WHEN/DO immediately following `event_meta` (e.g.
+ *       `ALERT log_tag=error, render=x DO nop`) is the OTHER half of the
+ *       "combined with WHEN/DO" rejection (see `parseAlertClauseBody`'s own
+ *       half, which covers `WHEN ... ALERT log_tag=...`) — a clear,
+ *       specific message instead of `parseCall`'s generic reserved-word
+ *       error (DO/WHEN are reserved words `parseCall` would reject anyway).
+ *    2. A contextual leading `msg=` default, recognized EXACTLY the same
+ *       way `parseAlertClauseBody` recognizes it (Sprint 6) — consumed
+ *       HERE (not left for `parseCallList` to choke on) so
+ *       `compileEventStmt` can raise a clear, specific error ("msg=
+ *       doesn't apply to event agents") instead of a confusing parse
+ *       failure. */
+export function parseEventStmt(state) {
+  const alertTok = _advance(state); // consume "ALERT"
+  const eventMeta = {};
+  const seenKeys = new Set();
+  while (true) {
+    const tok = _peek(state);
+    if (tok.type !== 'NAME' || tok.hasCall) break;
+    const lower = tok.value.toLowerCase();
+    if (!_EVENT_META_KEYS.has(lower)) break;
+    const next = state.tokens[state.pos + 1];
+    if (!next || next.type !== 'EQ') break;
+    if (seenKeys.has(lower)) throw new _ParseError(`duplicate event-meta key '${lower}='`, tok);
+    seenKeys.add(lower);
+    _advance(state); // key
+    _advance(state); // "="
+    eventMeta[lower] = lower === 'where' ? parseObjectLiteral(state) : parseValue(state);
+    const comma = _peek(state);
+    if (comma.type !== 'COMMA') throw new _ParseError(`expected "," after ${lower}=...`, comma);
+    _advance(state);
+  }
+  const after = _peek(state);
+  if (after.type === 'NAME' && !after.hasCall && (_wordIs(after, 'when') || _wordIs(after, 'do'))) {
+    throw new _ParseError(
+      'log_tag=/min_level=/render=/where= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      after,
+    );
+  }
+  let msgNode = null;
+  const msgTok = _peek(state);
+  if (msgTok.type === 'NAME' && !msgTok.hasCall && msgTok.value.toLowerCase() === 'msg') {
+    const msgNext = state.tokens[state.pos + 1];
+    if (msgNext && msgNext.type === 'EQ') {
+      _advance(state); // consume "msg"
+      _advance(state); // consume "="
+      msgNode = parseValue(state);
+      const comma = _peek(state);
+      if (comma.type !== 'COMMA') throw new _ParseError('expected "," after msg="..." default, followed by a channel list', comma);
+      _advance(state);
+    }
+  }
+  const calls = parseCallList(state);
+  // Second half of the "combined with WHEN/DO" guard — `after` (above)
+  // only catches DO/WHEN appearing IMMEDIATELY after event_meta, before
+  // any channel; a trailing `DO ...` AFTER the channel call_list (e.g.
+  // `ALERT log_tag=error, render=error, telegram DO nop`) must be caught
+  // here instead, or it falls through as unconsumed trailing input and
+  // surfaces parseStatement's generic "unexpected trailing input" error
+  // rather than this clear, specific one.
+  const afterCalls = _peek(state);
+  if (afterCalls.type === 'NAME' && !afterCalls.hasCall && _wordIs(afterCalls, 'do')) {
+    throw new _ParseError(
+      'log_tag=/min_level=/render=/where= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      afterCalls,
+    );
+  }
+  const meta = parseMetaClause(state);
+  return { kind: 'event', eventMeta, msgNode, calls, meta, start: alertTok.start };
+}
+
 /** `order_stmt := call ("," call)* meta_item*` — restricted to
  *  order/place_order calls. A non-empty `meta` here is syntactically fine
  *  (parsed, not rejected) but is a COMPILE-time error — see
@@ -1421,12 +1712,29 @@ export function parseStatement(text) {
     // leading `bracket(...)` (Sprint 8) or `token(...)` (Sprint 10) call
     // straight to its own standalone-statement parser is unambiguous too —
     // mirrors how WHEN/ALERT/DO dispatch to agent_stmt.
+    //
+    // Sprint 12 — event_stmt dispatch rule, PRECISE: a bare leading `ALERT`
+    // (no `WHEN` before it) routes to `parseEventStmt` specifically when
+    // its FIRST kwarg — before any bare channel name — is one of the four
+    // reserved event-meta keys (`log_tag=`/`min_level=`/`render=`/`where=`,
+    // see `_EVENT_META_KEYS`); this is checked via a 2-token lookahead
+    // (NAME matching one of those keys, immediately followed by a lone
+    // `EQ`) PAST the `ALERT` token itself. An ordinary bare-ALERT agent_stmt
+    // (e.g. `ALERT telegram DO nop`) never matches this lookahead (no real
+    // channel is named one of these four reserved words), so it falls
+    // through to `isAgentStmt` unchanged.
     const first = _peek(state);
-    const isAgentStmt = first.type === 'NAME' && !first.hasCall
+    const firstIsAlert = first.type === 'NAME' && !first.hasCall && _wordIs(first, 'alert');
+    const evSecond = firstIsAlert ? state.tokens[state.pos + 1] : null;
+    const evThird = firstIsAlert ? state.tokens[state.pos + 2] : null;
+    const isEventStmt = firstIsAlert && evSecond && evSecond.type === 'NAME' && !evSecond.hasCall
+      && _EVENT_META_KEYS.has(evSecond.value.toLowerCase()) && evThird && evThird.type === 'EQ';
+    const isAgentStmt = !isEventStmt && first.type === 'NAME' && !first.hasCall
       && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do'));
-    const isBracketStmt = !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
-    const isTokenStmt = !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
-    const ast = isAgentStmt ? parseAgentStmt(state)
+    const isBracketStmt = !isEventStmt && !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
+    const isTokenStmt = !isEventStmt && !isAgentStmt && !isBracketStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'token');
+    const ast = isEventStmt ? parseEventStmt(state)
+      : isAgentStmt ? parseAgentStmt(state)
       : isBracketStmt ? parseBracketStmt(state)
       : isTokenStmt ? parseTokenStmt(state)
       : parseOrderStmt(state);
@@ -2109,6 +2417,113 @@ function compileAgentStmt(ast, catalog, opts) {
   };
 }
 
+// ── event_stmt compiler (Sprint 12) — notification (kind='event') agents.
+// `log_tag`/`render` are free-text, preserved EXACTLY as typed (no enum/
+// case normalization — see `_EVENT_META_KEYS`'s own file-header note and
+// the PLAN's explicit "asymmetric casing" rule); `min_level` is the ONE
+// field that DOES get case-normalized, via the SAME `_coerceValueForSpec`
+// enum path every other enum field in this grammar already uses. ───────
+const _MIN_LEVEL_SPEC = Object.freeze({ type: 'enum', enum: ['DEBUG', 'INFO', 'WARNING', 'ERROR', 'CRITICAL'] });
+const _MIN_LEVEL_DEFAULT = 'INFO'; // confirmed against event_agents.py:validate_seed_spec's own `str(leaf.get("min_level", "INFO"))` default
+
+/** Extract a free-text value (bare NAME or quoted STRING) PRESERVED
+ *  EXACTLY as typed — no case normalization, unlike an enum field. Used
+ *  for `log_tag=`/`render=` (never `min_level=`, which IS enum-normalized
+ *  via `_MIN_LEVEL_SPEC` above). */
+function _freeTextValue(valueNode, label) {
+  if (valueNode.type === 'string' || valueNode.type === 'name') return { value: valueNode.value };
+  return { error: _err(`${label}: expected a bare word or quoted string`) };
+}
+
+/** Compile an `event_stmt` AST (see `parseEventStmt`) to a `kind:'event'`
+ *  agent-create payload. The channel call_list is compiled via the EXACT
+ *  SAME `compileAlertClause` path ALERT's own call_list already uses (so
+ *  `$ref` Token references, per-channel params, and the `enabled: true`
+ *  stamp all come free) — but with NO clause-level `msg=` default
+ *  (`null`), since an event-agent channel carries no message at all (the
+ *  `render=` renderer owns the message body server-side). `msg=`/`message=`
+ *  appearing ANYWHERE in the clause (the clause-level default captured by
+ *  `parseEventStmt`, OR a per-channel own `msg=`/`message=` kwarg) is a
+ *  compile-time error naming the offending key, per the operator's
+ *  explicit instruction that `render=` — not `msg=` — owns the message for
+ *  an event agent. */
+function compileEventStmt(ast, catalog) {
+  const errors = [];
+
+  const logTagNode = ast.eventMeta.log_tag;
+  const renderNode = ast.eventMeta.render;
+  const minLevelNode = ast.eventMeta.min_level;
+  const whereNode = ast.eventMeta.where;
+
+  // `msg=`/`message=` rejection, naming EVERY other reserved key present
+  // alongside it (not just a generic "doesn't apply" wording) — per the
+  // operator's explicit instruction that "log_tag= and msg= both present"
+  // must name both keys, not just complain about msg= in isolation.
+  if (ast.msgNode != null) {
+    const present = ['log_tag', 'min_level', 'render', 'where'].filter((k) => ast.eventMeta[k]);
+    const alongside = present.length ? ` (combined with ${present.map((k) => `${k}=`).join(', ')})` : '';
+    errors.push(_err(`msg= doesn't apply to event agents${alongside} — set render= instead`));
+  }
+  for (const call of ast.calls) {
+    const hasMsg = (call.args || []).some((a) => a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()));
+    if (hasMsg) {
+      errors.push(_err(`msg=/message= doesn't apply to event agents (channel '${call.name}') — set render= instead`));
+    }
+  }
+
+  let logTag = null;
+  if (!logTagNode) errors.push(_err("event agent: missing required 'log_tag='"));
+  else {
+    const r = _freeTextValue(logTagNode, 'log_tag');
+    if (r.error) errors.push(r.error); else logTag = r.value;
+  }
+
+  let renderName = null;
+  if (!renderNode) errors.push(_err("event agent: missing required 'render='"));
+  else {
+    const r = _freeTextValue(renderNode, 'render');
+    if (r.error) errors.push(r.error); else renderName = r.value;
+  }
+
+  let minLevel = _MIN_LEVEL_DEFAULT;
+  if (minLevelNode) {
+    const r = _coerceValueForSpec(minLevelNode, _MIN_LEVEL_SPEC, 'min_level', 'event agent');
+    if (r.error) errors.push(r.error); else minLevel = r.value;
+  }
+
+  let where;
+  if (whereNode) where = _unwrapValueNode(whereNode);
+
+  // Strip any (already-rejected-above) msg=/message= kwarg before handing
+  // the channel list to compileAlertClause — avoids a confusing SECOND,
+  // unrelated "channel has no message" error cascading on top of our own
+  // clear one above.
+  const sanitizedCalls = ast.calls.map((call) => ({
+    ...call,
+    args: (call.args || []).filter((a) => !(a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()))),
+  }));
+  const eventsResult = compileAlertClause(sanitizedCalls, null, catalog);
+  errors.push(...eventsResult.errors);
+
+  const metaFields = compileMetaClause(ast.meta, errors);
+
+  if (errors.length) return { kind: 'event', errors, agent: null };
+
+  const log = { tag: logTag, min_level: minLevel };
+  if (where !== undefined) log.where = where;
+
+  return {
+    kind: 'event', errors: [],
+    agent: {
+      kind: 'event',
+      conditions: { log },
+      events: eventsResult.events,
+      actions: [{ type: 'render', render: renderName }],
+      ...metaFields,
+    },
+  };
+}
+
 /** Compile one bare `order(...)` call to a leg object using FIELD NAMES
  *  shared by both the ticket (`side`/`account`) and basket
  *  (`transaction_type`, no `account` — grouped at the BasketGroup level)
@@ -2393,6 +2808,10 @@ export function compileStatement(ast, catalog, opts = {}) {
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
     return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
+  }
+  if (ast.kind === 'event') {
+    const r = compileEventStmt(ast, catalog);
+    return { kind: 'event', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
   }
   if (ast.kind === 'bracket') {
     const r = compileBracketStmt(ast, opts);
@@ -3231,6 +3650,104 @@ export function decompileAgent({ conditions, events, actions, name = undefined, 
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
   const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
+  const roundTrip = compileAgentCliStatement(text, catalog, opts);
+  if (!roundTrip.ok) {
+    const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
+    return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
+  }
+  return { text, errors: [] };
+}
+
+/** Decompile a stored `kind='event'` agent's `{conditions, events,
+ *  actions}` (plus the shared meta fields) back to its equivalent `ALERT
+ *  log_tag=... render=... ...` CLI text (Sprint 12) — the reverse of
+ *  `compileEventStmt`. Distinct from `decompileAgent` (which only ever
+ *  handles the ordinary `WHEN/ALERT/DO` shape) since a `kind='event'`
+ *  row's `conditions`/`actions` are a STRUCTURALLY DIFFERENT shape
+ *  (`{"log": {...}}`, not a WHEN condition tree; a single
+ *  `[{"type":"render","render":...}]` entry, not a generic DO action
+ *  list) — reuses `decompileEvents` UNCHANGED for the `events` array (the
+ *  ONE piece that genuinely is the same shape ALERT's own channel list
+ *  uses) plus the shared `decompileMetaClause` helper every other
+ *  decompiler in this file already uses.
+ *
+ *  Fails loud (never guesses) on anything this syntax can't express yet —
+ *  e.g. an `actions[0]` carrying an extra key beyond `type`/`render` (a
+ *  real seeded agent's own repeat-dedup `"gate"` key — see
+ *  `backend/api/algo/event_agents.py`'s `ERROR_AGENT` — is NOT expressible
+ *  by this syntax yet) — same "fail loud, don't silently drop a field
+ *  that would change behavior on resave" convention
+ *  `decompileEvents`/`decompileActions` already follow. */
+export function decompileEventAgent({ conditions, events, actions, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
+  const errors = [];
+
+  const log = conditions && typeof conditions === 'object' && !Array.isArray(conditions) ? conditions.log : null;
+  if (!log || typeof log !== 'object' || Array.isArray(log)) {
+    errors.push(_err(`event agent: 'conditions' must be a {"log": {...}} shape, got ${JSON.stringify(conditions)}`));
+  }
+
+  let logTag = null, minLevel = null, whereObj = null;
+  if (log) {
+    if (typeof log.tag !== 'string' || !log.tag) {
+      errors.push(_err('event agent: conditions.log.tag must be a non-empty string'));
+    } else {
+      logTag = log.tag;
+    }
+    const rawLevel = 'min_level' in log ? log.min_level : _MIN_LEVEL_DEFAULT;
+    if (typeof rawLevel !== 'string' || !_MIN_LEVEL_SPEC.enum.includes(String(rawLevel).toUpperCase())) {
+      errors.push(_err(`event agent: conditions.log.min_level ${JSON.stringify(log.min_level)} is not a recognized level`));
+    } else {
+      minLevel = String(rawLevel).toUpperCase();
+    }
+    if ('where' in log) {
+      if (!log.where || typeof log.where !== 'object' || Array.isArray(log.where)) {
+        errors.push(_err('event agent: conditions.log.where must be an object'));
+      } else {
+        whereObj = log.where;
+      }
+    }
+  }
+
+  const eventsResult = decompileEvents(events, catalog);
+  errors.push(...eventsResult.errors);
+  if (!eventsResult.errors.length && eventsResult.text === 'nop') {
+    errors.push(_err('event agent: at least one channel is required — an empty events array has no CLI representation for this syntax yet'));
+  }
+
+  let renderName = null;
+  if (!Array.isArray(actions) || actions.length !== 1 || !actions[0] || typeof actions[0] !== 'object') {
+    errors.push(_err(`event agent: 'actions' must be a single-entry [{"type":"render","render":"<name>"}] array, got ${JSON.stringify(actions)}`));
+  } else {
+    const act = actions[0];
+    const extraKeys = Object.keys(act).filter((k) => k !== 'type' && k !== 'render');
+    if (act.type !== 'render' || typeof act.render !== 'string' || !act.render) {
+      errors.push(_err(`event agent: actions[0] must be {"type":"render","render":"<name>"}, got ${JSON.stringify(act)}`));
+    } else if (extraKeys.length) {
+      errors.push(_err(`event agent: actions[0] has extra key(s) [${extraKeys.join(', ')}] not expressible by this syntax yet`));
+    } else {
+      renderName = act.render;
+    }
+  }
+
+  const metaResult = decompileMetaClause({ name, description, tags, group });
+  errors.push(...metaResult.errors);
+
+  if (errors.length) return { text: null, errors };
+
+  const logTagR = _isBareable(logTag) ? { text: logTag } : _quoteString(logTag);
+  if (logTagR.error) return { text: null, errors: [_err(`log_tag: ${logTagR.message}`)] };
+  const renderR = _isBareable(renderName) ? { text: renderName } : _quoteString(renderName);
+  if (renderR.error) return { text: null, errors: [_err(`render: ${renderR.message}`)] };
+
+  const parts = [`log_tag=${logTagR.text}`, `min_level=${minLevel}`, `render=${renderR.text}`];
+  if (whereObj) {
+    const whereR = _renderObjectLiteral(whereObj);
+    if (whereR.error) return { text: null, errors: [_err(`where: ${whereR.message}`)] };
+    parts.push(`where=${whereR.text}`);
+  }
+
+  const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
+  const text = `ALERT ${parts.join(', ')}, ${eventsResult.text}${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';

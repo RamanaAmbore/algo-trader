@@ -1149,3 +1149,122 @@ describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
     expect(r.agent.group).toBe('hedge-book');
   });
 });
+
+// ── Sprint 12 — event_stmt: ALERT-only statement for notification
+//    (kind='event') agents ────────────────────────────────────────────────
+
+describe('Sprint 12 — event_stmt: full compile of the example statement', () => {
+  it('compiles the example statement to the exact JSON shape', () => {
+    const r = compile('ALERT log_tag=error, min_level=ERROR, render=error, telegram, email, log #name="Error alert"');
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('event');
+    expect(r.agent).toEqual({
+      kind: 'event',
+      conditions: { log: { tag: 'error', min_level: 'ERROR' } },
+      events: [
+        { channel: 'telegram', enabled: true },
+        { channel: 'email', enabled: true },
+        { channel: 'log', enabled: true },
+      ],
+      actions: [{ type: 'render', render: 'error' }],
+      name: 'Error alert',
+    });
+  });
+
+  it('log_tag= missing is a compile error', () => {
+    const r = compile('ALERT render=error, telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /missing required 'log_tag='/.test(e.message))).toBe(true);
+  });
+
+  it('render= missing is a compile error', () => {
+    const r = compile('ALERT log_tag=error, telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /missing required 'render='/.test(e.message))).toBe(true);
+  });
+
+  it('min_level= omitted defaults to "INFO"', () => {
+    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.log.min_level).toBe('INFO');
+  });
+
+  it('min_level=error (lowercase input) compiles to "ERROR" (the one field that IS case-normalized)', () => {
+    const r = compile('ALERT log_tag=error, min_level=error, render=error, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.log.min_level).toBe('ERROR');
+  });
+
+  it('log_tag= and render= are preserved EXACTLY as typed — never case-normalized', () => {
+    const r = compile('ALERT log_tag=Chase, render=ChaseCancel, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.log.tag).toBe('Chase');
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'ChaseCancel' }]);
+  });
+
+  it('where={alert_event=cancel_unconfirmed} compiles with the value preserved as the literal string, NOT re-cased', () => {
+    const r = compile('ALERT log_tag=chase, min_level=CRITICAL, render=chase_cancel, where={alert_event=cancel_unconfirmed}, ntfy #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions.log.where).toEqual({ alert_event: 'cancel_unconfirmed' });
+  });
+
+  it('where= is omitted entirely from conditions.log when not supplied (never an empty {})', () => {
+    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect('where' in r.agent.conditions.log).toBe(false);
+  });
+
+  it('a channel with its own param still compiles via the exact same ALERT call_list path (e.g. ntfy(priority=urgent))', () => {
+    const r = compile('ALERT log_tag=error, render=error, ntfy(priority=urgent) #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'ntfy', enabled: true, priority: 'urgent' }]);
+  });
+
+  it('msg= combined with log_tag= is a compile error naming both keys', () => {
+    const r = compile('ALERT log_tag=error, render=error, msg="hi", telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /msg=.*doesn't apply to event agents.*log_tag=/.test(e.message))).toBe(true);
+  });
+
+  it('a per-channel own msg= is rejected the same way, naming the channel', () => {
+    const r = compile('ALERT log_tag=error, render=error, telegram(msg="hi") #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /doesn't apply to event agents \(channel 'telegram'\)/.test(e.message))).toBe(true);
+  });
+
+  it('log_tag= combined with WHEN is a compile error, not a confusing "unknown channel" fallthrough', () => {
+    const r = compile('WHEN always ALERT log_tag=error, render=error DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /unknown channel/.test(e.message))).toBe(false);
+  });
+
+  it('log_tag= combined with a trailing DO is a compile error', () => {
+    const r = compile('ALERT log_tag=error, render=error, telegram DO nop #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
+  });
+
+  it('a duplicate event-meta key is a PARSE-time error (not deferred to compile time)', () => {
+    const r = compile('ALERT log_tag=error, log_tag=chase, render=error, telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /duplicate event-meta key 'log_tag='/.test(e.message))).toBe(true);
+  });
+
+  it('dispatch correctly distinguishes "ALERT log_tag=..." (event_stmt) from an ordinary WHEN-omitted "ALERT msg=... telegram" (agent_stmt)', () => {
+    const eventForm = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    expect(eventForm.ok).toBe(true);
+    expect(eventForm.kind).toBe('event');
+
+    const ordinaryForm = compile('ALERT msg="hi", telegram DO nop #name="x"');
+    expect(ordinaryForm.ok).toBe(true);
+    expect(ordinaryForm.kind).toBe('agent');
+    expect(ordinaryForm.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'hi' }]);
+  });
+
+  it('a real channel bearing no event-meta kwarg still dispatches as the ordinary bare-ALERT agent_stmt (no regression)', () => {
+    const r = compile('ALERT telegram DO nop #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('agent');
+  });
+});

@@ -31,7 +31,8 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
-  decompileActions, decompileAgent, decompileMetaClause, decompileBracket, ALWAYS_LEAF,
+  decompileActions, decompileAgent, decompileMetaClause, decompileBracket,
+  decompileEventAgent, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
 // ── Fixture catalog ──────────────────────────────────────────────────────
@@ -1089,5 +1090,98 @@ describe('Sprint 8 — bracket(...) decompile round-trip', () => {
     const dec = decompileBracketTemplate({ tp_pct: 30 });
     expect(dec.text).toBeNull();
     expect(dec.errors.some(e => /missing required 'name'/.test(e.message))).toBe(true);
+  });
+});
+
+// ── Sprint 12 — event_stmt decompiler (decompileEventAgent) ────────────────
+//
+// `ERROR_AGENT` (backend/api/algo/event_agents.py, SEEDED_AGENTS) — its
+// REAL `conditions`/`events` are reused here VERBATIM:
+//   conditions: {"log": {"tag": "error", "min_level": "ERROR"}}
+//   events:     [{"channel": "telegram", "enabled": true},
+//                {"channel": "ntfy", "enabled": true}]
+// Its REAL `actions` is `[{"type": "render", "render": "error", "gate":
+// true}]` — the extra `gate` key (the render action's own repeat-dedup
+// flag, consumed by `_gate_key`/`_channel_enabled` in event_agents.py) is
+// NOT expressible by this syntax yet (compileEventStmt's compiled shape
+// is always exactly `{"type":"render","render":"<name>"}`, nothing more) —
+// per .claude/PLAN.md's explicit scoping note, the round-trip assertion
+// below is scoped to conditions/events/actions ONLY, using a trimmed
+// `actions` array (dropping `gate`) so the test exercises what THIS
+// syntax can express. No other Agent-row field (scope, cooldown_minutes,
+// trade_mode, lifespan_type, ...) is asserted here either — none of them
+// are produced by compileEventStmt at all.
+describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)', () => {
+  const ERROR_AGENT_LIKE = {
+    conditions: { log: { tag: 'error', min_level: 'ERROR' } },
+    events: [
+      { channel: 'telegram', enabled: true },
+      { channel: 'ntfy', enabled: true },
+    ],
+    actions: [{ type: 'render', render: 'error' }], // gate:true dropped — not expressible yet, see note above
+    name: 'Error alert',
+  };
+
+  function decompileEvent(agentJson, opts = {}) {
+    return decompileEventAgent(agentJson, CATALOG, { lotSizeOf, ...opts });
+  }
+
+  it('decompiles to the expected ALERT log_tag=... CLI text', () => {
+    const dec = decompileEvent(ERROR_AGENT_LIKE);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('ALERT log_tag=error, min_level=ERROR, render=error, telegram, ntfy #name="Error alert"');
+  });
+
+  it('recompiles back to the IDENTICAL conditions/events/actions JSON (round-trip)', () => {
+    const dec = decompileEvent(ERROR_AGENT_LIKE);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(ERROR_AGENT_LIKE.conditions);
+    expect(recompiled.agent.events).toEqual(ERROR_AGENT_LIKE.events);
+    expect(recompiled.agent.actions).toEqual(ERROR_AGENT_LIKE.actions);
+    expect(recompiled.agent.name).toBe(ERROR_AGENT_LIKE.name);
+  });
+
+  it('min_level absent on the stored row defaults to "INFO" on decompile (matches the compiler default)', () => {
+    const dec = decompileEvent({
+      conditions: { log: { tag: 'summary' } },
+      events: [{ channel: 'telegram', enabled: true }],
+      actions: [{ type: 'render', render: 'summary' }],
+      name: 'x',
+    });
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('min_level=INFO');
+  });
+
+  it('a stored where= object round-trips with values preserved exactly, not re-cased', () => {
+    const agentJson = {
+      conditions: { log: { tag: 'chase', min_level: 'CRITICAL', where: { alert_event: 'cancel_unconfirmed' } } },
+      events: [{ channel: 'ntfy', enabled: true, priority: 'urgent' }],
+      actions: [{ type: 'render', render: 'chase_cancel' }],
+      name: 'Chase cancel',
+    };
+    const dec = decompileEvent(agentJson);
+    expect(dec.errors).toEqual([]);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+  });
+
+  it('fails loud (never silently drops) on an actions[0] carrying an extra key not expressible by this syntax (e.g. the real ERROR_AGENT\'s own "gate")', () => {
+    const dec = decompileEvent({
+      conditions: ERROR_AGENT_LIKE.conditions,
+      events: ERROR_AGENT_LIKE.events,
+      actions: [{ type: 'render', render: 'error', gate: true }],
+      name: 'Error alert',
+    });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /not expressible by this syntax yet/.test(e.message))).toBe(true);
+  });
+
+  it('fails loud on a malformed conditions shape (missing "log")', () => {
+    const dec = decompileEvent({ conditions: { all: [] }, events: [], actions: [] });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
   });
 });
