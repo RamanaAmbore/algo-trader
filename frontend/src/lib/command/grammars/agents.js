@@ -1282,3 +1282,654 @@ export function validateAgentCliStatement(text, catalog, opts = {}) {
   const result = compileAgentCliStatement(text, catalog, opts);
   return { ok: result.ok, errors: result.errors };
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// (f) Decompiler — reverse of (d) above. Given an agent's CURRENT
+//     conditions/events/actions JSON (never the audit-only cli_source
+//     column — see .claude/PLAN.md), regenerate equivalent CLI text.
+//     Round-trip contract: compile(decompile(J)) must be a semantically
+//     valid agent whose conditions/events/actions are reconstructible to
+//     J for every shape the COMPILER itself can produce; a handful of
+//     shapes that only a non-CLI author (JSON textarea / AI-draft / direct
+//     admin edit) could produce have NO exact CLI form at all (documented
+//     at each call site below) — those either normalize to an equivalent-
+//     but-differently-shaped JSON on resave, or fail loud with a
+//     structured error, per this sprint's explicit "never guess" mandate.
+//
+//     KEY-NAME CHOICE (documented per .claude/PLAN.md's explicit ask):
+//     decompiled output always uses the REAL schema key names (account,
+//     symbol, chase_level, ...), never the KWARG_ALIASES short forms
+//     (acct, sym, chase, ...). Simpler and safer — the compiler accepts
+//     real names everywhere aliases are accepted, so there is no
+//     round-trip reason to prefer aliases, and using real names avoids a
+//     second alias-resolution pass on the decompile side for no benefit.
+// ═══════════════════════════════════════════════════════════════════════
+
+const _CMP_LOW_OPS = new Set(['<', '<=']);
+const _CMP_HIGH_OPS = new Set(['>', '>=']);
+const _BARE_IDENT_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/** True iff `s` can be written bare (unquoted) per the grammar's own
+ *  "enum values are bare" convention — a plain identifier, and not a
+ *  reserved word (which would be a parse error as a bare value/name). */
+function _isBareable(s) {
+  return typeof s === 'string' && _BARE_IDENT_RE.test(s) && !_RESERVED.has(s.toLowerCase());
+}
+
+/** Render `n` as a CLI numeric literal. Returns `null` (never a lossy
+ *  guess) when `n` isn't finite or would stringify with exponent
+ *  notation (`1e-7`) — the lexer's NUMBER rule has no exponent support,
+ *  so emitting one would produce unparseable text (advisor-flagged). */
+function _renderNumber(n) {
+  if (typeof n !== 'number' || !Number.isFinite(n)) return null;
+  const s = String(n);
+  if (/e/i.test(s)) return null;
+  return s;
+}
+
+/** Quote a free-text string for CLI output. The lexer has no escape
+ *  sequences, so a string containing BOTH quote characters has no safe
+ *  single-token representation — fail loud rather than mangle it. */
+function _quoteString(s) {
+  if (s.includes('"') && s.includes("'")) {
+    return { error: true, message: `cannot represent a value containing both " and ' as a CLI string literal` };
+  }
+  const q = s.includes('"') ? "'" : '"';
+  return { text: `${q}${s}${q}` };
+}
+
+/** Render one list-literal item (leaf `in`/`not_in` RHS, or a generic
+ *  param's array passthrough) — bare if it's a safe identifier/number,
+ *  quoted otherwise. Mirrors `_compileListValue`'s acceptance of either
+ *  spelling for a non-numeric metric's list items. */
+function _renderListItem(v) {
+  if (typeof v === 'number') {
+    const t = _renderNumber(v);
+    return t == null ? { error: true, message: 'list item cannot be rendered (exponent notation)' } : { text: t };
+  }
+  if (typeof v === 'boolean') return { text: v ? 'true' : 'false' };
+  if (typeof v === 'string') return _isBareable(v) ? { text: v } : _quoteString(v);
+  return { error: true, message: `list item of type ${typeof v} has no CLI representation` };
+}
+
+function _renderListLiteral(items) {
+  const parts = [];
+  for (const v of items) {
+    const r = _renderListItem(v);
+    if (r.error) return r;
+    parts.push(r.text);
+  }
+  return { text: `[${parts.join(', ')}]` };
+}
+
+/** Render a single param value against its `params_schema` field spec —
+ *  the decompile-direction mirror of `_coerceValueForSpec`. Enum values
+ *  always render bare when possible (grammar's own documented
+ *  convention) and fall back to quoted when the value isn't a safe bare
+ *  identifier (e.g. `order_type=SL-M`) — `_coerceValueForSpec` accepts
+ *  either spelling for `type:'enum'`, so quoting is always safe there.
+ *  `type:'number'` fields that are `token_ref_ok` may legitimately hold
+ *  an EXPRESSION STRING (e.g. `qty=base_lots * 2`, `price=ltp * 1.01`)
+ *  instead of a literal — rendered quoted, exactly as it would have been
+ *  typed, never coerced to a bare (unparseable) arithmetic expression. */
+function _renderParamValue(value, spec) {
+  const type = spec && spec.type;
+  if (type === 'number') {
+    if (typeof value === 'string') return _quoteString(value); // token_ref_ok expression
+    if (typeof value === 'number') {
+      const t = _renderNumber(value);
+      return t == null ? { error: true, message: 'exponent-notation number cannot be rendered' } : { text: t };
+    }
+    return { error: true, message: `expected a number, got ${JSON.stringify(value)}` };
+  }
+  if (type === 'boolean') {
+    if (typeof value === 'boolean') return { text: value ? 'true' : 'false' };
+    return { error: true, message: 'expected true/false' };
+  }
+  if (type === 'enum') {
+    if (typeof value !== 'string') return { error: true, message: 'expected an enum value' };
+    return _isBareable(value) ? { text: value } : _quoteString(value);
+  }
+  if (type === 'string') {
+    if (typeof value !== 'string') return { error: true, message: 'expected a free-text string' };
+    return _quoteString(value);
+  }
+  // Unknown/absent schema type — best-effort passthrough, mirrors
+  // `_coerceValueForSpec`'s own fallback branch.
+  if (typeof value === 'number') {
+    const t = _renderNumber(value);
+    return t == null ? { error: true, message: 'exponent-notation number cannot be rendered' } : { text: t };
+  }
+  if (typeof value === 'boolean') return { text: value ? 'true' : 'false' };
+  if (typeof value === 'string') return _isBareable(value) ? { text: value } : _quoteString(value);
+  if (Array.isArray(value)) return _renderListLiteral(value);
+  return { error: true, message: 'value has no CLI representation' };
+}
+
+/** Resolve + reverse a stored metric-call string (e.g. `"mean_pnl(30)"`,
+ *  or a bare fixed-window token like `"mean_pnl_30m"`) back to its
+ *  KEYWORD call-syntax CLI spelling, per `.claude/PLAN.md`'s explicit
+ *  instruction — parses the string's positional value(s) and zips them
+ *  against the resolved catalog entry's `paramKeys`, in the SAME order
+ *  `_compileMetricCallString` used to build the string. A bare token
+ *  (no parens) decompiles unchanged. Returns `{ entry, text }` or
+ *  `{ error }` — never throws, never guesses on an arity/catalog
+ *  mismatch (fail loud, per the sprint's "never guess" mandate). */
+function _resolveMetricCall(metricStr, catalog) {
+  if (typeof metricStr !== 'string' || !metricStr) {
+    return { error: `invalid metric reference ${JSON.stringify(metricStr)}` };
+  }
+  const m = /^([A-Za-z_][A-Za-z0-9_]*)\(([^()]*)\)$/.exec(metricStr);
+  const name = m ? m[1] : metricStr;
+  const entry = catalog.metrics.get(name.toLowerCase());
+  if (!entry) return { error: `unknown metric '${name}' referenced in stored condition` };
+  if (!m) {
+    if (entry.paramKeys.length !== 0) {
+      return { error: `metric '${entry.token}' requires argument(s) (${entry.paramKeys.join(', ')}) but the stored call has none` };
+    }
+    return { entry, text: entry.token };
+  }
+  const rawArgs = m[2].trim() === '' ? [] : m[2].split(',').map(s => s.trim());
+  if (rawArgs.length !== entry.paramKeys.length) {
+    return { error: `metric '${entry.token}': expected ${entry.paramKeys.length} argument(s), stored call has ${rawArgs.length}` };
+  }
+  const pairs = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    const n = Number(rawArgs[i]);
+    if (!Number.isFinite(n)) return { error: `metric '${entry.token}': stored argument '${rawArgs[i]}' is not numeric` };
+    const t = _renderNumber(n);
+    if (t == null) return { error: `metric '${entry.token}': stored argument '${rawArgs[i]}' cannot be rendered as a CLI numeric literal` };
+    pairs.push(`${entry.paramKeys[i]}=${t}`);
+  }
+  return { entry, text: `${entry.token}(${pairs.join(', ')})` };
+}
+
+/** Resolve a stored scope string (e.g. `"positions.expiring_today.nfo"`)
+ *  against the catalog. Scope tokens are always stored/typed as a single
+ *  dotted string with no call arguments in the live catalog today, so
+ *  this is a direct lookup, not a reconstruction. Named distinctly from
+ *  the compiler's own `_resolveScopeString(scopeNode, ...)` above (which
+ *  takes a parsed AST `ScopeNode`, not a stored string) to avoid a
+ *  same-name collision in this shared module. */
+function _decompileResolveScopeString(scopeStr, catalog) {
+  if (typeof scopeStr !== 'string' || !scopeStr) return { error: `invalid scope reference ${JSON.stringify(scopeStr)}` };
+  const entry = catalog.scopes.get(scopeStr.toLowerCase());
+  if (!entry) return { error: `unknown scope '${scopeStr}' referenced in stored condition` };
+  return { text: entry.token };
+}
+
+/** True iff `x` is a plain (non-composite, non-$ref) leaf shape — has
+ *  `metric`/`scope`/`op` as strings and none of `all`/`any`/`not`/`$ref`.
+ *  Used by the between-chain-reversal heuristic below to confirm BOTH
+ *  `all` children are genuine leaves before attempting the collapse. */
+function _isPlainLeaf(x) {
+  return !!x && typeof x === 'object'
+    && typeof x.metric === 'string' && typeof x.scope === 'string' && typeof x.op === 'string'
+    && !('all' in x) && !('any' in x) && !('not' in x) && !('$ref' in x);
+}
+
+/** Attempt to reverse a STRICT/mixed-strictness `all:[leaf1, leaf2]` pair
+ *  (produced by `compileBetween`'s non-inclusive branch — see that
+ *  function's own comment) back to pretty chained-comparison syntax
+ *  (`low <op1> metric@scope <op2> high`) — a NICE-TO-HAVE per
+ *  `.claude/PLAN.md`, falls back to `null` (generic `&` rendering) on any
+ *  ambiguity. Never throws, never mutates the caller's shared error list
+ *  — a `null` return just means "render this generically instead", and
+ *  the generic path re-resolves (and correctly reports) any real error.
+ *
+ *  Order-preserving reconstruction: `compileBetween` ALWAYS builds
+ *  `all:[flip(op1)-leaf, op2-leaf]` in that exact order, so treating
+ *  `all[0]` as "leaf1" (reverse its op via `_BETWEEN_FLIP`, which is its
+ *  own inverse) and `all[1]` as "leaf2" (used as-is) exactly reconstructs
+ *  `value1 op1 metric@scope op2 value2` for ANY valid opposite-bucket
+ *  pairing — regardless of which direction (low-to-high or
+ *  high-to-low) the original chain was typed in.
+ *
+ *  Advisor-flagged correctness guard: an INCLUSIVE same-op pair
+ *  (`op1===op2==='<='` or both `'>='`) must NOT collapse here — the
+ *  compiler represents that shape as the native `{op:'between',...}`
+ *  leaf, never as `all:[...]`, so a hand-constructed `all` pair with that
+ *  exact shape would, if collapsed, recompile to a DIFFERENT JSON
+ *  structure (`between` instead of `all`) than what was stored. */
+function _tryDecompileBetween(a, b, catalog) {
+  if (!_isPlainLeaf(a) || !_isPlainLeaf(b)) return null;
+  if (a.metric !== b.metric || a.scope !== b.scope) return null;
+  if (typeof a.value !== 'number' || typeof b.value !== 'number') return null;
+  const aLow = _CMP_LOW_OPS.has(a.op), aHigh = _CMP_HIGH_OPS.has(a.op);
+  const bLow = _CMP_LOW_OPS.has(b.op), bHigh = _CMP_HIGH_OPS.has(b.op);
+  const oppositeBuckets = (aLow && bHigh) || (aHigh && bLow);
+  if (!oppositeBuckets) return null;
+  const op1 = _BETWEEN_FLIP[a.op];
+  const op2 = b.op;
+  if ((op1 === '<=' && op2 === '<=') || (op1 === '>=' && op2 === '>=')) return null; // inclusive — would be native `between`, not `all`
+  const m = _resolveMetricCall(a.metric, catalog);
+  if (m.error) return null;
+  const s = _decompileResolveScopeString(a.scope, catalog);
+  if (s.error) return null;
+  const v1 = _renderNumber(a.value);
+  const v2 = _renderNumber(b.value);
+  if (v1 == null || v2 == null) return null;
+  return `${v1} ${op1} ${m.text}@${s.text} ${op2} ${v2}`;
+}
+
+/** Decompile a single leaf `{metric, scope, op, value}` — the mirror of
+ *  `compileLeaf`. Handles exactly the shapes the compiler can emit
+ *  (native `between`, `in`/`not_in`, boolean-shorthand, boolean
+ *  explicit, plain numeric comparator) and fails loud on anything else. */
+function decompileLeaf(node, catalog, errors) {
+  const m = _resolveMetricCall(node.metric, catalog);
+  if (m.error) { errors.push(_err(m.error)); return null; }
+  const s = _decompileResolveScopeString(node.scope, catalog);
+  if (s.error) { errors.push(_err(s.error)); return null; }
+  const metricText = m.text, scopeText = s.text, entry = m.entry;
+
+  if (node.op === 'between') {
+    if (!Array.isArray(node.value) || node.value.length !== 2
+        || typeof node.value[0] !== 'number' || typeof node.value[1] !== 'number') {
+      errors.push(_err(`leaf '${node.metric}@${node.scope}': 'between' op requires a 2-number value array`));
+      return null;
+    }
+    const low = _renderNumber(node.value[0]), high = _renderNumber(node.value[1]);
+    if (low == null || high == null) { errors.push(_err(`leaf '${node.metric}@${node.scope}': between bound cannot be rendered`)); return null; }
+    return `${low} <= ${metricText}@${scopeText} <= ${high}`;
+  }
+
+  if (node.op === 'in' || node.op === 'not_in') {
+    if (!Array.isArray(node.value)) {
+      errors.push(_err(`leaf '${node.metric}@${node.scope}': '${node.op}' requires a list value`));
+      return null;
+    }
+    const r = _renderListLiteral(node.value);
+    if (r.error) { errors.push(_err(`leaf '${node.metric}@${node.scope}': ${r.message}`)); return null; }
+    return `${metricText}@${scopeText} ${node.op === 'not_in' ? 'not in' : 'in'} ${r.text}`;
+  }
+
+  const valueType = entry ? entry.valueType : null;
+  if (valueType === 'boolean') {
+    if (node.op === '==' && node.value === true) return `${metricText}@${scopeText}`; // boolean shorthand
+    if ((node.op === '==' || node.op === '!=') && typeof node.value === 'boolean') {
+      return `${metricText}@${scopeText} ${node.op} ${node.value}`;
+    }
+    errors.push(_err(`leaf '${node.metric}@${node.scope}': unrecognized boolean leaf shape (op=${node.op}, value=${JSON.stringify(node.value)})`));
+    return null;
+  }
+
+  if (['<', '<=', '>', '>=', '==', '!='].includes(node.op) && typeof node.value === 'number') {
+    const numText = _renderNumber(node.value);
+    if (numText == null) { errors.push(_err(`leaf '${node.metric}@${node.scope}': value ${node.value} cannot be rendered as a CLI numeric literal`)); return null; }
+    return `${metricText}@${scopeText} ${node.op} ${numText}`;
+  }
+
+  errors.push(_err(`leaf '${node.metric}@${node.scope}': unrecognized op/value combination (op=${node.op}, value=${JSON.stringify(node.value)})`));
+  return null;
+}
+
+/** Recursively expand any child of an `all`/`any` array that is ITSELF
+ *  the SAME op (e.g. a nested `all:[{all:[a,b]}, c]}`, which is exactly
+ *  what `compileCondNode` builds for any chain of 3+ ANDed/ORed leaves —
+ *  see its own left-leaning-binary-chain comment) into one flat sibling
+ *  list. Recompiling a flattened `(a) & (b) & (c)` text reconstructs the
+ *  SAME nested-pair tree via the parser's own left-to-right chain
+ *  (`parseOrExpr`), so this flatten-then-rejoin is lossless for anything
+ *  the compiler itself produces — see `decompileAllAny`'s own comment for
+ *  the genuinely-flat-N-ary case (never compiler-produced) this does NOT
+ *  make lossless. */
+function _flattenCompositeChildren(opKey, arr) {
+  const out = [];
+  for (const child of arr) {
+    if (child && typeof child === 'object' && Array.isArray(child[opKey]) && !('$ref' in child)) {
+      out.push(..._flattenCompositeChildren(opKey, child[opKey]));
+    } else {
+      out.push(child);
+    }
+  }
+  return out;
+}
+
+/** Decompile an `{all:[...]}` / `{any:[...]}` node. Flattens same-op
+ *  nesting first (see `_flattenCompositeChildren`), tries the pretty
+ *  between-chain reversal for an exactly-2-leaf `all`, then falls back to
+ *  a flat `(t1) & (t2) & ... & (tN)` / `| ` join — each term wrapped
+ *  individually (never a growing concatenated string re-wrapped at each
+ *  recursion level), so paren nesting depth never exceeds the TRUE
+ *  nesting depth of the stored tree, regardless of chain length
+ *  (advisor-flagged: naive `(decompile(left)) & (decompile(right))`
+ *  recursion compounds one extra paren pair per chain element and can
+ *  blow the `_MAX_DEPTH` lexer guard on an ordinary long chain).
+ *
+ *  DOCUMENTED NORMALIZATION (advisor item 5 — a deliberate, consistent
+ *  policy, not a bug): a flat array whose length is NOT exactly 2 (a
+ *  single-element `all`/`any` — semantically just that one element, e.g.
+ *  the REAL `expiry-day-equity-itm-auto-close` builtin agent's
+ *  `{"all": [<one leaf>]}` — or a genuinely flat 3+-element array, which
+ *  the compiler itself never produces but a hand/AI-authored JSON might)
+ *  has NO distinct CLI form from the grammar's own left-associative
+ *  chain — resaving normalizes it to whatever nested-pair (or bare,
+ *  for N=1) shape the grammar's chain-builder naturally produces.
+ *  Semantically identical, structurally re-shaped. */
+function decompileAllAny(node, opKey, catalog, errors) {
+  const rawArr = node[opKey];
+  if (!Array.isArray(rawArr) || rawArr.length === 0) {
+    errors.push(_err(`'${opKey}' must be a non-empty array`));
+    return null;
+  }
+  const flat = _flattenCompositeChildren(opKey, rawArr);
+  if (flat.length === 1) return decompileCondNode(flat[0], catalog, errors);
+  if (flat.length === 2 && opKey === 'all') {
+    const between = _tryDecompileBetween(flat[0], flat[1], catalog);
+    if (between) return between;
+  }
+  const sym = opKey === 'all' ? '&' : '|';
+  const parts = [];
+  let bad = false;
+  for (const c of flat) {
+    const inner = decompileCondNode(c, catalog, errors);
+    if (inner == null) { bad = true; continue; }
+    parts.push(`(${inner})`);
+  }
+  if (bad) return null;
+  return parts.join(` ${sym} `);
+}
+
+/** Recursive dispatcher — the mirror of `compileCondNode`. Dispatches on
+ *  JSON SHAPE (not an AST node type — this operates directly on the
+ *  stored `conditions` JSON): `all`/`any` composite, `not`, or a plain
+ *  leaf (has `metric`+`scope` strings). Anything else — including a
+ *  `$ref` fragment (checked here too, defense-in-depth, though
+ *  `decompileCondition`'s own upfront whole-tree scan is the primary
+ *  catch) — fails loud, never guesses. Does NOT special-case
+ *  `ALWAYS_LEAF` here (that check lives ONLY in `decompileCondition`,
+ *  the top-level entry point, below) — advisor-flagged: `always` is
+ *  standalone-only in the grammar (a parse error if combined with
+ *  `&`/`|`), so a NESTED occurrence of the exact sentinel shape (e.g.
+ *  inside an `all`/`any` alongside another leaf) must render as an
+ *  ordinary leaf, never as the bare word `always`. */
+function decompileCondNode(node, catalog, errors) {
+  if (node == null || typeof node !== 'object' || Array.isArray(node)) {
+    errors.push(_err(`unrecognized condition shape: ${JSON.stringify(node)}`));
+    return null;
+  }
+  if ('$ref' in node) {
+    errors.push(_err('cannot decompile — this agent uses a $ref fragment; edit it via the JSON textarea instead'));
+    return null;
+  }
+  if (Array.isArray(node.all)) return decompileAllAny(node, 'all', catalog, errors);
+  if (Array.isArray(node.any)) return decompileAllAny(node, 'any', catalog, errors);
+  if ('not' in node) {
+    const inner = decompileCondNode(node.not, catalog, errors);
+    if (inner == null) return null;
+    return `~(${inner})`;
+  }
+  if (typeof node.metric === 'string' && typeof node.scope === 'string') {
+    return decompileLeaf(node, catalog, errors);
+  }
+  errors.push(_err(`unrecognized condition shape: ${JSON.stringify(node)}`));
+  return null;
+}
+
+/** True iff `node` is EXACTLY the frozen `ALWAYS_LEAF` sentinel —
+ *  compared field-by-field (never `JSON.stringify` equality), since a
+ *  real stored row can have its leaf's keys in a different order than
+ *  `ALWAYS_LEAF`'s own declared order (confirmed against the real
+ *  `market-open-nse`/`market-preclose-mcx` builtin agents in
+ *  `agent_engine.py`, which write `{"op":..., "scope":..., "metric":...,
+ *  "value":...}` — op-first, not `ALWAYS_LEAF`'s metric-first order).
+ *  Deliberately does NOT match a leaf that merely shares the sentinel's
+ *  numeric VALUE (-999999999) on a different metric/scope — e.g. the
+ *  real `expiry-mcx-risk-alert` builtin uses that same magic number on
+ *  `pnl@positions.expiring_today.mcx_unhedged`, which must decompile as
+ *  an ordinary leaf, not as `always`. */
+function _isAlwaysLeafExact(node) {
+  return !!node && typeof node === 'object'
+    && node.metric === ALWAYS_LEAF.metric
+    && node.scope === ALWAYS_LEAF.scope
+    && node.op === ALWAYS_LEAF.op
+    && node.value === ALWAYS_LEAF.value
+    && !('all' in node) && !('any' in node) && !('not' in node) && !('$ref' in node);
+}
+
+/** True iff a `$ref` fragment reference appears ANYWHERE in the
+ *  conditions tree — the grammar has no CLI syntax for a template
+ *  fragment reference at all (explicit non-goal per `.claude/PLAN.md`). */
+function _containsRef(node) {
+  if (node == null || typeof node !== 'object') return false;
+  if ('$ref' in node) return true;
+  if (Array.isArray(node.all)) return node.all.some(_containsRef);
+  if (Array.isArray(node.any)) return node.any.some(_containsRef);
+  if ('not' in node) return _containsRef(node.not);
+  return false;
+}
+
+/** Decompile a stored `conditions` JSON tree back to `WHEN`-clause CLI
+ *  text. Public entry point — checks the two conditions that can ONLY be
+ *  evaluated at the whole-tree root (a `$ref` anywhere, or the `always`
+ *  sentinel AT THE TOP, never nested — see `_isAlwaysLeafExact`'s own
+ *  comment) before delegating to the recursive dispatcher. */
+export function decompileCondition(conditions, catalog) {
+  if (_containsRef(conditions)) {
+    return { text: null, errors: [_err('cannot decompile — this agent uses a $ref fragment; edit it via the JSON textarea instead')] };
+  }
+  if (conditions == null || typeof conditions !== 'object') {
+    return { text: null, errors: [_err(`unrecognized condition shape: ${JSON.stringify(conditions)}`)] };
+  }
+  if (_isAlwaysLeafExact(conditions)) return { text: 'always', errors: [] };
+  const errors = [];
+  const text = decompileCondNode(conditions, catalog, errors);
+  if (errors.length || text == null) {
+    return { text: null, errors: errors.length ? errors : [_err('could not decompile condition')] };
+  }
+  return { text, errors: [] };
+}
+
+/** Decompile a stored `events` array back to `ALERT`-clause CLI text.
+ *  `[]` → `nop`. Every entry must resolve to a real catalog channel and
+ *  carry `enabled: true` — a disabled (`enabled: false`) or structurally
+ *  missing-`enabled` entry has NO CLI representation at all (the grammar
+ *  has no syntax for "this channel exists but is turned off") and fails
+ *  loud rather than silently dropping it from the regenerated text (which
+ *  would silently change the agent's behavior on resave). An extra key
+ *  not declared in that channel's `params_schema` also fails loud — it
+ *  could never have been produced by the compiler (see
+ *  `_mapCallArgsToKeys`'s symmetric "unknown parameter" rejection). */
+export function decompileEvents(events, catalog) {
+  if (!Array.isArray(events)) return { text: null, errors: [_err(`'events' must be an array, got ${JSON.stringify(events)}`)] };
+  if (events.length === 0) return { text: 'nop', errors: [] };
+  const errors = [];
+  const parts = [];
+  for (const ev of events) {
+    if (!ev || typeof ev !== 'object' || typeof ev.channel !== 'string') {
+      errors.push(_err(`unrecognized event entry: ${JSON.stringify(ev)}`));
+      continue;
+    }
+    if (!('enabled' in ev) || ev.enabled !== true) {
+      errors.push(_err(`event '${ev.channel}': a disabled or missing-'enabled' channel entry has no CLI representation`));
+      continue;
+    }
+    const entry = catalog.channels.get(ev.channel.toLowerCase());
+    if (!entry) { errors.push(_err(`unknown channel '${ev.channel}' referenced in stored events`)); continue; }
+    const extraKeys = Object.keys(ev).filter(k => k !== 'channel' && k !== 'enabled');
+    if (extraKeys.length === 0) { parts.push(entry.token); continue; }
+    const argParts = [];
+    let bad = false;
+    for (const k of extraKeys) {
+      const spec = entry.paramsSchema[k];
+      if (!spec) { errors.push(_err(`event '${entry.token}': unknown parameter '${k}' (not declared in its catalog schema)`)); bad = true; continue; }
+      const r = _renderParamValue(ev[k], spec);
+      if (r.error) { errors.push(_err(`event '${entry.token}'.${k}: ${r.message}`)); bad = true; continue; }
+      argParts.push(`${k}=${r.text}`);
+    }
+    if (!bad) parts.push(`${entry.token}(${argParts.join(', ')})`);
+  }
+  if (errors.length) return { text: null, errors };
+  return { text: parts.join(', '), errors: [] };
+}
+
+/** Decompile one `{"type":"place_order","params":{...}}` action to
+ *  `order(...)`. `params.qty` is CONTRACTS (the agent-action convention,
+ *  distinct from the ticket/basket "lots directly" convention) —
+ *  converted back to `lots=` for display WHEN that conversion is clean,
+ *  reusing the SAME `lotSizeOf` resolver the compiler's own
+ *  `_compileOrderActionParams` uses (`opts.lotSizeOf` or
+ *  `_defaultLotSizeOf`).
+ *
+ *  PLAN-VS-CODE DISCREPANCY, RESOLVED (not just documented — see the
+ *  Sprint 3 handback report for the original finding): `.claude/PLAN.md`
+ *  said "lots= is the ONLY valid CLI spelling for order quantity," but
+ *  `_compileOrderActionParams` (the Sprint 2 compiler, same file) also
+ *  accepts a plain `qty=` for `DO order(...)`, coerced through the exact
+ *  same `_coerceValueForSpec` path every other param uses — so a plain
+ *  `qty=<value>` is ALWAYS renderable with zero possibility of failure
+ *  (no lot-size lookup, no exact-multiple requirement — it's just the
+ *  stored value, verbatim, same as any other param). Given that, failing
+ *  loud whenever lots-conversion isn't clean was stricter than necessary:
+ *  a real, compiler-accepted alternate spelling already existed for
+ *  exactly that case. Resolution: try the nicer `lots=` form first (when
+ *  it converts cleanly); fall back to plain `qty=` — via the SAME
+ *  `_renderParamValue` every other param already uses, so a `token_ref_ok`
+ *  expression string renders quoted automatically, no special-casing
+ *  needed — for every other case. This only fails loud for genuinely
+ *  malformed data (`qty` key absent, or neither a string nor a number),
+ *  never for "can't cleanly convert to lots," since that's no longer a
+ *  real failure — there's always a valid spelling. */
+function _decompileOrderAction(params, entry, opts) {
+  const keys = Object.keys(params || {});
+  for (const k of keys) {
+    if (k !== 'qty' && !(k in entry.paramsSchema)) {
+      return { error: `order: unknown parameter '${k}' (not declared in catalog schema)` };
+    }
+  }
+  if (!('qty' in (params || {}))) return { error: `order: missing 'qty' in stored params — malformed place_order action` };
+  const qty = params.qty;
+  if (typeof qty !== 'string' && (typeof qty !== 'number' || !Number.isFinite(qty))) {
+    return { error: `order: qty is neither a number nor an expression string — malformed place_order action` };
+  }
+
+  // Try the nicer lots= form first — only when it converts cleanly.
+  let qtyArgText = null;
+  if (typeof qty === 'number') {
+    const symbol = params.symbol;
+    const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
+    const lotSize = typeof symbol === 'string' && symbol ? lotSizeOf(symbol) : null;
+    if (lotSize && lotSize > 0 && qty % lotSize === 0) {
+      const lotsText = _renderNumber(qty / lotSize);
+      if (lotsText != null) qtyArgText = `lots=${lotsText}`;
+    }
+  }
+  // Fall back to plain qty= — always possible, reuses the exact same
+  // rendering every other param goes through (quotes a token_ref_ok
+  // expression string automatically).
+  if (qtyArgText == null) {
+    const r = _renderParamValue(qty, entry.paramsSchema.qty);
+    if (r.error) return { error: `order.qty: ${r.message}` };
+    qtyArgText = `qty=${r.text}`;
+  }
+
+  const argParts = [];
+  for (const k of entry.paramKeys) {
+    if (k === 'qty') { argParts.push(qtyArgText); continue; }
+    if (!(k in params)) continue;
+    const r = _renderParamValue(params[k], entry.paramsSchema[k]);
+    if (r.error) return { error: `order.${k}: ${r.message}` };
+    argParts.push(`${k}=${r.text}`);
+  }
+  return { text: `order(${argParts.join(', ')})` };
+}
+
+/** Decompile one non-`place_order` action generically — the mirror of
+ *  `_compileGenericActionParams`. Any OTHER action type renders as
+ *  `action_type_name(key=value, ...)`, reusing the same quoting rules
+ *  uniformly; zero-param actions (or an action with zero PROVIDED params)
+ *  render bare. A param key not declared in the action's catalog schema
+ *  fails loud — it could never have been compiler-produced. */
+function _decompileGenericAction(params, entry) {
+  const provided = params || {};
+  const keys = Object.keys(provided);
+  for (const k of keys) {
+    if (!(k in entry.paramsSchema)) return { error: `action '${entry.token}': unknown parameter '${k}' (not declared in catalog schema)` };
+  }
+  if (keys.length === 0) return { text: entry.token };
+  const argParts = [];
+  for (const k of entry.paramKeys) {
+    if (!(k in provided)) continue;
+    const r = _renderParamValue(provided[k], entry.paramsSchema[k]);
+    if (r.error) return { error: `action '${entry.token}'.${k}: ${r.message}` };
+    argParts.push(`${k}=${r.text}`);
+  }
+  return { text: `${entry.token}(${argParts.join(', ')})` };
+}
+
+/** Decompile a stored `actions` array back to `DO`-clause CLI text.
+ *  `[]` → `nop`. Every entry must carry a real `type` resolving against
+ *  the catalog AND a `params` object — an entry missing `params`
+ *  entirely (or `params: null`) has no CLI representation and fails
+ *  loud, same rationale as the disabled-channel case in
+ *  `decompileEvents`. `place_order` renders via the `order` CLI alias
+ *  (never the literal `place_order` name — the opposite-direction
+ *  mapping from how the compiler resolves `order`→`place_order`). */
+export function decompileActions(actions, catalog, opts = {}) {
+  if (!Array.isArray(actions)) return { text: null, errors: [_err(`'actions' must be an array, got ${JSON.stringify(actions)}`)] };
+  if (actions.length === 0) return { text: 'nop', errors: [] };
+  const errors = [];
+  const parts = [];
+  for (const act of actions) {
+    if (!act || typeof act !== 'object' || typeof act.type !== 'string') {
+      errors.push(_err(`unrecognized action entry: ${JSON.stringify(act)}`));
+      continue;
+    }
+    if (!('params' in act) || act.params === null || typeof act.params !== 'object') {
+      errors.push(_err(`action '${act.type}': missing or invalid 'params' object — has no CLI representation`));
+      continue;
+    }
+    const lookupName = act.type.toLowerCase();
+    const entry = catalog.actions.get(lookupName);
+    if (!entry) { errors.push(_err(`unknown action '${act.type}' referenced in stored actions`)); continue; }
+    if (lookupName === 'place_order') {
+      const r = _decompileOrderAction(act.params, entry, opts);
+      if (r.error) { errors.push(_err(r.error)); continue; }
+      parts.push(r.text);
+      continue;
+    }
+    const r = _decompileGenericAction(act.params, entry);
+    if (r.error) { errors.push(_err(r.error)); continue; }
+    parts.push(r.text);
+  }
+  if (errors.length) return { text: null, errors };
+  return { text: parts.join(', '), errors: [] };
+}
+
+/** Decompile a full agent `{conditions, events, actions}` to its
+ *  equivalent `WHEN ... ALERT ... DO ...` CLI text — the reverse of
+ *  `compileAgentStmt`. This is what Sprint 4's Edit flow calls on the
+ *  agent's LIVE JSON (never on `cli_source`, which is audit/history
+ *  only — see `.claude/PLAN.md`). Aggregates errors from all three
+ *  clauses (mirrors `compileAgentStmt`'s own aggregation) rather than
+ *  stopping at the first failure, so an operator fixing a broken agent
+ *  via the JSON textarea sees every problem at once.
+ *
+ *  Safety net (advisor item 6, optional-but-cheap): after building the
+ *  text, actually recompile it and fail loud if that recompile itself
+ *  errors — catches any shape this decompiler mishandles that wasn't
+ *  explicitly enumerated above. Deliberately does NOT deep-compare the
+ *  recompiled JSON against the ORIGINAL input — several shapes documented
+ *  above (a single-element `all`/`any`, a flat 3+-element `all`/`any`)
+ *  are INTENTIONAL normalizations that legitimately differ in structure
+ *  from the original while remaining semantically equivalent; comparing
+ *  against the original would incorrectly reject those. */
+export function decompileAgent({ conditions, events, actions }, catalog, opts = {}) {
+  const condResult = decompileCondition(conditions, catalog);
+  const eventsResult = decompileEvents(events, catalog);
+  const actionsResult = decompileActions(actions, catalog, opts);
+  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors];
+  const evLen = Array.isArray(events) ? events.length : null;
+  const acLen = Array.isArray(actions) ? actions.length : null;
+  if (evLen === 0 && acLen === 0) errors.push(_err('an agent must have at least one of ALERT or DO'));
+  if (errors.length) return { text: null, errors };
+
+  const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}`;
+  const roundTrip = compileAgentCliStatement(text, catalog, opts);
+  if (!roundTrip.ok) {
+    const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
+    return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
+  }
+  return { text, errors: [] };
+}
