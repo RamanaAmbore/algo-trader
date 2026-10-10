@@ -94,6 +94,7 @@ class _FakeAgentRow:
         self.tier = "medium"
         self.topic = "general"
         self.cli_source = None
+        self.group_name = None
         self.condition_first_true_at = None
         for k, v in kw.items():
             setattr(self, k, v)
@@ -873,4 +874,119 @@ async def test_update_agent_without_cli_source_leaves_it_unchanged():
 
     assert result == {"detail": "Agent 't-agent' updated"}
     assert agent.cli_source == "old source text"
+    assert agent.name == "renamed only"
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sprint 7 (2026-10, CLI-grammar effort) — `group` accepted by
+# AgentCreateRequest / AgentUpdateRequest, persisted onto the ORM
+# attribute `group_name` (`group` is a reserved SQL keyword — see
+# Agent.group_name in backend/api/models.py). Distinct from `topic`,
+# which has a real execution-time effect (tier-scoped suppression);
+# `group` is organisational/display-only, same provenance class as
+# cli_source. Same 'None means unchanged' convention as every other
+# optional field on these structs.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_agent_update_request_decodes_group():
+    """Regression guard for the same bug class as tier/topic/cli_source
+    above: msgspec silently drops unknown struct fields on decode, so a
+    PUT body carrying `group` would previously vanish without a trace."""
+    body = json.dumps({"group": "nifty-hedges"}).encode()
+    decoded = msgspec.json.decode(body, type=AgentUpdateRequest)
+    assert decoded.group == "nifty-hedges"
+
+
+def test_agent_create_request_decodes_group():
+    body = json.dumps({
+        "slug": "x", "name": "X", "conditions": {}, "events": [],
+        "group": "nifty-hedges",
+    }).encode()
+    decoded = msgspec.json.decode(body, type=AgentCreateRequest)
+    assert decoded.group == "nifty-hedges"
+
+
+def test_agent_update_request_group_defaults_to_none():
+    """None = 'leave column unchanged' — matches every other optional
+    field's convention on this struct."""
+    decoded = msgspec.json.decode(b"{}", type=AgentUpdateRequest)
+    assert decoded.group is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_with_group_persists_it_as_group_name():
+    """(a) Creating an agent with `group` set persists it onto the ORM
+    row's `group_name` attribute (NOT a `group` attribute — `group` is
+    a reserved SQL keyword, so the ORM column/attribute is deliberately
+    named differently from the request field). GET isn't wired to
+    surface `group` yet (same display-only provenance as cli_source,
+    not read by any route handler), so read back via the object that
+    was actually passed to session.add()."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="grp-1", name="Grouped agent", conditions={}, events=[],
+        group="nifty-hedges",
+    )
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, data)
+
+    session.add.assert_called_once()
+    added_agent = session.add.call_args[0][0]
+    assert added_agent.group_name == "nifty-hedges"
+    assert not hasattr(added_agent, "group")
+
+
+@pytest.mark.asyncio
+async def test_create_agent_without_group_leaves_group_name_none():
+    """(b) Creating an agent WITHOUT `group` leaves `group_name` None —
+    no regression for existing agents created before this sprint."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(slug="grp-2", name="Plain agent", conditions={}, events=[])
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, data)
+
+    added_agent = session.add.call_args[0][0]
+    assert added_agent.group_name is None
+
+
+@pytest.mark.asyncio
+async def test_update_agent_sets_group_name():
+    """(c) Updating an agent's `group` via PUT sets `group_name` on the
+    row — the field-name-differs-from-attribute-name case, which can't
+    live in update_agent's generic setattr(agent, field, val) copy loop
+    and must be mapped explicitly."""
+    agent = _FakeAgentRow(group_name="old-group")
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(group="new-group")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    assert agent.group_name == "new-group"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_without_group_leaves_group_name_unchanged():
+    """(d) Updating an agent WITHOUT sending `group` (field omitted /
+    None) leaves the existing stored `group_name` UNCHANGED — matches
+    the 'None means unchanged' convention; do not accidentally clear
+    it. Seeded with a non-None value so the test can distinguish
+    'unchanged' from 'cleared'."""
+    agent = _FakeAgentRow(group_name="old-group")
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    assert agent.group_name == "old-group"
     assert agent.name == "renamed only"

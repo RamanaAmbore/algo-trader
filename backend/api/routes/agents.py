@@ -146,6 +146,12 @@ class AgentCreateRequest(msgspec.Struct):
     # run_cycle()/execute(). None when the agent was authored via the
     # existing form/JSON UI path.
     cli_source:             str | None = None
+    # Sprint 7 (CLI grammar authoring, `#group=...` directive) —
+    # organisational grouping, distinct from `topic` (which has a real
+    # execution-time effect — see Agent.topic). Maps to the ORM
+    # attribute `group_name` (`group` is a reserved SQL keyword) — see
+    # Agent.group_name in backend/api/models.py. None = ungrouped.
+    group:                  str | None = None
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -179,6 +185,9 @@ class AgentUpdateRequest(msgspec.Struct):
     # Sprint 4 (CLI grammar authoring) — None means unchanged, same
     # convention as every other optional field in this struct.
     cli_source:            str | None = None
+    # Sprint 7 (CLI grammar authoring, `#group=...`) — None means
+    # unchanged, same convention. Maps to ORM attribute `group_name`.
+    group:                 str | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -839,6 +848,7 @@ class AgentController(Controller):
                 tier=(data.tier or "medium"),
                 topic=(data.topic or "general"),
                 cli_source=data.cli_source,
+                group_name=data.group,
             )
             session.add(agent)
             await session.commit()
@@ -898,6 +908,13 @@ class AgentController(Controller):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
+            # group maps to the ORM attribute `group_name` (`group` is a
+            # reserved SQL keyword) — can't live in the setattr loop above
+            # since the request field name and the ORM attribute name
+            # differ. None = unchanged, same convention as every other
+            # optional field here.
+            if data.group is not None:
+                agent.group_name = data.group
             if data.fire_at_time is not None:
                 agent.fire_at_time = _normalize_fire_at(data.fire_at_time)
             if data.trade_mode is not None:

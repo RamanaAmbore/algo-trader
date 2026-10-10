@@ -840,3 +840,118 @@ describe('low-level exports', () => {
     expect(leaf.value).toEqual({ type: 'number', value: -50000 });
   });
 });
+
+// ── trailing "#" meta clause (Sprint 7) — #name=/#desc=/#tag=/#group= ──
+
+describe('meta clause — #name=/#desc=/#tag=/#group=', () => {
+  it('#name= alone compiles to agent.name', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name="NIFTY loss guard"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.name).toBe('NIFTY loss guard');
+    expect(r.agent.description).toBeUndefined();
+    expect(r.agent.tags).toBeUndefined();
+    expect(r.agent.group).toBeUndefined();
+  });
+
+  it('#desc= alone compiles to agent.description', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #desc="Closes on -50k drawdown"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.description).toBe('Closes on -50k drawdown');
+  });
+
+  it('#tag= with multiple comma-separated values produces a real JS array', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #tag=risk,nifty');
+    expect(r.ok).toBe(true);
+    expect(Array.isArray(r.agent.tags)).toBe(true);
+    expect(r.agent.tags).toEqual(['risk', 'nifty']);
+  });
+
+  it('#tag= with a single value still produces a one-element array', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #tag=risk');
+    expect(r.ok).toBe(true);
+    expect(r.agent.tags).toEqual(['risk']);
+  });
+
+  it('a hyphenated BARE_WORD value (#group=hedge-book) lexes and compiles correctly — confirmed gap, NOT handled by the NAME scanner', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #group=hedge-book');
+    expect(r.ok).toBe(true);
+    expect(r.agent.group).toBe('hedge-book');
+  });
+
+  it('a quoted value containing a space still works', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name="NIFTY loss guard"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.name).toBe('NIFTY loss guard');
+  });
+
+  it('all four keys compile correctly in combination, in the documented example order', () => {
+    const r = compile(
+      'WHEN pnl@positions.total <= -50000 ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) '
+      + '#name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.name).toBe('NIFTY loss guard');
+    expect(r.agent.description).toBe('Closes on -50k drawdown');
+    expect(r.agent.tags).toEqual(['risk', 'nifty']);
+    expect(r.agent.group).toBe('hedge-book');
+    // conditions/events/actions compile unaffected by the trailing meta clause.
+    expect(r.agent.actions).toEqual([{
+      type: 'place_order',
+      params: { account: 'ZG0790', symbol: 'NIFTY25JULFUT', side: 'SELL', qty: 75 },
+    }]);
+  });
+
+  it('no meta clause at all leaves name/description/tags/group entirely absent from the compiled agent', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram');
+    expect(r.ok).toBe(true);
+    expect('name' in r.agent).toBe(false);
+    expect('description' in r.agent).toBe(false);
+    expect('tags' in r.agent).toBe(false);
+    expect('group' in r.agent).toBe(false);
+  });
+
+  it('a bare order(...) statement with a trailing #... produces the exact compile-error text', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75) #name="x"', { mode: 'paper' });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => e.message === 'meta tags only apply to agents/brackets, not a bare order')).toBe(true);
+  });
+
+  it('an unknown meta key is a compile-time error, not a silent drop', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #bogus=x');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown meta tag '#bogus'/.test(e.message))).toBe(true);
+  });
+
+  it('#name= with 2+ comma-separated values is a compile-time error (only #tag= accepts multiple)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name=foo,bar');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /#name takes exactly one value/.test(e.message))).toBe(true);
+  });
+
+  it('a duplicate meta key is a compile-time error', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram #name=foo #name=bar');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /duplicate meta tag '#name'/.test(e.message))).toBe(true);
+  });
+
+  it('composes with the already-shipped ALERT/DO reordering (DO before ALERT)', () => {
+    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="x") #name="x"');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT telegram #name="x"');
+    expect(reversed.ok).toBe(true);
+    expect(reversed.agent).toEqual(canonical.agent);
+  });
+
+  it('composes with the WHEN-omission form (no WHEN at all)', () => {
+    const withWhen = compile('WHEN always ALERT telegram #name="x"');
+    const omitted = compile('ALERT telegram #name="x"');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withWhen.agent);
+  });
+
+  it('composes with a bare "DO ..." with no ALERT at all', () => {
+    const r = compile('DO emit_log(message="x") #name="x" #group=hedge-book');
+    expect(r.ok).toBe(true);
+    expect(r.agent.name).toBe('x');
+    expect(r.agent.group).toBe('hedge-book');
+  });
+});

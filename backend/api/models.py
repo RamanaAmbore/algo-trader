@@ -1020,6 +1020,16 @@ class Agent(Base):
     # purely additive, display-only provenance; nothing reads it yet.
     cli_source: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
 
+    # group_name — Sprint 7 of the CLI-grammar-authoring effort
+    # (`#group=...` directive). Purely organisational metadata for
+    # grouping agents on /agents and in the CLI editor — distinct from
+    # `topic` below, which has a real execution-time effect (topic-scoped
+    # tier suppression). NULL = ungrouped. The attribute is named
+    # `group_name` (not `group`) because `GROUP` is a reserved SQL
+    # keyword; the API-facing JSON field is still called `group` — see
+    # backend/api/routes/agents.py's request/response mapping.
+    group_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+
     # Condition tree (AND/OR/NOT with account selection)
     conditions: Mapped[dict]     = mapped_column(JSONB, nullable=False, default=dict)
 
@@ -1598,6 +1608,18 @@ class OrderTemplate(Base):
     owner_user_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True,
     )
+
+    # ── Sprint 7 (CLI-grammar effort, `#group=...` / `#tag=...`) ────────
+    # group_name — organisational grouping, same semantics + reserved-
+    # keyword rationale as Agent.group_name above. NULL = ungrouped.
+    # Unused by any route as of this sprint — Sprint 8 wires up
+    # OrderTemplateController's request/response schemas.
+    group_name: Mapped[Optional[str]] = mapped_column(String(64), nullable=True)
+    # tags — mirrors Agent.tags exactly: JSONB list, NOT NULL, default
+    # empty list. Free-form labels for filtering/organising templates.
+    tags: Mapped[list] = mapped_column(JSONB, nullable=False, default=list,
+                                        server_default="[]")
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False,
         default=lambda: datetime.now(timezone.utc),

@@ -987,6 +987,51 @@ async def _migrate_agents_cli_source(conn) -> None:
     ))
 
 
+async def _migrate_agents_group_name(conn) -> None:
+    """Additive migration — `agents.group_name` (Sprint 7 of the CLI/text
+    grammar agent-authoring effort, `#group=...` directive). Mirrors
+    `_migrate_agents_cli_source`'s exact pattern: runs inside init_db's
+    normal `engine.begin()` transaction, `SET LOCAL lock_timeout` bounds
+    how long this can wait behind any in-flight row lock on `agents`,
+    plain `ADD COLUMN IF NOT EXISTS` (nullable VARCHAR(64), no default,
+    no backfill) so it's a no-op on an already-migrated DB and safe on a
+    fresh one. No index — organisational/display metadata only, never
+    queried by WHERE clause (unlike `topic`, which drives real
+    execution-time tier suppression and must never be confused with
+    this column)."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS group_name VARCHAR(64)"
+    ))
+
+
+async def _migrate_order_templates_group_and_tags(conn) -> None:
+    """Additive migration — `order_templates.group_name` +
+    `order_templates.tags` (Sprint 7 of the CLI/text grammar effort,
+    `#group=...` / `#tag=...` directives). Mirrors
+    `_migrate_agents_group_name`'s exact pattern: runs inside init_db's
+    normal `engine.begin()` transaction, `SET LOCAL lock_timeout` bounds
+    how long this can wait behind any in-flight row lock on
+    `order_templates`. `group_name` is a plain nullable `ADD COLUMN IF
+    NOT EXISTS` (no default, no backfill). `tags` mirrors `agents.tags`'s
+    own migration shape exactly (`_migrate_agents_columns`) — JSONB, NOT
+    NULL, `DEFAULT '[]'::jsonb` — required because `order_templates`
+    already has system rows seeded on every boot, so a NOT NULL column
+    without a default would fail the ALTER against those existing rows.
+    Unused by any route as of this sprint — OrderTemplateController's
+    request/response schemas are Sprint 8's job."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    for stmt in (
+        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
+        "group_name VARCHAR(64)",
+        "ALTER TABLE order_templates ADD COLUMN IF NOT EXISTS "
+        "tags JSONB NOT NULL DEFAULT '[]'::jsonb",
+    ):
+        await conn.execute(text(stmt))
+
+
 # Sprint 1a — CREATE INDEX CONCURRENTLY statements for the three new
 # algo_orders columns. Index names deliberately match the names
 # SQLAlchemy's default `index=True` naming convention produces
@@ -1079,6 +1124,8 @@ async def init_db() -> None:
         await _migrate_algo_orders_sprint1a_columns(conn)
         await _migrate_algo_orders_mcp_request_id(conn)
         await _migrate_agents_cli_source(conn)
+        await _migrate_agents_group_name(conn)
+        await _migrate_order_templates_group_and_tags(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the

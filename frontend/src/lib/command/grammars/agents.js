@@ -13,7 +13,7 @@
 // EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
 // ─────────────────────────────────────────────────────────────────────────
 //   statement      := agent_stmt | order_stmt
-//   agent_stmt     := when_part? tail            (* WHEN, ALERT, and DO are
+//   agent_stmt     := when_part? tail meta_item*  (* WHEN, ALERT, and DO are
 //                                                    each independently
 //                                                    optional and may appear
 //                                                    in any order; omitting
@@ -24,7 +24,12 @@
 //                                                    real ALERT or DO is
 //                                                    still required — all-
 //                                                    omitted/all-nop is a
-//                                                    compile-time error *)
+//                                                    compile-time error.
+//                                                    meta_item* is TRAILING
+//                                                    ONLY — after `tail`
+//                                                    finishes parsing, never
+//                                                    interspersed with
+//                                                    WHEN/ALERT/DO. Sprint 7. *)
 //   when_part      := "WHEN" condition
 //   tail           := alert_part do_part | do_part alert_part
 //                    | alert_part | do_part | ε
@@ -42,7 +47,42 @@
 //                                                      channel. Sprint 6. *)
 //   do_clause      := "nop" | call_list
 //   call_list      := call ("," call)*
-//   order_stmt     := call ("," call)*            (* order/place_order only *)
+//   order_stmt     := call ("," call)* meta_item*  (* order/place_order only;
+//                                                      a bare order_stmt
+//                                                      carrying any meta_item
+//                                                      is parsed fine but a
+//                                                      COMPILE-time error —
+//                                                      meta tags only apply
+//                                                      to agents/brackets.
+//                                                      Sprint 7. *)
+//   meta_item      := "#" NAME "=" meta_value ("," meta_value)*
+//                                                   (* trailing-only — see
+//                                                      agent_stmt/order_stmt
+//                                                      above. NAME is one of
+//                                                      the four recognized
+//                                                      keys (name/desc/tag/
+//                                                      group) — an unknown
+//                                                      key is a compile-time
+//                                                      error, not a parse
+//                                                      error (same
+//                                                      parse-permissively/
+//                                                      validate-at-compile
+//                                                      split every other
+//                                                      production in this
+//                                                      grammar follows).
+//                                                      Sprint 7. *)
+//   meta_value     := STRING | BARE_WORD           (* Sprint 7 *)
+//   BARE_WORD      := (* an unquoted run of 1+ characters containing NONE
+//                        of: whitespace, ",", "#", "=", or a quote
+//                        character — quotes are required only once one of
+//                        those appears in the value. DELIBERATELY WIDER
+//                        than NAME's word-char class (letters/digits/
+//                        underscore only) — e.g. "hedge-book" lexes as one
+//                        BARE_WORD token (the hyphen is allowed) but would
+//                        NOT lex as a single NAME token elsewhere in this
+//                        grammar. Scanned by a dedicated branch in
+//                        `lexAgentStatement` triggered by "#", not reused
+//                        from the NAME/word-char scanner. Sprint 7. *)
 //   condition      := "always" | or_expr
 //   or_expr        := term (("&" | "|") term)*     (* equal precedence, L-to-R *)
 //   term           := "~" primary | primary
@@ -66,12 +106,20 @@
 // AST shape (internal, documented for Sprint 3's decompiler / Sprint 4's
 // live-preview — NOT the compiled JSON, see compile*() below for that)
 // ─────────────────────────────────────────────────────────────────────────
-//   Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls }
-//               | { kind:'order', calls: CallNode[] }
+//   Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls, meta }
+//               | { kind:'order', calls: CallNode[], meta }
 //   alertMsg   := ValueNode | null   (* the optional clause-level `msg=`
 //                  default — ALWAYS null when alertCalls is 'nop' or when
 //                  no ALERT clause was written at all; DO has no equivalent
 //                  field. Sprint 6. *)
+//   meta       := MetaItem[]         (* [] when no trailing `#...` clause was
+//                  written at all. Produced by `parseMetaClause` — a
+//                  GENERIC, reusable helper (also usable by a future
+//                  bracket_stmt). For `kind:'order'`, a non-empty `meta` is
+//                  parsed fine but is a COMPILE-time error, not a parse
+//                  error. Sprint 7. *)
+//   MetaItem   := { key: string, values: MetaValueNode[], start }
+//   MetaValueNode := { type:'string'|'bareword', value: string }
 //   Condition  := { type:'always' }
 //               | { type:'and'|'or', left: Condition, right: Condition }
 //               | { type:'not', term: Condition }
@@ -381,6 +429,54 @@ export function lexAgentStatement(text) {
         if (i >= n) throw new _ParseError('unterminated string literal', { start });
         i++;
         tokens.push({ type: 'STRING', value: text.slice(start + 1, i - 1), start, end: i });
+        continue;
+      }
+
+      if (ch === '#') {
+        // meta_item := "#" NAME "=" meta_value ("," meta_value)*
+        // meta_value := STRING | BARE_WORD
+        // Scanned entirely in THIS branch (not via the generic word-char/
+        // STRING scanners above) because BARE_WORD is lexically WIDER than
+        // NAME — it allows any character except whitespace/","/"#"/"="/a
+        // quote (e.g. a hyphen, so "hedge-book" lexes as one token), which
+        // the ordinary NAME scanner (`_isWordChar`) does not permit. The
+        // key (before "=") IS a plain NAME — reuses `_isWordStart`/
+        // `_isWordChar` unchanged.
+        tokens.push({ type: 'HASH', start, end: i + 1 });
+        i++;
+        while (i < n && /\s/.test(text[i])) i++;
+        if (!_isWordStart(text[i] || '')) throw new _ParseError('expected a meta key name after "#" (e.g. #name=...)', { start: i });
+        const keyStart = i;
+        while (i < n && _isWordChar(text[i])) i++;
+        tokens.push({ type: 'NAME', value: text.slice(keyStart, i), reserved: false, hasCall: false, args: null, start: keyStart, end: i });
+        while (i < n && /\s/.test(text[i])) i++;
+        if (text[i] !== '=') throw new _ParseError('expected "=" after meta key', { start: i });
+        tokens.push({ type: 'EQ', start: i, end: i + 1 });
+        i++;
+        // meta_value ("," meta_value)*
+        while (true) {
+          while (i < n && /\s/.test(text[i])) i++;
+          const vStart = i;
+          if (text[i] === '"' || text[i] === "'") {
+            const quote = text[i];
+            i++;
+            while (i < n && text[i] !== quote) i++;
+            if (i >= n) throw new _ParseError('unterminated string literal in meta value', { start: vStart });
+            i++;
+            tokens.push({ type: 'STRING', value: text.slice(vStart + 1, i - 1), start: vStart, end: i });
+          } else {
+            while (i < n && !/[\s,#="']/.test(text[i])) i++;
+            if (i === vStart) throw new _ParseError('expected a meta value after "="', { start: vStart });
+            tokens.push({ type: 'BAREWORD', value: text.slice(vStart, i), start: vStart, end: i });
+          }
+          while (i < n && /\s/.test(text[i])) i++;
+          if (text[i] === ',') {
+            tokens.push({ type: 'COMMA', start: i, end: i + 1 });
+            i++;
+            continue;
+          }
+          break;
+        }
         continue;
       }
 
@@ -743,6 +839,48 @@ function parseAlertClauseBody(state) {
   return { msgDefault, calls };
 }
 
+/** `meta_value := STRING | BARE_WORD` — both already resolved to one token
+ *  each at lex time (`lexAgentStatement`'s dedicated "#" branch); this is a
+ *  thin AST-shaping accessor, parallel to `parseValue` for the main
+ *  grammar's `value` production. */
+function parseMetaValue(state) {
+  const tok = _peek(state);
+  if (tok.type === 'STRING') { _advance(state); return { type: 'string', value: tok.value }; }
+  if (tok.type === 'BAREWORD') { _advance(state); return { type: 'bareword', value: tok.value }; }
+  throw new _ParseError('expected a meta value (a quoted string or a bare word)', tok);
+}
+
+/** `meta_item := "#" NAME "=" meta_value ("," meta_value)*` — GENERIC,
+ *  reusable helper: parses ZERO OR MORE trailing meta_items starting at
+ *  `state`'s current position, stopping the moment the next token isn't
+ *  "#". Sprint 7. Trailing-only by construction — callers invoke this
+ *  AFTER their own clause-parsing loop completes (`parseAgentStmt`'s tail,
+ *  `parseOrderStmt`'s call_list), never interspersed partway through.
+ *  Written with no agent_stmt-specific assumptions so a future
+ *  bracket_stmt can call it unchanged. An absent meta clause (next token
+ *  isn't "#") is NOT an error — it simply returns `[]`; semantic checks
+ *  (unknown key, wrong arity, "not allowed on a bare order") all happen
+ *  later, at compile time, via `compileMetaClause`. */
+export function parseMetaClause(state) {
+  const items = [];
+  while (_peek(state).type === 'HASH') {
+    const hashTok = _advance(state);
+    const keyTok = _peek(state);
+    if (keyTok.type !== 'NAME') throw new _ParseError('expected a meta key name after "#"', keyTok);
+    _advance(state);
+    const eq = _peek(state);
+    if (eq.type !== 'EQ') throw new _ParseError(`expected "=" after meta key '${keyTok.value}'`, eq);
+    _advance(state);
+    const values = [parseMetaValue(state)];
+    while (_peek(state).type === 'COMMA') {
+      _advance(state);
+      values.push(parseMetaValue(state));
+    }
+    items.push({ key: keyTok.value, values, start: hashTok.start });
+  }
+  return items;
+}
+
 /** `agent_stmt := "WHEN" condition tail`
  *  `tail := alert_part do_part | do_part alert_part | alert_part | do_part | ε`
  *
@@ -796,10 +934,16 @@ export function parseAgentStmt(state) {
       break;
     }
   }
-  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls };
+  // meta_item* — trailing-only, parsed AFTER the tail loop above completes.
+  // See `parseMetaClause`'s own docstring for why no pre-pass is needed.
+  const meta = parseMetaClause(state);
+  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls, meta };
 }
 
-/** `order_stmt := call ("," call)*` — restricted to order/place_order calls. */
+/** `order_stmt := call ("," call)* meta_item*` — restricted to
+ *  order/place_order calls. A non-empty `meta` here is syntactically fine
+ *  (parsed, not rejected) but is a COMPILE-time error — see
+ *  `compileOrderStmt` — meta tags only apply to agents/brackets. */
 export function parseOrderStmt(state) {
   const calls = parseCallList(state);
   for (const c of calls) {
@@ -811,7 +955,8 @@ export function parseOrderStmt(state) {
       );
     }
   }
-  return { kind: 'order', calls };
+  const meta = parseMetaClause(state);
+  return { kind: 'order', calls, meta };
 }
 
 /** `statement := agent_stmt | order_stmt` — top-level entry point.
@@ -1292,6 +1437,49 @@ function compileDoClause(doCalls, catalog, opts) {
   return { actions: errors.length ? null : actions, errors };
 }
 
+// ── Meta clause (Sprint 7) — `#name=`/`#desc=`/`#tag=`/`#group=`. GENERIC,
+// reusable across agent_stmt (this sprint) and a future bracket_stmt — no
+// agent-specific assumptions baked in. `group` is a genuinely NEW concept,
+// deliberately distinct from (and never aliased to) this grammar's
+// existing `Agent.topic` field. ─────────────────────────────────────────
+const _META_KEY_MAP = Object.freeze({ name: 'name', desc: 'description', tag: 'tags', group: 'group' });
+
+/** Compile a parsed `meta_item[]` (see `parseMetaClause`) to
+ *  `{ name?, description?, tags?, group? }` — only keys actually PROVIDED
+ *  appear on the returned object (never a null/undefined placeholder for
+ *  an omitted key), so callers can safely `{ ...other, ...compileMetaClause(...) }`.
+ *  Errors are pushed onto the caller-supplied `errors` array (never
+ *  thrown) — same "never throw from a compile* function" convention every
+ *  other compiler helper in this file follows. `#tag=` is the only key
+ *  that accepts 2+ comma-separated meta_values (becomes a real JS array);
+ *  `#name=`/`#desc=`/`#group=` each require exactly one value. */
+export function compileMetaClause(metaItems, errors) {
+  const out = {};
+  if (!metaItems || metaItems.length === 0) return out;
+  const seen = new Set();
+  for (const item of metaItems) {
+    const lower = item.key.toLowerCase();
+    const realKey = _META_KEY_MAP[lower];
+    if (!realKey) {
+      errors.push(_err(`unknown meta tag '#${item.key}' — expected one of #name, #desc, #tag, #group`));
+      continue;
+    }
+    if (seen.has(realKey)) {
+      errors.push(_err(`duplicate meta tag '#${lower}'`));
+      continue;
+    }
+    seen.add(realKey);
+    if (realKey === 'tags') {
+      out.tags = item.values.map((v) => v.value);
+    } else if (item.values.length !== 1) {
+      errors.push(_err(`#${lower} takes exactly one value (only #tag= accepts comma-separated multiple values)`));
+    } else {
+      out[realKey] = item.values[0].value;
+    }
+  }
+  return out;
+}
+
 function compileAgentStmt(ast, catalog, opts) {
   const errors = [];
   const condResult = compileCondition(ast.condition, catalog);
@@ -1300,13 +1488,14 @@ function compileAgentStmt(ast, catalog, opts) {
   errors.push(...eventsResult.errors);
   const actionsResult = compileDoClause(ast.doCalls, catalog, opts);
   errors.push(...actionsResult.errors);
+  const metaFields = compileMetaClause(ast.meta, errors);
   if (ast.alertCalls === 'nop' && ast.doCalls === 'nop') {
     errors.push(_err('an agent must have at least one of ALERT or DO'));
   }
   if (errors.length) return { kind: 'agent', errors, agent: null };
   return {
     kind: 'agent', errors: [],
-    agent: { conditions: condResult.conditions, events: eventsResult.events, actions: actionsResult.actions },
+    agent: { conditions: condResult.conditions, events: eventsResult.events, actions: actionsResult.actions, ...metaFields },
   };
 }
 
@@ -1409,6 +1598,12 @@ function _compileOrderCallToLeg(call, catalog, opts) {
  *  `backend/api/schemas.py:TicketOrderRequest` / `BasketOrderRequest`). */
 function compileOrderStmt(ast, catalog, opts = {}) {
   const errors = [];
+  // A bare order(...) statement has no agent/bracket to attach a
+  // name/description/tag/group to — parsed fine (see `parseOrderStmt`),
+  // rejected here at compile time, per the operator's explicit scope.
+  if (ast.meta && ast.meta.length) {
+    errors.push(_err('meta tags only apply to agents/brackets, not a bare order'));
+  }
   const legs = [];
   for (const call of ast.calls) {
     const r = _compileOrderCallToLeg(call, catalog, opts);
@@ -1533,6 +1728,22 @@ function _quoteString(s) {
   }
   const q = s.includes('"') ? "'" : '"';
   return { text: `${q}${s}${q}` };
+}
+
+/** True iff `s` can be written as an unquoted BARE_WORD meta value — any
+ *  non-empty run of characters containing NONE of whitespace, ",", "#",
+ *  "=", or a quote character (the grammar's own BARE_WORD definition —
+ *  Sprint 7). DELIBERATELY WIDER than `_isBareable`'s NAME-shaped check
+ *  (e.g. a hyphen like "hedge-book" is fine here, unlike `_isBareable`). */
+function _isMetaBareWord(s) {
+  return typeof s === 'string' && s.length > 0 && !/[\s,#="']/.test(s);
+}
+
+/** Render one meta value — bare when it's a safe BARE_WORD, quoted
+ *  otherwise. The decompile-direction mirror of the meta lexer's own
+ *  STRING-vs-BARE_WORD dispatch. */
+function _renderMetaValue(s) {
+  return _isMetaBareWord(s) ? { text: s } : _quoteString(s);
 }
 
 /** Render one list-literal item (leaf `in`/`not_in` RHS, or a generic
@@ -2173,17 +2384,62 @@ export function decompileActions(actions, catalog, opts = {}) {
  *  are INTENTIONAL normalizations that legitimately differ in structure
  *  from the original while remaining semantically equivalent; comparing
  *  against the original would incorrectly reject those. */
-export function decompileAgent({ conditions, events, actions }, catalog, opts = {}) {
+/** Decompile `{ name?, description?, tags?, group? }` back to a trailing
+ *  `#...` meta clause — the inverse of `compileMetaClause`. GENERIC,
+ *  reusable helper (also usable by a future bracket decompiler). Omits
+ *  any individual key whose value is empty/unset; omits the WHOLE clause
+ *  (returns `''`) when all four are empty/unset — an agent that predates
+ *  Sprint 7 (e.g. has only a real `name` from the Structured tab) still
+ *  decompiles correctly, rendering just `#name=...`. Returns
+ *  `{ text, errors }` — `text` is `null` only on a genuine rendering
+ *  failure (e.g. a tag string containing both quote characters), never a
+ *  silent guess. */
+export function decompileMetaClause(agent) {
+  const errors = [];
+  const parts = [];
+  const a = agent || {};
+
+  if (typeof a.name === 'string' && a.name !== '') {
+    const r = _renderMetaValue(a.name);
+    if (r.error) errors.push(_err(`#name: ${r.message}`)); else parts.push(`#name=${r.text}`);
+  }
+  if (typeof a.description === 'string' && a.description !== '') {
+    const r = _renderMetaValue(a.description);
+    if (r.error) errors.push(_err(`#desc: ${r.message}`)); else parts.push(`#desc=${r.text}`);
+  }
+  if (Array.isArray(a.tags) && a.tags.length > 0) {
+    const rendered = [];
+    let bad = false;
+    for (const t of a.tags) {
+      if (typeof t !== 'string' || t === '') { errors.push(_err('#tag: every tag must be a non-empty string')); bad = true; continue; }
+      const r = _renderMetaValue(t);
+      if (r.error) { errors.push(_err(`#tag: ${r.message}`)); bad = true; continue; }
+      rendered.push(r.text);
+    }
+    if (!bad) parts.push(`#tag=${rendered.join(',')}`);
+  }
+  if (typeof a.group === 'string' && a.group !== '') {
+    const r = _renderMetaValue(a.group);
+    if (r.error) errors.push(_err(`#group: ${r.message}`)); else parts.push(`#group=${r.text}`);
+  }
+
+  if (errors.length) return { text: null, errors };
+  return { text: parts.join(' '), errors: [] };
+}
+
+export function decompileAgent({ conditions, events, actions, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
   const condResult = decompileCondition(conditions, catalog);
   const eventsResult = decompileEvents(events, catalog);
   const actionsResult = decompileActions(actions, catalog, opts);
-  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors];
+  const metaResult = decompileMetaClause({ name, description, tags, group });
+  const errors = [...condResult.errors, ...eventsResult.errors, ...actionsResult.errors, ...metaResult.errors];
   const evLen = Array.isArray(events) ? events.length : null;
   const acLen = Array.isArray(actions) ? actions.length : null;
   if (evLen === 0 && acLen === 0) errors.push(_err('an agent must have at least one of ALERT or DO'));
   if (errors.length) return { text: null, errors };
 
-  const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}`;
+  const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
+  const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';

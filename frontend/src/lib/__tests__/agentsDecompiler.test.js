@@ -31,7 +31,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
-  decompileActions, decompileAgent, ALWAYS_LEAF,
+  decompileActions, decompileAgent, decompileMetaClause, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
 // ── Fixture catalog ──────────────────────────────────────────────────────
@@ -921,5 +921,70 @@ describe('ALERT msg= decompile round-trip', () => {
     const dec = decompileEvents([{ channel: 'telegram', enabled: true, message: 42 }], CATALOG);
     expect(dec.text).toBeNull();
     expect(dec.errors.some(e => /message: must be a string/.test(e.message))).toBe(true);
+  });
+});
+
+// ── trailing "#" meta clause decompile round-trips (Sprint 7) ──────────
+
+describe('meta clause decompile round-trip', () => {
+  it('round-trips an agent with all four meta fields set', () => {
+    const { first, dec } = roundTrip(
+      'WHEN pnl@positions.total <= -50000 ALERT telegram '
+      + 'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1) '
+      + '#name="NIFTY loss guard" #desc="Closes on -50k drawdown" #tag=risk,nifty #group=hedge-book'
+    );
+    expect(first.agent.name).toBe('NIFTY loss guard');
+    expect(first.agent.description).toBe('Closes on -50k drawdown');
+    expect(first.agent.tags).toEqual(['risk', 'nifty']);
+    expect(first.agent.group).toBe('hedge-book');
+    expect(dec.text).toContain('#name="NIFTY loss guard"');
+    expect(dec.text).toContain('#desc="Closes on -50k drawdown"');
+    expect(dec.text).toContain('#tag=risk,nifty');
+    expect(dec.text).toContain('#group=hedge-book');
+  });
+
+  it('round-trips an agent with none of the four meta fields set — no "#..." clause rendered at all', () => {
+    const { first, dec } = roundTrip('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
+    expect(first.agent.name).toBeUndefined();
+    expect(first.agent.description).toBeUndefined();
+    expect(first.agent.tags).toBeUndefined();
+    expect(first.agent.group).toBeUndefined();
+    expect(dec.text).not.toMatch(/#/);
+  });
+
+  it('a hand-constructed agent shape with only a real "name" (simulating a pre-Sprint-7 agent) still decompiles "#name=..." correctly', () => {
+    // Same real market-open-nse builtin shape used elsewhere in this file
+    // (always-sentinel, reordered keys, actions=[]) — but with ONLY a
+    // Structured-tab `name` set and no description/tags/group at all,
+    // exactly the shape every agent created before this sprint has.
+    const agentJson = {
+      conditions: { op: '>=', scope: 'funds.any_acct', metric: 'avail_margin', value: -999999999 },
+      events: [{ channel: 'telegram', enabled: true }],
+      actions: [],
+      name: 'Market open NSE',
+    };
+    const dec = decompile(agentJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/#name="Market open NSE"$/);
+    expect(dec.text).not.toMatch(/#desc=/);
+    expect(dec.text).not.toMatch(/#tag=/);
+    expect(dec.text).not.toMatch(/#group=/);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.name).toBe('Market open NSE');
+    expect(recompiled.agent.description).toBeUndefined();
+    expect(recompiled.agent.tags).toBeUndefined();
+    expect(recompiled.agent.group).toBeUndefined();
+  });
+
+  it('decompileMetaClause() omits the whole clause when every field is empty/unset', () => {
+    expect(decompileMetaClause({})).toEqual({ text: '', errors: [] });
+    expect(decompileMetaClause(null)).toEqual({ text: '', errors: [] });
+  });
+
+  it('decompileMetaClause() omits any individual unset key while rendering the ones that are set', () => {
+    const r = decompileMetaClause({ name: 'x', description: '', tags: [], group: 'hedge-book' });
+    expect(r.errors).toEqual([]);
+    expect(r.text).toBe('#name=x #group=hedge-book');
   });
 });
