@@ -1,0 +1,1284 @@
+// Agent CLI grammar — Sprint 2 (core parser/compiler, no UI yet).
+//
+// Full design: .claude/PLAN.md / ~/.claude/plans/purrfect-marinating-pixel.md.
+// This file is NOT a hand-written per-token grammar like orders.js — it's a
+// generic, SCHEMA-DRIVEN builder that resolves every metric/scope/channel/
+// action token against the live backend catalog (`fetchGrammarTokens`), plus
+// a hand-rolled recursive-descent parser for the full WHEN/ALERT/DO boolean-
+// tree grammar `engine.js` has no equivalent of, plus a compiler to the exact
+// JSON shape the existing agent-create/update and ticket/basket endpoints
+// already accept, plus an exhaustive semantic validator.
+//
+// ─────────────────────────────────────────────────────────────────────────
+// EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
+// ─────────────────────────────────────────────────────────────────────────
+//   statement      := agent_stmt | order_stmt
+//   agent_stmt     := "WHEN" condition "ALERT" alert_clause "DO" do_clause
+//   alert_clause   := "nop" | call_list
+//   do_clause      := "nop" | call_list
+//   call_list      := call ("," call)*
+//   order_stmt     := call ("," call)*            (* order/place_order only *)
+//   condition      := "always" | or_expr
+//   or_expr        := term (("&" | "|") term)*     (* equal precedence, L-to-R *)
+//   term           := "~" primary | primary
+//   primary        := "(" or_expr ")" | leaf
+//   leaf           := metric_ref comparator value
+//                    | value comparator metric_ref comparator value   (* between *)
+//   metric_ref     := call "@" scope_ref
+//   scope_ref      := call ("." call)*
+//   comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
+//   value          := NUMBER | STRING | NAME | list_literal
+//   list_literal   := "[" value ("," value)* "]"
+//   call           := NAME | NAME "(" arg_list ")"
+//   arg_list       := kw_arg ("," kw_arg)*          (* EVERY arg is keyword —
+//                                                       including the first;
+//                                                       no positional form
+//                                                       exists in this
+//                                                       grammar at all *)
+//   kw_arg         := NAME "=" value
+//
+// ─────────────────────────────────────────────────────────────────────────
+// AST shape (internal, documented for Sprint 3's decompiler / Sprint 4's
+// live-preview — NOT the compiled JSON, see compile*() below for that)
+// ─────────────────────────────────────────────────────────────────────────
+//   Statement  := { kind:'agent', condition, alertCalls, doCalls }
+//               | { kind:'order', calls: CallNode[] }
+//   Condition  := { type:'always' }
+//               | { type:'and'|'or', left: Condition, right: Condition }
+//               | { type:'not', term: Condition }
+//               | { type:'leaf', metric: CallNode, scope: ScopeNode,
+//                   op: string|null, value: ValueNode|null }
+//               | { type:'between', value1: ValueNode, op1: string,
+//                   metric: CallNode, scope: ScopeNode, op2: string,
+//                   value2: ValueNode }
+//   CallNode   := { type:'call', name: string, args: ArgEntry[],
+//                   hasCall: boolean, start, end }
+//   ArgEntry   := { key: string, value: ValueNode }   (* key is NEVER null —
+//                   every argument is keyword-only, including the first *)
+//   ScopeNode  := { type:'scope', segments: CallNode[] }
+//   ValueNode  := { type:'number'|'string'|'name', value }
+//               | { type:'list', value: ValueNode[] }
+//
+// ─────────────────────────────────────────────────────────────────────────
+// KNOWN GAPS between this design and the LIVE backend catalog (documented
+// here rather than silently "fixed" — implement the MECHANISM generically
+// per the design doc; these are catalog-content facts, not grammar bugs):
+//   - `always`'s sentinel scope is `funds.any_acct` (confirmed against the
+//     real `market-open-nse` builtin agent in agent_engine.py), NOT
+//     `funds.total` as one earlier draft guessed.
+//   - The boolean-metric shorthand is keyed off `value_type === 'boolean'`
+//     exactly as specified, but NO metric in the live catalog is actually
+//     typed 'boolean' today — `is_itm`/`is_ntm` are `value_type: 'number'`
+//     and `is_future` has no `value_type` at all. The mechanism is correct
+//     and future-proof; it simply has nothing to fire against yet. Tests
+//     exercise it via a fixture catalog that declares a real boolean metric.
+//   - `ntfy` (used in the design doc's own canonical example 2) does not
+//     exist in the live `notify`/`channel` catalog. Implemented generically;
+//     tests use a fixture catalog that adds it.
+//   - `side` (used in the design doc's own operator-table example,
+//     `side in [BUY, SELL]`) is not a real condition/metric token in the
+//     live catalog. `in`/`not_in` are implemented generically against ANY
+//     metric; tests use a fixture metric for this.
+//   - RESOLVED (was flagged in an earlier revision of this sprint, kept here
+//     as a record of why the design changed): `params_schema` is stored as
+//     Postgres JSONB (`backend/api/models.py: GrammarToken.params_schema`),
+//     which does not guarantee object key order survives a round-trip
+//     through the DB. The original design read `paramKeys[0]` as "the
+//     positional-or-keyword slot," which would have silently depended on
+//     that unguaranteed order in production even though every test (JS
+//     object literals DO preserve order) would have passed regardless. The
+//     operator's fix: remove positional arguments from the grammar
+//     entirely — every argument is always keyword (`arg_list := kw_arg
+//     ("," kw_arg)*` above), so `_mapCallArgsToKeys` only ever looks up a
+//     key by NAME, never by position. `paramKeys`' array order is now used
+//     only for cosmetic/display purposes (if at all), never for binding
+//     correctness — no backend change was needed.
+
+import { fetchGrammarTokens } from '$lib/api';
+import { getInstrument } from '$lib/data/instruments';
+import { tokenizeCallStyle } from '$lib/command/engine.js';
+
+// ── Depth/length guards — mirrors backend/api/algo/expr_eval.py's
+//    _MAX_EXPR_LEN / _MAX_DEPTH philosophy (cheap guards against a
+//    pathological paste freezing the parser via runaway recursion), scaled
+//    up from expr_eval's 200-char single-expression cap since a REALISTIC
+//    multi-leg agent statement (several leaves, several DO calls) is
+//    legitimately much longer than a single arithmetic sub-expression —
+//    the nesting-DEPTH guard is the one that matters for recursion safety
+//    and is kept at the SAME value expr_eval.py uses. ──────────────────────
+const _MAX_STATEMENT_LEN = 4000;
+const _MAX_DEPTH = 20;
+
+// ── Reserved words — checked before generic NAME classification, never
+//    treated as a callable token name. ──────────────────────────────────
+const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'true', 'false']);
+export const RESERVED_WORDS = _RESERVED;
+
+// ── `always` sentinel leaf — the exact shape the real `market-open-nse` /
+//    `market-preclose-mcx` builtin agents use (agent_engine.py ~1578-1590).
+export const ALWAYS_LEAF = Object.freeze({
+  metric: 'avail_margin', scope: 'funds.any_acct', op: '>=', value: -999999999,
+});
+
+// ── Shortened-keyword-name alias table (presentation-only; CLI typing
+//    convenience, never written to the output JSON — the compiler always
+//    maps back to the real schema key). `chase_level: 'chase'` reuses the
+//    name ALREADY established in orders.yaml (role: chase, $ref:
+//    chase_level) — not renamed here. ─────────────────────────────────────
+export const KWARG_ALIASES = Object.freeze({
+  account: 'acct',
+  symbol: 'sym',
+  exchange: 'exch',
+  order_type: 'otype',
+  price: 'px',
+  product: 'prod',
+  variety: 'var',
+  chase_level: 'chase',
+});
+const _ALIAS_TO_REAL = Object.fromEntries(
+  Object.entries(KWARG_ALIASES).map(([real, alias]) => [alias.toLowerCase(), real])
+);
+
+// ═══════════════════════════════════════════════════════════════════════
+// (a) Catalog fetch + generic grammar builder
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Build a lookup catalog from raw grammar_tokens rows (mixed grammar_kind).
+ *  Pure — no network. `fetchAgentCatalog()` below is the thin I/O wrapper,
+ *  kept separate so every parser/compiler test can run against a plain
+ *  fixture array with zero network/auth mocking. */
+export function buildCatalog(rows) {
+  const metrics = new Map();
+  const scopes = new Map();
+  const channels = new Map();
+  const actions = new Map();
+  for (const row of rows || []) {
+    if (!row || row.is_active === false) continue;
+    const entry = _buildCatalogEntry(row);
+    const key = String(row.token).toLowerCase();
+    if (row.grammar_kind === 'condition' && row.token_kind === 'metric') metrics.set(key, entry);
+    else if (row.grammar_kind === 'condition' && row.token_kind === 'scope') scopes.set(key, entry);
+    else if (row.grammar_kind === 'notify' && row.token_kind === 'channel') channels.set(key, entry);
+    else if (row.grammar_kind === 'action' && row.token_kind === 'action_type') actions.set(key, entry);
+  }
+  return { metrics, scopes, channels, actions };
+}
+
+function _buildCatalogEntry(row) {
+  const schema = row.params_schema || {};
+  return {
+    token: row.token,              // canonical stored casing
+    valueType: row.value_type || null,
+    paramsSchema: schema,
+    paramKeys: Object.keys(schema), // declared order — keys[0] is positional-or-keyword
+  };
+}
+
+/** Fetch the live catalog (condition + notify + action kinds) and build it.
+ *  The ONLY function in this file that touches the network — every other
+ *  export is pure and testable with a fixture catalog from `buildCatalog`. */
+export async function fetchAgentCatalog() {
+  const [condRows, notifyRows, actionRows] = await Promise.all([
+    fetchGrammarTokens('condition'),
+    fetchGrammarTokens('notify'),
+    fetchGrammarTokens('action'),
+  ]);
+  return buildCatalog([...(condRows || []), ...(notifyRows || []), ...(actionRows || [])]);
+}
+
+/** Default lot-size resolver — reuses the SAME instruments-cache lookup
+ *  orders.js's own resolveInstrument()/getInstrument() mechanism is built
+ *  on, rather than inventing a second lot-size source. Returns null (never
+ *  1) on any miss — callers must treat null as "unresolvable", not "no
+ *  lots". */
+function _defaultLotSizeOf(symbol) {
+  try {
+    const inst = getInstrument(symbol);
+    const ls = inst && inst.ls != null ? Number(inst.ls) : null;
+    return ls && ls > 0 ? ls : null;
+  } catch { return null; }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// Error helper
+// ═══════════════════════════════════════════════════════════════════════
+
+function _err(message, token) {
+  return { message, position: token && typeof token.start === 'number' ? token.start : undefined };
+}
+
+class _ParseError extends Error {
+  constructor(message, token) {
+    super(message);
+    this.position = token && typeof token.start === 'number' ? token.start : undefined;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// (b) Lexer
+// ═══════════════════════════════════════════════════════════════════════
+
+const _PUNCT_SINGLE = {
+  '(': 'LPAREN', ')': 'RPAREN', '[': 'LBRACKET', ']': 'RBRACKET',
+  ',': 'COMMA', '@': 'AT', '.': 'DOT', '&': 'AMP', '|': 'PIPE', '~': 'TILDE',
+};
+
+function _isWordChar(ch) { return /[A-Za-z0-9_]/.test(ch); }
+function _isWordStart(ch) { return /[A-Za-z_]/.test(ch); }
+function _isDigit(ch) { return /[0-9]/.test(ch); }
+
+/** Tokenize a value-ish fragment (from the inner-arg tokenizeCallStyle
+ *  stream) into a ValueNode. */
+function _valueNodeFromCallStyleToken(tok) {
+  if (tok.quoted) return { type: 'string', value: tok.text };
+  const text = tok.text;
+  if (/^-?\d+(\.\d+)?$/.test(text)) return { type: 'number', value: Number(text) };
+  return { type: 'name', value: text };
+}
+
+/** Parse a single comma-separated arg segment (array of tokenizeCallStyle
+ *  tokens) into one ArgEntry, handling every spacing variant around `=`
+ *  (fused `key=value`, fused `key="quoted value"`, spaced `key = value`,
+ *  `key =value`, `key= value`). Throws _ParseError on malformed segments. */
+function _parseArgSegment(segTokens, labelToken) {
+  if (segTokens.length === 0) throw new _ParseError('empty argument (trailing/leading/double comma)', labelToken);
+  const first = segTokens[0];
+  if (first.kwarg) {
+    if (first.kwarg.value === '' && segTokens.length > 1) {
+      // `key= value` — value is the glued-nothing kwarg continued by the
+      // next token.
+      if (segTokens.length > 2) throw new _ParseError('unexpected token in argument', segTokens[2]);
+      return { key: first.kwarg.key, value: _valueNodeFromCallStyleToken(segTokens[1]) };
+    }
+    if (segTokens.length > 1) throw new _ParseError('unexpected token in argument', segTokens[1]);
+    return {
+      key: first.kwarg.key,
+      value: first.kwarg.quoted ? { type: 'string', value: first.kwarg.value } : _valueNodeFromCallStyleToken({ text: first.kwarg.value }),
+    };
+  }
+  if (!first.punct && !first.quoted && segTokens.length > 1) {
+    const second = segTokens[1];
+    if (!second.punct && !second.quoted && !second.kwarg && second.text === '=') {
+      // spaced `key = value`
+      if (segTokens.length < 3) throw new _ParseError('expected a value after "="', second);
+      if (segTokens.length > 3) throw new _ParseError('unexpected token in argument', segTokens[3]);
+      return { key: first.text, value: _valueNodeFromCallStyleToken(segTokens[2]) };
+    }
+    if (!second.punct && !second.quoted && !second.kwarg && second.text.startsWith('=') && second.text.length > 1) {
+      // `key =value` — second token is glued "=value"
+      if (segTokens.length > 2) throw new _ParseError('unexpected token in argument', segTokens[2]);
+      return { key: first.text, value: _valueNodeFromCallStyleToken({ text: second.text.slice(1) }) };
+    }
+  }
+  if (first.punct) throw new _ParseError(`unexpected '${first.punct}' in argument list`, first);
+  // Every argument is always keyword — including the first — per the
+  // operator's explicit decision (this also fully removes the only case
+  // where a schema's params_schema key ORDER mattered for correctness;
+  // see the "Known gaps" note below on jsonb not guaranteeing key order).
+  throw new _ParseError(
+    `argument must be written as name=value (every argument is keyword-only, including the first)`,
+    first,
+  );
+}
+
+/** Parse the inner text of a call's `(...)` into ArgEntry[], via
+ *  engine.js's tokenizeCallStyle() — the Sprint 2 reuse point: a `call`'s
+ *  argument list has NO extra punctuation beyond what tokenizeCallStyle
+ *  already understands (names, numbers, quoted strings, `key=value`,
+ *  commas) — list literals as a CALL ARGUMENT value (as opposed to a leaf's
+ *  RHS value, which the outer lexer below handles directly) are a known,
+ *  documented scope limitation: tokenizeCallStyle has no `[`/`]` awareness,
+ *  so a bracketed list typed as a call arg will not parse as a list — no
+ *  example in the design doc's grammar needs this, so it is out of scope
+ *  for Sprint 2. */
+function _parseArgListFromInnerText(innerText, labelToken) {
+  const raw = innerText.trim();
+  if (raw === '') return [];
+  const callTokens = tokenizeCallStyle(innerText);
+  if (callTokens.length === 0) return [];
+  // Split on top-level commas (no nesting possible inside — see docstring).
+  const segments = [[]];
+  for (const t of callTokens) {
+    if (t.punct === ',') segments.push([]);
+    else segments[segments.length - 1].push(t);
+  }
+  return segments.map(seg => _parseArgSegment(seg, labelToken));
+}
+
+/** Lex a full statement into a flat token stream. Returns
+ *  `{ tokens, errors }` — `errors` is a structured list (never throws out
+ *  of this function); `tokens` is `[]` on a lex error. */
+export function lexAgentStatement(text) {
+  if (typeof text !== 'string') return { tokens: [], errors: [_err('statement must be a string')] };
+  if (text.length > _MAX_STATEMENT_LEN) {
+    return { tokens: [], errors: [_err(`statement too long (${text.length} chars > ${_MAX_STATEMENT_LEN} cap)`)] };
+  }
+  // Cheap text-level paren-depth guard before any real scanning — mirrors
+  // expr_eval.py's _check_paren_depth rationale (catch pathological nesting
+  // before it ever drives recursion). Quote-aware (parens inside a quoted
+  // string literal, e.g. emit_log(message="(((hi)))"), must never count —
+  // otherwise a legitimate message containing parens could be falsely
+  // rejected. Deliberately counts a metric/scope/action CALL's own
+  // "(...)" toward this depth too, even though those are absorbed into one
+  // token at lex time and never actually recurse through the parser's own
+  // depth-tracked productions (parsePrimary's "(" / parseTerm's "~") — this
+  // makes the pre-scan a conservative (slightly stricter) over-approximation
+  // of the real recursion risk, same spirit as expr_eval.py's own guard:
+  // cheap and approximate, not a precise parse.
+  let depth = 0;
+  let inQuote = null;
+  for (const ch of text) {
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === '(') { depth++; if (depth > _MAX_DEPTH) return { tokens: [], errors: [_err(`nesting too deep (> ${_MAX_DEPTH})`)] }; }
+    else if (ch === ')') depth--;
+  }
+
+  const tokens = [];
+  let i = 0;
+  const n = text.length;
+  try {
+    while (i < n) {
+      while (i < n && /\s/.test(text[i])) i++;
+      if (i >= n) break;
+      const start = i;
+      const ch = text[i];
+
+      if (ch === '"' || ch === "'") {
+        const quote = ch;
+        i++;
+        while (i < n && text[i] !== quote) i++;
+        if (i >= n) throw new _ParseError('unterminated string literal', { start });
+        i++;
+        tokens.push({ type: 'STRING', value: text.slice(start + 1, i - 1), start, end: i });
+        continue;
+      }
+
+      if (ch === '<' || ch === '>' || ch === '=' || ch === '!') {
+        const two = text.slice(i, i + 2);
+        if (ch === '<') { if (two === '<=') { tokens.push({ type: 'LE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'LT', start, end: i + 1 }); i += 1; } continue; }
+        if (ch === '>') { if (two === '>=') { tokens.push({ type: 'GE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'GT', start, end: i + 1 }); i += 1; } continue; }
+        if (ch === '=') { if (two === '==') { tokens.push({ type: 'EQEQ', start, end: i + 2 }); i += 2; continue; } throw new _ParseError(`unexpected '='`, { start }); }
+        if (ch === '!') { if (two === '!=') { tokens.push({ type: 'NE', start, end: i + 2 }); i += 2; continue; } throw new _ParseError(`unexpected '!'`, { start }); }
+      }
+
+      if (_PUNCT_SINGLE[ch]) {
+        tokens.push({ type: _PUNCT_SINGLE[ch], start, end: i + 1 });
+        i++;
+        continue;
+      }
+
+      if (_isDigit(ch) || (ch === '-' && _isDigit(text[i + 1] || ''))) {
+        let j = i + (ch === '-' ? 1 : 0);
+        while (j < n && _isDigit(text[j])) j++;
+        if (text[j] === '.' && _isDigit(text[j + 1] || '')) {
+          j++;
+          while (j < n && _isDigit(text[j])) j++;
+        }
+        tokens.push({ type: 'NUMBER', value: Number(text.slice(start, j)), start, end: j });
+        i = j;
+        continue;
+      }
+
+      if (_isWordStart(ch)) {
+        let j = i;
+        while (j < n && _isWordChar(text[j])) j++;
+        const nameRaw = text.slice(start, j);
+        i = j;
+        const lower = nameRaw.toLowerCase();
+        if (text[i] === '(') {
+          // CALL — extract the balanced-paren substring (quote-aware).
+          const innerStart = i + 1;
+          let pd = 1;
+          let k = innerStart;
+          while (k < n && pd > 0) {
+            const c = text[k];
+            if (c === '"' || c === "'") {
+              const q = c; k++;
+              while (k < n && text[k] !== q) k++;
+              if (k >= n) throw new _ParseError('unterminated string literal inside call arguments', { start: innerStart });
+              k++;
+              continue;
+            }
+            if (c === '(') pd++;
+            else if (c === ')') pd--;
+            k++;
+          }
+          if (pd !== 0) throw new _ParseError(`unbalanced parentheses after '${nameRaw}'`, { start });
+          const innerEnd = k - 1;
+          const innerText = text.slice(innerStart, innerEnd);
+          // Note: innerText.trim() !== '' always yields args.length >= 1 or
+          // a thrown _ParseError (tokenizeCallStyle never silently drops a
+          // non-whitespace char) — no separate "non-empty but zero args"
+          // case to guard here.
+          const args = _parseArgListFromInnerText(innerText, { start });
+          tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: true, args, start, end: k });
+          i = k;
+        } else {
+          tokens.push({ type: 'NAME', value: nameRaw, reserved: _RESERVED.has(lower), hasCall: false, args: null, start, end: i });
+        }
+        continue;
+      }
+
+      throw new _ParseError(`unexpected character '${ch}'`, { start });
+    }
+  } catch (e) {
+    if (e instanceof _ParseError) return { tokens: [], errors: [{ message: e.message, position: e.position }] };
+    throw e;
+  }
+  tokens.push({ type: 'EOF', start: n, end: n });
+  return { tokens, errors: [] };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// (c) Recursive-descent parser
+// ═══════════════════════════════════════════════════════════════════════
+
+function _peek(state) { return state.tokens[state.pos]; }
+function _advance(state) { return state.tokens[state.pos++]; }
+function _wordIs(tok, word) { return tok.type === 'NAME' && tok.value.toLowerCase() === word; }
+
+function _expectWord(state, word) {
+  const tok = _peek(state);
+  if (!_wordIs(tok, word)) throw new _ParseError(`expected "${word.toUpperCase()}"`, tok);
+  return _advance(state);
+}
+
+function _checkDepth(depth, tok) {
+  if (depth > _MAX_DEPTH) throw new _ParseError(`expression nesting too deep (> ${_MAX_DEPTH})`, tok);
+}
+
+/** `call := NAME | NAME "(" arg_list ")"` */
+export function parseCall(state) {
+  const tok = _peek(state);
+  if (tok.type !== 'NAME') throw new _ParseError('expected a name', tok);
+  if (tok.reserved) throw new _ParseError(`"${tok.value}" is a reserved word and cannot be used as a token name`, tok);
+  if (tok.hasCall && (!tok.args || tok.args.length === 0)) {
+    throw new _ParseError(`"${tok.value}()" is a parse error — a zero-argument token is always written bare`, tok);
+  }
+  _advance(state);
+  return { type: 'call', name: tok.value, args: tok.args || [], hasCall: tok.hasCall, start: tok.start, end: tok.end };
+}
+
+/** `arg_list := first_arg ("," kw_arg)*` — args are resolved at LEX time
+ *  (tokenizeCallStyle reuse point, see `_parseArgListFromInnerText`); this
+ *  accessor exists for EBNF-production naming parity with the formal
+ *  grammar and for Sprint 3/4 consumers that want to inspect a call's
+ *  already-parsed argument list without re-deriving it. */
+export function parseArgList(callNode) { return callNode.args || []; }
+
+/** `scope_ref := call ("." call)*` */
+export function parseScopeRef(state) {
+  const segments = [parseCall(state)];
+  while (_peek(state).type === 'DOT') {
+    _advance(state);
+    segments.push(parseCall(state));
+  }
+  return { type: 'scope', segments };
+}
+
+/** `metric_ref := call "@" scope_ref` */
+export function parseMetricRef(state) {
+  const metric = parseCall(state);
+  const at = _peek(state);
+  if (at.type !== 'AT') throw new _ParseError(`expected "@" after metric '${metric.name}'`, at);
+  _advance(state);
+  const scope = parseScopeRef(state);
+  return { metric, scope };
+}
+
+/** `list_literal := "[" value ("," value)* "]"` */
+export function parseListLiteral(state) {
+  const open = _peek(state);
+  if (open.type !== 'LBRACKET') throw new _ParseError('expected "["', open);
+  _advance(state);
+  const items = [];
+  if (_peek(state).type !== 'RBRACKET') {
+    items.push(parseValue(state));
+    while (_peek(state).type === 'COMMA') {
+      _advance(state);
+      if (_peek(state).type === 'RBRACKET') throw new _ParseError('trailing comma in list literal', _peek(state));
+      items.push(parseValue(state));
+    }
+  }
+  const close = _peek(state);
+  if (close.type !== 'RBRACKET') throw new _ParseError('expected "]"', close);
+  _advance(state);
+  return { type: 'list', value: items };
+}
+
+/** `value := NUMBER | STRING | NAME | list_literal` */
+export function parseValue(state) {
+  const tok = _peek(state);
+  if (tok.type === 'NUMBER') { _advance(state); return { type: 'number', value: tok.value }; }
+  if (tok.type === 'STRING') { _advance(state); return { type: 'string', value: tok.value }; }
+  if (tok.type === 'LBRACKET') return parseListLiteral(state);
+  if (tok.type === 'NAME' && !tok.hasCall) {
+    if (tok.reserved && tok.value.toLowerCase() !== 'true' && tok.value.toLowerCase() !== 'false') {
+      throw new _ParseError(`"${tok.value}" is a reserved word and cannot be used as a value here`, tok);
+    }
+    _advance(state);
+    return { type: 'name', value: tok.value };
+  }
+  throw new _ParseError('expected a value (number, string, or bare name)', tok);
+}
+
+const _COMPARATOR_MAP = { LT: '<', LE: '<=', GT: '>', GE: '>=', EQEQ: '==', NE: '!=' };
+
+function _isComparatorStart(tok) {
+  if (_COMPARATOR_MAP[tok.type]) return true;
+  return tok.type === 'NAME' && (_wordIs(tok, 'in') || _wordIs(tok, 'not'));
+}
+
+function parseComparator(state) {
+  const tok = _peek(state);
+  if (_COMPARATOR_MAP[tok.type]) { _advance(state); return _COMPARATOR_MAP[tok.type]; }
+  if (tok.type === 'NAME' && _wordIs(tok, 'not')) {
+    _advance(state);
+    const t2 = _peek(state);
+    if (!(t2.type === 'NAME' && _wordIs(t2, 'in'))) throw new _ParseError('expected "in" after "not"', t2);
+    _advance(state);
+    return 'not_in';
+  }
+  if (tok.type === 'NAME' && _wordIs(tok, 'in')) { _advance(state); return 'in'; }
+  throw new _ParseError('expected a comparator', tok);
+}
+
+function _isLiteralStart(tok) {
+  return tok.type === 'NUMBER' || tok.type === 'STRING' || tok.type === 'LBRACKET';
+}
+
+/** `leaf := metric_ref comparator value | value comparator metric_ref comparator value` */
+export function parseLeaf(state) {
+  const startTok = _peek(state);
+  if (_isLiteralStart(startTok)) {
+    const value1 = parseValue(state);
+    const op1 = parseComparator(state);
+    const { metric, scope } = parseMetricRef(state);
+    const op2 = parseComparator(state);
+    const value2 = parseValue(state);
+    return { type: 'between', value1, op1, metric, scope, op2, value2 };
+  }
+  const { metric, scope } = parseMetricRef(state);
+  if (_isComparatorStart(_peek(state))) {
+    const op = parseComparator(state);
+    const value = parseValue(state);
+    return { type: 'leaf', metric, scope, op, value };
+  }
+  // Boolean-metric shorthand — syntactically accepted here; the semantic
+  // check ("was this metric actually boolean?") happens at compile time,
+  // once the token is resolved against the catalog (see design doc).
+  return { type: 'leaf', metric, scope, op: null, value: null };
+}
+
+/** `primary := "(" or_expr ")" | leaf` — `depth` increments EXACTLY ONCE
+ *  per actual `(` nesting level here (and once per `~` in `parseTerm`
+ *  below) — these are the only two productions that recurse into a NEW
+ *  nesting level; `parseOrExpr`/`parseTerm` passing `depth` straight
+ *  through (not +1) keeps the guard's ">20" semantics matching the
+ *  operator-visible nesting depth 1:1, not inflated by grammar-structure
+ *  hops that aren't real nesting. */
+export function parsePrimary(state, depth = 0) {
+  const tok = _peek(state);
+  if (tok.type === 'LPAREN') {
+    _checkDepth(depth + 1, tok);
+    _advance(state);
+    const inner = parseOrExpr(state, depth + 1);
+    const close = _peek(state);
+    if (close.type !== 'RPAREN') throw new _ParseError('expected ")"', close);
+    _advance(state);
+    return inner;
+  }
+  return parseLeaf(state);
+}
+
+/** `term := "~" primary | primary` */
+export function parseTerm(state, depth = 0) {
+  const tok = _peek(state);
+  if (tok.type === 'TILDE') {
+    _checkDepth(depth + 1, tok);
+    _advance(state);
+    const inner = parsePrimary(state, depth + 1);
+    return { type: 'not', term: inner };
+  }
+  return parsePrimary(state, depth);
+}
+
+/** `or_expr := term (("&" | "|") term)*` — equal precedence, strictly
+ *  left-to-right (folded as a left-leaning binary chain, NOT an n-ary node —
+ *  this correctly represents e.g. `a & b | c` as `(a & b) | c` without
+ *  pretending `&`/`|` share one node type). */
+export function parseOrExpr(state, depth = 0) {
+  let node = parseTerm(state, depth);
+  while (true) {
+    const tok = _peek(state);
+    if (tok.type === 'AMP') { _advance(state); node = { type: 'and', left: node, right: parseTerm(state, depth) }; continue; }
+    if (tok.type === 'PIPE') { _advance(state); node = { type: 'or', left: node, right: parseTerm(state, depth) }; continue; }
+    break;
+  }
+  return node;
+}
+
+/** `condition := "always" | or_expr` — "always" is standalone-only: a
+ *  parse error, not a silently-tolerated redundancy, if followed by `&`
+ *  or `|` right here at the top level. `always` appearing as an OPERAND
+ *  deeper in an expression (e.g. `x | always`) is caught differently —
+ *  `parseCall` rejects any reserved word used as a token name, which
+ *  `always` always is outside this one top-level sentinel spot — still a
+ *  clear parse error, just a different message. */
+export function parseCondition(state, depth = 0) {
+  const tok = _peek(state);
+  if (tok.type === 'NAME' && _wordIs(tok, 'always') && !tok.hasCall) {
+    _advance(state);
+    const next = _peek(state);
+    if (next.type === 'AMP' || next.type === 'PIPE') {
+      throw new _ParseError('"always" is standalone-only — it cannot be combined with & or |', next);
+    }
+    return { type: 'always' };
+  }
+  return parseOrExpr(state, depth);
+}
+
+/** `call_list := call ("," call)*` */
+function parseCallList(state) {
+  const calls = [parseCall(state)];
+  while (_peek(state).type === 'COMMA') {
+    _advance(state);
+    calls.push(parseCall(state));
+  }
+  return calls;
+}
+
+function parseClauseBody(state) {
+  const tok = _peek(state);
+  if (tok.type === 'NAME' && _wordIs(tok, 'nop')) {
+    if (tok.hasCall) throw new _ParseError('"nop" takes no arguments — nop() is a parse error', tok);
+    _advance(state);
+    return 'nop';
+  }
+  return parseCallList(state);
+}
+
+/** `agent_stmt := "WHEN" condition "ALERT" alert_clause "DO" do_clause` */
+export function parseAgentStmt(state) {
+  _expectWord(state, 'when');
+  const condition = parseCondition(state, 0);
+  _expectWord(state, 'alert');
+  const alertCalls = parseClauseBody(state);
+  _expectWord(state, 'do');
+  const doCalls = parseClauseBody(state);
+  return { kind: 'agent', condition, alertCalls, doCalls };
+}
+
+/** `order_stmt := call ("," call)*` — restricted to order/place_order calls. */
+export function parseOrderStmt(state) {
+  const calls = parseCallList(state);
+  for (const c of calls) {
+    const lname = c.name.toLowerCase();
+    if (lname !== 'order' && lname !== 'place_order') {
+      throw new _ParseError(
+        'only order(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+        { start: c.start }
+      );
+    }
+  }
+  return { kind: 'order', calls };
+}
+
+/** `statement := agent_stmt | order_stmt` — top-level entry point.
+ *  Returns `{ ast, errors }` — `ast` is `null` on any parse failure. */
+export function parseStatement(text) {
+  const { tokens, errors: lexErrors } = lexAgentStatement(text);
+  if (lexErrors.length) return { ast: null, errors: lexErrors };
+  const state = { tokens, pos: 0 };
+  try {
+    const first = _peek(state);
+    const ast = (first.type === 'NAME' && _wordIs(first, 'when') && !first.hasCall)
+      ? parseAgentStmt(state)
+      : parseOrderStmt(state);
+    const trailing = _peek(state);
+    if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input', trailing);
+    return { ast, errors: [] };
+  } catch (e) {
+    if (e instanceof _ParseError) return { ast: null, errors: [{ message: e.message, position: e.position }] };
+    throw e;
+  }
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// (d) Compiler — AST → request JSON
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Map a call's args onto a schema's declared keys — every argument is
+ *  ALWAYS keyword (no positional form exists in this grammar at all, per
+ *  the operator's explicit decision), so this never depends on `keys`'
+ *  ORDER, only on key NAMES — important because `params_schema` is stored
+ *  as Postgres jsonb, which does not guarantee key order is preserved on
+ *  round-trip (see the file-header "Known gaps" note). Alias table applied
+ *  when `aliasToReal` is provided. Returns a `Map<realKey, ValueNode>`;
+ *  errors are pushed onto the caller-supplied `errors` array (never
+ *  thrown). `callNode.args` is guaranteed to have every entry's `key` set
+ *  (never `null`) by the lexer — `_parseArgSegment` throws a parse error
+ *  before a positional-shaped arg ever reaches here. */
+function _mapCallArgsToKeys(callNode, keys, aliasToReal, errors, label) {
+  const provided = new Map();
+  (callNode.args || []).forEach((arg) => {
+    const typedLower = arg.key.toLowerCase();
+    let realKey = keys.find(k => k.toLowerCase() === typedLower) || null;
+    if (!realKey && aliasToReal) {
+      const aliased = aliasToReal[typedLower];
+      if (aliased && keys.includes(aliased)) realKey = aliased;
+    }
+    if (!realKey) { errors.push(_err(`unknown parameter '${arg.key}' for ${label}`)); return; }
+    if (provided.has(realKey)) { errors.push(_err(`${label}: duplicate parameter '${realKey}'`)); return; }
+    provided.set(realKey, arg.value);
+  });
+  return provided;
+}
+
+/** Coerce one ValueNode against its params_schema field spec. Returns
+ *  `{ value }` or `{ error }` — never throws. */
+function _coerceValueForSpec(valueNode, spec, key, label) {
+  const type = spec && spec.type;
+  if (type === 'enum') {
+    if (valueNode.type !== 'string' && valueNode.type !== 'name') return { error: _err(`${label}.${key}: expected an enum value`) };
+    const raw = valueNode.value;
+    const match = (spec.enum || []).find(e => String(e).toLowerCase() === String(raw).toLowerCase());
+    if (!match) return { error: _err(`${label}.${key}: '${raw}' is not one of [${(spec.enum || []).join(', ')}]`) };
+    return { value: match };
+  }
+  if (type === 'number') {
+    if (valueNode.type === 'number') return { value: valueNode.value };
+    if (valueNode.type === 'string' && spec.token_ref_ok) return { value: valueNode.value }; // expr string, evaluated server-side
+    return { error: _err(`${label}.${key}: expected a number`) };
+  }
+  if (type === 'boolean') {
+    if (valueNode.type === 'name') {
+      const low = String(valueNode.value).toLowerCase();
+      if (low === 'true') return { value: true };
+      if (low === 'false') return { value: false };
+    }
+    return { error: _err(`${label}.${key}: expected true or false`) };
+  }
+  if (type === 'string') {
+    if (valueNode.type === 'string') return { value: valueNode.value };
+    return { error: _err(`${label}.${key}: free-text value must be quoted (e.g. ${key}="...")`) };
+  }
+  // Unknown/absent spec type — best-effort passthrough.
+  if (valueNode.type === 'list') return { value: valueNode.value.map(v => v.value) };
+  return { value: valueNode.value };
+}
+
+/** Describe which OTHER bucket a name resolves to in the catalog, for a
+ *  clearer kind-mismatch error (e.g. "'emit_log' is an action — only
+ *  metrics are allowed in a WHEN condition") instead of a bare "unknown
+ *  X" when the token is actually real, just in the wrong clause. */
+function _describeKind(name, catalog) {
+  const key = String(name).toLowerCase();
+  if (catalog.metrics.has(key)) return 'a metric';
+  if (catalog.scopes.has(key)) return 'a scope';
+  if (catalog.channels.has(key)) return 'a channel';
+  if (catalog.actions.has(key)) return 'an action';
+  return null;
+}
+
+function _resolveMetric(callNode, catalog, errors) {
+  const entry = catalog.metrics.get(callNode.name.toLowerCase());
+  if (!entry) {
+    const other = _describeKind(callNode.name, catalog);
+    errors.push(_err(other
+      ? `'${callNode.name}' is ${other} — only metrics are allowed in a WHEN condition`
+      : `unknown metric '${callNode.name}'`));
+    return null;
+  }
+  return entry;
+}
+
+function _resolveScopeString(scopeNode, catalog, errors) {
+  const parts = [];
+  for (const seg of scopeNode.segments) {
+    if (seg.args && seg.args.length) { errors.push(_err(`scope segment '${seg.name}' takes no arguments`)); return null; }
+    parts.push(seg.name.toLowerCase());
+  }
+  const joined = parts.join('.');
+  const entry = catalog.scopes.get(joined);
+  if (!entry) { errors.push(_err(`unknown scope '${parts.join('.')}'`)); return null; }
+  return entry.token;
+}
+
+/** Compiles a metric/scope `call` to its POSITIONAL-ONLY catalog string
+ *  (e.g. `"mean_pnl(30)"`), regardless of whether the operator typed
+ *  positional or keyword args — mirrors the live backend's
+ *  `grammar_registry.py:_parse_call_token`, which ONLY accepts a single
+ *  positional literal per declared param, EXACT arity (no optional/default
+ *  params for metric/scope calls — unlike action/channel calls, which use
+ *  per-key `required`). */
+function _compileMetricCallString(callNode, entry, errors) {
+  const keys = entry.paramKeys;
+  if (keys.length === 0) {
+    if (callNode.args && callNode.args.length) { errors.push(_err(`${entry.token} takes no arguments`)); return null; }
+    return entry.token;
+  }
+  const localErrors = [];
+  const provided = _mapCallArgsToKeys(callNode, keys, null, localErrors, entry.token);
+  if (localErrors.length) { errors.push(...localErrors); return null; }
+  const missing = keys.filter(k => !provided.has(k));
+  if (missing.length) { errors.push(_err(`${entry.token} requires argument(s): ${missing.join(', ')}`)); return null; }
+  const parts = [];
+  for (const k of keys) {
+    const v = provided.get(k);
+    if (v.type !== 'number' || !(v.value > 0)) {
+      errors.push(_err(`${entry.token}: argument '${k}' must be a positive numeric literal`));
+      return null;
+    }
+    parts.push(String(v.value));
+  }
+  return `${entry.token}(${parts.join(',')})`;
+}
+
+function _compileListValue(listNode, metricEntry, errors) {
+  const isNumeric = metricEntry.valueType === 'number' || !metricEntry.valueType;
+  const out = [];
+  for (const item of listNode.value) {
+    if (isNumeric) {
+      if (item.type !== 'number') { errors.push(_err(`list literal: expected a number`)); return null; }
+      out.push(item.value);
+    } else {
+      out.push(item.value);
+    }
+  }
+  return out;
+}
+
+function compileLeaf(node, catalog) {
+  const errors = [];
+  const metricEntry = _resolveMetric(node.metric, catalog, errors);
+  const scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
+  if (errors.length) return { conditions: null, errors };
+  const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
+  if (errors.length) return { conditions: null, errors };
+
+  if (node.op === null) {
+    if (metricEntry.valueType === 'boolean') {
+      return { conditions: { metric: metricStr, scope: scopeStr, op: '==', value: true }, errors: [] };
+    }
+    errors.push(_err(`expected a comparator after a numeric metric '${metricEntry.token}'`));
+    return { conditions: null, errors };
+  }
+
+  if (node.op === 'in' || node.op === 'not_in') {
+    if (node.value.type !== 'list') {
+      errors.push(_err(`'${node.op === 'in' ? 'in' : 'not in'}' requires a list literal on the right`));
+      return { conditions: null, errors };
+    }
+    const list = _compileListValue(node.value, metricEntry, errors);
+    if (errors.length) return { conditions: null, errors };
+    return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: list }, errors: [] };
+  }
+
+  if (metricEntry.valueType === 'boolean') {
+    if (node.op !== '==' && node.op !== '!=') {
+      errors.push(_err(`boolean metric '${metricEntry.token}' only supports == / !=`));
+      return { conditions: null, errors };
+    }
+    if (node.value.type !== 'name' || !['true', 'false'].includes(String(node.value.value).toLowerCase())) {
+      errors.push(_err(`${metricEntry.token}: expected true or false`));
+      return { conditions: null, errors };
+    }
+    return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: String(node.value.value).toLowerCase() === 'true' }, errors: [] };
+  }
+
+  if (node.value.type !== 'number') {
+    errors.push(_err('comparator requires both sides numeric'));
+    return { conditions: null, errors };
+  }
+  return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: node.value.value }, errors: [] };
+}
+
+const _BETWEEN_FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' };
+
+function compileBetween(node, catalog) {
+  const errors = [];
+  const metricEntry = _resolveMetric(node.metric, catalog, errors);
+  const scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
+  if (errors.length) return { conditions: null, errors };
+  const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
+  if (errors.length) return { conditions: null, errors };
+
+  if (node.value1.type !== 'number' || node.value2.type !== 'number') {
+    errors.push(_err('chained ("between") comparison literals must be numeric'));
+    return { conditions: null, errors };
+  }
+  if (metricEntry.valueType && metricEntry.valueType !== 'number') {
+    errors.push(_err('chained ("between") comparison requires a numeric metric'));
+    return { conditions: null, errors };
+  }
+
+  const lowSet = new Set(['<', '<=']);
+  const highSet = new Set(['>', '>=']);
+  const dirLow = lowSet.has(node.op1) && lowSet.has(node.op2);
+  const dirHigh = highSet.has(node.op1) && highSet.has(node.op2);
+  if (!dirLow && !dirHigh) {
+    errors.push(_err('mixed-direction chained comparison — both sides must point the same direction'));
+    return { conditions: null, errors };
+  }
+
+  const inclusive = (node.op1 === '<=' && node.op2 === '<=') || (node.op1 === '>=' && node.op2 === '>=');
+  if (inclusive) {
+    const [low, high] = dirLow ? [node.value1.value, node.value2.value] : [node.value2.value, node.value1.value];
+    return { conditions: { metric: metricStr, scope: scopeStr, op: 'between', value: [low, high] }, errors: [] };
+  }
+  // Strict / mixed-strictness chain — the backend's `between` op is ALWAYS
+  // inclusive (`lambda a,b: b[0] <= a <= b[1]`), so compiling a strict
+  // chain to it would silently loosen the condition. Compile to an
+  // explicit `all` of the two original (direction-correct) comparisons
+  // instead — see .claude/PLAN.md Step 5's "between" design note.
+  const leaf1 = { metric: metricStr, scope: scopeStr, op: _BETWEEN_FLIP[node.op1], value: node.value1.value };
+  const leaf2 = { metric: metricStr, scope: scopeStr, op: node.op2, value: node.value2.value };
+  return { conditions: { all: [leaf1, leaf2] }, errors: [] };
+}
+
+function compileCondNode(node, catalog) {
+  if (node.type === 'and' || node.type === 'or') {
+    const l = compileCondNode(node.left, catalog);
+    const r = compileCondNode(node.right, catalog);
+    const errors = [...l.errors, ...r.errors];
+    if (errors.length) return { conditions: null, errors };
+    return { conditions: { [node.type === 'and' ? 'all' : 'any']: [l.conditions, r.conditions] }, errors: [] };
+  }
+  if (node.type === 'not') {
+    const inner = compileCondNode(node.term, catalog);
+    if (inner.errors.length) return { conditions: null, errors: inner.errors };
+    return { conditions: { not: inner.conditions }, errors: [] };
+  }
+  if (node.type === 'between') return compileBetween(node, catalog);
+  if (node.type === 'leaf') return compileLeaf(node, catalog);
+  return { conditions: null, errors: [_err('internal: unknown condition node type')] };
+}
+
+function compileCondition(node, catalog) {
+  if (node.type === 'always') return { conditions: { ...ALWAYS_LEAF }, errors: [] };
+  return compileCondNode(node, catalog);
+}
+
+function _compileGenericActionParams(call, entry) {
+  const errors = [];
+  const provided = _mapCallArgsToKeys(call, entry.paramKeys, _ALIAS_TO_REAL, errors, entry.token);
+  if (errors.length) return { params: null, errors };
+  for (const k of entry.paramKeys) {
+    const spec = entry.paramsSchema[k];
+    if (spec && spec.required && !provided.has(k)) errors.push(_err(`${entry.token}: missing required param '${k}'`));
+  }
+  if (errors.length) return { params: null, errors };
+  const params = {};
+  for (const [k, v] of provided) {
+    const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
+    if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
+  }
+  if (errors.length) return { params: null, errors };
+  return { params, errors: [] };
+}
+
+/** Strip any `lots=` arg out of a call's arg list (CLI-only sugar — not a
+ *  real schema key on `place_order`), returning `{ lotsArg, call }`. */
+function _splitLotsArg(call) {
+  const lotsArgs = (call.args || []).filter(a => a.key && a.key.toLowerCase() === 'lots');
+  const otherArgs = (call.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'lots'));
+  return { lotsArgs, call: { ...call, args: otherArgs } };
+}
+
+/** Compile a `DO order(...)` / `DO place_order(...)` call to an agent
+ *  action's `{"type":"place_order","params":{...}}` entry. `lots=N`
+ *  converts to the REAL schema's `qty` param as CONTRACTS
+ *  (`qty = lots * lot_size`) — this is place_order's own documented
+ *  convention (order_fields.yaml: "qty: Number of lots × lot size"),
+ *  DISTINCT from the ticket/basket convention below (where `quantity` is
+ *  lots directly, no multiplication) — see `_compileOrderCallToLeg`. */
+function _compileOrderActionParams(call, entry, opts) {
+  const errors = [];
+  const { lotsArgs, call: strippedCall } = _splitLotsArg(call);
+  const provided = _mapCallArgsToKeys(strippedCall, entry.paramKeys, _ALIAS_TO_REAL, errors, entry.token);
+  if (lotsArgs.length > 1) errors.push(_err(`${entry.token}: duplicate parameter 'lots'`));
+  if (lotsArgs.length === 1 && provided.has('qty')) errors.push(_err(`${entry.token}: cannot specify both qty and lots`));
+  if (errors.length) return { params: null, errors };
+
+  for (const k of entry.paramKeys) {
+    if (k === 'qty') continue;
+    const spec = entry.paramsSchema[k];
+    if (spec && spec.required && !provided.has(k)) errors.push(_err(`${entry.token}: missing required param '${k}'`));
+  }
+  if (!provided.has('qty') && lotsArgs.length === 0) {
+    errors.push(_err(`${entry.token}: missing required param 'qty' (or lots=N for F&O)`));
+  }
+  if (errors.length) return { params: null, errors };
+
+  const params = {};
+  for (const [k, v] of provided) {
+    if (k === 'qty') continue;
+    const coerced = _coerceValueForSpec(v, entry.paramsSchema[k], k, entry.token);
+    if (coerced.error) errors.push(coerced.error); else params[k] = coerced.value;
+  }
+  if (errors.length) return { params: null, errors };
+
+  if (lotsArgs.length === 1) {
+    const lotsVal = lotsArgs[0].value;
+    if (lotsVal.type !== 'number' || !(lotsVal.value > 0)) {
+      errors.push(_err(`${entry.token}: lots must be a positive number`));
+      return { params: null, errors };
+    }
+    const symbol = params.symbol;
+    if (!symbol) {
+      errors.push(_err(`${entry.token}: lots requires symbol to be resolvable`));
+      return { params: null, errors };
+    }
+    const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
+    const lotSize = lotSizeOf(symbol);
+    if (!lotSize || !(lotSize > 0)) {
+      errors.push(_err(`${entry.token}: could not resolve lot size for '${symbol}' — required to convert lots to qty`));
+      return { params: null, errors };
+    }
+    params.qty = Math.round(lotsVal.value * lotSize);
+  } else {
+    const qtyVal = provided.get('qty');
+    const coerced = _coerceValueForSpec(qtyVal, entry.paramsSchema.qty, 'qty', entry.token);
+    if (coerced.error) { errors.push(coerced.error); return { params: null, errors }; }
+    params.qty = coerced.value;
+  }
+  return { params, errors: [] };
+}
+
+function compileAlertClause(alertCalls, catalog) {
+  if (alertCalls === 'nop') return { events: [], errors: [] };
+  const errors = [];
+  const events = [];
+  for (const call of alertCalls) {
+    const entry = catalog.channels.get(call.name.toLowerCase());
+    if (!entry) {
+      const other = _describeKind(call.name, catalog);
+      errors.push(_err(other
+        ? `'${call.name}' is ${other} — only channels are allowed in ALERT`
+        : `unknown channel '${call.name}'`));
+      continue;
+    }
+    const r = _compileGenericActionParams(call, entry);
+    errors.push(...r.errors);
+    if (!r.errors.length) events.push({ channel: entry.token, enabled: true, ...r.params });
+  }
+  return { events: errors.length ? null : events, errors };
+}
+
+function compileDoClause(doCalls, catalog, opts) {
+  if (doCalls === 'nop') return { actions: [], errors: [] };
+  const errors = [];
+  const actions = [];
+  for (const call of doCalls) {
+    const rawName = call.name.toLowerCase();
+    const lookupName = rawName === 'order' ? 'place_order' : rawName;
+    const entry = catalog.actions.get(lookupName);
+    if (!entry) {
+      const other = _describeKind(call.name, catalog);
+      errors.push(_err(other
+        ? `'${call.name}' is ${other} — only actions are allowed in DO`
+        : `unknown action '${call.name}'`));
+      continue;
+    }
+    if (lookupName === 'place_order') {
+      const r = _compileOrderActionParams(call, entry, opts);
+      errors.push(...r.errors);
+      if (!r.errors.length) actions.push({ type: 'place_order', params: r.params });
+      continue;
+    }
+    const r = _compileGenericActionParams(call, entry);
+    errors.push(...r.errors);
+    if (!r.errors.length) actions.push({ type: entry.token, params: r.params });
+  }
+  return { actions: errors.length ? null : actions, errors };
+}
+
+function compileAgentStmt(ast, catalog, opts) {
+  const errors = [];
+  const condResult = compileCondition(ast.condition, catalog);
+  errors.push(...condResult.errors);
+  const eventsResult = compileAlertClause(ast.alertCalls, catalog);
+  errors.push(...eventsResult.errors);
+  const actionsResult = compileDoClause(ast.doCalls, catalog, opts);
+  errors.push(...actionsResult.errors);
+  if (ast.alertCalls === 'nop' && ast.doCalls === 'nop') {
+    errors.push(_err('an agent must have at least one of ALERT or DO'));
+  }
+  if (errors.length) return { kind: 'agent', errors, agent: null };
+  return {
+    kind: 'agent', errors: [],
+    agent: { conditions: condResult.conditions, events: eventsResult.events, actions: actionsResult.actions },
+  };
+}
+
+/** Compile one bare `order(...)` call to a leg object using FIELD NAMES
+ *  shared by both the ticket (`side`/`account`) and basket
+ *  (`transaction_type`, no `account` — grouped at the BasketGroup level)
+ *  destinations; `compileOrderStmt` adapts field names per destination.
+ *  Ticket/basket convention: `quantity` IS LOTS for F&O (never multiplied
+ *  by lot_size here) — `lot_size_hint` carries the resolved lot size for
+ *  the backend's own cache. This is the OPPOSITE of the agent-action
+ *  `qty` convention above (contracts) — see TicketOrderRequest's own
+ *  docstring (schemas.py) for the "lots, not contracts" rule this exists
+ *  to honor; multiplying here would reproduce the CRUDEOIL 100× oversize
+ *  incident class. */
+function _compileOrderCallToLeg(call, catalog, opts) {
+  const errors = [];
+  const lname = call.name.toLowerCase();
+  if (lname !== 'order' && lname !== 'place_order') {
+    errors.push(_err('only order(...) can be used standalone'));
+    return { leg: null, errors };
+  }
+  const entry = catalog.actions.get('place_order');
+  if (!entry) { errors.push(_err('place_order action not found in catalog')); return { leg: null, errors }; }
+
+  const { lotsArgs, call: strippedCall } = _splitLotsArg(call);
+  const provided = _mapCallArgsToKeys(strippedCall, entry.paramKeys, _ALIAS_TO_REAL, errors, 'order');
+  if (lotsArgs.length > 1) errors.push(_err("order: duplicate parameter 'lots'"));
+  if (lotsArgs.length === 1 && provided.has('qty')) errors.push(_err('order: cannot specify both qty and lots'));
+  if (!provided.has('account')) errors.push(_err("order: missing required param 'account'"));
+  if (!provided.has('symbol')) errors.push(_err("order: missing required param 'symbol'"));
+  if (!provided.has('side')) errors.push(_err("order: missing required param 'side'"));
+  if (!provided.has('qty') && lotsArgs.length === 0) errors.push(_err("order: missing required param 'qty' (or lots=N for F&O)"));
+  if (errors.length) return { leg: null, errors };
+
+  const coerce = (key, dflt) => {
+    if (!provided.has(key)) return dflt;
+    const c = _coerceValueForSpec(provided.get(key), entry.paramsSchema[key], key, 'order');
+    if (c.error) { errors.push(c.error); return dflt; }
+    return c.value;
+  };
+  const account = coerce('account', null);
+  const symbol = coerce('symbol', null);
+  const side = coerce('side', null);
+  const exchange = coerce('exchange', 'NFO');
+  const product = coerce('product', 'NRML');
+  const order_type = coerce('order_type', 'LIMIT');
+  const variety = coerce('variety', 'regular');
+  const price = coerce('price', null);
+  const trigger_price = coerce('trigger_price', null);
+  const template_id = coerce('template_id', null);
+  const tp_pct_override = coerce('tp_pct_override', null);
+  const sl_pct_override = coerce('sl_pct_override', null);
+  const wing_premium_pct_override = coerce('wing_premium_pct_override', null);
+  const wing_strike_offset_override = coerce('wing_strike_offset_override', null);
+  let chase = false;
+  let chase_aggressiveness = 'low';
+  if (provided.has('chase_level')) {
+    const lvl = coerce('chase_level', null);
+    if (lvl) { chase = true; chase_aggressiveness = String(lvl).toLowerCase(); }
+  }
+  if (errors.length) return { leg: null, errors };
+
+  let quantity;
+  let lot_size_hint = null;
+  if (lotsArgs.length === 1) {
+    const lotsVal = lotsArgs[0].value;
+    if (lotsVal.type !== 'number' || !(lotsVal.value > 0)) {
+      errors.push(_err('order: lots must be a positive number'));
+      return { leg: null, errors };
+    }
+    const lotSizeOf = (opts && opts.lotSizeOf) || _defaultLotSizeOf;
+    const lotSize = lotSizeOf(symbol);
+    if (!lotSize || !(lotSize > 0)) {
+      errors.push(_err(`order: could not resolve lot size for '${symbol}'`));
+      return { leg: null, errors };
+    }
+    quantity = Math.round(lotsVal.value);
+    lot_size_hint = Math.round(lotSize);
+  } else {
+    const c = _coerceValueForSpec(provided.get('qty'), entry.paramsSchema.qty, 'qty', 'order');
+    if (c.error) { errors.push(c.error); return { leg: null, errors }; }
+    quantity = c.value;
+  }
+
+  const leg = {
+    account, side, tradingsymbol: symbol, quantity,
+    exchange, product, order_type, variety, price, trigger_price,
+    chase, chase_aggressiveness,
+    template_id, tp_pct_override, sl_pct_override,
+    wing_premium_pct_override, wing_strike_offset_override,
+  };
+  if (lot_size_hint != null) leg.lot_size_hint = lot_size_hint;
+  return { leg, errors: [] };
+}
+
+/** Compile a bare `order_stmt` to a SINGLE TicketOrderRequest-shaped
+ *  object (one call) or a BasketOrderRequest-shaped object (2+ calls,
+ *  grouped by account) — the SAME shapes the existing Ticket UI / basket
+ *  endpoint already accept (`frontend/src/lib/order/orderTicketSubmit.js`,
+ *  `backend/api/schemas.py:TicketOrderRequest` / `BasketOrderRequest`). */
+function compileOrderStmt(ast, catalog, opts = {}) {
+  const errors = [];
+  const legs = [];
+  for (const call of ast.calls) {
+    const r = _compileOrderCallToLeg(call, catalog, opts);
+    errors.push(...r.errors);
+    if (r.leg) legs.push(r.leg);
+  }
+  if (errors.length) return { kind: 'order', errors, ticket: null, basket: null };
+
+  if (legs.length === 1) {
+    if (!opts.mode) {
+      return { kind: 'order', errors: [_err('mode ("paper"|"live") is required to compile a bare order statement')], ticket: null, basket: null };
+    }
+    return { kind: 'order', errors: [], ticket: { mode: opts.mode, ...legs[0] }, basket: null };
+  }
+
+  const order = [];
+  const byAccount = new Map();
+  for (const leg of legs) {
+    if (!byAccount.has(leg.account)) { byAccount.set(leg.account, []); order.push(leg.account); }
+    const { account, side, ...rest } = leg; // eslint-disable-line no-unused-vars
+    byAccount.get(leg.account).push({ transaction_type: side, ...rest });
+  }
+  const groups = order.map(account => ({ account, legs: byAccount.get(account) }));
+  return { kind: 'order', errors: [], ticket: null, basket: { groups } };
+}
+
+/** Compile an already-parsed AST (from `parseStatement`) to its JSON
+ *  request shape. Returns `{ kind, errors, agent, ticket, basket }` —
+ *  non-empty `errors` means every payload field is `null`. */
+export function compileStatement(ast, catalog, opts = {}) {
+  if (ast.kind === 'agent') {
+    const r = compileAgentStmt(ast, catalog, opts);
+    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null };
+  }
+  return compileOrderStmt(ast, catalog, opts);
+}
+
+/** One-shot parse + compile — the main entry point for Sprint 4's UI and
+ *  for this sprint's tests. Never throws; always returns a structured
+ *  result. `opts.mode` ("paper"|"live") is required for a single bare
+ *  order_stmt; `opts.lotSizeOf(symbol) -> number|null` overrides the
+ *  default instruments-cache lot-size lookup (used by tests). */
+export function compileAgentCliStatement(text, catalog, opts = {}) {
+  const { ast, errors: parseErrors } = parseStatement(text);
+  if (parseErrors.length) {
+    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null };
+  }
+  const result = compileStatement(ast, catalog, opts);
+  if (result.errors && result.errors.length) {
+    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null };
+  }
+  return {
+    ok: true, errors: [], kind: result.kind,
+    agent: result.agent || null, ticket: result.ticket || null, basket: result.basket || null,
+  };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// (e) Semantic validator — thin wrapper for Sprint 4's live-preview, reuses
+//     the EXACT SAME parse+compile path (no duplicated validation logic).
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Validate a CLI statement WITHOUT needing the caller to consume the
+ *  compiled payload — returns only `{ ok, errors }`. Structured errors
+ *  (never throws), per the design doc's requirement that Sprint 4's UI
+ *  consume a stable error shape rather than catching exceptions. */
+export function validateAgentCliStatement(text, catalog, opts = {}) {
+  const result = compileAgentCliStatement(text, catalog, opts);
+  return { ok: result.ok, errors: result.errors };
+}

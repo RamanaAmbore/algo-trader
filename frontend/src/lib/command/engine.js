@@ -60,6 +60,122 @@ export function tokenize(line) {
   return tokens;
 }
 
+/**
+ * Call-style tokenizer (Sprint 2, agent CLI grammar) — a SEPARATE mode from
+ * `tokenize()` above. `tokenize()` is purely whitespace-delimited and is left
+ * byte-for-byte unchanged (orders.js depends on its exact behavior); this is
+ * a new, additive export for grammars whose tokens use call syntax —
+ * `name(arg1, key=value)` — where `(`, `)`, and `,` must be recognized as
+ * structural delimiters even with NO surrounding whitespace, e.g.
+ * `order(account, symbol="NIFTY25JULFUT")`.
+ *
+ * Quote-aware like `tokenize()`, plus one extra refinement `tokenize()` does
+ * NOT have: a `key=value` kwarg atom whose value is immediately a quoted
+ * string (`key="..."` / `key='...'`, no space before the quote) consumes the
+ * ENTIRE quoted literal — including any spaces inside it — as that kwarg's
+ * value, with the surrounding quotes stripped and `kwarg.quoted = true`. A
+ * spaced `key = "value"` form does NOT get this special fusion (there IS a
+ * gap before the quote) — callers that need the spaced form supported treat
+ * a standalone `=` punct token + the following quoted/bare token as the
+ * same kwarg themselves (this is a parser-level concern, not a tokenizer
+ * one, matching the plan's adjacency-rule split of responsibilities).
+ */
+export function tokenizeCallStyle(line) {
+  const tokens = [];
+  let i = 0;
+  const n = line.length;
+  const isDelim = (ch) => ch === '(' || ch === ')' || ch === ',';
+  while (i < n) {
+    while (i < n && /\s/.test(line[i])) i++;
+    if (i >= n) break;
+    const start = i;
+    const ch = line[i];
+    if (ch === '"' || ch === "'") {
+      const quote = ch;
+      i++;
+      while (i < n && line[i] !== quote) i++;
+      if (i < n) i++; // consume closing quote
+      tokens.push({ start, end: i, raw: line.slice(start, i),
+        text: line.slice(start + 1, i - 1), quoted: true });
+      continue;
+    }
+    if (isDelim(ch)) {
+      i++;
+      tokens.push({ start, end: i, raw: ch, text: ch, punct: ch });
+      continue;
+    }
+    // Generic atom: scan until whitespace, a structural delimiter, or a
+    // quote char — UNLESS we're sitting right after a `key=` boundary with
+    // no gap before the quote, in which case fuse the quoted literal in.
+    while (i < n && !/\s/.test(line[i]) && !isDelim(line[i]) && line[i] !== '"' && line[i] !== "'") {
+      i++;
+    }
+    const nameEnd = i;
+    const raw0 = line.slice(start, nameEnd);
+    const eq = raw0.indexOf('=');
+    if (eq > 0 && i < n && (line[i] === '"' || line[i] === "'")) {
+      const key = raw0.slice(0, eq);
+      const quote = line[i];
+      const qStart = i;
+      i++;
+      while (i < n && line[i] !== quote) i++;
+      if (i < n) i++; // consume closing quote
+      const value = line.slice(qStart + 1, Math.max(qStart + 1, i - 1));
+      tokens.push({ start, end: i, raw: line.slice(start, i), text: line.slice(start, i),
+        kwarg: { key, value, quoted: true } });
+      continue;
+    }
+    if (eq > 0) {
+      tokens.push({ start, end: nameEnd, raw: raw0, text: raw0,
+        kwarg: { key: raw0.slice(0, eq), value: raw0.slice(eq + 1) } });
+    } else {
+      tokens.push({ start, end: nameEnd, raw: raw0, text: raw0 });
+    }
+  }
+  return tokens;
+}
+
+/**
+ * Fuzzy-subsequence match (Sprint 2, agent CLI grammar) — true when every
+ * character of `typed` appears, in order, in `candidate` (case-insensitive),
+ * not necessarily contiguously — command-palette style (`mnpnl` matches
+ * `mean_pnl`). Exported standalone — opt-in, does not change `suggestAt()`'s
+ * own default `.startsWith()` filtering, so orders.js's existing suggestion
+ * behavior is untouched.
+ */
+export function fuzzySubsequenceMatch(typed, candidate) {
+  if (!typed) return true;
+  const t = String(typed).toLowerCase();
+  const c = String(candidate).toLowerCase();
+  let ti = 0;
+  for (let ci = 0; ci < c.length && ti < t.length; ci++) {
+    if (c[ci] === t[ti]) ti++;
+  }
+  return ti === t.length;
+}
+
+/**
+ * Rank + filter `candidates` by fuzzy-subsequence match against `prefix`.
+ * Exact-prefix matches sort first (score 0), then by how early the first
+ * typed character appears, then alphabetically. Returns `candidates`
+ * unfiltered (shallow-copied) when `prefix` is empty.
+ */
+export function fuzzyFilter(prefix, candidates) {
+  if (!prefix) return candidates.slice();
+  const p = String(prefix).toLowerCase();
+  return candidates
+    .filter(c => fuzzySubsequenceMatch(p, c))
+    .map(c => ({ c, score: _fuzzyScore(p, String(c).toLowerCase()) }))
+    .sort((a, b) => a.score - b.score || a.c.localeCompare(b.c))
+    .map(x => x.c);
+}
+
+function _fuzzyScore(p, c) {
+  if (c.startsWith(p)) return 0;
+  const idx = c.indexOf(p[0]);
+  return idx < 0 ? 1000 : idx + 1;
+}
+
 /** Find the token containing cursorPos (or the one being typed). */
 export function tokenAtCursor(tokens, cursorPos, line) {
   // If cursor is immediately after a token (no trailing space), we're still editing that token
