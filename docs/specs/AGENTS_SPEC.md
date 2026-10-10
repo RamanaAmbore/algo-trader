@@ -23,6 +23,7 @@ the rule lifecycle from condition evaluation through delivery and side-effect ex
 10. [run_cycle() Timing](#10-run_cycle-timing)
 11. [Test Coverage Map](#11-test-coverage-map)
 12. [Automated Order Hold and Release](#12-automated-order-hold-and-release)
+13. [Agent CLI Grammar](#13-agent-cli-grammar)
 
 ---
 
@@ -520,10 +521,109 @@ current value by name every call.
 
 ---
 
+## 13. Agent CLI Grammar
+
+### Operator-composed text statements (Sprint 4)
+
+The agent editor's CLI tab enables authoring agents as single-line text statements 
+instead of nested JSON trees. A statement comprises:
+
+```
+WHEN <condition> [ALERT <alert_clause>] [DO <do_clause>]
+```
+
+or for placing orders directly:
+
+```
+<order_call> [, <order_call> ...]
+```
+
+Both `ALERT` and `DO` clauses are independently optional — any combination is valid, 
+**except** an agent must have at least one of them (a bare `WHEN` with neither is 
+rejected). Order is flexible: `WHEN ... DO ... ALERT ...` and `WHEN ... ALERT ... DO ...`
+both compile identically.
+
+### Syntax overview
+
+**Condition tree**: `&` (AND) and `|` (OR) have equal precedence and evaluate 
+left-to-right — use parentheses to disambiguate: `a & b | c` groups as `(a & b) | c`. 
+`~` denotes NOT. `always` is a reserved sentinel for schedule-only agents. Between-style 
+conditions are supported: `lower < metric@scope < upper`.
+
+**Calls**: All arguments are keyword-only (positional form does not exist in this 
+grammar). Argument aliases are provided for brevity:
+- `account` → `acct`, `symbol` → `sym`, `exchange` → `exch`, `order_type` → `otype`,
+  `price` → `px`, `product` → `prod`, `variety` → `var`, `chase_level` → `chase`
+
+**Values**: Numbers, strings (quoted), names, and list literals `[a, b, c]` — the 
+last only in leaf RHS positions, not as function arguments.
+
+**Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, `false`.
+
+**Limits**: 4000 characters per statement, 20 maximum nesting depth.
+
+### Parameterized metric and scope call syntax
+
+Metrics and scopes may use function-call syntax with an arbitrary window (in minutes):
+
+```
+mean_pnl(minutes=30) @ positions.total <= -50000
+max_drawdown_pnl(minutes=90) @ funds.any_acct <= -100000
+```
+
+The keyword parameter form (`minutes=30`) is CLI surface — it compiles to the 
+backend's positional catalog string internally (e.g. `"mean_pnl(30)"`), matching 
+the contract documented in §9 above. Only a single bare numeric literal is accepted 
+as the argument; expressions, names, and keyword arguments to actions do not support 
+this syntax.
+
+### Compilation contract
+
+- Each statement compiles to an atomic agent JSON shape (conditions/events/actions 
+  trees), with no intermediate validation — all semantic checks happen after parsing.
+- A condition with a `$ref` fragment anywhere (conditions, events, or actions) cannot 
+  decompile back to CLI form — the tab is disabled for that session.
+- A bare `order(...)` statement (no `WHEN`, no agent state) places a real broker 
+  order through the ticket or basket endpoints, bypassing agent creation entirely.
+- The compiled JSON is the SSOT — `cli_source` field is audit/display-only, never 
+  read by execution. Regenerating CLI from JSON via decompile may normalize the 
+  expression tree (e.g. a single-element `all` → bare leaf) while preserving 
+  semantics.
+
+### Operator semantics
+
+`cli_source` (new nullable string field on `Agent` row):
+- Set to the exact CLI text on `POST` or `PATCH` when saved from the CLI tab.
+- Set to empty string `''` when saved from the Structured (JSON) tab, clearing any 
+  prior stale value.
+- Never read by the condition evaluator or action dispatcher.
+- Displayed in the agent history for reference but has no runtime effect.
+
+### UI behavior
+
+- **Edit existing agent**: If the agent's current JSON decompiles cleanly to CLI text, 
+  the CLI tab is shown by default with equivalent text pre-filled. If decompilation 
+  fails (e.g., `$ref` fragment), the tab is disabled and Structured is the default.
+- **Structured ↔ CLI toggling**: Switching from Structured to CLI re-decompiles the 
+  current JSON if it has diverged since the last sync. Invalid JSON blocks the switch. 
+  Switching back to Structured preserves any JSON edits made there since the last 
+  compile.
+- **Live compilation**: `onCompile` callback fires only after operator edits to avoid 
+  silently overwriting Structured JSON on tab switches or page reloads. A single 
+  keystroke in the CLI textarea triggers recompilation with ~150ms debounce, updating 
+  the JSON preview and error list.
+- **Order statement**: A bare `order(...)` text shows a "Place order" button instead 
+  of a Save button, and submitting places the order immediately via the ticket or 
+  basket endpoint (single leg → ticket, multiple legs → basket). LIVE mode orders 
+  require confirmation before submission.
+
+---
+
 ## Change log
 
 | Date | Change |
 |---|---|
+| 2026-10-10 | (uncommitted Sprint 4) — Agent CLI grammar UI + full compiler suite + decompiler. Operators can now author and edit agents via single-line text statements (WHEN condition [ALERT notifies] [DO actions]) in the `/automation` page's CLI tab, alongside the existing Structured (JSON) tab. Supports parameterized metric/scope call syntax (mean_pnl(minutes=30)), keyword-only arguments with aliases, list literals, and parenthesized boolean logic. A bare order(...) statement places a real order without creating an agent. Commits 2a5cd01d, d05fe54a, 3b615b0b with integration into existing agent create/update routes. |
 | 2026-10-09 | 9b7da82f: CLI-grammar effort, Sprint 1 — `_age_validate_action_entries()` closes the same save-time validation gap for the `actions` array that c0f260b9 (below) closed for `conditions`; new `grammar.is_known_action_type()`; new `Agent.cli_source` (nullable, audit-only) column; `expr_eval.py` extended to support string constants and `+` concatenation for `token_ref_ok` action params. |
 | 2026-10-09 | c0f260b9: Sprint 3 — `_age_validate_threshold_conditions()` closes the save-time validation gap for threshold/cycle agents (create/update now reject unknown/malformed `metric`/`scope`/`op` tokens with 422, same as the long-standing event-kind path). `_parse_call_token` rejects non-positive call-syntax windows (`mean_pnl(0)`). `_summarise_token()` generalizes `params_schema` surfacing beyond `action_type` to metric/scope/channel/format call-syntax tokens. |
 | 2026-10-09 | 1b80b7d8: Sprint 2 — parameterized function-call metric tokens (`mean_pnl(30)` etc.) added to `GrammarRegistry`, documented in §9 above. |

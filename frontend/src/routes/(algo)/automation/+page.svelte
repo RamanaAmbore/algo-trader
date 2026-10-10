@@ -12,14 +12,18 @@
     fetchSimStatus,
     startSimForAgent, aiDraftAgent, fetchGrammarTokens,
     fetchAgentRenderers, fetchSetting,
+    placeTicketOrder, placeBasket,
   } from '$lib/api';
   import ActivityLogSurface from '$lib/ActivityLogSurface.svelte';
   import Select   from '$lib/Select.svelte';
   import AutomationTabs from '$lib/AutomationTabs.svelte';
+  import AlgoTabs from '$lib/AlgoTabs.svelte';
   import DisclosureChevron from '$lib/DisclosureChevron.svelte';
   import ConfirmModal from '$lib/ConfirmModal.svelte';
   import ChaseAggPicker from '$lib/order/ChaseAggPicker.svelte';
   import { loadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
+  import AgentCliEditor from '$lib/command/AgentCliEditor.svelte';
+  import { fetchAgentCatalog, decompileAgent, compileAgentCliStatement } from '$lib/command/grammars/agents.js';
 
   let agents      = $state([]);
   let loading     = $state(true);
@@ -96,7 +100,7 @@
     lifespan_expires_at: string,
     tier: string, topic: string,
     trade_mode: string, debounce_minutes: number,
-    tags: string, blackout_windows: string,
+    tags: string, blackout_windows: string, cliText: string,
   }} */ ({
     name: '', long_name: '', description: '',
     conditions: '{}', events: '[]', actions: '[]',
@@ -105,8 +109,143 @@
     lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
     tier: 'medium', topic: 'general',
     trade_mode: 'paper', debounce_minutes: 0,
-    tags: '', blackout_windows: '[]',
+    tags: '', blackout_windows: '[]', cliText: '',
   }));
+
+  // ── CLI editor (Sprint 4) — Structured↔CLI toggle for the threshold-
+  //    agent editor. `agentCliCatalog` is fetched ONCE via
+  //    `ensureAgentCliCatalog()` (cached promise, never a per-render
+  //    refetch) the first time either a new-agent panel or an edit panel
+  //    actually needs it — never on page mount. `cliDisabled` is set
+  //    per-edit-session when `decompileAgent()` can't produce an exact
+  //    CLI form (e.g. a `$ref` fragment, Sprint 3's documented non-goal).
+  let editorMode    = $state(/** @type {'structured'|'cli'} */ ('structured'));
+  let agentCliCatalog = $state(/** @type {any} */ (null));
+  let cliDisabled      = $state(false);
+  let cliDisabledReason = $state('');
+  /** @type {Promise<any>|null} */
+  let _cliCatalogPromise = null;
+  async function ensureAgentCliCatalog() {
+    if (agentCliCatalog) return agentCliCatalog;
+    if (!_cliCatalogPromise) {
+      _cliCatalogPromise = fetchAgentCatalog();
+    }
+    try {
+      const cat = await _cliCatalogPromise;
+      agentCliCatalog = cat;
+      return cat;
+    } catch (e) {
+      // Never cache a failure — templates.js cache-poisoning invariant.
+      _cliCatalogPromise = null;
+      toast.error(`CLI catalog load failed`);
+      return null;
+    }
+  }
+  // Snapshot of the three JSON strings at the moment they last matched
+  // `editForm.cliText` exactly (set on a successful decompile-on-edit-open
+  // AND on every successful CLI→JSON compile-write). Used by
+  // `setEditorMode` to detect "operator edited the Structured JSON tab
+  // directly since the last CLI sync" on a Structured→CLI switch, so the
+  // visible cliText never silently goes stale relative to what's about to
+  // be saved.
+  /** @type {{conditions:string, events:string, actions:string}|null} */
+  let _cliJsonSnapshot = $state(null);
+  function _cliJsonMatchesSnapshot() {
+    return !!_cliJsonSnapshot
+      && editForm.conditions === _cliJsonSnapshot.conditions
+      && editForm.events === _cliJsonSnapshot.events
+      && editForm.actions === _cliJsonSnapshot.actions;
+  }
+  async function setEditorMode(/** @type {string} */ m) {
+    if (m === 'cli' && !_cliJsonMatchesSnapshot()) {
+      // Structured JSON diverged from the last known-synced cliText (either
+      // the operator edited it directly, or this is the first switch for a
+      // brand-new agent) — re-decompile the CURRENT JSON once, on switch,
+      // never per keystroke.
+      const cat = await ensureAgentCliCatalog();
+      if (!cat) { cliDisabled = true; cliDisabledReason = 'CLI catalog unavailable'; return; }
+      let parsed;
+      try {
+        parsed = {
+          conditions: JSON.parse(editForm.conditions),
+          events: JSON.parse(editForm.events),
+          actions: JSON.parse(editForm.actions),
+        };
+      } catch (e) {
+        cliDisabled = true; cliDisabledReason = 'Structured JSON is invalid — fix it before switching to CLI';
+        return; // stay on Structured
+      }
+      let decomp;
+      try { decomp = decompileAgent(parsed, cat); }
+      catch (e) { decomp = { text: null, errors: [{ message: e?.message || 'decompile failed' }] }; }
+      if (decomp.errors.length === 0 && decomp.text) {
+        editForm.cliText = decomp.text;
+        _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
+        cliDisabled = false; cliDisabledReason = '';
+      } else {
+        cliDisabled = true; cliDisabledReason = 'This agent has no exact CLI form';
+        return; // stay on Structured
+      }
+    }
+    editorMode = /** @type {'structured'|'cli'} */ (m);
+  }
+  const editorModeTabs = $derived([
+    { id: 'structured', label: 'Structured' },
+    { id: 'cli', label: 'CLI', disabled: cliDisabled,
+      disabledTitle: cliDisabledReason || 'No exact CLI form for this agent' },
+  ]);
+  /** Fired by AgentCliEditor on every successful, operator-driven compile.
+   *  A bare order statement (`kind:'order'`) must never touch the
+   *  conditions/events/actions fields — only a `kind:'agent'` result does. */
+  function onCliAgentCompile(/** @type {any} */ result) {
+    if (!result?.ok || result.kind !== 'agent' || !result.agent) return;
+    editForm.conditions = JSON.stringify(result.agent.conditions, null, 2);
+    editForm.events     = JSON.stringify(result.agent.events, null, 2);
+    editForm.actions    = JSON.stringify(result.agent.actions, null, 2);
+    // JSON and cliText are back in sync — keep the snapshot current so a
+    // later Structured→CLI switch doesn't needlessly re-decompile.
+    _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
+  }
+  /** Fired by AgentCliEditor when the operator clicks "Place order" for a
+   *  bare `kind:'order'` CLI statement — single-leg goes through the
+   *  ticket endpoint, multi-leg through basket. LIVE mode confirms first
+   *  (same guard as toggleTradeMode's paper→live flip) since this is a
+   *  free-text box placing a real broker order, not the structured
+   *  OrderTicket. */
+  async function onCliOrderSubmit(/** @type {any} */ result) {
+    // `BasketOrderRequest`/`BasketLeg` (backend/api/schemas.py) carry NO
+    // client-settable mode field at all — a basket's effective mode is
+    // resolved entirely SERVER-SIDE from the global
+    // `execution.paper_trading_mode`/`execution.shadow_mode` settings
+    // (backend/api/routes/orders_basket.py:~247-257), so the frontend
+    // genuinely cannot know in advance whether a basket submit will
+    // resolve to paper/shadow/live. Always confirm before a basket submit
+    // from this free-text box — the single-leg ticket path DOES carry a
+    // real client-requested `mode` (gated server-side against the same
+    // kill-switch), so that one only confirms when actually 'live'.
+    const isLive = result.ticket?.mode === 'live' || !!result.basket;
+    if (isLive) {
+      const ok = await _liveAgentConfirmRef?.ask({
+        title: 'Place LIVE order?',
+        message: 'This CLI statement will place a real order against the broker.',
+        danger: true,
+        confirmLabel: 'Place LIVE order',
+        cancelLabel: 'Cancel',
+      });
+      if (!ok) return;
+    }
+    try {
+      if (result.basket) {
+        await placeBasket(result.basket.groups);
+        toast.success('Basket order placed');
+      } else if (result.ticket) {
+        await placeTicketOrder(result.ticket);
+        toast.success('Order placed');
+      }
+    } catch (e) {
+      toast.error(`Order failed: ${e.message}`);
+    }
+  }
 
   // Tier order matters — UI segmented control lists them critical → low
   // so the eye reads them as severity descending.
@@ -200,7 +339,7 @@
     }
   }
 
-  function startEdit(/** @type {any} */ agent) {
+  async function startEdit(/** @type {any} */ agent) {
     editing = agent.slug;
     // Keep the agent's row expanded so the inline editor actually renders
     // where the operator clicked.
@@ -236,7 +375,46 @@
       // Blackout windows: list of {start: "HH:MM", end: "HH:MM"} as JSON.
       tags:                 Array.isArray(agent.tags) ? agent.tags.join(', ') : '',
       blackout_windows:     JSON.stringify(agent.blackout_windows || [], null, 2),
+      cliText:              '',
     };
+    // Default to Structured until a one-time decompile attempt proves the
+    // agent HAS an exact CLI form — never retried per keystroke, only here
+    // at edit-open time (Sprint 4 brief).
+    editorMode = 'structured';
+    cliDisabled = false;
+    cliDisabledReason = '';
+    const cat = await ensureAgentCliCatalog();
+    // Stale-resolve guard — a quick A→B edit-click switch must not let A's
+    // slower catalog/decompile resolution land on B's editForm.
+    if (editing !== agent.slug) return;
+    if (!cat) {
+      cliDisabled = true;
+      cliDisabledReason = 'CLI catalog unavailable';
+      return;
+    }
+    let decomp;
+    try {
+      decomp = decompileAgent({ conditions: agent.conditions, events: agent.events, actions: agent.actions }, cat);
+    } catch (e) {
+      decomp = { text: null, errors: [{ message: e?.message || 'decompile failed' }] };
+    }
+    if (editing !== agent.slug) return;
+    if (decomp.errors.length === 0 && decomp.text) {
+      editForm.cliText = decomp.text;
+      editorMode = 'cli';
+      cliDisabled = false;
+      cliDisabledReason = '';
+      // JSON ↔ cliText are in sync right now — snapshot it so switching
+      // tabs without touching either side never triggers a needless
+      // re-decompile.
+      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
+    } else {
+      editForm.cliText = '';
+      editorMode = 'structured';
+      cliDisabled = true;
+      cliDisabledReason = 'This agent has no exact CLI form';
+      _cliJsonSnapshot = null;
+    }
   }
 
   let validationErrors = $state(/** @type {string[]} */([]));
@@ -354,8 +532,16 @@
         lifespan_type: 'persistent', lifespan_max_fires: '', lifespan_expires_at: '',
         tier: 'medium', topic: 'general',
         trade_mode: 'paper', debounce_minutes: 0,
-        tags: '', blackout_windows: '[]',
+        tags: '', blackout_windows: '[]', cliText: '',
       };
+      // Nothing to decompile for a brand-new agent — Structured by
+      // default, CLI tab enabled (operator may author from scratch).
+      // Snapshot the blank defaults so the first Structured→CLI switch
+      // doesn't attempt (and fail) a decompile of an empty agent.
+      editorMode = 'structured';
+      cliDisabled = false;
+      cliDisabledReason = '';
+      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
     } else {
       editing = null;
       eventCreateErrors = [];
@@ -687,10 +873,44 @@
       debounce_minutes:  Number(editForm.debounce_minutes) || 0,
       tags:              tagsList,
       blackout_windows:  bw,
+      // `update_agent` treats `cli_source: None` as "leave unchanged" (same
+      // convention every other optional AgentUpdateRequest field follows),
+      // so a Structured-tab save must send '' (not null) to actually CLEAR
+      // a previously-saved CLI string — never leave a stale cli_source
+      // diverging from the conditions/events/actions just edited as JSON.
+      cli_source: editorMode === 'cli' ? (editForm.cliText || '') : '',
     };
   }
 
   async function saveEdit() {
+    // CLI tab is the active editing surface — recompile the FINAL cliText
+    // synchronously right now (never trust the debounced AgentCliEditor
+    // preview, which may be up to 150ms stale, mid-invalid, or — for a
+    // bare `kind:'order'` statement — never meant to write these fields
+    // at all) so `editForm.conditions/events/actions` (and therefore
+    // `cli_source`) can never diverge from what's actually saved.
+    if (editorMode === 'cli') {
+      if (!agentCliCatalog) {
+        validationErrors = ['CLI catalog unavailable — cannot save from CLI tab'];
+        return;
+      }
+      const cliResult = compileAgentCliStatement(editForm.cliText, agentCliCatalog, {
+        mode: editForm.trade_mode === 'live' ? 'live' : 'paper',
+      });
+      if (!cliResult.ok) {
+        validationErrors = (cliResult.errors || []).map((e) => e.message);
+        if (!validationErrors.length) validationErrors = ['CLI text failed to compile'];
+        return;
+      }
+      if (cliResult.kind !== 'agent' || !cliResult.agent) {
+        validationErrors = ['CLI text is an order statement, not an agent — write a WHEN/ALERT/DO statement, or switch to Structured'];
+        return;
+      }
+      editForm.conditions = JSON.stringify(cliResult.agent.conditions, null, 2);
+      editForm.events     = JSON.stringify(cliResult.agent.events, null, 2);
+      editForm.actions    = JSON.stringify(cliResult.agent.actions, null, 2);
+      _cliJsonSnapshot = { conditions: editForm.conditions, events: editForm.events, actions: editForm.actions };
+    }
     // Server-side validation must pass for v2 trees before we touch the
     // agent row — v1 trees are accepted as-is.
     const ok = await runValidation();
@@ -1292,6 +1512,21 @@
                 </div>
               </div>
 
+              <div class="mt-3">
+                <AlgoTabs tabs={editorModeTabs} value={editorMode} onChange={setEditorMode} compact />
+              </div>
+
+              {#if editorMode === 'cli'}
+                <div class="mt-3">
+                  <AgentCliEditor
+                    bind:value={editForm.cliText}
+                    catalog={agentCliCatalog}
+                    mode={editForm.trade_mode === 'live' ? 'live' : 'paper'}
+                    onCompile={onCliAgentCompile}
+                    onOrderSubmit={onCliOrderSubmit}
+                  />
+                </div>
+              {:else}
               <div class="grid grid-cols-1 md:grid-cols-3 gap-3 mt-3">
                 <div>
                   <span class="field-label">
@@ -1401,6 +1636,7 @@
                   {/if}
                 </div>
               </div>
+              {/if}
 
               {#if validationErrors.length}
                 <div class="mt-3 p-2 rounded bg-red-500/15 text-[var(--algo-red-text-bright)] text-[length:var(--fs-sm)] border border-red-500/40">

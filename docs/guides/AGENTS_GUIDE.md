@@ -171,6 +171,111 @@ spikes.
 
 ---
 
+## The CLI tab — single-line agent authoring
+
+A faster authoring path for threshold agents: type a single-line statement in the 
+CLI tab instead of hand-editing JSON. The statement compiles live to the same 
+JSON tree the Structured tab produces.
+
+### Statement shape
+
+```
+WHEN <condition> [ALERT <channels>] [DO <actions>]
+```
+
+Both `ALERT` and `DO` are independently optional — you can omit either or both 
+(but not both together). Order is flexible: `DO` can come before `ALERT`.
+
+Examples:
+
+```
+WHEN pnl@positions.total <= -50000 ALERT telegram DO nop
+```
+
+(Fire when total P&L drops to -₹50k, notify Telegram only, no action.)
+
+```
+WHEN max_drawdown_pnl(minutes=90)@funds.any_acct <= -100000 DO 
+  close_position(exchange="NFO")
+```
+
+(Fire when any account's 90-min max drawdown hits -₹100k; close F&O positions, 
+no notification.)
+
+```
+WHEN always ALERT nop DO emit_log(message="Market open check")
+```
+
+(Schedule-only agent; fires on the market-open tick, logs a message.)
+
+### Syntax highlights
+
+**Boolean logic**: `&` (AND) and `|` (OR) have equal precedence, left-to-right 
+evaluation — **use parentheses to disambiguate**:
+```
+WHEN (pnl@positions.total <= -50000 & day_pct@positions.total <= -2) 
+  | pnl_rate_abs@positions.total <= -5000
+```
+
+**NOT**: `~` prefix:
+```
+WHEN ~(pnl@positions.total > 0)
+```
+
+**Metric windows**: Parameterized call syntax for arbitrary rolling windows:
+```
+WHEN mean_pnl(minutes=45)@positions.total <= -25000
+WHEN max_drawdown_day(minutes=120)@holdings.total <= -50000
+```
+
+**Arguments**: Keyword-only (every arg is `name=value`, even the first). 
+Shorthand aliases provided:
+- `acct` ← `account`, `sym` ← `symbol`, `exch` ← `exchange`, `otype` ← `order_type`,
+  `px` ← `price`, `prod` ← `product`, `var` ← `variety`, `chase` ← `chase_level`
+
+```
+place_order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1)
+```
+
+**List literals**: Allowed only on the right-hand side of a condition:
+```
+WHEN side@positions in ["BUY", "SELL"]
+```
+
+**Reserved words**: `when`, `alert`, `do`, `nop`, `always`, `in`, `not`, `true`, 
+`false` — cannot be used as metric/scope/action names (parser rejects them).
+
+### Editing workflow
+
+- **Create new**: Start in the CLI tab, type your statement. Live compilation 
+  updates the JSON preview below as you type (debounce ~150ms). Errors appear 
+  in red.
+- **Edit existing**: Open an agent's edit panel. If its JSON cleanly decompiles to 
+  CLI text, the CLI tab shows the equivalent statement by default. If not 
+  (e.g., has a `$ref` fragment), the tab is greyed out and you must use Structured.
+- **Switching tabs**: Changing from Structured to CLI re-decompiles the current 
+  JSON if you edited it since the last sync. Invalid JSON blocks the switch. 
+  Switching back to Structured preserves any JSON edits.
+- **Save**: Click Save from either tab. Structured saves clear any prior CLI text; 
+  CLI saves persist the typed statement as audit/history in the `cli_source` field.
+
+### Direct order placement (no agent)
+
+Type a bare `order(...)` call (or several comma-separated) with no `WHEN`:
+
+```
+order(acct="ZG0790", sym="NIFTY25JULFUT", side="BUY", qty=1, px=25500)
+```
+
+The CLI tab shows a **Place order** button instead of Save. Clicking it submits 
+directly to the broker (single leg via ticket endpoint, multiple legs via basket). 
+LIVE mode orders require confirmation before submission.
+
+**Caution**: This places a real broker order immediately — not a template, not 
+a simulator. Confirm the statement before clicking Place order.
+
+---
+
 ## Fragments — reuse without copy-paste
 
 Two kinds at `/automation/agent-templates`:
@@ -308,7 +413,8 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 ## Authoring workflow
 
-1. **Spike the condition tree** in the `/automation` editor or via the Claude Code MCP (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
+1. **Spike the condition tree** in the `/automation` editor (CLI tab for text, 
+   Structured tab for JSON) or via the Claude Code MCP (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
 2. **Validate** — clear all token / shape errors
 3. **Dry-run** — sanity check against current market
 4. **Run in Simulator** — confirm the alert fires + actions log correctly with the `SIM` pill
@@ -377,6 +483,8 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `Validate` rejects with `unknown metric token` | Typo in metric name OR token deactivated on `/admin/tokens` | `/admin/tokens` → Condition tab → search the token |
+| CLI tab is greyed out (disabled) | Agent's JSON uses a `$ref` fragment (condition, events, or actions); cannot decompile to CLI form | Use the Structured tab and JSON textarea instead; edit as JSON |
+| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Change `place_order(account, symbol, ...)` to `place_order(acct=account, sym=symbol, ...)` |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
 | Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + `/admin/alerts` log; or set `cooldown_minutes: 0` temporarily |

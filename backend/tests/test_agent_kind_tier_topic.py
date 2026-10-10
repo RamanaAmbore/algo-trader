@@ -93,6 +93,7 @@ class _FakeAgentRow:
         self.kind = "cycle"
         self.tier = "medium"
         self.topic = "general"
+        self.cli_source = None
         self.condition_first_true_at = None
         for k, v in kw.items():
             setattr(self, k, v)
@@ -766,3 +767,110 @@ async def test_update_agent_cycle_kind_re_validates_merged_conditions_when_untou
 
     assert exc_info.value.status_code == 422
     session.commit.assert_not_awaited()
+
+
+# ═══════════════════════════════════════════════════════════════════════
+# Sprint 4 (2026-10, CLI-grammar effort) — cli_source accepted by
+# AgentCreateRequest / AgentUpdateRequest, persisted by create_agent /
+# update_agent. Audit/display-only field — never semantically validated.
+# ═══════════════════════════════════════════════════════════════════════
+
+def test_agent_update_request_decodes_cli_source():
+    """Regression guard for the same bug class as tier/topic above:
+    msgspec silently drops unknown struct fields on decode, so a PUT
+    body carrying cli_source would previously vanish without a trace."""
+    body = json.dumps({"cli_source": "when pnl < -5000 alert telegram"}).encode()
+    decoded = msgspec.json.decode(body, type=AgentUpdateRequest)
+    assert decoded.cli_source == "when pnl < -5000 alert telegram"
+
+
+def test_agent_create_request_decodes_cli_source():
+    body = json.dumps({
+        "slug": "x", "name": "X", "conditions": {}, "events": [],
+        "cli_source": "when pnl < -5000 alert telegram",
+    }).encode()
+    decoded = msgspec.json.decode(body, type=AgentCreateRequest)
+    assert decoded.cli_source == "when pnl < -5000 alert telegram"
+
+
+def test_agent_update_request_cli_source_defaults_to_none():
+    """None = 'leave column unchanged' — matches every other optional
+    field's convention on this struct."""
+    decoded = msgspec.json.decode(b"{}", type=AgentUpdateRequest)
+    assert decoded.cli_source is None
+
+
+@pytest.mark.asyncio
+async def test_create_agent_with_cli_source_persists_it():
+    """(a) Creating an agent with cli_source set persists it on the row.
+    GET isn't wired to surface cli_source yet (display-only provenance,
+    not read by any route handler), so read back via the object that
+    was actually passed to session.add() — the same technique
+    test_create_agent_threshold_kind_stores_cycle_literally uses for
+    kind."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(
+        slug="cli-1", name="CLI agent", conditions={}, events=[],
+        cli_source="when pnl < -5000 alert telegram",
+    )
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, data)
+
+    session.add.assert_called_once()
+    added_agent = session.add.call_args[0][0]
+    assert added_agent.cli_source == "when pnl < -5000 alert telegram"
+
+
+@pytest.mark.asyncio
+async def test_create_agent_without_cli_source_leaves_it_none():
+    """(b) Creating an agent WITHOUT cli_source leaves it None — no
+    regression for existing non-CLI-authored agents (form/JSON UI
+    path)."""
+    session_factory, session = _mock_session(existing=None)
+    controller = AgentController.__new__(AgentController)
+    data = AgentCreateRequest(slug="cli-2", name="Form agent", conditions={}, events=[])
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        await _handler_fn(AgentController.create_agent)(controller, data)
+
+    added_agent = session.add.call_args[0][0]
+    assert added_agent.cli_source is None
+
+
+@pytest.mark.asyncio
+async def test_update_agent_sets_cli_source():
+    """(c) Updating an agent's cli_source via PUT changes it."""
+    agent = _FakeAgentRow(cli_source="old source text")
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(cli_source="new source text")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    assert agent.cli_source == "new source text"
+    session.commit.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_update_agent_without_cli_source_leaves_it_unchanged():
+    """(d) Updating an agent WITHOUT sending cli_source (field omitted /
+    None) leaves the existing stored value UNCHANGED — matches the
+    'None means unchanged' convention every other optional update field
+    already follows; do not accidentally clear it. Seeded with a
+    non-None value so the test can distinguish 'unchanged' from
+    'cleared'."""
+    agent = _FakeAgentRow(cli_source="old source text")
+    session_factory, session = _mock_session(existing=agent)
+    controller = AgentController.__new__(AgentController)
+    data = AgentUpdateRequest(name="renamed only")
+
+    with patch("backend.api.routes.agents.async_session", session_factory):
+        result = await _handler_fn(AgentController.update_agent)(controller, "t-agent", data)
+
+    assert result == {"detail": "Agent 't-agent' updated"}
+    assert agent.cli_source == "old source text"
+    assert agent.name == "renamed only"

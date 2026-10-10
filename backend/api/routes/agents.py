@@ -141,6 +141,11 @@ class AgentCreateRequest(msgspec.Struct):
     # None lets the model defaults ("medium" / "general") apply.
     tier:                   str | None = None
     topic:                  str | None = None
+    # Sprint 4 (CLI grammar authoring) — raw CLI text the operator typed
+    # when authoring via the CLI tab. Display/audit-only, never read by
+    # run_cycle()/execute(). None when the agent was authored via the
+    # existing form/JSON UI path.
+    cli_source:             str | None = None
 
 
 class AgentUpdateRequest(msgspec.Struct):
@@ -171,6 +176,9 @@ class AgentUpdateRequest(msgspec.Struct):
     kind:                  Literal["cycle", "threshold", "event"] | None = None
     tier:                  str | None = None
     topic:                 str | None = None
+    # Sprint 4 (CLI grammar authoring) — None means unchanged, same
+    # convention as every other optional field in this struct.
+    cli_source:            str | None = None
 
 
 class AgentEventInfo(msgspec.Struct):
@@ -830,6 +838,7 @@ class AgentController(Controller):
                 kind=kind,
                 tier=(data.tier or "medium"),
                 topic=(data.topic or "general"),
+                cli_source=data.cli_source,
             )
             session.add(agent)
             await session.commit()
@@ -884,7 +893,8 @@ class AgentController(Controller):
             for field in ('name', 'long_name', 'description', 'conditions',
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',
-                          'tags', 'blackout_windows', 'tier', 'topic'):
+                          'tags', 'blackout_windows', 'tier', 'topic',
+                          'cli_source'):
                 val = getattr(data, field, None)
                 if val is not None:
                     setattr(agent, field, val)
