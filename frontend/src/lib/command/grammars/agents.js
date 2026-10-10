@@ -96,7 +96,7 @@
 
 import { fetchGrammarTokens } from '$lib/api';
 import { getInstrument } from '$lib/data/instruments';
-import { tokenizeCallStyle } from '$lib/command/engine.js';
+import { tokenizeCallStyle, fuzzyFilter } from '$lib/command/engine.js';
 
 // ── Depth/length guards — mirrors backend/api/algo/expr_eval.py's
 //    _MAX_EXPR_LEN / _MAX_DEPTH philosophy (cheap guards against a
@@ -131,6 +131,7 @@ export const KWARG_ALIASES = Object.freeze({
   exchange: 'exch',
   order_type: 'otype',
   price: 'px',
+  trigger_price: 'trigpx',
   product: 'prod',
   variety: 'var',
   chase_level: 'chase',
@@ -1963,4 +1964,322 @@ export function decompileAgent({ conditions, events, actions }, catalog, opts = 
     return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
   }
   return { text, errors: [] };
+}
+
+// ═══════════════════════════════════════════════════════════════════════
+// (g) Live autocomplete (Sprint 4) — below-the-textarea suggestion row,
+//     NOT caret-anchored (deliberate scope decision, see PLAN.md). Reuses
+//     `lexAgentStatement` for the common (closed-syntax) case and
+//     `fuzzyFilter` from engine.js for ranking; never throws — a bad/
+//     mid-typing input degrades to an empty suggestion list.
+//
+//     Design note: `lexAgentStatement` throws internally (caught, surfaced
+//     as `errors`) whenever a call's "(" has no matching ")" yet, or an
+//     arg segment is empty (a bare trailing comma) — BOTH of which are the
+//     NORMAL, expected state of the text while an operator is actively
+//     typing a call's argument list (e.g. `order(` or `order(account=X,`).
+//     So the primary mechanism here is a small, quote-aware "find the
+//     innermost still-open call paren ending at/before the cursor" scan
+//     (same spirit as the depth-guard already in `lexAgentStatement`,
+//     just without requiring the close to exist) — this covers the
+//     unclosed-call case AND the "cursor sits inside an already-closed
+//     call" case AND the trailing-comma case uniformly, with no need to
+//     special-case any of them. Only once we know we are NOT inside an
+//     open call's parens do we fall back to `lexAgentStatement` on the
+//     TEXT UP TO THE CURSOR (never the full text — a half-typed later
+//     clause must never blank out suggestions for the clause the operator
+//     is actually editing) for the bare metric/channel/action-name case.
+// ═══════════════════════════════════════════════════════════════════════
+
+/** Quote-aware scan for the innermost call whose "(" is open (no matching
+ *  ")" yet) somewhere in `text.slice(0, cursor)`. Returns
+ *  `{ nameStart, nameEnd, parenPos }` or `null` when the cursor isn't
+ *  inside a call's argument list at all (e.g. a bare grouping "(" from
+ *  `"(" or_expr ")"`, or no open paren at all). */
+function _findOpenCallAt(text, cursor) {
+  const prefix = text.slice(0, cursor);
+  const stack = [];
+  let inQuote = null;
+  for (let i = 0; i < prefix.length; i++) {
+    const ch = prefix[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === '(') stack.push(i);
+    else if (ch === ')') stack.pop();
+  }
+  if (!stack.length) return null;
+  const parenPos = stack[stack.length - 1];
+  // A call paren is immediately preceded by a word char (no space allowed
+  // between a call's name and its own "(" — see lexAgentStatement). A
+  // bare grouping paren (boolean sub-expression) is not a call context.
+  const before = parenPos > 0 ? prefix[parenPos - 1] : '';
+  if (!_isWordChar(before)) return null;
+  let nameStart = parenPos;
+  while (nameStart > 0 && _isWordChar(prefix[nameStart - 1])) nameStart--;
+  return { nameStart, nameEnd: parenPos, parenPos };
+}
+
+/** Nearest non-whitespace char before `pos` in `text` — used to detect
+ *  "immediately after @ or ." (scope-ref position — see `_suggestScopeRef`
+ *  below, Sprint 5) and to bias catalog lookup toward `catalog.scopes` for
+ *  a call sitting right after "@"/".". */
+function _nearestNonSpaceBefore(text, pos) {
+  let i = pos - 1;
+  while (i >= 0 && /\s/.test(text[i])) i--;
+  return i >= 0 ? text[i] : '';
+}
+
+/** Determine which clause (when/alert/do/order) `tokens` (a token stream
+ *  from lexing some PREFIX of the statement) currently ends in — the last
+ *  WHEN/ALERT/DO reserved-word marker seen wins; no WHEN at all means a
+ *  bare order_stmt. */
+function _clauseKindFromTokenPrefix(tokens) {
+  let kind = null;
+  for (const t of tokens) {
+    if (t.type !== 'NAME' || !t.reserved) continue;
+    const w = String(t.value).toLowerCase();
+    if (w === 'when') kind = 'when';
+    else if (w === 'alert') kind = 'alert';
+    else if (w === 'do') kind = 'do';
+  }
+  return kind || 'order';
+}
+
+/** Look up a call's catalog entry by name, trying the catalog section(s)
+ *  implied by `clauseKind`/`scopeHint` first (disambiguation only — the
+ *  grammar's token namespaces don't collide in practice). */
+function _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint) {
+  if (!catalog) return null;
+  const key = String(name).toLowerCase();
+  let order;
+  if (scopeHint) order = ['scopes', 'metrics', 'channels', 'actions'];
+  else if (clauseKind === 'alert') order = ['channels', 'metrics', 'scopes', 'actions'];
+  else if (clauseKind === 'do' || clauseKind === 'order') order = ['actions', 'metrics', 'scopes', 'channels'];
+  else order = ['metrics', 'scopes', 'channels', 'actions'];
+  for (const section of order) {
+    const m = catalog[section];
+    if (m && m.has(key)) return m.get(key);
+  }
+  return null;
+}
+
+function _candidateTokensForClause(clauseKind, catalog) {
+  if (!catalog) return null;
+  if (clauseKind === 'when') return [...catalog.metrics.values()].map((e) => e.token);
+  if (clauseKind === 'alert') return [...catalog.channels.values()].map((e) => e.token);
+  if (clauseKind === 'do' || clauseKind === 'order') return [...catalog.actions.values()].map((e) => e.token);
+  return null;
+}
+
+/** Walk backward through `real` (tokens lexed from the text UP TO THE
+ *  CURSOR) to confirm the cursor sits inside an in-progress `scope_ref`
+ *  (`call ("." call)*`) immediately preceded by a metric's "@" — exactly
+ *  the position `metric_ref := call "@" scope_ref` describes. Returns
+ *  `{ scopeRefStart: number }` — the text offset right after the "@",
+ *  i.e. the start of the WHOLE scope_ref typed so far (not just the last
+ *  segment) — or `null` when `real` doesn't actually end in a real
+ *  scope_ref position. `null` is the normal, expected outcome for a '.'
+ *  that isn't part of a scope_ref at all (e.g. an incomplete decimal
+ *  literal like `3.` lexes as NUMBER(3), DOT — see the regression test
+ *  for this exact shape); callers degrade to an empty suggestion list. */
+function _scopeRefContextFromTokens(real, pos) {
+  let idx = real.length - 1;
+  if (idx >= 0 && real[idx].type === 'NAME' && !real[idx].hasCall && real[idx].end === pos) {
+    idx--; // skip the still-being-typed last segment — only completed segments matter below
+  }
+  while (idx >= 0 && real[idx].type === 'DOT') {
+    idx--;
+    if (idx < 0 || real[idx].type !== 'NAME' || real[idx].hasCall) return null;
+    idx--;
+  }
+  if (idx < 0 || real[idx].type !== 'AT') return null;
+  return { scopeRefStart: real[idx].end };
+}
+
+/** Suggest scope-name completions for an in-progress `scope_ref` sitting
+ *  right after "@" or "." (metric_ref's `@ scope_ref` position). Scope
+ *  tokens are stored/typed as a single dotted string with no per-segment
+ *  catalog entries (see `_resolveScopeString`/`_decompileResolveScopeString`
+ *  elsewhere in this file), so the candidate list is simply every full
+ *  `catalog.scopes` token (e.g. `"positions.expiring_today.mcx_unhedged"`),
+ *  and `replaceRange` spans the WHOLE scope_ref typed so far — from right
+ *  after "@" to the cursor, not just the last segment — so picking a
+ *  suggestion replaces everything typed for the scope_ref in one shot.
+ *  Fuzzy-ranked via the SAME `fuzzyFilter` every other branch of
+ *  `suggestAgentCliAt` uses, against the raw typed-so-far text (dots
+ *  included) — a real prefix match (e.g. "positions." against
+ *  "positions.total") always ranks above a looser subsequence match. */
+function _suggestScopeRef(real, text, pos, catalog) {
+  if (!catalog) return _emptySuggest(pos);
+  const ctx = _scopeRefContextFromTokens(real, pos);
+  if (!ctx) return _emptySuggest(pos);
+  const typedSoFar = text.slice(ctx.scopeRefStart, pos);
+  const candidates = [...catalog.scopes.values()].map((e) => e.token);
+  const ranked = fuzzyFilter(typedSoFar, candidates);
+  return { suggestions: ranked, replaceRange: [ctx.scopeRefStart, pos], kind: 'scope' };
+}
+
+/** Quote-aware split of a call's inner-text-so-far on top-level commas,
+ *  keeping each segment's own start offset (relative to the inner text)
+ *  so callers can compute absolute `replaceRange` positions. No nesting
+ *  is possible inside a call's arg list (same documented limitation
+ *  `_parseArgListFromInnerText` already carries). */
+function _splitTopLevelCommasWithOffsets(str) {
+  const segs = [];
+  let segStart = 0;
+  let inQuote = null;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === ',') { segs.push({ text: str.slice(segStart, i), start: segStart }); segStart = i + 1; }
+  }
+  segs.push({ text: str.slice(segStart), start: segStart });
+  return segs;
+}
+
+/** First top-level (unquoted) "=" offset in `str`, or -1. */
+function _findTopLevelEquals(str) {
+  let inQuote = null;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === '=') return i;
+  }
+  return -1;
+}
+
+function _emptySuggest(cursor) {
+  return { suggestions: [], replaceRange: [cursor, cursor], kind: null };
+}
+
+/** Suggest param-name or enum-value completions for the call whose "("
+ *  sits at `parenPos`, given everything typed so far up to `cursor`. */
+function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
+  const innerSoFar = text.slice(parenPos + 1, cursor);
+  const segments = _splitTopLevelCommasWithOffsets(innerSoFar);
+  const usedKeys = new Set();
+  for (let i = 0; i < segments.length - 1; i++) {
+    const eq = _findTopLevelEquals(segments[i].text);
+    if (eq < 0) continue;
+    const k = segments[i].text.slice(0, eq).trim().toLowerCase();
+    usedKeys.add(_ALIAS_TO_REAL[k] || k);
+  }
+  const last = segments[segments.length - 1];
+  const lastAbsStart = parenPos + 1 + last.start;
+  const eqIdx = _findTopLevelEquals(last.text);
+
+  if (eqIdx >= 0) {
+    // Right after (or mid-typing) a value for an already-named param.
+    const rawKey = last.text.slice(0, eqIdx).trim().toLowerCase();
+    const realKey = _ALIAS_TO_REAL[rawKey] || rawKey;
+    const spec = entry.paramsSchema && entry.paramsSchema[realKey];
+    if (!spec || spec.type !== 'enum' || !Array.isArray(spec.enum)) return _emptySuggest(cursor);
+    const valueAbsStart = lastAbsStart + eqIdx + 1;
+    const valuePartialRaw = text.slice(valueAbsStart, cursor);
+    const valuePartial = valuePartialRaw.replace(/^['"]/, '');
+    const ranked = fuzzyFilter(valuePartial.trim(), spec.enum);
+    return { suggestions: ranked, replaceRange: [valueAbsStart, cursor], kind: 'enum' };
+  }
+
+  // No "=" yet in the segment being typed — suggest/complete a param NAME.
+  const raw = last.text;
+  const leadWs = raw.length - raw.replace(/^\s+/, '').length;
+  const partialKey = raw.trim();
+  const available = (entry.paramKeys || []).filter((k) => !usedKeys.has(k.toLowerCase()));
+  const ranked = fuzzyFilter(partialKey, available);
+  const replaceStart = lastAbsStart + leadWs;
+  return { suggestions: ranked, replaceRange: [replaceStart, cursor], kind: 'param' };
+}
+
+function _suggestAgentCliAtImpl(text, cursor, catalog) {
+  if (typeof text !== 'string') return _emptySuggest(0);
+  const n = text.length;
+  const pos = Math.max(0, Math.min(Number(cursor) || 0, n));
+
+  // 1. Inside a call's (possibly still-open) argument list?
+  const openCall = _findOpenCallAt(text, pos);
+  if (openCall) {
+    const name = text.slice(openCall.nameStart, openCall.nameEnd);
+    const scopeHint = _nearestNonSpaceBefore(text, openCall.nameStart) === '@'
+      || _nearestNonSpaceBefore(text, openCall.nameStart) === '.';
+    const prefixLex = lexAgentStatement(text.slice(0, openCall.nameStart));
+    const clauseKind = prefixLex.errors.length ? null : _clauseKindFromTokenPrefix(prefixLex.tokens);
+    const entry = _lookupAnyCatalogEntry(name, catalog, clauseKind, scopeHint);
+    if (!entry) return _emptySuggest(pos);
+    return _paramOrEnumSuggestion(text, openCall.parenPos, pos, entry);
+  }
+
+  // 2. Not inside a call — bare metric/channel/action NAME being typed.
+  //    Lex only the text UP TO THE CURSOR so a half-typed later clause
+  //    never blanks out suggestions for the clause actually being edited.
+  const { tokens, errors } = lexAgentStatement(text.slice(0, pos));
+  if (errors.length) return _emptySuggest(pos);
+  if (!tokens.length) return _emptySuggest(pos);
+
+  // Drop the synthetic EOF token lexAgentStatement always appends.
+  const real = tokens[tokens.length - 1].type === 'EOF' ? tokens.slice(0, -1) : tokens;
+  const lastTok = real[real.length - 1];
+
+  // "Immediately after @ or ." (scope-ref position) — suggest scope
+  // names (see `_suggestScopeRef`); degrades to empty when the char
+  // isn't actually part of a real scope_ref (e.g. an incomplete decimal
+  // literal's trailing '.').
+  const wordStart = (lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos)
+    ? lastTok.start : pos;
+  if (_nearestNonSpaceBefore(text, wordStart) === '@' || _nearestNonSpaceBefore(text, wordStart) === '.') {
+    return _suggestScopeRef(real, text, pos, catalog);
+  }
+
+  const clauseKind = _clauseKindFromTokenPrefix(real);
+  const candidates = _candidateTokensForClause(clauseKind, catalog);
+  if (!candidates) return _emptySuggest(pos);
+
+  let partial = '';
+  let replaceStart = pos;
+  if (lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos) {
+    // Cursor glued to the end of a bare NAME — still typing it (or it's
+    // a just-typed WHEN/ALERT/DO/NOP/ALWAYS keyword itself, never a fresh
+    // metric/channel/action position).
+    if (lastTok.reserved) return _emptySuggest(pos);
+    partial = lastTok.value;
+    replaceStart = lastTok.start;
+  } else if (!_isFreshNamePosition(lastTok)) {
+    // Gap position (whitespace, or right after a closed call's ")"/a
+    // value/a comparator/etc.) — only a legal metric/channel/action slot
+    // when the token immediately before it is one that the grammar
+    // actually allows a call/NAME to follow: a WHEN/ALERT/DO clause
+    // marker, a boolean connective (&/|/~), a grouping "(", or a
+    // call-list "," — e.g. NOT right after a comparator or a value.
+    return _emptySuggest(pos);
+  }
+
+  const ranked = fuzzyFilter(partial, candidates);
+  return { suggestions: ranked, replaceRange: [replaceStart, pos], kind: 'token' };
+}
+
+/** True when `lastTok` (the last REAL token lexed before the cursor, or
+ *  `undefined` at the very start of the text) legally precedes a fresh
+ *  metric/channel/action NAME per the grammar — see call site above. */
+function _isFreshNamePosition(lastTok) {
+  if (!lastTok) return true; // start of text — nothing typed yet
+  if (lastTok.type === 'NAME' && lastTok.reserved) {
+    const w = String(lastTok.value).toLowerCase();
+    return w === 'when' || w === 'alert' || w === 'do';
+  }
+  return lastTok.type === 'AMP' || lastTok.type === 'PIPE' || lastTok.type === 'TILDE'
+    || lastTok.type === 'LPAREN' || lastTok.type === 'COMMA';
+}
+
+/** Live autocomplete for the agent CLI textarea. Never throws — returns
+ *  `{ suggestions: string[], replaceRange: [start, end], kind:
+ *  'token'|'param'|'enum'|'scope'|null }`. See the section header above
+ *  for the design rationale. */
+export function suggestAgentCliAt(text, cursor, catalog) {
+  try {
+    return _suggestAgentCliAtImpl(text, cursor, catalog);
+  } catch {
+    return _emptySuggest(Number(cursor) || 0);
+  }
 }

@@ -624,6 +624,25 @@ describe('KWARG_ALIASES', () => {
     expect(r.ticket.chase).toBe(true);
     expect(r.ticket.chase_aggressiveness).toBe('high');
   });
+
+  it('trigger_price has the "trigpx" short alias (matching the price→px convention)', () => {
+    expect(KWARG_ALIASES.trigger_price).toBe('trigpx');
+  });
+
+  it('trigger_price= and its trigpx= alias compile to identical params for an SL order', () => {
+    const real = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=SL, price=23000, trigger_price=23050)',
+      { mode: 'paper' },
+    );
+    const aliased = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, order_type=SL, price=23000, trigpx=23050)',
+      { mode: 'paper' },
+    );
+    expect(real.ok).toBe(true);
+    expect(aliased.ok).toBe(true);
+    expect(real.ticket.trigger_price).toBe(23050);
+    expect(aliased.ticket).toEqual(real.ticket);
+  });
 });
 
 // ── parseStatement()/order_stmt restriction ──────────────────────────────
