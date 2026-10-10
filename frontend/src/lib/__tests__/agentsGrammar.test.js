@@ -365,6 +365,42 @@ describe('ALERT/DO — independently optional, either order (operator request: "
   });
 });
 
+describe('WHEN — now optional too (operator request: "alert to be placed, or action performed with no when condition")', () => {
+  it('bare "DO ..." with no WHEN at all compiles identically to "WHEN always DO ..."', () => {
+    const withAlways = compile('WHEN always DO emit_log(message="x")');
+    const omitted = compile('DO emit_log(message="x")');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withAlways.agent);
+  });
+
+  it('bare "ALERT ..." with no WHEN at all compiles identically to "WHEN always ALERT ..."', () => {
+    const withAlways = compile('WHEN always ALERT telegram');
+    const omitted = compile('ALERT telegram');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withAlways.agent);
+  });
+
+  it('WHEN omitted + ALERT/DO reversed order still compiles identically', () => {
+    const canonical = compile('ALERT telegram DO emit_log(message="x")');
+    const reversed = compile('DO emit_log(message="x") ALERT telegram');
+    expect(reversed.ok).toBe(true);
+    expect(reversed.agent).toEqual(canonical.agent);
+  });
+
+  it('ALERT/DO both omitted alongside WHEN ("DO nop" with no WHEN) still rejected — at least one real clause required', () => {
+    const r = compile('DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+  });
+
+  it('a bare "order(...)" statement is still routed as order_stmt, never mistaken for a WHEN-omitted agent_stmt', () => {
+    const r = compile('order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)', { mode: 'paper' });
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('order');
+    expect(r.ticket).not.toBeNull();
+  });
+});
+
 describe('adversarial — mixed-direction between chain', () => {
   it('0 <= x >= 5 is a parse/compile error, not silently always-false', () => {
     const r = compile('WHEN 0 <= pnl@positions.total >= 5 ALERT telegram DO nop');

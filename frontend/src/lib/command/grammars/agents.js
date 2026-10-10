@@ -13,7 +13,23 @@
 // EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
 // ─────────────────────────────────────────────────────────────────────────
 //   statement      := agent_stmt | order_stmt
-//   agent_stmt     := "WHEN" condition "ALERT" alert_clause "DO" do_clause
+//   agent_stmt     := when_part? tail            (* WHEN, ALERT, and DO are
+//                                                    each independently
+//                                                    optional and may appear
+//                                                    in any order; omitting
+//                                                    WHEN means `always`;
+//                                                    omitting a clause means
+//                                                    the same as writing it
+//                                                    as "nop"; at least one
+//                                                    real ALERT or DO is
+//                                                    still required — all-
+//                                                    omitted/all-nop is a
+//                                                    compile-time error *)
+//   when_part      := "WHEN" condition
+//   tail           := alert_part do_part | do_part alert_part
+//                    | alert_part | do_part | ε
+//   alert_part     := "ALERT" alert_clause
+//   do_part        := "DO" do_clause
 //   alert_clause   := "nop" | call_list
 //   do_clause      := "nop" | call_list
 //   call_list      := call ("," call)*
@@ -677,8 +693,18 @@ function parseClauseBody(state) {
  *  clause never appeared at all, so the compiler never needs to know
  *  "omitted" from "explicit nop" as a separate case. */
 export function parseAgentStmt(state) {
-  _expectWord(state, 'when');
-  const condition = parseCondition(state, 0);
+  // WHEN itself is now optional (per operator instruction — an alert/action
+  // should be placeable with no condition at all). Omitting it means the
+  // same thing as writing it as `always` explicitly — both produce the
+  // identical `{ type: 'always' }` AST node, so compileCondition/the rest
+  // of this function never need to know "omitted" from "explicit always".
+  let condition;
+  if (_wordIs(_peek(state), 'when')) {
+    _advance(state);
+    condition = parseCondition(state, 0);
+  } else {
+    condition = { type: 'always' };
+  }
   /** @type {'nop' | any[]} */
   let alertCalls = 'nop';
   /** @type {'nop' | any[]} */
@@ -724,10 +750,14 @@ export function parseStatement(text) {
   if (lexErrors.length) return { ast: null, errors: lexErrors };
   const state = { tokens, pos: 0 };
   try {
+    // WHEN is optional (an agent_stmt may start directly with ALERT or DO —
+    // see parseAgentStmt) — ALERT/DO are reserved words that can never be a
+    // real order/place_order call name, so dispatching on them here is
+    // unambiguous, same as WHEN always was.
     const first = _peek(state);
-    const ast = (first.type === 'NAME' && _wordIs(first, 'when') && !first.hasCall)
-      ? parseAgentStmt(state)
-      : parseOrderStmt(state);
+    const isAgentStmt = first.type === 'NAME' && !first.hasCall
+      && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do'));
+    const ast = isAgentStmt ? parseAgentStmt(state) : parseOrderStmt(state);
     const trailing = _peek(state);
     if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input', trailing);
     return { ast, errors: [] };
