@@ -659,14 +659,45 @@ function parseClauseBody(state) {
   return parseCallList(state);
 }
 
-/** `agent_stmt := "WHEN" condition "ALERT" alert_clause "DO" do_clause` */
+/** `agent_stmt := "WHEN" condition tail`
+ *  `tail := alert_part do_part | do_part alert_part | alert_part | do_part | ε`
+ *
+ *  `ALERT` and `DO` are each independently optional (at most one of each,
+ *  never both omitted — that's still a semantic error, checked later, same
+ *  as the existing `ALERT nop DO nop` rejection) and may appear in EITHER
+ *  order — `WHEN ... ALERT ... DO ...`, `WHEN ... DO ... ALERT ...`,
+ *  `WHEN ... DO ...` alone, or `WHEN ... ALERT ...` alone are all valid.
+ *  Omitting a clause entirely means the same thing as writing it as `nop`
+ *  — both are accepted, `nop` is kept as explicit, backward-compatible
+ *  sugar for the same empty state, not replaced by omission. A completely
+ *  bare `WHEN condition` (tail = ε) is syntactically valid here; the
+ *  "at least one of ALERT or DO" check happens at compile time, same as
+ *  it always has — `alertCalls`/`doCalls` default to `'nop'` when their
+ *  clause never appeared at all, so the compiler never needs to know
+ *  "omitted" from "explicit nop" as a separate case. */
 export function parseAgentStmt(state) {
   _expectWord(state, 'when');
   const condition = parseCondition(state, 0);
-  _expectWord(state, 'alert');
-  const alertCalls = parseClauseBody(state);
-  _expectWord(state, 'do');
-  const doCalls = parseClauseBody(state);
+  /** @type {'nop' | any[]} */
+  let alertCalls = 'nop';
+  /** @type {'nop' | any[]} */
+  let doCalls = 'nop';
+  let sawAlert = false;
+  let sawDo = false;
+  for (let i = 0; i < 2; i++) {
+    const tok = _peek(state);
+    if (!sawAlert && _wordIs(tok, 'alert')) {
+      _advance(state);
+      alertCalls = parseClauseBody(state);
+      sawAlert = true;
+    } else if (!sawDo && _wordIs(tok, 'do')) {
+      _advance(state);
+      doCalls = parseClauseBody(state);
+      sawDo = true;
+    } else {
+      break;
+    }
+  }
   return { kind: 'agent', condition, alertCalls, doCalls };
 }
 

@@ -206,6 +206,50 @@ describe('canonical examples — decompile→recompile round-trip', () => {
   });
 });
 
+// ── ALERT/DO independently optional + reorderable (input flexibility) ──
+//
+// The decompiler's OWN output is deliberately unchanged by this grammar
+// relaxation — it always renders the fixed canonical "WHEN ... ALERT ...
+// DO ..." shape (using "nop" for an empty clause), never the newly-allowed
+// omitted/reordered input forms. These tests confirm that choice: an
+// omitted-clause or reordered-clause INPUT still compiles to the exact
+// same JSON a canonical-order, nop-using statement would, and the
+// decompiled OUTPUT text is always the fixed canonical shape regardless
+// of which input form produced the underlying JSON.
+
+describe('ALERT/DO omission and reordering — decompiled output stays canonical', () => {
+  it('DO-only input (no ALERT token) decompiles to the fixed "ALERT nop DO ..." canonical form', () => {
+    const first = compile('WHEN pnl_pct@positions.total <= -5 DO emit_log(message="x")');
+    expect(first.ok).toBe(true);
+    const dec = decompile(first.agent);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/^WHEN .* ALERT nop DO /);
+    const second = compile(dec.text);
+    expect(second.ok).toBe(true);
+    expect(second.agent).toEqual(first.agent);
+  });
+
+  it('ALERT-only input (no DO token) decompiles to the fixed "ALERT ... DO nop" canonical form', () => {
+    const first = compile('WHEN pnl_pct@positions.total <= -5 ALERT telegram');
+    expect(first.ok).toBe(true);
+    const dec = decompile(first.agent);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/ ALERT telegram DO nop$/);
+    const second = compile(dec.text);
+    expect(second.ok).toBe(true);
+    expect(second.agent).toEqual(first.agent);
+  });
+
+  it('reversed input order ("DO ... ALERT ...") decompiles to the same canonical ALERT-before-DO text as the non-reversed input', () => {
+    const canonical = compile('WHEN pnl_pct@positions.total <= -5 ALERT telegram DO emit_log(message="x")');
+    const reversed = compile('WHEN pnl_pct@positions.total <= -5 DO emit_log(message="x") ALERT telegram');
+    expect(reversed.agent).toEqual(canonical.agent);
+    const decCanonical = decompile(canonical.agent);
+    const decReversed = decompile(reversed.agent);
+    expect(decReversed.text).toBe(decCanonical.text);
+  });
+});
+
 // ── Real builtin-agent shapes (agent_engine.py BUILTIN_AGENTS) ──────────
 
 describe('real builtin agents — never authored via the CLI', () => {

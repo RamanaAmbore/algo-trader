@@ -331,6 +331,40 @@ describe('adversarial — ALERT nop DO nop together', () => {
   });
 });
 
+describe('ALERT/DO — independently optional, either order (operator request: "alert and do sequence can inter change, one of them optional")', () => {
+  it('DO before ALERT (reversed order) compiles identically to the canonical ALERT-before-DO order', () => {
+    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO emit_log(message="x")');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT telegram');
+    expect(reversed.ok).toBe(true);
+    expect(reversed.agent).toEqual(canonical.agent);
+  });
+
+  it('DO alone (ALERT token omitted entirely) compiles identically to "ALERT nop DO ..."', () => {
+    const withNop = compile('WHEN pnl@positions.total <= -1 ALERT nop DO emit_log(message="x")');
+    const omitted = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x")');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withNop.agent);
+  });
+
+  it('ALERT alone (DO token omitted entirely) compiles identically to "ALERT ... DO nop"', () => {
+    const withNop = compile('WHEN pnl@positions.total <= -1 ALERT telegram DO nop');
+    const omitted = compile('WHEN pnl@positions.total <= -1 ALERT telegram');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withNop.agent);
+  });
+
+  it('neither clause present ("WHEN cond" alone) is rejected the same way as "ALERT nop DO nop"', () => {
+    const r = compile('WHEN pnl@positions.total <= -1');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /at least one of ALERT or DO/.test(e.message))).toBe(true);
+  });
+
+  it('a repeated clause keyword ("ALERT x ALERT y") leaves the second occurrence as unconsumed trailing input — a parse error', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram ALERT email DO nop');
+    expect(r.ok).toBe(false);
+  });
+});
+
 describe('adversarial — mixed-direction between chain', () => {
   it('0 <= x >= 5 is a parse/compile error, not silently always-false', () => {
     const r = compile('WHEN 0 <= pnl@positions.total >= 5 ALERT telegram DO nop');
