@@ -323,6 +323,20 @@ operator saving a threshold agent through the ordinary form (or the AI-
 draft flow, which only shows validation errors advisorily) could persist a 
 typo'd token with 200/201 and the agent would silently never fire.
 
+**Threshold/cycle-agent action validation** (2026-10, Sprint 1 of the CLI-grammar
+effort) — the `actions` array gets the same treatment `conditions` already does
+above, via a sibling `_age_validate_action_entries()`: for every entry, the action
+type must be a registered token (`grammar.is_known_action_type()`) and every
+`required: true` key in its `params_schema` must be present in that entry's
+`params` dict — a 422 with the error list otherwise. Gated on `kind != "event"`
+(event-kind `actions` entries are a structurally different `{"type": "render",
+"render": <key>}` shape, already checked against `event_agents.RENDERS` by the
+event-spec validator). On `PATCH`, the MERGED `agent.actions` is re-validated, same
+rule as conditions. An empty `[]` actions list (an alert-only agent) is left alone.
+Before this, the `actions` array was completely unchecked at save time for
+threshold/cycle agents — an unknown action type or a missing required param saved
+with 200/201.
+
 ---
 
 ## 9. Grammar Tokens and Registry
@@ -510,6 +524,7 @@ current value by name every call.
 
 | Date | Change |
 |---|---|
+| 2026-10-09 | 9b7da82f: CLI-grammar effort, Sprint 1 — `_age_validate_action_entries()` closes the same save-time validation gap for the `actions` array that c0f260b9 (below) closed for `conditions`; new `grammar.is_known_action_type()`; new `Agent.cli_source` (nullable, audit-only) column; `expr_eval.py` extended to support string constants and `+` concatenation for `token_ref_ok` action params. |
 | 2026-10-09 | c0f260b9: Sprint 3 — `_age_validate_threshold_conditions()` closes the save-time validation gap for threshold/cycle agents (create/update now reject unknown/malformed `metric`/`scope`/`op` tokens with 422, same as the long-standing event-kind path). `_parse_call_token` rejects non-positive call-syntax windows (`mean_pnl(0)`). `_summarise_token()` generalizes `params_schema` surfacing beyond `action_type` to metric/scope/channel/format call-syntax tokens. |
 | 2026-10-09 | 1b80b7d8: Sprint 2 — parameterized function-call metric tokens (`mean_pnl(30)` etc.) added to `GrammarRegistry`, documented in §9 above. |
 | 2026-10-08 | (pre-existing corrections): Fixed incorrect statement about `expiry_close` being "held until expiry cutoff" — clarified that cutoff controls creation timing only, not release (operator must click Release to remove hold indefinitely). Fixed incorrect statement that "every held order" has `status="HELD"` — `template_exit` holds leave the parent at original status (e.g. FILLED) with only `hold_json` set. |
