@@ -21,16 +21,26 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'metric', token: 'pnl_pct', value_type: 'number', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'day_pct', value_type: 'number', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'avail_margin', value_type: 'number', params_schema: null },
-  { grammar_kind: 'condition', token_kind: 'metric', token: 'mean_pnl', value_type: 'number', params_schema: { minutes: { type: 'number' } } },
+  {
+    grammar_kind: 'condition', token_kind: 'metric', token: 'mean_pnl', value_type: 'number',
+    description: 'Average positions P&L over a lookback window (fixture).',
+    params_schema: { minutes: { type: 'number', description: 'Lookback window in minutes (fixture).' } },
+  },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'stdev_pnl', value_type: 'number', params_schema: { minutes: { type: 'number' } } },
   { grammar_kind: 'condition', token_kind: 'metric', token: 'max_drawdown_pnl', value_type: 'number', params_schema: { minutes: { type: 'number' } } },
   // scopes
-  { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.total', params_schema: null },
+  {
+    grammar_kind: 'condition', token_kind: 'scope', token: 'positions.total', params_schema: null,
+    description: 'The single TOTAL row of the positions summary (fixture).',
+  },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.any_acct', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.total', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.any_acct', params_schema: null },
   // channels
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null },
+  {
+    grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null,
+    description: 'Telegram group defined by secrets.telegram_chat_id (fixture).',
+  },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: null },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'log', params_schema: null },
   // actions — place_order mirrors the real agent_grammar.yaml schema
@@ -38,7 +48,7 @@ const FIXTURE_ROWS = [
   {
     grammar_kind: 'action', token_kind: 'action_type', token: 'place_order',
     params_schema: {
-      account: { type: 'string', required: true, token_ref_ok: true },
+      account: { type: 'string', required: true, token_ref_ok: true, description: 'Masked account id to route the order to (fixture).' },
       symbol: { type: 'string', required: true },
       exchange: { type: 'enum', enum: ['NSE', 'BSE', 'NFO', 'CDS', 'MCX'], required: false, default: 'NFO' },
       side: { type: 'enum', enum: ['BUY', 'SELL'], required: true },
@@ -273,5 +283,67 @@ describe('suggestAgentCliAt() — fuzzy ranking order', () => {
   it('non-matching partial drops all candidates', () => {
     const r = suggest('WHEN zzz_no_such_metric');
     expect(r.suggestions).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint 11 — catalog `description` surfaced via a `descriptions` array
+// parallel to `suggestions` (same order/length), for every suggestion
+// context `suggestAgentCliAt` handles.
+// ─────────────────────────────────────────────────────────────────────────
+describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
+  it('a token-name suggestion carries its catalog description', () => {
+    const r = suggest('WHEN mean_');
+    expect(r.descriptions).toBeDefined();
+    expect(r.descriptions.length).toBe(r.suggestions.length);
+    const idx = r.suggestions.indexOf('mean_pnl');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('Average positions P&L over a lookback window (fixture).');
+  });
+
+  it('a channel token-name suggestion (ALERT clause) carries its catalog description', () => {
+    const r = suggest('WHEN always ALERT tel');
+    const idx = r.suggestions.indexOf('telegram');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('Telegram group defined by secrets.telegram_chat_id (fixture).');
+  });
+
+  it('a scope-ref suggestion carries that scope\'s own catalog description', () => {
+    const r = suggest('WHEN mean_pnl(minutes=5)@positions.');
+    const idx = r.suggestions.indexOf('positions.total');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('The single TOTAL row of the positions summary (fixture).');
+  });
+
+  it('a param-name suggestion inside an open call carries that param\'s own description', () => {
+    const r = suggest('WHEN always ALERT nop DO place_order(');
+    expect(r.kind).toBe('param');
+    const idx = r.suggestions.indexOf('account');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('Masked account id to route the order to (fixture).');
+  });
+
+  it('a param-name suggestion with no backend-provided description degrades to an empty string, not a crash', () => {
+    const r = suggest('WHEN always ALERT nop DO place_order(');
+    const idx = r.suggestions.indexOf('symbol'); // fixture's `symbol` param carries no `description` key
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('');
+  });
+
+  it('an enum-value suggestion has no per-value description anywhere in the schema — degrades to empty strings, never throws', () => {
+    const text = 'WHEN always ALERT nop DO place_order(account="ZG0790", side=';
+    expect(() => suggest(text)).not.toThrow();
+    const r = suggest(text);
+    expect(r.kind).toBe('enum');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['BUY', 'SELL']));
+    expect(r.descriptions).toBeDefined();
+    expect(r.descriptions.length).toBe(r.suggestions.length);
+    expect(r.descriptions.every((d) => d === '')).toBe(true);
+  });
+
+  it('an empty-result suggestion still carries a (zero-length) descriptions array', () => {
+    const r = suggest('WHEN pnl@positions.total <= ');
+    expect(r.suggestions).toEqual([]);
+    expect(r.descriptions).toEqual([]);
   });
 });

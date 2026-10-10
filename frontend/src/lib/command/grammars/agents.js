@@ -428,6 +428,12 @@ function _buildCatalogEntry(row) {
     valueType: row.value_type || null,
     paramsSchema: schema,
     paramKeys: Object.keys(schema), // declared order — keys[0] is positional-or-keyword
+    // Sprint 11 — the token's own catalog description (e.g. the `telegram`
+    // channel row's "Telegram group defined by secrets.telegram_chat_id.").
+    // Each PARAM's own description lives inside `schema[key].description`
+    // already — untouched here, just surfaced downstream by
+    // `suggestAgentCliAt`'s param-name branch.
+    description: row.description || '',
     // Sprint 10 — true only for a merged-in AgentTemplate ("Token") row
     // (backend's GrammarTokenOut.is_fragment_ref) — see the file-header
     // EBNF's `leaf`/`call` production notes for how this flag is consumed.
@@ -3453,6 +3459,23 @@ function _candidateTokensForClause(clauseKind, catalog) {
   return null;
 }
 
+/** Token → catalog description lookup for whichever catalog section
+ *  `clauseKind` draws its candidates from (same section `_candidateTokensForClause`
+ *  reads) — used to build the `descriptions` array parallel to `suggestions`
+ *  in the bare-name branch of `_suggestAgentCliAtImpl`. `null` when
+ *  `clauseKind` doesn't map to a real section (mirrors `_candidateTokensForClause`). */
+function _descMapForClause(clauseKind, catalog) {
+  if (!catalog) return null;
+  let section;
+  if (clauseKind === 'when') section = catalog.metrics;
+  else if (clauseKind === 'alert') section = catalog.channels;
+  else if (clauseKind === 'do' || clauseKind === 'order') section = catalog.actions;
+  else return null;
+  const out = new Map();
+  for (const e of section.values()) out.set(e.token, e.description || '');
+  return out;
+}
+
 /** Walk backward through `real` (tokens lexed from the text UP TO THE
  *  CURSOR) to confirm the cursor sits inside an in-progress `scope_ref`
  *  (`call ("." call)*`) immediately preceded by a metric's "@" — exactly
@@ -3497,8 +3520,14 @@ function _suggestScopeRef(real, text, pos, catalog) {
   if (!ctx) return _emptySuggest(pos);
   const typedSoFar = text.slice(ctx.scopeRefStart, pos);
   const candidates = [...catalog.scopes.values()].map((e) => e.token);
+  const descByToken = new Map([...catalog.scopes.values()].map((e) => [e.token, e.description || '']));
   const ranked = fuzzyFilter(typedSoFar, candidates);
-  return { suggestions: ranked, replaceRange: [ctx.scopeRefStart, pos], kind: 'scope' };
+  return {
+    suggestions: ranked,
+    descriptions: ranked.map((t) => descByToken.get(t) || ''),
+    replaceRange: [ctx.scopeRefStart, pos],
+    kind: 'scope',
+  };
 }
 
 /** Quote-aware split of a call's inner-text-so-far on top-level commas,
@@ -3533,7 +3562,7 @@ function _findTopLevelEquals(str) {
 }
 
 function _emptySuggest(cursor) {
-  return { suggestions: [], replaceRange: [cursor, cursor], kind: null };
+  return { suggestions: [], descriptions: [], replaceRange: [cursor, cursor], kind: null };
 }
 
 /** Suggest param-name or enum-value completions for the call whose "("
@@ -3562,7 +3591,11 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
     const valuePartialRaw = text.slice(valueAbsStart, cursor);
     const valuePartial = valuePartialRaw.replace(/^['"]/, '');
     const ranked = fuzzyFilter(valuePartial.trim(), spec.enum);
-    return { suggestions: ranked, replaceRange: [valueAbsStart, cursor], kind: 'enum' };
+    // No per-VALUE description exists anywhere in the backend schema
+    // (agent_grammar.yaml / order_fields.yaml enum lists carry no
+    // per-entry text, only the param itself does) — degrade to empty
+    // strings rather than inventing text.
+    return { suggestions: ranked, descriptions: ranked.map(() => ''), replaceRange: [valueAbsStart, cursor], kind: 'enum' };
   }
 
   // No "=" yet in the segment being typed — suggest/complete a param NAME.
@@ -3572,7 +3605,8 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
   const available = (entry.paramKeys || []).filter((k) => !usedKeys.has(k.toLowerCase()));
   const ranked = fuzzyFilter(partialKey, available);
   const replaceStart = lastAbsStart + leadWs;
-  return { suggestions: ranked, replaceRange: [replaceStart, cursor], kind: 'param' };
+  const descriptions = ranked.map((k) => (entry.paramsSchema && entry.paramsSchema[k] && entry.paramsSchema[k].description) || '');
+  return { suggestions: ranked, descriptions, replaceRange: [replaceStart, cursor], kind: 'param' };
 }
 
 function _suggestAgentCliAtImpl(text, cursor, catalog) {
@@ -3638,7 +3672,9 @@ function _suggestAgentCliAtImpl(text, cursor, catalog) {
   }
 
   const ranked = fuzzyFilter(partial, candidates);
-  return { suggestions: ranked, replaceRange: [replaceStart, pos], kind: 'token' };
+  const descMap = _descMapForClause(clauseKind, catalog);
+  const descriptions = ranked.map((t) => (descMap && descMap.get(t)) || '');
+  return { suggestions: ranked, descriptions, replaceRange: [replaceStart, pos], kind: 'token' };
 }
 
 /** True when `lastTok` (the last REAL token lexed before the cursor, or
@@ -3655,8 +3691,14 @@ function _isFreshNamePosition(lastTok) {
 }
 
 /** Live autocomplete for the agent CLI textarea. Never throws — returns
- *  `{ suggestions: string[], replaceRange: [start, end], kind:
- *  'token'|'param'|'enum'|'scope'|null }`. See the section header above
+ *  `{ suggestions: string[], descriptions: string[], replaceRange: [start, end],
+ *  kind: 'token'|'param'|'enum'|'scope'|null }`. `descriptions` is always
+ *  the SAME length/order as `suggestions` — Sprint 11 surfaces each
+ *  catalog token's own `description` (bare token-name / scope-ref
+ *  suggestions) or each param's own `paramsSchema[key].description`
+ *  (param-name suggestions inside an open call); enum-VALUE suggestions
+ *  have no per-value description anywhere in the backend schema, so that
+ *  branch always returns empty strings. See the section header above
  *  for the design rationale. */
 export function suggestAgentCliAt(text, cursor, catalog) {
   try {

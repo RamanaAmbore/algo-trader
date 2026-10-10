@@ -45,6 +45,20 @@
   /** @type {HTMLTextAreaElement|null} */
   let textareaEl = $state(null);
   let cursorPos = $state(0);
+  // LABEL (not index) of whichever suggestion pill is currently hovered or
+  // keyboard-focused — drives the small description detail line below the
+  // row (Sprint 11). Deliberately keyed by the suggestion's own string,
+  // not its position: the suggestion list re-filters on every keystroke
+  // (same `suggestResult` derived below), so an index captured while the
+  // mouse rested on pill 3 would silently point at whatever suggestion
+  // happens to occupy slot 3 AFTER a re-filter — including a completely
+  // different token — the moment the operator keeps typing without the
+  // mouse ever leaving the pill (no `mouseleave` fires in that case).
+  // Looking the label back up in the CURRENT `suggestResult.suggestions`
+  // below means a label that has since dropped out of the list simply
+  // shows no description, never a stale/wrong one. `null` when nothing
+  // is hovered/focused.
+  let _hoverLabel = $state(null);
   // Flips true on the FIRST real operator edit (typed char or applied
   // suggestion) after mount/prop-reseed — gates `onCompile` so a freshly
   // decompiled/seeded `value` never fires a write-back into the parent's
@@ -83,9 +97,9 @@
   }
 
   const suggestResult = $derived.by(() => {
-    if (!catalog) return { suggestions: [], replaceRange: [cursorPos, cursorPos], kind: null };
+    if (!catalog) return { suggestions: [], descriptions: [], replaceRange: [cursorPos, cursorPos], kind: null };
     try { return suggestAgentCliAt(value, cursorPos, catalog); }
-    catch { return { suggestions: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
+    catch { return { suggestions: [], descriptions: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });
 
   async function applySuggestion(s) {
@@ -104,6 +118,16 @@
   function handlePlaceOrder() {
     if (compiled?.ok && compiled.kind === 'order') onOrderSubmit?.(compiled);
   }
+
+  // Description of whichever suggestion pill is currently hovered/focused,
+  // or '' when nothing is hovered or the hovered suggestion has no
+  // backend-provided description (e.g. an enum value, or an undescribed
+  // token/param) — callers never render an empty detail box for ''.
+  const _hoverDesc = $derived.by(() => {
+    if (_hoverLabel == null) return '';
+    const i = suggestResult.suggestions.indexOf(_hoverLabel);
+    return i >= 0 ? (suggestResult.descriptions?.[i] || '') : '';
+  });
 
   const previewPayload = $derived.by(() => {
     if (!compiled?.ok) return null;
@@ -130,9 +154,17 @@
   {#if suggestResult.suggestions.length}
     <div class="agent-cli-suggest-row" role="listbox" aria-label="CLI suggestions">
       {#each suggestResult.suggestions.slice(0, 12) as s (s)}
-        <button type="button" class="agent-cli-suggest-pill" onclick={() => applySuggestion(s)}>{s}</button>
+        <button type="button" class="agent-cli-suggest-pill"
+                onclick={() => applySuggestion(s)}
+                onmouseenter={() => { _hoverLabel = s; }}
+                onmouseleave={() => { _hoverLabel = null; }}
+                onfocus={() => { _hoverLabel = s; }}
+                onblur={() => { _hoverLabel = null; }}>{s}</button>
       {/each}
     </div>
+    {#if _hoverDesc}
+      <div class="agent-cli-suggest-desc">{_hoverDesc}</div>
+    {/if}
   {/if}
 
   {#if compiled && !compiled.ok}
@@ -184,6 +216,11 @@
     cursor: pointer;
   }
   .agent-cli-suggest-pill:hover { background: var(--algo-amber-bg-strong); }
+  .agent-cli-suggest-desc {
+    font-size: var(--fs-xs);
+    color: var(--algo-muted);
+    padding: 0 0.3rem;
+  }
   .agent-cli-errors {
     padding: 0.4rem 0.6rem; border-radius: 0.3rem;
     background: var(--algo-red-bg-mid);
