@@ -63,6 +63,13 @@ def _to_out(row: OrderTemplate) -> OrderTemplateOut:
         is_default=row.is_default,
         is_system=row.is_system,
         is_active=row.is_active,
+        # getattr-guarded (Sprint 8) — defensive against pre-migration
+        # rows / minimal test-double rows that predate these columns,
+        # same convention as every other Sprint 7/8 group_name/tags
+        # read site (agents.py:_agent_to_info, chase.py:
+        # _chase_snapshot_algo_row).
+        group=getattr(row, "group_name", None),
+        tags=list(getattr(row, "tags", None) or []),
     )
 
 
@@ -175,6 +182,10 @@ _PATCH_FIELDS = (
     "wing_premium_pct", "wing_strike_offset", "wing_max_spread_pct",
     "tp_order_type", "tp_scales_json", "sl_trail_pct",
     "is_default", "is_active",
+    # Sprint 8 — `tags` maps directly (same name on both request and
+    # ORM side), so it's safe in this generic setattr loop. `group`
+    # is deliberately NOT here — see _apply_patch_fields below.
+    "tags",
 )
 
 
@@ -188,6 +199,16 @@ def _apply_patch_fields(row: OrderTemplate, data: "OrderTemplatePatch") -> None:
         v = getattr(data, field, None)
         if v is not None:
             setattr(row, field, v)
+    # `group` maps to ORM attribute `group_name` (`group` is a reserved
+    # SQL keyword) — can't live in the generic setattr loop above since
+    # the request field name and the ORM attribute name differ. Mirrors
+    # the identical AgentUpdateRequest.group → Agent.group_name fix from
+    # Sprint 7 (backend/api/routes/agents.py:update_agent) — a naive
+    # setattr(row, "group", ...) would silently create a bogus
+    # `template.group` instance attribute instead of persisting, since
+    # OrderTemplate has no mapped `group` column. None = unchanged.
+    if data.group is not None:
+        row.group_name = data.group
 
 
 async def _demote_existing_default(s, applies_to: str, exclude_id: int | None) -> None:
@@ -269,6 +290,8 @@ class OrderTemplateController(Controller):
                 is_default=data.is_default,
                 is_system=False,
                 is_active=data.is_active,
+                group_name=data.group,
+                tags=list(data.tags or []),
             )
             s.add(row)
             await s.commit()

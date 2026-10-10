@@ -12,7 +12,31 @@
 // ─────────────────────────────────────────────────────────────────────────
 // EBNF (implemented exactly — see .claude/PLAN.md for the authoritative copy)
 // ─────────────────────────────────────────────────────────────────────────
-//   statement      := agent_stmt | order_stmt
+//   statement      := agent_stmt | order_stmt | bracket_stmt
+//   bracket_stmt   := call meta_item*               (* `bracket(...)` only —
+//                                                       restricted to
+//                                                       standalone use,
+//                                                       EXACTLY mirroring
+//                                                       order_stmt's own
+//                                                       "only order(...) can
+//                                                       be used standalone"
+//                                                       rule/error-message
+//                                                       style, just naming
+//                                                       "bracket" instead of
+//                                                       "order" — a single
+//                                                       call, no call_list
+//                                                       (order_stmt allows
+//                                                       2+ calls for a
+//                                                       basket; a bracket
+//                                                       save is always
+//                                                       exactly one preset).
+//                                                       `#name=` is
+//                                                       effectively required
+//                                                       (compile-time error
+//                                                       if absent) since
+//                                                       OrderTemplateCreate.
+//                                                       name is a required
+//                                                       field. Sprint 8. *)
 //   agent_stmt     := when_part? tail meta_item*  (* WHEN, ALERT, and DO are
 //                                                    each independently
 //                                                    optional and may appear
@@ -101,6 +125,46 @@
 //                                                       exists in this
 //                                                       grammar at all *)
 //   kw_arg         := NAME "=" value
+//   object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"   (* Sprint 8 — a
+//                                                       genuinely NEW value
+//                                                       shape, STRICTLY
+//                                                       scoped to the
+//                                                       tp_scales_json_value
+//                                                       production below;
+//                                                       NOT a general
+//                                                       addition to `value`
+//                                                       anywhere else in
+//                                                       this grammar. Reuses
+//                                                       "=" as the key/value
+//                                                       separator — this
+//                                                       grammar's one and
+//                                                       only keyword-
+//                                                       assignment operator
+//                                                       everywhere else — a
+//                                                       deliberate decision
+//                                                       NOT to introduce a
+//                                                       second ":" operator
+//                                                       just for this one
+//                                                       nested case. *)
+//   obj_kwarg      := NAME "=" value
+//   tp_scales_json_value := "[" object_literal ("," object_literal)* "]"
+//                                                    (* Sprint 8 — the ONLY
+//                                                       legal value shape
+//                                                       for a call argument
+//                                                       named `tp_scales_json`
+//                                                       (case-insensitive),
+//                                                       on EITHER order(...)
+//                                                       or bracket(...).
+//                                                       Parsed by a
+//                                                       dedicated mini
+//                                                       lexer/parser (see
+//                                                       `_parseTpScalesJsonArg`
+//                                                       below) — NOT routed
+//                                                       through
+//                                                       tokenizeCallStyle,
+//                                                       which has no
+//                                                       "["/"]"/"{"/"}"
+//                                                       awareness at all. *)
 //
 // ─────────────────────────────────────────────────────────────────────────
 // AST shape (internal, documented for Sprint 3's decompiler / Sprint 4's
@@ -108,6 +172,8 @@
 // ─────────────────────────────────────────────────────────────────────────
 //   Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls, meta }
 //               | { kind:'order', calls: CallNode[], meta }
+//               | { kind:'bracket', call: CallNode, meta }   (* Sprint 8 —
+//                  exactly ONE call (never a list, unlike 'order') *)
 //   alertMsg   := ValueNode | null   (* the optional clause-level `msg=`
 //                  default — ALWAYS null when alertCalls is 'nop' or when
 //                  no ALERT clause was written at all; DO has no equivalent
@@ -135,6 +201,11 @@
 //   ScopeNode  := { type:'scope', segments: CallNode[] }
 //   ValueNode  := { type:'number'|'string'|'name', value }
 //               | { type:'list', value: ValueNode[] }
+//               | { type:'object', value: { [key: string]: ValueNode } }
+//                  (* Sprint 8 — object_literal; ONLY ever appears as an
+//                     item inside a 'list' ValueNode that is itself the
+//                     value of a `tp_scales_json=` argument — never
+//                     produced anywhere else in this grammar. *)
 //
 // ─────────────────────────────────────────────────────────────────────────
 // KNOWN GAPS between this design and the LIVE backend catalog (documented
@@ -359,28 +430,202 @@ function _parseArgSegment(segTokens, labelToken) {
   );
 }
 
-/** Parse the inner text of a call's `(...)` into ArgEntry[], via
- *  engine.js's tokenizeCallStyle() — the Sprint 2 reuse point: a `call`'s
- *  argument list has NO extra punctuation beyond what tokenizeCallStyle
- *  already understands (names, numbers, quoted strings, `key=value`,
- *  commas) — list literals as a CALL ARGUMENT value (as opposed to a leaf's
- *  RHS value, which the outer lexer below handles directly) are a known,
- *  documented scope limitation: tokenizeCallStyle has no `[`/`]` awareness,
- *  so a bracketed list typed as a call arg will not parse as a list — no
- *  example in the design doc's grammar needs this, so it is out of scope
- *  for Sprint 2. */
+// ── tp_scales_json object-literal mini lexer/parser (Sprint 8) ─────────
+// STRICTLY scoped to one call-argument value shape (see the file-header
+// EBNF's `object_literal`/`tp_scales_json_value` note) — a dedicated,
+// self-contained lexer+parser, not routed through tokenizeCallStyle (no
+// `[`/`]`/`{`/`}` awareness at all) or the main `lexAgentStatement` token
+// stream (no `{`/`}` awareness either). Operates directly on the raw
+// bracket-span text (e.g. `[{at_pct=30, close_pct=50}]`), producing a
+// `{type:'list', value: ObjectValueNode[]}` ValueNode — the SAME shape
+// `parseListLiteral`/`parseValue` use elsewhere in this file, so every
+// downstream consumer (coercion, decompile) only ever sees one list/object
+// vocabulary.
+
+function _lexObjScalesTok(text, baseStart) {
+  const tokens = [];
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    while (i < n && /\s/.test(text[i])) i++;
+    if (i >= n) break;
+    const start = i;
+    const ch = text[i];
+    if (ch === '"' || ch === "'") {
+      const q = ch;
+      i++;
+      while (i < n && text[i] !== q) i++;
+      if (i >= n) throw new _ParseError('unterminated string literal in tp_scales_json value', { start: baseStart + start });
+      i++;
+      tokens.push({ type: 'STRING', value: text.slice(start + 1, i - 1), start: baseStart + start, end: baseStart + i });
+      continue;
+    }
+    if (ch === '{') { tokens.push({ type: 'LBRACE', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (ch === '}') { tokens.push({ type: 'RBRACE', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (ch === '[') { tokens.push({ type: 'LBRACKET', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (ch === ']') { tokens.push({ type: 'RBRACKET', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (ch === ',') { tokens.push({ type: 'COMMA', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (ch === '=') { tokens.push({ type: 'EQ', start: baseStart + start, end: baseStart + i + 1 }); i++; continue; }
+    if (_isDigit(ch) || (ch === '-' && _isDigit(text[i + 1] || ''))) {
+      let j = i + (ch === '-' ? 1 : 0);
+      while (j < n && _isDigit(text[j])) j++;
+      if (text[j] === '.' && _isDigit(text[j + 1] || '')) { j++; while (j < n && _isDigit(text[j])) j++; }
+      tokens.push({ type: 'NUMBER', value: Number(text.slice(start, j)), start: baseStart + start, end: baseStart + j });
+      i = j;
+      continue;
+    }
+    if (_isWordStart(ch)) {
+      let j = i;
+      while (j < n && _isWordChar(text[j])) j++;
+      tokens.push({ type: 'NAME', value: text.slice(start, j), start: baseStart + start, end: baseStart + j });
+      i = j;
+      continue;
+    }
+    throw new _ParseError(`unexpected character '${ch}' in tp_scales_json value`, { start: baseStart + start });
+  }
+  tokens.push({ type: 'EOF', start: baseStart + n, end: baseStart + n });
+  return tokens;
+}
+
+/** `value` production, reused unmodified for an `obj_kwarg`'s RHS — a
+ *  flat NUMBER/STRING/NAME only (a nested list_literal inside an object
+ *  field is intentionally NOT supported — out of scope, no realistic
+ *  tp_scales_json shape needs it; a nested object_literal is likewise not
+ *  supported — object_literal does not recurse). */
+function _objScalesParseValue(state) {
+  const tok = state.tokens[state.pos];
+  if (tok.type === 'NUMBER') { state.pos++; return { type: 'number', value: tok.value }; }
+  if (tok.type === 'STRING') { state.pos++; return { type: 'string', value: tok.value }; }
+  if (tok.type === 'NAME') { state.pos++; return { type: 'name', value: tok.value }; }
+  throw new _ParseError('expected a value (number, string, or bare name) inside {...}', tok);
+}
+
+/** `object_literal := "{" obj_kwarg ("," obj_kwarg)* "}"` */
+function _parseObjectLiteral(state) {
+  const open = state.tokens[state.pos];
+  if (open.type !== 'LBRACE') throw new _ParseError('expected "{" (tp_scales_json entries are {key=value, ...} objects)', open);
+  state.pos++;
+  const fields = {};
+  if (state.tokens[state.pos].type !== 'RBRACE') {
+    while (true) {
+      const keyTok = state.tokens[state.pos];
+      if (keyTok.type !== 'NAME') throw new _ParseError('expected a key name inside {...}', keyTok);
+      state.pos++;
+      const eq = state.tokens[state.pos];
+      if (eq.type !== 'EQ') throw new _ParseError(`expected "=" after key '${keyTok.value}' (object literal fields use "=", not ":")`, eq);
+      state.pos++;
+      const value = _objScalesParseValue(state);
+      if (Object.prototype.hasOwnProperty.call(fields, keyTok.value)) {
+        throw new _ParseError(`duplicate key '${keyTok.value}' in object literal`, keyTok);
+      }
+      fields[keyTok.value] = value;
+      if (state.tokens[state.pos].type === 'COMMA') { state.pos++; continue; }
+      break;
+    }
+  }
+  const close = state.tokens[state.pos];
+  if (close.type !== 'RBRACE') throw new _ParseError('expected "}"', close);
+  state.pos++;
+  return { type: 'object', value: fields };
+}
+
+/** `tp_scales_json_value := "[" object_literal ("," object_literal)* "]"` —
+ *  top-level entry point. `rawBracketText` is the FULL `[...]` span
+ *  (including both brackets); `baseStart` is its absolute offset (best-
+ *  effort, same relative-to-innerText convention every other arg-position
+ *  error in this file already uses) for error reporting. */
+function _parseTpScalesJsonArg(rawBracketText, baseStart) {
+  const tokens = _lexObjScalesTok(rawBracketText, baseStart);
+  const state = { tokens, pos: 0 };
+  const open = state.tokens[state.pos];
+  if (open.type !== 'LBRACKET') {
+    throw new _ParseError('tp_scales_json requires a list of {...} entries, e.g. [{at_pct=30, close_pct=50}]', open);
+  }
+  state.pos++;
+  const items = [];
+  if (state.tokens[state.pos].type !== 'RBRACKET') {
+    items.push(_parseObjectLiteral(state));
+    while (state.tokens[state.pos].type === 'COMMA') {
+      state.pos++;
+      items.push(_parseObjectLiteral(state));
+    }
+  }
+  const close = state.tokens[state.pos];
+  if (close.type !== 'RBRACKET') throw new _ParseError('expected "]"', close);
+  state.pos++;
+  const trailing = state.tokens[state.pos];
+  if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input after tp_scales_json value', trailing);
+  return { type: 'list', value: items };
+}
+
+/** Bracket/brace/quote-aware split of a call's RAW inner text on TOP-LEVEL
+ *  commas only (Sprint 8) — commas nested inside a `tp_scales_json=[...]`
+ *  value (list of `{...}` object literals) must never split the arg list.
+ *  Operates on the raw text BEFORE any tokenizing happens — the old
+ *  Sprint 2 mechanism (tokenize the whole innerText via tokenizeCallStyle,
+ *  then split at its own comma-punct tokens) has no bracket/brace
+ *  awareness at all, so it would incorrectly treat every comma inside a
+ *  tp_scales_json value as a fresh top-level argument. No existing call
+ *  argument (any catalog action, order/bracket, metric/scope) uses `[`/
+ *  `{` characters outside of this one new value shape, so this change is
+ *  a no-op for every pre-Sprint-8 statement. Returns `[{text, start}]` —
+ *  `start` is the segment's offset into `innerText`. */
+function _splitTopLevelArgCommas(innerText) {
+  const segs = [];
+  let segStart = 0;
+  let depth = 0;
+  let inQuote = null;
+  for (let i = 0; i < innerText.length; i++) {
+    const ch = innerText[i];
+    if (inQuote) { if (ch === inQuote) inQuote = null; continue; }
+    if (ch === '"' || ch === "'") { inQuote = ch; continue; }
+    if (ch === '(' || ch === '[' || ch === '{') { depth++; continue; }
+    if (ch === ')' || ch === ']' || ch === '}') { depth--; continue; }
+    if (ch === ',' && depth === 0) {
+      segs.push({ text: innerText.slice(segStart, i), start: segStart });
+      segStart = i + 1;
+    }
+  }
+  segs.push({ text: innerText.slice(segStart), start: segStart });
+  return segs;
+}
+
+const _TP_SCALES_JSON_ARG_RE = /^([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(\[[\s\S]*\])$/;
+
+/** Parse one raw (pre-split) argument segment into an ArgEntry — dispatches
+ *  to the `tp_scales_json` object-literal-list parser when the segment's
+ *  key matches (case-insensitive) and its value is bracket-shaped;
+ *  otherwise tokenizes via the ORIGINAL Sprint 2 path (tokenizeCallStyle +
+ *  `_parseArgSegment`), unchanged for every other argument. */
+function _parseOneArgFromRawSegment(seg, labelToken) {
+  const leadWs = seg.text.length - seg.text.replace(/^\s+/, '').length;
+  const trimmed = seg.text.trim();
+  if (trimmed === '') throw new _ParseError('empty argument (trailing/leading/double comma)', labelToken);
+  const base = seg.start + leadWs;
+
+  const m = _TP_SCALES_JSON_ARG_RE.exec(trimmed);
+  if (m && m[1].toLowerCase() === 'tp_scales_json') {
+    const bracketLocalIdx = trimmed.indexOf('[', m[1].length);
+    const bracketText = trimmed.slice(bracketLocalIdx);
+    const value = _parseTpScalesJsonArg(bracketText, base + bracketLocalIdx);
+    return { key: m[1], value };
+  }
+
+  const segTokens = tokenizeCallStyle(trimmed).map(t => ({ ...t, start: t.start + base, end: t.end + base }));
+  return _parseArgSegment(segTokens, labelToken);
+}
+
+/** Parse the inner text of a call's `(...)` into ArgEntry[]. Splits on
+ *  top-level commas via `_splitTopLevelArgCommas` (bracket/brace/quote-
+ *  aware, Sprint 8) then parses each raw segment via
+ *  `_parseOneArgFromRawSegment` — the Sprint 2 tokenizeCallStyle() reuse
+ *  point for every ORDINARY argument is unchanged; only `tp_scales_json`
+ *  gets a dedicated parse path (see that function's own docstring). */
 function _parseArgListFromInnerText(innerText, labelToken) {
   const raw = innerText.trim();
   if (raw === '') return [];
-  const callTokens = tokenizeCallStyle(innerText);
-  if (callTokens.length === 0) return [];
-  // Split on top-level commas (no nesting possible inside — see docstring).
-  const segments = [[]];
-  for (const t of callTokens) {
-    if (t.punct === ',') segments.push([]);
-    else segments[segments.length - 1].push(t);
-  }
-  return segments.map(seg => _parseArgSegment(seg, labelToken));
+  const rawSegments = _splitTopLevelArgCommas(innerText);
+  return rawSegments.map(seg => _parseOneArgFromRawSegment(seg, labelToken));
 }
 
 /** Lex a full statement into a flat token stream. Returns
@@ -959,8 +1204,35 @@ export function parseOrderStmt(state) {
   return { kind: 'order', calls, meta };
 }
 
-/** `statement := agent_stmt | order_stmt` — top-level entry point.
- *  Returns `{ ast, errors }` — `ast` is `null` on any parse failure. */
+/** `bracket_stmt := call meta_item*` — Sprint 8. A SINGLE `bracket(...)`
+ *  call (never a call_list — order_stmt's 2+-call basket form has no
+ *  bracket equivalent), restricted to standalone use, EXACTLY mirroring
+ *  `parseOrderStmt`'s own "only order(...) can be used standalone"
+ *  rule/error-message style above, just naming "bracket" instead of
+ *  "order". A trailing comma (an attempt at a bracket call_list) is
+ *  rejected with its own, analogous message rather than silently being
+ *  swallowed by `parseCallList`. */
+export function parseBracketStmt(state) {
+  const call = parseCall(state);
+  if (call.name.toLowerCase() !== 'bracket') {
+    throw new _ParseError(
+      'only bracket(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      { start: call.start },
+    );
+  }
+  if (_peek(state).type === 'COMMA') {
+    throw new _ParseError(
+      'only a single bracket(...) can be used standalone — wrap other actions in a WHEN ... DO ... agent',
+      _peek(state),
+    );
+  }
+  const meta = parseMetaClause(state);
+  return { kind: 'bracket', call, meta };
+}
+
+/** `statement := agent_stmt | order_stmt | bracket_stmt` — top-level entry
+ *  point. Returns `{ ast, errors }` — `ast` is `null` on any parse
+ *  failure. */
 export function parseStatement(text) {
   const { tokens, errors: lexErrors } = lexAgentStatement(text);
   if (lexErrors.length) return { ast: null, errors: lexErrors };
@@ -969,11 +1241,15 @@ export function parseStatement(text) {
     // WHEN is optional (an agent_stmt may start directly with ALERT or DO —
     // see parseAgentStmt) — ALERT/DO are reserved words that can never be a
     // real order/place_order call name, so dispatching on them here is
-    // unambiguous, same as WHEN always was.
+    // unambiguous, same as WHEN always was. "bracket" is likewise never a
+    // real metric/scope/channel/action name, so dispatching a leading
+    // `bracket(...)` call straight to `parseBracketStmt` (Sprint 8) is
+    // unambiguous too — mirrors how WHEN/ALERT/DO dispatch to agent_stmt.
     const first = _peek(state);
     const isAgentStmt = first.type === 'NAME' && !first.hasCall
       && (_wordIs(first, 'when') || _wordIs(first, 'alert') || _wordIs(first, 'do'));
-    const ast = isAgentStmt ? parseAgentStmt(state) : parseOrderStmt(state);
+    const isBracketStmt = !isAgentStmt && first.type === 'NAME' && first.hasCall && _wordIs(first, 'bracket');
+    const ast = isAgentStmt ? parseAgentStmt(state) : isBracketStmt ? parseBracketStmt(state) : parseOrderStmt(state);
     const trailing = _peek(state);
     if (trailing.type !== 'EOF') throw new _ParseError('unexpected trailing input', trailing);
     return { ast, errors: [] };
@@ -1265,6 +1541,114 @@ function _splitLotsArg(call) {
   return { lotsArgs, call: { ...call, args: otherArgs } };
 }
 
+// ═══════════════════════════════════════════════════════════════════════
+// Shared TP/SL/Wing kwarg vocabulary (Sprint 8) — ONE vocabulary for both
+// `order(...)` (ad-hoc, per-order override) and `bracket(...)` (saved,
+// reusable preset). Field-name mapping CONFIRMED directly against the
+// real backend structs (`backend/api/schemas.py`):
+//   TicketOrderRequest:  tp_pct_override, sl_pct_override,
+//                        wing_premium_pct_override, wing_strike_offset_override,
+//                        wing_max_spread_pct_override, sl_trail_pct_override,
+//                        tp_scales_json_override (str — JSON-encoded)
+//   OrderTemplateCreate: tp_pct, sl_pct, wing_premium_pct, wing_strike_offset,
+//                        wing_max_spread_pct, tp_order_type, sl_trail_pct,
+//                        tp_scales_json (str — JSON-encoded)
+// Every one of the above is CONFIRMED present on both structs, with the
+// SAME plain-name/`_override`-suffix convention, EXCEPT `tp_order_type`:
+// `TicketOrderRequest` has NO `tp_order_type` / `tp_order_type_override`
+// field at all today (only `OrderTemplateCreate`/`OrderTemplatePatch`
+// declare it). `tp_order_type_override` below is this sprint's
+// extrapolation of the same convention every OTHER sibling field already
+// confirms — FLAGGED here and in this sprint's handback report for the
+// backend agent to verify/add; order(...)'s compiled ticket output will
+// carry a field the real schema doesn't (yet) have until that's resolved. ─
+
+const _TPSLWING_KWARGS = Object.freeze([
+  'tp_pct', 'sl_pct', 'wing_premium_pct', 'wing_strike_offset',
+  'wing_max_spread_pct', 'tp_order_type', 'sl_trail_pct', 'tp_scales_json',
+]);
+
+/** Recursively unwrap a ValueNode (including the Sprint 8 'object'/'list'
+ *  shapes) to its plain-JS equivalent — used only for `tp_scales_json`,
+ *  the one value shape that can contain an 'object' node; every other
+ *  shared kwarg is a flat number/enum handled directly via
+ *  `_coerceValueForSpec`. */
+function _unwrapValueNode(v) {
+  if (!v || typeof v !== 'object') return v;
+  if (v.type === 'list') return v.value.map(_unwrapValueNode);
+  if (v.type === 'object') {
+    const out = {};
+    for (const [k, vv] of Object.entries(v.value)) out[k] = _unwrapValueNode(vv);
+    return out;
+  }
+  return v.value;
+}
+
+/** Strip the shared TP/SL/Wing kwargs (Sprint 8) out of a call's arg
+ *  list — CLI-only shared vocabulary, never a literal key in either
+ *  destination's own catalog-declared params_schema — same "strip sugar
+ *  before generic key-mapping" pattern `_splitLotsArg` already
+ *  established. Returns `{ tpSlWingArgs, call }`. */
+function _splitTpSlWingArgs(call) {
+  const picked = [];
+  const rest = [];
+  for (const a of (call.args || [])) {
+    if (a.key && _TPSLWING_KWARGS.includes(a.key.toLowerCase())) picked.push(a);
+    else rest.push(a);
+  }
+  return { tpSlWingArgs: picked, call: { ...call, args: rest } };
+}
+
+const _TP_ORDER_TYPE_SPEC = Object.freeze({ type: 'enum', enum: ['LIMIT', 'MARKET'] });
+const _TPSLWING_NUMBER_SPEC = Object.freeze({ type: 'number' });
+
+/** Compile the shared TP/SL/Wing kwargs to either destination's field
+ *  names — the ONE mapping function both `order(...)` (`destKind:
+ *  'ticket'` → `${kwarg}_override`) and `bracket(...)` (`destKind:
+ *  'template'` → plain `${kwarg}`) call into, per the module-header note
+ *  above. `wing_premium_pct` and `wing_strike_offset` are mutually
+ *  exclusive — mirrors `_compileOrderActionParams`'s/`_compileOrderCallToLeg`'s
+ *  existing lots-vs-qty exclusivity check's exact message style.
+ *  `tp_scales_json` is a `str` (JSON-encoded) field on BOTH destinations —
+ *  the parsed object-literal-list AST value is `JSON.stringify`'d here,
+ *  never sent as a raw array/object. Returns `{ fields, errors }` —
+ *  `fields` is a plain object meant to be spread into the caller's
+ *  compiled leg/template object; never throws. */
+function _compileTpSlWingFields(tpSlWingArgs, destKind, label) {
+  const errors = [];
+  const byKey = new Map();
+  for (const a of tpSlWingArgs || []) {
+    const k = a.key.toLowerCase();
+    if (byKey.has(k)) { errors.push(_err(`${label}: duplicate parameter '${k}'`)); continue; }
+    byKey.set(k, a.value);
+  }
+  if (byKey.has('wing_premium_pct') && byKey.has('wing_strike_offset')) {
+    errors.push(_err(`${label}: cannot specify both wing_premium_pct and wing_strike_offset`));
+  }
+  if (errors.length) return { fields: null, errors };
+
+  const fields = {};
+  for (const kwarg of _TPSLWING_KWARGS) {
+    if (!byKey.has(kwarg)) continue;
+    const valueNode = byKey.get(kwarg);
+    const outKey = destKind === 'ticket' ? `${kwarg}_override` : kwarg;
+
+    if (kwarg === 'tp_scales_json') {
+      if (valueNode.type !== 'list' || !valueNode.value.every((v) => v && v.type === 'object')) {
+        errors.push(_err(`${label}: tp_scales_json must be a list of {...} entries, e.g. [{at_pct=30, close_pct=50}]`));
+        continue;
+      }
+      fields[outKey] = JSON.stringify(valueNode.value.map(_unwrapValueNode));
+      continue;
+    }
+    const spec = kwarg === 'tp_order_type' ? _TP_ORDER_TYPE_SPEC : _TPSLWING_NUMBER_SPEC;
+    const coerced = _coerceValueForSpec(valueNode, spec, kwarg, label);
+    if (coerced.error) { errors.push(coerced.error); continue; }
+    fields[outKey] = coerced.value;
+  }
+  return { fields: errors.length ? null : fields, errors };
+}
+
 /** Compile a `DO order(...)` / `DO place_order(...)` call to an agent
  *  action's `{"type":"place_order","params":{...}}` entry. `lots=N`
  *  converts to the REAL schema's `qty` param as CONTRACTS
@@ -1520,7 +1904,35 @@ function _compileOrderCallToLeg(call, catalog, opts) {
   const entry = catalog.actions.get('place_order');
   if (!entry) { errors.push(_err('place_order action not found in catalog')); return { leg: null, errors }; }
 
-  const { lotsArgs, call: strippedCall } = _splitLotsArg(call);
+  const { lotsArgs, call: afterLots } = _splitLotsArg(call);
+  // Shared TP/SL/Wing kwargs (Sprint 8) — stripped here, same "sugar
+  // before generic key-mapping" pattern `lots=` already uses, since none
+  // of tp_pct/sl_pct/wing_premium_pct/wing_strike_offset/
+  // wing_max_spread_pct/tp_order_type/sl_trail_pct/tp_scales_json are
+  // literal keys in this entry's own catalog params_schema.
+  const { tpSlWingArgs, call: afterTpSlWing } = _splitTpSlWingArgs(afterLots);
+  // `bracket=` (Sprint 8) — references an existing saved OrderTemplate by
+  // name; see `_compileTpSlWingFields`'s sibling note above for the
+  // analogous tp_order_type caveat. FIELD-NAME CHOICE (not independently
+  // confirmed — flagged for the backend agent): `TicketOrderRequest` has
+  // no raw name/slug reference field at all (only numeric `template_id`);
+  // the one existing precedent anywhere in the codebase for "reference a
+  // saved template by NAME, resolved server-side" is `backend/api/routes/
+  // lab.py`'s own request struct's `template_slug` field (resolved via
+  // `_res_resolve_template_slug` BEFORE a real TicketOrderRequest is
+  // built) — reused here for consistency. This compiler does no network
+  // I/O, so it can only emit the raw slug, never a resolved id.
+  const bracketArgs = (afterTpSlWing.args || []).filter(a => a.key && a.key.toLowerCase() === 'bracket');
+  const strippedCall = { ...afterTpSlWing, args: (afterTpSlWing.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'bracket')) };
+  if (bracketArgs.length > 1) errors.push(_err("order: duplicate parameter 'bracket'"));
+  let template_slug = null;
+  if (bracketArgs.length === 1) {
+    const r = _coerceValueForSpec(bracketArgs[0].value, { type: 'string' }, 'bracket', 'order');
+    if (r.error) errors.push(r.error); else template_slug = r.value;
+  }
+  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'ticket', 'order');
+  errors.push(...tpSlWingResult.errors);
+
   const provided = _mapCallArgsToKeys(strippedCall, entry.paramKeys, _ALIAS_TO_REAL, errors, 'order');
   if (lotsArgs.length > 1) errors.push(_err("order: duplicate parameter 'lots'"));
   if (lotsArgs.length === 1 && provided.has('qty')) errors.push(_err('order: cannot specify both qty and lots'));
@@ -1587,7 +1999,23 @@ function _compileOrderCallToLeg(call, catalog, opts) {
     template_id, tp_pct_override, sl_pct_override,
     wing_premium_pct_override, wing_strike_offset_override,
   };
+  // Shared TP/SL/Wing plain-name kwargs (Sprint 8) — merged AFTER the old
+  // catalog-schema-driven `*_override` fields above (via `Object.assign`,
+  // not an object-literal spread — a spread here widens svelte-check's
+  // inferred type for `leg` just enough to break the plain property
+  // assignments right below, which this exact file already relies on for
+  // `lot_size_hint`) so the new spelling wins if an operator (unusually)
+  // supplies both; only keys actually TYPED appear here (see
+  // `_compileTpSlWingFields`), so every key the operator didn't use keeps
+  // its `null` default from above.
+  Object.assign(leg, tpSlWingResult.fields || {});
   if (lot_size_hint != null) leg.lot_size_hint = lot_size_hint;
+  // `bracket=` (Sprint 8) — conditionally added, same "only present when
+  // actually typed" convention `lot_size_hint` above already uses, so
+  // every pre-Sprint-8 `order(...)` compile's exact output shape
+  // (asserted via `.toEqual` in existing tests) is byte-for-byte
+  // unaffected when `bracket=` isn't used.
+  if (template_slug != null) leg.template_slug = template_slug;
   return { leg, errors: [] };
 }
 
@@ -1630,15 +2058,69 @@ function compileOrderStmt(ast, catalog, opts = {}) {
   return { kind: 'order', errors: [], ticket: null, basket: { groups } };
 }
 
+const _BRACKET_APPLIES_TO_SPEC = Object.freeze({ type: 'enum', enum: ['buy_any', 'sell_option', 'both'] });
+
+/** Compile a standalone `bracket(...)` call to an `OrderTemplateCreate`-
+ *  shaped object (`backend/api/schemas.py`) — Sprint 8. `applies_to` is
+ *  bracket-ONLY (not part of the shared TP/SL/Wing vocabulary, never valid
+ *  on `order(...)`), CONFIRMED against the real struct's own declared
+ *  default/comment (`applies_to: str = "both" # 'buy_any' / 'sell_option'
+ *  / 'both'`). `#name=` is effectively required — `OrderTemplateCreate.name`
+ *  is a required (non-Optional) `str` field — a missing `#name=` is a
+ *  compile-time error, matching this file's existing required-field error
+ *  style (`'<label>: missing required param '<key>''`). */
+function compileBracketStmt(ast, opts = {}) {
+  const errors = [];
+  const call = ast.call;
+  if (!call || call.name.toLowerCase() !== 'bracket') {
+    errors.push(_err('only bracket(...) can be used standalone'));
+    return { errors, template: null };
+  }
+
+  const { tpSlWingArgs, call: afterTpSlWing } = _splitTpSlWingArgs(call);
+  const appliesToArgs = (afterTpSlWing.args || []).filter(a => a.key && a.key.toLowerCase() === 'applies_to');
+  const otherArgs = (afterTpSlWing.args || []).filter(a => !(a.key && a.key.toLowerCase() === 'applies_to'));
+  if (appliesToArgs.length > 1) errors.push(_err("bracket: duplicate parameter 'applies_to'"));
+  for (const a of otherArgs) errors.push(_err(`bracket: unknown parameter '${a.key}'`));
+
+  const tpSlWingResult = _compileTpSlWingFields(tpSlWingArgs, 'template', 'bracket');
+  errors.push(...tpSlWingResult.errors);
+
+  let applies_to;
+  if (appliesToArgs.length === 1) {
+    const r = _coerceValueForSpec(appliesToArgs[0].value, _BRACKET_APPLIES_TO_SPEC, 'applies_to', 'bracket');
+    if (r.error) errors.push(r.error); else applies_to = r.value;
+  }
+
+  const metaFields = compileMetaClause(ast.meta, errors);
+  if (!metaFields.name) {
+    errors.push(_err("bracket: missing required meta tag '#name' — a saved bracket must have a name"));
+  }
+
+  if (errors.length) return { errors, template: null };
+
+  const template = {
+    ...metaFields,
+    ...(applies_to !== undefined ? { applies_to } : {}),
+    ...tpSlWingResult.fields,
+  };
+  return { errors: [], template };
+}
+
 /** Compile an already-parsed AST (from `parseStatement`) to its JSON
- *  request shape. Returns `{ kind, errors, agent, ticket, basket }` —
- *  non-empty `errors` means every payload field is `null`. */
+ *  request shape. Returns `{ kind, errors, agent, ticket, basket,
+ *  template }` — non-empty `errors` means every payload field is `null`. */
 export function compileStatement(ast, catalog, opts = {}) {
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
-    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null };
+    return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null };
   }
-  return compileOrderStmt(ast, catalog, opts);
+  if (ast.kind === 'bracket') {
+    const r = compileBracketStmt(ast, opts);
+    return { kind: 'bracket', errors: r.errors, agent: null, ticket: null, basket: null, template: r.template };
+  }
+  const r = compileOrderStmt(ast, catalog, opts);
+  return { ...r, template: null };
 }
 
 /** One-shot parse + compile — the main entry point for Sprint 4's UI and
@@ -1649,15 +2131,16 @@ export function compileStatement(ast, catalog, opts = {}) {
 export function compileAgentCliStatement(text, catalog, opts = {}) {
   const { ast, errors: parseErrors } = parseStatement(text);
   if (parseErrors.length) {
-    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null };
+    return { ok: false, errors: parseErrors, kind: null, agent: null, ticket: null, basket: null, template: null };
   }
   const result = compileStatement(ast, catalog, opts);
   if (result.errors && result.errors.length) {
-    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null };
+    return { ok: false, errors: result.errors, kind: result.kind, agent: null, ticket: null, basket: null, template: null };
   }
   return {
     ok: true, errors: [], kind: result.kind,
     agent: result.agent || null, ticket: result.ticket || null, basket: result.basket || null,
+    template: result.template || null,
   };
 }
 
@@ -2440,6 +2923,121 @@ export function decompileAgent({ conditions, events, actions, name = undefined, 
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
   const text = `WHEN ${condResult.text} ALERT ${eventsResult.text} DO ${actionsResult.text}${metaSuffix}`;
+  const roundTrip = compileAgentCliStatement(text, catalog, opts);
+  if (!roundTrip.ok) {
+    const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';
+    return { text: null, errors: [_err(`internal: decompiled text failed to recompile (${detail})`)] };
+  }
+  return { text, errors: [] };
+}
+
+// ── Shared TP/SL/Wing decompiler (Sprint 8) — the decompile-direction
+// mirror of `_compileTpSlWingFields`, reusing the same bare/quote
+// rendering rules `_renderParamValue`'s "unknown/absent schema type"
+// fallback branch already uses for every other generic action param. ───
+
+/** Render one `tp_scales_json` object-literal entry (a plain JS object,
+ *  after `JSON.parse`) back to `{key=value, ...}` CLI text. No
+ *  params_schema exists for an object literal's inner fields — always
+ *  best-effort passthrough, same as `_renderParamValue`'s own fallback
+ *  branch (reused directly, with `spec: null`). */
+function _renderObjectLiteral(obj) {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return { error: true, message: 'tp_scales_json entry must be an object' };
+  }
+  const parts = [];
+  for (const [k, v] of Object.entries(obj)) {
+    const r = _renderParamValue(v, null);
+    if (r.error) return r;
+    parts.push(`${k}=${r.text}`);
+  }
+  return { text: `{${parts.join(', ')}}` };
+}
+
+/** Render a stored `tp_scales_json`/`tp_scales_json_override` STRING
+ *  field (JSON-encoded array of objects — see the shared-vocabulary note
+ *  on `_compileTpSlWingFields`) back to `[{...}, {...}]` CLI text. */
+function _renderTpScalesJsonValue(rawStr) {
+  let parsed;
+  try { parsed = JSON.parse(rawStr); } catch { return { error: true, message: 'tp_scales_json is not valid JSON' }; }
+  if (!Array.isArray(parsed)) return { error: true, message: 'tp_scales_json must decode to a JSON array of objects' };
+  const parts = [];
+  for (const item of parsed) {
+    const r = _renderObjectLiteral(item);
+    if (r.error) return r;
+    parts.push(r.text);
+  }
+  return { text: `[${parts.join(', ')}]` };
+}
+
+/** Decompile the shared TP/SL/Wing fields off a stored leg/template
+ *  object back to `key=value` CLI arg-text fragments — the ONE mapping
+ *  function both `order(...)` and `bracket(...)` decompilers would call
+ *  (mirrors `_compileTpSlWingFields`'s own destKind convention: `'ticket'`
+ *  reads `${kwarg}_override` keys, `'template'` reads plain `${kwarg}`
+ *  keys). Returns `{ argParts, errors }` — never throws. */
+function _decompileTpSlWingFields(obj, destKind, label) {
+  const errors = [];
+  const argParts = [];
+  for (const kwarg of _TPSLWING_KWARGS) {
+    const srcKey = destKind === 'ticket' ? `${kwarg}_override` : kwarg;
+    if (obj[srcKey] == null) continue;
+    const value = obj[srcKey];
+
+    if (kwarg === 'tp_scales_json') {
+      if (typeof value !== 'string') { errors.push(_err(`${label}.${srcKey}: expected a JSON string`)); continue; }
+      const r = _renderTpScalesJsonValue(value);
+      if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
+      argParts.push(`tp_scales_json=${r.text}`);
+      continue;
+    }
+    if (kwarg === 'tp_order_type') {
+      const r = _renderParamValue(value, _TP_ORDER_TYPE_SPEC);
+      if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
+      argParts.push(`tp_order_type=${r.text}`);
+      continue;
+    }
+    const r = _renderParamValue(value, _TPSLWING_NUMBER_SPEC);
+    if (r.error) { errors.push(_err(`${label}.${srcKey}: ${r.message}`)); continue; }
+    argParts.push(`${kwarg}=${r.text}`);
+  }
+  return { argParts, errors };
+}
+
+/** Decompile a stored `OrderTemplateCreate`-shaped bracket back to its
+ *  `bracket(...) #name=...` CLI text — the reverse of `compileBracketStmt`
+ *  (Sprint 8). Reuses `decompileMetaClause` UNCHANGED (same generic helper
+ *  `decompileAgent` uses) plus the shared `_decompileTpSlWingFields`
+ *  renderer above. Same recompile safety net `decompileAgent` already
+ *  uses — builds the text, then actually recompiles it and fails loud if
+ *  that recompile itself errors. */
+export function decompileBracket(template, catalog, opts = {}) {
+  const t = template || {};
+  const errors = [];
+  const argParts = [];
+
+  if (t.applies_to != null) {
+    if (typeof t.applies_to !== 'string') {
+      errors.push(_err('bracket.applies_to: expected an enum value'));
+    } else {
+      argParts.push(`applies_to=${_isBareable(t.applies_to) ? t.applies_to : _quoteString(t.applies_to).text}`);
+    }
+  }
+
+  const tpSlWingResult = _decompileTpSlWingFields(t, 'template', 'bracket');
+  errors.push(...tpSlWingResult.errors);
+  argParts.push(...tpSlWingResult.argParts);
+
+  const metaResult = decompileMetaClause({ name: t.name, description: t.description, tags: t.tags, group: t.group });
+  errors.push(...metaResult.errors);
+  if (typeof t.name !== 'string' || t.name === '') {
+    errors.push(_err("bracket: missing required 'name' — cannot decompile a nameless bracket"));
+  }
+
+  if (errors.length) return { text: null, errors };
+
+  const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
+  const text = `bracket(${argParts.join(', ')})${metaSuffix}`;
   const roundTrip = compileAgentCliStatement(text, catalog, opts);
   if (!roundTrip.ok) {
     const detail = (roundTrip.errors && roundTrip.errors[0] && roundTrip.errors[0].message) || 'unknown error';

@@ -481,7 +481,19 @@ async def release_template_exit(order_id: int, actor: str) -> dict:
         args = dict(parent_row_id=row.id, parent_account=row.account,
                     parent_symbol=row.symbol, parent_exchange=row.exchange,
                     parent_side=row.transaction_type, parent_qty=int(row.quantity),
-                    fill_price=float(row.fill_price or 0), template_id=int(row.template_id or 0),
+                    fill_price=float(row.fill_price or 0),
+                    # Sprint 8 fix: was `int(row.template_id or 0)` — passing
+                    # 0 happened to work by accident (no real OrderTemplate
+                    # row ever has id=0, so load_template_for_slug_or_id
+                    # still missed and fell through to the ad-hoc path), but
+                    # relied on that coincidence rather than the explicit
+                    # `template_id=None` contract every other
+                    # `_fire_template_attach_on_fill` caller now uses (see
+                    # orders_postback._pb_dispatch_template_attach, chase.
+                    # _ch_check_and_fire_template_attach, orders_place.
+                    # _maybe_fire_template_attach_for_reconcile, paper.
+                    # _paper_maybe_fire_template_attach).
+                    template_id=(int(row.template_id) if row.template_id else None),
                     parent_product=row.product or "NRML", mode=row.mode or "live")
     from backend.api.algo.order_events import write_event
     await write_event(order_id, "released", f"Template exits released by {actor}", {"actor": actor})

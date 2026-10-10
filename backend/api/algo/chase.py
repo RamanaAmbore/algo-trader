@@ -187,6 +187,7 @@ def _chase_snapshot_algo_row(row, broker_order_id: str) -> dict:
         "target_abs":        row.target_abs,
         "parent_order_id":   row.parent_order_id,
         "template_id":       row.template_id,
+        "template_overrides_json": getattr(row, "template_overrides_json", None),
         "account":           str(row.account or ""),
         "symbol":            str(row.symbol or broker_order_id),
         "exchange":          str(row.exchange or "NFO"),
@@ -285,12 +286,21 @@ async def _chase_terminal_update_db(
 
 
 def _ch_maybe_fire_auto_tp(snap: dict, final_price: float) -> None:
-    """Fire legacy single-target TP shim when template_id IS NULL."""
+    """Fire legacy single-target TP shim when template_id IS NULL.
+
+    `template_overrides_json` exclusion mirrors the identical Sprint 8
+    fix in orders_postback._pb_wants_take_profit_arm — prevents a row
+    carrying both a legacy target_pct AND a v2 override field from
+    being double-armed by this shim AND the ad-hoc template-attach
+    path (`_ch_maybe_fire_template_attach` below).
+    """
     if not (snap.get("target_pct") or snap.get("target_abs")):
         return
     if snap.get("parent_order_id") is not None:
         return
     if snap.get("template_id") is not None:
+        return
+    if snap.get("template_overrides_json"):
         return
     from backend.api.routes.orders import _arm_take_profit
     # 2026-09-27 audit fix (finding #5/#1 bundle): pass the parent's real
@@ -370,7 +380,7 @@ async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> 
         parent_side=snap["transaction_type"],
         parent_qty=attach_qty,
         fill_price=float(final_price),
-        template_id=int(snap["template_id"]),
+        template_id=(int(snap["template_id"]) if snap.get("template_id") else None),
         parent_product=snap["product"],
         # chase_order() is the real-broker cancel-and-replace engine — only
         # ever invoked for mode=='live' rows — but thread the row's own
@@ -381,8 +391,18 @@ async def _ch_check_and_fire_template_attach(snap: dict, final_price: float) -> 
 
 
 def _ch_maybe_fire_template_attach(snap: dict, final_price: float) -> None:
-    """Fire template attach task on chase fill (idempotent via GTT guard)."""
-    if not snap.get("template_id"):
+    """Fire template attach task on chase fill (idempotent via GTT guard).
+
+    Sprint 8 fix: fires when EITHER a saved template_id is set OR the
+    row carries ad-hoc override fields (template_overrides_json
+    non-empty) — mirrors the identical fix in orders_postback.
+    _pb_wants_template_attach and paper._paper_maybe_fire_template_attach.
+    Previously this required template_id truthy, so a chase-filled
+    ticket submitted with only tp_pct_override/sl_pct_override/wing_*
+    override fields (no saved template) never reached
+    apply_template_to_order's ad-hoc path on a real fill.
+    """
+    if not (snap.get("template_id") or snap.get("template_overrides_json")):
         return
     if snap.get("parent_order_id") is not None:
         return

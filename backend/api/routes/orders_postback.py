@@ -643,20 +643,40 @@ async def _pb_write_timeline_events(
 
 
 def _pb_wants_take_profit_arm(_r) -> bool:
-    """Parent fill with a TP target and no template attached wants
-    the take-profit arm dispatched.
+    """Parent fill with a TP target and no template (saved OR ad-hoc)
+    attached wants the legacy take-profit arm dispatched.
+
+    `_r.template_overrides_json` exclusion added alongside the Sprint 8
+    ad-hoc-template fix in `_pb_wants_template_attach` below — without
+    it, a row carrying BOTH a legacy `target_pct` AND a v2 override
+    field (e.g. `sl_pct_override`) with no `template_id` would get
+    double-armed: this legacy shim's own single TP AND the ad-hoc
+    template-attach path's TP/SL/Wing.
     """
     return bool(
         (_r.target_pct or _r.target_abs)
         and _r.parent_order_id is None
         and _r.template_id is None
+        and not _r.template_overrides_json
         and _r.fill_price
     )
 
 
 def _pb_wants_template_attach(_r) -> bool:
-    """Live parent fill with a template_id wants the template attach
-    fan-out dispatched.
+    """Live parent fill with a template_id OR ad-hoc override fields
+    (no saved template, but at least one TP/SL/Wing override was
+    supplied — see `template_attach.build_adhoc_template` /
+    `has_any_override`) wants the template attach fan-out dispatched.
+
+    Sprint 8 fix: this used to require `_r.template_id` truthy, so a
+    ticket submitted with ONLY override fields (tp_pct_override /
+    sl_pct_override / wing_*_override) and no template_id/template_slug
+    never reached `apply_template_to_order` on a real fill — the ad-hoc
+    path it already supports (`build_adhoc_template`) was structurally
+    unreachable from every live fill-detection path (postback, chase,
+    paper engine all had this same gate — see chase.py
+    `_ch_maybe_fire_template_attach` and paper.py
+    `_paper_maybe_fire_template_attach`, fixed identically).
 
     (#2) Only fire when the order is FULLY filled (filled_quantity >= quantity).
     Partial fills must not trigger the exit GTTs early — the remaining open qty
@@ -669,7 +689,7 @@ def _pb_wants_template_attach(_r) -> bool:
     if getattr(_r, "is_close_intent", False):
         return False
     if not (
-        _r.template_id
+        (_r.template_id or _r.template_overrides_json)
         and _r.parent_order_id is None
         and _r.mode == "live"
         and _r.fill_price
@@ -714,6 +734,14 @@ def _pb_dispatch_template_attach(_r) -> None:
 
     (#2) Caller (_pb_wants_template_attach) already verified full-fill;
     use filled_quantity as attach_qty when available.
+
+    `template_id` is passed through as `None` (not `int(None)`, which
+    raises) when the row has no saved template — `_fire_template_
+    attach_on_fill` → `apply_template_to_order` already handles
+    `template_id=None` correctly via the ad-hoc-template path as long
+    as `row_info["overrides"]` (parsed from `template_overrides_json`)
+    carries at least one override field, which `_pb_wants_template_attach`
+    already verified before dispatching here.
     """
     from backend.api.routes.orders_place import _fire_template_attach_on_fill
 
@@ -731,7 +759,7 @@ def _pb_dispatch_template_attach(_r) -> None:
             parent_side=str(_r.transaction_type or "BUY"),
             parent_qty=_attach_qty,
             fill_price=float(_r.fill_price),
-            template_id=int(_r.template_id),
+            template_id=(int(_r.template_id) if _r.template_id else None),
             parent_product=str(_r.product or "NRML"),
             # _pb_wants_template_attach() already restricts this path to
             # mode=='live' rows; thread the row's own mode through as a

@@ -516,6 +516,86 @@ describe('adversarial — lots vs qty', () => {
   });
 });
 
+// ── Sprint 8 — shared TP/SL/Wing kwarg vocabulary, tp_scales_json object
+//    literals, bracket= on order(...), and the standalone bracket_stmt ──
+
+describe('Sprint 8 — tp_scales_json object-literal parsing', () => {
+  it('a single {...} entry parses and compiles to a JSON-stringified array', () => {
+    const r = compile('bracket(tp_scales_json=[{at_pct=30, close_pct=50}]) #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.template.tp_scales_json).toBe(JSON.stringify([{ at_pct: 30, close_pct: 50 }]));
+  });
+
+  it('multiple comma-separated {...} entries all parse correctly', () => {
+    const r = compile(
+      'bracket(tp_scales_json=[{at_pct=30, close_pct=50}, {at_pct=60, close_pct=50}]) #name="x"'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.template.tp_scales_json).toBe(
+      JSON.stringify([{ at_pct: 30, close_pct: 50 }, { at_pct: 60, close_pct: 50 }])
+    );
+  });
+
+  it('"=" is the object literal\'s key/value separator — ":" is a parse error, not a silent alternate spelling', () => {
+    const r = compile('bracket(tp_scales_json=[{at_pct:30}]) #name="x"');
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe('Sprint 8 — order(...) inline TP/SL/Wing overrides', () => {
+  it('tp_pct/sl_pct compile to the *_override ticket field names', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, tp_pct=30, sl_pct=-20)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.tp_pct_override).toBe(30);
+    expect(r.ticket.sl_pct_override).toBe(-20);
+  });
+
+  it('wing_premium_pct + wing_strike_offset together is a compile error (mirrors the lots/qty exclusivity style)', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, wing_premium_pct=5, wing_strike_offset=100)',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /cannot specify both wing_premium_pct and wing_strike_offset/.test(e.message))).toBe(true);
+  });
+
+  it('bracket="name" compiles to template_slug on the ticket', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, bracket="default-bull")',
+      { mode: 'paper' },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.ticket.template_slug).toBe('default-bull');
+  });
+});
+
+describe('Sprint 8 — standalone bracket(...) statement', () => {
+  it('compiles to an OrderTemplateCreate-shaped object', () => {
+    const r = compile(
+      'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20, tp_order_type=LIMIT) #name="Default Bull"'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.template).toEqual({
+      name: 'Default Bull', applies_to: 'buy_any', tp_pct: 30, sl_pct: -20, tp_order_type: 'LIMIT',
+    });
+  });
+
+  it('a missing #name= is a compile-time error — a saved bracket must have a name', () => {
+    const r = compile('bracket(applies_to=buy_any, tp_pct=30)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /missing required meta tag '#name'/.test(e.message))).toBe(true);
+  });
+
+  it('bracket(...) used inside a DO clause is rejected the same way any other non-catalog action is ("unknown action")', () => {
+    const r = compile('WHEN always ALERT nop DO bracket(applies_to=buy_any)');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /unknown action 'bracket'/.test(e.message))).toBe(true);
+  });
+});
+
 // ── Boolean-metric shorthand ─────────────────────────────────────────────
 
 describe('boolean-metric shorthand', () => {

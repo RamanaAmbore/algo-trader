@@ -434,6 +434,12 @@ class OrderTemplateOut(msgspec.Struct):
     is_default:          bool = False
     is_system:           bool = False
     is_active:           bool = True
+    # Sprint 8 (CLI grammar authoring, `#group=...` / `#tag=...`) —
+    # mirrors AgentInfo's group/tags shape. `group` maps to the ORM
+    # attribute `group_name` (`group` is a reserved SQL keyword — see
+    # OrderTemplate.group_name in backend/api/models.py). None = ungrouped.
+    group:               str | None = None
+    tags:                list = msgspec.field(default_factory=list)
 
 
 class OrderTemplateCreate(msgspec.Struct):
@@ -450,6 +456,11 @@ class OrderTemplateCreate(msgspec.Struct):
     sl_trail_pct:        float | None = None
     is_default:          bool = False
     is_active:           bool = True
+    # Sprint 8 — see OrderTemplateOut.group / .tags above. `group` maps
+    # to ORM attribute `group_name`; `tags` maps directly (same name
+    # on both sides, matching Agent.tags's pattern).
+    group:               str | None = None
+    tags:                list | None = None
 
 
 class OrderTemplatePatch(msgspec.Struct):
@@ -470,6 +481,15 @@ class OrderTemplatePatch(msgspec.Struct):
     sl_trail_pct:        float | None = None
     is_default:          bool | None = None
     is_active:           bool | None = None
+    # Sprint 8 — see OrderTemplateOut.group / .tags above. `group` maps
+    # to ORM attribute `group_name` (`group` is a reserved SQL
+    # keyword) — NOT part of the generic `_PATCH_FIELDS` setattr loop
+    # in routes/templates.py since the request field name and ORM
+    # attribute name differ; handled explicitly. `tags` maps directly
+    # and IS part of `_PATCH_FIELDS` (same name both sides). None =
+    # unchanged on both.
+    group:               str | None = None
+    tags:                list | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -677,6 +697,15 @@ class TicketOrderRequest(msgspec.Struct):
     sl_pct_override:              Optional[float] = None
     wing_premium_pct_override:    Optional[float] = None
     wing_strike_offset_override:  Optional[int]   = None
+    # TP leg order type override — "LIMIT" | "MARKET". None = inherit
+    # the selected template's tp_order_type (or "LIMIT" for an ad-hoc
+    # template with no saved template). The resolver
+    # (`_parse_template_overrides` in template_attach.py) clamps any
+    # other value to "LIMIT", so no separate validator is needed here.
+    # Only takes effect alongside a TP-defining override (tp_pct_override
+    # or legacy target_pct) or a saved template's own tp_pct — it
+    # modifies an existing TP leg, it never creates one on its own.
+    tp_order_type_override:       Optional[str]   = None
     # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
     # here purely for persistence/symmetry — `_build_overrides_json`
     # serializes it onto AlgoOrder.template_overrides_json so a retry-
@@ -808,6 +837,10 @@ class TicketPreviewRequest(msgspec.Struct):
     sl_pct_override:              Optional[float] = None
     wing_premium_pct_override:    Optional[float] = None
     wing_strike_offset_override:  Optional[int]   = None
+    # Mirrors TicketOrderRequest.tp_order_type_override — see that
+    # field's comment for the full rationale. Carried here so the
+    # preview chip shows the correct planned order_type for the TP leg.
+    tp_order_type_override:       Optional[str]   = None
     # Chain-tab Spread% field (backend.api.algo.spread_check). Carried
     # here for persistence/symmetry with TicketOrderRequest's own
     # override field — the live Chain-tab spread gate itself reads

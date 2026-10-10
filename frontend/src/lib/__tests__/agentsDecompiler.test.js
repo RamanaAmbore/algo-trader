@@ -31,7 +31,7 @@ vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
 const {
   buildCatalog, compileAgentCliStatement, decompileCondition, decompileEvents,
-  decompileActions, decompileAgent, decompileMetaClause, ALWAYS_LEAF,
+  decompileActions, decompileAgent, decompileMetaClause, decompileBracket, ALWAYS_LEAF,
 } = await import('$lib/command/grammars/agents.js');
 
 // ── Fixture catalog ──────────────────────────────────────────────────────
@@ -986,5 +986,64 @@ describe('meta clause decompile round-trip', () => {
     const r = decompileMetaClause({ name: 'x', description: '', tags: [], group: 'hedge-book' });
     expect(r.errors).toEqual([]);
     expect(r.text).toBe('#name=x #group=hedge-book');
+  });
+});
+
+// ── Sprint 8 — bracket(...) decompile→recompile round-trip ─────────────
+
+function decompileBracketTemplate(templateJson, opts = {}) {
+  return decompileBracket(templateJson, CATALOG, { lotSizeOf, ...opts });
+}
+
+/** compile(text) -> decompileBracket(.template) -> compile(decompiled
+ *  text) -> assert the SECOND compile's template JSON deep-equals the
+ *  FIRST's — the same hard round-trip contract `roundTrip()` above
+ *  enforces for agents. */
+function roundTripBracket(text) {
+  const first = compile(text);
+  expect(first.ok).toBe(true);
+  const dec = decompileBracketTemplate(first.template);
+  expect(dec.errors).toEqual([]);
+  expect(typeof dec.text).toBe('string');
+  const second = compile(dec.text);
+  expect(second.errors).toEqual([]);
+  expect(second.ok).toBe(true);
+  expect(second.template).toEqual(first.template);
+  return { first, dec, second };
+}
+
+describe('Sprint 8 — bracket(...) decompile round-trip', () => {
+  it('round-trips a bracket with every shared TP/SL/Wing field set, including a 2-entry tp_scales_json', () => {
+    const { first, dec } = roundTripBracket(
+      'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20, wing_max_spread_pct=2.5, ' +
+      'tp_order_type=LIMIT, sl_trail_pct=5, ' +
+      'tp_scales_json=[{at_pct=30, close_pct=50}, {at_pct=60, close_pct=50}]) ' +
+      '#name="Default Bull" #desc="Scale-out preset" #tag=hedge,nifty #group=hedge-book'
+    );
+    expect(first.template).toEqual({
+      name: 'Default Bull',
+      description: 'Scale-out preset',
+      tags: ['hedge', 'nifty'],
+      group: 'hedge-book',
+      applies_to: 'buy_any',
+      tp_pct: 30,
+      sl_pct: -20,
+      wing_max_spread_pct: 2.5,
+      tp_order_type: 'LIMIT',
+      sl_trail_pct: 5,
+      tp_scales_json: JSON.stringify([{ at_pct: 30, close_pct: 50 }, { at_pct: 60, close_pct: 50 }]),
+    });
+    expect(dec.text).toMatch(/^bracket\(/);
+    expect(dec.text).toMatch(/#name="Default Bull"/);
+  });
+
+  it('wing_premium_pct alone (not wing_strike_offset) also round-trips', () => {
+    roundTripBracket('bracket(tp_pct=30, wing_premium_pct=4.5) #name="x"');
+  });
+
+  it('decompileBracket() fails loud (never guesses) on a nameless template', () => {
+    const dec = decompileBracketTemplate({ tp_pct: 30 });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /missing required 'name'/.test(e.message))).toBe(true);
   });
 });

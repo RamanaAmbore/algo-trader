@@ -774,6 +774,10 @@ def _ticket_overrides_dict(data) -> dict:
         # resolve_template_plan field — getattr-guarded since not every
         # caller of this helper's request struct carries it.
         "wing_max_spread_pct": getattr(data, "wing_max_spread_pct_override", None),
+        # TP leg order type override (LIMIT | MARKET) — see
+        # TicketOrderRequest.tp_order_type_override. getattr-guarded for
+        # the same reason as wing_max_spread_pct above.
+        "tp_order_type":       getattr(data, "tp_order_type_override", None),
     }
     if overrides["tp_pct"] is None and getattr(data, "target_pct", None) is not None:
         try:
@@ -806,11 +810,29 @@ def _build_overrides_json(leg) -> str | None:
         ("wing_max_spread_pct_override", "wing_max_spread_pct"),
         ("sl_trail_pct_override",       "sl_trail_pct"),
         ("tp_scales_json_override",     "tp_scales_json"),
+        ("tp_order_type_override",      "tp_order_type"),
     ):
         v = getattr(leg, src_key, None)
         if v is not None:
             payload[dst_key] = v
     if not payload:
+        return None
+    # Guard (tp_order_type_override gap) — tp_order_type only ever
+    # MODIFIES an existing TP leg (see template_attach._parse_template_
+    # overrides), it never CREATES one; it's deliberately excluded from
+    # `template_attach.has_any_override`'s key set for that reason. A
+    # ticket that combines the legacy v1 `target_pct` field with ONLY
+    # tp_order_type_override (no tp_pct_override) would otherwise
+    # persist a non-empty `template_overrides_json` here — which (a)
+    # suppresses the legacy single-TP shim (`_pb_wants_take_profit_arm`
+    # / `_ch_maybe_fire_auto_tp` treat any non-empty override JSON as
+    # "ad-hoc template present") and (b) `has_any_override` still
+    # returns False for a tp_order_type-only dict, so the ad-hoc path
+    # also builds nothing — net result: the take-profit silently
+    # vanishes instead of arming at the legacy target_pct. Treat a
+    # tp_order_type-only payload as "no overrides" so the legacy shim
+    # keeps firing exactly as before this field existed.
+    if set(payload) == {"tp_order_type"}:
         return None
     import json as _json
     return _json.dumps(payload)

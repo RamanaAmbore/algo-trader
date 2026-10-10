@@ -822,12 +822,17 @@ class PaperTradeEngine:
         qty: int,
         product: str | None,
         mode: str,
+        template_overrides_json: str | None = None,
     ) -> None:
         """Schedule template-attach task on a paper/sim/replay fill, if
         applicable.
 
-        Fires only when: kind==fill, template_id set, parent_order_id is None
-        (i.e. this is a parent row, not a child), and fill_price is present.
+        Fires only when: kind==fill, EITHER template_id is set OR the row
+        carries ad-hoc override fields (template_overrides_json non-empty
+        — Sprint 8 fix, see orders_postback._pb_wants_template_attach's
+        docstring for the full incident this closes across all three
+        fill-dispatch call sites), parent_order_id is None (i.e. this is
+        a parent row, not a child), and fill_price is present.
 
         CRITICAL (2026-09-30): this engine is shared by ALL of `paper`,
         `sim`, and `replay` (self._label is literally the AlgoOrder.mode
@@ -839,7 +844,7 @@ class PaperTradeEngine:
         because it never is. `_fire_template_attach_on_fill` refuses to do
         anything real unless `mode == 'live'`.
         """
-        if not template_id or parent_order_id is not None:
+        if (not template_id and not template_overrides_json) or parent_order_id is not None:
             return
         fill_price = order.get("fill_price")
         if fill_price is None:
@@ -854,7 +859,7 @@ class PaperTradeEngine:
                 parent_side=str(side),
                 parent_qty=qty,
                 fill_price=float(fill_price),
-                template_id=int(template_id),
+                template_id=(int(template_id) if template_id else None),
                 parent_product=str(product or "NRML"),
                 mode=str(mode or self._label),
             ))
@@ -886,6 +891,7 @@ class PaperTradeEngine:
             # fire — captured BEFORE leaving the session so SQLAlchemy
             # doesn't lazy-load post-commit.
             _row_template_id     = row.template_id
+            _row_template_overrides_json = row.template_overrides_json
             _row_parent_order_id = row.parent_order_id
             _row_product         = row.product
             _row_account         = row.account
@@ -910,6 +916,7 @@ class PaperTradeEngine:
                 str(_row_account), str(_row_symbol),
                 str(_row_exchange or "NFO"), str(_row_side),
                 _row_qty, _row_product, str(_row_mode or self._label),
+                template_overrides_json=_row_template_overrides_json,
             )
 
         row_snap = {

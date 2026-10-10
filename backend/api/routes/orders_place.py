@@ -366,8 +366,12 @@ async def _get_template_attach_lock(parent_row_id: int) -> "asyncio.Lock":
 def _opl_reconcile_attach_eligible(row) -> bool:
     """Return True when a reconciled row should trigger template attach.
 
-    Guards: must be live mode, must be a parent with a template_id,
-    and must have a fill_price. Extracted from
+    Guards: must be live mode, must be a parent with EITHER a saved
+    template_id OR ad-hoc override fields (template_overrides_json
+    non-empty — Sprint 8 fix, mirrors the identical fix in
+    orders_postback._pb_wants_template_attach / chase.
+    _ch_maybe_fire_template_attach / paper._paper_maybe_fire_
+    template_attach), and must have a fill_price. Extracted from
     _maybe_fire_template_attach_for_reconcile to reduce CC there."""
     # Close-intent or explicit close flag → never attach template
     if (row.intent or "").lower() == "close":
@@ -376,7 +380,7 @@ def _opl_reconcile_attach_eligible(row) -> bool:
         return False
     if (row.mode or "").lower() != "live":
         return False
-    if not (row.template_id and row.parent_order_id is None):
+    if not ((row.template_id or row.template_overrides_json) and row.parent_order_id is None):
         return False
     return bool(row.fill_price)
 
@@ -482,7 +486,8 @@ async def _verify_close_intent(
 def _maybe_fire_template_attach_for_reconcile(row) -> None:
     """Sprint A helper — when the reconcile path flips an AlgoOrder to
     FILLED, fire the template attach if the row carries a template_id
-    and is a parent (parent_order_id IS NULL). Same idempotency guard
+    OR ad-hoc override fields (Sprint 8) and is a parent (parent_order_id
+    IS NULL). Same idempotency guard
     inside `_fire_template_attach_on_fill` ensures duplicate firings
     (postback arriving after reconcile) are safe.
 
@@ -519,7 +524,7 @@ def _maybe_fire_template_attach_for_reconcile(row) -> None:
             parent_side=str(row.transaction_type),
             parent_qty=_attach_qty,
             fill_price=float(row.fill_price),
-            template_id=int(row.template_id),
+            template_id=(int(row.template_id) if row.template_id else None),
             parent_product=str(row.product or "NRML"),
             # _opl_reconcile_attach_eligible() already restricts this path
             # to mode=='live' rows; thread the row's own mode through as a
@@ -705,13 +710,26 @@ async def _fire_template_attach_on_fill(
     parent_side: str,
     parent_qty: int,
     fill_price: float,
-    template_id: int,
+    template_id: int | None,
     parent_product: str = "NRML",
     mode: str,
     bypass_hold: bool = False,
 ):
-    """Fire apply_plan_live for a templated parent order that just
-    flipped to FILLED via Kite/Dhan/Groww postback.
+    """Fire apply_plan_live for a templated OR ad-hoc-override parent
+    order that just flipped to FILLED via Kite/Dhan/Groww postback,
+    chase's terminal-fill path, or the paper/sim/replay engine.
+
+    `template_id` is `None` for an ad-hoc order (no saved template —
+    operator supplied inline tp_pct_override/sl_pct_override/wing_*
+    fields on the ticket instead). `apply_template_to_order` already
+    handles `template_id=None` via its `build_adhoc_template` path —
+    see that function's docstring. Every caller of this function must
+    still verify there's SOMETHING to attach (a real template_id OR a
+    non-empty overrides dict) before dispatching — this function does
+    not re-check that itself (Sprint 8 fix, see each caller's own
+    gate: `orders_postback._pb_wants_template_attach`, `chase.
+    _ch_maybe_fire_template_attach`, `paper._paper_maybe_fire_
+    template_attach`).
 
     Persists the returned gtt_ids back onto AlgoOrder.attached_gtts_json
     so the operator can cancel them later if they manually close the
