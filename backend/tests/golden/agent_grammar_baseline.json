@@ -629,6 +629,25 @@
     {
       "grammar_kind": "notify",
       "token_kind": "channel",
+      "token": "ntfy",
+      "value_type": "enum",
+      "description": "Push notification via ntfy.sh. Priority sets urgency; defaults to the firing agent's tier when omitted.",
+      "params_schema": {
+        "priority": {
+          "type": "enum",
+          "enum": [
+            "low",
+            "default",
+            "high",
+            "urgent"
+          ],
+          "required": false
+        }
+      }
+    },
+    {
+      "grammar_kind": "notify",
+      "token_kind": "channel",
       "token": "websocket",
       "value_type": "enum",
       "description": "Live push to connected /algo dashboard clients."

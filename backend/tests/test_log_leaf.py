@@ -163,7 +163,13 @@ async def test_feed_failure_returns_no_rows_and_retries_next_cycle():
 
 
 @pytest.mark.asyncio
-async def test_log_channel_writes_a_tagged_agent_record(monkeypatch):
+async def test_log_channel_no_longer_writes_directly_via_dispatch_channel(monkeypatch):
+    """Sprint 6 moved 'log' off events.py's direct-dispatch branches onto
+    the _RECORDED_CHANNELS / event_agents.py CHANNELS table (see
+    test_event_agents.py::test_log_channel_entry_logs_via_logger_warning
+    for where this tagged agent record now actually gets written) —
+    calling _dispatch_channel directly with channel='log' must no longer
+    touch events.logger at all."""
     calls = []
 
     class _Fake:
@@ -174,12 +180,7 @@ async def test_log_channel_writes_a_tagged_agent_record(monkeypatch):
     await ev_events._dispatch_channel(
         {"channel": "log"}, SimpleNamespace(name="Loss", slug="loss-funds-negative"),
         "body", "subj", "ebody", "cash < 0", "ts", _eval_result([]), None, False, "main", "")
-    assert len(calls) == 1
-    msg, kw = calls[0]
-    assert "[loss-funds-negative]" in msg
-    assert kw["extra"]["tags"] == ["agent"]
-    assert kw["extra"]["agent_slug"] == "loss-funds-negative"
-    assert kw["extra"]["sim_mode"] is False
+    assert calls == []
 
 
 @pytest.mark.asyncio

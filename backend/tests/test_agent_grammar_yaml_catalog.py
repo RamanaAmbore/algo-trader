@@ -9,12 +9,15 @@ reconstructed into the identical list-of-dicts shape. This is meant to be
 PURE DATA RELOCATION — zero behavior change.
 
 `backend/tests/golden/agent_grammar_baseline.json` is a frozen snapshot of
-SYSTEM_TOKENS (post `.extend(LOG_TAG_TOKENS)`, i.e. the full 92-entry list
-the app actually runs with) and LOG_TAG_TOKENS, captured from the Python
-literal exactly as it existed immediately before the YAML externalization.
-It is a static fixture — never regenerated from the live module — so this
-test cannot silently degrade into a no-op comparing the module against
-itself after the refactor is committed.
+SYSTEM_TOKENS (post `.extend(LOG_TAG_TOKENS)`, i.e. the full list the app
+actually runs with — 92 entries at the moment of the original YAML
+externalization, 100 as of the Sprint 6 `ntfy` amendment below) and
+LOG_TAG_TOKENS, captured from the Python literal exactly as it existed
+immediately before the YAML externalization, then hand-amended in lockstep
+with every later documented, intentional catalog change. It is a static
+fixture — never regenerated from the live module — so this test cannot
+silently degrade into a no-op comparing the module against itself after
+the refactor is committed.
 
 Amendment (2026-10-08): the 7 dead action-stub `resolver` fields
 (place_order/modify_order/cancel_order/cancel_all_orders/
@@ -27,6 +30,14 @@ were deleted from `actions.py` — see CLAUDE.md's "Agent action-dispatch
 SSOT" note. The baseline is no longer byte-identical to the
 pre-YAML-externalization Python literal for those 7 entries; it now
 reflects the current, intentional post-dead-code-removal shape.
+
+Amendment (Sprint 6, agent CLI grammar): a new `(notify, channel, ntfy)`
+token was added to `agent_grammar.yaml` (and mirrored here) — `ntfy`
+already dispatches in `events.py`/`event_agents.py` but was missing from
+the authorable catalog. Inserted at the same list position as the YAML
+(right after `email`, before `websocket`) so `test_system_tokens_byte_
+for_byte_equal_to_baseline` keeps passing with a baseline that reflects
+this intentional, documented addition rather than a real regression.
 
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes

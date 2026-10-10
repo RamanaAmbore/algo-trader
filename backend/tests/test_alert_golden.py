@@ -436,3 +436,132 @@ async def test_summary_matches_the_pre_migration_dispatch(monkeypatch, msg_type,
     _, addr, subj, body = sent["mail"][0]
     assert subj == subject
     assert hashlib.sha256(body.encode()).hexdigest() == sha
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 6 — full round trip: events.dispatch() -> (grouped record(s)) ->
+#  event_agents.dispatch() via BREACH_AGENT -> final telegram/ntfy/email
+#  delivery. Golden-pinned with the module's frozen _FIXED_TS.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_breach_dispatch_default_group_golden_round_trip(monkeypatch):
+    """No channel carries a custom `message` — events.dispatch() must emit
+    exactly one grouped record, and the final telegram/ntfy/email delivery
+    through BREACH_AGENT must be byte-identical to the pre-Sprint-6
+    (ungrouped) shape. This covers the majority of production traffic —
+    every existing threshold/loss-* agent."""
+    from unittest.mock import AsyncMock
+    from backend.api.algo import events, event_agents
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    import backend.shared.helpers.mail_utils as mu
+
+    monkeypatch.setattr(events, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(events, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(events, "_log_event", AsyncMock())
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    sent = {"tg": [], "ntfy": [], "mail": []}
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent["tg"].append(msg))
+    monkeypatch.setattr(au, "send_ntfy_alert",
+                        lambda title, message, priority=None: sent["ntfy"].append((title, message, priority)))
+
+    firing_agent = SimpleNamespace(
+        id=42, name="Account funds gone negative", slug="loss-funds", tier="critical",
+        events=[{"channel": "telegram", "enabled": True},
+                {"channel": "ntfy", "enabled": True},
+                {"channel": "email", "enabled": True}],
+    )
+    eval_result = events.EvalResult(triggered=True, condition_text="cash < 0", detail={})
+
+    info_calls = []
+    monkeypatch.setattr(events.logger, "info", lambda msg, **kw: info_calls.append(kw.get("extra")))
+
+    await events.dispatch(firing_agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1, "messageless channels must share exactly one record"
+    extra = info_calls[0]
+
+    # Replay through the real BREACH_AGENT, the same way log_store.py's
+    # flush_once() -> event_agents.dispatch_rows() would in production.
+    rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+           "logger": "backend.api.algo.events", "message": "x", "tags": ["info", "agent"],
+           "extra": extra}
+    breach_agent = SimpleNamespace(slug=event_agents.BREACH_AGENT["slug"],
+                                   **{k: event_agents.BREACH_AGENT[k] for k in ("conditions", "events", "actions")})
+    await event_agents.dispatch([rec], [breach_agent])
+
+    expected_body = (
+        f"Alert — Account funds gone negative\n"
+        f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
+        f"Condition: cash < 0"
+    )
+    assert sent["tg"] == [expected_body]
+    assert sent["ntfy"] == [("Account funds gone negative", expected_body, "urgent")]
+    assert len(sent["mail"]) == 1
+    _, addr, subj, body = sent["mail"][0]
+    assert addr == "a@x.com"
+    assert subj == "RamboQuant Agent: Account funds gone negative"
+    assert "<p><b>Condition:</b> cash < 0</p>" in body
+
+
+@pytest.mark.asyncio
+async def test_breach_dispatch_custom_message_channel_golden_round_trip(monkeypatch):
+    """One channel (ntfy) carries a custom `message` — it must deliver
+    THAT text, not condition_text, while telegram/email (messageless)
+    still deliver the shared condition_text body."""
+    from unittest.mock import AsyncMock
+    from backend.api.algo import events, event_agents
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    import backend.shared.helpers.mail_utils as mu
+
+    monkeypatch.setattr(events, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(events, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(events, "_log_event", AsyncMock())
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(au, "get_alert_recipients", lambda: ["a@x.com"])
+    sent = {"tg": [], "ntfy": [], "mail": []}
+    monkeypatch.setattr(mu, "send_email", lambda *a, **k: sent["mail"].append(a))
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent["tg"].append(msg))
+    monkeypatch.setattr(au, "send_ntfy_alert",
+                        lambda title, message, priority=None: sent["ntfy"].append((title, message, priority)))
+
+    firing_agent = SimpleNamespace(
+        id=42, name="Account funds gone negative", slug="loss-funds", tier="critical",
+        events=[{"channel": "telegram", "enabled": True},
+                {"channel": "email", "enabled": True},
+                {"channel": "ntfy", "enabled": True, "message": "Cash is deeply negative — act now"}],
+    )
+    eval_result = events.EvalResult(triggered=True, condition_text="cash < 0", detail={})
+
+    info_calls = []
+    monkeypatch.setattr(events.logger, "info", lambda msg, **kw: info_calls.append(kw.get("extra")))
+
+    await events.dispatch(firing_agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 2
+    breach_agent = SimpleNamespace(slug=event_agents.BREACH_AGENT["slug"],
+                                   **{k: event_agents.BREACH_AGENT[k] for k in ("conditions", "events", "actions")})
+    for extra in info_calls:
+        rec = {"ts": _dt.datetime(2026, 10, 6, 9, 0, tzinfo=_dt.timezone.utc), "level": "INFO",
+               "logger": "backend.api.algo.events", "message": "x", "tags": ["info", "agent"],
+               "extra": extra}
+        await event_agents.dispatch([rec], [breach_agent])
+
+    shared_body = (
+        f"Alert — Account funds gone negative\n"
+        f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
+        f"Condition: cash < 0"
+    )
+    custom_body = (
+        f"Alert — Account funds gone negative\n"
+        f"Agent: Account funds gone negative (#42)\n{_FIXED_TS}\n"
+        f"Condition: Cash is deeply negative — act now"
+    )
+    assert sent["tg"] == [shared_body]
+    assert sent["ntfy"] == [("Account funds gone negative", custom_body, "urgent")]
+    assert len(sent["mail"]) == 1
+    assert sent["mail"][0][2] == "RamboQuant Agent: Account funds gone negative"

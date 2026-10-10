@@ -30,7 +30,16 @@
 //                    | alert_part | do_part | ε
 //   alert_part     := "ALERT" alert_clause
 //   do_part        := "DO" do_clause
-//   alert_clause   := "nop" | call_list
+//   alert_clause   := "nop" | (("msg" "=" value ",")? call_list)
+//                                                   (* "msg" is NOT a
+//                                                      reserved word — it
+//                                                      is recognized
+//                                                      CONTEXTUALLY, only
+//                                                      as NAME "=" in the
+//                                                      leading position of
+//                                                      a non-"nop" ALERT
+//                                                      clause, before any
+//                                                      channel. Sprint 6. *)
 //   do_clause      := "nop" | call_list
 //   call_list      := call ("," call)*
 //   order_stmt     := call ("," call)*            (* order/place_order only *)
@@ -57,8 +66,12 @@
 // AST shape (internal, documented for Sprint 3's decompiler / Sprint 4's
 // live-preview — NOT the compiled JSON, see compile*() below for that)
 // ─────────────────────────────────────────────────────────────────────────
-//   Statement  := { kind:'agent', condition, alertCalls, doCalls }
+//   Statement  := { kind:'agent', condition, alertCalls, alertMsg, doCalls }
 //               | { kind:'order', calls: CallNode[] }
+//   alertMsg   := ValueNode | null   (* the optional clause-level `msg=`
+//                  default — ALWAYS null when alertCalls is 'nop' or when
+//                  no ALERT clause was written at all; DO has no equivalent
+//                  field. Sprint 6. *)
 //   Condition  := { type:'always' }
 //               | { type:'and'|'or', left: Condition, right: Condition }
 //               | { type:'not', term: Condition }
@@ -375,7 +388,21 @@ export function lexAgentStatement(text) {
         const two = text.slice(i, i + 2);
         if (ch === '<') { if (two === '<=') { tokens.push({ type: 'LE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'LT', start, end: i + 1 }); i += 1; } continue; }
         if (ch === '>') { if (two === '>=') { tokens.push({ type: 'GE', start, end: i + 2 }); i += 2; } else { tokens.push({ type: 'GT', start, end: i + 1 }); i += 1; } continue; }
-        if (ch === '=') { if (two === '==') { tokens.push({ type: 'EQEQ', start, end: i + 2 }); i += 2; continue; } throw new _ParseError(`unexpected '='`, { start }); }
+        if (ch === '=') {
+          if (two === '==') { tokens.push({ type: 'EQEQ', start, end: i + 2 }); i += 2; continue; }
+          // A single "=" at the top level (outside any call's own "(...)",
+          // which is tokenized separately via tokenizeCallStyle) has
+          // exactly ONE legitimate grammar production: the ALERT clause's
+          // contextual `msg=` default (Sprint 6, see parseAlertClauseBody).
+          // No other production in this grammar ever expects a bare EQ
+          // token, so emitting one here (instead of throwing, as before)
+          // is safe — any OTHER use of a stray "=" still fails, just at
+          // the PARSER stage now ("expected a comparator" / "unexpected
+          // trailing input") rather than at lex time.
+          tokens.push({ type: 'EQ', start, end: i + 1 });
+          i += 1;
+          continue;
+        }
         if (ch === '!') { if (two === '!=') { tokens.push({ type: 'NE', start, end: i + 2 }); i += 2; continue; } throw new _ParseError(`unexpected '!'`, { start }); }
       }
 
@@ -676,6 +703,46 @@ function parseClauseBody(state) {
   return parseCallList(state);
 }
 
+/** `alert_clause := "nop" | (("msg" "=" value ",")? call_list)` — Sprint 6.
+ *  ALERT-only (DO has no equivalent; `parseClauseBody` above is unchanged
+ *  and still used for DO). The leading `msg="..."` default is recognized
+ *  CONTEXTUALLY — "msg" is NOT in `_RESERVED` — purely by lookahead: a
+ *  bare (non-call) NAME spelled "msg" (case-insensitive) immediately
+ *  followed by a lone `EQ` token. A hand-typed channel that happens to be
+ *  literally named "msg" but is NOT followed by "=" (e.g. a bare `msg`
+ *  channel, or `msg(...)`, which lexes with `hasCall: true`) falls straight
+ *  through to the ordinary `parseCallList` branch below — no reserved-word
+ *  collision is possible. The value's STRING-ness is deliberately NOT
+ *  enforced here (same "parse permissively, validate at compile time"
+ *  split every other field in this grammar follows — see `parseValue`'s
+ *  callers elsewhere); `compileAlertClause` rejects a non-string default
+ *  with the same "must be quoted" wording other free-text fields use.
+ *  @returns {{ msgDefault: any, calls: 'nop' | any[] }} */
+function parseAlertClauseBody(state) {
+  const tok = _peek(state);
+  if (tok.type === 'NAME' && _wordIs(tok, 'nop')) {
+    if (tok.hasCall) throw new _ParseError('"nop" takes no arguments — nop() is a parse error', tok);
+    _advance(state);
+    return { msgDefault: null, calls: 'nop' };
+  }
+  let msgDefault = null;
+  if (tok.type === 'NAME' && !tok.hasCall && tok.value.toLowerCase() === 'msg') {
+    const next = state.tokens[state.pos + 1];
+    if (next && next.type === 'EQ') {
+      _advance(state); // consume "msg"
+      _advance(state); // consume "="
+      msgDefault = parseValue(state);
+      const comma = _peek(state);
+      if (comma.type !== 'COMMA') {
+        throw new _ParseError('expected "," after msg="..." default, followed by a channel list', comma);
+      }
+      _advance(state);
+    }
+  }
+  const calls = parseCallList(state);
+  return { msgDefault, calls };
+}
+
 /** `agent_stmt := "WHEN" condition tail`
  *  `tail := alert_part do_part | do_part alert_part | alert_part | do_part | ε`
  *
@@ -707,6 +774,8 @@ export function parseAgentStmt(state) {
   }
   /** @type {'nop' | any[]} */
   let alertCalls = 'nop';
+  /** @type {any} the clause-level `msg=` default ValueNode, or null — Sprint 6 */
+  let alertMsg = null;
   /** @type {'nop' | any[]} */
   let doCalls = 'nop';
   let sawAlert = false;
@@ -715,7 +784,9 @@ export function parseAgentStmt(state) {
     const tok = _peek(state);
     if (!sawAlert && _wordIs(tok, 'alert')) {
       _advance(state);
-      alertCalls = parseClauseBody(state);
+      const body = parseAlertClauseBody(state);
+      alertCalls = body.calls;
+      alertMsg = body.msgDefault;
       sawAlert = true;
     } else if (!sawDo && _wordIs(tok, 'do')) {
       _advance(state);
@@ -725,7 +796,7 @@ export function parseAgentStmt(state) {
       break;
     }
   }
-  return { kind: 'agent', condition, alertCalls, doCalls };
+  return { kind: 'agent', condition, alertCalls, alertMsg, doCalls };
 }
 
 /** `order_stmt := call ("," call)*` — restricted to order/place_order calls. */
@@ -1109,11 +1180,47 @@ function _compileOrderActionParams(call, entry, opts) {
   return { params, errors: [] };
 }
 
-function compileAlertClause(alertCalls, catalog) {
+// ── ALERT `msg=` default (Sprint 6) ─────────────────────────────────────
+// `msg`/`message` is never part of a real channel's own `params_schema`
+// (confirmed against the live catalog's telegram/email/websocket/log/inapp
+// rows — none declare any params at all today), so it is stripped out of
+// a call's own args HERE, inside compileAlertClause, BEFORE the call ever
+// reaches `_compileGenericActionParams` — never inside that shared helper
+// itself, which DO's `emit_log(message=...)` also uses and which DOES
+// declare a real `message` param that must keep working unmodified.
+const _MESSAGE_KEYS = new Set(['msg', 'message']);
+const _MESSAGE_SPEC = Object.freeze({ type: 'string' });
+
+/** `alert_clause`'s per-channel message resolution (Sprint 6):
+ *    1. a channel's OWN `msg=`/`message=` kwarg (either spelling) always
+ *       wins over the clause-level default;
+ *    2. otherwise the clause-level `msg=` default (`alertMsg`), if any;
+ *    3. otherwise — but ONLY if `msg` was used SOMEWHERE in this clause at
+ *       all (own or default) — a compile error naming the channel;
+ *    4. if `msg` was used NOWHERE in the clause, every channel compiles
+ *       with NO `message` key at all — byte-for-byte unchanged from the
+ *       pre-Sprint-6 output, since the backend treats an absent `message`
+ *       key as "use the auto-composed default" for the vast majority of
+ *       real, existing agents. */
+function compileAlertClause(alertCalls, alertMsg, catalog) {
   if (alertCalls === 'nop') return { events: [], errors: [] };
   const errors = [];
+
+  let defaultMessage = null;
+  if (alertMsg != null) {
+    const r = _coerceValueForSpec(alertMsg, _MESSAGE_SPEC, 'msg', 'ALERT');
+    if (r.error) errors.push(r.error);
+    else defaultMessage = r.value;
+  }
+
+  const ownMsgArgsByCall = alertCalls.map((call) =>
+    (call.args || []).filter((a) => a.key && _MESSAGE_KEYS.has(a.key.toLowerCase())));
+  const anyMsgUsed = defaultMessage != null
+    || ownMsgArgsByCall.some((args) => args.length > 0);
+
   const events = [];
-  for (const call of alertCalls) {
+  for (let i = 0; i < alertCalls.length; i++) {
+    const call = alertCalls[i];
     const entry = catalog.channels.get(call.name.toLowerCase());
     if (!entry) {
       const other = _describeKind(call.name, catalog);
@@ -1122,9 +1229,37 @@ function compileAlertClause(alertCalls, catalog) {
         : `unknown channel '${call.name}'`));
       continue;
     }
-    const r = _compileGenericActionParams(call, entry);
+
+    const msgArgs = ownMsgArgsByCall[i];
+    if (msgArgs.length > 1) {
+      errors.push(_err(`${entry.token}: duplicate parameter 'msg'/'message'`));
+      continue;
+    }
+    let ownMessage = null;
+    if (msgArgs.length === 1) {
+      const r = _coerceValueForSpec(msgArgs[0].value, _MESSAGE_SPEC, msgArgs[0].key.toLowerCase(), entry.token);
+      if (r.error) { errors.push(r.error); continue; }
+      ownMessage = r.value;
+    }
+    const strippedCall = { ...call, args: (call.args || []).filter((a) => !(a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()))) };
+
+    const r = _compileGenericActionParams(strippedCall, entry);
     errors.push(...r.errors);
-    if (!r.errors.length) events.push({ channel: entry.token, enabled: true, ...r.params });
+    if (r.errors.length) continue;
+
+    let resolvedMessage = null;
+    if (ownMessage != null) {
+      resolvedMessage = ownMessage;
+    } else if (defaultMessage != null) {
+      resolvedMessage = defaultMessage;
+    } else if (anyMsgUsed) {
+      errors.push(_err(`channel '${entry.token}' has no message — set msg= on ALERT or on this channel directly`));
+      continue;
+    }
+
+    const event = { channel: entry.token, enabled: true, ...r.params };
+    if (resolvedMessage != null) event.message = resolvedMessage;
+    events.push(event);
   }
   return { events: errors.length ? null : events, errors };
 }
@@ -1161,7 +1296,7 @@ function compileAgentStmt(ast, catalog, opts) {
   const errors = [];
   const condResult = compileCondition(ast.condition, catalog);
   errors.push(...condResult.errors);
-  const eventsResult = compileAlertClause(ast.alertCalls, catalog);
+  const eventsResult = compileAlertClause(ast.alertCalls, ast.alertMsg, catalog);
   errors.push(...eventsResult.errors);
   const actionsResult = compileDoClause(ast.doCalls, catalog, opts);
   errors.push(...actionsResult.errors);
@@ -1792,12 +1927,34 @@ export function decompileCondition(conditions, catalog) {
  *  would silently change the agent's behavior on resave). An extra key
  *  not declared in that channel's `params_schema` also fails loud — it
  *  could never have been produced by the compiler (see
- *  `_mapCallArgsToKeys`'s symmetric "unknown parameter" rejection). */
+ *  `_mapCallArgsToKeys`'s symmetric "unknown parameter" rejection).
+ *
+ *  `message` (Sprint 6's `msg=` feature) is handled OUTSIDE the generic
+ *  extraKeys loop above, since it is never declared in a real channel's
+ *  own `params_schema` — `compileAlertClause` strips/re-attaches it the
+ *  same way, never through `_mapCallArgsToKeys`. Per that compiler's own
+ *  resolution invariant, a successfully-compiled `events` array is always
+ *  in exactly one of two states: EVERY enabled entry carries a `message`
+ *  key, or NONE do. A stored agent with SOME entries carrying `message`
+ *  and others not (only reachable via hand-edited JSON, never the
+ *  compiler) has NO CLI representation — under the compile-time
+ *  resolution rule, a channel missing both its own message and a clause
+ *  default when `msg` is used elsewhere is a hard compile error, so
+ *  decompiling that exact mix could never recompile back to the same
+ *  shape — and fails loud here rather than surfacing as a confusing
+ *  "internal: decompiled text failed to recompile" from `decompileAgent`'s
+ *  safety net. When every entry's `message` is the IDENTICAL string, it is
+ *  hoisted to one leading clause-level `msg=` default and omitted from
+ *  each channel (which then renders bare when it has no other args);
+ *  otherwise each channel renders its own `msg=` individually, no shared
+ *  default. Channels with no `message` key at all (today's normal,
+ *  overwhelmingly common case) decompile exactly as before Sprint 6 — no
+ *  `msg=` anywhere in the output. */
 export function decompileEvents(events, catalog) {
   if (!Array.isArray(events)) return { text: null, errors: [_err(`'events' must be an array, got ${JSON.stringify(events)}`)] };
   if (events.length === 0) return { text: 'nop', errors: [] };
   const errors = [];
-  const parts = [];
+  const rendered = [];
   for (const ev of events) {
     if (!ev || typeof ev !== 'object' || typeof ev.channel !== 'string') {
       errors.push(_err(`unrecognized event entry: ${JSON.stringify(ev)}`));
@@ -1809,8 +1966,7 @@ export function decompileEvents(events, catalog) {
     }
     const entry = catalog.channels.get(ev.channel.toLowerCase());
     if (!entry) { errors.push(_err(`unknown channel '${ev.channel}' referenced in stored events`)); continue; }
-    const extraKeys = Object.keys(ev).filter(k => k !== 'channel' && k !== 'enabled');
-    if (extraKeys.length === 0) { parts.push(entry.token); continue; }
+    const extraKeys = Object.keys(ev).filter(k => k !== 'channel' && k !== 'enabled' && k !== 'message');
     const argParts = [];
     let bad = false;
     for (const k of extraKeys) {
@@ -1820,10 +1976,50 @@ export function decompileEvents(events, catalog) {
       if (r.error) { errors.push(_err(`event '${entry.token}'.${k}: ${r.message}`)); bad = true; continue; }
       argParts.push(`${k}=${r.text}`);
     }
-    if (!bad) parts.push(`${entry.token}(${argParts.join(', ')})`);
+    let message; // undefined = no 'message' key at all (the normal case)
+    if ('message' in ev) {
+      if (typeof ev.message !== 'string') {
+        errors.push(_err(`event '${entry.token}'.message: must be a string, got ${JSON.stringify(ev.message)}`));
+        bad = true;
+      } else {
+        message = ev.message;
+      }
+    }
+    if (bad) continue;
+    rendered.push({ entry, argParts, message });
   }
   if (errors.length) return { text: null, errors };
-  return { text: parts.join(', '), errors: [] };
+
+  const withMsg = rendered.filter(r => typeof r.message === 'string');
+  if (withMsg.length > 0 && withMsg.length < rendered.length) {
+    const missing = rendered.find(r => typeof r.message !== 'string');
+    return {
+      text: null,
+      errors: [_err(`channel '${missing.entry.token}' has no message while other channels in this ALERT do — this shape has no CLI representation`)],
+    };
+  }
+
+  const uniform = withMsg.length === rendered.length && rendered.length > 0
+    && rendered.every(r => r.message === rendered[0].message);
+
+  let defaultPrefix = '';
+  if (uniform) {
+    const q = _quoteString(rendered[0].message);
+    if (q.error) return { text: null, errors: [_err(q.message)] };
+    defaultPrefix = `msg=${q.text}, `;
+  }
+
+  const parts = [];
+  for (const r of rendered) {
+    const argParts = [...r.argParts];
+    if (!uniform && typeof r.message === 'string') {
+      const q = _quoteString(r.message);
+      if (q.error) return { text: null, errors: [_err(q.message)] };
+      argParts.push(`msg=${q.text}`);
+    }
+    parts.push(argParts.length === 0 ? r.entry.token : `${r.entry.token}(${argParts.join(', ')})`);
+  }
+  return { text: `${defaultPrefix}${parts.join(', ')}`, errors: [] };
 }
 
 /** Decompile one `{"type":"place_order","params":{...}}` action to

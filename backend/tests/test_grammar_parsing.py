@@ -151,6 +151,30 @@ class TestLiveCashMetric:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 6 (agent CLI grammar) — ntfy registered as an authorable channel
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestNtfyChannelCatalogToken:
+    """`ntfy` already dispatches in events.py/event_agents.py — this is just
+    the catalog-loader registration so the agent CLI grammar's
+    autocomplete/validation surfaces it like every other notify channel."""
+
+    def test_ntfy_channel_token_registered(self):
+        from backend.api.algo.grammar import SYSTEM_TOKENS
+        tokens = {(t['grammar_kind'], t['token_kind'], t['token']) for t in SYSTEM_TOKENS}
+        assert ('notify', 'channel', 'ntfy') in tokens
+
+    def test_ntfy_channel_token_has_priority_params_schema(self):
+        from backend.api.algo.grammar import SYSTEM_TOKENS
+        by_key = {(t['grammar_kind'], t['token_kind'], t['token']): t for t in SYSTEM_TOKENS}
+        tok = by_key[('notify', 'channel', 'ntfy')]
+        assert tok['value_type'] == 'enum'
+        assert tok['params_schema']['priority']['type'] == 'enum'
+        assert tok['params_schema']['priority']['enum'] == ['low', 'default', 'high', 'urgent']
+        assert tok['params_schema']['priority']['required'] is False
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 #  Fix #10 — day_pct metric prefers margin-based column over notional
 # ═══════════════════════════════════════════════════════════════════════════
 

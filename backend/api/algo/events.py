@@ -88,6 +88,129 @@ def _build_dispatch_email_body(
     )
 
 
+def _build_dispatch_bodies(
+    message_text: str, agent, sim_tag: str, branch: str, branch_tag: str,
+    ist_display: str, sim_mode: bool,
+) -> tuple[str, str, str, str]:
+    """Build telegram/ntfy/email bodies for one alert message.
+
+    Shared by the default (condition-text) group and each per-channel
+    custom-message record (Sprint 6 `msg=` grammar keyword) so both render
+    through identical formatting logic — only the one line that used to
+    always be `condition_text` changes.
+
+    The old "When:" line is replaced by format_notification_header's
+    output — it still carries the same dual-tz ist_display (reused via the
+    ist_display= kwarg so telegram/ntfy/email all share one timestamp
+    instead of each calling timestamp_display() a moment apart) PLUS the
+    "Agent: {name} (#{id})" identity line.
+    """
+    from backend.shared.helpers.alert_utils import format_notification_header
+    body_lines = [
+        f"{sim_tag}Alert{branch_tag} — {agent.name}",
+        format_notification_header(agent.name, agent.id, ist_display=ist_display),
+        f"Condition: {message_text}",
+    ]
+    telegram_body = "\n".join(body_lines)
+    # Dedicated ntfy body — kept a separate variable (not just an alias for
+    # telegram_body) even though the content is identical today. ntfy has no
+    # HTML rendering; message_text is operator/user-authored (e.g.
+    # "pnl < -5000") and must never be run through an HTML-tag-stripping
+    # regex, since a bare comparison operator would be misread as a tag
+    # boundary. Keeping this independent means if telegram_body ever grows
+    # HTML styling (as alert_utils._dispatch's equivalent string did), ntfy
+    # can't silently inherit literal <b>/<code> tags — see
+    # backend/shared/helpers/alert_utils.py:_html_to_plain for the sibling
+    # fix on that path.
+    ntfy_body = "\n".join(body_lines)
+    email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
+    email_body = _build_dispatch_email_body(
+        agent.name, agent.id, sim_tag, branch, branch_tag, ist_display, message_text, sim_mode
+    )
+    return telegram_body, ntfy_body, email_subject, email_body
+
+
+def _classify_recorded_channel(
+    ch: dict, agent, eval_result, condition_text: str, branch_tag: str, sim_mode: bool,
+) -> "tuple | None":
+    """Build one channel's resolved record for the _RECORDED_CHANNELS path.
+
+    Returns None when the channel's tags don't match this fire. Otherwise
+    returns (custom_message_or_None, rec_ch). custom_message is None when
+    this channel carries no operator-authored `message` override (an empty
+    string normalizes to None too) — the caller groups every such channel
+    into ONE shared logger.info() record, byte-identical to the
+    pre-grouping (Sprint 6) behaviour. A channel with a real custom message
+    gets its own separate record (built by the caller via
+    _build_dispatch_bodies) instead of sharing the condition_text body.
+    """
+    if not _tags_match(ch, eval_result):
+        return None
+    rec_ch = {k: v for k, v in ch.items() if k in ("channel", "priority", "tags", "message")}
+    custom_message = rec_ch.pop("message", None) or None
+    # Tier-driven ntfy priority default — only when the operator hasn't
+    # hand-configured an explicit priority for this channel, and only for
+    # ntfy (telegram/email sends don't accept a priority kwarg; injecting
+    # one there would make every send silently fail). `agent` here is the
+    # REAL firing Agent row (not a dispatching meta-agent), so `.tier`
+    # genuinely reflects this alert's severity.
+    if rec_ch.get("channel") == "ntfy" and not rec_ch.get("priority"):
+        from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
+        tier_priority = _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
+        if tier_priority:
+            rec_ch["priority"] = tier_priority
+    rec_ch = rec_ch | {"enabled": True, "gate": True}
+    if rec_ch.get("channel") == "log":
+        # event_agents.py's `log` CHANNELS entry has no per-channel render
+        # output of its own (BREACH_AGENT's renderer only carries the
+        # SHARED telegram/ntfy/email bodies) — so the fully rendered log
+        # line, plus the fields the old events.py `_log_channel` used
+        # (agent slug, sim_mode), are pre-baked onto this channel's own
+        # record here and read back by event_agents._send_channel's "log"
+        # branch. Deliberately omits "alert_event" from anything this
+        # produces downstream — event_agents._send_log_channel's own
+        # logger.warning call must never carry "alert_event": "breach" or
+        # it would re-match BREACH_AGENT's own condition on the next log
+        # flush and loop forever.
+        log_msg_text = custom_message if custom_message is not None else condition_text
+        log_sim_tag = "[SIM] " if sim_mode else ""
+        rec_ch["log_line"] = (
+            f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {log_msg_text}"
+        )
+        rec_ch["log_agent_slug"] = agent.slug
+        rec_ch["log_sim_mode"] = bool(sim_mode)
+    # Put a REAL (non-empty) custom message back on the record — popped
+    # above only to decide grouping, but an operator reading `channels` in
+    # a persisted agent_events row should still see which message this
+    # channel actually rendered. A messageless channel's record keeps no
+    # "message" key at all (byte-identical to pre-Sprint-6 shape).
+    if custom_message is not None:
+        rec_ch["message"] = custom_message
+    return custom_message, rec_ch
+
+
+def _emit_breach_record(
+    agent, branch_tag: str, condition_text: str, channels: list,
+    telegram_body: str, ntfy_body: str, email_subject: str, email_body: str,
+    sim_mode: bool,
+) -> None:
+    """One 'ALERT recorded' log line — the single hand-off point into
+    event_agents.py's BREACH_AGENT renderer. Shared by the default
+    (messageless) group and each per-channel custom-message record so
+    both paths produce byte-identical extra shapes (only `channels` /
+    the three body fields differ)."""
+    logger.info(
+        f"ALERT recorded [{agent.slug}]{branch_tag}: {agent.name}",
+        extra={
+            "tags": ["agent"], "alert_event": "breach", "agent_slug": agent.slug,
+            "agent_name": agent.name, "agent_id": agent.id, "condition_text": condition_text,
+            "channels": channels, "telegram_body": telegram_body,
+            "ntfy_body": ntfy_body, "email_subject": email_subject,
+            "email_body": email_body, "sim_mode": bool(sim_mode),
+        },
+    )
+
+
 async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False,
                    skip_channels: frozenset = frozenset()):
     """
@@ -106,12 +229,18 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
         Condition: <condition_text>
 
     The branch tag is shown only on non-main deploys.
+
+    A channel entry carrying a `message` key (set by the frontend CLI
+    compiler's `msg=` keyword) gets ITS OWN separate alert record, rendered
+    from that message text instead of condition_text — see
+    _classify_recorded_channel / _build_dispatch_bodies. Every other
+    channel (the majority of production traffic) still shares ONE record,
+    byte-identical to pre-Sprint-6 output.
     """
     if not is_enabled('agent_alerts'):
         return
 
     from backend.shared.helpers.date_time_utils import timestamp_display
-    from backend.shared.helpers.alert_utils import format_notification_header
 
     branch = config.get("deploy_branch", "main")
     branch_tag = f" [{branch}]" if branch != "main" else ""
@@ -119,32 +248,8 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     ist_display = timestamp_display()
     condition_text = eval_result.condition_text or ""
 
-    # Single unified content shown across all channels. The old "When:"
-    # line is replaced by format_notification_header's output — it still
-    # carries the same dual-tz ist_display (reused via the ist_display=
-    # kwarg so this and the email body below share one timestamp
-    # instead of each calling timestamp_display() a moment apart) PLUS
-    # the new "Agent: {name} (#{id})" identity line.
-    body_lines = [
-        f"{sim_tag}Alert{branch_tag} — {agent.name}",
-        format_notification_header(agent.name, agent.id, ist_display=ist_display),
-        f"Condition: {condition_text}",
-    ]
-    telegram_body = "\n".join(body_lines)
-    # Dedicated ntfy body — kept a separate variable (not just an alias for
-    # telegram_body) even though the content is identical today. ntfy has no
-    # HTML rendering; condition_text is operator/user-authored (e.g.
-    # "pnl < -5000") and must never be run through an HTML-tag-stripping
-    # regex, since a bare comparison operator would be misread as a tag
-    # boundary. Keeping this independent means if telegram_body ever grows
-    # HTML styling (as alert_utils._dispatch's equivalent string did), ntfy
-    # can't silently inherit literal <b>/<code> tags — see
-    # backend/shared/helpers/alert_utils.py:_html_to_plain for the sibling
-    # fix on that path.
-    ntfy_body = "\n".join(body_lines)
-    email_subject = f"RamboQuant {sim_tag}Agent{branch_tag}: {agent.name}"
-    email_body = _build_dispatch_email_body(
-        agent.name, agent.id, sim_tag, branch, branch_tag, ist_display, condition_text, sim_mode
+    telegram_body, ntfy_body, email_subject, email_body = _build_dispatch_bodies(
+        condition_text, agent, sim_tag, branch, branch_tag, ist_display, sim_mode,
     )
 
     # Resolve any `{"$ref": "<notify-fragment>"}` entries against the
@@ -154,32 +259,28 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
     from backend.api.algo.template_registry import resolve_events
     channels = resolve_events(agent.events if isinstance(agent.events, list) else [])
 
-    # Telegram, email, and ntfy are sent by the event path from one tagged record,
-    # so their text and routing are decided in one place. Websocket, in-app, and
-    # log channels stay here: they are UI broadcasts or the audit log line.
+    # Telegram, email, ntfy, and log are sent by the event path from one or
+    # more tagged records (grouped by message — see _classify_recorded_
+    # channel), so their text and routing are decided in one place.
+    # Websocket and in-app stay here: they are UI broadcasts, not something
+    # the log-driven BREACH_AGENT renderer delivers.
     recorded_channels = []
+    custom_channels: list[tuple[str, dict]] = []
     for ch in channels:
         if not ch.get("enabled", False):
             continue
         if ch.get("channel") in skip_channels:
             continue
         if ch.get("channel") in _RECORDED_CHANNELS:
-            if _tags_match(ch, eval_result):
-                rec_ch = {k: v for k, v in ch.items() if k in ("channel", "priority", "tags")}
-                # Tier-driven ntfy priority default — only when the
-                # operator hasn't hand-configured an explicit priority
-                # for this channel, and only for ntfy (telegram/email
-                # sends don't accept a priority kwarg; injecting one
-                # there would make every send silently fail). `agent`
-                # here is the REAL firing Agent row (not a dispatching
-                # meta-agent), so `.tier` genuinely reflects this
-                # alert's severity.
-                if rec_ch.get("channel") == "ntfy" and not rec_ch.get("priority"):
-                    from backend.shared.helpers.alert_utils import _TIER_TO_NTFY_PRIORITY
-                    tier_priority = _TIER_TO_NTFY_PRIORITY.get(getattr(agent, "tier", None))
-                    if tier_priority:
-                        rec_ch["priority"] = tier_priority
-                recorded_channels.append(rec_ch | {"enabled": True, "gate": True})
+            classified = _classify_recorded_channel(
+                ch, agent, eval_result, condition_text, branch_tag, sim_mode,
+            )
+            if classified is not None:
+                custom_message, rec_ch = classified
+                if custom_message is None:
+                    recorded_channels.append(rec_ch)
+                else:
+                    custom_channels.append((custom_message, rec_ch))
             continue
         try:
             await _dispatch_channel(
@@ -191,15 +292,18 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
             logger.error(f"Agent event dispatch failed ({ch.get('channel', '')}): {e}")
 
     if recorded_channels:
-        logger.info(
-            f"ALERT recorded [{agent.slug}]{branch_tag}: {agent.name}",
-            extra={
-                "tags": ["agent"], "alert_event": "breach", "agent_slug": agent.slug,
-                "agent_name": agent.name, "agent_id": agent.id, "condition_text": condition_text,
-                "channels": recorded_channels, "telegram_body": telegram_body,
-                "ntfy_body": ntfy_body, "email_subject": email_subject,
-                "email_body": email_body, "sim_mode": bool(sim_mode),
-            },
+        _emit_breach_record(
+            agent, branch_tag, condition_text, recorded_channels,
+            telegram_body, ntfy_body, email_subject, email_body, sim_mode,
+        )
+
+    for custom_message, rec_ch in custom_channels:
+        msg_telegram_body, msg_ntfy_body, _msg_subject, msg_email_body = _build_dispatch_bodies(
+            custom_message, agent, sim_tag, branch, branch_tag, ist_display, sim_mode,
+        )
+        _emit_breach_record(
+            agent, branch_tag, condition_text, [rec_ch],
+            msg_telegram_body, msg_ntfy_body, email_subject, msg_email_body, sim_mode,
         )
 
     # Persist to agent_events table (sim_mode flag flows through)
@@ -207,7 +311,7 @@ async def dispatch(agent, eval_result, broadcast_fn=None, sim_mode: bool = False
                      sim_mode=sim_mode)
 
 
-_RECORDED_CHANNELS = frozenset({"telegram", "email", "ntfy"})
+_RECORDED_CHANNELS = frozenset({"telegram", "email", "ntfy", "log"})
 
 
 def _tags_match(ch: dict, eval_result) -> bool:
@@ -257,21 +361,20 @@ async def _send_ntfy_channel(ch: dict, agent, telegram_body: str, ntfy_body: str
     await loop.run_in_executor(None, lambda: send_ntfy_alert(title=agent.name, message=_ntfy_msg, priority=priority))
 
 
-def _log_channel(agent, condition_text: str, sim_mode: bool, branch_tag: str) -> None:
-    log_sim_tag = "[SIM] " if sim_mode else ""
-    logger.warning(
-        f"{log_sim_tag}ALERT [{agent.slug}]{branch_tag}: {agent.name} — {condition_text}",
-        extra={"tags": ["agent"], "agent_slug": agent.slug, "sim_mode": bool(sim_mode)},
-    )
-
-
 async def _dispatch_channel(
     ch: dict, agent, telegram_body: str, email_subject: str,
     email_body: str, condition_text: str, ist_display: str,
     eval_result, broadcast_fn, sim_mode: bool, branch: str, branch_tag: str,
     ntfy_body: str | None = None,
 ) -> None:
-    """Route one channel event. Raises on error — caller wraps in try/except."""
+    """Route one channel event. Raises on error — caller wraps in try/except.
+
+    `branch_tag` is kept in the signature for call-site/positional-arg
+    stability (websocket/inapp callers and existing tests) even though no
+    branch in this function body reads it any more — `log` moved to
+    _RECORDED_CHANNELS / event_agents.py's CHANNELS table (Sprint 6) and
+    was the only consumer.
+    """
     channel = ch.get("channel", "")
     if not _tags_match(ch, eval_result):
         return
@@ -285,8 +388,6 @@ async def _dispatch_channel(
         _broadcast_inapp(broadcast_fn, agent, condition_text, eval_result, ist_display, sim_mode, branch)
     elif channel == "ntfy" and is_enabled("ntfy"):
         await _send_ntfy_channel(ch, agent, telegram_body, ntfy_body)
-    elif channel == "log":
-        _log_channel(agent, condition_text, sim_mode, branch_tag)
 
 
 async def log_event(agent, event_type: str, condition_text: str = "",

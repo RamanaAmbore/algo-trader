@@ -869,3 +869,57 @@ describe('decompiled output key-name choice', () => {
     expect(recompiled.agent).toEqual(agentJson);
   });
 });
+
+// ── ALERT msg= decompile round-trips (Sprint 6) ─────────────────────────
+
+describe('ALERT msg= decompile round-trip', () => {
+  it('shared identical message across every channel decompiles to one clause-level msg= default', () => {
+    const { first, dec } = roundTrip(
+      'WHEN pnl@positions.total <= -1 ALERT msg="Stop loss hit", telegram, ntfy(priority="urgent") DO nop'
+    );
+    expect(first.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, message: 'Stop loss hit' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent', message: 'Stop loss hit' },
+    ]);
+    expect(dec.text).toContain('msg="Stop loss hit", telegram, ntfy(priority=urgent)');
+    expect(dec.text).not.toMatch(/telegram\(/); // hoisted channel with no other args renders bare
+  });
+
+  it('per-channel distinct messages decompile to individual per-channel msg=, no shared default', () => {
+    const { first, dec } = roundTrip(
+      'WHEN pnl@positions.total <= -1 ALERT telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent") DO nop'
+    );
+    expect(first.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, message: 'custom A' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent', message: 'custom B' },
+    ]);
+    expect(dec.text).not.toMatch(/^WHEN .*ALERT msg=/); // no hoisted clause-level default
+    expect(dec.text).toContain('telegram(msg="custom A")');
+    expect(dec.text).toContain('ntfy(priority=urgent, msg="custom B")');
+  });
+
+  it('no-message agent (today\'s normal case) decompiles with no msg= anywhere — the critical backward-compatibility path', () => {
+    const { first, dec } = roundTrip(
+      'WHEN pnl@positions.total <= -1 ALERT telegram, ntfy(priority="urgent") DO nop'
+    );
+    expect('message' in first.agent.events[0]).toBe(false);
+    expect('message' in first.agent.events[1]).toBe(false);
+    expect(dec.text).not.toMatch(/\bmsg=/);
+    expect(dec.text).toContain('ALERT telegram, ntfy(priority=urgent)');
+  });
+
+  it('a message present on some channels but not others has no CLI representation and fails loud (never producible by the compiler)', () => {
+    const dec = decompileEvents([
+      { channel: 'telegram', enabled: true, message: 'a' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent' },
+    ], CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /has no message while other channels in this ALERT do/.test(e.message))).toBe(true);
+  });
+
+  it('a non-string message value fails loud instead of emitting unparseable text', () => {
+    const dec = decompileEvents([{ channel: 'telegram', enabled: true, message: 42 }], CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /message: must be a string/.test(e.message))).toBe(true);
+  });
+});

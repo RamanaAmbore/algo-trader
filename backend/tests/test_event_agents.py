@@ -130,17 +130,24 @@ async def test_unknown_renderer_sends_nothing_and_reports_once(monkeypatch, send
 
 @pytest.mark.asyncio
 async def test_dev_process_never_dispatches(monkeypatch, senders):
+    """On a non-main branch, real notification channels (telegram/ntfy/
+    email) never fire for an ordinary (non-'log') event-agent record.
+
+    Behaviour change (fix for the Sprint 6 regression, see
+    dispatch_rows's docstring): `load_agents()`/`dispatch()` ARE now
+    called even on a non-main branch — the branch gate moved from a
+    blanket row-level early-return to a per-channel filter, so 'log' can
+    still fire for a record that carries it (see the mixed-channel tests
+    below). This test now asserts the actual guarantee that matters:
+    telegram/ntfy stay dark, not that load_agents is skipped."""
     from backend.shared.helpers import utils as u
     monkeypatch.setattr(u, "config", {"deploy_branch": "dev"})
-    called = []
 
-    async def boom():
-        called.append(True)
-        return []
+    async def load():
+        return [_agent()]
 
-    monkeypatch.setattr(event_agents, "load_agents", boom)
+    monkeypatch.setattr(event_agents, "load_agents", load)
     await event_agents.dispatch_rows([_rec()])
-    assert called == []
     assert senders == {"ntfy": [], "tg": []}
 
 
@@ -222,6 +229,13 @@ def test_validation_reports_unknown_tag_renderer_and_channel():
 
 @pytest.mark.asyncio
 async def test_simulated_records_are_skipped_unless_switch_on(monkeypatch):
+    """A sim-mode record is now stamped `_log_only` (real channels
+    suppressed, 'log' still eligible) rather than dropped outright, when
+    `simulator.notify_during_run` is off. Behaviour change (fix for the
+    Sprint 6 regression): the record still reaches `dispatch()` in both
+    cases — only the stamped flag differs — so 'log' can fire during a
+    sim run regardless of this setting (see the dedicated sim/log tests
+    below)."""
     from backend.shared.helpers import utils as u
     monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
     seen = []
@@ -239,13 +253,14 @@ async def test_simulated_records_are_skipped_unless_switch_on(monkeypatch):
     sim["extra"]["sim_mode"] = True
     monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
     await event_agents.dispatch_rows([sim])
-    assert seen == []
+    assert len(seen) == 1 and seen[0]["_log_only"] is True
+    seen.clear()
     monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: True)
     await event_agents.dispatch_rows([sim])
-    assert len(seen) == 1
+    assert len(seen) == 1 and seen[0]["_log_only"] is False
 
 
-def _breach_rec(channels):
+def _breach_rec(channels, sim_mode=False):
     return {"ts": datetime(2026, 10, 6, 9, 0, tzinfo=timezone.utc), "level": "INFO",
             "logger": "backend.api.algo.events", "message": "x", "tags": ["info", "agent"],
             "extra": {"tags": ["agent"], "alert_event": "breach", "agent_slug": "loss-funds",
@@ -253,7 +268,165 @@ def _breach_rec(channels):
                       "channels": channels, "telegram_body": "Alert — Account funds gone negative",
                       "ntfy_body": "Alert — Account funds gone negative\nCondition: cash < 0",
                       "email_subject": "RamboQuant Agent: Account funds gone negative",
-                      "email_body": "<html>cash</html>", "sim_mode": False}}
+                      "email_body": "<html>cash</html>", "sim_mode": sim_mode}}
+
+
+def _breach_agent():
+    spec = event_agents.BREACH_AGENT
+    return SimpleNamespace(slug=spec["slug"], **{k: spec[k] for k in ("conditions", "events", "actions")})
+
+
+def _log_ch(sim_mode=False):
+    """A 'log' channel entry shaped exactly like events.py's
+    _classify_recorded_channel would pre-build onto a BREACH_AGENT record."""
+    return {"channel": "log", "enabled": True, "gate": True,
+            "log_line": "ALERT [loss-funds]: Account funds gone negative — cash < 0",
+            "log_agent_slug": "loss-funds", "log_sim_mode": sim_mode}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Regression coverage: 'log' must be exempt from the deploy-branch gate and
+#  the simulator notify-during-run gate, while every other channel (telegram/
+#  email/ntfy) keeps both gates exactly as before — including when 'log' and
+#  a real channel share the SAME record (the actual Sprint 6 bug scenario).
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_log_only_record_fires_on_non_main_branch(monkeypatch):
+    import backend.shared.helpers.utils as u
+    from backend.shared.helpers import utils as cfg_u
+    captured = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(cfg_u, "config", {"deploy_branch": "dev"})
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
+    )
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    await event_agents.dispatch_rows([_breach_rec([_log_ch()])])
+    assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_channels_do_not_fire_on_non_main_branch_regression_guard(monkeypatch):
+    """Regression guard — the existing branch gate must still correctly
+    block real notification channels; only 'log' is exempt."""
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(u, "config", {"deploy_branch": "dev"})
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    tg_ch = {"channel": "telegram", "enabled": True, "gate": True}
+    await event_agents.dispatch_rows([_breach_rec([tg_ch])])
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_log_and_telegram_record_on_non_main_branch_only_logs(monkeypatch):
+    """The actual bug scenario: a single shared record carrying BOTH 'log'
+    and 'telegram' (e.g. an agent with events: [{"channel": "telegram"},
+    {"channel": "log"}] and no custom per-channel message, which group
+    into ONE record per events.py's message-grouping). On a non-main
+    branch, 'log' must still fire while 'telegram' stays dark — in the
+    SAME dispatch call, not just in two separately-tested pure cases."""
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    captured, sent = [], []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(u, "config", {"deploy_branch": "dev"})
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
+    )
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    mixed = [{"channel": "telegram", "enabled": True, "gate": True}, _log_ch()]
+    await event_agents.dispatch_rows([_breach_rec(mixed)])
+    assert len(captured) == 1
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_log_only_record_fires_during_sim_regardless_of_notify_setting(monkeypatch):
+    import backend.shared.helpers.utils as u
+    captured = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
+    )
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    await event_agents.dispatch_rows([_breach_rec([_log_ch(sim_mode=True)], sim_mode=True)])
+    assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_real_channels_respect_sim_notify_setting_regression_guard(monkeypatch):
+    """Regression guard — the existing sim-notify gate must still
+    correctly block real notification channels during an un-switched-on
+    simulator run; only 'log' is exempt."""
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    sent = []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    tg_ch = {"channel": "telegram", "enabled": True, "gate": True}
+    await event_agents.dispatch_rows([_breach_rec([tg_ch], sim_mode=True)])
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_mixed_log_and_telegram_record_during_sim_only_logs(monkeypatch):
+    """Sim-mode sibling of the branch-gate mixed-record bug fix: 'log' and
+    'telegram' sharing one record during an un-switched-on simulator run —
+    'log' fires, 'telegram' doesn't, in the same dispatch call."""
+    import backend.shared.helpers.utils as u
+    import backend.shared.helpers.alert_utils as au
+    captured, sent = [], []
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    monkeypatch.setattr(u, "config", {"deploy_branch": "main"})
+    monkeypatch.setattr(event_agents, "_sim_notify_allowed", lambda: False)
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append(msg)),
+    )
+    monkeypatch.setattr(au, "_send_telegram", lambda msg, **k: sent.append(msg))
+
+    async def load():
+        return [_breach_agent()]
+
+    monkeypatch.setattr(event_agents, "load_agents", load)
+    mixed = [{"channel": "telegram", "enabled": True, "gate": True}, _log_ch(sim_mode=True)]
+    await event_agents.dispatch_rows([_breach_rec(mixed, sim_mode=True)])
+    assert len(captured) == 1
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -292,10 +465,72 @@ async def test_breach_record_respects_disabled_capability(monkeypatch):
     assert sent == []
 
 
-def test_telegram_ntfy_and_email_are_recorded_channels():
+def test_telegram_ntfy_email_and_log_are_recorded_channels():
+    """Sprint 6 moved 'log' off events.py's direct-dispatch branches onto
+    this same recorded-channel path. websocket/inapp are an explicit,
+    operator-confirmed exclusion — they stay UI broadcasts, dispatched
+    directly inside events.py:_dispatch_channel, and must never join
+    _RECORDED_CHANNELS."""
     from backend.api.algo import events
-    assert events._RECORDED_CHANNELS == {"telegram", "email", "ntfy"}
+    assert events._RECORDED_CHANNELS == {"telegram", "email", "ntfy", "log"}
+    assert "websocket" not in events._RECORDED_CHANNELS
+    assert "inapp" not in events._RECORDED_CHANNELS
     assert event_agents.CHANNELS["email"][0] == "mail"
+
+
+@pytest.mark.asyncio
+async def test_log_channel_entry_logs_via_logger_warning(monkeypatch):
+    """event_agents.py's new 'log' CHANNELS entry writes a logger.warning
+    line — the self-contained plain-log send ported from events.py's old
+    `_log_channel` now that 'log' renders through this table instead of
+    events.py's direct-dispatch branches."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    captured = []
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append((msg, k.get("extra")))),
+    )
+    ch = {"channel": "log", "enabled": True, "gate": True,
+          "log_line": "ALERT [loss-funds]: Account funds gone negative — cash < 0",
+          "log_agent_slug": "loss-funds", "log_sim_mode": False}
+    out = ("Account funds gone negative", "Alert — body text", "Alert — body text")
+    agent = SimpleNamespace(slug="loss-funds", tier="critical")
+
+    sent = await event_agents._send_channel(ch, out, agent)
+
+    assert sent is True
+    assert len(captured) == 1
+    msg, extra = captured[0]
+    assert msg == "ALERT [loss-funds]: Account funds gone negative — cash < 0"
+    assert extra == {"tags": ["agent"], "agent_slug": "loss-funds", "sim_mode": False}
+    assert "alert_event" not in extra, (
+        "must never carry alert_event — would re-match BREACH_AGENT's own "
+        "condition on the next log flush and loop forever"
+    )
+
+
+@pytest.mark.asyncio
+async def test_log_channel_falls_back_to_title_and_body_without_prebuilt_line(monkeypatch):
+    """A caller that doesn't pre-build log_line/log_agent_slug (e.g. a
+    future renderer) still gets a sane 'title — body' log line instead of
+    crashing."""
+    import backend.shared.helpers.utils as u
+    monkeypatch.setattr(u, "is_enabled", lambda cap: True)
+    captured = []
+    monkeypatch.setattr(
+        event_agents, "_EVENTS_LOGGER",
+        SimpleNamespace(warning=lambda msg, **k: captured.append((msg, k.get("extra")))),
+    )
+    ch = {"channel": "log", "enabled": True}
+    out = ("Some Title", "Some Body")
+    agent = SimpleNamespace(slug="x", tier="low")
+
+    sent = await event_agents._send_channel(ch, out, agent)
+
+    assert sent is True
+    assert captured[0][0] == "Some Title — Some Body"
+    assert captured[0][1] == {"tags": ["agent"], "agent_slug": None, "sim_mode": False}
 
 
 @pytest.mark.asyncio

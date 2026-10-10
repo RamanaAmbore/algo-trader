@@ -691,6 +691,112 @@ describe('order_stmt restricted to order/place_order calls only', () => {
   });
 });
 
+// ── ALERT msg= clause-level/per-channel message default (Sprint 6) ─────
+
+describe('ALERT msg= default', () => {
+  it('clause-level default applies to every bare channel that does not override it', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="Stop loss hit", telegram, ntfy(priority="urgent") DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, message: 'Stop loss hit' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent', message: 'Stop loss hit' },
+    ]);
+  });
+
+  it('a per-channel own msg= overrides the clause default; a channel with no own msg= still inherits it', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="default text", telegram, ntfy(msg="override", priority="urgent") DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, message: 'default text' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent', message: 'override' },
+    ]);
+  });
+
+  it('per-channel own msg= on every channel needs no clause-level default at all', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="custom A"), ntfy(msg="custom B", priority="urgent") DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, message: 'custom A' },
+      { channel: 'ntfy', enabled: true, priority: 'urgent', message: 'custom B' },
+    ]);
+  });
+
+  it('a channel with neither its own message nor a clause-level default is a compile error with the exact documented wording', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="only this one has a message"), ntfy(priority="urgent") DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => e.message === "channel 'ntfy' has no message — set msg= on ALERT or on this channel directly")).toBe(true);
+  });
+
+  it('when msg= is used nowhere in the clause, every channel compiles with NO message key at all (unchanged from pre-Sprint-6 output)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram, ntfy(priority="urgent") DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true },
+      { channel: 'ntfy', enabled: true, priority: 'urgent' },
+    ]);
+    expect('message' in r.agent.events[0]).toBe(false);
+    expect('message' in r.agent.events[1]).toBe(false);
+  });
+
+  it('telegram() with empty parens, relying only on the clause default, is still a parse error (existing "zero-arg must be bare" rule is untouched)', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="x", telegram(), ntfy(priority="urgent") DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /zero-argument token is always written bare/.test(e.message))).toBe(true);
+  });
+
+  it('a duplicate msg/message kwarg on the same channel call is a compile error', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg="a", message="b") DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /duplicate parameter 'msg'\/'message'/.test(e.message))).toBe(true);
+  });
+
+  it('a bare (unquoted) per-channel message value is rejected, same "must be quoted" rule as every other free-text field', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT telegram(msg=hello) DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /must be quoted/.test(e.message))).toBe(true);
+  });
+
+  it('msg= and MSG= are case-insensitive and behave identically', () => {
+    const lower = compile('WHEN pnl@positions.total <= -1 ALERT msg="hi", telegram DO nop');
+    const upper = compile('WHEN pnl@positions.total <= -1 ALERT MSG="hi", telegram DO nop');
+    expect(lower.ok).toBe(true);
+    expect(upper.ok).toBe(true);
+    expect(upper.agent).toEqual(lower.agent);
+  });
+
+  it('DO emit_log(message=...) is unaffected by the ALERT-only msg= stripping — DO\'s own real "message" param still works', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT msg="y", telegram');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: 'x' } }]);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, message: 'y' }]);
+  });
+
+  it('msg= composes with the already-shipped ALERT/DO reordering: DO-before-ALERT with a clause default compiles identically to the canonical order', () => {
+    const canonical = compile('WHEN pnl@positions.total <= -1 ALERT msg="y", telegram DO emit_log(message="x")');
+    const reversed = compile('WHEN pnl@positions.total <= -1 DO emit_log(message="x") ALERT msg="y", telegram');
+    expect(reversed.ok).toBe(true);
+    expect(reversed.agent).toEqual(canonical.agent);
+  });
+
+  it('msg= composes with a bare "ALERT ..." with no WHEN at all', () => {
+    const withWhen = compile('WHEN always ALERT msg="y", telegram');
+    const omitted = compile('ALERT msg="y", telegram');
+    expect(omitted.ok).toBe(true);
+    expect(omitted.agent).toEqual(withWhen.agent);
+  });
+
+  it('"ALERT msg=..." with no channel list at all is a parse error, not a silent success', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT msg="y" DO nop');
+    expect(r.ok).toBe(false);
+  });
+
+  it('"ALERT nop" is unaffected — msg= has no meaning alongside an explicit nop', () => {
+    const r = compile('WHEN pnl@positions.total <= -1 ALERT nop DO emit_log(message="x")');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([]);
+  });
+});
+
 // ── lexAgentStatement() / parseCall() / parseValue() / parseLeaf() — a
 //    few direct unit tests on the lower-level exports, for Sprint 3/4's
 //    benefit (decompiler / live preview will call these directly). ──────

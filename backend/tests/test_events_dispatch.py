@@ -345,8 +345,13 @@ async def test_dispatch_channel_inapp():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_channel_log():
-    """Dispatch channel log."""
+async def test_dispatch_channel_log_is_now_a_noop():
+    """'log' moved off _dispatch_channel's direct-send branches onto the
+    _RECORDED_CHANNELS / event_agents.py CHANNELS table (Sprint 6) — calling
+    _dispatch_channel directly with channel='log' must no longer write
+    anything via events.logger. (Its old behaviour — slug/condition/[SIM]/
+    branch_tag in the warning line — now lives in
+    event_agents._send_log_channel; see test_event_agents.py.)"""
     from backend.api.algo.events import _dispatch_channel
     from unittest.mock import MagicMock, patch
 
@@ -360,30 +365,7 @@ async def test_dispatch_channel_log():
             ch, agent, "", "", "", "test condition", "2026-07-26", None,
             None, False, "main", ""
         )
-        mock_logger.warning.assert_called_once()
-        call_str = str(mock_logger.warning.call_args)
-        assert "test-slug" in call_str
-        assert "test condition" in call_str
-
-
-@pytest.mark.asyncio
-async def test_dispatch_channel_log_sim_mode():
-    """Log channel includes [SIM] tag in sim_mode."""
-    from backend.api.algo.events import _dispatch_channel
-    from unittest.mock import MagicMock, patch
-
-    ch = {"channel": "log", "enabled": True}
-    agent = MagicMock()
-    agent.name = "Test"
-    agent.slug = "test"
-
-    with patch('backend.api.algo.events.logger') as mock_logger:
-        await _dispatch_channel(
-            ch, agent, "", "", "", "test", "2026-07-26", None,
-            None, True, "main", ""  # sim_mode=True
-        )
-        call_str = str(mock_logger.warning.call_args)
-        assert "[SIM]" in call_str
+        mock_logger.warning.assert_not_called()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -860,81 +842,6 @@ async def test_dispatch_channel_ntfy_without_priority_passes_none():
 
 
 @pytest.mark.asyncio
-async def test_dispatch_channel_log_includes_sim_tag_when_sim_mode():
-    """log channel includes [SIM] tag in message when sim_mode=True."""
-    from backend.api.algo.events import _dispatch_channel, EvalResult
-
-    ch = {"channel": "log", "enabled": True}
-    agent = MagicMock()
-    agent.id = 1
-    agent.slug = "test-agent"
-    agent.name = "Test Agent"
-
-    eval_result = EvalResult(triggered=True, condition_text="loss > 5000", detail={})
-
-    with patch('backend.api.algo.events.logger') as mock_logger:
-        await _dispatch_channel(
-            ch, agent, "", "", "",
-            "loss > 5000", "2026-07-26", eval_result,
-            None, True, "main", ""  # sim_mode=True
-        )
-
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "[SIM]" in log_message
-
-
-@pytest.mark.asyncio
-async def test_dispatch_channel_log_no_sim_tag_when_not_sim_mode():
-    """log channel does NOT include [SIM] tag when sim_mode=False."""
-    from backend.api.algo.events import _dispatch_channel, EvalResult
-
-    ch = {"channel": "log", "enabled": True}
-    agent = MagicMock()
-    agent.id = 1
-    agent.slug = "test-agent"
-    agent.name = "Test Agent"
-
-    eval_result = EvalResult(triggered=True, condition_text="loss > 5000", detail={})
-
-    with patch('backend.api.algo.events.logger') as mock_logger:
-        await _dispatch_channel(
-            ch, agent, "", "", "",
-            "loss > 5000", "2026-07-26", eval_result,
-            None, False, "main", ""  # sim_mode=False
-        )
-
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "[SIM]" not in log_message
-
-
-@pytest.mark.asyncio
-async def test_dispatch_channel_log_includes_branch_tag():
-    """log channel includes branch_tag in message."""
-    from backend.api.algo.events import _dispatch_channel, EvalResult
-
-    ch = {"channel": "log", "enabled": True}
-    agent = MagicMock()
-    agent.id = 1
-    agent.slug = "test-agent"
-    agent.name = "Test Agent"
-
-    eval_result = EvalResult(triggered=True, condition_text="test", detail={})
-
-    with patch('backend.api.algo.events.logger') as mock_logger:
-        await _dispatch_channel(
-            ch, agent, "", "", "",
-            "test", "2026-07-26", eval_result,
-            None, False, "dev", " [dev]"  # branch_tag
-        )
-
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "[dev]" in log_message
-
-
-@pytest.mark.asyncio
 async def test_dispatch_channel_telegram_skipped_when_is_enabled_false():
     """telegram channel is skipped when is_enabled('telegram') returns False."""
     from backend.api.algo.events import _dispatch_channel, EvalResult
@@ -1074,32 +981,6 @@ async def test_dispatch_skips_disabled_channels():
     assert "email" not in dispatch_calls
 
 
-@pytest.mark.asyncio
-async def test_dispatch_channel_log_includes_agent_slug_and_condition():
-    """log channel includes agent slug and condition text in message."""
-    from backend.api.algo.events import _dispatch_channel, EvalResult
-
-    ch = {"channel": "log", "enabled": True}
-    agent = MagicMock()
-    agent.id = 1
-    agent.slug = "my-test-agent"
-    agent.name = "My Test Agent"
-
-    condition_text = "pnl < -1000"
-    eval_result = EvalResult(triggered=True, condition_text=condition_text, detail={})
-
-    with patch('backend.api.algo.events.logger') as mock_logger:
-        await _dispatch_channel(
-            ch, agent, "", "", "",
-            condition_text, "2026-07-26", eval_result,
-            None, False, "main", ""
-        )
-
-        mock_logger.warning.assert_called_once()
-        log_message = mock_logger.warning.call_args[0][0]
-        assert "my-test-agent" in log_message
-        assert condition_text in log_message
-        assert "My Test Agent" in log_message
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1204,3 +1085,202 @@ async def test_dispatch_channel_ntfy_falls_back_to_telegram_body_when_ntfy_body_
     mock_send.assert_called_once()
     _, kwargs = mock_send.call_args
     assert kwargs["message"] == "fallback text"
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 6 — per-channel `message` grouping (events.py:_classify_recorded_
+#  channel / _emit_breach_record). This module's autouse `_direct_channels`
+#  fixture empties `_RECORDED_CHANNELS` for every OTHER test in this file
+#  (so they can exercise `_dispatch_channel` directly) — these tests
+#  explicitly restore the real set first, since the grouping logic only
+#  runs for _RECORDED_CHANNELS members.
+# ═══════════════════════════════════════════════════════════════════════════
+
+@pytest.mark.asyncio
+async def test_dispatch_groups_messageless_channels_into_one_record():
+    """No channel carries a `message` key — dispatch() must emit exactly
+    ONE 'ALERT recorded' logger.info() call, in the same shape as before
+    Sprint 6's grouping. This is the majority of production traffic
+    (every existing threshold/loss-* agent) and must never regress."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email", "enabled": True},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append((msg, kw.get("extra")))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1, "messageless channels must share exactly one record"
+    msg, extra = info_calls[0]
+    assert msg == "ALERT recorded [test-agent]: Test Agent"
+    assert [c["channel"] for c in extra["channels"]] == ["telegram", "email"]
+    assert "message" not in extra["channels"][0] and "message" not in extra["channels"][1]
+    assert extra["condition_text"] == "pnl > 1000"
+    assert extra["telegram_body"] == extra["ntfy_body"]
+    assert "Condition: pnl > 1000" in extra["telegram_body"]
+    assert extra["email_subject"] == "RamboQuant Agent: Test Agent"
+    assert "<p><b>Condition:</b> pnl > 1000</p>" in extra["email_body"]
+    assert extra["sim_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_dispatch_treats_empty_string_message_as_no_message():
+    """An explicit `message: ""` (or `message: None`) must normalize to
+    'no custom message' and join the shared group — never change the
+    record's shape vs. the messageless default."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [
+        {"channel": "telegram", "enabled": True, "message": ""},
+        {"channel": "email", "enabled": True, "message": None},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append((msg, kw.get("extra")))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 1
+    _, extra = info_calls[0]
+    assert len(extra["channels"]) == 2
+    for c in extra["channels"]:
+        assert "message" not in c
+
+
+@pytest.mark.asyncio
+async def test_dispatch_splits_custom_message_channels_into_their_own_records():
+    """A channel with a real `message` override gets its OWN separate
+    'ALERT recorded' record (rendered from that message, not
+    condition_text) — every messageless channel still shares one shared
+    record."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [
+        {"channel": "telegram", "enabled": True},
+        {"channel": "email", "enabled": True},
+        {"channel": "ntfy", "enabled": True, "message": "custom ntfy text"},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append((msg, kw.get("extra")))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert len(info_calls) == 2
+    shared = next(extra for _, extra in info_calls if len(extra["channels"]) == 2)
+    custom = next(extra for _, extra in info_calls if len(extra["channels"]) == 1)
+
+    assert {c["channel"] for c in shared["channels"]} == {"telegram", "email"}
+    assert "Condition: pnl > 1000" in shared["telegram_body"]
+
+    assert custom["channels"][0]["channel"] == "ntfy"
+    assert custom["channels"][0]["message"] == "custom ntfy text"
+    assert "Condition: custom ntfy text" in custom["ntfy_body"]
+    assert "pnl > 1000" not in custom["ntfy_body"]
+    # condition_text on the top-level extra always reflects the agent's
+    # real firing condition, regardless of which group rendered the body.
+    assert custom["condition_text"] == "pnl > 1000"
+    # email_subject never depends on the message override (only the body does).
+    assert custom["email_subject"] == shared["email_subject"] == "RamboQuant Agent: Test Agent"
+
+
+@pytest.mark.asyncio
+async def test_log_channel_now_flows_through_recorded_channels_not_dispatch_channel():
+    """'log' moved into _RECORDED_CHANNELS (Sprint 6) — dispatch() must
+    route it through the grouped-record path, never call _dispatch_channel
+    for it."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [{"channel": "log", "enabled": True}]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    dispatch_channel_calls = []
+    async def mock_dispatch_channel(ch, *a, **k):
+        dispatch_channel_calls.append(ch.get("channel"))
+
+    info_calls = []
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.events._dispatch_channel', side_effect=mock_dispatch_channel), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock), \
+         patch.object(events.logger, "info", side_effect=lambda msg, **kw: info_calls.append(kw.get("extra"))):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert dispatch_channel_calls == []
+    assert len(info_calls) == 1
+    extra = info_calls[0]
+    assert extra["channels"][0]["channel"] == "log"
+    assert extra["channels"][0]["log_line"] == "ALERT [test-agent]: Test Agent — pnl > 1000"
+    assert extra["channels"][0]["log_agent_slug"] == "test-agent"
+    assert extra["channels"][0]["log_sim_mode"] is False
+
+
+@pytest.mark.asyncio
+async def test_websocket_and_inapp_channels_still_dispatch_directly():
+    """Explicit scope-discipline regression guard (Sprint 6 narrowed scope
+    to telegram/email/ntfy/log only) — websocket and inapp must still be
+    routed through _dispatch_channel exactly as before, unaffected by the
+    grouping refactor. See test_event_agents.py for the companion
+    assertion that they're absent from _RECORDED_CHANNELS."""
+    from backend.api.algo import events
+    from backend.api.algo.events import dispatch, EvalResult
+
+    agent = MagicMock()
+    agent.id = 1
+    agent.name = "Test Agent"
+    agent.slug = "test-agent"
+    agent.tier = "medium"
+    agent.events = [
+        {"channel": "websocket", "enabled": True},
+        {"channel": "inapp", "enabled": True},
+    ]
+    eval_result = EvalResult(triggered=True, condition_text="pnl > 1000", detail={})
+
+    dispatch_channel_calls = []
+    async def mock_dispatch_channel(ch, *a, **k):
+        dispatch_channel_calls.append(ch.get("channel"))
+
+    with patch.object(events, "_RECORDED_CHANNELS", frozenset({"telegram", "email", "ntfy", "log"})), \
+         patch('backend.api.algo.events._dispatch_channel', side_effect=mock_dispatch_channel), \
+         patch('backend.api.algo.template_registry.resolve_events', return_value=agent.events), \
+         patch('backend.api.algo.events._log_event', new_callable=AsyncMock):
+        await dispatch(agent, eval_result, sim_mode=False)
+
+    assert set(dispatch_channel_calls) == {"websocket", "inapp"}

@@ -557,6 +557,24 @@ system_tokens:
   token: email
   value_type: enum
   description: Email to every address in secrets.alert_emails.
+# ntfy already dispatches today (events.py's _RECORDED_CHANNELS /
+# event_agents.py's CHANNELS table) — this entry is Sprint 6's catalog
+# registration only, so the agent CLI grammar's autocomplete/validation
+# surfaces it as an authorable channel token like every other one here.
+- grammar_kind: notify
+  token_kind: channel
+  token: ntfy
+  value_type: enum
+  description: Push notification via ntfy.sh. Priority sets urgency; defaults to the firing agent's tier when omitted.
+  params_schema:
+    priority:
+      type: enum
+      enum:
+      - low
+      - default
+      - high
+      - urgent
+      required: false
 - grammar_kind: notify
   token_kind: channel
   token: websocket

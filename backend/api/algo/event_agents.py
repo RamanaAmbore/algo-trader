@@ -16,6 +16,14 @@ from sqlalchemy import select
 from backend.api.algo import fill_notify
 from backend.api.algo.agent_evaluator import Context, evaluate
 from backend.shared.helpers.error_alerts import RepeatGate, clean_message
+from backend.shared.helpers.ramboq_logger import get_logger
+
+# Logger name deliberately pinned to "backend.api.algo.events" (NOT this
+# module's own __name__) — the "log" channel's send function below is a
+# direct port of events.py's old _log_channel, and every LogEvent row it
+# writes must keep showing up under that same logger name so stored rows
+# look identical to what they did before the Sprint 6 move.
+_EVENTS_LOGGER = get_logger("backend.api.algo.events")
 
 _CACHE_S = 60.0
 _cache: dict = {"at": float("-inf"), "agents": []}
@@ -277,11 +285,40 @@ def _send_telegram_info_html(title: str, body: str, tg: str | None = None) -> No
     alert_utils._send_telegram_info(tg or f"<b>{html.escape(title)}</b>\n{html.escape(body)}")
 
 
+def _send_log_channel(title: str, body: str, tg: str | None = None, *,
+                      log_line: str | None = None, agent_slug: str | None = None,
+                      sim_mode: bool = False, **_kw) -> None:
+    """Plain log write — the 'log' channel's entire delivery IS this
+    logger.warning call. No broadcast_fn, no external service — fully
+    self-contained, same as before this channel moved off
+    events.py's old direct-dispatch `_log_channel`.
+
+    `log_line`/`agent_slug`/`sim_mode` are pre-built by
+    events.py:_classify_recorded_channel onto this channel's own record
+    (the generic `out` render tuple only carries the SHARED telegram/ntfy/
+    email bodies, not a per-channel one) and threaded through by
+    `_send_channel`'s "log" branch below. Falls back to `title — body`
+    when called directly without those (e.g. a future renderer that
+    doesn't pre-build a log line).
+
+    The `extra` dict here is deliberately identical to the old
+    `_log_channel`'s shape — `tags`/`agent_slug`/`sim_mode` only, NEVER
+    `alert_event` — adding `alert_event: "breach"` would make this very
+    write re-match BREACH_AGENT's own log condition on the next flush and
+    loop forever.
+    """
+    _EVENTS_LOGGER.warning(
+        log_line or f"{title} — {body}",
+        extra={"tags": ["agent"], "agent_slug": agent_slug, "sim_mode": bool(sim_mode)},
+    )
+
+
 CHANNELS = {
     "ntfy": ("ntfy", _send_ntfy),
     "telegram": ("telegram", _send_telegram_html),
     "telegram_info": (None, _send_telegram_info_html),
     "email": ("mail", _send_email_channel),
+    "log": (None, _send_log_channel),
 }
 
 
@@ -331,6 +368,10 @@ async def _send_channel(ch: dict, out: tuple, agent) -> bool:
     if ch.get("channel") == "email":
         kwargs["email"] = out[3] if len(out) > 3 else None
         kwargs["recipients"] = ch.get("recipients")
+    if ch.get("channel") == "log":
+        kwargs["log_line"] = ch.get("log_line")
+        kwargs["agent_slug"] = ch.get("log_agent_slug")
+        kwargs["sim_mode"] = ch.get("log_sim_mode", False)
     try:
         await asyncio.to_thread(send, title, body, tg, **kwargs)
         return True
@@ -348,9 +389,21 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
             sys.stderr.write(f"event_agents: {agent.slug} names unknown renderer '{key}'\n")
         return 0
     gated = _gate_spec(agent)
+    # Cheap backstop against the shared repeat-gate consuming its dedup
+    # budget for rows that will end up fully suppressed anyway: a GATED
+    # agent whose own static `events` carries no 'log' channel can never
+    # rescue a `_log_only` row (see dispatch_rows docstring) — its only
+    # possible channels are real notification channels, every one of
+    # which will be dropped below regardless. BREACH_AGENT is the one
+    # source of a dynamically-added 'log' channel (via out[4]) and is
+    # deliberately ungated, so it always reaches render/_gate_passes.
+    static_has_log = any(isinstance(e, dict) and e.get("channel") == "log" for e in (agent.events or []))
     sent = 0
     for rec in records:
         if not evaluate(agent.conditions, Context(log_records=[rec])):
+            continue
+        log_only = bool(rec.get("_log_only"))
+        if log_only and gated and not static_has_log:
             continue
         to_render = _gate_passes(agent, rec, gated)
         if to_render is None:
@@ -358,6 +411,13 @@ async def _dispatch_agent(agent, records: list[dict]) -> int:
         out = render(to_render)
         channels = out[4] if len(out) > 4 else (agent.events or [])
         for ch in channels:
+            # A `_log_only` record is one the branch gate or sim-notify
+            # gate would normally have suppressed entirely — 'log' is
+            # exempt from both (local log write, no external notification
+            # cost), every other channel in the SAME record still must not
+            # fire. See dispatch_rows docstring for the full rationale.
+            if log_only and (not isinstance(ch, dict) or ch.get("channel") != "log"):
+                continue
             if await _send_channel(ch, out, agent):
                 sent += 1
     return sent
@@ -395,14 +455,40 @@ def _sim_notify_allowed() -> bool:
 
 
 async def dispatch_rows(rows: list[dict]) -> None:
-    if not _alerts_enabled_here():
-        return
+    """Flush one batch of tagged log rows to any matching event agent.
+
+    Two independent gates normally suppress a row entirely: the deploy-
+    branch gate (`_alerts_enabled_here`, real notifications only fire from
+    the main-branch deploy) and the simulator notify-during-run gate
+    (`_sim_notify_allowed`). Both exist to stop telegram/email/ntfy from
+    paging a real phone/inbox from a dev instance or a fabricated
+    simulator run.
+
+    The 'log' channel is exempt from BOTH gates — it's a local log write
+    with no external notification cost, and its whole documented purpose
+    ("silent testing of new agents") requires it to keep working on dev
+    and during simulator runs. Earlier (pre-fix) this function dropped
+    the WHOLE row when a gate failed, which also silenced any 'log'
+    channel sharing that row — including a MIXED record (e.g. one agent
+    firing both 'telegram' and 'log' with no custom per-channel message,
+    which land in the SAME shared record per events.py's message-grouping
+    logic). Fix: never drop a row here for branch/sim reasons. Instead,
+    stamp it `_log_only` when either gate would have suppressed it, and
+    let `_dispatch_agent` filter at the CHANNEL level — 'log' always
+    passes, every other channel in that same record still correctly
+    stays dark.
+    """
     rows = [{**r, "extra": {**(r.get("extra") or {}), **(r.get("_bulk") or {})}} for r in rows]
     rows = [r for r in rows if (r.get("extra") or {}).get("origin") in (None, "main")]
-    if not _sim_notify_allowed():
-        rows = [r for r in rows if not (r.get("extra") or {}).get("sim_mode")]
     if not rows:
         return
+    branch_ok = _alerts_enabled_here()
+    sim_ok = True
+    if any((r.get("extra") or {}).get("sim_mode") for r in rows):
+        sim_ok = _sim_notify_allowed()
+    for r in rows:
+        is_sim = bool((r.get("extra") or {}).get("sim_mode"))
+        r["_log_only"] = (not branch_ok) or (is_sim and not sim_ok)
     try:
         agents = await load_agents()
         if agents and rows:
