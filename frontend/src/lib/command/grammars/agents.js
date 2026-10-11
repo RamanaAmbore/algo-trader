@@ -1541,15 +1541,25 @@ export function parseMetricRef(state) {
  *  (the exact same "expected '@' after metric" wording `parseMetricRef`
  *  already throws, since a `between` chain's metric position has no bare-
  *  ref/Token-reference alternative the way a plain leaf does). Returns
- *  `{ kind: 'colref', segments: CallNode[] }` or
- *  `{ kind: 'metric', metric: CallNode, scope: ScopeNode }`. */
+ *  `{ kind: 'colref', segments: (CallNode|QualifierNode)[] }` or
+ *  `{ kind: 'metric', metric: CallNode, scope: ScopeNode }`. Sprint 21 —
+ *  every segment AFTER the first uses `parseScopeSeg` (not `parseCall`),
+ *  so a qualifier segment (`symbol:NIFTY25JULFUT`) may now appear
+ *  anywhere in the chain before the trailing column name — see
+ *  `_resolveDotAccessWithQualifier`'s own header comment for the
+ *  resolution-side half of this. The first segment stays `parseCall`
+ *  (unchanged) since the colref/metric_ref dispatch below only knows to
+ *  look for a following "." or "@" once it's been consumed. */
 function parseMetricOrColRef(state) {
   const first = parseCall(state);
   if (_peek(state).type === 'DOT') {
+    // Sprint 21 — typed `any[]` (not inferred from `first`'s narrower
+    // CallNode shape) since a later segment may now be a QualifierNode.
+    /** @type {any[]} */
     const segments = [first];
     while (_peek(state).type === 'DOT') {
       _advance(state);
-      segments.push(parseCall(state));
+      segments.push(parseScopeSeg(state));
     }
     return { kind: 'colref', segments };
   }
@@ -1659,10 +1669,16 @@ export function parseLeaf(state) {
     // This branch is reached ONLY when a "." immediately follows the
     // first call with no "@" anywhere — the existing `scope_ref` grammar
     // (always preceded by "@") is completely untouched.
+    // Sprint 21 — segments AFTER the first use `parseScopeSeg` (same as
+    // `parseMetricOrColRef`'s identical loop above), so a qualifier
+    // segment may appear mid-chain, e.g.
+    // `quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100`. Typed `any[]` for
+    // the same reason as that sibling loop.
+    /** @type {any[]} */
     const segments = [firstCall];
     while (_peek(state).type === 'DOT') {
       _advance(state);
-      segments.push(parseCall(state));
+      segments.push(parseScopeSeg(state));
     }
     if (_isComparatorStart(_peek(state))) {
       const op = parseComparator(state);
@@ -2809,6 +2825,27 @@ function _compileComparatorValue(metricStr, scopeStr, valueType, op, value, erro
     return { metric: metricStr, scope: scopeStr, op, value: String(value.value).toLowerCase() === 'true' };
   }
 
+  // Sprint 21 — a string-typed metric/column (e.g. `orders.any_acct.status`)
+  // only supports scalar equality, never an ordered comparator — same
+  // "==/!= only" shape the boolean branch above already uses. Both a bare
+  // NAME and a quoted STRING are accepted for the right-hand value (same
+  // "either spelling accepted" precedent `in`/`not_in` already established
+  // for a non-numeric metric's list items, via `_compileListValue`) — the
+  // DO-clause's separate "free-text value must be quoted" rule is a
+  // different code path (`_coerceValueForSpec`, action params only) and is
+  // untouched by this.
+  if (valueType === 'string') {
+    if (op !== '==' && op !== '!=') {
+      errors.push(_err(`string metric '${metricStr}' only supports == / !=`));
+      return null;
+    }
+    if (value.type !== 'string' && value.type !== 'name') {
+      errors.push(_err(`${metricStr}: expected a string value`));
+      return null;
+    }
+    return { metric: metricStr, scope: scopeStr, op, value: String(value.value) };
+  }
+
   if (value.type !== 'number') {
     errors.push(_err('comparator requires both sides numeric'));
     return null;
@@ -2840,7 +2877,67 @@ function _compileComparatorValue(metricStr, scopeStr, valueType, op, value, erro
  *       arguments has no default-dot shortcut (dot-access can't pass
  *       arguments) — a clear error pointing at the explicit call form.
  *    4. Anything else — unknown scope or unknown column/metric on it. */
+/** Sprint 21 — the qualifier-aware branch of `_resolveDotAccess`, reached
+ *  only when at least one segment of the bare dotted chain is a Sprint-19
+ *  QualifierNode (e.g. `quote.tracked.symbol:NIFTY25JULFUT.ltp`). Without
+ *  this, a scope requiring a qualifier (`quote.tracked`) would be
+ *  completely unreachable for any exposed column that has no dedicated
+ *  "@"-form metric token (`bid`/`ask`/`volume` have none) — only `ltp`
+ *  (reused as a real metric) would have a usable spelling at all.
+ *
+ *  The grammar rule is simple and matches `scope_ref`'s own convention:
+ *  the LAST segment is always the trailing column/metric name (a plain
+ *  call, never a qualifier); EVERY segment before it is the scope chain,
+ *  qualifiers included — handed off verbatim to Sprint 19's own
+ *  `_resolveScopeRefFull`, so qualifier validation (unknown key, "*"/
+ *  "worst" handling, trailing-only enforcement, exposed-column
+ *  whitelisting) is defined in exactly ONE place for both the "@" form
+ *  and this bare dot-access form. */
+function _resolveDotAccessWithQualifier(segments, catalog, errors) {
+  const last = segments[segments.length - 1];
+  if (last.type !== 'call') {
+    errors.push(_err(`expected a trailing '.column' name after '${last.key}:' — a qualifier segment cannot be the last segment of a dot-access chain`));
+    return null;
+  }
+  if (last.args && last.args.length) {
+    errors.push(_err(`'${last.name}' takes no arguments`));
+    return null;
+  }
+  const scopeSegs = segments.slice(0, -1);
+  const scopeResolved = _resolveScopeRefFull({ type: 'scope', segments: scopeSegs }, catalog, errors);
+  if (!scopeResolved) return null; // _resolveScopeRefFull already pushed the specific error
+
+  const lastName = last.name.toLowerCase();
+  const { scopeStr, scopeFilter } = scopeResolved;
+  const colKey = `${scopeStr}.${lastName}`.toLowerCase();
+  const colEntry = catalog.columns && catalog.columns.get(colKey);
+  if (colEntry) {
+    const exposedName = colEntry.token.slice(scopeStr.length + 1);
+    return { metricStr: exposedName, scopeStr, valueType: colEntry.valueType, scopeFilter };
+  }
+  const metricEntry = catalog.metrics.get(lastName);
+  if (metricEntry && !metricEntry.isFragmentRef) {
+    if (metricEntry.paramKeys && metricEntry.paramKeys.length) {
+      errors.push(_err(
+        `'${lastName}' requires argument(s) — use '${lastName}(...)@${scopeStr}', `
+        + `dot-access has no way to pass arguments`
+      ));
+      return null;
+    }
+    return { metricStr: metricEntry.token, scopeStr, valueType: metricEntry.valueType, scopeFilter };
+  }
+  errors.push(_err(`unknown column '${lastName}' on scope '${scopeStr}'`));
+  return null;
+}
+
 function _resolveDotAccess(segments, catalog, errors) {
+  // Sprint 21 — a qualifier segment anywhere in the chain delegates
+  // entirely to the qualifier-aware branch above; the no-qualifier path
+  // below is completely unchanged (byte-identical behavior for every
+  // pre-Sprint-21 chain).
+  if (segments.some((s) => s.type === 'qualifier')) {
+    return _resolveDotAccessWithQualifier(segments, catalog, errors);
+  }
   const parts = [];
   for (let i = 0; i < segments.length; i++) {
     const seg = segments[i];
@@ -2902,6 +2999,8 @@ function compileLeaf(node, catalog) {
   const metricEntry = _resolveMetric(node.metric, catalog, errors);
   const scopeResolved = metricEntry ? _resolveScopeRefFull(node.scope, catalog, errors) : null;
   if (errors.length) return { conditions: null, errors };
+  _checkQuoteScopeRequiresSymbol(scopeResolved.scopeStr, scopeResolved.scopeFilter, errors);
+  if (errors.length) return { conditions: null, errors };
   const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
   if (errors.length) return { conditions: null, errors };
   const conditions = _compileComparatorValue(metricStr, scopeResolved.scopeStr, metricEntry.valueType, node.op, node.value, errors);
@@ -2920,12 +3019,38 @@ function compileLeaf(node, catalog) {
  *  `compileLeaf` so the two produce byte-identical JSON for the "same
  *  concept, different spelling" case (`positions.total.pnl <= -50000`
  *  vs. `pnl@positions.total <= -50000`). */
+/** Sprint 21 — `quote.*` is instrument-rooted (market data belongs to no
+ *  account) with no meaningful "every tracked symbol" aggregate the way
+ *  `*.any_acct` works for accounts, so a `quote.*` leaf with no (or
+ *  wildcard) `symbol:` qualifier has nothing to disambiguate WHICH
+ *  tracked row it means. Mirrors the backend's own `agent_evaluator.
+ *  validate()` guard byte-for-byte (same condition: `scope_filter` missing
+ *  or its `symbol` key absent) — the exact symmetric-opposite direction of
+ *  Sprint 19's "qualifier not valid for this scope" check above (a
+ *  REQUIRED qualifier missing, instead of an unsupported one supplied).
+ *  Called once scope + scope_filter are BOTH already resolved, from every
+ *  leaf-producing compile path (`compileLeaf`, `compileColRef`, and both
+ *  of `compileBetween`'s output shapes) so a `quote.*` leaf can never
+ *  reach the compiled JSON without a concrete symbol, regardless of which
+ *  CLI spelling produced it. A no-op for every other scope family. */
+function _checkQuoteScopeRequiresSymbol(scopeStr, scopeFilter, errors) {
+  if (typeof scopeStr !== 'string' || !scopeStr.toLowerCase().startsWith('quote.')) return;
+  if (scopeFilter && scopeFilter.symbol) return;
+  errors.push(_err(
+    `${scopeStr} requires a specific symbol: qualifier, e.g. `
+    + `${scopeStr}.symbol:NIFTY25JULFUT — no 'any symbol' aggregate exists for market data`
+  ));
+}
+
 function compileColRef(node, catalog) {
   const errors = [];
   const resolved = _resolveDotAccess(node.segments, catalog, errors);
   if (errors.length) return { conditions: null, errors };
+  _checkQuoteScopeRequiresSymbol(resolved.scopeStr, resolved.scopeFilter, errors);
+  if (errors.length) return { conditions: null, errors };
   const conditions = _compileComparatorValue(resolved.metricStr, resolved.scopeStr, resolved.valueType, node.op, node.value, errors);
   if (errors.length) return { conditions: null, errors };
+  if (resolved.scopeFilter) conditions.scope_filter = resolved.scopeFilter;
   return { conditions, errors: [] };
 }
 
@@ -2937,7 +3062,7 @@ function compileBetween(node, catalog) {
   if (node.colSegments) {
     const resolved = _resolveDotAccess(node.colSegments, catalog, errors);
     if (errors.length) return { conditions: null, errors };
-    ({ metricStr, scopeStr, valueType } = resolved);
+    ({ metricStr, scopeStr, valueType, scopeFilter } = resolved);
   } else {
     const metricEntry = _resolveMetric(node.metric, catalog, errors);
     const scopeResolved = metricEntry ? _resolveScopeRefFull(node.scope, catalog, errors) : null;
@@ -2948,6 +3073,8 @@ function compileBetween(node, catalog) {
     scopeStr = scopeResolved.scopeStr;
     scopeFilter = scopeResolved.scopeFilter;
   }
+  _checkQuoteScopeRequiresSymbol(scopeStr, scopeFilter, errors);
+  if (errors.length) return { conditions: null, errors };
 
   if (node.value1.type !== 'number' || node.value2.type !== 'number') {
     errors.push(_err('chained ("between") comparison literals must be numeric'));
@@ -4660,18 +4787,17 @@ function decompileLeaf(node, catalog, errors) {
     refText = `${m.text}@${scopeText}`;
     entry = m.entry;
   } else {
-    // A bare-column metric has no "@" form at all, so a scope_filter
-    // (which only ever renders as a qualifier suffix on the "@"-scope
-    // side) has nowhere to attach — fail loud rather than guess at a
-    // syntax this grammar doesn't have.
-    if (node.scope_filter !== undefined) {
-      errors.push(_err(`leaf '${node.metric}@${node.scope}': a scope_filter combined with a bare-column metric has no CLI representation yet`));
-      return null;
-    }
     const colKey = `${s.text}.${node.metric}`.toLowerCase();
     const colEntry = catalog.columns && catalog.columns.get(colKey);
     if (!colEntry) { errors.push(_err(m.error)); return null; }
-    refText = colEntry.token;
+    // Sprint 21 — a bare-column metric has no "@" form, but it CAN carry
+    // a scope_filter via the dot-access-with-qualifier mechanism
+    // (`_resolveDotAccessWithQualifier`'s compile-side counterpart):
+    // render `<scope><.qualifier:value><.column>`, e.g.
+    // `quote.tracked.symbol:NIFTY25JULFUT.bid` — `scopeText` already
+    // carries the qualifier suffix from above. Without a scope_filter,
+    // this is byte-identical to the pre-Sprint-21 plain `colEntry.token`.
+    refText = node.scope_filter !== undefined ? `${scopeText}.${node.metric}` : colEntry.token;
     entry = colEntry;
   }
 
@@ -4710,6 +4836,16 @@ function decompileLeaf(node, catalog, errors) {
     const numText = _renderNumber(node.value);
     if (numText == null) { errors.push(_err(`leaf '${node.metric}@${node.scope}': value ${node.value} cannot be rendered as a CLI numeric literal`)); return null; }
     return `${refText} ${node.op} ${numText}`;
+  }
+
+  // Sprint 21 — the decompile-direction mirror of `_compileComparatorValue`'s
+  // new string-equality branch (e.g. `orders.any_acct.status == "OPEN"`).
+  // Reuses `_renderListItem`'s existing bare/quoted string rendering (the
+  // SAME rule `in`/`not_in` list items already use) rather than duplicating it.
+  if ((node.op === '==' || node.op === '!=') && typeof node.value === 'string') {
+    const r = _renderListItem(node.value);
+    if (r.error) { errors.push(_err(`leaf '${node.metric}@${node.scope}': ${r.message}`)); return null; }
+    return `${refText} ${node.op} ${r.text}`;
   }
 
   errors.push(_err(`leaf '${node.metric}@${node.scope}': unrecognized op/value combination (op=${node.op}, value=${JSON.stringify(node.value)})`));

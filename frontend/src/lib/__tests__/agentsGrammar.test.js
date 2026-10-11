@@ -227,6 +227,104 @@ const FIXTURE_ROWS = [
   // on the bare `positions` family aliases onto directly — a pure alias,
   // no `scope_filter` involved, so no new COLUMN row is needed for it.
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.worst_acct', params_schema: null },
+  // Sprint 21 — appended at the END (same append-only convention as every
+  // earlier batch above). `orders.any_acct` (account-rooted, one row per
+  // currently open AlgoOrder) and `quote.tracked` (instrument-rooted,
+  // pre-tracked ad-hoc market data) — real shapes confirmed against the
+  // real backend diff (commit e8b1ad38, `backend/api/algo/grammar.py`'s
+  // `_ORDERS_COLUMNS`/`_QUOTE_COLUMNS` + `agent_grammar.yaml`'s new scope
+  // tokens), not just PLAN.md's summary.
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'orders.any_acct', params_schema: null },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.symbol', value_type: 'string',
+    label: 'Symbol',
+    description: "Symbol. Sourced from DataFrame column 'tradingsymbol' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.exchange', value_type: 'string',
+    label: 'Exchange',
+    description: "Exchange. Sourced from DataFrame column 'exchange' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.side', value_type: 'string',
+    label: 'Side (BUY/SELL)',
+    description: "Side (BUY/SELL). Sourced from DataFrame column 'side' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.qty', value_type: 'number',
+    label: 'Quantity (Contracts)',
+    description: "Quantity (Contracts). Sourced from DataFrame column 'quantity' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.price', value_type: 'number',
+    label: 'Order Price (₹)',
+    description: "Order Price (₹). Sourced from DataFrame column 'price' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.status', value_type: 'string',
+    label: 'Order Status',
+    description: "Order Status. Sourced from DataFrame column 'status' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'orders.any_acct.order_id', value_type: 'string',
+    label: 'Broker Order ID',
+    description: "Broker Order ID. Sourced from DataFrame column 'order_id' on ctx.orders_rows, populated by backend.api.algo.grammar._scope_orders_any_acct.",
+  },
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'quote.tracked', params_schema: null },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.symbol', value_type: 'string',
+    label: 'Symbol',
+    description: "Symbol. Sourced from DataFrame column 'tradingsymbol' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.exchange', value_type: 'string',
+    label: 'Exchange',
+    description: "Exchange. Sourced from DataFrame column 'exchange' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.ltp', value_type: 'number',
+    label: 'LTP',
+    description: "LTP. Sourced from DataFrame column 'last_price' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.bid', value_type: 'number',
+    label: 'Bid',
+    description: "Bid. Sourced from DataFrame column 'bid' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.ask', value_type: 'number',
+    label: 'Ask',
+    description: "Ask. Sourced from DataFrame column 'ask' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'quote.tracked.volume', value_type: 'number',
+    label: 'Volume',
+    description: "Volume. Sourced from DataFrame column 'volume' on ctx.quote_rows, populated by backend.api.algo.grammar._scope_quote_tracked.",
+  },
+  // `ltp` is ALSO a real registered metric token (`agent_grammar.yaml`'s
+  // existing `token: ltp`, `grammar.py`'s `_metric_ltp`) — reused by
+  // `quote.tracked.ltp` exactly like `watchlist.*` already reuses it, not
+  // merely an exposed-column fallback. Needed for the `ltp@quote.tracked...`
+  // ("@" form) spelling used below.
+  { grammar_kind: 'condition', token_kind: 'metric', token: 'ltp', value_type: 'number', params_schema: null },
+  // `cancel_order` mirrors the REAL agent_grammar.yaml schema. NOTE: the
+  // real param key is `broker_order_id`, NOT `order_id` — PLAN.md's own
+  // literal example text `cancel_order(order_id=order_id)` does not
+  // compile against the real catalog for this reason (see this sprint's
+  // handback report for the full explanation).
+  {
+    grammar_kind: 'action', token_kind: 'action_type', token: 'cancel_order',
+    params_schema: {
+      account: { type: 'string', required: true },
+      broker_order_id: { type: 'string', required: true },
+      variety: { type: 'enum', enum: ['regular', 'amo'], required: false },
+    },
+  },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -2595,5 +2693,261 @@ describe('Sprint 20 (item 5) — describeErrorPosition()', () => {
     const d = describeErrorPosition(text, err.position);
     expect(d).not.toBeNull();
     expect(d.snippet).toContain('acct=ZG0790');
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Sprint 21 — orders.any_acct / quote.tracked scope families.
+//
+// Backend half committed in e8b1ad38 (backend/api/algo/grammar.py +
+// agent_evaluator.py + agent_grammar.yaml) — real shapes confirmed against
+// that diff + backend/tests/test_orders_quote_scopes.py directly, not just
+// .claude/PLAN.md's summary (two discrepancies found this way, documented
+// inline below).
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('Sprint 21 — orders.any_acct: the generic Sprint-15 dot-access mechanism picks it up for free', () => {
+  it('orders.any_acct.status == "OPEN" compiles correctly (PLAN item 1 + Test coverage)', () => {
+    const r = compile('WHEN orders.any_acct.status == "OPEN" ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'status', scope: 'orders.any_acct', op: '==', value: 'OPEN' });
+  });
+
+  it('orders.any_acct.status != "OPEN" also compiles (!= side of the new string-equality branch)', () => {
+    const r = compile('WHEN orders.any_acct.status != "OPEN" ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'status', scope: 'orders.any_acct', op: '!=', value: 'OPEN' });
+  });
+
+  it('a string-typed column still rejects an ordered comparator (<, >, etc) — only ==/!= are valid', () => {
+    const r = compile('WHEN orders.any_acct.status < "OPEN" ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only supports == \/ !=/.test(e.message))).toBe(true);
+  });
+
+  it('every other new exposed name (side/qty/price/order_id/account_id/exchange) resolves via the SAME generic mechanism', () => {
+    expect(compile('WHEN orders.any_acct.side == "SELL" ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.qty >= 5 ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.price > 100 ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.order_id == "ABC123" ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.account_id == "ZG0790" ALERT telegram DO nop').ok).toBe(true);
+    expect(compile('WHEN orders.any_acct.exchange == "NFO" ALERT telegram DO nop').ok).toBe(true);
+  });
+
+  it('"@" form (metric@scope) also compiles for a bare-column metric that has no dedicated metric token, via existing dot-access fallback resolution being unnecessary here — confirms orders.any_acct is a real catalog scope token usable as any other', () => {
+    // orders.any_acct itself has no bare-call form issue — this just
+    // confirms the scope token round-trips through the ordinary
+    // qualifier-free path with NO code change, e.g. combined in a tree.
+    const r = compile(
+      'WHEN (orders.any_acct.qty >= 5) & (orders.any_acct.side == "BUY") ALERT telegram DO nop'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        { metric: 'qty', scope: 'orders.any_acct', op: '>=', value: 5 },
+        { metric: 'side', scope: 'orders.any_acct', op: '==', value: 'BUY' },
+      ],
+    });
+  });
+
+  it('orders.account:ZG0790 resolves through the implicit any_acct fallback — no new qualifier mechanism needed (advisor-confirmed "should work as-is")', () => {
+    const r = compile('WHEN pnl@orders.account:ZG0790 > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'pnl', scope: 'orders.any_acct', op: '>', value: 0,
+      scope_filter: { account_id: 'ZG0790' },
+    });
+  });
+});
+
+describe('Sprint 21 — decompile round-trip for orders.any_acct', () => {
+  it('orders.any_acct.status == "OPEN" round-trips through decompile → recompile (decompiler prefers the bare spelling, same "bare when possible" rule _renderListItem already applies to in/not_in list items)', () => {
+    const r = compile('WHEN orders.any_acct.status == "OPEN" ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('orders.any_acct.status == OPEN');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+});
+
+describe('Sprint 21 — $row fan-out binding for order_id/status/side on a matched orders.any_acct row (PLAN item 3)', () => {
+  it('cancel_order(account=account_id, broker_order_id=order_id) inside a WHEN ... orders.any_acct compiles to the $row marker shape', () => {
+    // NOTE on PLAN.md's own literal example text, `cancel_order(order_id=
+    // order_id)`: this does NOT compile against the real catalog —
+    // `cancel_order`'s real params_schema key is `broker_order_id`, never
+    // `order_id` (confirmed against agent_grammar.yaml directly — see
+    // this sprint's handback report). The correct, real-catalog-compilable
+    // spelling keeps the bare-NAME VALUE as `order_id` (the real exposed
+    // column name on orders.any_acct, resolved via $row) but the KEYWORD
+    // on the left must be the schema's own `broker_order_id`.
+    const r = compile(
+      'WHEN orders.any_acct.status == "OPEN" DO cancel_order(account=account_id, broker_order_id=order_id)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'cancel_order',
+      params: { account: { '$row': 'account_id' }, broker_order_id: { '$row': 'order_id' } },
+    }]);
+  });
+
+  it('the "result." alias spelling resolves to the identical marker', () => {
+    const r = compile(
+      'WHEN orders.any_acct.status == "OPEN" DO cancel_order(account=result.account_id, broker_order_id=result.order_id)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{
+      type: 'cancel_order',
+      params: { account: { '$row': 'account_id' }, broker_order_id: { '$row': 'order_id' } },
+    }]);
+  });
+
+  it('side is ALSO exposed and bindable via $row (not just order_id) — e.g. a hypothetical future action taking a side= param', () => {
+    // emit_log's `message` param is a free-text string (token_ref_ok),
+    // reused here purely as a vehicle to prove `side`/`status` resolve
+    // via $row — no new action needed for this generic-mechanism check.
+    const r = compile(
+      'WHEN orders.any_acct.qty >= 5 DO emit_log(message=side)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'emit_log', params: { message: { '$row': 'side' } } }]);
+  });
+
+  it('orders.any_acct is NOT an aggregate and NOT a watchlist scope — neither $row guard misfires on it', () => {
+    // Sanity precondition + regression guard: orders.any_acct must never
+    // be caught by either Sprint-16 guard that exists for OTHER scopes.
+    const r = compile(
+      'WHEN orders.any_acct.status == "OPEN" DO cancel_order(account=account_id, broker_order_id=order_id)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.errors).toEqual([]);
+  });
+});
+
+describe('Sprint 21 — quote.tracked: generic dot-access mechanism + the real gap it exposed', () => {
+  it('quote.tracked.bid/ask/volume (no dedicated metric token) compile via plain dot-access, same mechanism as orders.any_acct — but (unlike orders.any_acct) still require the symbol: qualifier, proven in the next describe block', () => {
+    expect(compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.symbol == "NIFTY25JULFUT" ALERT telegram DO nop').ok).toBe(true);
+  });
+
+  it('ltp@quote.tracked (the "@" form, since ltp IS a real registered metric) compiles for free with no qualifier', () => {
+    const r = compile('WHEN ltp@quote.tracked <= 100 ALERT telegram DO nop');
+    // no scope_filter present — this leaf will be rejected by the NEW
+    // quote.* compile-time guard (PLAN item 2), proven in the next
+    // describe block. Asserted here only as the pre-guard parse/scope
+    // resolution sanity check.
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /requires a specific symbol:/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 21 — quote.tracked requires a non-wildcard symbol: qualifier (PLAN item 2, compile-time guard)', () => {
+  it('quote.tracked.ltp with NO symbol qualifier is a compile error (Test coverage #3)', () => {
+    const r = compile('WHEN quote.tracked.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e =>
+      /quote\.tracked requires a specific symbol: qualifier/.test(e.message)
+      && /quote\.tracked\.symbol:NIFTY25JULFUT/.test(e.message)
+      && /no 'any symbol' aggregate exists for market data/.test(e.message)
+    )).toBe(true);
+  });
+
+  it('ltp@quote.tracked with NO symbol qualifier (the "@" form) is the SAME compile error', () => {
+    const r = compile('WHEN ltp@quote.tracked <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
+  });
+
+  it('quote.tracked.symbol:*.ltp (wildcard) is the SAME compile error (Test coverage #4)', () => {
+    const r = compile('WHEN quote.tracked.symbol:*.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
+  });
+
+  it('ltp@quote.tracked.symbol:* (the "@" form wildcard) is the SAME compile error', () => {
+    const r = compile('WHEN ltp@quote.tracked.symbol:* <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /quote\.tracked requires a specific symbol: qualifier/.test(e.message))).toBe(true);
+  });
+
+  it('quote.tracked.symbol:NIFTY25JULFUT with .ltp <= 100 compiles successfully (Test coverage #5 — the real new mechanism: dot-access col_ref now carries an embedded qualifier)', () => {
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'ltp', scope: 'quote.tracked', op: '<=', value: 100,
+      scope_filter: { symbol: 'NIFTY25JULFUT' },
+    });
+  });
+
+  it('ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100 (the "@" form, pre-existing Sprint 19 qualifier mechanism) compiles identically', () => {
+    const atForm = compile('WHEN ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100 ALERT telegram DO nop');
+    const dotForm = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(atForm.ok).toBe(true);
+    expect(atForm.agent.conditions).toEqual(dotForm.agent.conditions);
+  });
+
+  it('quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 (a column with NO dedicated metric token) compiles via the same new mechanism — proves bid/ask/volume are reachable at all (they have no "@" form)', () => {
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'bid', scope: 'quote.tracked', op: '<=', value: 100,
+      scope_filter: { symbol: 'NIFTY25JULFUT' },
+    });
+  });
+
+  it('the between-chain (inclusive) form also threads the symbol: qualifier through dot-access', () => {
+    const r = compile('WHEN 10 <= quote.tracked.symbol:NIFTY25JULFUT.bid <= 200 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      metric: 'bid', scope: 'quote.tracked', op: 'between', value: [10, 200],
+      scope_filter: { symbol: 'NIFTY25JULFUT' },
+    });
+  });
+
+  it('the between-chain (strict, "all" fallback) form also threads the symbol: qualifier onto BOTH leaves', () => {
+    const r = compile('WHEN 10 < quote.tracked.symbol:NIFTY25JULFUT.bid < 200 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({
+      all: [
+        { metric: 'bid', scope: 'quote.tracked', op: '>', value: 10, scope_filter: { symbol: 'NIFTY25JULFUT' } },
+        { metric: 'bid', scope: 'quote.tracked', op: '<', value: 200, scope_filter: { symbol: 'NIFTY25JULFUT' } },
+      ],
+    });
+  });
+
+  it('a non-quote scope is completely unaffected by the new guard (regression)', () => {
+    const r = compile('WHEN pnl@positions.total > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+  });
+
+  it('quote.tracked.account:X is rejected by the existing column whitelist, not the new guard — no account dimension on quote.* (advisor-confirmed "should work as-is")', () => {
+    const r = compile('WHEN pnl@quote.tracked.account:ZG0790 > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /not a valid qualifier for scope 'quote\.tracked'/.test(e.message))).toBe(true);
+  });
+});
+
+describe('Sprint 21 — quote.tracked.symbol:NIFTY25JULFUT.ltp decompile round-trip (dot-access-with-qualifier)', () => {
+  it('compiles and decompiles to the "@" form (dot-access-with-qualifier has no dedicated decompile spelling; ltp has a real metric token so the generic decompiler prefers it) and recompiles identically', () => {
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.ltp <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('ltp@quote.tracked.symbol:NIFTY25JULFUT <= 100');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
+  });
+
+  it('quote.tracked.symbol:NIFTY25JULFUT.bid decompile round-trip (a column with NO metric token — the bare-column-plus-scope_filter decompile path)', () => {
+    const r = compile('WHEN quote.tracked.symbol:NIFTY25JULFUT.bid <= 100 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    const dec = decompileCondition(r.agent.conditions, CATALOG);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toBe('quote.tracked.symbol:NIFTY25JULFUT.bid <= 100');
+    const recompiled = compile(`WHEN ${dec.text} ALERT telegram DO nop`);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(r.agent.conditions);
   });
 });
