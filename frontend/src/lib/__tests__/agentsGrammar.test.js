@@ -57,13 +57,18 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'scope', token: 'holdings.total', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.total', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'funds.any_acct', params_schema: null },
-  // channels
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null },
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: null },
+  // channels — `gate` (Sprint 18) is the real catalog shape on
+  // telegram/email/ntfy (see agent_grammar.yaml).
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: { gate: { type: 'boolean', required: false } } },
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: { gate: { type: 'boolean', required: false } } },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'log', params_schema: null },
   // fixture-only `ntfy` (used in the design doc's own canonical example 2,
   // but absent from the live catalog today — see "Known gaps")
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy', params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'urgent'], required: false } } },
+  { grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy', params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'urgent'], required: false }, gate: { type: 'boolean', required: false } } },
+  // Sprint 18 — the synthetic `render_action` row (backend's
+  // `routes/grammar.py:_render_action_catalog_rows`), declaring the
+  // kind='event' agent render action's own optional `gate` sibling key.
+  { grammar_kind: 'action', token_kind: 'render_action', token: 'render', params_schema: { gate: { type: 'boolean', required: false } } },
   // actions — place_order mirrors the REAL agent_grammar.yaml schema,
   // preserving its real declared key order (account first).
   {
@@ -254,6 +259,24 @@ describe('buildCatalog()', () => {
     const cat = buildCatalog([{ grammar_kind: 'notify', token_kind: 'channel', token: 'x', is_active: false }]);
     expect(cat.channels.has('x')).toBe(false);
   });
+
+  // Sprint 18 — the synthetic `render_action` row (`token_kind:
+  // 'render_action'`, NEVER 'action_type') surfaces as a single
+  // `catalog.renderAction` entry, and critically does NOT land in
+  // `catalog.actions` — the DO-dispatchable bucket. A cycle-agent's DO
+  // list must never be tricked into accepting a bare `render` action it
+  // has no handler for.
+  it('a render_action row populates catalog.renderAction, never catalog.actions', () => {
+    expect(CATALOG.renderAction).not.toBeNull();
+    expect(CATALOG.renderAction.token).toBe('render');
+    expect(CATALOG.renderAction.paramsSchema.gate.type).toBe('boolean');
+    expect(CATALOG.actions.has('render')).toBe(false);
+  });
+
+  it('catalog.renderAction is null when no render_action row is present', () => {
+    const cat = buildCatalog([{ grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null }]);
+    expect(cat.renderAction).toBeNull();
+  });
 });
 
 describe('fetchAgentCatalog()', () => {
@@ -261,7 +284,7 @@ describe('fetchAgentCatalog()', () => {
     vi.mocked(fetchGrammarTokens).mockImplementation(async (kind) => {
       if (kind === 'condition') return [FIXTURE_ROWS[0]];
       if (kind === 'notify') return [FIXTURE_ROWS[13]];
-      return [FIXTURE_ROWS[17]];
+      return [FIXTURE_ROWS[18]];
     });
     const cat = await fetchAgentCatalog();
     expect(cat.metrics.has('pnl')).toBe(true);
@@ -1701,6 +1724,65 @@ describe('Sprint 12 — event_stmt: full compile of the example statement', () =
     const r = compile('ALERT telegram DO nop #name="x"');
     expect(r.ok).toBe(true);
     expect(r.kind).toBe('agent');
+  });
+});
+
+// ── Sprint 18 — event_stmt: render-action `gate=`, channel `gate=`,
+//    and a bare `nop` channel list (empty events). ─────────────────────
+
+describe('Sprint 18 — event_stmt: render-action gate= and empty-events nop', () => {
+  it('gate=true on the render action compiles onto actions[0] as a sibling of type/render', () => {
+    const r = compile('ALERT log_tag=error, render=error, gate=true, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'error', gate: true }]);
+  });
+
+  it('gate= omitted entirely compiles actions[0] with NO gate key at all (never defaulted to false)', () => {
+    const r = compile('ALERT log_tag=error, render=error, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'error' }]);
+    expect('gate' in r.agent.actions[0]).toBe(false);
+  });
+
+  it('gate= accepts any order relative to the other event-meta kwargs', () => {
+    const r = compile('ALERT gate=false, render=x, log_tag=y, telegram #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'x', gate: false }]);
+  });
+
+  it('gate= must be a boolean — a string value is a compile error', () => {
+    const r = compile('ALERT log_tag=error, render=error, gate="yes", telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /gate.*expected true or false/.test(e.message))).toBe(true);
+  });
+
+  it('a duplicate gate= key is a PARSE-time error, same as the other four event-meta keys', () => {
+    const r = compile('ALERT log_tag=error, render=error, gate=true, gate=false, telegram #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /duplicate event-meta key 'gate='/.test(e.message))).toBe(true);
+  });
+
+  it('a channel\'s own gate=false kwarg compiles via the ordinary per-channel params path (unrelated to the action-level gate=)', () => {
+    const r = compile('ALERT log_tag=orders, render=order_failure, telegram(gate=false), email(gate=false) #name="x"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([
+      { channel: 'telegram', enabled: true, gate: false },
+      { channel: 'email', enabled: true, gate: false },
+    ]);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'order_failure' }]);
+  });
+
+  it('a bare "nop" channel list compiles to an empty events array (real cycle-breach-alert shape)', () => {
+    const r = compile('ALERT log_tag=agent, render=breach, nop #name="Cycle breach"');
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([]);
+    expect(r.agent.actions).toEqual([{ type: 'render', render: 'breach' }]);
+  });
+
+  it('"nop" combined with a trailing DO is still a compile error (same guard as a real channel list)', () => {
+    const r = compile('ALERT log_tag=error, render=error, nop DO nop #name="x"');
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /only valid on a bare ALERT-only statement, not combined with WHEN\/DO/.test(e.message))).toBe(true);
   });
 });
 

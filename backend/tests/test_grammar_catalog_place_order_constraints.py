@@ -184,8 +184,14 @@ class TestListTokensRouteSurvival:
 
         out = await g.GrammarTokenController.list_tokens.fn(None, grammar="action")
 
-        assert len(out) == 1
-        place_order_out = out[0]
+        # Sprint 18 — `grammar='action'` also carries the synthetic
+        # `render_action` row (`routes/grammar.py:_render_action_catalog_rows`)
+        # alongside the real `place_order` row — assert on the real row by
+        # token_kind rather than a hardcoded total count, which this test
+        # does not otherwise care about.
+        action_type_rows = [r for r in out if r.token_kind == "action_type"]
+        assert len(action_type_rows) == 1
+        place_order_out = action_type_rows[0]
         assert place_order_out.token == "place_order"
         assert place_order_out.mutually_exclusive_groups == [
             ["wing_premium_pct_override", "wing_strike_offset_override"],

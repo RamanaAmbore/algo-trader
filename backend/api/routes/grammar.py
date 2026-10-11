@@ -240,6 +240,55 @@ def _merge_exposed_column_rows(
     return base_rows
 
 
+# Sprint 18 — the kind='event' agent render action's own optional
+# sibling params (currently just `gate`) are declared in a SEPARATE
+# top-level YAML section (`event_actions.render.params_schema`,
+# `grammar.get_render_action_params_schema()`) — deliberately NOT part
+# of the `action_type` token family (see that accessor's own docstring
+# for why: merging it in would make `is_known_action_type("render")`
+# true). Nothing in `list_tokens()` exposed this schema to the frontend
+# before this addition, which is what blocked the agent CLI decompiler
+# from recognizing a real seeded agent's action-level `gate` key at all.
+# Synthesized here as its own `GrammarTokenOut` row, gated to
+# `grammar == "action"` ONLY — the exact fetchGrammarTokens('action')
+# call `fetchAgentCatalog()` already makes, so no new frontend network
+# call is needed. `token_kind="render_action"` (NEVER "action_type") so
+# `buildCatalog()`'s action-type bucket — and by extension
+# `is_known_action_type`-gated DO-clause validation — never sees it;
+# this is a sibling catalog entry for a structurally different
+# (kind='event'-only) action shape, not a dispatchable DO action.
+# Negative id namespace well clear of `_fragment_catalog_rows`'
+# `-row.id` (small DB autoincrement values) and
+# `_exposed_column_catalog_rows`' `-2_000_000`-based range, so none of
+# the three synthetic-row sources can ever collide on id.
+_RENDER_ACTION_ID = -3_000_000
+
+
+def _render_action_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
+    """One synthetic `GrammarTokenOut` row for the render action's own
+    params_schema, or `[]` when `grammar != "action"` (including the
+    admin Tokens CRUD page's unfiltered `grammar=None` call, which must
+    never see synthetic rows — same rule `_fragment_catalog_rows`/
+    `_exposed_column_catalog_rows` already follow) or when the YAML
+    section declares no schema at all."""
+    if grammar != "action":
+        return []
+    from backend.api.algo.grammar import get_render_action_params_schema
+    schema = get_render_action_params_schema()
+    if not schema:
+        return []
+    return [GrammarTokenOut(
+        id=_RENDER_ACTION_ID,
+        grammar_kind="action",
+        token_kind="render_action",
+        token="render",
+        description="kind='event' agent render-action optional params (e.g. gate).",
+        params_schema=schema,
+        is_system=True,
+        is_active=True,
+    )]
+
+
 async def _reload_registry():
     """Best-effort reload so an edit lights up the running engine."""
     try:
@@ -300,6 +349,13 @@ class GrammarTokenController(Controller):
         one per real `scope.attribute` pair the dot-access grammar can
         read (e.g. `positions.total.pnl`). Same unfiltered-never-merges
         rule applies.
+
+        When `grammar == "action"` specifically, Sprint 18's render-action
+        params_schema (`event_actions.render.params_schema` in the YAML
+        catalog) is projected in as one `token_kind='render_action'` row
+        (see `_render_action_catalog_rows`) — the kind='event' agent CLI
+        decompiler reads this to recognize the render action's own extra
+        keys (e.g. `gate`). Same unfiltered-never-merges rule applies.
         """
         async with async_session() as s:
             stmt = select(GrammarToken)
@@ -315,7 +371,9 @@ class GrammarTokenController(Controller):
         fragment_rows = await _fragment_catalog_rows(grammar)
         out = _merge_fragment_rows(out, fragment_rows)
         column_rows = _exposed_column_catalog_rows(grammar)
-        return _merge_exposed_column_rows(out, column_rows)
+        out = _merge_exposed_column_rows(out, column_rows)
+        out.extend(_render_action_catalog_rows(grammar))
+        return out
 
     # ── Read one ───────────────────────────────────────────────────────────
     @get("/tokens/{token_id:int}", guards=[cap_guard("view_agents_catalog")])

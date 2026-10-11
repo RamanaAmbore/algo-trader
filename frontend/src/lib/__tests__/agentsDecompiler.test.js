@@ -73,13 +73,26 @@ const FIXTURE_ROWS = [
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.expiring_today', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.expiring_today.nfo', params_schema: null },
   { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.expiring_today.mcx_unhedged', params_schema: null },
-  // channels
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'telegram', params_schema: null },
-  { grammar_kind: 'notify', token_kind: 'channel', token: 'email', params_schema: null },
+  // channels — `gate` (Sprint 18) is the real catalog shape on
+  // telegram/email/ntfy (see agent_grammar.yaml); deliberately absent on
+  // `log` (capability is always None, `gate` has no effect there — same
+  // real-catalog omission backend's test_grammar_event_action_gate_field.py
+  // asserts).
+  {
+    grammar_kind: 'notify', token_kind: 'channel', token: 'telegram',
+    params_schema: { gate: { type: 'boolean', required: false } },
+  },
+  {
+    grammar_kind: 'notify', token_kind: 'channel', token: 'email',
+    params_schema: { gate: { type: 'boolean', required: false } },
+  },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'log', params_schema: null },
   {
     grammar_kind: 'notify', token_kind: 'channel', token: 'ntfy',
-    params_schema: { priority: { type: 'enum', enum: ['low', 'default', 'high', 'urgent'], required: false } },
+    params_schema: {
+      priority: { type: 'enum', enum: ['low', 'default', 'high', 'urgent'], required: false },
+      gate: { type: 'boolean', required: false },
+    },
   },
   // actions
   {
@@ -134,6 +147,17 @@ const FIXTURE_ROWS = [
       account: { type: 'string', required: true, token_ref_ok: true },
       symbol: { type: 'string', required: true },
     },
+  },
+  // Sprint 18 — the synthetic `render_action` row (backend's
+  // `routes/grammar.py:_render_action_catalog_rows`, gated to
+  // `grammar == 'action'`) declaring the kind='event' agent render
+  // action's own optional `gate` sibling key. `token_kind` is
+  // deliberately `'render_action'`, NOT `'action_type'` — see
+  // `buildCatalog`'s own comment for why (never lands in the DO-action
+  // bucket / `catalog.actions`).
+  {
+    grammar_kind: 'action', token_kind: 'render_action', token: 'render',
+    params_schema: { gate: { type: 'boolean', required: false } },
   },
   {
     grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.account_id', value_type: 'string',
@@ -1179,31 +1203,26 @@ describe('Sprint 18 — decompileBracket() refuses loud on slug/is_default/is_ac
 });
 
 // ── Sprint 12 — event_stmt decompiler (decompileEventAgent) ────────────────
+// +Sprint 18 — channel-level and render-action-level `gate`, empty
+// `events: []`, round-tripped against the REAL seeded shapes in
+// backend/api/algo/event_agents.py:SEEDED_AGENTS.
 //
-// `ERROR_AGENT` (backend/api/algo/event_agents.py, SEEDED_AGENTS) — its
-// REAL `conditions`/`events` are reused here VERBATIM:
+// `ERROR_AGENT`'s REAL `conditions`/`events`/`actions` are reused here
+// VERBATIM (including its real `actions[0].gate: true` — Sprint 18 made
+// this expressible via the new `gate=` event_meta kwarg, resolved
+// against `catalog.renderAction`'s own params_schema):
 //   conditions: {"log": {"tag": "error", "min_level": "ERROR"}}
 //   events:     [{"channel": "telegram", "enabled": true},
 //                {"channel": "ntfy", "enabled": true}]
-// Its REAL `actions` is `[{"type": "render", "render": "error", "gate":
-// true}]` — the extra `gate` key (the render action's own repeat-dedup
-// flag, consumed by `_gate_key`/`_channel_enabled` in event_agents.py) is
-// NOT expressible by this syntax yet (compileEventStmt's compiled shape
-// is always exactly `{"type":"render","render":"<name>"}`, nothing more) —
-// per .claude/PLAN.md's explicit scoping note, the round-trip assertion
-// below is scoped to conditions/events/actions ONLY, using a trimmed
-// `actions` array (dropping `gate`) so the test exercises what THIS
-// syntax can express. No other Agent-row field (scope, cooldown_minutes,
-// trade_mode, lifespan_type, ...) is asserted here either — none of them
-// are produced by compileEventStmt at all.
-describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)', () => {
+//   actions:    [{"type": "render", "render": "error", "gate": true}]
+describe('Sprint 12/18 — event_stmt decompile round-trip (real seeded agent shapes)', () => {
   const ERROR_AGENT_LIKE = {
     conditions: { log: { tag: 'error', min_level: 'ERROR' } },
     events: [
       { channel: 'telegram', enabled: true },
       { channel: 'ntfy', enabled: true },
     ],
-    actions: [{ type: 'render', render: 'error' }], // gate:true dropped — not expressible yet, see note above
+    actions: [{ type: 'render', render: 'error', gate: true }], // real ERROR_AGENT shape, gate now expressible (Sprint 18)
     name: 'Error alert',
   };
 
@@ -1211,13 +1230,13 @@ describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)
     return decompileEventAgent(agentJson, CATALOG, { lotSizeOf, ...opts });
   }
 
-  it('decompiles to the expected ALERT log_tag=... CLI text', () => {
+  it('decompiles to the expected ALERT log_tag=... CLI text, including the action-level gate=true', () => {
     const dec = decompileEvent(ERROR_AGENT_LIKE);
     expect(dec.errors).toEqual([]);
-    expect(dec.text).toBe('ALERT log_tag=error, min_level=ERROR, render=error, telegram, ntfy #name="Error alert"');
+    expect(dec.text).toBe('ALERT log_tag=error, min_level=ERROR, render=error, gate=true, telegram, ntfy #name="Error alert"');
   });
 
-  it('recompiles back to the IDENTICAL conditions/events/actions JSON (round-trip)', () => {
+  it('recompiles back to the IDENTICAL conditions/events/actions JSON (round-trip), gate:true included', () => {
     const dec = decompileEvent(ERROR_AGENT_LIKE);
     const recompiled = compile(dec.text);
     expect(recompiled.ok).toBe(true);
@@ -1253,11 +1272,11 @@ describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)
     expect(recompiled.agent.events).toEqual(agentJson.events);
   });
 
-  it('fails loud (never silently drops) on an actions[0] carrying an extra key not expressible by this syntax (e.g. the real ERROR_AGENT\'s own "gate")', () => {
+  it('fails loud (never silently drops) on an actions[0] carrying a genuinely undeclared extra key', () => {
     const dec = decompileEvent({
       conditions: ERROR_AGENT_LIKE.conditions,
       events: ERROR_AGENT_LIKE.events,
-      actions: [{ type: 'render', render: 'error', gate: true }],
+      actions: [{ type: 'render', render: 'error', made_up_key: true }],
       name: 'Error alert',
     });
     expect(dec.text).toBeNull();
@@ -1266,6 +1285,93 @@ describe('Sprint 12 — event_stmt decompile round-trip (real ERROR_AGENT shape)
 
   it('fails loud on a malformed conditions shape (missing "log")', () => {
     const dec = decompileEvent({ conditions: { all: [] }, events: [], actions: [] });
+    expect(dec.text).toBeNull();
+    expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
+  });
+
+  // ── real seeded ORDER_FAILURE_AGENT shape — channel-level `gate: false`
+  // on all three channels (telegram/ntfy/email). This is the generic
+  // `decompileEvents`-driven path (Sprint 18's channel `gate` schema
+  // addition) — no code change was needed here, only the catalog schema;
+  // this test VERIFIES that claim against the real seeded shape rather
+  // than trusting it. ──────────────────────────────────────────────────
+  it('real order-failure-alert shape: channel-level gate:false on telegram/ntfy/email round-trips', () => {
+    const agentJson = {
+      conditions: { log: { tag: 'orders', min_level: 'WARNING', where: { alert_event: 'order_failure' } } },
+      events: [
+        { channel: 'telegram', enabled: true, gate: false },
+        { channel: 'ntfy', enabled: true, priority: 'urgent', gate: false },
+        { channel: 'email', enabled: true, gate: false },
+      ],
+      actions: [{ type: 'render', render: 'order_failure' }],
+      name: 'Order failure',
+    };
+    const dec = decompileEvent(agentJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toContain('telegram(gate=false)');
+    expect(dec.text).toContain('ntfy(priority=urgent, gate=false)');
+    expect(dec.text).toContain('email(gate=false)');
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual(agentJson.events);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
+  });
+
+  // ── compile direction, independently of decompile — confirms
+  // `telegram(gate=false)` compiles correctly on its own, not merely as
+  // the output of a decompile call (compile/decompile are NOT assumed
+  // symmetric just because one direction works). ──────────────────────
+  it('compiles a hand-typed telegram(gate=false) channel call on its own', () => {
+    const r = compile(
+      'ALERT log_tag=orders, min_level=WARNING, render=order_failure, telegram(gate=false)'
+    );
+    expect(r.ok).toBe(true);
+    expect(r.agent.events).toEqual([{ channel: 'telegram', enabled: true, gate: false }]);
+  });
+
+  // ── real seeded BREACH_AGENT shape — `events: []` (confirmed
+  // intentional: this agent supplies channels dynamically at render
+  // time). Sprint 18 made this expressible via `nop` in the channel
+  // list position. ──────────────────────────────────────────────────
+  it('real cycle-breach-alert shape: empty events:[] decompiles via a bare "nop" channel list', () => {
+    const agentJson = {
+      conditions: { log: { tag: 'agent', min_level: 'INFO', where: { alert_event: 'breach' } } },
+      events: [],
+      actions: [{ type: 'render', render: 'breach' }],
+      name: 'Cycle breach',
+    };
+    const dec = decompileEvent(agentJson);
+    expect(dec.errors).toEqual([]);
+    expect(dec.text).toMatch(/,\s*nop(\s|$)/);
+    const recompiled = compile(dec.text);
+    expect(recompiled.ok).toBe(true);
+    expect(recompiled.agent.conditions).toEqual(agentJson.conditions);
+    expect(recompiled.agent.events).toEqual([]);
+    expect(recompiled.agent.actions).toEqual(agentJson.actions);
+  });
+
+  // ── real seeded TEMPLATE_ATTACH_URGENT_AGENT shape — `conditions:
+  // {"any": [{"log": ...}, {"log": ...}]}` (two log leaves, different
+  // min_level AND where, same tag). CONFIRMED BLOCKED, not a silent
+  // partial decompile: `event_stmt` has exactly one `log_tag=`/
+  // `min_level=`/`where=` triple — there is no existing syntax to
+  // express a second, independently-thresholded log leaf, and
+  // inventing one is an operator-facing grammar design decision (see
+  // the proposal in `decompileEventAgent`'s own docstring), not
+  // something to improvise silently here. This test documents the
+  // current, correct, loud-failure behavior — NOT a round-trip. */
+  it('real template-attach-urgent shape: any:[{log},{log}] fails loud, not silently (confirmed blocked pending new CLI syntax)', () => {
+    const agentJson = {
+      conditions: { any: [
+        { log: { tag: 'gtt', min_level: 'WARNING', where: { alert_event: 'wing_unprotected' } } },
+        { log: { tag: 'gtt', min_level: 'CRITICAL', where: { alert_event: 'wing_hard_reject' } } },
+      ] },
+      events: [{ channel: 'ntfy', enabled: true, priority: 'urgent' }],
+      actions: [{ type: 'render', render: 'template_attach' }],
+      name: 'Template attach urgent',
+    };
+    const dec = decompileEvent(agentJson);
     expect(dec.text).toBeNull();
     expect(dec.errors.some(e => /'conditions' must be a \{"log": \{\.\.\.\}\} shape/.test(e.message))).toBe(true);
   });

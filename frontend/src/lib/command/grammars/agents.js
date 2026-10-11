@@ -53,8 +53,9 @@
 //                                                       `ALERT telegram DO
 //                                                       nop`). *)
 //   event_meta     := event_kw*                     (* log_tag=/min_level=/
-//                                                       render=/where= —
-//                                                       ANY ORDER, each at
+//                                                       render=/where=/
+//                                                       gate= — ANY ORDER,
+//                                                       each at
 //                                                       most once; a
 //                                                       duplicate key is a
 //                                                       PARSE-time error
@@ -67,6 +68,37 @@
 //                    | ("min_level" "=" value ",")
 //                    | ("render" "=" value ",")
 //                    | ("where" "=" object_literal ",")
+//                    | ("gate" "=" value ",")         (* Sprint 18 —
+//                                                       boolean, enables
+//                                                       repeat-dedup
+//                                                       (RepeatGate) on
+//                                                       this render
+//                                                       action's fired
+//                                                       records; compiles
+//                                                       onto the single
+//                                                       actions[0] entry
+//                                                       as a sibling key
+//                                                       of `type`/
+//                                                       `render`, e.g.
+//                                                       {"type":"render",
+//                                                       "render":"error",
+//                                                       "gate":true} —
+//                                                       OMITTED entirely
+//                                                       (not written as
+//                                                       false) when not
+//                                                       typed, matching
+//                                                       every other
+//                                                       seeded agent's
+//                                                       real shape.
+//                                                       Validated against
+//                                                       `catalog.
+//                                                       renderAction`'s
+//                                                       own params_schema
+//                                                       (backend's
+//                                                       `event_actions.
+//                                                       render.
+//                                                       params_schema`),
+//                                                       not hardcoded. *)
 //                                                   (* `log_tag`/`render`
 //                                                       are REQUIRED
 //                                                       (compile-time error
@@ -115,7 +147,7 @@
 //                                                       for an event agent,
 //                                                       not `msg=`.
 //                                                       Combining any of
-//                                                       these four reserved
+//                                                       these five reserved
 //                                                       keys with WHEN/DO
 //                                                       is a compile-time
 //                                                       error (see
@@ -541,16 +573,23 @@ const _MAX_DEPTH = 20;
 const _RESERVED = new Set(['when', 'alert', 'do', 'nop', 'always', 'in', 'not', 'true', 'false']);
 export const RESERVED_WORDS = _RESERVED;
 
-// ── event_stmt reserved kwarg names (Sprint 12) — NOT in `_RESERVED`
-//    (same "contextual, not a reserved word" treatment Sprint 6's `msg=`
-//    already uses): recognized only by lookahead (a bare NAME spelled one
-//    of these four, immediately followed by a lone `EQ`), in
-//    `parseEventStmt`'s own event_meta loop AND (for the "combined with
-//    WHEN/DO" rejection) `parseAlertClauseBody`. A real channel/action
-//    token could in principle be named one of these — none are, in the
-//    live catalog, and the grammar's own contextual-lookahead style
-//    already accepts that same small risk for `msg=`. ───────────────────
-const _EVENT_META_KEYS = new Set(['log_tag', 'min_level', 'render', 'where']);
+// ── event_stmt reserved kwarg names (Sprint 12, +`gate` Sprint 18) — NOT
+//    in `_RESERVED` (same "contextual, not a reserved word" treatment
+//    Sprint 6's `msg=` already uses): recognized only by lookahead (a
+//    bare NAME spelled one of these five, immediately followed by a lone
+//    `EQ`), in `parseEventStmt`'s own event_meta loop AND (for the
+//    "combined with WHEN/DO" rejection) `parseAlertClauseBody`. A real
+//    channel/action token could in principle be named one of these —
+//    none are, in the live catalog, and the grammar's own
+//    contextual-lookahead style already accepts that same small risk for
+//    `msg=`. `gate=` is the kind='event' agent's RENDER-ACTION-level gate
+//    (repeat-dedup via the shared RepeatGate — see `catalog.renderAction`'s
+//    own params_schema, sourced from backend's `event_actions.render.
+//    params_schema`) — unrelated to a CHANNEL's own `gate=` kwarg (e.g.
+//    `telegram(gate=false)`), which is an ordinary per-channel param
+//    resolved generically through that channel's own `paramsSchema`, not
+//    through this reserved-kwarg set at all. ──────────────────────────
+const _EVENT_META_KEYS = new Set(['log_tag', 'min_level', 'render', 'where', 'gate']);
 
 // ── `always` sentinel leaf — the exact shape the real `market-open-nse` /
 //    `market-preclose-mcx` builtin agents use (agent_engine.py ~1578-1590).
@@ -599,6 +638,20 @@ export function buildCatalog(rows) {
   // real-casing-preserving-on-`.token`/lowercased-key convention every other
   // bucket here already follows.
   const columns = new Map();
+  // Sprint 18 — the single synthetic `token_kind: 'render_action'` row
+  // (backend's `routes/grammar.py:_render_action_catalog_rows`, gated to
+  // `grammar == 'action'`, so it rides the SAME fetchGrammarTokens
+  // ('action') call below with no new network call). Declares the
+  // kind='event' agent render action's own optional sibling params
+  // (currently just `gate`) — deliberately kept OUT of `actions` (the
+  // DO-dispatchable `action_type` bucket): `token_kind` is
+  // `'render_action'`, never `'action_type'`, so a cycle-agent's DO list
+  // can never be tricked into accepting a bare `render` action it has no
+  // handler for. A single entry (not a Map) since there is exactly one
+  // row; `null` when the backend hasn't shipped it yet (older catalog,
+  // or the YAML section is empty) — every consumer must treat that as
+  // "no declared schema", matching the real pre-Sprint-18 behavior.
+  let renderAction = null;
   for (const row of rows || []) {
     if (!row || row.is_active === false) continue;
     const entry = _buildCatalogEntry(row);
@@ -608,8 +661,9 @@ export function buildCatalog(rows) {
     else if (row.grammar_kind === 'condition' && row.token_kind === 'column') columns.set(key, entry);
     else if (row.grammar_kind === 'notify' && row.token_kind === 'channel') channels.set(key, entry);
     else if (row.grammar_kind === 'action' && row.token_kind === 'action_type') actions.set(key, entry);
+    else if (row.grammar_kind === 'action' && row.token_kind === 'render_action') renderAction = entry;
   }
-  return { metrics, scopes, channels, actions, columns };
+  return { metrics, scopes, channels, actions, columns, renderAction };
 }
 
 function _buildCatalogEntry(row) {
@@ -1650,19 +1704,19 @@ export function parseAgentStmt(state) {
 /** `event_stmt := "ALERT" event_meta call_list meta_item*` — Sprint 12,
  *  notification (`kind='event'`) agents. Dispatched from `parseStatement`'s
  *  own lookahead rule (see that function's dispatch comment) specifically
- *  when a bare leading `ALERT` is immediately followed by one of the four
- *  reserved event-meta kwargs (`log_tag=`/`min_level=`/`render=`/`where=`,
- *  see `_EVENT_META_KEYS`) — never reached for an ordinary bare-ALERT
+ *  when a bare leading `ALERT` is immediately followed by one of the five
+ *  reserved event-meta kwargs (`log_tag=`/`min_level=`/`render=`/`where=`/
+ *  `gate=`, see `_EVENT_META_KEYS`) — never reached for an ordinary bare-ALERT
  *  agent_stmt (e.g. `ALERT telegram DO nop`), which keeps going through
  *  `parseAgentStmt`/`parseAlertClauseBody` exactly as before.
  *
- *  `event_meta := event_kw*` — each of the four keys at most once, ANY
- *  ORDER (a plain loop, not four fixed positions); a duplicate key is a
+ *  `event_meta := event_kw*` — each of the five keys at most once, ANY
+ *  ORDER (a plain loop, not five fixed positions); a duplicate key is a
  *  PARSE-time error (not deferred to compile time, per the operator's
  *  explicit instruction — unlike almost everything else in this grammar).
  *  `where=` is the ONE key whose value is an `object_literal` (reusing
  *  `parseObjectLiteral` directly against THIS function's own `state` — see
- *  that function's own generalization comment); the other three use the
+ *  that function's own generalization comment); the other four use the
  *  ordinary `value` production.
  *
  *  After `event_meta`, two guards run before the channel call_list:
@@ -1701,7 +1755,7 @@ export function parseEventStmt(state) {
   const after = _peek(state);
   if (after.type === 'NAME' && !after.hasCall && (_wordIs(after, 'when') || _wordIs(after, 'do'))) {
     throw new _ParseError(
-      'log_tag=/min_level=/render=/where= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      'log_tag=/min_level=/render=/where=/gate= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
       after,
     );
   }
@@ -1718,7 +1772,14 @@ export function parseEventStmt(state) {
       _advance(state);
     }
   }
-  const calls = parseCallList(state);
+  // Sprint 18 — `parseClauseBody` (not the bare `parseCallList`) so a
+  // kind='event' agent's channel list can ALSO be written as bare `nop`
+  // (an empty `events: []` — the real, confirmed-intentional shape of
+  // the seeded `cycle-breach-alert` agent, which supplies channels
+  // dynamically at render time). `calls` is therefore `'nop' | any[]`,
+  // same union `parseAlertClauseBody`'s own ordinary-ALERT callers
+  // already handle — see `compileEventStmt`'s matching `'nop'` guards.
+  const calls = parseClauseBody(state);
   // Second half of the "combined with WHEN/DO" guard — `after` (above)
   // only catches DO/WHEN appearing IMMEDIATELY after event_meta, before
   // any channel; a trailing `DO ...` AFTER the channel call_list (e.g.
@@ -1729,7 +1790,7 @@ export function parseEventStmt(state) {
   const afterCalls = _peek(state);
   if (afterCalls.type === 'NAME' && !afterCalls.hasCall && _wordIs(afterCalls, 'do')) {
     throw new _ParseError(
-      'log_tag=/min_level=/render=/where= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
+      'log_tag=/min_level=/render=/where=/gate= are only valid on a bare ALERT-only statement, not combined with WHEN/DO',
       afterCalls,
     );
   }
@@ -1823,13 +1884,13 @@ export function parseStatement(text) {
     //
     // Sprint 12 — event_stmt dispatch rule, PRECISE: a bare leading `ALERT`
     // (no `WHEN` before it) routes to `parseEventStmt` specifically when
-    // its FIRST kwarg — before any bare channel name — is one of the four
-    // reserved event-meta keys (`log_tag=`/`min_level=`/`render=`/`where=`,
-    // see `_EVENT_META_KEYS`); this is checked via a 2-token lookahead
+    // its FIRST kwarg — before any bare channel name — is one of the five
+    // reserved event-meta keys (`log_tag=`/`min_level=`/`render=`/`where=`/
+    // `gate=`, see `_EVENT_META_KEYS`); this is checked via a 2-token lookahead
     // (NAME matching one of those keys, immediately followed by a lone
     // `EQ`) PAST the `ALERT` token itself. An ordinary bare-ALERT agent_stmt
     // (e.g. `ALERT telegram DO nop`) never matches this lookahead (no real
-    // channel is named one of these four reserved words), so it falls
+    // channel is named one of these five reserved words), so it falls
     // through to `isAgentStmt` unchanged.
     const first = _peek(state);
     const firstIsAlert = first.type === 'NAME' && !first.hasCall && _wordIs(first, 'alert');
@@ -3042,17 +3103,22 @@ function compileEventStmt(ast, catalog) {
   const renderNode = ast.eventMeta.render;
   const minLevelNode = ast.eventMeta.min_level;
   const whereNode = ast.eventMeta.where;
+  const gateNode = ast.eventMeta.gate;
 
   // `msg=`/`message=` rejection, naming EVERY other reserved key present
   // alongside it (not just a generic "doesn't apply" wording) — per the
   // operator's explicit instruction that "log_tag= and msg= both present"
   // must name both keys, not just complain about msg= in isolation.
   if (ast.msgNode != null) {
-    const present = ['log_tag', 'min_level', 'render', 'where'].filter((k) => ast.eventMeta[k]);
+    const present = ['log_tag', 'min_level', 'render', 'where', 'gate'].filter((k) => ast.eventMeta[k]);
     const alongside = present.length ? ` (combined with ${present.map((k) => `${k}=`).join(', ')})` : '';
     errors.push(_err(`msg= doesn't apply to event agents${alongside} — set render= instead`));
   }
-  for (const call of ast.calls) {
+  // Sprint 18 — `ast.calls` is `'nop' | CallNode[]` (see `parseEventStmt`'s
+  // own comment on switching to `parseClauseBody`); `'nop'` means an empty
+  // channel list, so there is nothing to check here.
+  const rawCalls = ast.calls === 'nop' ? [] : ast.calls;
+  for (const call of rawCalls) {
     const hasMsg = (call.args || []).some((a) => a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()));
     if (hasMsg) {
       errors.push(_err(`msg=/message= doesn't apply to event agents (channel '${call.name}') — set render= instead`));
@@ -3082,11 +3148,33 @@ function compileEventStmt(ast, catalog) {
   let where;
   if (whereNode) where = _unwrapValueNode(whereNode);
 
+  // Sprint 18 — `gate=` is the RENDER ACTION's own optional sibling key
+  // (repeat-dedup via the shared RepeatGate), validated against
+  // `catalog.renderAction`'s own params_schema (backend's
+  // `event_actions.render.params_schema`, via `GET /tokens?grammar=action`'s
+  // new `render_action` row) rather than a hardcoded boolean check — a
+  // stale/older catalog that hasn't shipped this row yet fails loud
+  // instead of silently accepting an undeclared key. `undefined` (never
+  // typed) is the overwhelmingly common case and must NOT be defaulted to
+  // `false` — the compiled `actions[0]` omits `gate` entirely then,
+  // matching every real seeded agent except `error-alert`.
+  let gate; // undefined = not typed
+  if (gateNode) {
+    const spec = catalog.renderAction && catalog.renderAction.paramsSchema && catalog.renderAction.paramsSchema.gate;
+    if (!spec) {
+      errors.push(_err("event agent: 'gate=' is not declared in the current catalog (render action schema missing)"));
+    } else {
+      const r = _coerceValueForSpec(gateNode, spec, 'gate', 'event agent');
+      if (r.error) errors.push(r.error); else gate = r.value;
+    }
+  }
+
   // Strip any (already-rejected-above) msg=/message= kwarg before handing
   // the channel list to compileAlertClause — avoids a confusing SECOND,
   // unrelated "channel has no message" error cascading on top of our own
-  // clear one above.
-  const sanitizedCalls = ast.calls.map((call) => ({
+  // clear one above. `'nop'` passes straight through (compileAlertClause's
+  // own `'nop'` guard returns `{events: [], errors: []}`).
+  const sanitizedCalls = ast.calls === 'nop' ? 'nop' : ast.calls.map((call) => ({
     ...call,
     args: (call.args || []).filter((a) => !(a.key && _MESSAGE_KEYS.has(a.key.toLowerCase()))),
   }));
@@ -3100,13 +3188,16 @@ function compileEventStmt(ast, catalog) {
   const log = { tag: logTag, min_level: minLevel };
   if (where !== undefined) log.where = where;
 
+  const action = { type: 'render', render: renderName };
+  if (gate !== undefined) action.gate = gate;
+
   return {
     kind: 'event', errors: [],
     agent: {
       kind: 'event',
       conditions: { log },
       events: eventsResult.events,
-      actions: [{ type: 'render', render: renderName }],
+      actions: [action],
       ...metaFields,
     },
   };
@@ -4350,18 +4441,29 @@ export function decompileAgent({ conditions, events, actions, name = undefined, 
  *  decompiler in this file already uses.
  *
  *  Fails loud (never guesses) on anything this syntax can't express yet —
- *  e.g. an `actions[0]` carrying an extra key beyond `type`/`render` (a
- *  real seeded agent's own repeat-dedup `"gate"` key — see
- *  `backend/api/algo/event_agents.py`'s `ERROR_AGENT` — is NOT expressible
- *  by this syntax yet) — same "fail loud, don't silently drop a field
- *  that would change behavior on resave" convention
- *  `decompileEvents`/`decompileActions` already follow. */
+ *  e.g. a `conditions` tree wrapped in `any`/`all`/`not` (multiple log
+ *  leaves ORed/ANDed together — two real seeded agents,
+ *  `template-attach-urgent`/`template-attach-high`, use this shape) has
+ *  no CLI representation yet: `event_meta` carries exactly one
+ *  `log_tag=`/`min_level=`/`where=` triple, with no syntax today for a
+ *  second, independently-thresholded leaf. Same "fail loud, don't
+ *  silently drop/collapse a field that would change behavior on resave"
+ *  convention `decompileEvents`/`decompileActions` already follow — this
+ *  is a genuine grammar-extension gap, not a shortcut taken here.
+ *
+ *  `actions[0]`'s extra keys (beyond `type`/`render`, e.g. the real
+ *  seeded `error-alert` agent's repeat-dedup `"gate"` key) are resolved
+ *  against `catalog.renderAction`'s own params_schema (Sprint 18 — see
+ *  `buildCatalog`'s own comment) the same generic, catalog-driven way
+ *  `decompileEvents` already resolves a channel's own extra keys — an
+ *  undeclared key (or a stale catalog missing the `render_action` row
+ *  entirely) still fails loud, never silently dropped. */
 export function decompileEventAgent({ conditions, events, actions, name = undefined, description = undefined, tags = undefined, group = undefined }, catalog, opts = {}) {
   const errors = [];
 
   const log = conditions && typeof conditions === 'object' && !Array.isArray(conditions) ? conditions.log : null;
   if (!log || typeof log !== 'object' || Array.isArray(log)) {
-    errors.push(_err(`event agent: 'conditions' must be a {"log": {...}} shape, got ${JSON.stringify(conditions)}`));
+    errors.push(_err(`event agent: 'conditions' must be a {"log": {...}} shape, got ${JSON.stringify(conditions)} (an any/all-wrapped list of log leaves has no CLI representation yet)`));
   }
 
   let logTag = null, minLevel = null, whereObj = null;
@@ -4388,11 +4490,15 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
 
   const eventsResult = decompileEvents(events, catalog);
   errors.push(...eventsResult.errors);
-  if (!eventsResult.errors.length && eventsResult.text === 'nop') {
-    errors.push(_err('event agent: at least one channel is required — an empty events array has no CLI representation for this syntax yet'));
-  }
+  // Sprint 18 — an empty channel list (`events: []`, `eventsResult.text
+  // === 'nop'`) IS now expressible (`parseEventStmt` accepts bare `nop`
+  // for the channel list too — see its own comment) — the real,
+  // confirmed-intentional shape of the seeded `cycle-breach-alert` agent,
+  // which supplies channels dynamically at render time. No longer
+  // rejected here.
 
   let renderName = null;
+  const extraEventKwParts = [];
   if (!Array.isArray(actions) || actions.length !== 1 || !actions[0] || typeof actions[0] !== 'object') {
     errors.push(_err(`event agent: 'actions' must be a single-entry [{"type":"render","render":"<name>"}] array, got ${JSON.stringify(actions)}`));
   } else {
@@ -4400,10 +4506,23 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
     const extraKeys = Object.keys(act).filter((k) => k !== 'type' && k !== 'render');
     if (act.type !== 'render' || typeof act.render !== 'string' || !act.render) {
       errors.push(_err(`event agent: actions[0] must be {"type":"render","render":"<name>"}, got ${JSON.stringify(act)}`));
-    } else if (extraKeys.length) {
-      errors.push(_err(`event agent: actions[0] has extra key(s) [${extraKeys.join(', ')}] not expressible by this syntax yet`));
     } else {
       renderName = act.render;
+      // Sprint 18 — resolved generically against `catalog.renderAction`'s
+      // own params_schema (backend's `event_actions.render.params_schema`,
+      // via `GET /tokens?grammar=action`'s synthetic `render_action` row)
+      // instead of a hardcoded `{type, render}` set. `catalog.renderAction`
+      // is `null` for a stale/older catalog that hasn't shipped this row
+      // yet — every extra key then fails loud, same as an undeclared key
+      // against a real schema.
+      const schema = (catalog.renderAction && catalog.renderAction.paramsSchema) || {};
+      for (const k of extraKeys) {
+        const spec = schema[k];
+        if (!spec) { errors.push(_err(`event agent: actions[0] has extra key '${k}' not expressible by this syntax yet`)); continue; }
+        const r = _renderParamValue(act[k], spec);
+        if (r.error) { errors.push(_err(`event agent: actions[0].${k}: ${r.message}`)); continue; }
+        extraEventKwParts.push(`${k}=${r.text}`);
+      }
     }
   }
 
@@ -4423,6 +4542,9 @@ export function decompileEventAgent({ conditions, events, actions, name = undefi
     if (whereR.error) return { text: null, errors: [_err(`where: ${whereR.message}`)] };
     parts.push(`where=${whereR.text}`);
   }
+  // Sprint 18 — render action's own extra keys (e.g. `gate=true`),
+  // rendered above against `catalog.renderAction`'s schema.
+  parts.push(...extraEventKwParts);
 
   const metaSuffix = metaResult.text ? ` ${metaResult.text}` : '';
   const text = `ALERT ${parts.join(', ')}, ${eventsResult.text}${metaSuffix}`;
