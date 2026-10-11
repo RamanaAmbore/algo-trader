@@ -293,3 +293,133 @@ class TestValidateCallSyntaxTokens:
         errors = validate(cond)
         assert len(errors) == 1
         assert "unknown metric token" in errors[0]
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+#  Sprint 15 follow-up — exposed-only-column fallback in `_eval_leaf` /
+#  `validate()`. A leaf referencing an exposed column with no registered
+#  metric token (e.g. `qty`, `symbol`, `realised`...) used to compile fine
+#  but silently never fire: `REGISTRY.metric()` returned None, logged
+#  "unknown token", and the leaf was skipped. `_resolve_metric_fn()` now
+#  falls back to `grammar.exposed_columns_for_scope(scope)` before giving
+#  up — shared by both `_eval_leaf` (runtime) and `validate()` (save-time)
+#  so the two never disagree.
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestExposedColumnFallback:
+    """REGISTRY is a process-wide singleton other test files' reload()
+    calls mutate — wire exactly the real resolvers these tests need via
+    monkeypatch (auto-restored after each test), same pattern as
+    TestAllJoinsSameAccount._wire_registry above."""
+
+    @pytest.fixture(autouse=True)
+    def _wire_registry(self, monkeypatch):
+        from backend.api.algo.grammar_registry import REGISTRY
+        from backend.api.algo.grammar import _scope_positions_worst_symbol, OPERATORS
+        # Replace the whole dicts (not setitem) so a leftover 'qty'/'pnl'
+        # registration from some other test module can't leak in and
+        # mask what this test is actually proving.
+        monkeypatch.setattr(REGISTRY, 'metrics', {})
+        monkeypatch.setattr(REGISTRY, 'scopes', {'positions.worst_symbol': _scope_positions_worst_symbol})
+        monkeypatch.setattr(REGISTRY, 'operators', {'>': OPERATORS['>'], '<': OPERATORS['<']})
+        monkeypatch.setattr(REGISTRY, 'metric_factories', {})
+        monkeypatch.setattr(REGISTRY, '_metric_call_cache', {})
+
+    def test_exposed_only_column_now_fires(self):
+        """`qty` has no `_metric_qty` resolver anywhere in grammar.py —
+        it only exists as an exposed column on `positions.worst_symbol`'s
+        schema (`_POSITION_ROW_COLUMNS`, from_column='quantity'). Prior to
+        this fix, `REGISTRY.metric('qty')` was None and the leaf never
+        fired regardless of the real quantity value."""
+        from backend.api.algo.agent_evaluator import evaluate, Context
+        rows = [
+            {'account': 'ACCT_A', 'pnl': -100.0, 'quantity': 5},
+            {'account': 'ACCT_B', 'pnl': -50.0, 'quantity': 3},
+        ]
+        ctx = Context(position_rows=rows)
+        leaf = {"metric": "qty", "scope": "positions.worst_symbol", "op": ">", "value": 0}
+        result = evaluate(leaf, ctx)
+        # worst_symbol picks the most-negative pnl row -> ACCT_A (qty=5)
+        assert len(result) == 1, f"Expected exposed-only column 'qty' to fire, got {result}"
+        assert result[0]['account'] == 'ACCT_A'
+        assert result[0]['value'] == 5.0
+
+    def test_exposed_only_column_missing_on_row_is_skipped_not_zero(self):
+        """A row lacking the exposed column must resolve to None (missing),
+        never a coerced 0 — same missing-vs-zero convention as every
+        hand-written metric resolver."""
+        from backend.api.algo.agent_evaluator import evaluate, Context
+        rows = [{'account': 'ACCT_A', 'pnl': -100.0}]  # no 'quantity' key
+        ctx = Context(position_rows=rows)
+        leaf = {"metric": "qty", "scope": "positions.worst_symbol", "op": ">", "value": -1}
+        result = evaluate(leaf, ctx)
+        assert result == [], "Missing exposed column must skip the row, not fire on a coerced 0"
+
+    def test_genuinely_unknown_token_still_skipped(self, monkeypatch):
+        """A token that is neither a real metric NOR an exposed column on
+        the leaf's scope must keep the original 'unknown token' skip
+        behaviour, unchanged."""
+        from backend.api.algo.agent_evaluator import evaluate, Context
+        import backend.api.algo.agent_evaluator as ev_mod
+        warnings = []
+        monkeypatch.setattr(ev_mod.logger, 'warning', lambda msg: warnings.append(msg))
+        rows = [{'account': 'ACCT_A', 'pnl': -100.0, 'quantity': 5}]
+        ctx = Context(position_rows=rows)
+        leaf = {"metric": "nope_xyz", "scope": "positions.worst_symbol", "op": ">", "value": 0}
+        result = evaluate(leaf, ctx)
+        assert result == []
+        assert any("unknown token" in w for w in warnings)
+
+    def test_exposed_name_on_wrong_scope_still_unknown(self):
+        """`qty` is only on `positions.worst_symbol`'s exposed-column
+        schema, NOT on `funds.any_acct`'s — the fallback must be scoped
+        per scope token, never a global exposed-name lookup."""
+        from backend.api.algo.agent_evaluator import evaluate, Context
+        ctx = Context(df_margins=_margins_ctx_df([{'account': 'ACCT_A', 'quantity': 5}]))
+        leaf = {"metric": "qty", "scope": "funds.any_acct", "op": ">", "value": 0}
+        result = evaluate(leaf, ctx)
+        assert result == [], "Exposed column from a DIFFERENT scope must not resolve"
+
+    def test_real_metric_token_is_not_double_resolved_through_fallback(self, monkeypatch):
+        """`pnl` is BOTH a real registered metric token AND an exposed
+        column on `positions.worst_symbol`'s schema. The real metric path
+        must win outright — the fallback must never also run. Proven via
+        a spy metric resolver that returns a sentinel distinct from the
+        row's raw `pnl` column; if the fallback ran instead (or in
+        addition), the match value would be the raw column value, not
+        the sentinel."""
+        from backend.api.algo.agent_evaluator import evaluate, Context
+        from backend.api.algo.grammar_registry import REGISTRY
+        calls = []
+
+        def _spy_pnl(ctx, row):
+            calls.append(row)
+            return 12345.0
+
+        monkeypatch.setitem(REGISTRY.metrics, 'pnl', _spy_pnl)
+        rows = [{'account': 'ACCT_A', 'pnl': 1.0, 'quantity': 5}]
+        ctx = Context(position_rows=rows)
+        leaf = {"metric": "pnl", "scope": "positions.worst_symbol", "op": ">", "value": 0}
+        result = evaluate(leaf, ctx)
+        assert len(result) == 1
+        assert result[0]['value'] == 12345.0, (
+            "Expected the real registered metric's sentinel value — the "
+            "exposed-column fallback must never run for a known metric token"
+        )
+        assert len(calls) == 1, "Spy metric resolver must be called exactly once (not bypassed)"
+
+    def test_validate_accepts_exposed_only_column_leaf(self):
+        """`validate()` (the save-time dry check used by the agent create/
+        update path) must agree with `_eval_leaf` — an exposed-only column
+        leaf is no longer rejected as an 'unknown metric token'."""
+        from backend.api.algo.agent_evaluator import validate
+        cond = {"metric": "qty", "scope": "positions.worst_symbol", "op": ">", "value": 0}
+        assert validate(cond) == []
+
+    def test_validate_still_rejects_genuinely_unknown_metric(self):
+        from backend.api.algo.agent_evaluator import validate
+        cond = {"metric": "nope_xyz", "scope": "positions.worst_symbol", "op": ">", "value": 0}
+        errors = validate(cond)
+        assert len(errors) == 1
+        assert "unknown metric token" in errors[0]
+        assert "nope_xyz" in errors[0]

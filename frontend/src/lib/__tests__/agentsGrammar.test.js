@@ -33,6 +33,7 @@ const {
   buildCatalog, fetchAgentCatalog, parseStatement, compileStatement,
   compileAgentCliStatement, validateAgentCliStatement, lexAgentStatement,
   parseCall, parseValue, parseLeaf, ALWAYS_LEAF, KWARG_ALIASES,
+  suggestAgentCliAt, decompileCondition,
 } = await import('$lib/command/grammars/agents.js');
 const { fetchGrammarTokens } = await import('$lib/api');
 
@@ -108,6 +109,57 @@ const FIXTURE_ROWS = [
   // everything else about their catalog shape is identical.
   { grammar_kind: 'condition', token_kind: 'metric', token: 'loss-positions-default', is_fragment_ref: true, params_schema: null },
   { grammar_kind: 'notify', token_kind: 'channel', token: 'notify-critical-trio', is_fragment_ref: true, params_schema: null },
+  // Sprint 15 — appended at the END (not spliced in among the earlier
+  // rows) so the existing `fetchAgentCatalog()` test's `FIXTURE_ROWS[13]`/
+  // `FIXTURE_ROWS[17]` index references stay valid.
+  //
+  // A real multi-segment SCOPE (positions.expiring_today.mcx_unhedged is
+  // the live catalog's own canonical example) — needed for the
+  // longest-scope-chain-match-first regression guard: this chain must
+  // keep resolving as a SCOPE, never get misparsed as a shorter scope +
+  // a trailing column.
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.expiring_today', params_schema: null },
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'positions.expiring_today.mcx_unhedged', params_schema: null },
+  // Sprint 15 — `token_kind: 'column'` rows (the per-scope exposed-column
+  // registry projection). `token` is the compound `<scope>.<exposed_name>`
+  // string per the backend's chosen shape; `label` is the short,
+  // operator-facing display text — mirrors the REAL registry entries in
+  // `backend/api/algo/grammar.py` (`_POSITIONS_SUMMARY_COLUMNS`/
+  // `_POSITION_ROW_COLUMNS`) exactly, so a compiled/decompiled fixture
+  // test reads the same as it would against the live catalog.
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.total.pnl', value_type: 'number',
+    label: 'P&L (₹)',
+    description: "P&L (₹). Sourced from DataFrame column 'pnl' on ctx.sum_positions, populated by backend.api.algo.grammar._scope_positions_total.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.total.account_id', value_type: 'string',
+    label: 'Account',
+    description: "Account. Sourced from DataFrame column 'account' on ctx.sum_positions, populated by backend.api.algo.grammar._scope_positions_total.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.qty', value_type: 'number',
+    label: 'Quantity (Contracts)',
+    description: "Quantity (Contracts). Sourced from DataFrame column 'quantity' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.symbol', value_type: 'string',
+    label: 'Symbol',
+    description: "Symbol. Sourced from DataFrame column 'tradingsymbol' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today.",
+  },
+  // Same column, under the DEEPER mcx_unhedged scope — needed to confirm
+  // a 4-segment chain (3-segment scope + 1 column) resolves with the
+  // FULL 3-segment scope, not a shorter 2-segment guess.
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'positions.expiring_today.mcx_unhedged.pnl', value_type: 'number',
+    label: 'P&L (₹)',
+    description: "P&L (₹). Sourced from DataFrame column 'pnl' on ctx.position_rows, populated by backend.api.algo.grammar._scope_positions_expiring_today_mcx_unhedged.",
+  },
+  {
+    grammar_kind: 'condition', token_kind: 'column', token: 'funds.total.option_premium', value_type: 'number',
+    label: 'Option Premium',
+    description: "Option Premium. Sourced from DataFrame column 'util option_premium' on ctx.df_margins, populated by backend.api.algo.grammar._scope_funds_total.",
+  },
 ];
 
 const CATALOG = buildCatalog(FIXTURE_ROWS);
@@ -924,6 +976,172 @@ describe('chained ("between") comparison', () => {
         { metric: 'pnl', scope: 'positions.total', op: '<', value: 100 },
       ],
     });
+  });
+});
+
+// ── Sprint 15 — generic `scope.attribute` dot-access, per-scope column
+//    registry projected into the token catalog ─────────────────────────
+
+describe('Sprint 15 — scope.attribute dot-access (col_ref leaf)', () => {
+  it('positions.total.pnl <= -50000 compiles to the IDENTICAL JSON as pnl@positions.total <= -50000', () => {
+    const dotted = compile('WHEN positions.total.pnl <= -50000 ALERT telegram DO nop');
+    const atForm = compile('WHEN pnl@positions.total <= -50000 ALERT telegram DO nop');
+    expect(dotted.ok).toBe(true);
+    expect(dotted.errors).toEqual([]);
+    expect(dotted.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.total', op: '<=', value: -50000 });
+    expect(dotted.agent.conditions).toEqual(atForm.agent.conditions);
+  });
+
+  it('a column with no hand-registered metric token compiles via dot-access (e.g. qty — no "qty@scope" form exists)', () => {
+    const r = compile('WHEN positions.expiring_today.qty > 10 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'qty', scope: 'positions.expiring_today', op: '>', value: 10 });
+  });
+
+  it('a string-typed column works with in/not_in, same as a string-typed metric', () => {
+    const r = compile('WHEN positions.expiring_today.symbol in ["NIFTY25JULFUT"] ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'symbol', scope: 'positions.expiring_today', op: 'in', value: ['NIFTY25JULFUT'] });
+  });
+
+  it('a column under a space-containing real DataFrame column name (funds option_premium) compiles — the exposed name stays clean', () => {
+    const r = compile('WHEN funds.total.option_premium > 0 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'option_premium', scope: 'funds.total', op: '>', value: 0 });
+  });
+
+  it('a numeric column compared against a non-numeric value errors with the SAME message a numeric metric already produces (reused, not duplicated, check)', () => {
+    const colForm = compile('WHEN positions.total.pnl == "5" ALERT telegram DO nop');
+    const metricForm = compile('WHEN pnl@positions.total == "5" ALERT telegram DO nop');
+    expect(colForm.ok).toBe(false);
+    expect(colForm.errors[0].message).toBe('comparator requires both sides numeric');
+    expect(colForm.errors[0].message).toBe(metricForm.errors[0].message);
+  });
+
+  it('between-chain syntax also accepts a bare dotted column (symmetry with compileLeaf)', () => {
+    const r = compile('WHEN -1000 <= funds.total.option_premium <= 5000 ALERT telegram DO nop');
+    expect(r.ok).toBe(true);
+    expect(r.agent.conditions).toEqual({ metric: 'option_premium', scope: 'funds.total', op: 'between', value: [-1000, 5000] });
+  });
+
+  // ── Regression guard: the EXISTING multi-segment scope_ref (always
+  //    reached via "@") is completely unaffected by the new bare dotted
+  //    leaf form. ──────────────────────────────────────────────────────
+  describe('regression guard — positions.expiring_today.mcx_unhedged (real multi-segment SCOPE)', () => {
+    it('unaffected: pnl@positions.expiring_today.mcx_unhedged still compiles exactly as before', () => {
+      const r = compile('WHEN pnl@positions.expiring_today.mcx_unhedged <= -1000 ALERT telegram DO nop');
+      expect(r.ok).toBe(true);
+      expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today.mcx_unhedged', op: '<=', value: -1000 });
+    });
+
+    it('a 4-segment dotted chain (3-segment scope + column) resolves scope = the FULL 3-segment scope, not a shorter guess', () => {
+      const r = compile('WHEN positions.expiring_today.mcx_unhedged.pnl <= -1000 ALERT telegram DO nop');
+      expect(r.ok).toBe(true);
+      expect(r.agent.conditions).toEqual({ metric: 'pnl', scope: 'positions.expiring_today.mcx_unhedged', op: '<=', value: -1000 });
+    });
+
+    it('the bare 3-segment chain alone (no trailing column) resolves as a SCOPE and errors clearly — never misparsed as a shorter scope + column', () => {
+      const r = compile('WHEN positions.expiring_today.mcx_unhedged <= -1000 ALERT telegram DO nop');
+      expect(r.ok).toBe(false);
+      expect(r.errors[0].message).toMatch(/'positions\.expiring_today\.mcx_unhedged' is a scope/);
+      expect(r.errors[0].message).not.toMatch(/unknown column/);
+    });
+  });
+
+  describe('decompile round-trip (a column with no backing metric token)', () => {
+    it('{metric:"qty", scope:"positions.expiring_today", ...} decompiles to the dotted column form and recompiles to the same JSON', () => {
+      const conditions = { metric: 'qty', scope: 'positions.expiring_today', op: '>', value: 10 };
+      const { text, errors } = decompileCondition(conditions, CATALOG);
+      expect(errors).toEqual([]);
+      expect(text).toBe('positions.expiring_today.qty > 10');
+      const recompiled = compile(`WHEN ${text} ALERT telegram DO nop`);
+      expect(recompiled.ok).toBe(true);
+      expect(recompiled.agent.conditions).toEqual(conditions);
+    });
+  });
+});
+
+describe('Sprint 15 — autocomplete: column suggestions show the SHORT label, not the long compound token', () => {
+  it('typing a complete known scope + "." suggests its exposed columns, inserting the FULL compound token but LABELING it with the short display text', () => {
+    const text = 'WHEN positions.total.';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.kind).toBe('column');
+    const idx = r.suggestions.indexOf('positions.total.pnl');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    // The long compound token is never what gets shown as the primary
+    // label — the short catalog `label` ("P&L (₹)") is.
+    expect(r.labels[idx]).toBe('P&L (₹)');
+    expect(r.labels[idx]).not.toBe('positions.total.pnl');
+    // The description still carries full provenance (unaffected).
+    expect(r.descriptions[idx]).toContain('P&L (₹)');
+  });
+
+  it('replaceRange spans the WHOLE typed chain (from the fresh-name start), same convention as @-anchored scope_ref completion', () => {
+    const text = 'WHEN positions.total.';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    const chainStart = text.indexOf('positions.total.');
+    expect(r.replaceRange).toEqual([chainStart, text.length]);
+  });
+
+  it('mid-typing a partial column name fuzzy-filters within that one scope only', () => {
+    const text = 'WHEN positions.total.pn';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.kind).toBe('column');
+    expect(r.suggestions).toEqual(['positions.total.pnl']);
+    expect(r.suggestions).not.toContain('positions.total.account_id');
+  });
+
+  it('a non-column, non-metric suggestion (e.g. the ordinary metric-name branch) carries labels[i] === null, never a stray label', () => {
+    const r = suggestAgentCliAt('WHEN pn', 'WHEN pn'.length, CATALOG);
+    expect(r.kind).toBe('token');
+    const idx = r.suggestions.indexOf('pnl');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.labels[idx]).toBeNull();
+  });
+
+  it('an incomplete scope prefix (not yet a real, complete scope) suggests nothing — exact scope matching, never a fuzzy cross-scope guess', () => {
+    const text = 'WHEN positions.tot';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    // "positions.tot" is mid-typing a SCOPE segment itself (not yet
+    // "positions.total" followed by "."), so this still falls through to
+    // the existing scope-chain-extension suggestion path, not a column
+    // list — confirms no column leaks in before the scope is complete.
+    expect(r.suggestions).not.toContain('positions.total.pnl');
+  });
+});
+
+describe('Sprint 15 — AgentCliEditor hover description: required_if / mutually_exclusive_groups rendered as plain English', () => {
+  it("a required_if-carrying param's hover description includes the generated requirement text (price — required when order_type is LIMIT/SL)", () => {
+    const text = 'WHEN always ALERT nop DO place_order(';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    expect(r.kind).toBe('param');
+    const idx = r.suggestions.indexOf('price');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toContain('price — required when order_type is LIMIT/SL');
+  });
+
+  it("trigger_price's required_if (SL/SL-M) is rendered distinctly from price's own (LIMIT/SL)", () => {
+    const text = 'WHEN always ALERT nop DO place_order(';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    const idx = r.suggestions.indexOf('trigger_price');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toContain('trigger_price — required when order_type is SL/SL-M');
+  });
+
+  it('a mutually_exclusive_groups member\'s description names the OTHER member', () => {
+    const text = 'WHEN always ALERT nop DO place_order(';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    const idx = r.suggestions.indexOf('wing_premium_pct_override');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toContain('wing_premium_pct_override is mutually exclusive with wing_strike_offset_override');
+  });
+
+  it('a param with neither required_if nor a mutex membership still degrades to its own plain description, unchanged', () => {
+    const text = 'WHEN always ALERT nop DO place_order(';
+    const r = suggestAgentCliAt(text, text.length, CATALOG);
+    const idx = r.suggestions.indexOf('symbol');
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(r.descriptions[idx]).toBe('');
   });
 });
 

@@ -264,7 +264,8 @@
 //   term           := "~" primary | primary
 //   primary        := "(" or_expr ")" | leaf
 //   leaf           := metric_ref comparator value
-//                    | value comparator metric_ref comparator value   (* between *)
+//                    | col_ref comparator value                       (* Sprint 15 *)
+//                    | value comparator (metric_ref | col_ref) comparator value   (* between *)
 //                    | call                           (* Sprint 10 — a BARE
 //                                                          call with no "@"
 //                                                          following is
@@ -301,6 +302,24 @@
 //                                                          time. *)
 //   metric_ref     := call "@" scope_ref
 //   scope_ref      := call ("." call)*
+//   col_ref        := call ("." call)+        (* Sprint 15 — `leaf`'s OTHER
+//                        alternative, with NO "@": a bare dotted chain,
+//                        e.g. `positions.total.pnl`. Syntactically
+//                        IDENTICAL to `scope_ref` (both are just
+//                        `call ("." call)*`), but semantically distinct —
+//                        `scope_ref` only ever appears after "@"; `col_ref`
+//                        only ever appears as a leaf's LHS with no "@" at
+//                        all. Disambiguation of which trailing segment(s)
+//                        are the scope vs. the column happens at COMPILE
+//                        time (`_resolveDotAccess`): try the WHOLE chain
+//                        against known scope names first (this is what
+//                        keeps `positions.expiring_today.mcx_unhedged`
+//                        resolving as a SCOPE, not a column, when it's
+//                        used standalone with no trailing column segment),
+//                        falling back to "last segment is a column (or an
+//                        existing bare zero-arg metric) on the scope
+//                        resolved so far" only when the full chain isn't
+//                        itself a known scope. *)
 //   comparator     := "<" | "<=" | ">" | ">=" | "==" | "!=" | "in" | "not in"
 //   value          := NUMBER | STRING | NAME | list_literal
 //   list_literal   := "[" value ("," value)* "]"
@@ -443,6 +462,17 @@
 //               | { type:'ref', call: CallNode }   (* Sprint 10 — a bare
 //                   call with no "@" following; resolved at COMPILE time —
 //                   see the `leaf` EBNF production's own comment above. *)
+//               | { type:'colref', segments: CallNode[], op: string|null,
+//                   value: ValueNode|null }   (* Sprint 15 — a bare dotted
+//                   chain with NO "@" at all, e.g. `positions.total.pnl`.
+//                   Parsed identically to `scope_ref`'s own "." call)*
+//                   shape, but which segments are the SCOPE and which
+//                   trailing segment is a COLUMN (or an existing bare
+//                   zero-arg metric bound to that scope) is a COMPILE-time
+//                   decision — see `_resolveDotAccess`'s "longest known-
+//                   scope-chain match first" rule. Distinct from `leaf`
+//                   (which always has an explicit "@") so the two can
+//                   never be confused structurally. *)
 //   CallNode   := { type:'call', name: string, args: ArgEntry[],
 //                   hasCall: boolean, start, end }
 //   ArgEntry   := { key: string, value: ValueNode }   (* key is NEVER null —
@@ -561,16 +591,25 @@ export function buildCatalog(rows) {
   const scopes = new Map();
   const channels = new Map();
   const actions = new Map();
+  // Sprint 15 — `token_kind: 'column'` rows, the per-scope exposed-column
+  // registry projection (`backend.api.algo.grammar.EXPOSED_COLUMNS`, merged
+  // into `list_tokens(grammar='condition')` by
+  // `routes/grammar.py:_merge_exposed_column_rows`). Keyed by the row's own
+  // COMPOUND token string, lowercased (e.g. `"positions.total.pnl"`) — same
+  // real-casing-preserving-on-`.token`/lowercased-key convention every other
+  // bucket here already follows.
+  const columns = new Map();
   for (const row of rows || []) {
     if (!row || row.is_active === false) continue;
     const entry = _buildCatalogEntry(row);
     const key = String(row.token).toLowerCase();
     if (row.grammar_kind === 'condition' && row.token_kind === 'metric') metrics.set(key, entry);
     else if (row.grammar_kind === 'condition' && row.token_kind === 'scope') scopes.set(key, entry);
+    else if (row.grammar_kind === 'condition' && row.token_kind === 'column') columns.set(key, entry);
     else if (row.grammar_kind === 'notify' && row.token_kind === 'channel') channels.set(key, entry);
     else if (row.grammar_kind === 'action' && row.token_kind === 'action_type') actions.set(key, entry);
   }
-  return { metrics, scopes, channels, actions };
+  return { metrics, scopes, channels, actions, columns };
 }
 
 function _buildCatalogEntry(row) {
@@ -597,6 +636,12 @@ function _buildCatalogEntry(row) {
     // none (every condition/notify/non-mutex action row) — never `[]`,
     // so callers can use a plain truthy check.
     mutuallyExclusiveGroups: Array.isArray(row.mutually_exclusive_groups) ? row.mutually_exclusive_groups : null,
+    // Sprint 15 — operator-facing SHORT display text (e.g. `"P&L (₹)"`),
+    // populated today only for `token_kind:'column'` rows (backend's
+    // `GrammarTokenOut.label`). `null` for every other token kind — this
+    // is what autocomplete shows prominently for a column suggestion,
+    // never the long compound `token` string (see `_suggestBareDottedRef`).
+    label: row.label || null,
   };
 }
 
@@ -1203,6 +1248,36 @@ export function parseMetricRef(state) {
   return { metric, scope };
 }
 
+/** `metric_ref | col_ref` — Sprint 15's shared entry point for BOTH
+ *  `parseLeaf`'s between-chain branch and (via its own inline handling,
+ *  not this function — see `parseLeaf` directly) the plain leaf branch.
+ *  Parses the first `call`, then dispatches on what follows it: "." means
+ *  a bare `col_ref` chain (collected the same way `scope_ref` collects its
+ *  own "." call)* segments — NOT yet disambiguated into scope-vs-column
+ *  here, that split is a compile-time decision, see `_resolveDotAccess`);
+ *  "@" means an ordinary `metric_ref`; anything else is a parse error
+ *  (the exact same "expected '@' after metric" wording `parseMetricRef`
+ *  already throws, since a `between` chain's metric position has no bare-
+ *  ref/Token-reference alternative the way a plain leaf does). Returns
+ *  `{ kind: 'colref', segments: CallNode[] }` or
+ *  `{ kind: 'metric', metric: CallNode, scope: ScopeNode }`. */
+function parseMetricOrColRef(state) {
+  const first = parseCall(state);
+  if (_peek(state).type === 'DOT') {
+    const segments = [first];
+    while (_peek(state).type === 'DOT') {
+      _advance(state);
+      segments.push(parseCall(state));
+    }
+    return { kind: 'colref', segments };
+  }
+  const at = _peek(state);
+  if (at.type !== 'AT') throw new _ParseError(`expected "@" after metric '${first.name}'`, at);
+  _advance(state);
+  const scope = parseScopeRef(state);
+  return { kind: 'metric', metric: first, scope };
+}
+
 /** `list_literal := "[" value ("," value)* "]"` */
 export function parseListLiteral(state) {
   const open = _peek(state);
@@ -1264,38 +1339,64 @@ function _isLiteralStart(tok) {
   return tok.type === 'NUMBER' || tok.type === 'STRING' || tok.type === 'LBRACKET';
 }
 
-/** `leaf := metric_ref comparator value | value comparator metric_ref comparator value | call`
- *  (Sprint 10's bare-call/Token-reference alternative — see the file-header
- *  EBNF's own comment on this production for the full rationale.) */
+/** `leaf := metric_ref comparator value | col_ref comparator value
+ *         | value comparator (metric_ref | col_ref) comparator value | call`
+ *  (Sprint 10's bare-call/Token-reference alternative, and Sprint 15's bare
+ *  `col_ref` dot-access alternative — see the file-header EBNF's own
+ *  comment on this production for the full rationale on both.) */
 export function parseLeaf(state) {
   const startTok = _peek(state);
   if (_isLiteralStart(startTok)) {
     const value1 = parseValue(state);
     const op1 = parseComparator(state);
-    const { metric, scope } = parseMetricRef(state);
+    const ref = parseMetricOrColRef(state);
     const op2 = parseComparator(state);
     const value2 = parseValue(state);
-    return { type: 'between', value1, op1, metric, scope, op2, value2 };
+    if (ref.kind === 'colref') {
+      return { type: 'between', value1, op1, colSegments: ref.segments, op2, value2 };
+    }
+    return { type: 'between', value1, op1, metric: ref.metric, scope: ref.scope, op2, value2 };
   }
-  const metricCall = parseCall(state);
+  const firstCall = parseCall(state);
+  if (_peek(state).type === 'DOT') {
+    // Sprint 15 — a bare `col_ref` chain with NO "@" at all, e.g.
+    // `positions.total.pnl <= -50000`. Collected exactly like
+    // `scope_ref`'s own "." call)* segments — the scope-vs-column split
+    // is resolved later, at COMPILE time (`_resolveDotAccess`), not here.
+    // This branch is reached ONLY when a "." immediately follows the
+    // first call with no "@" anywhere — the existing `scope_ref` grammar
+    // (always preceded by "@") is completely untouched.
+    const segments = [firstCall];
+    while (_peek(state).type === 'DOT') {
+      _advance(state);
+      segments.push(parseCall(state));
+    }
+    if (_isComparatorStart(_peek(state))) {
+      const op = parseComparator(state);
+      const value = parseValue(state);
+      return { type: 'colref', segments, op, value };
+    }
+    return { type: 'colref', segments, op: null, value: null };
+  }
   if (_peek(state).type !== 'AT') {
-    // No "@" follows — a real metric ALWAYS requires "@ scope_ref", so this
-    // can only be a bare Token ($ref) reference. Deferred to COMPILE time
-    // (see `compileRef`) — parse permissively, validate once the catalog is
-    // known, same split this grammar already uses everywhere else.
-    return { type: 'ref', call: metricCall };
+    // No "@" and no "." follows — a real metric ALWAYS requires
+    // "@ scope_ref", so this can only be a bare Token ($ref) reference.
+    // Deferred to COMPILE time (see `compileRef`) — parse permissively,
+    // validate once the catalog is known, same split this grammar already
+    // uses everywhere else.
+    return { type: 'ref', call: firstCall };
   }
   _advance(state); // consume "@"
   const scope = parseScopeRef(state);
   if (_isComparatorStart(_peek(state))) {
     const op = parseComparator(state);
     const value = parseValue(state);
-    return { type: 'leaf', metric: metricCall, scope, op, value };
+    return { type: 'leaf', metric: firstCall, scope, op, value };
   }
   // Boolean-metric shorthand — syntactically accepted here; the semantic
   // check ("was this metric actually boolean?") happens at compile time,
   // once the token is resolved against the catalog (see design doc).
-  return { type: 'leaf', metric: metricCall, scope, op: null, value: null };
+  return { type: 'leaf', metric: firstCall, scope, op: null, value: null };
 }
 
 /** `primary := "(" or_expr ")" | leaf` — `depth` increments EXACTLY ONCE
@@ -1978,8 +2079,8 @@ function _compileMetricCallString(callNode, entry, errors) {
   return `${entry.token}(${parts.join(',')})`;
 }
 
-function _compileListValue(listNode, metricEntry, errors) {
-  const isNumeric = metricEntry.valueType === 'number' || !metricEntry.valueType;
+function _compileListValue(listNode, valueType, errors) {
+  const isNumeric = valueType === 'number' || !valueType;
   const out = [];
   for (const item of listNode.value) {
     if (isNumeric) {
@@ -1992,6 +2093,135 @@ function _compileListValue(listNode, metricEntry, errors) {
   return out;
 }
 
+/** Shared comparator/value compile logic for a resolved metric-OR-column
+ *  reference (Sprint 15) — the exact checks `compileLeaf` always had
+ *  ("boolean metric only supports ==/!=", "numeric comparator requires a
+ *  numeric value", the bare/boolean-shorthand case, `in`/`not_in`'s list
+ *  requirement), extracted so a resolved COLUMN entry (which has no
+ *  concept of "metric-kind" at all — it's a different catalog bucket)
+ *  gets the IDENTICAL behavior for free. Gated purely on `valueType`
+ *  (`'boolean'` / `'number'` / `'string'` / falsy), never on which
+ *  catalog bucket the caller resolved from — this is the "widen to
+ *  valueType, not metric-kind" the sprint's design asked for. Takes the
+ *  already-compiled `metricStr`/`scopeStr` (a column's `metricStr` is its
+ *  bare exposed name, e.g. `"pnl"` — see `_resolveDotAccess`) so the
+ *  output shape is byte-identical to what `compileLeaf` always produced
+ *  for a real metric. */
+function _compileComparatorValue(metricStr, scopeStr, valueType, op, value, errors) {
+  if (op === null) {
+    if (valueType === 'boolean') {
+      return { metric: metricStr, scope: scopeStr, op: '==', value: true };
+    }
+    errors.push(_err(`expected a comparator after a numeric metric '${metricStr}'`));
+    return null;
+  }
+
+  if (op === 'in' || op === 'not_in') {
+    if (value.type !== 'list') {
+      errors.push(_err(`'${op === 'in' ? 'in' : 'not in'}' requires a list literal on the right`));
+      return null;
+    }
+    const list = _compileListValue(value, valueType, errors);
+    if (errors.length) return null;
+    return { metric: metricStr, scope: scopeStr, op, value: list };
+  }
+
+  if (valueType === 'boolean') {
+    if (op !== '==' && op !== '!=') {
+      errors.push(_err(`boolean metric '${metricStr}' only supports == / !=`));
+      return null;
+    }
+    if (value.type !== 'name' || !['true', 'false'].includes(String(value.value).toLowerCase())) {
+      errors.push(_err(`${metricStr}: expected true or false`));
+      return null;
+    }
+    return { metric: metricStr, scope: scopeStr, op, value: String(value.value).toLowerCase() === 'true' };
+  }
+
+  if (value.type !== 'number') {
+    errors.push(_err('comparator requires both sides numeric'));
+    return null;
+  }
+  return { metric: metricStr, scope: scopeStr, op, value: value.value };
+}
+
+/** Resolve a bare dotted chain (Sprint 15's `col_ref`, e.g.
+ *  `positions.total.pnl` or `positions.expiring_today.mcx_unhedged`) at
+ *  COMPILE time into `{ metricStr, scopeStr, valueType }` — the same
+ *  trio `compileLeaf` already derives for a `metric@scope` leaf — or
+ *  pushes an error and returns `null`.
+ *
+ *  Disambiguation order (per the sprint's design, "longest known-scope-
+ *  chain match first"):
+ *    1. The WHOLE chain is itself a known SCOPE token (e.g.
+ *       `positions.expiring_today.mcx_unhedged` used bare, no trailing
+ *       column) — a clear, specific error: there's nothing to compare, a
+ *       scope alone is not a condition. This is what keeps a genuine
+ *       multi-segment scope name from ever being misparsed as a shorter
+ *       scope + a column read.
+ *    2. Chain-minus-last-segment is a known scope AND the last segment is
+ *       a registered exposed COLUMN on that scope — the common case
+ *       (`positions.total.pnl`).
+ *    3. Chain-minus-last-segment is a known scope AND the last segment is
+ *       an EXISTING bare (zero-arg) metric token (not a fragment/Token
+ *       ref) — e.g. a fixed-window metric like `mean_pnl_30m` read via
+ *       dot-access instead of `mean_pnl_30m@scope`. A metric that NEEDS
+ *       arguments has no default-dot shortcut (dot-access can't pass
+ *       arguments) — a clear error pointing at the explicit call form.
+ *    4. Anything else — unknown scope or unknown column/metric on it. */
+function _resolveDotAccess(segments, catalog, errors) {
+  const parts = [];
+  for (const seg of segments) {
+    if (seg.args && seg.args.length) {
+      errors.push(_err(`'${seg.name}' takes no arguments`));
+      return null;
+    }
+    parts.push(seg.name.toLowerCase());
+  }
+  const full = parts.join('.');
+  if (catalog.scopes.has(full)) {
+    errors.push(_err(
+      `'${full}' is a scope, not a condition — append '.column' to read a value off it `
+      + `(e.g. '${full}.pnl'), or use "metric@${full}" syntax`
+    ));
+    return null;
+  }
+  if (parts.length < 2) {
+    const other = _describeKind(parts[0], catalog);
+    errors.push(_err(other
+      ? `'${parts[0]}' is ${other} — expected a 'scope.column' dot-access read`
+      : `unknown scope or column '${parts[0]}'`));
+    return null;
+  }
+  const scopePart = parts.slice(0, -1).join('.');
+  const lastName = parts[parts.length - 1];
+  const scopeEntry = catalog.scopes.get(scopePart);
+  if (!scopeEntry) {
+    errors.push(_err(`unknown scope '${scopePart}'`));
+    return null;
+  }
+  const columns = catalog.columns;
+  const colKey = `${scopeEntry.token}.${lastName}`.toLowerCase();
+  const colEntry = columns && columns.get(colKey);
+  if (colEntry) {
+    const exposedName = colEntry.token.slice(scopeEntry.token.length + 1);
+    return { metricStr: exposedName, scopeStr: scopeEntry.token, valueType: colEntry.valueType };
+  }
+  const metricEntry = catalog.metrics.get(lastName);
+  if (metricEntry && !metricEntry.isFragmentRef) {
+    if (metricEntry.paramKeys && metricEntry.paramKeys.length) {
+      errors.push(_err(
+        `'${lastName}' requires argument(s) — use '${lastName}(...)@${scopeEntry.token}', `
+        + `dot-access has no way to pass arguments`
+      ));
+      return null;
+    }
+    return { metricStr: metricEntry.token, scopeStr: scopeEntry.token, valueType: metricEntry.valueType };
+  }
+  errors.push(_err(`unknown column '${lastName}' on scope '${scopeEntry.token}'`));
+  return null;
+}
+
 function compileLeaf(node, catalog) {
   const errors = [];
   const metricEntry = _resolveMetric(node.metric, catalog, errors);
@@ -1999,59 +2229,50 @@ function compileLeaf(node, catalog) {
   if (errors.length) return { conditions: null, errors };
   const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
   if (errors.length) return { conditions: null, errors };
+  const conditions = _compileComparatorValue(metricStr, scopeStr, metricEntry.valueType, node.op, node.value, errors);
+  if (errors.length) return { conditions: null, errors };
+  return { conditions, errors: [] };
+}
 
-  if (node.op === null) {
-    if (metricEntry.valueType === 'boolean') {
-      return { conditions: { metric: metricStr, scope: scopeStr, op: '==', value: true }, errors: [] };
-    }
-    errors.push(_err(`expected a comparator after a numeric metric '${metricEntry.token}'`));
-    return { conditions: null, errors };
-  }
-
-  if (node.op === 'in' || node.op === 'not_in') {
-    if (node.value.type !== 'list') {
-      errors.push(_err(`'${node.op === 'in' ? 'in' : 'not in'}' requires a list literal on the right`));
-      return { conditions: null, errors };
-    }
-    const list = _compileListValue(node.value, metricEntry, errors);
-    if (errors.length) return { conditions: null, errors };
-    return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: list }, errors: [] };
-  }
-
-  if (metricEntry.valueType === 'boolean') {
-    if (node.op !== '==' && node.op !== '!=') {
-      errors.push(_err(`boolean metric '${metricEntry.token}' only supports == / !=`));
-      return { conditions: null, errors };
-    }
-    if (node.value.type !== 'name' || !['true', 'false'].includes(String(node.value.value).toLowerCase())) {
-      errors.push(_err(`${metricEntry.token}: expected true or false`));
-      return { conditions: null, errors };
-    }
-    return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: String(node.value.value).toLowerCase() === 'true' }, errors: [] };
-  }
-
-  if (node.value.type !== 'number') {
-    errors.push(_err('comparator requires both sides numeric'));
-    return { conditions: null, errors };
-  }
-  return { conditions: { metric: metricStr, scope: scopeStr, op: node.op, value: node.value.value }, errors: [] };
+/** Compile a bare `col_ref` leaf (Sprint 15), e.g.
+ *  `positions.total.pnl <= -50000` — the mirror of `compileLeaf`, just
+ *  resolved via `_resolveDotAccess` instead of `_resolveMetric` +
+ *  `_resolveScopeString`. Shares `_compileComparatorValue` with
+ *  `compileLeaf` so the two produce byte-identical JSON for the "same
+ *  concept, different spelling" case (`positions.total.pnl <= -50000`
+ *  vs. `pnl@positions.total <= -50000`). */
+function compileColRef(node, catalog) {
+  const errors = [];
+  const resolved = _resolveDotAccess(node.segments, catalog, errors);
+  if (errors.length) return { conditions: null, errors };
+  const conditions = _compileComparatorValue(resolved.metricStr, resolved.scopeStr, resolved.valueType, node.op, node.value, errors);
+  if (errors.length) return { conditions: null, errors };
+  return { conditions, errors: [] };
 }
 
 const _BETWEEN_FLIP = { '<': '>', '<=': '>=', '>': '<', '>=': '<=' };
 
 function compileBetween(node, catalog) {
   const errors = [];
-  const metricEntry = _resolveMetric(node.metric, catalog, errors);
-  const scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
-  if (errors.length) return { conditions: null, errors };
-  const metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
-  if (errors.length) return { conditions: null, errors };
+  let metricStr, scopeStr, valueType;
+  if (node.colSegments) {
+    const resolved = _resolveDotAccess(node.colSegments, catalog, errors);
+    if (errors.length) return { conditions: null, errors };
+    ({ metricStr, scopeStr, valueType } = resolved);
+  } else {
+    const metricEntry = _resolveMetric(node.metric, catalog, errors);
+    scopeStr = metricEntry ? _resolveScopeString(node.scope, catalog, errors) : null;
+    if (errors.length) return { conditions: null, errors };
+    metricStr = _compileMetricCallString(node.metric, metricEntry, errors);
+    if (errors.length) return { conditions: null, errors };
+    valueType = metricEntry.valueType;
+  }
 
   if (node.value1.type !== 'number' || node.value2.type !== 'number') {
     errors.push(_err('chained ("between") comparison literals must be numeric'));
     return { conditions: null, errors };
   }
-  if (metricEntry.valueType && metricEntry.valueType !== 'number') {
+  if (valueType && valueType !== 'number') {
     errors.push(_err('chained ("between") comparison requires a numeric metric'));
     return { conditions: null, errors };
   }
@@ -2126,6 +2347,7 @@ function compileCondNode(node, catalog) {
   }
   if (node.type === 'between') return compileBetween(node, catalog);
   if (node.type === 'leaf') return compileLeaf(node, catalog);
+  if (node.type === 'colref') return compileColRef(node, catalog);
   if (node.type === 'ref') return compileRef(node, catalog);
   return { conditions: null, errors: [_err('internal: unknown condition node type')] };
 }
@@ -3301,13 +3523,36 @@ function _tryDecompileBetween(a, b, catalog) {
 /** Decompile a single leaf `{metric, scope, op, value}` — the mirror of
  *  `compileLeaf`. Handles exactly the shapes the compiler can emit
  *  (native `between`, `in`/`not_in`, boolean-shorthand, boolean
- *  explicit, plain numeric comparator) and fails loud on anything else. */
+ *  explicit, plain numeric comparator) and fails loud on anything else.
+ *
+ *  Sprint 15 fallback: `node.metric` may be a bare exposed-column name
+ *  with NO registered metric token at all (e.g. `qty`, `symbol`,
+ *  `realised` — real row columns, never hand-written metric resolvers).
+ *  Resolve the scope FIRST (needed either way), then try the normal
+ *  metric-call resolution; only on THAT failure, check whether
+ *  `<scope>.<metric>` is a registered column — if so, render the whole
+ *  leaf using the dotted `scope.column` form (`refText`) in place of
+ *  every `metric@scope` spot below, since a pure column has no "@" form
+ *  at all. A leaf whose metric genuinely resolves as a real metric token
+ *  (e.g. `pnl`) is COMPLETELY UNAFFECTED by this fallback — it keeps
+ *  decompiling to `pnl@positions.total` exactly as before; this is
+ *  expected normalization (both spellings compile to the same JSON). */
 function decompileLeaf(node, catalog, errors) {
-  const m = _resolveMetricCall(node.metric, catalog);
-  if (m.error) { errors.push(_err(m.error)); return null; }
   const s = _decompileResolveScopeString(node.scope, catalog);
   if (s.error) { errors.push(_err(s.error)); return null; }
-  const metricText = m.text, scopeText = s.text, entry = m.entry;
+
+  const m = _resolveMetricCall(node.metric, catalog);
+  let refText, entry;
+  if (!m.error) {
+    refText = `${m.text}@${s.text}`;
+    entry = m.entry;
+  } else {
+    const colKey = `${s.text}.${node.metric}`.toLowerCase();
+    const colEntry = catalog.columns && catalog.columns.get(colKey);
+    if (!colEntry) { errors.push(_err(m.error)); return null; }
+    refText = colEntry.token;
+    entry = colEntry;
+  }
 
   if (node.op === 'between') {
     if (!Array.isArray(node.value) || node.value.length !== 2
@@ -3317,7 +3562,7 @@ function decompileLeaf(node, catalog, errors) {
     }
     const low = _renderNumber(node.value[0]), high = _renderNumber(node.value[1]);
     if (low == null || high == null) { errors.push(_err(`leaf '${node.metric}@${node.scope}': between bound cannot be rendered`)); return null; }
-    return `${low} <= ${metricText}@${scopeText} <= ${high}`;
+    return `${low} <= ${refText} <= ${high}`;
   }
 
   if (node.op === 'in' || node.op === 'not_in') {
@@ -3327,14 +3572,14 @@ function decompileLeaf(node, catalog, errors) {
     }
     const r = _renderListLiteral(node.value);
     if (r.error) { errors.push(_err(`leaf '${node.metric}@${node.scope}': ${r.message}`)); return null; }
-    return `${metricText}@${scopeText} ${node.op === 'not_in' ? 'not in' : 'in'} ${r.text}`;
+    return `${refText} ${node.op === 'not_in' ? 'not in' : 'in'} ${r.text}`;
   }
 
   const valueType = entry ? entry.valueType : null;
   if (valueType === 'boolean') {
-    if (node.op === '==' && node.value === true) return `${metricText}@${scopeText}`; // boolean shorthand
+    if (node.op === '==' && node.value === true) return refText; // boolean shorthand
     if ((node.op === '==' || node.op === '!=') && typeof node.value === 'boolean') {
-      return `${metricText}@${scopeText} ${node.op} ${node.value}`;
+      return `${refText} ${node.op} ${node.value}`;
     }
     errors.push(_err(`leaf '${node.metric}@${node.scope}': unrecognized boolean leaf shape (op=${node.op}, value=${JSON.stringify(node.value)})`));
     return null;
@@ -3343,7 +3588,7 @@ function decompileLeaf(node, catalog, errors) {
   if (['<', '<=', '>', '>=', '==', '!='].includes(node.op) && typeof node.value === 'number') {
     const numText = _renderNumber(node.value);
     if (numText == null) { errors.push(_err(`leaf '${node.metric}@${node.scope}': value ${node.value} cannot be rendered as a CLI numeric literal`)); return null; }
-    return `${metricText}@${scopeText} ${node.op} ${numText}`;
+    return `${refText} ${node.op} ${numText}`;
   }
 
   errors.push(_err(`leaf '${node.metric}@${node.scope}': unrecognized op/value combination (op=${node.op}, value=${JSON.stringify(node.value)})`));
@@ -4235,8 +4480,119 @@ function _suggestScopeRef(real, text, pos, catalog) {
   return {
     suggestions: ranked,
     descriptions: ranked.map((t) => descByToken.get(t) || ''),
+    labels: ranked.map(() => null), // scope tokens have no distinct short label — pill shows the token itself
     replaceRange: [ctx.scopeRefStart, pos],
     kind: 'scope',
+  };
+}
+
+/** Like `_scopeRefContextFromTokens` but for a BARE dotted chain with NO
+ *  preceding "@" at all (Sprint 15's `col_ref` leaf form, e.g. typing
+ *  `positions.` or `positions.total.` directly as a WHEN leaf — no
+ *  `metric@` prefix). Walks backward the same way, but requires the
+ *  token immediately before the whole chain to be a legal FRESH-NAME
+ *  position (`_isFreshNamePosition` — the same check the bare-name
+ *  branch below uses), not an "@". Returns `{ chainStart }` or `null`
+ *  when `real` doesn't end in a real bare dotted chain (e.g. no "." at
+ *  all, or the chain sits right after a comparator/value where a fresh
+ *  leaf can't start). */
+function _bareDottedChainContextFromTokens(real, pos) {
+  let idx = real.length - 1;
+  if (idx >= 0 && real[idx].type === 'NAME' && !real[idx].hasCall && real[idx].end === pos) {
+    idx--; // skip the still-being-typed last segment
+  }
+  let sawDot = false;
+  // Tracks the START offset of the EARLIEST (leftmost) segment seen so
+  // far — walking backward means each successful match below is further
+  // LEFT than the last, so the final value after the loop is exactly the
+  // start of the whole chain's first segment. Deliberately NOT the end
+  // of whatever token precedes the chain (unlike `_scopeRefContextFromTokens`,
+  // which can rely on "@" sitting with no whitespace before the scope) —
+  // there is ALWAYS a space between a clause keyword/connective and a
+  // fresh leaf, so using the preceding token's `.end` here would wrongly
+  // fold that leading whitespace into `typedSoFar`.
+  let chainStart = null;
+  while (idx >= 0 && real[idx].type === 'DOT') {
+    sawDot = true;
+    idx--;
+    if (idx < 0 || real[idx].type !== 'NAME' || real[idx].hasCall) return null;
+    chainStart = real[idx].start;
+    idx--;
+  }
+  if (!sawDot) return null;
+  const before = idx >= 0 ? real[idx] : undefined;
+  if (!_isFreshNamePosition(before)) return null;
+  return { chainStart };
+}
+
+/** Suggest completions for a bare `col_ref` chain typed with NO "@" at
+ *  all (Sprint 15) — the sibling of `_suggestScopeRef`, for the NEW leaf
+ *  form `positions.total.pnl <= -50000`. Deliberately uses EXACT (not
+ *  fuzzy) matching on the scope part typed so far — a column/deeper-
+ *  scope suggestion only ever appears once the operator has typed a
+ *  COMPLETE, real scope name followed by ".", never a fuzzy guess that
+ *  could show the SAME short label (e.g. "P&L (₹)") under several
+ *  unrelated candidate scopes at once. Candidates are the union of (a)
+ *  this scope's own exposed columns (`catalog.columns`) and (b) any
+ *  DEEPER known scope that extends this exact prefix (e.g. typing
+ *  `positions.expiring_today.` still offers `...nfo` / `...mcx_unhedged`
+ *  as scope-chain continuations, same as the existing `@`-anchored
+ *  scope_ref completion). `suggestions[i]` is always the FULL text to
+ *  insert (replacing the WHOLE chain typed so far, same convention
+ *  `_suggestScopeRef` uses) — a column candidate inserts its full
+ *  compound token (e.g. `"positions.total.pnl"`), which the compiler
+ *  resolves exactly like hand-typing it; `labels[i]` carries the SHORT
+ *  operator-facing text (Sprint 15's `label` field) for a column
+ *  candidate, so the pill can show "P&L (₹)" instead of the long
+ *  compound token, without changing what text actually gets inserted. */
+function _suggestBareDottedRef(real, text, pos, catalog) {
+  if (!catalog) return _emptySuggest(pos);
+  const ctx = _bareDottedChainContextFromTokens(real, pos);
+  if (!ctx) return _emptySuggest(pos);
+  const typedSoFar = text.slice(ctx.chainStart, pos);
+  const lastDot = typedSoFar.lastIndexOf('.');
+  if (lastDot < 0) return _emptySuggest(pos); // defensive — ctx guarantees at least one dot
+
+  const scopePart = typedSoFar.slice(0, lastDot);
+  const scopePartLower = scopePart.toLowerCase();
+  const partial = typedSoFar.slice(lastDot + 1);
+  const prefix = `${scopePartLower}.`;
+
+  const items = [];
+  if (catalog.columns) {
+    for (const e of catalog.columns.values()) {
+      const tokenLower = e.token.toLowerCase();
+      // A column's OWNING scope must be EXACTLY `scopePart` — `startsWith`
+      // alone is too loose: e.g. "positions.expiring_today.mcx_unhedged.pnl"
+      // also starts with "positions.expiring_today." but its real owning
+      // scope is the DEEPER "positions.expiring_today.mcx_unhedged", not
+      // "positions.expiring_today". Compare the column's own scope part
+      // (everything before its LAST dot) for exact equality instead.
+      const lastDotInToken = tokenLower.lastIndexOf('.');
+      if (lastDotInToken < 0 || tokenLower.slice(0, lastDotInToken) !== scopePartLower) continue;
+      const suffix = e.token.slice(scopePart.length + 1);
+      items.push({ insert: e.token, matchText: suffix, label: e.label || null, description: e.description || '' });
+    }
+  }
+  for (const e of catalog.scopes.values()) {
+    const tokenLower = e.token.toLowerCase();
+    if (tokenLower === scopePartLower || !tokenLower.startsWith(prefix)) continue;
+    const suffix = e.token.slice(scopePart.length + 1);
+    items.push({ insert: e.token, matchText: suffix, label: null, description: e.description || '' });
+  }
+  // EXACT scope matching — only offer anything once the typed prefix is
+  // itself a real, complete scope token (or already has real deeper
+  // candidates under it); never fuzzy-guess across unrelated scopes.
+  if (!catalog.scopes.has(scopePartLower) && items.length === 0) return _emptySuggest(pos);
+
+  const byMatch = new Map(items.map((it) => [it.matchText, it]));
+  const ranked = fuzzyFilter(partial, items.map((it) => it.matchText));
+  return {
+    suggestions: ranked.map((mt) => byMatch.get(mt)?.insert ?? mt),
+    descriptions: ranked.map((mt) => byMatch.get(mt)?.description ?? ''),
+    labels: ranked.map((mt) => byMatch.get(mt)?.label ?? null),
+    replaceRange: [ctx.chainStart, pos],
+    kind: 'column',
   };
 }
 
@@ -4272,7 +4628,34 @@ function _findTopLevelEquals(str) {
 }
 
 function _emptySuggest(cursor) {
-  return { suggestions: [], descriptions: [], replaceRange: [cursor, cursor], kind: null };
+  return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursor, cursor], kind: null };
+}
+
+/** Sprint 15 (doc-rendering half) — generate a plain-English line for a
+ *  param's `required_if` (Sprint 17) and/or token-level
+ *  `mutuallyExclusiveGroups` (Sprint 17) membership, to append to that
+ *  param's own `description`. Flows through the SAME hover/focus
+ *  mechanism `AgentCliEditor.svelte` already renders `descriptions`
+ *  through (Sprint 11) — no new UI mechanism needed, just more text in
+ *  the string that mechanism already displays. ALWAYS generated from the
+ *  structured `required_if.field`/`required_if.in`/group-membership
+ *  data, never hand-written per field, so it can never drift from the
+ *  actual enforced rule. `''` when `spec` carries neither. */
+function _paramConstraintText(key, spec, mutexGroups) {
+  const lines = [];
+  const reqIf = spec && spec.required_if;
+  if (reqIf && reqIf.field && Array.isArray(reqIf.in) && reqIf.in.length) {
+    lines.push(`${key} — required when ${reqIf.field} is ${reqIf.in.join('/')}`);
+  }
+  if (Array.isArray(mutexGroups)) {
+    const lk = String(key).toLowerCase();
+    for (const group of mutexGroups) {
+      if (!Array.isArray(group) || !group.some((g) => String(g).toLowerCase() === lk)) continue;
+      const others = group.filter((g) => String(g).toLowerCase() !== lk);
+      if (others.length) lines.push(`${key} is mutually exclusive with ${others.join(', ')}`);
+    }
+  }
+  return lines.join('\n');
 }
 
 /** Suggest param-name or enum-value completions for the call whose "("
@@ -4305,7 +4688,7 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
     // (agent_grammar.yaml / order_fields.yaml enum lists carry no
     // per-entry text, only the param itself does) — degrade to empty
     // strings rather than inventing text.
-    return { suggestions: ranked, descriptions: ranked.map(() => ''), replaceRange: [valueAbsStart, cursor], kind: 'enum' };
+    return { suggestions: ranked, descriptions: ranked.map(() => ''), labels: ranked.map(() => null), replaceRange: [valueAbsStart, cursor], kind: 'enum' };
   }
 
   // No "=" yet in the segment being typed — suggest/complete a param NAME.
@@ -4315,8 +4698,17 @@ function _paramOrEnumSuggestion(text, parenPos, cursor, entry) {
   const available = (entry.paramKeys || []).filter((k) => !usedKeys.has(k.toLowerCase()));
   const ranked = fuzzyFilter(partialKey, available);
   const replaceStart = lastAbsStart + leadWs;
-  const descriptions = ranked.map((k) => (entry.paramsSchema && entry.paramsSchema[k] && entry.paramsSchema[k].description) || '');
-  return { suggestions: ranked, descriptions, replaceRange: [replaceStart, cursor], kind: 'param' };
+  const descriptions = ranked.map((k) => {
+    const spec = entry.paramsSchema && entry.paramsSchema[k];
+    const base = (spec && spec.description) || '';
+    // Sprint 17 docs-rendering gap closed here (Sprint 15's catalog-
+    // documentation ask): append a GENERATED plain-English line for
+    // `required_if` and/or `mutuallyExclusiveGroups` membership, never
+    // hand-written per field.
+    const extra = _paramConstraintText(k, spec, entry.mutuallyExclusiveGroups);
+    return extra ? (base ? `${base}\n${extra}` : extra) : base;
+  });
+  return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, cursor], kind: 'param' };
 }
 
 function _suggestAgentCliAtImpl(text, cursor, catalog) {
@@ -4355,7 +4747,13 @@ function _suggestAgentCliAtImpl(text, cursor, catalog) {
   const wordStart = (lastTok && lastTok.type === 'NAME' && !lastTok.hasCall && lastTok.end === pos)
     ? lastTok.start : pos;
   if (_nearestNonSpaceBefore(text, wordStart) === '@' || _nearestNonSpaceBefore(text, wordStart) === '.') {
-    return _suggestScopeRef(real, text, pos, catalog);
+    // "@"-anchored scope_ref (metric_ref's own `@ scope_ref`) takes
+    // priority — completely unaffected by Sprint 15. Only when there's
+    // genuinely no "@" anywhere before this chain (a BARE dotted
+    // `col_ref` leaf, e.g. typing `positions.` directly) does the new
+    // column/deeper-scope completion (`_suggestBareDottedRef`) apply.
+    if (_scopeRefContextFromTokens(real, pos)) return _suggestScopeRef(real, text, pos, catalog);
+    return _suggestBareDottedRef(real, text, pos, catalog);
   }
 
   const clauseKind = _clauseKindFromTokenPrefix(real);
@@ -4384,7 +4782,7 @@ function _suggestAgentCliAtImpl(text, cursor, catalog) {
   const ranked = fuzzyFilter(partial, candidates);
   const descMap = _descMapForClause(clauseKind, catalog);
   const descriptions = ranked.map((t) => (descMap && descMap.get(t)) || '');
-  return { suggestions: ranked, descriptions, replaceRange: [replaceStart, pos], kind: 'token' };
+  return { suggestions: ranked, descriptions, labels: ranked.map(() => null), replaceRange: [replaceStart, pos], kind: 'token' };
 }
 
 /** True when `lastTok` (the last REAL token lexed before the cursor, or
@@ -4401,15 +4799,24 @@ function _isFreshNamePosition(lastTok) {
 }
 
 /** Live autocomplete for the agent CLI textarea. Never throws — returns
- *  `{ suggestions: string[], descriptions: string[], replaceRange: [start, end],
- *  kind: 'token'|'param'|'enum'|'scope'|null }`. `descriptions` is always
- *  the SAME length/order as `suggestions` — Sprint 11 surfaces each
- *  catalog token's own `description` (bare token-name / scope-ref
- *  suggestions) or each param's own `paramsSchema[key].description`
- *  (param-name suggestions inside an open call); enum-VALUE suggestions
- *  have no per-value description anywhere in the backend schema, so that
- *  branch always returns empty strings. See the section header above
- *  for the design rationale. */
+ *  `{ suggestions: string[], descriptions: string[], labels: (string|null)[],
+ *  replaceRange: [start, end], kind: 'token'|'param'|'enum'|'scope'|'column'|null }`.
+ *  `descriptions` and `labels` are always the SAME length/order as
+ *  `suggestions` — Sprint 11 surfaces each catalog token's own
+ *  `description` (bare token-name / scope-ref suggestions) or each
+ *  param's own `paramsSchema[key].description` (param-name suggestions
+ *  inside an open call, now with a Sprint 17 `required_if`/
+ *  `mutuallyExclusiveGroups`-derived line appended — see
+ *  `_paramConstraintText`); enum-VALUE suggestions have no per-value
+ *  description anywhere in the backend schema, so that branch always
+ *  returns empty strings. `suggestions[i]` is ALWAYS the literal text to
+ *  insert (what `AgentCliEditor.svelte`'s `applySuggestion` writes into
+ *  the textarea) — `labels[i]` (Sprint 15) is `null` for every kind
+ *  except `'column'`, where it carries the exposed column's SHORT
+ *  operator-facing display text (e.g. `"P&L (₹)"`) to show INSTEAD of
+ *  the long compound token string `suggestions[i]` actually holds (e.g.
+ *  `"positions.total.pnl"`) — the UI shows `labels[i] || suggestions[i]`.
+ *  See the section header above for the design rationale. */
 export function suggestAgentCliAt(text, cursor, catalog) {
   try {
     return _suggestAgentCliAtImpl(text, cursor, catalog);

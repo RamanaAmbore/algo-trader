@@ -397,6 +397,16 @@ class GrammarTokenOut(msgspec.Struct):
     # than a normal leaf/channel object. Never True for a real GrammarToken
     # row.
     is_fragment_ref: bool = False
+    # Sprint 15 — operator-facing display text for this token's concept,
+    # kept in sync with whatever label the UI already shows for the SAME
+    # concept elsewhere (Funds grid, Legs/Snapshot grid, NavStrip, ...).
+    # Populated today ONLY for `token_kind='column'` rows (the per-scope
+    # exposed-column registry projection — see
+    # backend.api.algo.grammar.EXPOSED_COLUMNS / routes/grammar.py's
+    # `_exposed_column_catalog_rows`); None for every other token kind.
+    # Sprint 11's existing hover/focus description mechanism can read this
+    # directly instead of parsing it back out of `description`'s prose.
+    label: str | None = None
 
 
 class GrammarTokenCreate(msgspec.Struct):

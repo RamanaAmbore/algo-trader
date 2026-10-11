@@ -31,10 +31,11 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from statistics import median
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 
+from backend.api.algo import grammar
 from backend.api.algo.grammar_registry import REGISTRY
 from backend.shared.helpers.ramboq_logger import get_logger
 
@@ -525,6 +526,53 @@ def _eval_log(leaf: dict, ctx: Context) -> list[dict]:
     return matches
 
 
+def _resolve_metric_fn(metric_tok: Optional[str], scope_tok: Optional[str]) -> Optional[Callable]:
+    """Resolve a leaf's metric token to a callable `(ctx, row) -> value`.
+
+    Primary path: a real registered metric token (`REGISTRY.metric()`).
+
+    Fallback: Sprint 15's per-scope exposed-column registry
+    (`grammar.EXPOSED_COLUMNS` / `exposed_columns_for_scope()`) lets a
+    leaf dot-read any real row column that has no hand-written metric
+    resolver (e.g. `qty`, `symbol`, `realised`, `option_premium`...).
+    Only consulted when the real registry has no match for `metric_tok`
+    — a genuine metric token is never shadowed or double-resolved
+    through this path. Scoped per `scope_tok`: an exposed name that
+    exists on a DIFFERENT scope's schema (e.g. `qty` is not on
+    `funds.any_acct`) still resolves to None here, same as any other
+    unknown token.
+
+    Shared by `_eval_leaf` (runtime) and `validate()` (save-time dry
+    check) so the two never disagree about which tokens are legal.
+    """
+    fn = REGISTRY.metric(metric_tok)
+    if fn is not None:
+        return fn
+    exposed = grammar.exposed_columns_for_scope(scope_tok).get(metric_tok)
+    if not exposed:
+        return None
+    from_column = exposed['from_column']
+    value_type = exposed.get('type', 'number')
+
+    def _exposed_column_resolver(ctx, row, _col=from_column, _type=value_type):
+        v = row.get(_col)
+        if v is None:
+            return None
+        if _type == 'string':
+            return v
+        try:
+            v = float(v)
+        except (TypeError, ValueError):
+            return None
+        # NaN guard — rows sourced from a DataFrame can carry NaN for a
+        # genuinely-missing numeric cell; treat it as missing (None),
+        # same missing-vs-zero convention as every hand-written metric
+        # resolver, never a coerced 0.
+        return None if v != v else v
+
+    return _exposed_column_resolver
+
+
 def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
     if "log" in leaf:
         return _eval_log(leaf, ctx)
@@ -537,7 +585,7 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
         logger.warning(f"Condition leaf missing key {e}: {leaf!r}")
         return []
 
-    metric_fn = REGISTRY.metric(metric_tok)
+    metric_fn = _resolve_metric_fn(metric_tok, scope_tok)
     scope_fn  = REGISTRY.scope(scope_tok)
     op_fn     = REGISTRY.op(op_tok)
 
@@ -660,7 +708,7 @@ def validate(cond: dict) -> list[str]:
         for k in ('metric', 'scope', 'op'):
             if k not in c:
                 errors.append(f"{path}: leaf missing '{k}'")
-        if c.get('metric') and REGISTRY.metric(c['metric']) is None:
+        if c.get('metric') and _resolve_metric_fn(c['metric'], c.get('scope')) is None:
             errors.append(f"{path}: unknown metric token '{c['metric']}'")
         if c.get('scope') and REGISTRY.scope(c['scope']) is None:
             errors.append(f"{path}: unknown scope token '{c['scope']}'")

@@ -97,9 +97,9 @@
   }
 
   const suggestResult = $derived.by(() => {
-    if (!catalog) return { suggestions: [], descriptions: [], replaceRange: [cursorPos, cursorPos], kind: null };
+    if (!catalog) return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null };
     try { return suggestAgentCliAt(value, cursorPos, catalog); }
-    catch { return { suggestions: [], descriptions: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
+    catch { return { suggestions: [], descriptions: [], labels: [], replaceRange: [cursorPos, cursorPos], kind: null }; }
   });
 
   async function applySuggestion(s) {
@@ -160,13 +160,18 @@
 
   {#if suggestResult.suggestions.length}
     <div class="agent-cli-suggest-row" role="listbox" aria-label="CLI suggestions">
-      {#each suggestResult.suggestions.slice(0, 12) as s (s)}
+      {#each suggestResult.suggestions.slice(0, 12) as s, i (s)}
+        <!-- Sprint 15 — `labels[i]` (set only for a 'column' suggestion,
+             e.g. "P&L (₹)") is shown INSTEAD of the literal insertable
+             text `s` (e.g. "positions.total.pnl") when present — the
+             operator reads the short label, but `applySuggestion` below
+             always inserts the real `s` string, never the label. -->
         <button type="button" class="agent-cli-suggest-pill"
                 onclick={() => applySuggestion(s)}
                 onmouseenter={() => { _hoverLabel = s; }}
                 onmouseleave={() => { _hoverLabel = null; }}
                 onfocus={() => { _hoverLabel = s; }}
-                onblur={() => { _hoverLabel = null; }}>{s}</button>
+                onblur={() => { _hoverLabel = null; }}>{suggestResult.labels?.[i] || s}</button>
       {/each}
     </div>
     {#if _hoverDesc}
@@ -227,6 +232,10 @@
     font-size: var(--fs-xs);
     color: var(--algo-muted);
     padding: 0 0.3rem;
+    /* Sprint 15 — a param's description can carry a generated
+       required_if/mutually-exclusive line appended on its own newline
+       (see _paramConstraintText in agents.js) — preserve it. */
+    white-space: pre-line;
   }
   .agent-cli-errors {
     padding: 0.4rem 0.6rem; border-radius: 0.3rem;

@@ -134,6 +134,112 @@ def _merge_fragment_rows(
     return base_rows
 
 
+# Sprint 15 — project `backend.api.algo.grammar.EXPOSED_COLUMNS` (the
+# per-scope exposed-column registry backing `scope.attribute` dot-access,
+# e.g. `positions.total.pnl <= -50000`) into the same catalog shape
+# fetchGrammarTokens('condition') already returns, so every exposed
+# column is browsable/discoverable in the exact same place metrics/
+# scopes/channels/actions and (since Sprint 10) Tokens/fragments already
+# are. Sibling to `_fragment_catalog_rows`/`_merge_fragment_rows` above —
+# same gating + merge pattern, deliberately duplicated rather than shared
+# since the two sources (DB-backed AgentTemplate rows vs. an in-memory
+# Python registry) have nothing else in common.
+#
+# Token shape (the frontend agent in this sprint depends on this EXACT
+# shape): `token = "<scope_token>.<exposed_name>"`, e.g.
+# `"positions.total.pnl"`. Chosen over a bare `exposed_name` with scope
+# carried as separate metadata because (a) `GrammarTokenOut` has no spare
+# field for it today — adding one would ripple into every other token
+# kind for a Sprint-15-only need — and (b) the SAME exposed_name
+# legitimately repeats across multiple scopes (`pnl` appears under
+# positions.total, positions.any_acct, holdings.total, ...), so a bare
+# name would collide with itself across scopes AND with the real `pnl`
+# metric token. The compound string is unambiguous to parse: `exposed_name`
+# is guaranteed dot-free (identifier regex, enforced by
+# backend/tests/test_grammar_exposed_columns.py) and every real scope
+# token is a known, enumerable set, so a consumer splits on the LAST dot
+# only after failing to match the whole string against a known scope
+# chain — exactly the "longest scope-chain match first, then column read"
+# rule the dot-attribute grammar itself needs for
+# `positions.expiring_today.mcx_unhedged` (a real multi-segment SCOPE)
+# vs. `positions.total.pnl` (a scope + column read).
+_EXPOSED_COLUMN_ID_BASE = -2_000_000
+
+
+def _exposed_column_catalog_rows(grammar: str | None) -> list[GrammarTokenOut]:
+    """Synthesize one `GrammarTokenOut` per (scope, exposed_name) entry in
+    the Sprint 15 registry. Gated to `grammar == 'condition'` ONLY — these
+    are WHEN-side reads (every entry's `grammar_kind` is hard-coded
+    'condition'); an unfiltered call (`grammar=None`, the admin Tokens CRUD
+    page) must never see these synthetic rows, same id-space-collision
+    rationale as `_fragment_catalog_rows`'s own `grammar=None` short-circuit.
+
+    Negative id namespace, offset far below `_fragment_catalog_rows`' own
+    `-row.id` range (AgentTemplate ids are small DB autoincrement values)
+    so the two synthetic-row sources can never collide on id even though
+    both use negative ids to stay clear of real (positive) GrammarToken
+    ids. Ids are deterministic across calls/process restarts — derived
+    from a FIXED, alphabetically-sorted walk order, not registry dict
+    iteration order — so they are stable for a given registry content.
+    """
+    if grammar != "condition":
+        return []
+    from backend.api.algo.grammar import EXPOSED_COLUMNS, EXPOSED_COLUMN_SCOPE_PROVENANCE
+
+    rows: list[GrammarTokenOut] = []
+    idx = 0
+    for scope_token in sorted(EXPOSED_COLUMNS.keys()):
+        columns = EXPOSED_COLUMNS[scope_token]
+        ctx_attr, fn_name = EXPOSED_COLUMN_SCOPE_PROVENANCE[scope_token]
+        for exposed_name in sorted(columns.keys()):
+            entry = columns[exposed_name]
+            rows.append(GrammarTokenOut(
+                id=_EXPOSED_COLUMN_ID_BASE - idx,
+                grammar_kind="condition",
+                token_kind="column",
+                token=f"{scope_token}.{exposed_name}",
+                value_type=entry["type"],
+                description=(
+                    f"{entry['label']}. Sourced from DataFrame column "
+                    f"'{entry['from_column']}' on {ctx_attr}, populated by "
+                    f"backend.api.algo.grammar.{fn_name}."
+                ),
+                label=entry["label"],
+                is_system=True,
+                is_active=True,
+            ))
+            idx += 1
+    return rows
+
+
+def _merge_exposed_column_rows(
+    base_rows: list[GrammarTokenOut], column_rows: list[GrammarTokenOut],
+) -> list[GrammarTokenOut]:
+    """Append `column_rows` to `base_rows`, skipping (and logging) any
+    collision with an existing token of the same (token_kind, token) in
+    the same bucket — sibling to `_merge_fragment_rows`, identical
+    gating/merge/collision-skip pattern. A collision is not expected in
+    practice (every column token is scope-qualified, e.g.
+    'positions.total.pnl', and `token_kind='column'` is a brand-new kind
+    no other row ever uses) but the guard is kept for parity and so a
+    future registry addition can never silently shadow an existing row."""
+    if not column_rows:
+        return base_rows
+    taken = {(r.token_kind, r.token.lower()) for r in base_rows}
+    for crow in column_rows:
+        key = (crow.token_kind, crow.token.lower())
+        if key in taken:
+            logger.warning(
+                f"grammar catalog: exposed column '{crow.token}' "
+                f"({crow.grammar_kind}/{crow.token_kind}) collides with an "
+                f"existing token of the same name — skipping merged row"
+            )
+            continue
+        base_rows.append(crow)
+        taken.add(key)
+    return base_rows
+
+
 async def _reload_registry():
     """Best-effort reload so an edit lights up the running engine."""
     try:
@@ -186,6 +292,14 @@ class GrammarTokenController(Controller):
         ("Token") rows are merged in too, marked `is_fragment_ref=True`
         (see `_fragment_catalog_rows`). An unfiltered call never merges
         them (see that function's docstring for why).
+
+        When `grammar == "condition"` specifically, the Sprint 15
+        per-scope exposed-column registry (`EXPOSED_COLUMNS` in
+        `backend.api.algo.grammar`) is also projected in as
+        `token_kind='column'` rows (see `_exposed_column_catalog_rows`) —
+        one per real `scope.attribute` pair the dot-access grammar can
+        read (e.g. `positions.total.pnl`). Same unfiltered-never-merges
+        rule applies.
         """
         async with async_session() as s:
             stmt = select(GrammarToken)
@@ -199,7 +313,9 @@ class GrammarTokenController(Controller):
             rows = (await s.execute(stmt)).scalars().all()
         out = [_to_out(r) for r in rows]
         fragment_rows = await _fragment_catalog_rows(grammar)
-        return _merge_fragment_rows(out, fragment_rows)
+        out = _merge_fragment_rows(out, fragment_rows)
+        column_rows = _exposed_column_catalog_rows(grammar)
+        return _merge_exposed_column_rows(out, column_rows)
 
     # ── Read one ───────────────────────────────────────────────────────────
     @get("/tokens/{token_id:int}", guards=[cap_guard("view_agents_catalog")])

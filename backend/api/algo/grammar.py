@@ -746,6 +746,270 @@ def _metric_ltp(ctx, row):
     return float(row.get('last_price', 0) or 0)
 
 
+# ═══════════════════════════════════════════════════════════════════════════
+#  EXPOSED-COLUMN REGISTRY (Sprint 15 — generic `scope.attribute` dot-access)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# Every scope selector above returns a list of plain dicts — a pandas row
+# (`.to_dict()`) or a hand-built dict (watchlist rows) — carrying every REAL
+# column that row happens to have, not just the handful that already have a
+# hand-registered metric token (`pnl`, `day_pct`, `cash`, ...). Sprint 15
+# makes those real columns addressable from `WHEN` via `scope.attribute`
+# dot-access (e.g. `positions.total.pnl <= -50000`, equivalent to today's
+# `pnl@positions.total <= -50000`, but works for ANY column already on the
+# row — `positions.expiring_today.symbol`, `funds.total.collateral`,
+# etc. — with no new backend resolver needed per column).
+#
+# This dict is a PURE ADDITIVE ALIAS LAYER — it never renames, touches, or
+# reads any real DB/DataFrame column differently than every existing caller
+# already does. Each entry is `{type, from_column, label}`:
+#   type         — 'number' | 'string' (matches compileLeaf's valueType
+#                  vocabulary; no boolean-typed column exists in the real
+#                  data today).
+#   from_column  — the REAL, possibly messy DataFrame/dict column name
+#                  (e.g. 'avail cash', 'day_change_pct_margin'). Never
+#                  changed anywhere else in the codebase.
+#   label        — operator-facing display text. Matches an existing grid
+#                  headerName for the SAME real concept where one exists
+#                  (see per-entry comments), else a sensible title-case.
+#
+# Naming rule: `exposed_name` (the dict KEY) is always a clean identifier
+# (`^[A-Za-z_][A-Za-z0-9_]*$` — enforced by
+# backend/tests/test_grammar_exposed_columns.py) and reuses an EXISTING
+# metric token's name whenever that metric is a PURE passthrough of the
+# same column with no extra math (`pnl`, `day_val`, `inv_val`, `cur_val`,
+# `cash`, `sod_cash`, `avail_margin`, `used_margin`, `collateral`, `ltp` —
+# all confirmed pure `row.get(<from_column>)` reads above). Where an
+# existing metric of a similar-sounding name does EXTRA MATH beyond a raw
+# column read (`day_pct` branches between two different columns depending
+# on which is present; `pnl_pct` divides by the account's margin base, NOT
+# by `inv_val`/notional), the raw column gets its OWN distinct exposed name
+# instead (`day_change_pct`, `day_pct_margin`, `pnl_percentage`) — reusing
+# the metric's name for the raw column here would make
+# `scope.day_pct`/`scope.pnl_pct` silently mean something different from
+# `day_pct@scope`/`pnl_pct@scope`, exactly the kind of misleading collision
+# this registry exists to prevent.
+#
+# `account` is deliberately NOT used as an exposed name anywhere — it is a
+# real enum CONSTANT VALUE today (`cancel_all_orders`/`chase_close_positions`
+# action params' `scope` enum is `[total, account]`,
+# agent_grammar.yaml:842-843/869-870) — colliding would make a leaf that
+# happens to parse `account` ambiguous with that enum literal. The real
+# `account` column is exposed as `account_id` everywhere instead.
+#
+# `watchlist_rows`' `account` field is a second, DIFFERENT trap: it carries
+# the WATCHLIST NAME, not a trading account (see `Context.watchlist_rows`'
+# own field comment, agent_evaluator.py:170-174) — exposed as
+# `watchlist_name`, never `account_id`, so a dot-read can never silently
+# return a watchlist name where an account id is expected.
+
+def _col(from_column: str, label: str, value_type: str = 'number') -> dict:
+    return {'type': value_type, 'from_column': from_column, 'label': label}
+
+
+_COL_ACCOUNT_ID = _col('account', 'Account', 'string')
+
+# Account-level positions summary (ctx.sum_positions). Shared verbatim by
+# positions.total / positions.any_acct / positions.worst_acct — all three
+# select rows from the SAME summary frame (`_scope_positions_total`,
+# `_scope_positions_any_acct`, `_scope_positions_worst_acct` above all read
+# `ctx.sum_positions`), so they carry identical columns.
+_POSITIONS_SUMMARY_COLUMNS = {
+    'account_id':     _COL_ACCOUNT_ID,
+    'pnl':            _col('pnl', 'P&L (₹)'),
+    'day_val':        _col('day_change_val', 'Day Change (₹)'),
+    # Notional-based % (Σ|prev_close × quantity| denominator) — see
+    # `_apply_positions_margin_pct`'s docstring: kept for reference, no
+    # other confirmed consumer today. Distinct from `day_pct_margin` below.
+    'day_change_pct': _col('day_change_percentage', 'Day Change % (Notional)'),
+    # Margin-based % — what the `day_pct` metric token actually reads for
+    # POSITIONS rows (fix #10: day_change_val / account margin base). Added
+    # to the summary frame by `background._apply_positions_margin_pct`
+    # after `_rebuild_positions_summary` runs, so it is always present by
+    # the time the agent engine evaluates this scope.
+    'day_pct_margin': _col('day_change_pct_margin', 'Day Change % (Margin-based)'),
+}
+
+# Account-level holdings summary (ctx.sum_holdings). Shared by
+# holdings.total / holdings.any_acct / holdings.worst_acct AND
+# holdings.worst_symbol — the latter's own resolver
+# (`_scope_holdings_worst_symbol`) falls back to `_scope_holdings_worst_acct`
+# unconditionally today (`ctx.holdings_rows` is read via `getattr` but is
+# never actually populated anywhere in the codebase), so in practice it
+# ALWAYS returns this same summary-row shape, never a per-symbol row.
+_HOLDINGS_SUMMARY_COLUMNS = {
+    'account_id':     _COL_ACCOUNT_ID,
+    'inv_val':        _col('inv_val', 'Invested Value (₹)'),
+    'cur_val':        _col('cur_val', 'Current Value (₹)'),
+    'pnl':            _col('pnl', 'P&L (₹)'),
+    'day_val':        _col('day_change_val', 'Day Change (₹)'),
+    # Inv_val-based % (`pnl / inv_val * 100` — see `_bg_holdings_add_pct`).
+    # NOT the same formula as the `pnl_pct` metric token (which divides by
+    # the account's margin base, identical formula to positions) — kept as
+    # its own name to avoid a silent "same name, different math" collision.
+    'pnl_percentage': _col('pnl_percentage', 'P&L % (of Invested Value)'),
+    # HOLDINGS rows never carry `day_change_pct_margin` (that column is
+    # only ever added to the POSITIONS summary), so for holdings rows the
+    # `day_pct` metric token IS a pure passthrough of this exact column —
+    # still exposed under its own name here for consistency with the
+    # positions-side naming (`day_change_pct`), not `day_pct`.
+    'day_change_pct': _col('day_change_percentage', 'Day Change %'),
+}
+
+# Funds / margins (ctx.df_margins). Shared by funds.total / funds.any_acct.
+# Raw column names are Kite's own broker-response convention (space
+# included) — see `backend/brokers/broker_apis.py`'s `avail `/`util `
+# prefixing of the flattened `available`/`utilised` sub-dicts.
+_FUNDS_COLUMNS = {
+    'account_id':     _COL_ACCOUNT_ID,
+    # 'Live Cash' — matches the Funds grid's own headerName for this exact
+    # column (`frontend/src/lib/data/pulseColumns.js` field `live_cash`),
+    # not the grid's separate derived `cash_total` aggregate.
+    'cash':           _col('avail cash', 'Live Cash'),
+    'sod_cash':       _col('avail opening_balance', 'Start-of-Day Cash'),
+    'avail_margin':   _col('net', 'Avail Margin'),
+    'used_margin':    _col('util debits', 'Used Margin'),
+    'collateral':     _col('avail collateral', 'Collateral'),
+    # No existing metric token reads this column (fix #4 only wired
+    # `cash`/`sod_cash`/`avail_margin`/`used_margin`/`collateral`) — new
+    # exposed name, matching `routes/funds.py`'s own `_COL_MAP` entry
+    # ('util option_premium' -> 'option_premium').
+    'option_premium': _col('util option_premium', 'Option Premium'),
+}
+
+# Per-symbol position rows (ctx.position_rows — `df_positions.to_dict
+# ("records")`, the SAME enriched frame `background._enrich_positions`
+# produces; cross-broker normalised, so these columns exist for
+# Kite/Dhan/Groww alike). Shared by positions.expiring_today /
+# positions.expiring_today.nfo / positions.expiring_today.mcx_unhedged
+# (all three filter the same `_scope_positions_expiring_today` base list)
+# AND positions.worst_symbol, whose own resolver
+# (`_scope_positions_worst_symbol`) reads `ctx.position_rows` directly and
+# only falls back to the summary-row shape when that list is empty (rare —
+# legacy/sim call sites that never populate it).
+_POSITION_ROW_COLUMNS = {
+    'account_id':     _COL_ACCOUNT_ID,
+    # Exposed as `symbol`, NOT `tradingsymbol` — `order(symbol="...", ...)`
+    # already established `symbol` as the operator-facing word for this
+    # exact concept everywhere else in the grammar (order/bracket
+    # statements). `from_column` stays the real, unchanged column name.
+    'symbol':         _col('tradingsymbol', 'Symbol', 'string'),
+    'exchange':       _col('exchange', 'Exchange', 'string'),
+    'product':        _col('product', 'Product', 'string'),
+    # Always in CONTRACTS, never lots — `_annotate_lot_size` normalises
+    # `quantity` to contracts for every exchange before this row shape is
+    # ever built (see CLAUDE.md "F&O order qty convention").
+    'qty':            _col('quantity', 'Quantity (Contracts)'),
+    'avg_price':      _col('average_price', 'Avg Price'),
+    # Pure passthrough of the SAME column the real `ltp` metric token
+    # already reads (`_metric_ltp` above) — reused verbatim.
+    'ltp':            _col('last_price', 'LTP'),
+    # Renamed from Kite's `close_price` at fetch time
+    # (`broker_apis._fetch_positions_local`) — prior SETTLEMENT close, not
+    # today's live close. See CLAUDE.md "close_price / ltp invariant".
+    'prev_close':     _col('prev_close', 'Prev Close'),
+    'pnl':            _col('pnl', 'P&L (₹)'),
+    # Legacy backstop value (`apply_day_change_backstop`), NOT the
+    # baseline-diff Day P&L SSOT `_rebuild_positions_summary` derives for
+    # the account-level summary frame — see CLAUDE.md "Frontend Day P&L
+    # SSOT". Exposed as-is since it is the real column on this row shape;
+    # do not assume it agrees with `positions.total.pnl`'s day components.
+    'day_val':        _col('day_change_val', 'Day Change (₹)'),
+    'day_change_pct': _col('day_change_percentage', 'Day Change %'),
+    'realised':       _col('realised', 'Realised P&L (₹)'),
+    'unrealised':     _col('unrealised', 'Unrealised P&L (₹)'),
+    'lots':           _col('lots', 'Lots'),
+    'lot_size':       _col('lot_size', 'Lot Size'),
+}
+
+# Watchlist rows (ctx.watchlist_rows — see `_sd_build_watchlist_row`,
+# backend/api/algo/sim/driver.py). `quantity`/`average_price`/`pnl` are
+# hardcoded 0/0.0 on every watchlist row (no real position behind a
+# watchlist entry) — deliberately NOT exposed here; a dot-read on them
+# would always be the same constant, never a real signal.
+_WATCHLIST_COLUMNS = {
+    # RENAMED (semantic-collision guard) — the raw `account` column on a
+    # watchlist row holds the WATCHLIST NAME ('Default', 'Markets', ...),
+    # never a trading account. See module-level note above.
+    'watchlist_name': _col('account', 'Watchlist Name', 'string'),
+    # Exposed as `symbol`, NOT `tradingsymbol` — same operator-facing
+    # naming convention as `order(symbol=...)` and the position-row family
+    # above. `from_column` stays the real, unchanged column name.
+    'symbol':         _col('tradingsymbol', 'Symbol', 'string'),
+    'exchange':       _col('exchange', 'Exchange', 'string'),
+    'ltp':            _col('last_price', 'LTP'),
+    'prev_close':     _col('close_price', 'Prev Close'),
+    'bid':            _col('bid', 'Bid'),
+    'ask':            _col('ask', 'Ask'),
+    'day_change':     _col('day_change', 'Day Change (₹/share)'),
+    # SECOND semantic-collision guard found on this scope family (NOT just
+    # the watchlist-name one above): `_sd_build_watchlist_row` sets this
+    # column to `change_pct / 100.0` — i.e. a FRACTION (-0.02 for -2%),
+    # NOT a percent. positions/holdings' `day_change_pct` (and the raw
+    # `day_change_percentage` column everywhere else) is a PERCENT
+    # (-2.0 for -2%). Reusing the name `day_change_pct` here would make
+    # `watchlist.all.day_change_pct <= -2` silently never fire (a real
+    # -2% day never reaches -2.0 once expressed as a fraction) — exactly
+    # the kind of "same name, different unit" collision this registry
+    # exists to prevent. Exposed under its own distinct name instead.
+    'day_change_frac': _col('day_change_percentage', 'Day Change % (fraction, e.g. -0.02 = -2%)'),
+}
+
+# scope token -> its exposed-column schema. MUST cover every real
+# `token_kind: scope` row in agent_grammar.yaml — enforced by
+# backend/tests/test_grammar_exposed_columns.py (walks the YAML itself,
+# never a hardcoded copy of this key list).
+EXPOSED_COLUMNS: dict[str, dict] = {
+    'positions.total':                       _POSITIONS_SUMMARY_COLUMNS,
+    'positions.any_acct':                     _POSITIONS_SUMMARY_COLUMNS,
+    'positions.worst_acct':                   _POSITIONS_SUMMARY_COLUMNS,
+    'positions.worst_symbol':                 _POSITION_ROW_COLUMNS,
+    'positions.expiring_today':               _POSITION_ROW_COLUMNS,
+    'positions.expiring_today.nfo':           _POSITION_ROW_COLUMNS,
+    'positions.expiring_today.mcx_unhedged':  _POSITION_ROW_COLUMNS,
+    'holdings.total':                         _HOLDINGS_SUMMARY_COLUMNS,
+    'holdings.any_acct':                      _HOLDINGS_SUMMARY_COLUMNS,
+    'holdings.worst_acct':                    _HOLDINGS_SUMMARY_COLUMNS,
+    'holdings.worst_symbol':                  _HOLDINGS_SUMMARY_COLUMNS,
+    'funds.total':                            _FUNDS_COLUMNS,
+    'funds.any_acct':                         _FUNDS_COLUMNS,
+    'watchlist.all':                          _WATCHLIST_COLUMNS,
+    'watchlist.default':                      _WATCHLIST_COLUMNS,
+    'watchlist.markets':                      _WATCHLIST_COLUMNS,
+}
+
+# scope token -> (ctx attribute the resolver reads, resolver function name
+# in this module). Catalog-projection provenance ONLY (routes/grammar.py's
+# `_merge_exposed_column_rows` uses this to write each column row's
+# `description`) — kept separate from EXPOSED_COLUMNS itself since it is
+# one fact per SCOPE, not per column.
+EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
+    'positions.total':                       ('ctx.sum_positions', '_scope_positions_total'),
+    'positions.any_acct':                     ('ctx.sum_positions', '_scope_positions_any_acct'),
+    'positions.worst_acct':                   ('ctx.sum_positions', '_scope_positions_worst_acct'),
+    'positions.worst_symbol':                 ('ctx.position_rows', '_scope_positions_worst_symbol'),
+    'positions.expiring_today':               ('ctx.position_rows', '_scope_positions_expiring_today'),
+    'positions.expiring_today.nfo':           ('ctx.position_rows', '_scope_positions_expiring_today_nfo'),
+    'positions.expiring_today.mcx_unhedged':  ('ctx.position_rows', '_scope_positions_expiring_today_mcx_unhedged'),
+    'holdings.total':                         ('ctx.sum_holdings', '_scope_holdings_total'),
+    'holdings.any_acct':                      ('ctx.sum_holdings', '_scope_holdings_any_acct'),
+    'holdings.worst_acct':                    ('ctx.sum_holdings', '_scope_holdings_worst_acct'),
+    'holdings.worst_symbol':                  ('ctx.sum_holdings', '_scope_holdings_worst_symbol'),
+    'funds.total':                            ('ctx.df_margins', '_scope_funds_total'),
+    'funds.any_acct':                         ('ctx.df_margins', '_scope_funds_any_acct'),
+    'watchlist.all':                          ('ctx.watchlist_rows', '_scope_watchlist_all'),
+    'watchlist.default':                      ('ctx.watchlist_rows', '_scope_watchlist_default'),
+    'watchlist.markets':                      ('ctx.watchlist_rows', '_scope_watchlist_markets'),
+}
+
+
+def exposed_columns_for_scope(scope_token: str) -> dict:
+    """Return the `{exposed_name: {type, from_column, label}}` schema for
+    `scope_token`, or `{}` if the scope has no registered schema (unknown
+    scope / a future scope added without updating EXPOSED_COLUMNS)."""
+    return EXPOSED_COLUMNS.get(scope_token, {})
+
+
 # ── Operators — binary comparators (leaf-level) ──────────────────────────
 
 OPERATORS = {
