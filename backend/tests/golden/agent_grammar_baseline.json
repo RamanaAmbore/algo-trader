@@ -551,6 +551,22 @@
     },
     {
       "grammar_kind": "condition",
+      "token_kind": "scope",
+      "token": "orders.any_acct",
+      "value_type": "array",
+      "description": "Every currently open/active order (mode=live, not yet filled/cancelled/rejected), across every account. Leaf is OR-combined per row.",
+      "resolver": "backend.api.algo.grammar._scope_orders_any_acct"
+    },
+    {
+      "grammar_kind": "condition",
+      "token_kind": "scope",
+      "token": "quote.tracked",
+      "value_type": "array",
+      "description": "Pre-tracked ad-hoc market-data row(s) for symbols referenced by at least one active agent's quote.* condition leaf (via scope_filter.symbol), refreshed once per performance cycle — not a live per-condition broker fetch. REQUIRES a non-wildcard scope_filter.symbol. Leaf is OR-combined per row.",
+      "resolver": "backend.api.algo.grammar._scope_quote_tracked"
+    },
+    {
+      "grammar_kind": "condition",
       "token_kind": "operator",
       "token": "<",
       "value_type": "boolean",

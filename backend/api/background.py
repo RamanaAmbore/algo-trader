@@ -1172,6 +1172,202 @@ async def _perf_send_open_summaries(
             ss['last_open'] = today
 
 
+# ─────────────────────────────────────────────────────────────────────────
+# Sprint 21 — orders.* scope family + pre-tracked quote.* market-data scope.
+#
+# Both helpers are deliberately standalone (not inlined into
+# `_perf_run_agent_engine`, which is already the one function `_task_
+# performance` calls for agent-engine wiring) — keeps each easy to
+# unit-test in isolation and keeps `_perf_run_agent_engine` itself from
+# growing past the CC gate. Each swallows its own exceptions and returns
+# `[]` on any failure so a DB hiccup or a broker outage degrades the new
+# scopes to "no rows this tick" rather than taking down the whole
+# performance-refresh cycle (same resilience contract `position_rows` /
+# `spot_prices` already have above).
+# ─────────────────────────────────────────────────────────────────────────
+
+async def _perf_fetch_orders_rows() -> list[dict]:
+    """Query currently OPEN/active `AlgoOrder` rows for the `orders.*`
+    scope family (`agent_evaluator.Context.orders_rows`).
+
+    "Open" = `mode == 'live'` (sim/paper/replay/shadow orders never reach
+    a real broker and are not part of the operator's real order book —
+    see CLAUDE.md "Template attach mode gate") AND `status` not in
+    `ALGO_ORDER_TERMINAL_STATUSES` (FILLED/CANCELLED/REJECTED/UNFILLED/
+    CANCEL_FAILED) — this also keeps the default `"OPEN"` status AND the
+    legitimate non-terminal `"HELD"` status (order_hold.py) as "open".
+    No `created_at` bound — a long-resting stuck order is a MORE urgent
+    signal for an alert agent, not a less relevant one.
+
+    A cheap, indexed, single-table query — same cost profile as the
+    positions/holdings/funds fetch above, NOT a live broker call.
+    """
+    from backend.api.models import AlgoOrder, ALGO_ORDER_TERMINAL_STATUSES
+    from sqlalchemy import select as _sa_select
+
+    try:
+        async with async_session() as session:
+            stmt = _sa_select(AlgoOrder).where(
+                AlgoOrder.mode == 'live',
+                AlgoOrder.status.notin_(ALGO_ORDER_TERMINAL_STATUSES),
+            )
+            result = await session.execute(stmt)
+            rows = result.scalars().all()
+    except Exception as e:
+        logger.warning(f"Background: orders_rows fetch failed: {e}")
+        return []
+
+    out: list[dict] = []
+    for r in rows:
+        try:
+            _limit = float(r.current_limit) if r.current_limit is not None else None
+            _init  = float(r.initial_price) if r.initial_price is not None else None
+            price  = _limit if _limit is not None else _init
+            out.append({
+                "account":      r.account,
+                "tradingsymbol": r.symbol,
+                "exchange":     r.exchange,
+                "side":         r.transaction_type,
+                "quantity":     int(r.quantity or 0),
+                "price":        price,
+                "status":       r.status,
+                "order_id":     r.broker_order_id,
+            })
+        except Exception as e:
+            logger.debug(f"Background: skipped malformed orders_row id={getattr(r, 'id', '?')}: {e}")
+    return out
+
+
+def _collect_quote_symbols_from_conditions(conditions: list) -> "set[tuple[str, str | None]]":
+    """Pure walk — given a list of agent `conditions` trees, return the
+    set of `(symbol, exchange_or_None)` pairs referenced via a `quote.*`
+    leaf's `scope_filter.symbol` (+ optional `scope_filter.exchange`)
+    qualifier.
+
+    Mirrors `agent_evaluator.validate()`'s generic `$ref`/`all`/`any`/
+    `not` walk (same recursion shape, cycle-guarded) so a `quote.*` leaf
+    nested inside a condition fragment is discovered too. No DB/agent-
+    loading I/O here — callers resolve agents separately (see
+    `_perf_build_quote_rows` below) — so this is directly unit-testable
+    against a synthetic condition dict.
+    """
+    out: set[tuple[str, str | None]] = set()
+
+    def walk(node, visited: frozenset = frozenset()) -> None:
+        if not isinstance(node, dict):
+            return
+        if '$ref' in node:
+            ref = node.get('$ref')
+            if not isinstance(ref, str) or not ref or ref in visited:
+                return
+            try:
+                from backend.api.algo.template_registry import REGISTRY as _FRAG
+                body = _FRAG.get('condition', ref)
+            except Exception:
+                return
+            if isinstance(body, dict):
+                walk(body, visited | {ref})
+            return
+        if 'all' in node or 'any' in node:
+            key = 'all' if 'all' in node else 'any'
+            for child in (node.get(key) or []):
+                walk(child, visited)
+            return
+        if 'not' in node:
+            walk(node.get('not'), visited)
+            return
+        if 'log' in node:
+            return
+        scope_tok = node.get('scope')
+        if isinstance(scope_tok, str) and scope_tok.startswith('quote.'):
+            sf = node.get('scope_filter') or {}
+            sym = sf.get('symbol') if isinstance(sf, dict) else None
+            if sym and sym != '*':
+                exch = sf.get('exchange')
+                exch = str(exch).upper() if (exch and exch != '*') else None
+                out.add((str(sym).upper(), exch))
+
+    for cond in conditions or []:
+        try:
+            walk(cond)
+        except Exception:
+            continue
+    return out
+
+
+async def _perf_build_quote_rows() -> list[dict]:
+    """Pre-track ad-hoc market data for every symbol referenced by at
+    least one active agent's `quote.*` condition leaf
+    (`agent_evaluator.Context.quote_rows`).
+
+    Sprint 21 architecture decision (b) — pre-track into a dataframe the
+    same way `watchlist.*` already works, rather than live-fetching per
+    condition evaluation, so every scope's read cost stays uniform
+    (cheap, in-memory) at the price of the same staleness profile every
+    other scope already has. Reuses `routes/quote.py`'s existing
+    `resolve_market_data_keys` (virtual MCX/CDS root resolution) +
+    `_fetch_ltp` directly — no new quote-fetching code.
+
+    Missing-vs-zero: `_fetch_ltp` returns `ltp=0.0` (not an exception) on
+    a total broker failure — a row with `last_price=0.0` is dropped
+    entirely rather than exposed as a confirmed zero price, so a
+    `quote.tracked.ltp < X` leaf can never false-fire off a fetch outage.
+    """
+    from backend.api.algo.agent_engine import _cycle_load_agents
+    from backend.api.algo.symbol_resolver import resolve_market_data_keys
+    from backend.api.routes.quote import _fetch_ltp
+
+    try:
+        agents = await _cycle_load_agents(None)
+    except Exception as e:
+        logger.warning(f"Background: quote_rows — active agent load failed: {e}")
+        return []
+
+    symbols = _collect_quote_symbols_from_conditions(
+        [a.conditions for a in agents if getattr(a, 'conditions', None)]
+    )
+    if not symbols:
+        return []
+
+    keys: list[str] = []
+    key_to_pair: dict[str, tuple[str, str]] = {}
+    for sym, exch in symbols:
+        exch_u = (exch or "NSE").upper()
+        k = f"{exch_u}:{sym}"
+        keys.append(k)
+        key_to_pair[k] = (sym, exch_u)
+
+    try:
+        key_map = await resolve_market_data_keys(keys)
+    except Exception as e:
+        logger.warning(f"Background: quote_rows symbol resolution failed: {e}")
+        return []
+
+    rows: list[dict] = []
+    for k in keys:
+        sym, exch = key_to_pair[k]
+        broker_key = key_map.input_to_broker.get(k, k)
+        b_exch, b_sym = broker_key.split(":", 1) if ":" in broker_key else (exch, sym)
+        try:
+            q = await _run(_fetch_ltp, b_exch, b_sym, exch, sym)
+        except Exception as e:
+            logger.debug(f"Background: quote_rows fetch failed for {k}: {e}")
+            continue
+        if not q.ltp or q.ltp <= 0:
+            # Missing-vs-zero — a failed/empty fetch never masquerades as
+            # a confirmed LTP of 0 (see docstring above).
+            continue
+        rows.append({
+            "tradingsymbol": sym,
+            "exchange":      exch,
+            "last_price":    q.ltp,
+            "bid":           q.bid,
+            "ask":           q.ask,
+            "volume":        q.volume,
+        })
+    return rows
+
+
 async def _perf_run_agent_engine(
     sim_active: bool,
     df_holdings: pd.DataFrame,
@@ -1222,6 +1418,22 @@ async def _perf_run_agent_engine(
             logger.warning(
                 "agent_engine: spot_prices empty — expiry ITM agents will be skipped this tick"
             )
+        # Sprint 21 — orders.* scope family + pre-tracked quote.* market
+        # data. Each helper already swallows its own exceptions and
+        # returns [] on failure; the extra try/except HERE is defense in
+        # depth so an unforeseen bug in either one degrades to "no rows
+        # this tick" rather than ever preventing run_cycle (and every
+        # OTHER agent's unrelated condition) from running below.
+        try:
+            orders_rows = await _perf_fetch_orders_rows()
+        except Exception as oe:
+            logger.warning(f"Background: orders_rows unavailable this tick: {oe}")
+            orders_rows = []
+        try:
+            quote_rows = await _perf_build_quote_rows()
+        except Exception as qe:
+            logger.warning(f"Background: quote_rows unavailable this tick: {qe}")
+            quote_rows = []
         agent_context = {
             "sum_holdings": sum_holdings,
             "sum_positions": sum_positions,
@@ -1230,6 +1442,8 @@ async def _perf_run_agent_engine(
             "df_positions": df_positions,
             "position_rows": position_rows,
             "spot_prices":   spot_prices,
+            "orders_rows":   orders_rows,
+            "quote_rows":    quote_rows,
             "ist_display": ist_display,
             "now": now,
             "seg_state": seg_state,

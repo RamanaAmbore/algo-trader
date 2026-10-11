@@ -2098,6 +2098,8 @@ def _cycle_evaluate_agent(agent, context: dict, cfg: dict, now, alert_state: dic
         df_margins=context.get("df_margins"),
         watchlist_rows=context.get("watchlist_rows") or [],
         position_rows=context.get("position_rows") or [],
+        orders_rows=context.get("orders_rows") or [],
+        quote_rows=context.get("quote_rows") or [],
         spot_prices=context.get("spot_prices") or {},
         log_records=(context.get("log_records_by_agent") or {}).get(agent.id, []),
         alert_state=alert_state,
@@ -2723,11 +2725,20 @@ def _ae_row_identity(m: dict) -> tuple:
     `*_acct` scopes) have no tradingsymbol, so those three fields are
     `None` for every row at that scope — which is exactly the desired
     behavior: scope+account alone is already a full identity for a
-    one-row-per-account summary frame."""
+    one-row-per-account summary frame.
+
+    Sprint 21 — also includes `order_id` (None on every pre-existing row
+    shape, which never carries that key — purely additive, no behavior
+    change for positions/holdings/funds/watchlist). Without it, two
+    genuinely distinct open `orders.any_acct` rows for the same account/
+    symbol/exchange (e.g. two separate limit orders resting on the same
+    contract) would collapse to one identity and silently drop one of
+    them from `$row`-ref fan-out."""
     row = m.get('row') or {}
     return (
         m.get('scope'), m.get('account'),
         row.get('tradingsymbol'), row.get('exchange'), row.get('product'),
+        row.get('order_id'),
     )
 
 

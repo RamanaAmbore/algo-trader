@@ -746,6 +746,41 @@ def _metric_ltp(ctx, row):
     return float(row.get('last_price', 0) or 0)
 
 
+# ── Orders scope (Sprint 21) ─────────────────────────────────────────────
+# Reads ctx.orders_rows — currently OPEN/active `AlgoOrder` rows (mode=
+# 'live', status not in ALGO_ORDER_TERMINAL_STATUSES), refreshed once per
+# `_task_performance` cycle by `background._perf_fetch_orders_rows`. NOT a
+# live broker call — same cadence/cost profile as positions/holdings/funds.
+# Account-rooted (same `account:` qualifier mechanism as positions/
+# holdings/funds), never `exchange:`/`symbol:` — those are instrument-
+# rooted qualifiers, reserved for `quote.*` below.
+#
+# No `orders.total` aggregate — unlike P&L, there is no single meaningful
+# scalar to sum across open orders of mixed BUY/SELL direction and
+# instrument, so this scope family only ever has a per-row variant.
+
+def _scope_orders_any_acct(ctx):
+    """Every currently open/active order, across every account."""
+    return list(getattr(ctx, 'orders_rows', []) or [])
+
+
+# ── Quote scope (Sprint 21) ───────────────────────────────────────────────
+# Reads ctx.quote_rows — pre-tracked ad-hoc market-data rows (symbol +
+# exchange + ltp/bid/ask/volume) for every symbol referenced by at least
+# one active agent's `quote.*` leaf, refreshed once per `_task_performance`
+# cycle by `background._perf_build_quote_rows` (reuses `routes/quote.py`'s
+# `_fetch_ltp` directly — never a live per-condition broker round-trip).
+# Instrument-rooted (qualified by `symbol:` — REQUIRED, see
+# `agent_evaluator.validate()`'s quote.* guard — with `exchange:` as an
+# OPTIONAL secondary qualifier for a symbol ambiguous across exchanges);
+# never `account:` — market data belongs to no account. Mirrors
+# `watchlist.*`'s existing per-row-only pattern exactly — no aggregate.
+
+def _scope_quote_tracked(ctx):
+    """Every pre-tracked ad-hoc market-data row."""
+    return list(getattr(ctx, 'quote_rows', []) or [])
+
+
 # ═══════════════════════════════════════════════════════════════════════════
 #  EXPOSED-COLUMN REGISTRY (Sprint 15 — generic `scope.attribute` dot-access)
 # ═══════════════════════════════════════════════════════════════════════════
@@ -955,6 +990,53 @@ _WATCHLIST_COLUMNS = {
     'day_change_frac': _col('day_change_percentage', 'Day Change % (fraction, e.g. -0.02 = -2%)'),
 }
 
+# Orders rows (ctx.orders_rows — see `background._perf_fetch_orders_rows`).
+# One dict per currently open/active AlgoOrder, account-rooted like
+# positions/holdings/funds. `symbol`/`qty`/`account_id` reuse established
+# vocabulary; `side`/`price`/`status`/`order_id` are new names with no
+# prior precedent on any other scope family.
+_ORDERS_COLUMNS = {
+    'account_id': _COL_ACCOUNT_ID,
+    # Exposed as `symbol`, NOT `tradingsymbol` — same convention every
+    # other row-shaped scope family above already uses.
+    'symbol':     _col('tradingsymbol', 'Symbol', 'string'),
+    'exchange':   _col('exchange', 'Exchange', 'string'),
+    # BUY/SELL — AlgoOrder.transaction_type.
+    'side':       _col('side', 'Side (BUY/SELL)', 'string'),
+    'qty':        _col('quantity', 'Quantity (Contracts)'),
+    # current_limit (if the chase loop has re-quoted) else initial_price —
+    # computed once at row-build time (background._perf_fetch_orders_rows),
+    # same "live re-quoted price wins" convention the ChaseCard UI already
+    # uses for this exact column pair (see AlgoOrder.current_limit's own
+    # field comment, models.py).
+    'price':      _col('price', 'Order Price (₹)'),
+    'status':     _col('status', 'Order Status', 'string'),
+    # Maps 1:1 to the `order_id` param every `cancel_order`/`modify_order`
+    # action reads (actions_live.py) — i.e. the BROKER's order id
+    # (AlgoOrder.broker_order_id), never the internal AlgoOrder.id primary
+    # key. A `{"$row": "order_id"}` action param on an `orders.any_acct`
+    # match therefore resolves to exactly the value those actions expect.
+    'order_id':   _col('order_id', 'Broker Order ID', 'string'),
+}
+
+# Quote rows (ctx.quote_rows — see `background._perf_build_quote_rows`).
+# One dict per pre-tracked ad-hoc symbol, instrument-rooted (no account
+# dimension at all — market data belongs to no account). `symbol`/
+# `exchange`/`ltp`/`bid`/`ask` reuse the EXACT same names + from_columns
+# `_WATCHLIST_COLUMNS` already established for the identical concepts
+# (`ltp` is additionally a real registered metric token — see
+# `_metric_ltp` above, proven a pure passthrough of `last_price` by
+# `test_reused_exposed_names_are_pure_passthroughs_of_their_metric`).
+# `volume` is new, no prior precedent.
+_QUOTE_COLUMNS = {
+    'symbol':   _col('tradingsymbol', 'Symbol', 'string'),
+    'exchange': _col('exchange', 'Exchange', 'string'),
+    'ltp':      _col('last_price', 'LTP'),
+    'bid':      _col('bid', 'Bid'),
+    'ask':      _col('ask', 'Ask'),
+    'volume':   _col('volume', 'Volume'),
+}
+
 # scope token -> its exposed-column schema. MUST cover every real
 # `token_kind: scope` row in agent_grammar.yaml — enforced by
 # backend/tests/test_grammar_exposed_columns.py (walks the YAML itself,
@@ -976,6 +1058,8 @@ EXPOSED_COLUMNS: dict[str, dict] = {
     'watchlist.all':                          _WATCHLIST_COLUMNS,
     'watchlist.default':                      _WATCHLIST_COLUMNS,
     'watchlist.markets':                      _WATCHLIST_COLUMNS,
+    'orders.any_acct':                        _ORDERS_COLUMNS,
+    'quote.tracked':                          _QUOTE_COLUMNS,
 }
 
 # scope token -> (ctx attribute the resolver reads, resolver function name
@@ -1000,6 +1084,8 @@ EXPOSED_COLUMN_SCOPE_PROVENANCE: dict[str, tuple[str, str]] = {
     'watchlist.all':                          ('ctx.watchlist_rows', '_scope_watchlist_all'),
     'watchlist.default':                      ('ctx.watchlist_rows', '_scope_watchlist_default'),
     'watchlist.markets':                      ('ctx.watchlist_rows', '_scope_watchlist_markets'),
+    'orders.any_acct':                        ('ctx.orders_rows', '_scope_orders_any_acct'),
+    'quote.tracked':                          ('ctx.quote_rows', '_scope_quote_tracked'),
 }
 
 

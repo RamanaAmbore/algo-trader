@@ -48,6 +48,13 @@ seeded event agents (see `event_agents.py:SEEDED_AGENTS`) from
 round-tripping through the frontend's `event_stmt` CLI decompiler. See
 `test_grammar_event_action_gate_field.py` for the dedicated coverage.
 
+Amendment (Sprint 21, orders.* + quote.* scope families): two new
+`(condition, scope, ...)` tokens — `orders.any_acct` and `quote.tracked`
+— were added to `agent_grammar.yaml` right after `watchlist.markets`
+(and mirrored here at the same position) — see CLAUDE.md's Sprint 21
+notes / `backend/api/algo/grammar.py`'s `_scope_orders_any_acct` /
+`_scope_quote_tracked`.
+
 Perf: no DB / network calls, pure in-memory comparison.
 Reuse: shares the same SYSTEM_TOKENS / LOG_TAG_TOKENS module attributes
 every other grammar test and `seed_grammar_tokens()` read.

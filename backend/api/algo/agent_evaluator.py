@@ -180,6 +180,26 @@ class Context:
     # aggregated and carries no symbol). Empty when the engine hasn't
     # populated it (e.g. early in startup or in legacy callers).
     position_rows:   list = field(default_factory=list)
+    # Sprint 21 — currently OPEN/active AlgoOrder rows (mode='live', status
+    # not in ALGO_ORDER_TERMINAL_STATUSES), one dict per order, carrying
+    # account/tradingsymbol/exchange/side/quantity/price/status/order_id.
+    # Populated once per `_task_performance` cycle by
+    # `background._perf_fetch_orders_rows` — a cheap DB query against the
+    # real algo_orders table, NOT a live broker call. Mirrors
+    # `position_rows`'s existing pattern exactly. Empty on the sim/replay
+    # path (those drivers don't populate it) and before the live task's
+    # first tick.
+    orders_rows:     list = field(default_factory=list)
+    # Sprint 21 — pre-tracked ad-hoc market-data rows (one dict per
+    # symbol, carrying tradingsymbol/exchange/last_price/bid/ask/volume)
+    # for every symbol referenced by at least one active agent's
+    # `quote.*` condition leaf. Populated once per `_task_performance`
+    # cycle by `background._perf_build_quote_rows`, which reuses
+    # `routes/quote.py`'s existing `_fetch_ltp` fetch infrastructure —
+    # never a live per-condition broker round-trip. Mirrors
+    # `watchlist_rows`'s existing pattern: cheap, in-memory, same
+    # staleness profile as every other scope.
+    quote_rows:      list = field(default_factory=list)
     # Underlying spot prices keyed by underlying name (e.g. {"NIFTY":
     # 22150.30, "BANKNIFTY": 48230.10}). Populated by the engine once
     # per tick from broker.ltp on the distinct underlyings of the
@@ -732,6 +752,24 @@ def validate(cond: dict) -> list[str]:
             errors.append(f"{path}: unknown scope token '{c['scope']}'")
         if c.get('op') and REGISTRY.op(c['op']) is None:
             errors.append(f"{path}: unknown operator token '{c['op']}'")
+        # Sprint 21 — quote.* is instrument-rooted (no account dimension),
+        # so a leaf with no (or wildcard) scope_filter.symbol has nothing
+        # to disambiguate WHICH tracked symbol it means — ctx.quote_rows
+        # can hold several different agents' tracked symbols at once.
+        # Reject at validate() time rather than silently OR-evaluating
+        # against every tracked row. Mirror of Sprint 19's existing
+        # "qualifier not valid for this scope" guard below, just the
+        # opposite direction (a REQUIRED qualifier missing, instead of an
+        # invalid one supplied).
+        if isinstance(c.get('scope'), str) and c['scope'].startswith('quote.'):
+            _qsf = c.get('scope_filter')
+            _qsym = _qsf.get('symbol') if isinstance(_qsf, dict) else None
+            if not _qsym or _qsym == '*':
+                errors.append(
+                    f"{path}: scope '{c['scope']}' requires a non-wildcard "
+                    f"scope_filter.symbol (quote.* is instrument-rooted)"
+                )
+
         # Sprint 19 — optional scope_filter (e.g. {"symbol": "..."})
         # narrows a per-position scope to one specific row dimension. Only
         # dry-checked when the base scope itself resolved above — a typo'd

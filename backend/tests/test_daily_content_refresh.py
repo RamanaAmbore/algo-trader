@@ -367,9 +367,24 @@ class TestSpawnDailyContentRefreshGuard:
 
         app = MagicMock()
         app.state.bg_tasks = []
-        await bg.on_shutdown(app)
-
-        assert task.done() and task.cancelled()
+        try:
+            await bg.on_shutdown(app)
+            assert task.done() and task.cancelled()
+        finally:
+            # on_shutdown's real implementation ends with
+            # `_executor.shutdown(wait=False)` on the MODULE-LEVEL,
+            # process-wide ThreadPoolExecutor every `background._run()`
+            # call depends on. This is the one test in the suite that
+            # calls the real (unmocked) on_shutdown, so without this
+            # restore every later test in the SAME pytest process that
+            # exercises `_run()` (e.g. anything going through
+            # `_perf_run_agent_engine`'s `_resolve_spot_prices`/quote
+            # fetch calls) would silently see every submitted job raise
+            # "cannot schedule new futures after shutdown" — a real
+            # cross-test-file pollution bug, not specific to any one
+            # caller of `_run()`.
+            from concurrent.futures import ThreadPoolExecutor
+            bg._executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="ramboq-bg")
 
 
 # ---------------------------------------------------------------------------

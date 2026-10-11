@@ -252,6 +252,30 @@ def test_no_duplicate_exposed_names_within_a_scope():
         assert len(columns) == len(set(columns.keys())), scope_token
 
 
+# ── (d2) scope-FAMILY name itself must not collide with any enum constant ──
+#
+# Sprint 21 — the existing enum-collision test (b) only ever checked
+# EXPOSED_COLUMNS' column names, never the scope token strings themselves.
+# That gap is exactly how `market.*` (considered, then rejected, as the
+# Sprint 21 market-data scope-family name) would have slipped through:
+# `market` is a real enum value (order_fields.yaml's order-type enum
+# `[MARKET, LIMIT, SL, SL-M]`, lowercased). Only the scope's FIRST dotted
+# segment is checked — later segments (`total`, `nfo`, `default`, ...)
+# are legitimate existing scope-token segments that also happen to be
+# real enum values elsewhere (e.g. `total`/`account` as `cancel_all_
+# orders`' `scope` enum), so checking every segment would make this test
+# fail on scopes that already exist and are fine.
+
+def test_no_scope_family_name_collides_with_any_enum_constant():
+    enum_universe = _real_enum_universe()
+    scope_families = {tok.split('.', 1)[0] for tok in _real_scope_tokens()}
+    collisions = {fam for fam in scope_families if fam.lower() in enum_universe}
+    assert not collisions, (
+        f"scope-family name(s) collide with a real enum constant value: "
+        f"{collisions} — pick a different family name"
+    )
+
+
 def test_exposed_columns_for_scope_helper():
     assert g.exposed_columns_for_scope('positions.total') is g.EXPOSED_COLUMNS['positions.total']
     assert g.exposed_columns_for_scope('no-such-scope') == {}
