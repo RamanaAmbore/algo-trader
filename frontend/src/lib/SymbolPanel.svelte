@@ -43,6 +43,7 @@
   import { priceFmt, aggFmt as aggFmtMargin, qtyFmt } from '$lib/format';
   import OrderTicket      from '$lib/order/OrderTicket.svelte';
   import OptionChainTab   from '$lib/order/OptionChainTab.svelte';
+  import OrderCliTab      from '$lib/order/OrderCliTab.svelte';
   import ChaseCard       from '$lib/order/ChaseCard.svelte';
   import ChaseAggPicker  from '$lib/order/ChaseAggPicker.svelte';
   import OrderBook from '$lib/OrderBook.svelte';
@@ -135,7 +136,7 @@
    *   headerless?:     boolean,
    *   onSymbolChange?: ((sym: string) => void) | null,
    *   tabsExternal?:   boolean,
-   *   activeTab?:      'ticket' | 'chain' | 'chart',
+   *   activeTab?:      'ticket' | 'chain' | 'chart' | 'cli',
    *   hideBottomPanel?: boolean,
    *   actionsHidden?:  boolean,
    *   triggerSubmit?:  number,
@@ -213,7 +214,7 @@
     // to the requested defaultTab if no host binding is wired. When
     // tabsExternal is true the host MUST bind this prop or the body
     // won't update on tab clicks.
-    activeTab      = $bindable(/** @type {'ticket'|'chain'|'chart'|undefined} */ (undefined)),
+    activeTab      = $bindable(/** @type {'ticket'|'chain'|'chart'|'cli'|undefined} */ (undefined)),
     // When true the shell omits its own bottom panel (Order Log /
     // Order History). The host renders these in a separate card.
     // Used by /orders to split the entry shell from the activity
@@ -434,7 +435,7 @@
   // state internally. Either way, downstream code reads `_activeTab`
   // and tab-click handlers write to it — the two-way bind takes care
   // of pushing the change back up to the host when applicable.
-  let _activeTabInternal = $state(/** @type {'ticket'|'chain'|'chart'} */ (_resolveInitialTab()));
+  let _activeTabInternal = $state(/** @type {'ticket'|'chain'|'chart'|'cli'} */ (_resolveInitialTab()));
   // Seed the host's binding from the resolved default on first render.
   $effect(() => { if (activeTab === undefined) activeTab = _activeTabInternal; });
   const _activeTab = $derived(activeTab || _activeTabInternal);
@@ -467,7 +468,7 @@
     return m ? m[1] : up;
   }
 
-  function _setActiveTab(/** @type {'ticket'|'chain'|'chart'} */ id) {
+  function _setActiveTab(/** @type {'ticket'|'chain'|'chart'|'cli'} */ id) {
     _activeTabInternal = id;
     activeTab = id;
     // Tab swap drives the picker's displayed value per the rule above.
@@ -2655,6 +2656,21 @@
 
       {/if}
 
+      {#if _activeTab === 'cli'}
+        <!-- CLI tab (Sprint B, 2026-10, Phase 2) — order-scoped mount of
+             the generic agent-CLI grammar (agents.js/AgentCliEditor via
+             OrderCliTab), restricted to order(...)/place_order(...)
+             statements only. Shared by /orders' inline mount (this same
+             SymbolPanel instance, headerless) and the order-ticket
+             modal — see tabs.js's ORDER_TABS comment for the full
+             restoration history. -->
+        <OrderCliTab
+          mode={_sharedMode === 'live' ? 'live' : 'paper'}
+          isDemo={_isDemo}
+          onSubmit={(payload) => { onSubmit?.(payload); }}
+        />
+      {/if}
+
     </div>
 
     <!-- Shell-level Template picker — sits BELOW the tab body. Two-
@@ -2810,12 +2826,14 @@
     {/if}
 
     <!-- Shell-level basket bar — visible from any tab when legs exist,
-         except the Chart tab which shows only the ChartWorkspace.
-         Per-leg pills (B/S · sym · lots stepper · × remove) sit on the
-         left; Clear / Submit on the right. Same shape as the chain
-         tab's in-tab basket so the operator sees what's pending from
-         any tab without flipping back to Chain. -->
-    {#if basketLegs.length > 0 && _activeTab !== 'chart'}
+         except the Chart tab (shows only the ChartWorkspace) and the
+         CLI tab (Sprint B, 2026-10 — its own order path is the typed
+         statement, not the shared basket). Per-leg pills (B/S · sym ·
+         lots stepper · × remove) sit on the left; Clear / Submit on
+         the right. Same shape as the chain tab's in-tab basket so the
+         operator sees what's pending from any tab without flipping
+         back to Chain. -->
+    {#if basketLegs.length > 0 && _activeTab !== 'chart' && _activeTab !== 'cli'}
       <div class="oes-basket-bar">
         <!-- Per-account margin strip — shown when basket spans >1 account.
              Single-account baskets keep using the existing common-footer
@@ -3097,8 +3115,12 @@
          every tab (Ticket / Chain / Command). Inactive on tabs that
          don't accept a generic submit (Chain has its own per-strike
          buttons; CommandLine submits via Enter), but +Basket still
-         works when there's pending content. -->
-    {#if showCommonActions && !actionsHidden && _activeTab !== 'chart'}
+         works when there's pending content. Excluded on the CLI tab
+         (Sprint B, 2026-10) — OrderCliTab renders its own submit
+         button via AgentCliEditor's own "Place order" affordance; this
+         shared footer's BUY/SELL submit would otherwise fire against
+         whatever's in the (hidden) OrderTicket instead. -->
+    {#if showCommonActions && !actionsHidden && _activeTab !== 'chart' && _activeTab !== 'cli'}
       <div class="oes-common-actions">
         <!-- Mode pill + chase controls + Clear lifted to the picker row
              (heading row) above. The dedicated mode/chase row that used

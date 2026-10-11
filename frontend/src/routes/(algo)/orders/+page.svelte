@@ -93,7 +93,7 @@
   // surface per operator. Ticket / Command are one click away.
   // Operator: "order ticket should be first tab and chain should be
   // second tab." Ticket is the operator's most-used surface.
-  let _entryActiveTab = $state(/** @type {'chain'|'ticket'} */ ('ticket'));
+  let _entryActiveTab = $state(/** @type {'chain'|'ticket'|'chart'|'cli'} */ ('ticket'));
   let _entryAccounts  = $state(/** @type {string[]} */ ([]));
 
   // Counter-prop dispatch — SymbolPanel's common-actions footer

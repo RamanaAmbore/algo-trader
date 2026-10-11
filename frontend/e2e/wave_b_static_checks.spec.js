@@ -49,8 +49,10 @@ test.describe('Wave B static file checks', () => {
     expect(content).toContain('export const submitContact');
   });
 
-  test('console page does NOT use raw fetch for /api/agents/interpret', () => {
-    const content = readFile('src/routes/(algo)/console/+page.svelte');
+  test('console tab does NOT use raw fetch for /api/agents/interpret', () => {
+    // /console retired 2026-10 (Phase 2 Sprint B) — content moved to
+    // ConsoleTab.svelte, mounted on /automation's Console tab.
+    const content = readFile('src/lib/automation/ConsoleTab.svelte');
     expect(content).not.toContain("fetch('/api/agents/interpret");
   });
 

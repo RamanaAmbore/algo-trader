@@ -2,18 +2,21 @@
  * Terminal rename visual verification.
  *
  * Verifies that the "Rambo Terminal" public-surface rename and the
- * algo-side "Console" label (for /console) are correctly deployed on
- * dev.ramboq.com.  Two viewport projects: chromium-desktop (1400×900)
- * and mobile-portrait (360×800).
+ * algo-side "Console" label are correctly deployed on dev.ramboq.com.
+ * Two viewport projects: chromium-desktop (1400×900) and mobile-portrait
+ * (360×800).
  *
  * Checks:
  *  1. Public home `/` Y-fork right card — tag / h2 / CTA say "Rambo Terminal"
  *     and left card is unchanged (Investment Partnership / Partner with us).
  *  2. Public navbar desktop pill reads "Terminal ↗"
  *  3. Public navbar mobile hamburger tray contains "Terminal ↗"
- *  4. Algo navbar (signed in) — Build group has "Console" button that navigates to /console
+ *  4. Algo navbar (signed in) — "Console" button navigates to /automation's
+ *     Console tab (2026-10, Phase 2 Sprint B — /console retired as its own
+ *     route; nav entry repointed, old bookmarks still redirect there)
  *  5. Algo navbar (signed in) mobile hamburger — "Console" entry visible
- *  6. /console page — tab title + h1 = "Console | RamboQuant Analytics" / "Console"
+ *  6. Old /console bookmark redirects to /automation and lands on the
+ *     Console tab
  *  7. /showcase page — h1 = "Rambo Terminal — Tour" + title contains same string
  *
  * Run:
@@ -196,7 +199,10 @@ test.describe('Algo navbar — Console entry', () => {
     expect(terminalIdx, `Nav button "Terminal" still present — expected it to be "Console"`).toBe(-1);
   });
 
-  test('desktop: clicking "Console" nav button navigates to /console', async ({ page }) => {
+  test('desktop: clicking "Console" nav button navigates to the Automation Console tab', async ({ page }) => {
+    // 2026-10 (Phase 2 Sprint B) — /console retired as a standalone
+    // route; the nav entry now points directly at /automation's
+    // Console tab (frontend/src/routes/(algo)/+layout.svelte).
     const width = page.viewportSize()?.width ?? 1400;
     if (width <= 800) test.skip(true, 'desktop-only check');
 
@@ -209,8 +215,8 @@ test.describe('Algo navbar — Console entry', () => {
     const consoleBtn = page.locator('.algo-nav-btn').filter({ hasText: 'Console' }).first();
     await expect(consoleBtn).toBeVisible({ timeout: TIMEOUT });
     await consoleBtn.click();
-    await page.waitForURL(/\/console/, { timeout: TIMEOUT });
-    expect(page.url()).toContain('/console');
+    await page.waitForURL(/\/automation\?tab=console/, { timeout: TIMEOUT });
+    expect(page.url()).toContain('/automation?tab=console');
   });
 
   test('mobile: hamburger tray shows "Console" (not "Terminal") for the build-group entry', async ({ page }) => {
@@ -241,25 +247,26 @@ test.describe('Algo navbar — Console entry', () => {
   });
 });
 
-// ── /console page ─────────────────────────────────────────────────────────────
+// ── /console → /automation Console tab (retired 2026-10, Phase 2 Sprint B) ─────
 
-test.describe('/console page', () => {
+test.describe('/console redirect lands on the Automation Console tab', () => {
 
   test.beforeEach(async ({ page }) => {
     await loginForAlgo(page);
   });
 
-  test('browser tab title = "Console | RamboQuant Analytics"', async ({ page }) => {
+  // /console is no longer its own page (no own <svelte:head> title / h1) —
+  // it's a tab on /automation now, so the bookmark/redirect check asserts
+  // the AUTOMATION page's own title/h1, plus that the Console tab content
+  // (the CLI textarea) actually rendered — not a blank Agents-tab fallback.
+  test('old /console bookmark redirects to /automation and lands on the Console tab', async ({ page }) => {
     await page.goto('/console', { waitUntil: 'domcontentloaded' });
-    await expect(page).toHaveTitle('Console | RamboQuant Analytics', { timeout: TIMEOUT });
-  });
-
-  test('page h1 = "Console"', async ({ page }) => {
-    await page.goto('/console', { waitUntil: 'domcontentloaded' });
+    await expect(page).toHaveURL(/\/automation\?tab=console/, { timeout: TIMEOUT });
+    await expect(page).toHaveTitle('Automation | RamboQuant Analytics', { timeout: TIMEOUT });
     const h1 = page.locator('h1.page-title-chip, h1').first();
     await expect(h1).toBeVisible({ timeout: TIMEOUT });
-    const text = (await h1.textContent() || '').trim();
-    expect(text, `h1 text was: "${text}"`).toBe('Console');
+    expect((await h1.textContent() || '').trim()).toContain('Automation');
+    await expect(page.locator('.agent-cli-textarea')).toBeVisible({ timeout: TIMEOUT });
   });
 });
 

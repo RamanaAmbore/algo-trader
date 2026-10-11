@@ -9,6 +9,10 @@
   between routes; it's a thin AlgoTabs wrapper driven by the parent's own
   tab state via `value`/`onChange`, same contract as AlgoTabs itself.
 
+  Sprint B (2026-10, Phase 2 "Console retirement"): added the Console
+  tab — `/console` is retired as a standalone route; its full-scope
+  agent-CLI + plain orders bar now lives here (ConsoleTab.svelte).
+
   Agent fire history lives on /activity (Agent tab), not in this strip.
 -->
 <script>
@@ -18,6 +22,7 @@
   let { value, onChange } = $props();
 
   const TABS = [
+    { id: 'console',  label: 'Console'  },
     { id: 'agents',   label: 'Agents'   },
     { id: 'brackets', label: 'Brackets' },
     { id: 'tokens',   label: 'Tokens'   },

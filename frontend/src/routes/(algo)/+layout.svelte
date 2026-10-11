@@ -364,7 +364,11 @@
     { href: '/pulse',            label: 'Pulse',     group: 'monitor' },
     { href: '/dashboard',        label: 'Dashboard', group: 'monitor' },
     { href: '/orders',           label: 'Orders',    group: 'monitor' },
-    { href: '/console',          label: 'Console',   group: 'monitor' },
+    // 2026-10 (Phase 2 Sprint B) — /console retired as a standalone
+    // route; its content moved to /automation's new Console tab. This
+    // nav entry now points there directly (not left to the /console
+    // redirect) so the link never round-trips through an extra hop.
+    { href: '/automation?tab=console', label: 'Console', group: 'monitor' },
     { href: '/admin/derivatives', label: 'Derivatives', group: 'monitor' },
     { href: '/charts',           label: 'Charts',    group: 'monitor' },
     { href: '/automation',       label: 'Automation', group: 'monitor' },

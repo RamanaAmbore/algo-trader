@@ -26,7 +26,7 @@ Mental model: condition fires → alert emitted → notifies dispatch → action
 | Tokens (Saved Condition/Notify) | `/automation?tab=tokens` | Reusable saved sub-trees (notify channel sets + condition snippets) |
 | Activity | `/activity?tab=agent` | Recent agent fires (real, not sim) |
 | Grammar Catalog | `/admin/tokens` | Live metrics/scopes/operators/channels/actions (Config group, read-only) |
-| CLI (Command Line) | `/console` | Plain-text agent/order authoring (WHEN/ALERT/DO grammar + `order(...)`) |
+| CLI (Command Line) | `/automation?tab=console` | Plain-text agent/order authoring (WHEN/ALERT/DO grammar + `order(...)`) — `/console` retired 2026-10, redirects here |
 | MCP | `/admin/mcp` | LLM-driven research → draft agents via Claude Code MCP (Explore group) |
 | Simulator | `/admin/execution?mode=sim` | Fabricated price-move workspace for testing agents (Explore group) |
 
@@ -173,13 +173,20 @@ spikes.
 
 ---
 
-## Agent CLI — plain-text authoring at /console
+## Agent CLI — plain-text authoring on /automation's Console tab
 
-The Agent CLI (available at `/console`, not in `/automation`) is a text-first 
-grammar for typing agents, brackets, tokens, and orders without hand-editing JSON. 
-The live preview compiles each statement to JSON as you type, and the 
-Grammar Catalog (`/admin/tokens`) displays available metric/scope/channel/action 
+The Agent CLI (`/automation?tab=console` — `/console` retired as a standalone
+route 2026-10, Phase 2 Sprint B; old bookmarks redirect here) is a text-first
+grammar for typing agents, brackets, tokens, and orders without hand-editing JSON.
+The live preview compiles each statement to JSON as you type, and the
+Grammar Catalog (`/admin/tokens`) displays available metric/scope/channel/action
 tokens.
+
+Two scope-restricted order-only mounts of the SAME grammar also exist — a "CLI"
+tab on `/orders` and a "CLI" tab in the SymbolPanel order-ticket modal — both
+compile ONLY a bare `order(...)`/`place_order(...)` statement (enforced by the
+compiler itself, not a hidden button); bracket/agent/event/token syntax is
+rejected there with a message pointing back to `/automation?tab=console`.
 
 ### WHEN/ALERT/DO — Agent statements
 
@@ -267,8 +274,8 @@ Reference in agents:
 
 Seeded examples: `notify-critical-trio`, `notify-log-only`, `notify-telegram-only`.
 
-**Condition Tokens** — saved condition sub-trees. Currently browse-only (no 
-create UI in `/console` this sprint). Reference in agents:
+**Condition Tokens** — saved condition sub-trees. Currently browse-only (no
+create UI on the Console tab this sprint). Reference in agents:
 ```jsonc
 {
   "conditions": { "all": [
@@ -394,8 +401,9 @@ Built-in agents are **force-reseeded on every boot** — your changes to their `
 
 ## Authoring workflow
 
-1. **Spike the agent** via `/console` CLI (plain text) or `/automation` Structured 
-   tab (JSON), or via the Claude Code MCP Lab (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
+1. **Spike the agent** via the Console tab's CLI (`/automation?tab=console`,
+   plain text) or `/automation` Structured tab (JSON), or via the Claude Code
+   MCP Lab (see [LAB_MCP_GUIDE.md](LAB_MCP_GUIDE.md))
 2. **Validate** at `/automation` — clear all token + shape errors
 3. **Dry-run** — simulate against live data without firing
 4. **Run in Simulator** — test on synthetic ticks; fires immediately, bypassing gates
@@ -465,7 +473,7 @@ The Order log Mode pill (SIM / PAPER / LIVE / SHADOW) visualises the difference.
 | Symptom | Likely cause | Where to look |
 |---|---|---|
 | `Validate` rejects with `unknown metric token` | Typo in metric name OR token deactivated on `/admin/tokens` | `/admin/tokens` → Condition tab → search the token |
-| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/console` with correct syntax: `place_order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
+| CLI statement rejects with "argument must be written as name=value" | Attempted positional argument (first arg without a key). CLI grammar requires every argument to be keyword-only | Type at `/automation?tab=console` with correct syntax: `place_order(acct="ZG0790", sym="NIFTY25JULFUT", ...)` |
 | `dry-run` shows `would_fire: false` but you expect true | Condition mismatch — operator's threshold vs current state | Use the dry-run `matches` array; each entry shows the metric, scope, threshold, and actual value |
 | `dry-run` shows `blocked_by: "schedule"` | Agent has `schedule: market_hours` but markets are closed | Either wait for session, or flip `schedule: always` for diagnostic agents |
 | Agent never fires on real ticks | Rate metric without baseline crossed; or in cooldown; or suppressed | `/automation/<slug>` Events tab + the Alerts tab in the Activity log (bottom of `/automation`); or set `cooldown_minutes: 0` temporarily |

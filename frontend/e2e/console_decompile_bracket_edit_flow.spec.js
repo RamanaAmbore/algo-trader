@@ -1,21 +1,24 @@
 /**
- * console_decompile_bracket_edit_flow.spec.js — Sprint 18
+ * console_decompile_bracket_edit_flow.spec.js — Sprint 18; rewired
+ * Sprint B (2026-10, Phase 2 "Console retirement").
  *
  * `decompileBracket` (frontend/src/lib/command/grammars/agents.js) had
- * ZERO production callers before this sprint — only `__tests__` ever
+ * ZERO production callers before Sprint 18 — only `__tests__` ever
  * invoked it. This spec gives it its first real UI path: BracketsTab's
- * new "Open in Console" row action (frontend/src/lib/automation/
+ * "Open in Console" row action (frontend/src/lib/automation/
  * BracketsTab.svelte) decompiles a Bracket's live JSON to `bracket(...)`
- * CLI text and navigates to `/console?cli=<encoded text>`, where the
- * new `?cli=` prefill consumer (console/+page.svelte) seeds the
- * AgentCliEditor textarea with it.
+ * CLI text and navigates to `/automation?tab=console&cli=<encoded
+ * text>` (previously `/console?cli=...` — /console is now a redirect,
+ * see frontend/src/routes/(algo)/console/+page.js), where Automation's
+ * own `?cli=` prefill consumer seeds ConsoleTab's AgentCliEditor
+ * textarea with it.
  *
- * NOT a true in-place edit — /console's own submit path is create-only
- * (consoleDispatch.js:submitConsoleBracket always POSTs a new row), so
- * this button is deliberately labelled "Open in Console", not "Edit via
- * CLI". The spec name reflects the dispatch brief's framing but the
- * assertions below only ever check pre-fill correctness, never that the
- * original row got overwritten.
+ * NOT a true in-place edit — the Console tab's own submit path is
+ * create-only (consoleDispatch.js:submitConsoleBracket always POSTs a
+ * new row), so this button is deliberately labelled "Open in Console",
+ * not "Edit via CLI". The spec name reflects the dispatch brief's
+ * framing but the assertions below only ever check pre-fill
+ * correctness, never that the original row got overwritten.
  *
  * Both scenarios intercept the `GET /api/admin/templates/` list response
  * with a fixed fixture row (via `page.route`) instead of creating a real
@@ -108,7 +111,7 @@ test.describe('BracketsTab "Open in Console" → decompileBracket (Sprint 18)', 
     await loginAsAdmin(page);
   });
 
-  test('custom Bracket decompiles and pre-fills /console correctly', async ({ page }) => {
+  test('custom Bracket decompiles and pre-fills the Console tab correctly', async ({ page }) => {
     await mockTemplatesList(page, [CUSTOM_BRACKET_ROW]);
     await page.goto('/automation?tab=brackets');
     await page.waitForLoadState('networkidle');
@@ -121,7 +124,7 @@ test.describe('BracketsTab "Open in Console" → decompileBracket (Sprint 18)', 
     await expect(openBtn).toBeVisible({ timeout: TIMEOUT });
     await openBtn.click();
 
-    await page.waitForURL(/\/console\?cli=/, { timeout: TIMEOUT });
+    await page.waitForURL(/\/automation\?.*cli=/, { timeout: TIMEOUT });
 
     const cliTextarea = page.locator('.agent-cli-textarea');
     await expect(cliTextarea).toBeVisible({ timeout: TIMEOUT });
@@ -140,7 +143,8 @@ test.describe('BracketsTab "Open in Console" → decompileBracket (Sprint 18)', 
 
     // The `?cli=` param is stripped once consumed (replaceState) — a
     // reload shouldn't re-seed stale text over a fresh blank session.
-    await expect(page).toHaveURL(/\/console$/);
+    // `?tab=console` is retained so a reload still lands on this tab.
+    await expect(page).toHaveURL(/\/automation\?tab=console$/);
   });
 
   test('system Bracket refuses loud instead of navigating', async ({ page }) => {

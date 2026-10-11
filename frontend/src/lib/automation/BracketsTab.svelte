@@ -6,7 +6,8 @@
   Pure browse/manage: list + filter + expand + edit + toggle + delete.
   NO creation entry point — Sprint 9's /automation goal is "no creation
   entry point of any kind survives on this page." Bracket creation now
-  happens via the CLI `bracket(...)` statement at /console.
+  happens via the CLI `bracket(...)` statement on the Console tab
+  (/automation?tab=console).
 
   Operator workflow:
     - Browse system + custom Brackets
@@ -195,16 +196,20 @@
     }
   }
 
-  // ── "Open in Console" (Sprint 18) — gives `decompileBracket` its first
-  // real production caller. Decompiles this row's live JSON to CLI text
-  // and navigates to /console with it pre-filled via a `?cli=` query
-  // param. NOT a true in-place edit — /console's own submit path is
-  // create-only (see consoleDispatch.js:submitConsoleBracket, always
-  // POSTs), so saving from there creates a NEW Bracket seeded from this
-  // one's text rather than overwriting it; the button is deliberately
-  // labelled "Open in Console", not "Edit via CLI", so that behavior
-  // isn't misrepresented. A system/default/slugged/inactive row refuses
-  // with a short toast instead of navigating — see
+  // ── "Open in Console" (Sprint 18; rewired Sprint B 2026-10 — /console
+  // retired as a standalone route, content moved to /automation's
+  // Console tab) — gives `decompileBracket` its first real production
+  // caller. Decompiles this row's live JSON to CLI text and navigates to
+  // /automation's Console tab with it pre-filled via a `?cli=` query
+  // param (consumed by that page's own reactive `$effect` on `page.url`,
+  // same mechanism the old /console page itself used). NOT a true
+  // in-place edit — the Console tab's own submit path is create-only
+  // (see consoleDispatch.js:submitConsoleBracket, always POSTs), so
+  // saving from there creates a NEW Bracket seeded from this one's text
+  // rather than overwriting it; the button is deliberately labelled
+  // "Open in Console", not "Edit via CLI", so that behavior isn't
+  // misrepresented. A system/default/slugged/inactive row refuses with
+  // a short toast instead of navigating — see
   // `_bracketUnexpressibleFields` in agents.js for why those 4 fields
   // can't round-trip through this create-only path at all.
   /** @type {any} */
@@ -232,7 +237,7 @@
       toast.error("Can't open via CLI yet");
       return;
     }
-    goto(`/console?cli=${encodeURIComponent(dec.text)}`);
+    goto(`/automation?tab=console&cli=${encodeURIComponent(dec.text)}`);
   }
 
   async function confirmDelete(/** @type {any} */ t) {
@@ -558,7 +563,7 @@
                 </button>
                 <button class="tpl-btn"
                         onclick={() => openInConsole(t)} type="button"
-                        title="Decompile to CLI text and open /console (saving there creates a new Bracket — it does not overwrite this one)">
+                        title="Decompile to CLI text and open the Console tab (saving there creates a new Bracket — it does not overwrite this one)">
                   Open in Console
                 </button>
               </div>

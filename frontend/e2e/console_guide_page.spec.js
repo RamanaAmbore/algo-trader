@@ -1,15 +1,21 @@
 /**
  * console_guide_page.spec.js
  *
- * New in-app operator guide for the Console CLI grammar:
+ * In-app operator guide for the Console CLI grammar. Moved 2026-10
+ * (Phase 2 Sprint B — "Console retirement") from
  *   frontend/src/routes/(algo)/console/guide/+page.svelte
+ * to
+ *   frontend/src/routes/(algo)/automation/guide/+page.svelte
+ * — the old `/console/guide` URL now redirects there
+ * (frontend/src/routes/(algo)/console/guide/+page.js).
  *
  * Covers:
- *   1. The guide page renders at /console/guide and shows the expected
- *      section headers (Orders, Agents, Event agents, Brackets, Tokens,
- *      Meta tags, Quick reference).
- *   2. Clicking the "Guide" link in /console's page-header navigates to
- *      /console/guide successfully.
+ *   1. The guide page renders (via the old /console/guide URL, through
+ *      the redirect) and shows the expected section headers (Orders,
+ *      Agents, Event agents, Brackets, Tokens, Meta tags, Quick
+ *      reference).
+ *   2. Clicking the Guide link on Automation's Console tab navigates to
+ *      /automation/guide successfully.
  */
 
 import { test, expect } from '@playwright/test';
@@ -49,12 +55,12 @@ test.describe('Console CLI guide page', () => {
     }).first()).toBeVisible();
   });
 
-  test('Guide link on /console navigates to /console/guide', async ({ page }) => {
-    await page.goto('/console');
-    const guideLink = page.locator('a.console-guide-link');
+  test('Guide link on the Console tab navigates to /automation/guide', async ({ page }) => {
+    await page.goto('/automation?tab=console');
+    const guideLink = page.locator('.console-tab-guide a');
     await expect(guideLink).toBeVisible({ timeout: TIMEOUT });
     await guideLink.click();
-    await expect(page).toHaveURL(/\/console\/guide$/, { timeout: TIMEOUT });
+    await expect(page).toHaveURL(/\/automation\/guide$/, { timeout: TIMEOUT });
     await expect(page.locator('h1.page-title-chip', { hasText: 'Console CLI Guide' }))
       .toBeVisible({ timeout: TIMEOUT });
   });

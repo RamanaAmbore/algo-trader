@@ -1742,7 +1742,7 @@ const FONT_AUDIT_PAGES = [
   'src/routes/(algo)/admin/execution/+page.svelte',
   'src/routes/(algo)/strategies/+page.svelte',
   'src/routes/(algo)/activity/+page.svelte',
-  'src/routes/(algo)/console/+page.svelte',
+  'src/lib/automation/ConsoleTab.svelte', // /console retired 2026-10, content moved here
   'src/routes/(algo)/admin/mcp/+page.svelte',
   'src/routes/(algo)/admin/tokens/+page.svelte',
   'src/routes/(algo)/admin/brokers/+page.svelte',

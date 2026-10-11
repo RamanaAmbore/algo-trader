@@ -23,6 +23,7 @@
   import { loadOrderTemplates, reloadOrderTemplates, orderTemplatesStore } from '$lib/data/templates';
   import BracketsTab from '$lib/automation/BracketsTab.svelte';
   import TokensTab from '$lib/automation/TokensTab.svelte';
+  import ConsoleTab from '$lib/automation/ConsoleTab.svelte';
   import { goto } from '$app/navigation';
   import { page } from '$app/state';
 
@@ -34,16 +35,52 @@
   const isDemo = $derived(algoStatus.isDemo);
 
   // ── Tab state (Sprint 9 — Agents / Brackets / Tokens folded onto one
-  //    page). Seeded from ?tab= on mount; written back via replaceState
-  //    so a reload / bookmark preserves the tab without adding a history
-  //    entry per click. */
-  let activeTab = $state(/** @type {'agents'|'brackets'|'tokens'} */ ('agents'));
+  //    page; Sprint B 2026-10 added Console). Seeded from ?tab= on
+  //    mount; written back via replaceState so a reload / bookmark
+  //    preserves the tab without adding a history entry per click. */
+  let activeTab = $state(/** @type {'console'|'agents'|'brackets'|'tokens'} */ ('agents'));
   function setActiveTab(/** @type {string} */ id) {
     activeTab = /** @type {any} */ (id);
     const url = new URL(window.location.href);
     url.searchParams.set('tab', id);
     goto(url.pathname + '?' + url.searchParams.toString(), { replaceState: true, noScroll: true, keepFocus: true });
   }
+
+  // Console tab's CLI text — kept at page level (not inside ConsoleTab's
+  // own internal state) so a future Edit→decompile action elsewhere on
+  // this page (Sprint C) can write into it, and so it survives a tab
+  // switch away from Console and back. Bound two-way into ConsoleTab.
+  let _consoleCliText = $state('');
+
+  // Sprint B (2026-10) — single reactive effect (not a one-shot onMount
+  // read) on `page.url`, per the design doc: both `?tab=` (brackets/
+  // tokens/console) and `?cli=` (BracketsTab's "Open in Console" prefill,
+  // the retired /console page's own mechanism) must keep working on a
+  // WITHIN-page navigation to this same route, not just on first mount —
+  // SvelteKit reuses this component instance for a same-route navigation,
+  // so onMount never re-fires for a second "Open in Console" click while
+  // already on /automation. `_lastConsumedCli` guards against reprocessing
+  // the same value after it's stripped from the URL (not a single-shot
+  // flag — a DIFFERENT `?cli=` value later in the same session must still
+  // be consumed).
+  let _lastConsumedCli = /** @type {string|null} */ (null);
+  $effect(() => {
+    const t = page.url.searchParams.get('tab');
+    if ((t === 'brackets' || t === 'tokens' || t === 'console') && activeTab !== t) {
+      activeTab = t;
+    }
+    const raw = page.url.searchParams.get('cli');
+    if (raw != null && raw !== _lastConsumedCli) {
+      _lastConsumedCli = raw;
+      _consoleCliText = raw;
+      activeTab = 'console';
+      const url = new URL(window.location.href);
+      url.searchParams.delete('cli');
+      url.searchParams.set('tab', 'console');
+      goto(url.pathname + '?' + url.searchParams.toString(),
+        { replaceState: true, noScroll: true, keepFocus: true });
+    }
+  });
   /** @type {{ focusTemplate: (id: number) => void } | null} */
   let _bracketsTabRef = $state(null);
   /** Clicking a Bracket mini-card in the Agents-tab group grids jumps to
@@ -886,10 +923,9 @@
   }
 
   onMount(() => {
-    // Seed the active tab from ?tab= so a bookmark/reload lands back on
-    // Brackets or Tokens instead of always resetting to Agents.
-    const t = page.url.searchParams.get('tab');
-    if (t === 'brackets' || t === 'tokens') activeTab = t;
+    // Active-tab + ?cli= seeding now lives in the reactive $effect above
+    // (Sprint B, 2026-10) so a same-route navigation (not just first
+    // mount) keeps working — see that effect's own comment.
     loadAll();
     loadLogTags();
     loadGlobalDefaultTradeMode();
@@ -938,7 +974,9 @@
 
 <AutomationTabs value={activeTab} onChange={setActiveTab} />
 
-{#if activeTab === 'brackets'}
+{#if activeTab === 'console'}
+  <ConsoleTab bind:value={_consoleCliText} />
+{:else if activeTab === 'brackets'}
   <BracketsTab bind:this={_bracketsTabRef} />
 {:else if activeTab === 'tokens'}
   <TokensTab />

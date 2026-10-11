@@ -1,7 +1,12 @@
 <!--
-  /console/guide — operator-facing CLI reference for the agent-family
+  /automation/guide — operator-facing CLI reference for the agent-family
   grammar parsed by `$lib/command/grammars/agents.js` and typed into
-  the lower ("Agent CLI") bar on /console.
+  the Agent CLI panel on the Console tab of /automation.
+
+  Moved here 2026-10 (Phase 2, Sprint B — "Console retirement") from
+  /console/guide, which now redirects here (`/console/guide/+page.js`).
+  Content otherwise unchanged except for the /console → /automation
+  links below; every verified example citation still applies.
 
   Pure static documentation — no data fetch, no mutation, so this page
   carries none of the five Card-action buttons (search/expand/
@@ -37,15 +42,15 @@
   <AlgoTimestamp />
   <span class="ml-auto"></span>
   <span class="page-header-actions">
-    <a href="/console" class="cg-back-link">&larr; Back to Console</a>
+    <a href="/automation?tab=console" class="cg-back-link">&larr; Back to Console</a>
     <PageHeaderActions />
   </span>
 </div>
 
 <div class="cg-wrap">
   <p class="cg-intro">
-    The lower bar on <a href="/console">/console</a> (the "Agent CLI" panel, below the
-    plain orders bar) parses one statement at a time — it's a real multi-line textarea, so a
+    The Agent CLI panel on the <a href="/automation?tab=console">Console tab</a> of
+    /automation (below the plain orders bar) parses one statement at a time — it's a real multi-line textarea, so a
     statement can wrap across lines — into a live JSON preview, then shows a kind-appropriate
     submit button — <strong>Place order</strong>, <strong>Create agent</strong>,
     <strong>Save bracket</strong>, or <strong>Create token</strong> — depending on what you typed.

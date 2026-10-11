@@ -24,6 +24,18 @@
    *                Structured tab's own JSON textareas currently hold.
    *   onOrderSubmit — `(result) => void`, fired when the operator clicks
    *                "Place order" for a `kind:'order'` compile result.
+   *   allowedKinds — Sprint B (2026-10, Phase 2) — optional array
+   *                restricting compiled statement kinds (see
+   *                `compileStatement`'s own docstring in agents.js for
+   *                the full contract). Threaded straight into this
+   *                component's own debounced compile call so an order-
+   *                scoped mount's error list shows the real scope
+   *                rejection live, not just at submit time. `undefined`
+   *                (the default) means no restriction.
+   *   placeholder — textarea placeholder text. Defaults to the full
+   *                WHEN/ALERT/DO example; order-scoped mounts override
+   *                this with a plain `order(...)` example so the
+   *                placeholder itself signals the narrower scope.
    */
 
   import { tick } from 'svelte';
@@ -36,10 +48,14 @@
    *   mode?: 'paper'|'live',
    *   onCompile?: (result: any) => void,
    *   onOrderSubmit?: (result: any) => void,
+   *   allowedKinds?: string[],
+   *   placeholder?: string,
    * }} */
   let {
     value = $bindable(''), catalog = null, lotSizeOf = undefined,
     mode = 'paper', onCompile = undefined, onOrderSubmit = undefined,
+    allowedKinds = undefined,
+    placeholder = 'WHEN pnl_pct@positions.total <= -5 ALERT telegram DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
   } = $props();
 
   /** @type {HTMLTextAreaElement|null} */
@@ -77,7 +93,7 @@
       if (!cat) { compiled = null; return; }
       let result;
       try {
-        result = compileAgentCliStatement(text, cat, { mode: m, lotSizeOf });
+        result = compileAgentCliStatement(text, cat, { mode: m, lotSizeOf, allowedKinds });
       } catch (e) {
         result = { ok: false, errors: [{ message: e?.message || 'compile failed' }], kind: null, agent: null, ticket: null, basket: null, template: null, fragment: null };
       }
@@ -169,7 +185,7 @@
     class="agent-cli-textarea field-input font-mono text-[length:var(--fs-sm)]"
     rows="6"
     spellcheck="false"
-    placeholder={'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT telegram DO place_order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", qty=75)'}
+    {placeholder}
   ></textarea>
 
   {#if suggestResult.suggestions.length}

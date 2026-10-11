@@ -1498,6 +1498,63 @@ describe('order_stmt restricted to order/place_order calls only', () => {
   });
 });
 
+// ── Sprint B (Phase 2, 2026-10) — compileStatement's opts.allowedKinds ──
+// scope restriction, used by the two order-scoped CLI mounts (/orders'
+// CLI tab, SymbolPanel's restored CLI tab) to reject anything but a bare
+// order_stmt, enforced in the COMPILER (never just a hidden UI button).
+
+describe('compileStatement opts.allowedKinds — scope restriction', () => {
+  it('an order statement is accepted when allowedKinds includes "order"', () => {
+    const r = compile(
+      'order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1, price=100)',
+      { mode: 'paper', allowedKinds: ['order'] },
+    );
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('order');
+  });
+
+  it('a bracket(...) statement is rejected with the scope error when allowedKinds is order-only', () => {
+    const r = compile(
+      'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"',
+      { allowedKinds: ['order'] },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('bracket');
+    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+  });
+
+  it('a WHEN...ALERT...DO... agent statement is rejected with the scope error when allowedKinds is order-only', () => {
+    const r = compile(
+      'WHEN mean_pnl(minutes=30)@positions.total <= -50000 ALERT telegram ' +
+      'DO order(account="ZG0790", symbol="NIFTY25JULFUT", side="SELL", lots=1)',
+      { allowedKinds: ['order'] },
+    );
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('agent');
+    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+  });
+
+  it('a token(...) statement is rejected with the scope error when allowedKinds is order-only', () => {
+    const r = compile('token(kind="notify") telegram #name="my-token"', { allowedKinds: ['order'] });
+    expect(r.ok).toBe(false);
+    expect(r.kind).toBe('token');
+    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+  });
+
+  it('the scope check runs BEFORE any kind-specific compiler — a bracket missing #name= under order-only scope shows the scope error, not the "#name" error', () => {
+    const r = compile('bracket(applies_to=buy_any, tp_pct=30)', { allowedKinds: ['order'] });
+    expect(r.ok).toBe(false);
+    expect(r.errors.some(e => /author agents\/brackets on Automation . Console/.test(e.message))).toBe(true);
+    expect(r.errors.some(e => /missing required meta tag/.test(e.message))).toBe(false);
+  });
+
+  it('omitting allowedKinds entirely is backward compatible — a bracket(...) still compiles normally', () => {
+    const r = compile('bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="Default Bull"');
+    expect(r.ok).toBe(true);
+    expect(r.kind).toBe('bracket');
+  });
+});
+
 // ── ALERT msg= clause-level/per-channel message default (Sprint 6) ─────
 
 describe('ALERT msg= default', () => {

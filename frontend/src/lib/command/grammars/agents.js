@@ -4439,8 +4439,30 @@ function compileTokenStmt(ast, catalog, opts = {}) {
 /** Compile an already-parsed AST (from `parseStatement`) to its JSON
  *  request shape. Returns `{ kind, errors, agent, ticket, basket,
  *  template, fragment }` — non-empty `errors` means every payload field is
- *  `null`. */
+ *  `null`.
+ *
+ *  `opts.allowedKinds` (Sprint B, 2026-10, Phase 2 "Console relocation") —
+ *  an optional array restricting which of the five statement kinds
+ *  (`'order'|'bracket'|'agent'|'event'|'token'`) this compile call accepts.
+ *  Checked FIRST, before any kind-specific compiler runs, so a scope
+ *  violation always surfaces as this one clear message — never a
+ *  downstream error from a compiler that was never supposed to run (e.g.
+ *  a `bracket(...)` missing `#name=` under an order-only scope must show
+ *  THIS error, not "missing required meta tag '#name'"). This is the
+ *  SOLE enforcement point for the order-scoped CLI mounts added this
+ *  phase (`/orders`' CLI tab, the SymbolPanel order-ticket modal's CLI
+ *  tab) — the UI never hides a button to fake this restriction, it relies
+ *  on the compiler refusing the statement outright. `undefined`/omitted
+ *  means no restriction (every existing caller — the full-scope Console
+ *  tab on /automation — passes no `allowedKinds` at all). */
 export function compileStatement(ast, catalog, opts = {}) {
+  if (opts.allowedKinds && !opts.allowedKinds.includes(ast.kind)) {
+    return {
+      kind: ast.kind,
+      errors: [_err('author agents/brackets on Automation → Console')],
+      agent: null, ticket: null, basket: null, template: null, fragment: null,
+    };
+  }
   if (ast.kind === 'agent') {
     const r = compileAgentStmt(ast, catalog, opts);
     return { kind: 'agent', errors: r.errors, agent: r.agent, ticket: null, basket: null, template: null, fragment: null };
@@ -4465,7 +4487,10 @@ export function compileStatement(ast, catalog, opts = {}) {
  *  for this sprint's tests. Never throws; always returns a structured
  *  result. `opts.mode` ("paper"|"live") is required for a single bare
  *  order_stmt; `opts.lotSizeOf(symbol) -> number|null` overrides the
- *  default instruments-cache lot-size lookup (used by tests). */
+ *  default instruments-cache lot-size lookup (used by tests).
+ *  `opts.allowedKinds` (Sprint B, 2026-10) — forwarded verbatim to
+ *  `compileStatement`, see that function's docstring for the full
+ *  contract; this wrapper does no extra work for it. */
 export function compileAgentCliStatement(text, catalog, opts = {}) {
   const { ast, errors: parseErrors } = parseStatement(text);
   if (parseErrors.length) {
