@@ -1006,6 +1006,48 @@ async def _migrate_agents_group_name(conn) -> None:
     ))
 
 
+async def _migrate_agents_bracket_columns(conn) -> None:
+    """Additive migration — `agents.legacy_template_id` +
+    `agents.bracket_config` (Sprint E, Agent/Bracket/Template
+    unification phase). Mirrors `_migrate_agents_group_name`'s exact
+    pattern: runs inside init_db's normal `engine.begin()` transaction,
+    `SET LOCAL lock_timeout` bounds how long this can wait behind any
+    in-flight row lock on `agents`. `legacy_template_id` is a plain
+    nullable `INTEGER` with a `UNIQUE` constraint and a real FK to
+    `order_templates.id` (`ON DELETE SET NULL`) — added via a separate
+    `ADD CONSTRAINT ... UNIQUE` statement (guarded by a catalog check,
+    since Postgres has no `ADD CONSTRAINT IF NOT EXISTS`) so a repeat
+    boot never double-adds it. `bracket_config` is a nullable `JSONB`,
+    no default, no backfill — NULL for every pre-existing (non-bracket)
+    row, same "additive, no backfill" contract every other Sprint 1/7
+    migration in this file already uses."""
+    from sqlalchemy import text
+    await conn.execute(text("SET LOCAL lock_timeout = '5s'"))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS legacy_template_id INTEGER"
+    ))
+    await conn.execute(text(
+        "ALTER TABLE agents ADD COLUMN IF NOT EXISTS bracket_config JSONB"
+    ))
+    has_constraint = (await conn.execute(text(
+        "SELECT 1 FROM pg_constraint WHERE conname = 'uq_agents_legacy_template_id'"
+    ))).scalar_one_or_none()
+    if not has_constraint:
+        await conn.execute(text(
+            "ALTER TABLE agents ADD CONSTRAINT uq_agents_legacy_template_id "
+            "UNIQUE (legacy_template_id)"
+        ))
+    has_fk = (await conn.execute(text(
+        "SELECT 1 FROM pg_constraint WHERE conname = 'fk_agents_legacy_template_id'"
+    ))).scalar_one_or_none()
+    if not has_fk:
+        await conn.execute(text(
+            "ALTER TABLE agents ADD CONSTRAINT fk_agents_legacy_template_id "
+            "FOREIGN KEY (legacy_template_id) REFERENCES order_templates(id) "
+            "ON DELETE SET NULL"
+        ))
+
+
 async def _migrate_order_templates_group_and_tags(conn) -> None:
     """Additive migration — `order_templates.group_name` +
     `order_templates.tags` (Sprint 7 of the CLI/text grammar effort,
@@ -1126,6 +1168,7 @@ async def init_db() -> None:
         await _migrate_agents_cli_source(conn)
         await _migrate_agents_group_name(conn)
         await _migrate_order_templates_group_and_tags(conn)
+        await _migrate_agents_bracket_columns(conn)
     logger.info("Database: tables verified")
 
     # Sprint 1a — CONCURRENTLY index creation. MUST run after the
@@ -1188,6 +1231,18 @@ async def init_db() -> None:
     # existing rows; preserves the operator's tuned numeric values.
     from backend.api.algo.templates_seed import seed_templates
     await seed_templates()
+
+    # Sprint E (Agent/Bracket/Template unification phase) — mirror every
+    # OrderTemplate row (system AND custom) into its matching
+    # Agent(kind='bracket') row. Runs AFTER seed_agents()'s own prune
+    # (so this boot's kind='bracket' rows are created only after the
+    # kind != "bracket" prune-guard fix is in effect) and AFTER
+    # seed_templates() just above (so a fresh deploy's just-reseeded /
+    # just-rebalanced system OrderTemplate rows are mirrored within the
+    # same boot). `order_templates` stays in place — this is additive
+    # sync only, never a drop.
+    from backend.api.algo.bracket_registry import migrate_order_templates_to_bracket_agents
+    await migrate_order_templates_to_bracket_agents()
 
     # Seed the single shared 'Pinned' watchlist + migrate any per-user
     # Pinned/Default rows into it. Idempotent.

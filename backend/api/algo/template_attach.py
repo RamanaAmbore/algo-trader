@@ -2437,19 +2437,31 @@ def apply_plan_live(
 # SimDriver is active.
 
 def _ta_template_row_to_dict(row) -> dict:
-    """Convert one OrderTemplate ORM row to a plain dict for the resolver."""
+    """Convert one Agent(kind='bracket') ORM row to a plain dict for the
+    resolver — Sprint E (Agent/Bracket/Template unification phase).
+
+    `id` is `row.legacy_template_id` — the REAL, canonical
+    `OrderTemplate.id` — NEVER `row.id` (the Agent row's own primary
+    key). This is the exact direction the council-risk review blocked
+    on: `AlgoOrder.template_id` (and every tag/log string built off
+    `template.get("id")` downstream of this dict, e.g. `tpl-{id}-wing`)
+    must keep referencing the real `OrderTemplate.id` — a numeric
+    `Agent.id`/`OrderTemplate.id` collision would silently arm the
+    WRONG bracket's TP/SL/wing on a live fill if `row.id` leaked in
+    here instead."""
+    cfg = row.bracket_config or {}
     return {
-        "id":                 row.id,
+        "id":                 row.legacy_template_id,
         "slug":               row.slug,
         "name":               row.name,
-        "applies_to":         row.applies_to,
-        "tp_pct":             float(row.tp_pct)           if row.tp_pct is not None else None,
-        "sl_pct":             float(row.sl_pct)           if row.sl_pct is not None else None,
-        "wing_premium_pct":   float(row.wing_premium_pct) if row.wing_premium_pct is not None else None,
-        "wing_strike_offset": int(row.wing_strike_offset) if row.wing_strike_offset is not None else None,
-        "tp_order_type":      (row.tp_order_type or "LIMIT"),
-        "tp_scales_json":     row.tp_scales_json,
-        "sl_trail_pct":       float(row.sl_trail_pct)     if row.sl_trail_pct is not None else None,
+        "applies_to":         cfg.get("applies_to", "both"),
+        "tp_pct":             cfg.get("tp_pct"),
+        "sl_pct":             cfg.get("sl_pct"),
+        "wing_premium_pct":   cfg.get("wing_premium_pct"),
+        "wing_strike_offset": cfg.get("wing_strike_offset"),
+        "tp_order_type":      cfg.get("tp_order_type") or "LIMIT",
+        "tp_scales_json":     cfg.get("tp_scales_json"),
+        "sl_trail_pct":       cfg.get("sl_trail_pct"),
     }
 
 
@@ -2458,23 +2470,42 @@ async def load_template_for_slug_or_id(
     template_id:   Optional[int],
     template_slug: Optional[str],
 ) -> Optional[dict]:
-    """Fetch one OrderTemplate row as a dict. Returns None when neither
-    id nor slug resolves to a row (caller treats that as "no template
+    """Fetch one bracket as a dict. Returns None when neither id nor
+    slug resolves to a row (caller treats that as "no template
     selected — build an ad-hoc template from overrides instead").
     Async because we hit Postgres; pure read so no transaction
-    boundary to worry about."""
+    boundary to worry about.
+
+    Sprint E (Agent/Bracket/Template unification phase, council-risk
+    review fix #2) — resolves against `Agent(kind='bracket')` rows,
+    NOT `OrderTemplate` directly. `order_templates` stays the real FK
+    anchor for `AlgoOrder.template_id` (unchanged, still canonical);
+    this function bridges a `template_id` (an `OrderTemplate.id` value)
+    to its mirrored `Agent` row via `Agent.legacy_template_id` — the
+    OPPOSITE direction from the FK itself. A `template_slug` reference
+    resolves against `Agent.slug` directly (every bracket's mirrored
+    slug — real for system rows, `bracket-{id}`-derived for custom
+    rows — see `bracket_registry.bracket_slug_for`).
+
+    Resolving through the Agent mirror (rather than reading
+    `OrderTemplate` directly) is deliberate: `OrderTemplateController`
+    now writes BOTH rows atomically in the same transaction (see
+    `backend.api.algo.bracket_registry`'s own docstring), so the mirror
+    is never stale relative to the canonical row — and this keeps
+    exactly ONE live-fill read path to reason about, instead of two
+    that could silently diverge."""
     if template_id is None and not template_slug:
         return None
     from sqlalchemy import select
     from backend.api.database import async_session
-    from backend.api.models import OrderTemplate
+    from backend.api.models import Agent
 
     async with async_session() as s:
-        stmt = select(OrderTemplate)
+        stmt = select(Agent).where(Agent.kind == "bracket")
         if template_id is not None:
-            stmt = stmt.where(OrderTemplate.id == int(template_id))
+            stmt = stmt.where(Agent.legacy_template_id == int(template_id))
         else:
-            stmt = stmt.where(OrderTemplate.slug == str(template_slug))
+            stmt = stmt.where(Agent.slug == str(template_slug))
         row = (await s.execute(stmt)).scalars().first()
     if row is None:
         return None
@@ -3061,6 +3092,78 @@ async def _resolve_wing_pricing(
     return overrides, (wing_scan_note or offset_note), (wing_skipped_reason or offset_skip)
 
 
+def _ta_handle_unresolved_template_ref(
+    *,
+    template_id:        Optional[int],
+    template_slug:      Optional[str],
+    overrides:          dict,
+    parent_account:     str,
+    parent_symbol:      str,
+    parent_side:        str,
+    parent_qty:         int,
+    parent_exchange:    str,
+    parent_fill_price:  float,
+    parent_order_id:    Optional[int],
+):
+    """Decide what `_apply_template_to_order_impl` does when
+    `load_template_for_slug_or_id` returned None. Extracted to keep
+    that function's own cyclomatic complexity under the project's
+    radon gate; the branching logic itself is unchanged from Sprint E's
+    council-risk review fix #2.
+
+    Returns:
+      - a template `dict` (ad-hoc or built from overrides) — caller
+        should continue the normal attach flow with it.
+      - `None` — caller should return None immediately (genuinely no
+        template was requested AND no overrides were supplied).
+      - an `AttachResult` — caller should return it immediately (a
+        REFERENCED template/bracket failed to resolve and no overrides
+        were supplied to fall back on — a loud failure, not a silent
+        no-op).
+    """
+    if template_id is None and template_slug is None:
+        if not has_any_override(overrides):
+            return None
+        return build_adhoc_template(overrides)
+
+    # A template/bracket WAS referenced but didn't resolve — never a
+    # silent fallback. The parent order has already filled; this is an
+    # operational error the operator must see.
+    _fire_attach_fail_alert(
+        order_id=parent_order_id, symbol=parent_symbol,
+        account=parent_account,
+        errors=[
+            f"bracket template_id={template_id!r} "
+            f"template_slug={template_slug!r} did not resolve to any "
+            f"Agent(kind='bracket') row — exits were NOT armed for "
+            f"this fill"
+        ],
+    )
+    if not has_any_override(overrides):
+        return AttachResult(
+            plan=TemplatePlan(
+                template_id=template_id,
+                template_name="(unresolved)",
+                template_slug=template_slug,
+                parent_account=parent_account,
+                parent_symbol=parent_symbol,
+                parent_side=parent_side,
+                parent_qty=parent_qty,
+                parent_exchange=parent_exchange,
+                parent_fill_price=float(parent_fill_price),
+            ),
+            errors=[
+                f"bracket template_id={template_id!r} "
+                f"template_slug={template_slug!r} not found"
+            ],
+        )
+    # Overrides were ALSO supplied — proceed with the ad-hoc template
+    # built from them (the alert above already told the operator the
+    # referenced bracket itself didn't resolve), rather than refusing a
+    # fill that also carried legitimate inline TP/SL/Wing overrides.
+    return build_adhoc_template(overrides)
+
+
 async def _apply_template_to_order_impl(
     *,
     template_id:        Optional[int],
@@ -3100,9 +3203,20 @@ async def _apply_template_to_order_impl(
         template_id=template_id, template_slug=template_slug,
     )
     if template is None:
-        if not has_any_override(overrides):
-            return None
-        template = build_adhoc_template(overrides)
+        template = _ta_handle_unresolved_template_ref(
+            template_id=template_id, template_slug=template_slug,
+            overrides=overrides,
+            parent_account=parent_account, parent_symbol=parent_symbol,
+            parent_side=parent_side, parent_qty=parent_qty,
+            parent_exchange=parent_exchange, parent_fill_price=parent_fill_price,
+            parent_order_id=parent_order_id,
+        )
+        # Non-dict (None, or an AttachResult carrying a loud failure) —
+        # both are valid `Optional[AttachResult]` return values of THIS
+        # function; the caller's own early-return job, just relocated
+        # one frame down from where template resolution happened.
+        if not isinstance(template, dict):
+            return template
 
     # If the operator explicitly picked the "none" template (no TP/SL/Wing)
     # AND no overrides, short-circuit so we don't issue spurious GTTs.

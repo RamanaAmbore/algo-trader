@@ -29,13 +29,47 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
+// Sprint E (Agent/Bracket/Template unification phase) — loadOrderTemplates()
+// now sources from GET /api/agents/ (fetchAgents), reshaping every
+// kind='bracket' Agent row via bracketAgentToTemplateOut/
+// bracketRowsFromAgents — not fetchOrderTemplates()/GET /api/admin/
+// templates/ directly anymore. See templates.js's own updated doc.
 vi.mock('$lib/api', () => ({
-  fetchOrderTemplates: vi.fn(),
+  fetchAgents: vi.fn(),
 }));
 
+// Raw Agent(kind='bracket') rows, as GET /api/agents/ now returns them.
+const SAMPLE_AGENT_ROWS = [
+  {
+    id: 101, legacy_template_id: 1, slug: 'default-bull', name: 'Default Bull',
+    kind: 'bracket', is_system: true, status: 'active',
+    bracket_config: { applies_to: 'buy_any', is_default: true },
+  },
+  {
+    id: 102, legacy_template_id: 2, slug: 'default-bear', name: 'Default Bear',
+    kind: 'bracket', is_system: true, status: 'active',
+    bracket_config: { applies_to: 'sell_any', is_default: true },
+  },
+];
+
+// Expected OrderTemplateOut-shaped output after bracketRowsFromAgents
+// reshapes SAMPLE_AGENT_ROWS — `id` is `legacy_template_id`, NEVER the
+// Agent row's own `id` (101/102 above must not leak through).
 const SAMPLE_TEMPLATES = [
-  { id: 1, name: 'Default Bull', slug: 'default-bull', is_default: true, applies_to: 'buy_any', is_active: true },
-  { id: 2, name: 'Default Bear', slug: 'default-bear', is_default: true, applies_to: 'sell_any', is_active: true },
+  {
+    id: 1, slug: 'default-bull', name: 'Default Bull', description: '',
+    applies_to: 'buy_any', tp_pct: null, sl_pct: null, wing_premium_pct: null,
+    wing_strike_offset: null, wing_max_spread_pct: null, tp_order_type: 'LIMIT',
+    tp_scales_json: null, sl_trail_pct: null, is_default: true, is_system: true,
+    is_active: true, group: null, tags: [],
+  },
+  {
+    id: 2, slug: 'default-bear', name: 'Default Bear', description: '',
+    applies_to: 'sell_any', tp_pct: null, sl_pct: null, wing_premium_pct: null,
+    wing_strike_offset: null, wing_max_spread_pct: null, tp_order_type: 'LIMIT',
+    tp_scales_json: null, sl_trail_pct: null, is_default: true, is_system: true,
+    is_active: true, group: null, tags: [],
+  },
 ];
 
 describe('loadOrderTemplates', () => {
@@ -46,7 +80,7 @@ describe('loadOrderTemplates', () => {
 
   it('returns the fetched templates on a successful call', async () => {
     const api = await import('$lib/api');
-    vi.mocked(api.fetchOrderTemplates).mockResolvedValue(SAMPLE_TEMPLATES);
+    vi.mocked(api.fetchAgents).mockResolvedValue(SAMPLE_AGENT_ROWS);
     const { loadOrderTemplates } = await import('$lib/data/templates.js');
 
     const result = await loadOrderTemplates();
@@ -55,12 +89,12 @@ describe('loadOrderTemplates', () => {
 
   it('a failed fetch does NOT permanently cache an empty result — the next call retries and can succeed', async () => {
     const api = await import('$lib/api');
-    const fetchMock = vi.mocked(api.fetchOrderTemplates);
+    const fetchMock = vi.mocked(api.fetchAgents);
     // First call fails (simulating the auth-timing race / transient network blip).
     fetchMock.mockRejectedValueOnce(new Error('network blip'));
     // Second call (a later SymbolPanel mount — e.g. opening a new order)
     // succeeds with real data.
-    fetchMock.mockResolvedValueOnce(SAMPLE_TEMPLATES);
+    fetchMock.mockResolvedValueOnce(SAMPLE_AGENT_ROWS);
 
     const { loadOrderTemplates } = await import('$lib/data/templates.js');
 
@@ -77,8 +111,8 @@ describe('loadOrderTemplates', () => {
 
   it('a successful fetch IS cached — a subsequent call does not re-fetch', async () => {
     const api = await import('$lib/api');
-    const fetchMock = vi.mocked(api.fetchOrderTemplates);
-    fetchMock.mockResolvedValue(SAMPLE_TEMPLATES);
+    const fetchMock = vi.mocked(api.fetchAgents);
+    fetchMock.mockResolvedValue(SAMPLE_AGENT_ROWS);
 
     const { loadOrderTemplates } = await import('$lib/data/templates.js');
 
@@ -89,7 +123,7 @@ describe('loadOrderTemplates', () => {
 
   it('a genuinely empty (but successful) response IS cached — not treated as a failure', async () => {
     const api = await import('$lib/api');
-    const fetchMock = vi.mocked(api.fetchOrderTemplates);
+    const fetchMock = vi.mocked(api.fetchAgents);
     fetchMock.mockResolvedValue([]);
 
     const { loadOrderTemplates } = await import('$lib/data/templates.js');
@@ -105,7 +139,7 @@ describe('loadOrderTemplates', () => {
 
   it('concurrent calls while a fetch is in flight share the same promise (dedup)', async () => {
     const api = await import('$lib/api');
-    const fetchMock = vi.mocked(api.fetchOrderTemplates);
+    const fetchMock = vi.mocked(api.fetchAgents);
     /** @type {(v: any) => void} */
     let resolveFetch = () => {};
     fetchMock.mockReturnValue(new Promise((resolve) => { resolveFetch = resolve; }));
@@ -114,7 +148,7 @@ describe('loadOrderTemplates', () => {
 
     const p1 = loadOrderTemplates();
     const p2 = loadOrderTemplates();
-    resolveFetch(SAMPLE_TEMPLATES);
+    resolveFetch(SAMPLE_AGENT_ROWS);
 
     const [r1, r2] = await Promise.all([p1, p2]);
     expect(r1).toEqual(SAMPLE_TEMPLATES);

@@ -197,7 +197,13 @@ class TestCreateTemplatePersistsGroupAndTags:
         # The row passed to session.add() is the real OrderTemplate ORM
         # instance constructed inside create_template — inspect it
         # directly rather than re-deriving from `out`.
-        added_row = session.add.call_args[0][0]
+        # Sprint E — create_template now ALSO calls session.add() for
+        # the mirrored Agent(kind='bracket') row; find the OrderTemplate-
+        # typed call specifically rather than assuming it's the last one.
+        added_row = next(
+            c.args[0] for c in session.add.call_args_list
+            if isinstance(c.args[0], OrderTemplate)
+        )
         assert isinstance(added_row, OrderTemplate)
         assert added_row.group_name == "scalping"
         assert added_row.tags == ["fast", "intraday"]
@@ -217,7 +223,13 @@ class TestCreateTemplatePersistsGroupAndTags:
             controller = _new_controller()
             out = await _handler_fn(OrderTemplateController.create_template)(controller, data)
 
-        added_row = session.add.call_args[0][0]
+        # Sprint E — create_template now ALSO calls session.add() for
+        # the mirrored Agent(kind='bracket') row; find the OrderTemplate-
+        # typed call specifically rather than assuming it's the last one.
+        added_row = next(
+            c.args[0] for c in session.add.call_args_list
+            if isinstance(c.args[0], OrderTemplate)
+        )
         assert added_row.group_name is None
         assert added_row.tags == []
         assert out.group is None
@@ -227,10 +239,22 @@ class TestCreateTemplatePersistsGroupAndTags:
 # ── Full handler round-trip — patch_template ──────────────────────────────
 
 def _mock_session_for_patch(row):
+    # Sprint E — patch_template now also calls bracket_registry.
+    # mirror_bracket_upsert(s, row), which runs its own
+    # `select(Agent).where(Agent.slug == slug)` through `session.execute`.
+    # Must return a plain (non-async) result object whose
+    # `scalar_one_or_none()` resolves synchronously to None (no
+    # colliding Agent row) — the same shape `_mock_session_for_create`'s
+    # `dup_result` already uses for the analogous OrderTemplate
+    # duplicate-name check.
+    no_collision_result = MagicMock()
+    no_collision_result.scalar_one_or_none.return_value = None
     session = AsyncMock()
     session.__aenter__ = AsyncMock(return_value=session)
     session.__aexit__ = AsyncMock(return_value=False)
     session.get = AsyncMock(return_value=row)
+    session.execute = AsyncMock(return_value=no_collision_result)
+    session.add = MagicMock()
     session.commit = AsyncMock()
     session.refresh = AsyncMock()
     return session

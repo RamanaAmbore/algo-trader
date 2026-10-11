@@ -905,12 +905,42 @@ async def test_apply_template_to_order_parent_order_id_carries_through():
 # ── Empty/minimal cases ──────────────────────────────────────────
 
 @pytest.mark.asyncio
-async def test_apply_template_to_order_none_template_returns_none():
-    """Template resolves to None + no overrides → returns None early."""
+async def test_apply_template_to_order_no_template_requested_returns_none():
+    """No template_id/slug at all + no overrides → returns None early —
+    the genuine "operator didn't pick a template" case."""
     with patch(
         "backend.api.algo.template_attach.load_template_for_slug_or_id",
         new=AsyncMock(return_value=None),
     ):
+        result = await apply_template_to_order(
+            template_id=None,
+            template_slug=None,
+            overrides={},
+            parent_account="ACC1",
+            parent_symbol="RELIANCE",
+            parent_side="BUY",
+            parent_qty=10,
+            parent_exchange="NSE",
+            parent_fill_price=1000.0,
+            apply_path="preview",
+        )
+
+    assert result is None
+
+
+@pytest.mark.asyncio
+async def test_apply_template_to_order_unresolved_template_id_is_loud_not_silent():
+    """Sprint E (council-risk review fix #2) — a REFERENCED but
+    unresolved template_id (e.g. its bracket mirror is missing) must
+    never silently behave like "no template was requested". The parent
+    order has already filled; this must surface as an AttachResult
+    carrying errors (and fire an alert), not a quiet None."""
+    with patch(
+        "backend.api.algo.template_attach.load_template_for_slug_or_id",
+        new=AsyncMock(return_value=None),
+    ), patch(
+        "backend.api.algo.template_attach._fire_attach_fail_alert",
+    ) as mock_alert:
         result = await apply_template_to_order(
             template_id=999,  # Non-existent
             template_slug=None,
@@ -924,7 +954,9 @@ async def test_apply_template_to_order_none_template_returns_none():
             apply_path="preview",
         )
 
-    assert result is None
+    assert result is not None
+    assert result.errors
+    mock_alert.assert_called_once()
 
 
 @pytest.mark.asyncio

@@ -22,7 +22,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const fetchOrderTemplates = vi.fn();
+const loadOrderTemplates = vi.fn();
 const placeTicketOrder    = vi.fn();
 const placeBasket         = vi.fn();
 const createAgent         = vi.fn();
@@ -32,7 +32,6 @@ const patchOrderTemplate  = vi.fn();
 const reloadOrderTemplates = vi.fn();
 
 vi.mock('$lib/api', () => ({
-  fetchOrderTemplates: (...a) => fetchOrderTemplates(...a),
   placeTicketOrder:    (...a) => placeTicketOrder(...a),
   placeBasket:         (...a) => placeBasket(...a),
   createAgent:         (...a) => createAgent(...a),
@@ -41,6 +40,7 @@ vi.mock('$lib/api', () => ({
   patchOrderTemplate:  (...a) => patchOrderTemplate(...a),
 }));
 vi.mock('$lib/data/templates', () => ({
+  loadOrderTemplates: (...a) => loadOrderTemplates(...a),
   reloadOrderTemplates: (...a) => reloadOrderTemplates(...a),
 }));
 
@@ -61,7 +61,7 @@ const {
 } = await import('$lib/command/consoleDispatch.js');
 
 beforeEach(() => {
-  fetchOrderTemplates.mockReset();
+  loadOrderTemplates.mockReset();
   placeTicketOrder.mockReset();
   placeBasket.mockReset();
   createAgent.mockReset();
@@ -195,7 +195,7 @@ describe('resolveBracketTemplateRefs', () => {
 
 describe('submitConsoleOrder — bracket resolution gates submission', () => {
   it('resolves bracket= then places a single ticket with template_id substituted', async () => {
-    fetchOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
     placeTicketOrder.mockResolvedValue({ order_id: 'OID1' });
     const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
     const r = await submitConsoleOrder(compiled, { mode: 'paper' });
@@ -209,7 +209,7 @@ describe('submitConsoleOrder — bracket resolution gates submission', () => {
   });
 
   it('resolves bracket= across a basket and calls placeBasket with resolved groups', async () => {
-    fetchOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
     placeBasket.mockResolvedValue({ groups: [] });
     const basket = { groups: [{ account: 'A', legs: [{ side: 'BUY', template_slug: 'default-bull' }] }] };
     const r = await submitConsoleOrder({ ticket: null, basket }, { mode: 'paper' });
@@ -222,12 +222,12 @@ describe('submitConsoleOrder — bracket resolution gates submission', () => {
     placeTicketOrder.mockResolvedValue({ order_id: 'OID2' });
     const r = await submitConsoleOrder({ ticket: { account: 'ZG0790' }, basket: null }, { mode: 'paper' });
     expect(r.ok).toBe(true);
-    expect(fetchOrderTemplates).not.toHaveBeenCalled();
+    expect(loadOrderTemplates).not.toHaveBeenCalled();
     expect(placeTicketOrder).toHaveBeenCalledTimes(1);
   });
 
   it('a no-match bracket slug never calls placeTicketOrder or placeBasket', async () => {
-    fetchOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
     const compiled = { ticket: { account: 'ZG0790', template_slug: 'does-not-exist' }, basket: null };
     const r = await submitConsoleOrder(compiled, { mode: 'paper' });
     expect(r.ok).toBe(false);
@@ -237,7 +237,7 @@ describe('submitConsoleOrder — bracket resolution gates submission', () => {
   });
 
   it('a templates-fetch failure surfaces a distinct error and never calls the ticket endpoint', async () => {
-    fetchOrderTemplates.mockRejectedValue(new Error('network down'));
+    loadOrderTemplates.mockRejectedValue(new Error('network down'));
     const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
     const r = await submitConsoleOrder(compiled, { mode: 'paper' });
     expect(r.ok).toBe(false);
@@ -249,7 +249,7 @@ describe('submitConsoleOrder — bracket resolution gates submission', () => {
 
 describe('resolveConsoleOrder + submitResolvedConsoleOrder split (page pre-confirm flow)', () => {
   it('resolving separately from submitting still reaches the broker call once', async () => {
-    fetchOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
     placeTicketOrder.mockResolvedValue({ order_id: 'OID3' });
     const compiled = { ticket: { account: 'ZG0790', template_slug: 'default-bull' }, basket: null };
     const resolved = await resolveConsoleOrder(compiled);
@@ -257,11 +257,11 @@ describe('resolveConsoleOrder + submitResolvedConsoleOrder split (page pre-confi
     const r = await submitResolvedConsoleOrder(/** @type {any} */ (resolved), { mode: 'live' });
     expect(r.ok).toBe(true);
     expect(placeTicketOrder).toHaveBeenCalledTimes(1);
-    expect(fetchOrderTemplates).toHaveBeenCalledTimes(1); // not refetched twice
+    expect(loadOrderTemplates).toHaveBeenCalledTimes(1); // not refetched twice
   });
 
   it('a resolution failure never reaches submitResolvedConsoleOrder (caller must check .ok)', async () => {
-    fetchOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
+    loadOrderTemplates.mockResolvedValue(TEMPLATE_ROWS);
     const compiled = { ticket: { account: 'ZG0790', template_slug: 'nope' }, basket: null };
     const resolved = await resolveConsoleOrder(compiled);
     expect(resolved.ok).toBe(false);

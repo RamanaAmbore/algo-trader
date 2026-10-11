@@ -1,18 +1,35 @@
 /**
- * Order-template catalog cache — memoised module-level loader for
- * /api/admin/templates/. Three surfaces currently fetch the catalog
- * on mount (OrderTicket, /admin/derivatives Optimize tab, and
- * Brackets tab);
- * without this cache, opening the order modal hits the DB once per
- * mount + once per nav to the Brackets tab.
+ * Order-template ("Bracket") catalog cache — memoised module-level
+ * loader. Several surfaces fetch the catalog on mount (OrderTicket,
+ * /admin/derivatives Optimize tab, TemplateBar, SymbolPanel, the
+ * Automation page's Brackets kind-card, console's `bracket="slug"`
+ * resolution); without this cache, opening the order modal hits the DB
+ * once per mount + once per nav to the Brackets card.
+ *
+ * Sprint E (Agent/Bracket/Template unification phase) — sources from
+ * `GET /api/agents/` (every `kind='bracket'` row, reshaped via
+ * `bracketAgentToTemplateOut`/`bracketRowsFromAgents` in
+ * automationKinds.js) instead of `GET /api/admin/templates/` directly.
+ * The RECONSTRUCTED row shape is held byte-for-byte identical to the
+ * old `OrderTemplateOut` shape (including `id` = the real, canonical
+ * `OrderTemplate.id`, via `Agent.legacy_template_id` — never the
+ * Agent row's own `id`) so every existing consumer below needs ZERO
+ * change. CRUD (create/patch/delete) still POSTs to
+ * `/api/admin/templates/` (`createOrderTemplate`/`patchOrderTemplate`
+ * in api.js, unchanged) — that write path now ALSO mirrors into the
+ * matching Agent row server-side (backend.api.algo.bracket_registry),
+ * so a `reloadOrderTemplates()` call after a CRUD mutation re-fetches
+ * from `/api/agents/` and sees the fresh mirror immediately.
  *
  * Pattern mirrors `loadAccounts()` in `accounts.js`. Single in-flight
  * promise dedups concurrent callers; cached array survives subsequent
- * calls until reload() is invoked (e.g. after CRUD on the Brackets tab).
+ * calls until reload() is invoked (e.g. after CRUD on the Brackets
+ * kind-card).
  */
 
 import { writable } from 'svelte/store';
-import { fetchOrderTemplates as _apiFetch } from '$lib/api';
+import { fetchAgents } from '$lib/api';
+import { bracketRowsFromAgents } from '$lib/data/automationKinds';
 
 /** @type {any[] | null} */
 let _templates = null;
@@ -29,7 +46,8 @@ export async function loadOrderTemplates() {
   if (_loadPromise) return _loadPromise;
   _loadPromise = (async () => {
     try {
-      const rows = await _apiFetch();
+      const agentRows = await fetchAgents();
+      const rows = bracketRowsFromAgents(agentRows);
       _templates = Array.isArray(rows) ? rows : [];
       orderTemplatesStore.set(_templates);
       return _templates;

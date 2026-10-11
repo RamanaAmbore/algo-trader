@@ -68,23 +68,38 @@ const TEMPLATE_ROW = {
   tier: 'medium', topic: 'general', group: 'hedge-book', cli_source: null,
 };
 
-const AGENT_ROWS = [MANUAL_ROW, CYCLE_ROW, EVENT_ROW, TEMPLATE_ROW];
-
-const BRACKET_ROW = {
-  id: 201, slug: null, name: 'E2E Bracket', description: '', applies_to: 'both',
-  tp_pct: 30, sl_pct: -20, wing_premium_pct: null, wing_strike_offset: null,
-  wing_max_spread_pct: null, tp_order_type: 'LIMIT', tp_scales_json: null, sl_trail_pct: null,
-  is_default: false, is_system: false, is_active: true, group: 'hedge-book', tags: [],
+// Sprint E (Agent/Bracket/Template unification phase) — the Brackets
+// card now reads `GET /api/agents/` too (every `kind='bracket'` row,
+// reshaped client-side via `bracketAgentToTemplateOut`), NOT
+// `GET /api/admin/templates/` directly — this is now a REAL Agent row
+// riding along in `AGENT_ROWS`, not a separately-mocked endpoint.
+// `legacy_template_id` (201) is the canonical `OrderTemplate.id` this
+// row mirrors; `id` (202, deliberately DIFFERENT) is this Agent row's
+// own, unrelated primary key — proving the UI reads `legacy_template_id`
+// through the adapter, not `id`, matches the backend council-risk
+// review's fix #2 on the frontend side.
+const BRACKET_AGENT_ROW = {
+  id: 202, slug: 'bracket-201', name: 'E2E Bracket', long_name: null, description: '',
+  conditions: {}, events: [], actions: [], scope: 'total', schedule: 'market_hours',
+  cooldown_minutes: 30, fire_at_time: null, status: 'active', last_triggered_at: null,
+  trigger_count: 0, last_error: null, is_system: false, lifespan_type: 'persistent',
+  lifespan_max_fires: null, lifespan_expires_at: null, debounce_minutes: 0, tags: [],
+  blackout_windows: [], trade_mode: 'paper', kind: 'bracket', tier: 'medium', topic: 'general',
+  group: 'hedge-book', cli_source: null,
+  legacy_template_id: 201,
+  bracket_config: {
+    applies_to: 'both', tp_pct: 30, sl_pct: -20, wing_premium_pct: null,
+    wing_strike_offset: null, wing_max_spread_pct: null, tp_order_type: 'LIMIT',
+    tp_scales_json: null, sl_trail_pct: null, is_default: false,
+  },
 };
+
+const AGENT_ROWS = [MANUAL_ROW, CYCLE_ROW, EVENT_ROW, TEMPLATE_ROW, BRACKET_AGENT_ROW];
 
 async function mockLists(/** @type {import('@playwright/test').Page} */ page) {
   await page.route('**/api/agents/', async (route) => {
     if (route.request().method() !== 'GET') { await route.continue(); return; }
     await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(AGENT_ROWS) });
-  });
-  await page.route('**/api/admin/templates/', async (route) => {
-    if (route.request().method() !== 'GET') { await route.continue(); return; }
-    await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([BRACKET_ROW]) });
   });
 }
 
@@ -145,5 +160,43 @@ test.describe('Agents tab — groups are strictly per-kind (Sprint C regression)
       }
       await page.locator('button', { hasText: 'Back to cards' }).click();
     }
+  });
+});
+
+test.describe('Brackets kind-card reads live Agent(kind=bracket) data (Sprint E)', () => {
+  test('Edit on the Brackets card PATCHes /api/admin/templates/{legacy_template_id}, never {agent.id}', async ({ page }) => {
+    // BRACKET_AGENT_ROW.legacy_template_id = 201 (the real, canonical
+    // OrderTemplate.id) while its OWN Agent.id = 202 — deliberately
+    // different, so a PATCH sent to .../202 instead of .../201 proves
+    // the frontend adapter leaked the wrong id (the exact collision
+    // risk the backend council-risk review's fix #2 blocked dispatch
+    // on, mirrored here on the read/edit side).
+    let patchedUrl = /** @type {string | null} */ (null);
+    await page.route('**/api/admin/templates/201', async (route) => {
+      if (route.request().method() !== 'PATCH') { await route.continue(); return; }
+      patchedUrl = route.request().url();
+      await route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({}) });
+    });
+    await page.route('**/api/admin/templates/202', async (route) => {
+      // Must never be hit — if it is, patchedUrl above stays null and
+      // the test's final assertion fails.
+      await route.continue();
+    });
+
+    await page.goto('/automation');
+    await page.waitForLoadState('networkidle');
+
+    await page.locator('.kind-card[data-kind="brackets"]').click();
+    const row = page.locator('[role="listitem"]').filter({ hasText: 'E2E Bracket' });
+    await expect(row).toBeVisible({ timeout: TIMEOUT });
+    await row.locator('[role="button"]').first().click();
+    await row.getByRole('button', { name: 'Edit' }).click();
+
+    const saveBtn = page.locator('.console-agent-cli-btn');
+    await expect(saveBtn).toBeVisible({ timeout: TIMEOUT });
+    await saveBtn.click();
+
+    await expect.poll(() => patchedUrl, { timeout: TIMEOUT }).not.toBeNull();
+    expect(/** @type {string} */ (patchedUrl)).toContain('/api/admin/templates/201');
   });
 });

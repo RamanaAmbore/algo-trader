@@ -1866,7 +1866,7 @@ class OrdersController(Controller):
         """
         from sqlalchemy import select as _sql_select
         from backend.api.database import async_session
-        from backend.api.models import AlgoOrder, OrderTemplate
+        from backend.api.models import AlgoOrder, OrderTemplate, Agent
 
         async with async_session() as s:
             row = (await s.execute(
@@ -1888,6 +1888,25 @@ class OrdersController(Controller):
             )).scalar_one_or_none()
             if tpl is None:
                 return {"ok": False, "reason": f"template #{row.template_id} no longer exists"}
+            # Sprint E — `apply_template_to_order` now resolves via the
+            # Agent(kind='bracket') mirror, NOT `OrderTemplate` directly
+            # (see template_attach.load_template_for_slug_or_id). The
+            # OrderTemplate row existing is no longer sufficient on its
+            # own — defense-in-depth against the two tables somehow
+            # disagreeing (should be structurally impossible, since
+            # OrderTemplateController writes both atomically; this
+            # catches it with a clear reason instead of a confusing
+            # "no result" surface from deep inside the attach pipeline).
+            mirror = (await s.execute(
+                _sql_select(Agent.id).where(
+                    Agent.kind == "bracket",
+                    Agent.legacy_template_id == row.template_id,
+                )
+            )).scalar_one_or_none()
+            if mirror is None:
+                return {"ok": False, "reason":
+                        f"bracket mirror for template #{row.template_id} is "
+                        f"missing — the live resolver cannot arm this fill"}
 
             result = await _rco_run_template_attach(row)
             if result is None:

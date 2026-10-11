@@ -41,7 +41,13 @@ from backend.shared.helpers.ramboq_logger import get_logger
 logger = get_logger(__name__)
 
 
-_APPLIES_TO_CHOICES = {"buy_any", "sell_option", "sell_any", "both"}
+# "buy_option" (Sprint E fix #4, council-risk review) — the seeded
+# `default-long-option` system row (templates_seed.SYSTEM_TEMPLATES)
+# already uses applies_to="buy_option" and always has; this validator
+# simply never admitted it. Widening the validator (not re-seeding the
+# row to e.g. "buy_any") is deliberate — re-seeding would silently
+# change which exits arm on a real live BUY-option fill.
+_APPLIES_TO_CHOICES = {"buy_any", "sell_option", "sell_any", "both", "buy_option"}
 
 
 _TP_ORDER_TYPE_CHOICES = {"LIMIT", "MARKET"}
@@ -221,7 +227,14 @@ async def _demote_existing_default(s, applies_to: str, exclude_id: int | None) -
     it off. Used by CREATE + PATCH to enforce one-default-per-scope —
     auto-selector in OrderTicket would otherwise silently pick whichever
     sorted first if two defaults co-existed. Same enforcement the seeder
-    runs at boot time."""
+    runs at boot time.
+
+    Sprint E — also demotes the mirrored `Agent(kind='bracket')` rows
+    in the same `applies_to` scope, in the SAME transaction, so the
+    two tables never disagree on which row is the scope default (see
+    `bracket_registry.demote_existing_default_brackets`'s own doc)."""
+    from backend.api.algo.bracket_registry import demote_existing_default_brackets
+
     stmt = select(OrderTemplate).where(
         OrderTemplate.applies_to == applies_to,
         OrderTemplate.is_default.is_(True),
@@ -231,6 +244,7 @@ async def _demote_existing_default(s, applies_to: str, exclude_id: int | None) -
     existing = (await s.execute(stmt)).scalars().all()
     for r in existing:
         r.is_default = False
+    await demote_existing_default_brackets(s, applies_to, exclude_template_id=exclude_id)
 
 
 class OrderTemplateController(Controller):
@@ -265,6 +279,10 @@ class OrderTemplateController(Controller):
     # ── Create (custom only) ───────────────────────────────────────────
     @post("/", guards=[cap_guard("manage_settings")])
     async def create_template(self, data: OrderTemplateCreate) -> OrderTemplateOut:
+        from backend.api.algo.bracket_registry import (
+            mirror_bracket_upsert, BracketSlugCollisionError,
+        )
+
         _validate_applies_to(data.applies_to)
         async with async_session() as s:
             dup = await s.execute(
@@ -299,6 +317,17 @@ class OrderTemplateController(Controller):
                 tags=list(data.tags or []),
             )
             s.add(row)
+            # Flush (not commit) so `row.id` is assigned before the
+            # mirror derives its slug/legacy_template_id from it —
+            # the mirror write lands in the SAME transaction as this
+            # INSERT; a collision raises and the whole request 409s,
+            # rolling back both (Sprint E — see bracket_registry's
+            # own "if the mirror fails, the write fails" doc).
+            await s.flush()
+            try:
+                await mirror_bracket_upsert(s, row)
+            except BracketSlugCollisionError as e:
+                raise HTTPException(status_code=409, detail=str(e))
             await s.commit()
             await s.refresh(row)
         return _to_out(row)
@@ -310,6 +339,10 @@ class OrderTemplateController(Controller):
         template_id: int,
         data: OrderTemplatePatch,
     ) -> OrderTemplateOut:
+        from backend.api.algo.bracket_registry import (
+            mirror_bracket_upsert, BracketSlugCollisionError,
+        )
+
         async with async_session() as s:
             row = await s.get(OrderTemplate, template_id)
             if not row:
@@ -335,6 +368,15 @@ class OrderTemplateController(Controller):
             if target_default:
                 await _demote_existing_default(s, target_scope, exclude_id=row.id)
             _apply_patch_fields(row, data)
+            # Sprint E — re-mirror this row's content into its
+            # Agent(kind='bracket') row in the SAME transaction, so an
+            # edit through this endpoint is immediately visible to the
+            # live order-fill resolver (template_attach.load_template_
+            # for_slug_or_id), which reads ONLY the Agent mirror.
+            try:
+                await mirror_bracket_upsert(s, row)
+            except BracketSlugCollisionError as e:
+                raise HTTPException(status_code=409, detail=str(e))
             await s.commit()
             await s.refresh(row)
         return _to_out(row)
@@ -342,6 +384,8 @@ class OrderTemplateController(Controller):
     # ── Delete (custom only) ───────────────────────────────────────────
     @delete("/{template_id:int}", guards=[cap_guard("manage_settings")], status_code=200)
     async def delete_template(self, template_id: int) -> dict:
+        from backend.api.algo.bracket_registry import mirror_bracket_delete
+
         async with async_session() as s:
             row = await s.get(OrderTemplate, template_id)
             if not row:
@@ -356,6 +400,12 @@ class OrderTemplateController(Controller):
                         "off to disable them instead"
                     ),
                 )
+            # Sprint E — delete the mirrored Agent(kind='bracket') row
+            # in the SAME transaction, before the OrderTemplate row
+            # itself (AlgoOrder.template_id's ON DELETE SET NULL
+            # already handles any historical AlgoOrder reference to
+            # this id; the mirror has no such referrers of its own).
+            await mirror_bracket_delete(s, row.id)
             await s.delete(row)
             await s.commit()
         return {"deleted": True}

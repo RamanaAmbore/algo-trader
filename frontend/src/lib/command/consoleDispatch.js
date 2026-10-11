@@ -16,24 +16,32 @@
 // The one existing server-side resolver for this exact reference shape
 // (`backend/api/algo/template_attach.py:load_template_for_slug_or_id`,
 // used by the Lab/MCP `place_order` tool) matches ONLY on
-// `OrderTemplate.slug` — exact string equality, never on `name`. This
-// module mirrors that canonical behaviour exactly, on purpose: operator-
-// authored custom templates leave `slug` NULL and are addressed by `name`
-// everywhere else in the app (`backend/api/models.py` lines ~1531-1533),
-// so a `bracket="my-custom-template"` reference where "my-custom-template"
-// is a custom template's NAME (not its slug) will NOT resolve today — it
-// surfaces a clear "Unknown bracket" error rather than guessing. Widening
-// this to also match on `name` would diverge from the canonical resolver
-// and risks silently picking the wrong row when name and slug disagree.
-// This is a pre-existing, shared limitation (the Lab/MCP path has the
-// identical gap) — flagged here, not patched here.
+// `Agent.slug` (Sprint E, Agent/Bracket/Template unification phase —
+// previously `OrderTemplate.slug` directly; see that function's own
+// doc) — exact string equality, never on `name`. This module mirrors
+// that canonical behaviour exactly, on purpose, by resolving against
+// the SAME reshaped row list `loadOrderTemplates()` already produces
+// (bracket-Agent rows reshaped via `bracketAgentToTemplateOut`, `id` =
+// the real `OrderTemplate.id` via `Agent.legacy_template_id`) rather
+// than fetching `/api/admin/templates/` directly: operator-authored
+// custom templates leave `slug` NULL on the `OrderTemplate` side and
+// get a DERIVED slug (`bracket-{id}`) on the mirrored Agent side (see
+// `backend.api.algo.bracket_registry.bracket_slug_for`) — never the
+// template's `name` — so a `bracket="my-custom-template"` reference
+// where "my-custom-template" is a custom template's NAME (not its
+// slug/derived-slug) will NOT resolve today — it surfaces a clear
+// "Unknown bracket" error rather than guessing. Widening this to also
+// match on `name` would diverge from the canonical resolver and risks
+// silently picking the wrong row when name and slug disagree. This is
+// a pre-existing, shared limitation (the Lab/MCP path has the identical
+// gap) — flagged here, not patched here.
 
 import {
-  fetchOrderTemplates, placeTicketOrder, placeBasket,
+  placeTicketOrder, placeBasket,
   createAgent, updateAgent,
   createOrderTemplate, patchOrderTemplate,
 } from '$lib/api';
-import { reloadOrderTemplates } from '$lib/data/templates';
+import { loadOrderTemplates, reloadOrderTemplates } from '$lib/data/templates';
 
 // ─────────────────────────────────────────────────────────────────────────
 // (a) Classification
@@ -179,7 +187,7 @@ export async function resolveConsoleOrder(compiled) {
   }
   let templateRows;
   try {
-    templateRows = await fetchOrderTemplates();
+    templateRows = await loadOrderTemplates();
   } catch (e) {
     return { ok: false, error: e?.message ? `Could not load templates: ${e.message}` : 'Could not load templates for bracket lookup' };
   }

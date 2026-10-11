@@ -112,6 +112,18 @@ class AgentInfo(msgspec.Struct):
     # operator authored this agent with, if created via console/CLI.
     # Display/audit-only. None for UI-created or legacy agents.
     cli_source:            str | None = None
+    # Sprint E (Agent/Bracket/Template unification phase) — populated
+    # ONLY for kind='bracket' rows. `legacy_template_id` is the real,
+    # canonical `OrderTemplate.id` this row mirrors — NEVER confuse
+    # with `id` above, this row's own unrelated Agent primary key (the
+    # exact direction the council-risk review blocked dispatch on —
+    # see `backend.api.algo.bracket_registry`'s module doc).
+    # `bracket_config` is the mirrored TP/SL/Wing payload. The frontend
+    # adapter (`automationKinds.js`) reconstructs an `OrderTemplateOut`-
+    # shaped row from these two fields, using `legacy_template_id` as
+    # that reconstructed row's `id` — never `id` above.
+    legacy_template_id:    int | None = None
+    bracket_config:        dict | None = None
 
 
 class AgentCreateRequest(msgspec.Struct):
@@ -150,7 +162,16 @@ class AgentCreateRequest(msgspec.Struct):
     # a reusable $ref-able condition/notify sub-tree. Never independently
     # evaluated by run_cycle()/event_agents.py (both filter on a positive
     # kind=='cycle'/kind=='event' allowlist). See template_registry.py.
-    kind:                  Literal["cycle", "threshold", "event", "template"] = "cycle"
+    # 'bracket' (Sprint E, Agent/Bracket/Template unification phase) —
+    # a TP/SL/Wing exit-rule preset, synchronously mirrored from an
+    # OrderTemplate row by backend.api.algo.bracket_registry. NEVER
+    # independently evaluated either (same allowlist exclusion as
+    # 'template'). Accepted here ONLY so msgspec doesn't 400 a client
+    # that round-trips a bracket row's kind — create_agent itself
+    # REJECTS an attempt to actually CREATE a kind='bracket' row via
+    # this endpoint (brackets are created via POST /api/admin/
+    # templates/, which mirrors into Agent automatically).
+    kind:                  Literal["cycle", "threshold", "event", "template", "bracket"] = "cycle"
     # Alert hierarchy / noise-reduction — see Agent.tier / .topic.
     # None lets the model defaults ("medium" / "general") apply.
     tier:                   str | None = None
@@ -197,7 +218,7 @@ class AgentUpdateRequest(msgspec.Struct):
     # still rejects any attempt to actually CHANGE kind (see below); this
     # only keeps msgspec decode from rejecting a client that round-trips
     # the row's current kind value in a full-form update payload.
-    kind:                  Literal["cycle", "threshold", "event", "template"] | None = None
+    kind:                  Literal["cycle", "threshold", "event", "template", "bracket"] | None = None
     tier:                  str | None = None
     topic:                 str | None = None
     # Sprint 4 (CLI grammar authoring) — None means unchanged, same
@@ -259,13 +280,13 @@ _VALID_TRADE_MODES = {"paper", "live"}
 # must NEVER be written to the DB column as-is: run_cycle()'s query
 # filters `Agent.kind == "cycle"` and would silently skip any row stored
 # with kind="threshold" forever.
-_VALID_KINDS_INPUT = {"cycle", "threshold", "event", "template"}
+_VALID_KINDS_INPUT = {"cycle", "threshold", "event", "template", "bracket"}
 
 
 def _age_normalize_kind(raw: str | None) -> str:
     """Normalise an incoming `kind` value to the Agent model's real
-    vocabulary ('cycle', 'event', or 'template'). Raises 400 on anything
-    else."""
+    vocabulary ('cycle', 'event', 'template', or 'bracket'). Raises 400
+    on anything else."""
     k = (raw or "cycle").strip().lower()
     if k not in _VALID_KINDS_INPUT:
         raise HTTPException(status_code=400,
@@ -535,6 +556,8 @@ def _agent_to_info(a: Agent) -> AgentInfo:
         topic=getattr(a, "topic", "general") or "general",
         group=getattr(a, "group_name", None),
         cli_source=getattr(a, "cli_source", None),
+        legacy_template_id=getattr(a, "legacy_template_id", None),
+        bracket_config=getattr(a, "bracket_config", None),
     )
 
 
@@ -856,6 +879,22 @@ class AgentController(Controller):
                 raise HTTPException(status_code=400,
                     detail=f"lifespan_type must be one of {sorted(_LIFESPAN_TYPES)}")
             kind = _age_normalize_kind(data.kind)
+            if kind == "bracket":
+                # Sprint E — brackets are created via POST
+                # /api/admin/templates/, which mirrors into Agent
+                # automatically (backend.api.algo.bracket_registry).
+                # A bracket Agent row created through THIS endpoint
+                # would have no legacy_template_id and no
+                # bracket_config — an orphan the live order-fill
+                # resolver (template_attach.load_template_for_slug_
+                # or_id) would never be able to use, and the retry-
+                # same-slug derivation in bracket_registry assumes
+                # every bracket slug traces back to a real
+                # OrderTemplate row. Refuse outright rather than let
+                # a broken row exist.
+                raise HTTPException(status_code=400,
+                    detail="brackets are created via POST /api/admin/templates/, "
+                           "not /api/agents/")
             if kind == "event":
                 _age_validate_event_spec(data.slug, data.conditions, data.events, data.actions)
             elif kind == "template":
@@ -922,6 +961,55 @@ class AgentController(Controller):
         if data.lifespan_expires_at is not None:
             agent.lifespan_expires_at = _parse_iso_dt(data.lifespan_expires_at)
 
+    def _age_guard_update_kind_and_content(self, agent, data: 'AgentUpdateRequest') -> None:
+        """Pre-mutation guards for update_agent — extracted to keep that
+        handler's own cyclomatic complexity under the project's radon
+        gate. Raises HTTPException; never mutates `agent`."""
+        # kind is fixed at creation — reject any attempt to re-point an
+        # existing row between 'cycle' and 'event'. Simplest safe rule:
+        # the two kinds have completely different dispatch pipelines
+        # (agent_engine.run_cycle vs event_agents.dispatch_rows) and
+        # different column semantics (schedule/cooldown/trade_mode are
+        # meaningless for 'event' rows), so silently flipping kind
+        # mid-life would be a correctness landmine, not a convenience.
+        if data.kind is not None:
+            requested = _age_normalize_kind(data.kind)
+            if requested != agent.kind:
+                raise HTTPException(status_code=400,
+                    detail="kind cannot be changed after creation "
+                           f"(agent is {agent.kind!r})")
+        # System templates (Sprint D2) — body + description are
+        # code-owned, same guard the retired agent_templates.py CRUD
+        # route's PATCH enforced for `is_system` fragments. Status
+        # (activate/deactivate) still works — that's a separate
+        # endpoint, untouched here.
+        if agent.kind == "template" and agent.is_system:
+            if data.conditions is not None or data.events is not None \
+                    or data.description is not None:
+                raise HTTPException(status_code=400,
+                    detail="System templates can only toggle status "
+                           "(activate/deactivate); body + description "
+                           "are owned by code seeds.")
+        # Sprint E — a bracket Agent row's content (name, description,
+        # bracket_config) is a synchronous MIRROR of its owning
+        # OrderTemplate row, written exclusively by bracket_registry.
+        # mirror_bracket_upsert. Letting this endpoint touch any of
+        # those fields would let the mirror drift from the row
+        # template_attach.load_template_for_slug_or_id actually reads
+        # at live-fill time — refuse, same "edit via the owning CRUD
+        # surface instead" contract the is_system template guard above
+        # already enforces. group/tags ARE allowed through — they're
+        # organisational metadata, not bracket content, and aren't
+        # mirrored.
+        if agent.kind == "bracket":
+            if (data.name is not None or data.description is not None
+                    or data.conditions is not None or data.events is not None
+                    or data.actions is not None):
+                raise HTTPException(status_code=400,
+                    detail="bracket content (name/description/TP/SL/wing) is "
+                           "edited via PATCH /api/admin/templates/{id}, not "
+                           "/api/agents/ — this row is a read-only mirror")
+
     @put("/{slug:str}", guards=[cap_guard("manage_own_agents")])
     async def update_agent(self, slug: str, data: AgentUpdateRequest) -> dict:
         async with async_session() as session:
@@ -929,31 +1017,7 @@ class AgentController(Controller):
             agent = result.scalar_one_or_none()
             if not agent:
                 raise HTTPException(status_code=404, detail=f"Agent '{slug}' not found")
-            # kind is fixed at creation — reject any attempt to re-point an
-            # existing row between 'cycle' and 'event'. Simplest safe rule:
-            # the two kinds have completely different dispatch pipelines
-            # (agent_engine.run_cycle vs event_agents.dispatch_rows) and
-            # different column semantics (schedule/cooldown/trade_mode are
-            # meaningless for 'event' rows), so silently flipping kind
-            # mid-life would be a correctness landmine, not a convenience.
-            if data.kind is not None:
-                requested = _age_normalize_kind(data.kind)
-                if requested != agent.kind:
-                    raise HTTPException(status_code=400,
-                        detail="kind cannot be changed after creation "
-                               f"(agent is {agent.kind!r})")
-            # System templates (Sprint D2) — body + description are
-            # code-owned, same guard the retired agent_templates.py CRUD
-            # route's PATCH enforced for `is_system` fragments. Status
-            # (activate/deactivate) still works — that's a separate
-            # endpoint, untouched here.
-            if agent.kind == "template" and agent.is_system:
-                if data.conditions is not None or data.events is not None \
-                        or data.description is not None:
-                    raise HTTPException(status_code=400,
-                        detail="System templates can only toggle status "
-                               "(activate/deactivate); body + description "
-                               "are owned by code seeds.")
+            self._age_guard_update_kind_and_content(agent, data)
             for field in ('name', 'long_name', 'description', 'conditions',
                           'events', 'actions', 'scope', 'schedule',
                           'cooldown_minutes', 'debounce_minutes',

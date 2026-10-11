@@ -1098,6 +1098,38 @@ class Agent(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # ── Sprint E (Agent/Bracket/Template unification phase) — Brackets
+    #    become `Agent(kind='bracket')` rows ───────────────────────────
+    #
+    # `AlgoOrder.template_id` is a REAL Postgres FK to `order_templates.id`
+    # (ondelete="SET NULL") written from at least three live-order-fill
+    # call sites — it stays the CANONICAL value stored there; renumbering
+    # history or re-pointing that FK at `Agent.id` risks a numeric
+    # `Agent.id`/`OrderTemplate.id` collision silently arming the WRONG
+    # bracket on a live fill. `legacy_template_id` is the back-reference
+    # in the OPPOSITE direction: given a `template_id` read off an
+    # `AlgoOrder` row, look up the `Agent(kind='bracket')` row whose
+    # `legacy_template_id` equals it. UNIQUE — at most one bracket Agent
+    # row may mirror a given `OrderTemplate` row. NULL for every
+    # non-bracket Agent row.
+    legacy_template_id: Mapped[Optional[int]] = mapped_column(
+        Integer, ForeignKey("order_templates.id", ondelete="SET NULL"),
+        nullable=True, unique=True, index=True,
+    )
+    # `bracket_config` — the TP/SL/Wing exit-rule payload for a
+    # kind='bracket' row, synchronously mirrored (same DB transaction,
+    # never best-effort) from the owning `OrderTemplate` row by
+    # `backend.api.algo.bracket_registry` on every create/update/seed.
+    # Keys: tp_pct, sl_pct, wing_premium_pct, wing_strike_offset,
+    # wing_max_spread_pct, tp_order_type, tp_scales_json, sl_trail_pct,
+    # applies_to, is_default. NULL for every non-bracket Agent row.
+    # `order_templates` stays the real FK anchor / id-stability table
+    # (kept in place, not dropped, per Sprint E's brief); this Agent row
+    # is what the live order-fill path (`template_attach.
+    # load_template_for_slug_or_id`) actually reads, so the two writes
+    # are kept atomic to avoid a stale-mirror arming the wrong exits.
+    bracket_config: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
+
     # ── Alert hierarchy / noise reduction (Sprint 1, May 2026) ─────────
     #
     # tier   — severity bucket. critical / high / medium / low.

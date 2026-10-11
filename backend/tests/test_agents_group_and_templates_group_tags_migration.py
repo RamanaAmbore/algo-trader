@@ -218,6 +218,7 @@ def test_init_db_real_call_does_not_raise_with_group_and_tags_steps():
          patch("backend.api.algo.template_registry.REGISTRY.reload", new=AsyncMock()), \
          patch("backend.shared.helpers.settings.seed_settings", new=AsyncMock()), \
          patch("backend.api.algo.templates_seed.seed_templates", new=AsyncMock()), \
+         patch("backend.api.algo.bracket_registry.migrate_order_templates_to_bracket_agents", new=AsyncMock()), \
          patch("backend.api.routes.watchlist.seed_global_pinned", new=AsyncMock()), \
          patch("backend.shared.helpers.alert_utils.refresh_alert_recipients", new=AsyncMock()):
 

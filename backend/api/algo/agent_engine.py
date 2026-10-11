@@ -1801,10 +1801,22 @@ async def _ae_prune_retired_builtins(session, builtin_slugs: set) -> None:
     fragments()`) are NOT sourced from BUILTIN_AGENTS at all — without
     this exclusion, this sweep would delete every one of them on the
     very next boot, since none of their slugs ever appear in
-    builtin_slugs."""
+    builtin_slugs.
+
+    kind != "bracket" guard (Sprint E, same phase — the exact Sprint D
+    landmine recurs, caught by the council-risk review BEFORE dispatch
+    this time): system Brackets (`default-bull`/`default-bear`/
+    `default-long-option`/`default-short-vol`/`none`, mirrored as
+    `Agent(kind='bracket', is_system=True)` rows by
+    `bracket_registry.migrate_order_templates_to_bracket_agents()`) are
+    likewise never in BUILTIN_AGENTS — same exclusion, same reason."""
     from sqlalchemy import delete as sa_delete
     retired = await session.execute(
-        select(Agent).where(Agent.is_system.is_(True), Agent.kind != "template")
+        select(Agent).where(
+            Agent.is_system.is_(True),
+            Agent.kind != "template",
+            Agent.kind != "bracket",
+        )
     )
     for row in retired.scalars().all():
         if row.slug not in builtin_slugs:
