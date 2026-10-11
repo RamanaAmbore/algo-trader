@@ -13,7 +13,7 @@ import { describe, it, expect, vi } from 'vitest';
 vi.mock('$lib/data/instruments', () => ({ getInstrument: vi.fn(() => null) }));
 vi.mock('$lib/api', () => ({ fetchGrammarTokens: vi.fn() }));
 
-const { buildCatalog, suggestAgentCliAt } = await import('$lib/command/grammars/agents.js');
+const { buildCatalog, suggestAgentCliAt, parseStatement } = await import('$lib/command/grammars/agents.js');
 
 const FIXTURE_ROWS = [
   // metrics
@@ -122,10 +122,11 @@ describe('suggestAgentCliAt() — bare-name position', () => {
     expect(r.suggestions).toContain('place_order');
   });
 
-  it('gap right after a comparator ("<= ") is NOT a fresh name position', () => {
+  it('gap right after a comparator ("<= ") is NOT a fresh name position, but now surfaces a value hint (Sprint H item 3)', () => {
     const r = suggest('WHEN pnl@positions.total <= ');
     expect(r.suggestions).toEqual([]);
-    expect(r.kind).toBeNull();
+    expect(r.kind).toBe('value-hint');
+    expect(r.hint).toBeTruthy();
   });
 });
 
@@ -345,5 +346,282 @@ describe('suggestAgentCliAt() — descriptions (Sprint 11)', () => {
     const r = suggest('WHEN pnl@positions.total <= ');
     expect(r.suggestions).toEqual([]);
     expect(r.descriptions).toEqual([]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// Sprint H (2026-10) — CLI autocomplete/dropdown completeness. Each
+// `describe` below maps to one numbered item in the sprint brief
+// (`.claude/PLAN.md`'s "Sprint H" section). A few cases also assert a
+// round-trip sanity check: splicing `suggestions[0]` in at `replaceRange`
+// must not make the statement LESS parseable than a hand-written
+// equivalent — catching a suggestion that's offered but doesn't actually
+// fit grammatically once picked.
+// ─────────────────────────────────────────────────────────────────────────
+
+/** Fixture extended with a `holdings.total` scope — the base FIXTURE_ROWS
+ *  has no `holdings.*` family at all, so the `hold`/`hld` alias fix (item
+ *  11) needs its own catalog to prove anything (there'd be nothing to
+ *  alias onto otherwise). */
+const CATALOG_WITH_HOLDINGS = buildCatalog([
+  ...FIXTURE_ROWS,
+  { grammar_kind: 'condition', token_kind: 'scope', token: 'holdings.total', params_schema: null, description: 'Holdings TOTAL row (fixture).' },
+]);
+
+describe('suggestAgentCliAt() — Sprint H item 1: statement-head keywords', () => {
+  it('very start of a statement suggests GIVEN/WHEN/ALERT/DO alongside bare action names', () => {
+    const r = suggest('');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['GIVEN', 'WHEN', 'ALERT', 'DO']));
+  });
+
+  it('a partially-typed clause-head keyword at the very start is completable', () => {
+    const r = suggest('ALE');
+    expect(r.suggestions).toContain('ALERT');
+    expect(r.replaceRange).toEqual([0, 3]);
+  });
+
+  it('after a complete WHEN condition (no ALERT/DO yet) suggests ALERT/DO and "&"/"|", not WHEN/GIVEN again', () => {
+    const r = suggest('WHEN pnl@positions.total <= -5 ');
+    expect(r.kind).toBe('keyword');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['ALERT', 'DO', '&', '|']));
+    expect(r.suggestions).not.toContain('WHEN');
+    expect(r.suggestions).not.toContain('GIVEN');
+  });
+
+  it('after a complete ALERT clause (no DO yet) suggests DO, not ALERT again, and no "&"/"|" (condition already sealed)', () => {
+    const r = suggest('WHEN pnl@positions.total <= -5 ALERT telegram ');
+    expect(r.kind).toBe('keyword');
+    expect(r.suggestions).toContain('DO');
+    expect(r.suggestions).not.toContain('ALERT');
+    expect(r.suggestions).not.toContain('&');
+  });
+
+  it('round-trip: picking "ALERT" after a complete condition, then completing the rest, parses cleanly', () => {
+    const text = 'WHEN pnl@positions.total <= -5 ';
+    const r = suggest(text);
+    const picked = text + 'ALERT';
+    const completed = `${picked} telegram DO nop`;
+    const { errors } = parseStatement(completed);
+    expect(errors).toEqual([]);
+    expect(r.suggestions).toContain('ALERT');
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 2/3: comparators (incl. in/not in) + post-comparator hint', () => {
+  it('right after a complete metric_ref with no comparator yet, suggests the full comparator set including in/not in', () => {
+    const r = suggest('WHEN pnl@positions.total ');
+    expect(r.kind).toBe('comparator');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['<', '<=', '>', '>=', '==', '!=', 'in', 'not in']));
+  });
+
+  it('right after a complete bare col_ref chain (Sprint 15 dot-access, no "@") also suggests comparators', () => {
+    const r = suggest('WHEN positions.total.pnl ');
+    expect(r.kind).toBe('comparator');
+    expect(r.suggestions).toContain('in');
+    expect(r.suggestions).toContain('not in');
+  });
+
+  it('mid-typing a word comparator ("i") after a complete ref offers only the word-shaped comparators (in / not in)', () => {
+    const r = suggest('WHEN pnl@positions.total i');
+    expect(r.kind).toBe('comparator');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['in']));
+    expect(r.suggestions.every((s) => s === 'in' || s === 'not in')).toBe(true);
+  });
+
+  it('round-trip: picking "in" then supplying a list literal parses cleanly', () => {
+    const text = 'WHEN pnl@positions.total ';
+    const picked = `${text}in [1, 2]`;
+    const { errors } = parseStatement(picked);
+    expect(errors).toEqual([]);
+  });
+
+  it('right after a comparator token, no catalog completion exists, but a value-position hint is surfaced instead of silence', () => {
+    const r = suggest('WHEN pnl@positions.total <= ');
+    expect(r.suggestions).toEqual([]);
+    expect(r.kind).toBe('value-hint');
+    expect(typeof r.hint).toBe('string');
+    expect(r.hint.length).toBeGreaterThan(0);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 4: order(/bracket(/token( param suggestions', () => {
+  it('"order(" (the alias, not "place_order") now gets real param suggestions, including lots=/bracket= sugar', () => {
+    const r = suggest('WHEN always ALERT nop DO order(');
+    expect(r.kind).toBe('param');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'side', 'qty', 'lots', 'bracket', 'tp_pct', 'sl_pct']));
+  });
+
+  it('"place_order(" gets the SAME augmented param list as "order(" (not just the bare catalog schema)', () => {
+    const r = suggest('WHEN always ALERT nop DO place_order(');
+    expect(r.kind).toBe('param');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['lots', 'bracket', 'tp_pct', 'sl_pct', 'wing_premium_pct']));
+  });
+
+  it('a bare standalone "order(" (no WHEN/DO at all) also gets param suggestions', () => {
+    const r = suggest('order(');
+    expect(r.kind).toBe('param');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['account', 'symbol', 'lots']));
+  });
+
+  it('"bracket(" gets its TP/SL/Wing/applies_to param list — previously ZERO suggestions', () => {
+    const r = suggest('bracket(');
+    expect(r.kind).toBe('param');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['tp_pct', 'sl_pct', 'wing_premium_pct', 'wing_strike_offset', 'tp_order_type', 'applies_to']));
+  });
+
+  it('"token(" gets its "kind" param — previously ZERO suggestions', () => {
+    const r = suggest('token(');
+    expect(r.kind).toBe('param');
+    expect(r.suggestions).toEqual(['kind']);
+  });
+
+  it('"token(kind=" only suggests the one real compiling value ("notify"), not "condition" (a guaranteed compile error)', () => {
+    const r = suggest('token(kind=');
+    expect(r.kind).toBe('enum');
+    expect(r.suggestions).toEqual(['notify']);
+  });
+
+  it('round-trip: a bracket(...) built entirely from suggested params compiles/parses', () => {
+    const text = 'bracket(applies_to=buy_any, tp_pct=30, sl_pct=-20) #name="x"';
+    const { errors } = parseStatement(text);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 5: "#" meta-tag suggestions', () => {
+  it('a bare trailing "#" (nothing typed yet) suggests all four meta keys', () => {
+    const r = suggest('WHEN always ALERT nop DO nop #');
+    expect(r.kind).toBe('meta');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['name=', 'desc=', 'tag=', 'group=']));
+  });
+
+  it('a partially-typed meta key ("#na") filters to the matching key only', () => {
+    const text = 'WHEN always ALERT nop DO nop #na';
+    const r = suggest(text);
+    expect(r.kind).toBe('meta');
+    expect(r.suggestions).toEqual(['name=']);
+    expect(r.replaceRange).toEqual([text.indexOf('#') + 1, text.length]);
+  });
+
+  it('an already-used meta key is excluded from the next "#" suggestion', () => {
+    const r = suggest('WHEN always ALERT nop DO nop #name="x" #');
+    expect(r.suggestions).not.toContain('name=');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['desc=', 'tag=', 'group=']));
+  });
+
+  it('round-trip: picking "name=" and supplying a value parses cleanly', () => {
+    const text = 'WHEN always ALERT nop DO nop #';
+    const picked = `${text}name="hello"`;
+    const { errors } = parseStatement(picked);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 6: WHEN suggests dot-access scope roots', () => {
+  it('right after "WHEN " suggests scope-family roots (positions/funds) alongside metric names', () => {
+    const r = suggest('WHEN ');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['positions', 'funds', 'mean_pnl']));
+  });
+
+  it('typing "positions." (bare dot-access, no "@") still completes to the real scope tokens', () => {
+    const r = suggest('WHEN positions.');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['positions.total', 'positions.any_acct']));
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 7: GIVEN suggestable, and its own item-head is debug-only', () => {
+  it('GIVEN appears in the statement-head keyword set', () => {
+    const r = suggest('');
+    expect(r.suggestions).toContain('GIVEN');
+  });
+
+  it('right after "GIVEN " (fresh item head) suggests ONLY debug — not metrics (GIVEN items are assignments/debug only)', () => {
+    const r = suggest('GIVEN ');
+    expect(r.suggestions).toEqual(['debug']);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 8: bound labels suggested wherever a value/condition is valid', () => {
+  it('a CONDITION-kind label is suggested as a whole bare WHEN leaf', () => {
+    const r = suggest('GIVEN x = pnl@positions.total <= -5 WHEN ');
+    expect(r.suggestions).toContain('x');
+  });
+
+  it('a PRIMITIVE(value)-kind label is NOT suggested as a whole bare WHEN leaf (would be a parse error if picked)', () => {
+    const r = suggest('GIVEN x = 5 WHEN ');
+    expect(r.suggestions).not.toContain('x');
+  });
+
+  it('right after a label-bind\'s own "=" (given_rhs position), suggests metrics + scope roots', () => {
+    const r = suggest('GIVEN x = ');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['mean_pnl', 'positions', 'funds']));
+  });
+
+  it('a PRIMITIVE-kind label is suggested as an ordinary call param value, alongside real enum values', () => {
+    const text = 'GIVEN lvl = HIGH WHEN always ALERT nop DO order(account="Z", symbol="N", side=SELL, chase_level=';
+    const r = suggest(text);
+    expect(r.suggestions).toEqual(expect.arrayContaining(['LOW', 'MED', 'HIGH', 'lvl']));
+  });
+
+  it('round-trip: a condition-kind label used as a whole WHEN condition compiles with no errors', () => {
+    const text = 'GIVEN x = pnl@positions.total <= -5 WHEN x ALERT telegram';
+    const { errors } = parseStatement(text);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 9: debug(...) suggested in GIVEN/ALERT/DO, and its own arg position', () => {
+  it('"debug" is offered as a candidate right after ALERT', () => {
+    const r = suggest('WHEN always ALERT ');
+    expect(r.suggestions).toContain('debug');
+  });
+
+  it('"debug" is offered as a candidate right after DO', () => {
+    const r = suggest('WHEN always ALERT nop DO ');
+    expect(r.suggestions).toContain('debug');
+  });
+
+  it('inside debug(...)\'s own parens, suggests bound labels', () => {
+    const r = suggest('GIVEN x = 5 WHEN always ALERT nop DO debug(');
+    expect(r.suggestions).toContain('x');
+  });
+
+  it('round-trip: debug(x) on a bound label compiles with no errors', () => {
+    const text = 'GIVEN x = 5 WHEN always ALERT nop DO debug(x)';
+    const { errors } = parseStatement(text);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 10: kind:/underlying: (and account:/symbol:/exchange:) qualifiers', () => {
+  it('typing "positions." offers the scope qualifier keys alongside deeper scope names', () => {
+    const r = suggest('WHEN positions.');
+    expect(r.suggestions).toEqual(expect.arrayContaining([
+      'positions.account:', 'positions.symbol:', 'positions.exchange:', 'positions.kind:', 'positions.underlying:',
+    ]));
+  });
+
+  it('round-trip: a leaf built with the underlying: qualifier parses cleanly', () => {
+    const text = 'WHEN positions.underlying:"NIFTY".pnl <= -5';
+    const { errors } = parseStatement(text);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe('suggestAgentCliAt() — Sprint H item 11: "hold" alias + funds.cash/funds.margin', () => {
+  it('"hold." resolves through the alias to the real "holdings" family, same as "holdings." would', () => {
+    const r = suggestAgentCliAt('WHEN hold.', 'WHEN hold.'.length, CATALOG_WITH_HOLDINGS);
+    expect(r.suggestions).toEqual(expect.arrayContaining(['holdings.total']));
+  });
+
+  it('"funds." offers funds.cash/funds.margin column-alias shortcuts alongside the real scope tokens', () => {
+    const r = suggest('WHEN funds.');
+    expect(r.suggestions).toEqual(expect.arrayContaining(['funds.cash', 'funds.margin', 'funds.total']));
+  });
+
+  it('round-trip: funds.cash as a leaf compiles/parses cleanly', () => {
+    const text = 'WHEN funds.cash <= 0';
+    const { errors } = parseStatement(text);
+    expect(errors).toEqual([]);
   });
 });

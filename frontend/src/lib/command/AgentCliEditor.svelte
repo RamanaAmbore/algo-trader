@@ -112,6 +112,17 @@
     const wasDirty = dirty;
     const timer = setTimeout(() => {
       if (!cat) { compiled = null; return; }
+      // Sprint H follow-up (operator-reported, 2026-10-11) — an empty or
+      // whitespace-only textarea (on mount, or after the operator clears
+      // it back out) used to still reach `compileAgentCliStatement`, which
+      // fails with a confusing "expected a name (line 1, col 1)" parse
+      // error — surfaced immediately in the result area even though the
+      // operator hasn't typed anything (they were only looking at the
+      // grayed placeholder text). There is nothing meaningful to parse
+      // here, so skip the compile call entirely (not just hide the error
+      // display) and leave the result area in its normal "nothing
+      // compiled yet" state, same as the `!cat` guard right above.
+      if (!text || !text.trim()) { compiled = null; return; }
       let result;
       try {
         result = compileAgentCliStatement(text, cat, { mode: m, lotSizeOf, allowedKinds });

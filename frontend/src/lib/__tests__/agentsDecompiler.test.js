@@ -336,7 +336,7 @@ describe('real builtin agents — never authored via the CLI', () => {
     expect(recompiled.agent.actions).toEqual([]);
   });
 
-  it('MANUAL_AGENT: conditions=null has NO CLI representation — fails loud, not a crash', () => {
+  it('MANUAL_AGENT: conditions=null has NO CLI representation — fails loud with a SPECIFIC refusal, not the generic "unrecognized condition shape" (operator-reported 2026-10-11, live-data smoke test against all 36 real prod agents)', () => {
     const agentJson = {
       conditions: null,
       events: [
@@ -350,7 +350,12 @@ describe('real builtin agents — never authored via the CLI', () => {
     const dec = decompile(agentJson);
     expect(dec.text).toBeNull();
     expect(dec.errors.length).toBeGreaterThan(0);
-    expect(dec.errors.some(e => /unrecognized condition shape/.test(e.message))).toBe(true);
+    // A system/manual-trigger agent with a genuinely null conditions field
+    // (never a real malformed shape) gets a clear, dignified, SPECIFIC
+    // refusal — not the generic malformed-shape message a real parse
+    // failure would get.
+    expect(dec.errors.some(e => /no expressible condition.*not editable via CLI/.test(e.message))).toBe(true);
+    expect(dec.errors.some(e => /unrecognized condition shape/.test(e.message))).toBe(false);
   });
 
   it('loss-positions-acct: {any:[day_val leaf, day_pct leaf]} — different metrics, generic OR', () => {
@@ -729,6 +734,26 @@ describe('unrecognized or malformed shapes fail loud', () => {
     const dec = decompileCondition({ metric: 'pnl', scope: 'positions.total', op: '<', value: 'not-a-number' }, CATALOG);
     expect(dec.text).toBeNull();
     expect(dec.errors.length).toBeGreaterThan(0);
+  });
+
+  // Operator-reported (2026-10-11, live-data smoke test decompiling all 36
+  // real prod agents) — the `manual` agent (`is_system=True`,
+  // `scope='manual'`, a bookkeeping row with no real condition at all —
+  // `run_cycle()` never auto-evaluates it) stores `conditions: null`. This
+  // must refuse with a specific, dignified message, NOT the generic
+  // "unrecognized condition shape: null" a real malformed shape gets.
+  it('a null conditions field (system/manual-trigger agent, e.g. the real "manual" agent) refuses with a specific message, not the generic "unrecognized condition shape"', () => {
+    const dec = decompileCondition(null, CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors.length).toBe(1);
+    expect(dec.errors[0].message).toMatch(/no expressible condition.*not editable via CLI/);
+    expect(dec.errors[0].message).not.toMatch(/unrecognized condition shape/);
+  });
+
+  it('an undefined conditions field gets the same specific refusal as null', () => {
+    const dec = decompileCondition(undefined, CATALOG);
+    expect(dec.text).toBeNull();
+    expect(dec.errors[0].message).toMatch(/no expressible condition/);
   });
 
   it('unknown channel referenced in stored events', () => {
