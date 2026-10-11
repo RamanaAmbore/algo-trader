@@ -1010,6 +1010,83 @@ def exposed_columns_for_scope(scope_token: str) -> dict:
     return EXPOSED_COLUMNS.get(scope_token, {})
 
 
+# ── Scope filter (Sprint 19) — generic row-predicate for leaf.scope_filter ──
+#
+# Closes a real join-granularity bug: a per-position scope like
+# `positions.expiring_today` can return SEVERAL rows for the same account
+# (one per held symbol). Splitting "this symbol" and "this metric breaches"
+# into two separately-ANDed leaves is UNSAFE — `_eval_all`'s join key
+# (agent_evaluator.py) is `account` only, not `(account, symbol)`, so the
+# two leaves could spuriously "agree" on account while actually referring
+# to two different symbol-rows within it. A single-leaf row filter has no
+# such ambiguity (there's only one leaf, so nothing to cross-join).
+#
+# Chosen shape: an OPTIONAL `scope_filter` key alongside the existing leaf
+# `{"metric", "scope", "op", "value"}` shape —
+#   {"metric": "pnl", "scope": "positions.expiring_today",
+#    "op": "<=", "value": -5000,
+#    "scope_filter": {"symbol": "NIFTY25JULFUT"}}
+# applied by `_eval_leaf` to the rows `scope_fn(ctx)` already returned,
+# BEFORE the metric evaluates each row — so it composes for free with
+# `expiring_today`, `.nfo`, and `.mcx_unhedged` alike (whichever base
+# scope ran, the SAME filter step runs on its output; no per-variant
+# duplication).
+#
+# Rejected alternative: encoding the symbol as a call-argument on the
+# scope token itself (mirroring `mean_pnl(30)`'s parameterized-token
+# precedent, e.g. `positions.expiring_today(symbol=...)`). Two concrete
+# incompatibilities with the EXISTING shared mechanism
+# (`GrammarRegistry._parse_call_token`) ruled this out after reading it:
+# (1) that parser requires the call's `func` to be a bare `ast.Name` —
+# `positions.expiring_today(...)` parses as an `ast.Attribute` chain, not
+# a `Name`, so it wouldn't even reach factory lookup without generalizing
+# the dotted-name walk; (2) it accepts ONLY positive numeric literal args
+# (explicitly documented as intentional — "every current params_schema is
+# a window in minutes") — a symbol is a string, so arg validation would
+# also need loosening. Both changes would widen a mechanism SHARED by
+# metric/scope/channel/format factories just to serve this one scope
+# family, for no benefit over the leaf-key approach, which touches zero
+# shared/generic code and needs no change to the scope token strings
+# `REGISTRY.scope()`/`validate()` already resolve correctly today.
+def scope_filter_row_predicate(scope_token, scope_filter):
+    """Build a `(row) -> bool` predicate for an optional leaf `scope_filter`
+    dict, e.g. `{"symbol": "NIFTY25JULFUT"}`.
+
+    Each qualifier key MUST be a real exposed column on `scope_token`'s own
+    EXPOSED_COLUMNS schema (reuses the SAME whitelist `_resolve_metric_fn`'s
+    fallback already uses) — `funds.any_acct` has no `symbol` column, so
+    `{"symbol": ...}` there is rejected (returns None), matching the
+    "attempting funds.symbol:... is a compile error" rule. Returns None
+    when ANY qualifier key isn't on the scope's schema; the caller decides
+    whether that's a validate()-time error or a runtime skip-with-warning.
+
+    `value == "*"` is an explicit "any value" wildcard for that qualifier —
+    functionally identical to omitting it, kept only for operator-facing
+    symmetry with `account:*` elsewhere in this grammar.
+
+    Multiple qualifiers AND-combine (e.g. a future
+    `{"account": "ZG0790", "symbol": "NIFTY25JULFUT"}`) — there is no
+    ambiguity here the way there is across separate leaves, since this is
+    one predicate applied to one scope's own rows.
+
+    Always returns a callable when every qualifier resolves (including an
+    always-true predicate for an empty/all-wildcard filter dict)."""
+    schema = exposed_columns_for_scope(scope_token)
+    resolved = []
+    for qual, want in (scope_filter or {}).items():
+        if want == '*':
+            continue
+        col = schema.get(qual)
+        if not col:
+            return None
+        resolved.append((col['from_column'], want))
+
+    def predicate(row):
+        return all(str(row.get(from_col)) == str(want) for from_col, want in resolved)
+
+    return predicate
+
+
 # ── Operators — binary comparators (leaf-level) ──────────────────────────
 
 OPERATORS = {

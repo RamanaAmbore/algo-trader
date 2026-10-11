@@ -604,6 +604,24 @@ def _eval_leaf(leaf: dict, ctx: Context) -> list[dict]:
         logger.warning(f"Scope selector '{scope_tok}' failed: {e}")
         return []
 
+    # Sprint 19 — optional symbol-filtered scope. Applied AFTER scope_fn's
+    # own row-selection logic (expiry / NFO / MCX-unhedged filtering),
+    # BEFORE the metric evaluates each row — so it composes uniformly with
+    # every per-position scope variant without touching their resolvers.
+    # See grammar.scope_filter_row_predicate's docstring for the full
+    # design rationale (why this is a leaf key, not a parameterized scope
+    # token).
+    scope_filter = leaf.get('scope_filter')
+    if scope_filter:
+        predicate = grammar.scope_filter_row_predicate(scope_tok, scope_filter)
+        if predicate is None:
+            logger.warning(
+                f"Condition leaf scope_filter {scope_filter!r} references a "
+                f"qualifier not exposed on scope '{scope_tok}' — leaf skipped"
+            )
+            return []
+        rows = [r for r in rows if predicate(r)]
+
     matches = []
     for row in rows:
         try:
@@ -714,6 +732,22 @@ def validate(cond: dict) -> list[str]:
             errors.append(f"{path}: unknown scope token '{c['scope']}'")
         if c.get('op') and REGISTRY.op(c['op']) is None:
             errors.append(f"{path}: unknown operator token '{c['op']}'")
+        # Sprint 19 — optional scope_filter (e.g. {"symbol": "..."})
+        # narrows a per-position scope to one specific row dimension. Only
+        # dry-checked when the base scope itself resolved above — a typo'd
+        # scope token already produced its own error; piling a second,
+        # derivative error on top of it would be noise.
+        scope_filter = c.get('scope_filter')
+        if scope_filter is not None:
+            if not isinstance(scope_filter, dict) or not scope_filter:
+                errors.append(f"{path}.scope_filter: must be a non-empty dict")
+            elif c.get('scope') and REGISTRY.scope(c['scope']) is not None:
+                if grammar.scope_filter_row_predicate(c['scope'], scope_filter) is None:
+                    errors.append(
+                        f"{path}.scope_filter: qualifier(s) "
+                        f"{sorted(scope_filter.keys())} not valid for scope "
+                        f"'{c['scope']}'"
+                    )
 
     walk(cond)
     return errors
