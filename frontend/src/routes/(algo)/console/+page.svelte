@@ -187,6 +187,18 @@
     <AlgoTimestamp />
     <span class="ml-auto"></span>
     <span class="page-header-actions">
+      <a href="/console/guide" class="console-guide-link" title="CLI grammar guide" aria-label="Open CLI guide">
+        <!-- Open-book glyph — "documentation" reads clearer here than a
+             generic "?" circle, which this app's icon set doesn't use
+             anywhere else. -->
+        <svg width="13" height="13" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+          <path d="M2 3.2c1.6-.6 3.4-.6 5 0v9.6c-1.6-.6-3.4-.6-5 0V3.2Z"
+                stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+          <path d="M14 3.2c-1.6-.6-3.4-.6-5 0v9.6c1.6-.6 3.4-.6 5 0V3.2Z"
+                stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/>
+        </svg>
+        <span>Guide</span>
+      </a>
       <RefreshButton onClick={_refresh} loading={_refreshing} label="console" />
       <PageHeaderActions />
     </span>
@@ -298,6 +310,31 @@
 <ConfirmModal bind:this={_liveConfirmRef} />
 
 <style>
+  /* Guide link — matches PageHeaderActions' .pha-btn sizing/chrome so it
+     sits flush in the same icon row, using the sky accent (info/help)
+     to stay visually distinct from the amber Order / cyan Chart /
+     orange Activity trio it sits next to. */
+  .console-guide-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.25rem;
+    height: 1.4rem;
+    padding: 0 0.4rem;
+    border-radius: 4px;
+    border: 1px solid var(--algo-sky-border-soft);
+    color: var(--algo-sky);
+    font-size: var(--fs-sm);
+    text-decoration: none;
+    background: rgba(255, 255, 255, 0.03);
+    transition: background 0.12s, border-color 0.12s, color 0.12s;
+    flex-shrink: 0;
+  }
+  .console-guide-link:hover {
+    background: var(--algo-sky-bg);
+    border-color: var(--algo-sky-border);
+    color: var(--algo-sky-text);
+  }
+
   .console-cmd-wrap {
     flex-shrink: 0;
     margin-bottom: 0.4rem;
